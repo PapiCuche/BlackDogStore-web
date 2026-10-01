@@ -48,8 +48,8 @@ import {
 
 const BUTTON =
   "rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40";
-const PRIMARY = `${BUTTON} bg-white text-black hover:bg-zinc-200`;
-const GHOST = `${BUTTON} border border-white/[0.12] text-zinc-300 hover:bg-white/[0.06]`;
+const PRIMARY = `${BUTTON} bg-foreground text-background hover:bg-foreground/90`;
+const GHOST = `${BUTTON} border border-bd-border text-foreground/85 hover:bg-surface-2`;
 
 function text(row: { data: Record<string, unknown> }, key: string) {
   const value = row.data?.[key];
@@ -152,7 +152,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       <Stepper labels={STEP_LABELS_PRODUCTS} current={step} />
 
       {error && (
-        <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+        <p className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
           {error}
         </p>
       )}
@@ -172,9 +172,9 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 const selected = event.target.files?.[0];
                 if (selected) void onFile(selected);
               }}
-              className="block w-full text-sm text-zinc-400 file:mr-4 file:rounded-lg file:border-0 file:bg-white file:px-4 file:py-2 file:text-sm file:font-semibold file:text-black"
+              className="block w-full text-sm text-background file:mr-4 file:rounded-lg file:border-0 file:bg-foreground file:px-4 file:py-2 file:text-sm file:font-semibold file:text-background"
             />
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-muted">
               ¿No tienes un archivo? Descarga la plantilla, complétala y vuelve aquí.
             </p>
             <a className={GHOST} href={productTemplateUrl(companyId)}>
@@ -202,24 +202,24 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 className={
                   "w-full rounded-xl border px-4 py-3 text-left transition " +
                   (sheet?.name === entry.name
-                    ? "border-white/30 bg-white/[0.06]"
-                    : "border-white/[0.06] hover:bg-white/[0.03]")
+                    ? "border-bd-border bg-surface-2"
+                    : "border-bd-border hover:bg-surface")
                 }
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-zinc-100">{entry.name}</span>
+                  <span className="font-semibold text-foreground">{entry.name}</span>
                   {entry.detected && (
-                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                    <span className="rounded-full bg-success-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
                       Formato reconocido
                     </span>
                   )}
                   {entry.profile && (
-                    <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-sky-300">
+                    <span className="rounded-full bg-info-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-info">
                       Mapeo recordado
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-muted">
                   {entry.detected || "Sin formato conocido"} · encabezados en la fila{" "}
                   {entry.header_row} · {entry.headers.length} columna(s)
                 </p>
@@ -248,23 +248,23 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           description="Sólo se escriben los campos que asignes aquí. El resto del archivo se ignora."
         >
           <div className="space-y-4">
-            <label className="block text-xs text-zinc-400">
+            <label className="block text-xs text-muted">
               Fila de encabezados
               <input
                 type="number"
                 min={1}
                 value={headerRow}
                 onChange={(event) => setHeaderRow(Number(event.target.value) || 1)}
-                className="ml-2 w-20 rounded-lg border border-white/[0.08] bg-black/40 px-2 py-1 text-sm text-zinc-200"
+                className="ml-2 w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground"
               />
             </label>
 
             <div className="grid gap-3 sm:grid-cols-2">
               {Object.entries(inspection.fields).map(([field, meta]) => (
                 <label key={field} className="block text-xs">
-                  <span className="mb-1 block uppercase tracking-widest text-zinc-500">
+                  <span className="mb-1 block uppercase tracking-widest text-muted">
                     {meta.label}
-                    {meta.required && <span className="text-rose-400"> *</span>}
+                    {meta.required && <span className="text-danger"> *</span>}
                   </span>
                   <select
                     value={mapping[field] ?? ""}
@@ -274,7 +274,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                       else next[field] = Number(event.target.value);
                       setMapping(next);
                     }}
-                    className="w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200"
+                    className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground"
                   >
                     <option value="">— no importar —</option>
                     {sheet.headers.map((header, index) => (
@@ -287,7 +287,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               ))}
             </div>
 
-            <div className="space-y-2 rounded-xl border border-white/[0.06] bg-black/20 px-4 py-3 text-xs text-zinc-400">
+            <div className="space-y-2 rounded-xl border border-bd-border bg-background/20 px-4 py-3 text-xs text-muted">
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -305,11 +305,11 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                   onChange={(event) => setCreateCategories(event.target.checked)}
                 />
                 Crear las categorías que falten
-                <span className="text-zinc-600">
+                <span className="text-muted">
                   — si lo dejas apagado, una categoría desconocida es un error de fila
                 </span>
               </label>
-              <p className="text-zinc-600">
+              <p className="text-muted">
                 Una celda vacía nunca borra lo que ya está guardado.
               </p>
             </div>
@@ -344,7 +344,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           <Notices job={job} />
 
           {job.counts.error > 0 && (
-            <div className="mb-4 rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
               Hay {job.counts.error} fila(s) con error. No se aplica una
               importación a medias: corrige el archivo y vuelve a subirlo.{" "}
               <a
@@ -397,7 +397,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
 
       {step === 5 && job && (
         <DashboardSection title="6 · Resultado">
-          <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <p className="mb-4 rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm text-success">
             Importación aplicada. Se crearon {job.summary?.applied?.created ?? 0} y
             se actualizaron {job.summary?.applied?.updated ?? 0} producto(s).
           </p>
@@ -433,10 +433,10 @@ export default function ProductImportPage() {
         >
           <div className="space-y-6">
             <header>
-              <h1 className="text-xl font-semibold text-zinc-100">
+              <h1 className="text-xl font-semibold text-foreground">
                 Carga masiva de productos
               </h1>
-              <p className="text-sm text-zinc-500">
+              <p className="text-sm text-muted">
                 Sube un Excel, revisa lo que va a pasar y sólo entonces aplícalo.
               </p>
             </header>

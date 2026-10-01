@@ -96,12 +96,17 @@ from .tenancy import (
     resolve_branch_for_user,
     resolve_catalog_company,
     visible_branches,
+    visible_orders,
 )
 from .sales_note_services import (
     SalesNoteError,
     generate_sales_note_pdf,
     get_or_create_sales_note,
     get_sales_note_filename,
+)
+from .ticket_services import (
+    generate_sales_note_ticket_pdf,
+    get_sales_note_ticket_filename,
 )
 from .serializers import (
     BranchSerializer,
@@ -1114,13 +1119,30 @@ class AdminStockTransferItemsView(APIView):
 
         try:
             with transaction.atomic():
+                # ERP-1 · P0-2. LOCK AND RE-CHECK BEFORE DELETING. The whole-list
+                # replace below removes lines before it ever validates one, and
+                # the only editability guard lived inside set_transfer_item — so
+                # an empty payload (keep == {}) wiped every line WITHOUT entering
+                # the loop, and a payload with all-zero quantities did the same.
+                # On a dispatched transfer that meant the source had already lost
+                # the units (transfer_out) and the destination would never
+                # receive them: stock destroyed, with no way back. Editing is a
+                # draft-only operation; enforce it here, under select_for_update
+                # so a concurrent dispatch cannot slip between the check and the
+                # delete either (that race was INV-10).
+                locked = StockTransfer.objects.select_for_update().get(pk=transfer.pk)
+                if not locked.is_editable:
+                    raise TransferError(
+                        'Solo se pueden editar las líneas de una transferencia '
+                        'en borrador.'
+                    )
                 # The PUT is the whole list: lines not sent are removed, so a
                 # partial payload cannot leave a stale line behind.
                 keep = {line['product'] for line in lines if line['quantity'] > 0}
-                transfer.items.exclude(product_id__in=keep).delete()
+                locked.items.exclude(product_id__in=keep).delete()
                 for line in lines:
                     set_transfer_item(
-                        transfer,
+                        locked,
                         product=products[line['product']],
                         quantity=line['quantity'],
                     )
@@ -1431,9 +1453,13 @@ def _sales_note_order(request, pk):
     the caller has company context, the legacy role when they reach the pilot
     through the bridge. Returns (order, error_response).
 
-    Deliberately NOT branch-scoped. A sales note is a commercial document about
-    a sale, not a stock operation; gating it on branch access would hide a
-    company's own paperwork from its own sales staff.
+    BRANCH-SCOPED since H4.1.2 (decision D2). This used to say the opposite: a
+    sales note is paperwork about a sale, so branch access "did not apply". But
+    the note carries the sale — customer, document, lines, amounts — and a
+    member granted one shop who may not open an order of another shop must not
+    read or issue that order's note either. The order is resolved through
+    visible_orders(), exactly like the order detail, so the two cannot disagree.
+    Company-wide staff (mode ALL, platform master, legacy bridge) see every note.
     """
     company, error = _company_context(
         request, CAP_SALES_NOTES, _LEGACY_SALES_NOTES_ROLES,
@@ -1445,9 +1471,11 @@ def _sales_note_order(request, pk):
             error.data['detail'] = 'No tienes permisos sobre las notas de venta.'
         return None, error
 
-    # An order of another tenant answers exactly like one that does not exist.
+    # An order of another tenant, or of a branch this caller does not operate,
+    # answers exactly like one that does not exist — before any note is read or
+    # a number is spent.
     order = (
-        Order.objects.filter(company=company)
+        visible_orders(request.user, company)
         .prefetch_related('items__product')
         .filter(pk=pk)
         .first()
@@ -1522,7 +1550,23 @@ class AdminOrderSalesNoteView(APIView):
 
 
 class AdminOrderSalesNotePdfView(APIView):
-    """GET /api/admin/orders/{pk}/sales-note/pdf/ — download the internal note PDF."""
+    """
+    GET /api/admin/orders/{pk}/sales-note/pdf/ — descarga la nota interna.
+
+    Sin parámetros devuelve el A4, exactamente como antes: hay enlaces y
+    llamadas ya escritos contra esta ruta y no pueden cambiar de significado.
+    `?formato=ticket80` devuelve el mismo documento en rollo de 80 mm.
+
+    NO SE LLAMA `?format=`. Se comprobó: `format` es el
+    `URL_FORMAT_OVERRIDE` de DRF, que negocia el renderizador ANTES de que
+    corra este método y responde 404 a un valor que no reconoce. El nombre
+    obvio estaba ocupado.
+    """
+
+    #: Un valor desconocido se rechaza en vez de caer al A4 en silencio: quien
+    #: escribe `ticket58` esperando papel estrecho tiene que enterarse ahora,
+    #: no al ver salir un A4 de la impresora.
+    FORMATS = ('a4', 'ticket80')
 
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesNotesThrottle]
@@ -1539,8 +1583,19 @@ class AdminOrderSalesNotePdfView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        wanted = (request.query_params.get('formato') or 'a4').strip().lower()
+        if wanted not in self.FORMATS:
+            return Response(
+                {'detail': f'Formato no reconocido. Use: {", ".join(self.FORMATS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ticket = wanted == 'ticket80'
+
         try:
-            pdf_bytes = generate_sales_note_pdf(note)
+            pdf_bytes = (
+                generate_sales_note_ticket_pdf(note) if ticket
+                else generate_sales_note_pdf(note)
+            )
         except SalesNoteError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception:
@@ -1559,14 +1614,19 @@ class AdminOrderSalesNotePdfView(APIView):
                 'sales_note_id': note.pk,
                 'sales_note_number': note.number,
                 'order_id': order.pk,
+                # QUÉ formato se llevó. Sin esto la bitácora no distingue una
+                # reimpresión en mostrador de una descarga de archivo.
+                'formato': wanted,
             },
             request=request,
             company=order.company,
         )
 
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = (
-            f'attachment; filename="{get_sales_note_filename(note)}"'
+        filename = (
+            get_sales_note_ticket_filename(note) if ticket
+            else get_sales_note_filename(note)
         )
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
         response['Cache-Control'] = 'no-store'
         return response

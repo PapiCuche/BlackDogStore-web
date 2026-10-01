@@ -14,6 +14,7 @@
 
 import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
+import { BrandLogo } from "./BrandLogo";
 
 const WHATSAPP_SVG = (
   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -22,31 +23,36 @@ const WHATSAPP_SVG = (
 );
 
 export function Footer() {
-  const { company, branding, contact } = useStorefront();
+  const { company, contact, services } = useStorefront();
   const storeName = company.name;
-  const logo = branding.logo_url;
 
   return (
-    <footer className="relative border-t border-white/[0.06] bg-[#080808]">
+    <footer className="relative border-t border-bd-border bg-background">
       {/* Top CTA band */}
-      <div className="relative overflow-hidden bg-white px-6 py-12 text-center topo-bg">
+      <div className="relative overflow-hidden bg-inverse px-6 py-12 text-center topo-bg">
         <div className="relative z-10 mx-auto max-w-2xl">
-          {logo ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={logo}
-              alt={storeName}
-              className="mx-auto mb-6 h-28 w-auto object-contain"
+          {/*
+            Esta banda se pinta con `bg-foreground`, que tras la traducción de paleta
+            de M12F ES el color del texto: su contraste es el CONTRARIO al de la
+            página. En tema oscuro sale clara; en tema claro, oscura. Por eso
+            `surface="inverse"` y no `"theme"`.
+
+            Antes leía `branding.logo_url` directamente y se saltaba las seis
+            variantes por contraste: sobre esta banda invertida, eso ponía el
+            logotipo del contraste equivocado exactamente la mitad del tiempo.
+          */}
+          <div className="mb-6 flex justify-center">
+            <BrandLogo
+              placement="hero"
+              surface="inverse"
+              className="h-28 w-auto object-contain"
+              wordmarkClassName="font-display text-3xl font-black uppercase tracking-tight text-inverse-foreground"
             />
-          ) : storeName ? (
-            <p className="mx-auto mb-6 font-display text-3xl font-black uppercase tracking-tight text-[#080808]">
-              {storeName}
-            </p>
-          ) : null}
-          <p className="font-display text-4xl font-black uppercase tracking-tight text-[#080808] sm:text-5xl">
+          </div>
+          <p className="font-display text-4xl font-black uppercase tracking-tight text-inverse-foreground sm:text-5xl">
             ¿Necesitas ayuda?
           </p>
-          <p className="mt-3 text-sm text-zinc-600">
+          <p className="mt-3 text-sm text-inverse-muted">
             Escríbenos y te respondemos lo antes posible.
           </p>
           {contact.whatsapp_link ? (
@@ -54,7 +60,7 @@ export function Footer() {
               href={contact.whatsapp_link}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              className="mt-6 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-inverse-foreground px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-inverse transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-inverse-foreground"
             >
               {WHATSAPP_SVG}
               Escribir al WhatsApp
@@ -62,7 +68,7 @@ export function Footer() {
           ) : contact.email ? (
             <a
               href={`mailto:${contact.email}`}
-              className="mt-6 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              className="mt-6 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-inverse-foreground px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-inverse transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-inverse-foreground"
             >
               Escríbenos
             </a>
@@ -77,20 +83,24 @@ export function Footer() {
           {/* Brand */}
           <div className="lg:col-span-2">
             <div className="flex items-center gap-4">
-              {logo ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={logo}
-                  alt={storeName}
-                  className="h-11 w-auto object-contain"
-                />
-              ) : null}
+              {/*
+                Sobre `bg-background`, que sigue al tema.
+
+                El nombre YA NO se escribe al lado: el lockup lo contiene, y
+                repetirlo junto a él duplica la marca dentro de su propia área de
+                protección. `BrandLogo` sólo escribe el nombre cuando NO hay
+                logotipo, que es cuando el nombre ES la identidad. La ciudad se
+                queda: es otra información, no la marca otra vez.
+              */}
+              <BrandLogo
+                placement="header"
+                surface="theme"
+                className="h-11 w-auto object-contain"
+                wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-foreground"
+              />
               <div>
-                <p className="font-display text-lg font-black uppercase tracking-tight text-white">
-                  {storeName}
-                </p>
                 {contact.city ? (
-                  <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+                  <p className="mt-1 text-[10px] uppercase tracking-[0.25em] text-muted">
                     {contact.city}
                   </p>
                 ) : null}
@@ -104,16 +114,16 @@ export function Footer() {
                   href={contact.whatsapp_link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 text-sm text-zinc-400 transition hover:text-white"
+                  className="flex items-center gap-2.5 text-sm text-muted transition hover:text-foreground"
                 >
                   {WHATSAPP_SVG}
                   {contact.phone || contact.whatsapp_number}
                 </a>
               ) : contact.phone ? (
-                <p className="text-sm text-zinc-400">{contact.phone}</p>
+                <p className="text-sm text-muted">{contact.phone}</p>
               ) : null}
               {contact.address ? (
-                <div className="flex items-start gap-2.5 text-sm text-zinc-500">
+                <div className="flex items-start gap-2.5 text-sm text-muted">
                   <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -125,7 +135,7 @@ export function Footer() {
                 </div>
               ) : null}
               {contact.email ? (
-                <p className="text-sm text-zinc-500">{contact.email}</p>
+                <p className="text-sm text-muted">{contact.email}</p>
               ) : null}
             </div>
 
@@ -138,7 +148,7 @@ export function Footer() {
                 href={contact.facebook_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-zinc-400 transition hover:border-white/30 hover:text-white"
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-bd-border hover:text-foreground"
                 aria-label="Facebook"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -151,7 +161,7 @@ export function Footer() {
                 href={contact.instagram_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-zinc-400 transition hover:border-white/30 hover:text-white"
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-bd-border hover:text-foreground"
                 aria-label="Instagram"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -164,7 +174,7 @@ export function Footer() {
 
           {/* Navigation */}
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-500">Tienda</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Tienda</p>
             <ul className="mt-4 space-y-3">
               {[
                 { href: "/product", label: "Catálogo" },
@@ -176,7 +186,7 @@ export function Footer() {
                 <li key={link.href}>
                   <Link
                     href={link.href}
-                    className="text-sm text-zinc-500 transition hover:text-white"
+                    className="text-sm text-muted transition hover:text-foreground"
                   >
                     {link.label}
                   </Link>
@@ -185,33 +195,41 @@ export function Footer() {
             </ul>
           </div>
 
-          {/* Services */}
+          {/*
+            UNA SOLA FUENTE.
+
+            Aquí había una segunda lista de servicios, escrita a mano, más corta
+            que la de `/services` y ya divergente: incluía «Diagnóstico
+            Gratuito», que la otra no ofrecía con ese nombre y que ninguna
+            política del proyecto respalda. Dos listas de lo mismo divergen
+            siempre; quien las lee no sabe cuál es la buena.
+
+            Ahora ambas salen de los servicios ACTIVOS del tenant. Un taller que
+            deja de ofrecer algo lo desactiva una vez y desaparece de los dos
+            sitios.
+          */}
+          {services.length > 0 ? (
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-500">Servicios</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Servicios</p>
             <ul className="mt-4 space-y-3">
-              {[
-                { label: "Cambio de Pantalla" },
-                { label: "Cambio de Batería" },
-                { label: "Cambio de Tapa Trasera" },
-                { label: "Cambio de Glass" },
-                { label: "Diagnóstico Gratuito" },
-              ].map((s) => (
-                <li key={s.label}>
+              {services.slice(0, 5).map((s) => (
+                <li key={s.title}>
                   <Link
                     href="/services"
-                    className="text-sm text-zinc-500 transition hover:text-white"
+                    className="text-sm text-muted transition-colors hover:text-foreground"
                   >
-                    {s.label}
+                    {s.title}
                   </Link>
                 </li>
               ))}
             </ul>
           </div>
+          ) : null}
         </div>
 
         {/* Bottom bar */}
-        <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-white/[0.06] pt-8 sm:flex-row">
-          <p className="text-xs text-zinc-600">
+        <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-bd-border pt-8 sm:flex-row">
+          <p className="text-xs text-muted">
             © {new Date().getFullYear()}
             {storeName ? ` ${storeName}.` : ""} Todos los derechos reservados.
           </p>
@@ -220,7 +238,7 @@ export function Footer() {
               href={contact.website_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-zinc-700 transition hover:text-zinc-400"
+              className="text-xs text-muted transition hover:text-muted"
             >
               {contact.website_url.replace(/^https?:\/\//, "")}
             </a>

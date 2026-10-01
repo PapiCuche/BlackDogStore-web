@@ -4,6 +4,153 @@
 **Estado del proyecto:** MVP en desarrollo; no apto todavía para producción ni pagos reales  
 **Objetivo del documento:** proporcionar contexto verificable a desarrolladores y asistentes de IA sobre la arquitectura, funcionalidades, problemas, riesgos y prioridades actuales del repositorio.
 
+> **Actualización de estabilización (28-09-2026, `erp/sales-fiscal-ui`).**
+> POS permite seleccionar documentos realmente soportados y conserva su número
+> y tipo, incluso cuando luego existen notas fiscales correctivas. La recepción
+> técnica web usa el RBAC y los endpoints existentes; Ventas puede entregar con
+> la capacidad específica, sin gestionar transiciones técnicas generales. Se
+> corrigen timeline, filtros y privacidad de estados/avisos. El 401/403 reportado
+> al abrir órdenes autorizadas no se reprodujo en el HEAD auditado. Fiscal sigue
+> en BETA; WhatsApp/SMS no están integrados. Migraciones locales 0085–0093
+> aplicadas con respaldo. Los dos errores de build/typecheck de páginas de
+> inventario quedan RESUELTOS extrayendo ambos badges al módulo compartido de
+> componentes; typecheck y build de producción pasan, y Playwright cubre POS y
+> acceso interno con 17 de 17. Evidencia y límites en
+> [la auditoría de estabilización](estabilizacion-funcional-2026-09-28.md).
+
+> **Actualización ERP-FISCAL-5B (28-09-2026, rama `erp/fiscal-sunat`).**
+> **Comunicación de Baja (RA)** para FACTURA y para las NC/ND ligadas a factura, y
+> la distinción entre EMITIR y OTORGAR. Cuatro migraciones aditivas (`0089`–`0092`),
+> sin frontend, sin producción. **Dos subflujos, no uno:** la factura `01` y las
+> notas `07`/`08` ligadas a factura se anulan con `VoidedDocuments`/RA; la boleta
+> `03` y sus notas, por el Resumen Diario con el estado oficial de anulación
+> —`ConditionCode=3` es del camino de la boleta, no de la factura (ADR-37)—. El
+> subflujo de boleta queda **PENDIENTE y declarado**: el Catálogo N.º 19, el Anexo
+> N.º 10 y las Reglas de Validación CPE devuelven 403 en `cpe.sunat.gob.pe`, y sin
+> el código y las reglas exactas emitir sería adivinar; exige además rehacer
+> `fiscal_summary_one_active_per_document` y la semántica de `superseded` al
+> rechazarse. **Entidad propia** `FiscalVoidCommunication` +
+> `FiscalVoidCommunicationDocument` (`0090`) con su ciclo de vida, su ticket y su
+> **CDR-Baja** —el tercer CDR del proceso—; no se marca `status = ANNULLED`, el
+> estado del comprobante se DERIVA y la historia es inmutable (ADR-40).
+> **`VoidedDocuments` contra el XSD OFICIAL:** el paquete SUNAT UBL 2.0 sí se
+> publica en `contenido.app.sunat.gob.pe` (20 XSD en `schemas/2.0/`, SHA-256 en
+> `PROCEDENCIA.md`), con `CustomizationID` **1.0** y **`ReferenceDate` ANTES de
+> `IssueDate`**; `cbc:ID` = `RA-YYYYMMDD-N` (fecha de generación, sin RUC).
+> **CDR-ACCEPTED-AT:** el plazo NO son las 72 horas de la guía de 2012 —el art. 14
+> de la RS 097-2012 fue sustituido en bloque por la **RS 114-2019 numeral 2.5**,
+> vigente 01.07.2019—, sino **siete días calendario desde el día siguiente de
+> recibir la CDR aceptada**; eso obligó a `cdr_accepted_at` (`0089`), de escritura
+> única, sellado en las dos rutas de aceptación y **nunca aproximado** desde
+> `issued_at`/`updated_at`/`created_at`; sin ese dato el plazo no es demostrable y
+> se falla cerrado (ADR-35), y se comprueba al crear y otra vez al enviar (ADR-38).
+> **GRANT-EVIDENCE-01:** «emitido» no es «otorgado» —el art. 15 lo define y la baja
+> aplica a los NO otorgados—, así que se añadió la representación mínima auditable
+> (`granted_at`/`granted_method`/`granted_by`/`granted_evidence` con métodos
+> genéricos `ECOMMERCE_PORTAL`/`EMAIL`/`POS_PRINT`/`POS_ELECTRONIC`/`MANUAL`/`API`)
+> más una **atestación administrativa auditada** de no otorgamiento (`0092`), con
+> restricción de BD que los hace excluyentes; **nunca un booleano del cuerpo como
+> autoridad** (ADR-34). Queda una consecuencia operativa abierta: como todavía nada
+> registra entregas, hoy toda baja exige ese paso manual, hasta que el checkout y el
+> POS registren el otorgamiento (ADR-41). **Caminos excluyentes:** un comprobante
+> en una baja viva ya no admite nota, y una NC aceptada DENIEGA la baja sin
+> invalidar la NC. Agrupación de documentos compatibles del mismo día, idempotencia
+> por `request_key` (`0091`) que libera su hueco al rechazarse, correlativo con
+> autoridad de PostgreSQL, y `sendSummary` → ticket persistido → `getStatus` con
+> reclamar/confirmar/red/finalizar **sin bloqueo durante el SOAP**; transmitido sin
+> ticket = `SUBMISSION_UNKNOWN`, nunca reenvío a ciegas (ADR-39). Plazo vencido =
+> **negativa**, sin NC automática; no otorgado con plazo vencido = «REQUIERE
+> REVISIÓN OPERATIVA/TRIBUTARIA». Seis rutas internas (`grant/`, `not-granted/`,
+> `void/`, detalle, `submit/`, `status/`) que DERIVAN el objetivo del documento
+> local autorizado —el cuerpo sólo aporta motivo y `request_key`—, con
+> `sales.fiscal.issue`/`sales.fiscal.view` y **404** al cruzar empresas. Revisión
+> adversarial de §43 con dos revisores independientes: ocho hallazgos, cinco
+> confirmados y corregidos (entre ellos el plazo, que se exigía al crear pero no al
+> enviar). **SUNAT BETA ACEPTÓ LA BAJA (28-09-2026):** `RA-20260928-1` sobre la
+> factura `F001-3`, atestiguada como no otorgada, ticket `1790611064145`,
+> «La Comunicacion de baja RA-20260928-1, ha sido aceptada», código `0`, CDR-Baja
+> `49a11c28…`; el original conserva su XML, su CDR y su estado. La baja de una
+> NC/ND de factura queda IMPLEMENTADA pero **con BETA no ejercitado**: el humo dio
+> de baja una factura, no una nota. Suite PostgreSQL **4378 verde (skipped=3)**:
+> +67 tests sobre el baseline 4311/3 y **sin delta de omitidas**. Detalle en el
+> CHANGELOG, ADR-34/41 y `docs/entrega-fiscal-5b-baja.md`.
+>
+> **Actualización ERP-FISCAL-4.1 (23-09-2026, rama `erp/fiscal-sunat`).** Cierre
+> normativo del Resumen Diario antes de NC/ND, cuatro puertas. **RC-ID-01:** el
+> `cbc:ID` lleva el correlativo (`RC-YYYYMMDD-N`, reglas 2210/2220) y su fecha es la
+> de GENERACIÓN (regla 2346), no la de emisión de las boletas; el correlativo pasa
+> a ser único por (empresa, ambiente, fecha de generación) —migración 0087—.
+> **RC-TIMEOUT-01:** un `sendSummary` transmitido sin ticket es INCIERTO
+> (`SUBMISSION_UNKNOWN`, migración 0086), distinto de un fallo no transmitido
+> (seguro); no se reenvía a ciegas, con banderas `can_submit`/`can_poll`/`can_recover`
+> y auditoría de evidencia. **RC-ANON-01:** el consumidor final va con guión `-` en
+> la línea del resumen (la boleta conserva `0`). **RC-XSD-01:** validación estructural
+> local (el XSD oficial 2.0 no pudo descargarse —SUNAT tras Cloudflare, y la fase
+> prohíbe *mirrors*—; **corregido en 5B:** el paquete sí se publica en otro host
+> oficial y está en `schemas/2.0/`, pero es el Resumen por RANGOS de 2012 y aquí se
+> emite el Resumen por DOCUMENTO, así que RC-XSD-01 sigue PARCIAL y la validación
+> estructural se mantiene). Dos migraciones aditivas, sin frontend, sin producción. Suite
+> PostgreSQL 4275 verde (skipped=3). Detalle en el CHANGELOG y ADR-27/28.
+>
+> **Actualización ERP-FISCAL-4 (22-09-2026, rama `erp/fiscal-sunat`).** Añade la
+> **boleta electrónica (tipo 03)** y el **Resumen Diario de Boletas (RC)**. La
+> boleta reutiliza el generador, la firma, el XSD (es UBL Invoice 2.1), VEN-02 y el
+> PDF/QR; el tipo se resuelve por `receipt_type` y la identidad del adquirente sigue
+> las reglas de la boleta (consumidor final sin documento con Catálogo 06 código 0;
+> falla cerrado si el total supera S/ 700 sin identificación). El Resumen Diario es
+> nuevo: modelos `FiscalDailySummary`/`FiscalDailySummaryDocument` (**migración 0085**,
+> aditiva, tras la puerta de diseño de BD), builder UBL 2.0 `SummaryDocuments`
+> propio, `sendSummary` → ticket (persistido antes de consultar), `getStatus(ticket)`,
+> y aplicación del CDR al resumen entero (un rechazo libera sus boletas, no las
+> anula). Bloques de 500, correlativo único bajo concurrencia, red fuera de
+> transacción, envío reclamado para no duplicar ticket. API interna
+> (`/api/admin/fiscal-summaries/…`, generar/enviar/consultar = ISSUE; selección de
+> boletas en el servidor, no por ids del cliente). Sin cambios de frontend.
+> `getStatusCpe` no existe; NC/ND/Baja/GRE/Consulta Integrada y producción quedan
+> fuera. **El XSD del Resumen (UBL 2.0) no está incluido** (no se pudo descargar en
+> este entorno): estructura verificada contra la guía y ejemplos, y contra BETA.
+> Detalle en el CHANGELOG y ADR-24/25/26.
+>
+> **Actualización ERP-FISCAL-3 (19-09-2026, rama `erp/fiscal-sunat`).** Cierra el
+> transporte incierto sin añadir tipos de comprobante ni habilitar producción.
+> **Reconciliación** (`getStatusCdr`): un envío que quedó `SUBMISSION_ERROR` se
+> resuelve CONSULTANDO el CDR del comprobante ya emitido; nunca reenvía, reserva
+> correlativo ni crea otro documento; la red va fuera de transacción y el estado
+> terminal se fija releyendo bajo bloqueo (idempotente, sin sobrescribir un
+> terminal). Endpoint `POST /reconcile/`, exige `sales.fiscal.issue`, deriva el
+> identificador del documento (anti-IDOR). Distinción clave: `getStatusCdr`
+> (`billConsultService`) ≠ `getStatus(ticket)` (`billService`); no existe
+> `getStatusCpe`. **Confianza del CDR**: se audita su firma —integridad sí (con
+> `signxml`), autenticidad `unverified` (SUNAT no publica ancla), CDR-TRUST-01
+> PENDIENTE, sin enchufar a la aceptación—. **Observaciones** del CDR con su
+> código conservado. **TEST-HARNESS-01**: el humo BETA pasa a comando opt-in que
+> persiste (no más rollback de un efecto externo). Consulta en producción y
+> emisión en producción son capacidades separadas (banderas distintas); ambas
+> siguen apagadas/BETA. Sin migraciones, sin frontend, sin red en esta fase.
+> Detalle en el CHANGELOG y ADR-20/21/22/23.
+>
+> **Actualización ERP-FISCAL-2 (18-09-2026, rama `erp/fiscal-sunat`).** La FACTURA
+> gravada, al contado y sin descuento pasa de PARCIAL a **IMPLEMENTADO para BETA**:
+> se emite, firma, valida contra el XSD, empaqueta y **SUNAT BETA la acepta**
+> (ResponseCode 0 en el caso limpio `118.00 × 1` y en el caso de redondeo
+> `59.90 × 2`). VEN-02A resuelto: reconciliación de líneas por resto mayor con
+> `ROUND_HALF_UP` explícito y déficit acotado/demostrado (ADR-17/18). FISCAL-03/04
+> resueltos: el PDF y el QR se construyen desde el XML firmado, no desde OrderItem
+> (ADR-19). El snapshot tributario de la Order sigue siendo la única autoridad
+> monetaria; descuento y no-gravado siguen fallando cerrado (PENDIENTE, ADR-15).
+> Sin migraciones, sin cambios de frontend. **Producción sigue deshabilitada
+> (ADR-10).** Boleta, NC/ND, Resumen, Baja, GRE y `getStatus`/reconciliación quedan
+> para fases posteriores. Detalle en el CHANGELOG.
+>
+> **Actualización ERP-FISCAL-1 (18-09-2026, rama `erp/fiscal-sunat`).** Base
+> fiscal endurecida sin habilitar emisión real: carga del certificado desde
+> PKCS#12 en memoria (ADR-16), throttles fiscales efectivos, parseo de XML/CDR
+> externo endurecido (XXE/DTD/tamaño/zip-bomb), errores de validación fiscal →
+> 400 (no 500), y la carrera de emisión concurrente resuelta de forma
+> idempotente. **Producción sigue deshabilitada (ADR-10).** VEN-02A (redondeo),
+> FISCAL-03/04 (fecha legal y PDF desde el XML firmado) y `getStatus` quedan
+> para ERP-FISCAL-2+. Detalle en el CHANGELOG.
+
 ---
 
 ## 1. Resumen ejecutivo
@@ -1257,6 +1404,11 @@ superficies lo llaman, con comportamiento idéntico. La restricción del rol de
 inventario se preservó **exacta**, aunque siga clavada al `UserProfile.role`
 legacy en lugar de a una capability.
 
+> **Ya no es así.** H4.1.2 movió esa decisión a `sales.orders.manage` dentro de
+> una empresa y dejó la regla por rol sólo en el puente legacy; H4.1.2B restringió
+> ese puente a quien nunca tuvo Membership. Se conserva el párrafo porque
+> describe lo que M6 entregó.
+
 `sales.orders.view` y `sales.orders.manage` promovidas a **ACTIVE**: v1 las
 impone sin ruta de rol legacy, que es la definición de ACTIVE en el catálogo.
 
@@ -2257,3 +2409,2069 @@ falla con `Number of calls: 0`. Esa es la demostración de que la baseline sirve
    de una fila, y `CASCADE` la borra si alguien elimina y recrea la membresía.
    Solo alcanzable desde el admin de Django.
 7. **`MembershipAdmin`** es el único admin hermano sin `has_delete_permission`.
+
+
+## M12B — Centro de notificaciones
+
+**Estado: IMPLEMENTADO** para `IN_APP` y `EMAIL`. Migración **0058**.
+
+### Por qué tres tablas y no una
+
+```
+NotificationEvent      algo ocurrió
+Notification           alguien debe saberlo
+NotificationDelivery   intentamos avisarle por un canal
+```
+
+Una sola tabla con un booleano `email_enviado` se rompe con el segundo
+destinatario, el segundo canal o el primer reintento — y se rompe en silencio.
+
+`IN_APP` no tiene fila de entrega: la `Notification` **es** la entrega in-app, y
+una fila diciendo «escribimos con éxito la fila a la que estamos unidos» sería
+una tautología con un índice encima.
+
+### Idempotencia en tres capas
+
+| Capa | Constraint |
+| --- | --- |
+| Evento | `event_key` UNIQUE, derivado de la entidad |
+| Destinatario | `UNIQUE(event, user)` · `UNIQUE(event, customer)` |
+| Canal | `UNIQUE(notification, channel)` |
+
+Más una `CheckConstraint`: exactamente un destinatario. Ninguno significa que no
+es de nadie; ambos, que dos superficies la reclamarían.
+
+### Eventos implementados
+
+| Evento | Origen real | Audiencia |
+| --- | --- | --- |
+| `service.assignment.created` | `assign_technician()` | técnico asignado |
+| `service.quote.available` | `publish_quote()` | cliente |
+| `service.quote.approved/rejected` | `record_quote_decision()` | técnico o gestión |
+| `service.ready_for_pickup` | transición real | cliente **y** personal de entrega de esa sucursal |
+| `service.delivered` | transición real | cliente |
+| `service.status.changed` | transición real | cliente (sólo estados con mensaje) |
+| `commerce.payment.confirmed` | IPN verificado | cliente |
+| `commerce.fulfillment.ready/shipped/delivered` | `change_fulfillment_status()` | cliente |
+| `commerce.order.cancelled` | `change_fulfillment_status()` | cliente |
+
+Todos respaldados por una transición que ya existía. No se inventó ningún
+estado, y `wallet.*` no aparece porque el módulo no existe.
+
+### El master de plataforma no es destinatario automático
+
+`resolve_capabilities()` devuelve todas las capacidades al superusuario en todas
+las empresas. Una consulta de «quién tiene esta capacidad» le entregaría cada
+evento de cada tenant. **Autorizar y direccionar son preguntas distintas**, y la
+resolución de destinatarios lo excluye a propósito.
+
+### El correo de confirmación no se duplicó
+
+`commerce.payment.confirmed` no está en `EMAIL_WORTHY_EVENTS`: `email_services`
+ya lo envía con su recibo y su idempotencia. M12B aporta el registro in-app.
+
+### Deuda declarada
+
+Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos (existe
+`retry_failed_delivery`, sin planificador — **PROPUESTA**) · push, WhatsApp, SMS
+(**PROPUESTA**) · portal web de reparaciones del cliente (**PENDIENTE**) ·
+Mobile (**PENDIENTE**) · `Administrador 18/37` en instalación desde cero
+(**PENDIENTE PREEXISTENTE**, no ampliado por esta fase).
+
+
+---
+
+## M12B.1 — Paridad de presets e integración con el libro de pagos
+
+**Estado: IMPLEMENTADO.** Migraciones **0060** (renumerada desde 0058) y **0061**.
+
+### Auditoría de migraciones que amplían presets
+
+| Migración | Preset | Discriminador | ¿Segura en fresh install? |
+| --- | --- | --- | --- |
+| 0017 seed | todos | literal congelado | **SAFE** (siembra, no compara) |
+| 0033 customer | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0035 commercial | Administrador + Ventas | vivo (admin) / congelado (ventas) | **UNSAFE** para admin |
+| 0037 commission | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0037 service | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0040 diagnostic | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0040 promotion | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0045 repair | Administrador | catálogo vivo − nuevas | **UNSAFE** |
+| 0047 technician | Servicio Técnico | literal congelado | **SAFE** |
+| 0050 quality | Admin + Técnico | vivo (admin) / congelado (técnico) | **UNSAFE** para admin |
+| 0053 delivery | Admin + Técnico | vivo (admin) / congelado (técnico) | **UNSAFE** para admin |
+| 0054 supervisor | Ventas + Supervisor | congelado (compara) / vivo (crea) | **SAFE** |
+| 0057 legacy tech | asignaciones | congelado | NO APLICA |
+| 0059 payment | Admin + Ventas | vivo (admin) / congelado (ventas) | **UNSAFE** para admin |
+| **0061 paridad** | Administrador | **congelado** | **SAFE** |
+
+El patrón se ve de un vistazo: **todo discriminador congelado funciona; todo
+discriminador vivo falla**, y sólo el de `Administrador` es vivo. Ventas,
+Inventario, Servicio Técnico y Supervisor Técnico ya tenían paridad correcta
+antes de esta subfase — el defecto era de un solo preset.
+
+### Reconstrucción empírica de la forma histórica
+
+Base limpia, migración a migración:
+
+```
+tras 0017 → Administrador = 18
+tras 0033 → 18      tras 0045 → 18
+tras 0035 → 18      tras 0050 → 18
+tras 0037 → 18      tras 0053 → 18
+tras 0040 → 18      tras 0059 → 18
+```
+
+Una sola forma que reparar, y es determinista: exactamente el `_ALL_ASSIGNABLE`
+de 0017. No hay formas intermedias porque ningún grant llegó nunca a producir una.
+
+### El discriminador de 0061
+
+Cuatro campos en conjunción, el patrón que 0053 estableció: `slug`, `name`, una
+de las descripciones que **la propia plataforma** escribió (dos variantes
+históricas), e igualdad **exacta** de conjunto.
+
+Un tenant tendría que haber elegido el slug de la plataforma, su nombre, una de
+sus dos frases literales y precisamente esos dieciocho códigos —ni diecisiete ni
+diecinueve— para ser confundido con un preset intacto.
+
+**Limitación declarada:** un `Administrador` del que un taller quitó una capacidad
+y luego añadió otra distinta, quedando en dieciocho, sería indistinguible. Se
+acepta el riesgo con el criterio conservador: la conjunción exige igualdad exacta
+del conjunto, no del tamaño.
+
+### Camino de upgrade, verificado con datos inyectados
+
+| Rol | Antes | Después | Resultado |
+| --- | ---: | ---: | --- |
+| Administrador sembrado | 18 | 38 | completado |
+| Administrador intacto (otro tenant) | 18 | 38 | completado |
+| Administrador recortado | 17 | 17 | **intacto** |
+| Administrador ampliado | 19 | 19 | **intacto** |
+| Rol renombrado | 18 | 18 | **intacto** |
+| Supervisor con duplicado | 15 | 14 | dedup, misma autoridad |
+
+El duplicado se inyectó por SQL crudo a propósito: `CompanyRole.save()` normaliza,
+así que la única forma de que llegara a la base es la que realmente ocurrió — una
+migración escribiendo por el modelo histórico, que no lleva ese `save()`.
+
+### Eventos del libro de pagos
+
+| Evento | Audiencia | Correo | Por qué |
+| --- | --- | --- | --- |
+| `service.payment.recorded` | cliente | no | El resumen ya le expone `paid` y `outstanding`; está en el mostrador |
+| `service.payment.reversed` | **interno** (`service.payments.manage`) | no | Un reverso es corrección contable, no reembolso |
+
+Clave de idempotencia desde `RepairPayment.id`, nunca del request. **Ninguna
+capability nueva:** M12B.1 usa las que PR #19 trajo.
+
+### Deuda que sigue abierta
+
+Preferencias por evento/canal (**PARCIAL**) · reintentos automáticos, sin
+planificador (**PROPUESTA**) · push, WhatsApp, SMS (**PROPUESTA**) · portal web de
+reparaciones del cliente (**PENDIENTE**) · Mobile (**PENDIENTE**) · comunicados
+internos, M12C (**PENDIENTE**) · evidencias, M12D (**PENDIENTE**).
+
+---
+
+## M12C — Comunicados internos
+
+**Estado: IMPLEMENTADO** para `IN_APP`. Migraciones **0062** (esquema) y **0063**
+(capability). Catálogo asignable: **39**.
+
+### Responsabilidades
+
+| Entidad | Qué es | Qué NO es |
+| --- | --- | --- |
+| `Announcement` | El documento: autor, texto completo, prioridad, estado | No es una bandeja |
+| `AnnouncementAudienceRule` | Una línea de «a quién», siempre con empresa | No es un JSON opaco |
+| `NotificationEvent` | Que el comunicado salió, **por empresa** | No es el documento |
+| `Notification` | La copia de un destinatario, con su `read_at` | No es el documento |
+
+`Notification.body` sigue en 400 caracteres. Es un preview; el texto vive en el
+`Announcement` al que la notificación apunta con `target_type='announcement'`.
+
+### Ciclo de vida
+
+```
+DRAFT ──publish──► PUBLISHED   (inmutable: ni texto, ni audiencia, ni borrado)
+  │
+  └──cancel──► CANCELLED       (borrador descartado; NO es recall)
+```
+
+Guardar un borrador diez veces produce diez guardados y **cero destinatarios**.
+
+### Las cinco audiencias
+
+| Tipo | Cómo resuelve | Nota |
+| --- | --- | --- |
+| `ALL_COMPANY` | membresías activas, usuarios activos, empresa activa | master excluido |
+| `BRANCH` | `has_branch_access()`, no `membership.branch_id` | quien trabaja en tres locales, trabaja en tres |
+| `ROLE` | `MembershipRoleAssignment` activa sobre `CompanyRole` real | funciona con roles personalizados, sin nombres hardcodeados |
+| `CAPABILITY` | `resolve_capabilities()` contra el catálogo real | rechaza códigos inexistentes |
+| `USER` | membresía activa en ESA empresa | ids cross-tenant rechazados |
+
+Una persona que cumple cuatro reglas recibe **un** aviso. La unión se toma en
+`resolve_audience()` y la constraint de M12B sigue detrás como garantía.
+
+`active_internal_users()` es ahora **el único sitio** que decide quién cuenta
+como personal: `resolve_internal_recipients()` de M12B se reescribió encima en
+lugar de duplicar las cuatro condiciones.
+
+### Superficies
+
+```
+/api/v1/internal/<slug>/communications/…    tenant · communications.manage
+/api/v1/internal/<slug>/announcements/<id>/ destinatario · SIN capability
+/api/v1/platform/announcements/…            master · is_superuser
+```
+
+La superficie platform está separada **porque** apunta a varias empresas.
+Esconder multiempresa bajo una ruta que promete un solo slug sería mentir en el
+propio path.
+
+### Deuda declarada
+
+Correo de comunicados (**PENDIENTE** — necesita cola y reintento) · programación
+diferida (**PROPUESTA**) · lista individual de lectores (**PROPUESTA**, no MVP:
+saber que once de cuarenta leyeron es gestión; saber cuáles once, por defecto, es
+vigilancia) · broadcast a clientes (**PROPUESTA** — exige consentimiento,
+unsubscribe y reglas de marketing) · push, WhatsApp, SMS (**PROPUESTA**) ·
+adjuntos (**PROPUESTA**) · M12D evidencias (**PENDIENTE**) · wallet
+(**PROPUESTA**).
+
+---
+
+## M12D — Evidencias fotográficas
+
+**Estado: IMPLEMENTADO** para web interna. Migración **0064**.
+
+### Capas
+
+```
+EvidenceImageProcessor   normaliza y comprime      (evidence_images.py)
+EvidenceStorage          guarda, abre, firma, borra (evidence_storage.py)
+evidence_services        el dominio                 (evidence_services.py)
+evidence_views           las dos superficies        (evidence_views.py)
+```
+
+El dominio conoce cuatro verbos. No sabe que detrás hay Cloudflare.
+
+### Storage por entorno
+
+| Entorno | Backend | Cómo se sirve |
+| --- | --- | --- |
+| Producción | S3-compatible (Cloudflare R2), bucket **privado** | URL firmada, TTL 300 s |
+| Desarrollo | `FileSystemStorage`, sin `base_url` | streaming autenticado |
+| Tests | directorio temporal | streaming autenticado, **cero red** |
+
+`boto3` y `django-storages` se importan **perezosamente**. Importarlos arriba
+haría que `manage.py test` fallara en cualquier máquina sin ellos — que hoy es
+el caso. Y si se pide `s3` sin poder construirlo, falla ruidosamente: una
+configuración que dice «usa R2» y escribe en disco local en silencio parecería
+funcionar hasta que alguien buscara una evidencia que nunca salió del contenedor.
+
+### Formatos
+
+| Entrada | Aceptada | Nota |
+| --- | :---: | --- |
+| JPEG, PNG, WebP | sí | Pillow 12.3.0 |
+| HEIC / HEIF | sí | `pillow-heif==1.6.0`, sólo decodificación |
+| SVG, PDF, ZIP, vídeo, binarios | **no** | superficie de ataque mínima |
+
+Salida **siempre** `image/webp`. Ni el `Content-Type` ni la extensión deciden
+nada: sólo si el decodificador consigue abrirlo.
+
+### Settings
+
+`SERVICE_EVIDENCE_MAX_UPLOAD_BYTES` 25 MB · `MAX_EDGE` 1600 · `IMAGE_QUALITY` 75
+· `MIN_QUALITY` 60 · `TARGET_BYTES` 1 MB · `MAX_COMPRESSION_ATTEMPTS` 6 ·
+`MAX_PIXELS` 60 M.
+
+Ninguno nombra a Black Dog Store, y el de píxeles existe por una razón concreta:
+un PNG de 20 KB puede declarar 30.000 de lado y pedir varios GB al decodificarse.
+El límite de bytes no lo ve venir.
+
+### Privacidad verificada
+
+| Comprobación | Resultado |
+| --- | --- |
+| EXIF tras procesar | 5 tags → **0** |
+| GPS | eliminado |
+| `b'iPhone'` / `b'Apple'` en los bytes finales | ausentes |
+| Orientación EXIF 6 | aplicada: 900×600 → 600×900 |
+| `Cache-Control` del contenido | `private, no-store` |
+| Serializador cliente | allowlist de 5 campos |
+
+Lo de la metadata se pregunta a los **bytes**, no a la API de Pillow: un
+decodificador puede exponer una vista limpia de un archivo que aún lleva la
+cadena dentro, y lo que se sube a un bucket son los bytes.
+
+### Deuda declarada
+
+Original forense (**PROPUESTA** — exige política propia de integridad y
+retención) · vídeo (**PROPUESTA**) · adjuntos generales (**PROPUESTA**) · firma
+digital (**PENDIENTE**) · evidencia de garantía (**PENDIENTE**, el dominio no
+existe) · retención y borrado definitivo (**PENDIENTE**) · limpieza de huérfanos
+en segundo plano (**PROPUESTA**, sin Celery) · upload directo a R2
+(**PROPUESTA**) · galería web del cliente (**PENDIENTE**, el portal no existe) ·
+Mobile (**PENDIENTE**, no auditado en esta fase) · avisos por foto
+(**PROPUESTA**, deliberadamente no implementados: una notificación por imagen
+subida sería ruido).
+
+
+## M12F.1 — Reconciliación del escaparate
+
+**Lo que esta fase corrigió no es una omisión: es una contradicción.** La página
+de servicios afirmaba que todos los servicios llevan seis meses de garantía, y
+tanto el manual de marca v3.0 del piloto como la fila de configuración del
+propio tenant dicen lo contrario — los seis meses son de los equipos seminuevos,
+y la cobertura de una reparación depende del trabajo y del repuesto.
+
+Las afirmaciones sin respaldo se retiran; las que el manual sí sostiene se
+conservan con su forma: los tiempos pasan a llamarse `estimated_time_text` y la
+página los rotula «Estimado:», porque el manual pide informar que pueden variar.
+
+**Segundo hallazgo, y es de arquitectura.** La traducción de paleta de M12F
+convirtió superficies de color fijo en superficies que siguen el tema, y las
+declaraciones `surface="dark"` de tres bloques se quedaron atrás. El logotipo
+blanco acabó sobre fondo crema. La lección se guarda como defensa: un fichero
+que pinta con tokens del tema no puede declarar un contraste fijo, y un test
+estructural lo comprueba.
+
+**Tercero: el navegador encuentra lo que el código no dice.** 194 px de
+desbordamiento en la portada a 320 px, celdas de 112 px útiles y un titular
+partido a mitad de palabra — ninguno era visible en una aserción sobre el
+código. La matriz de viewports pasa a comprobarse con Chromium de verdad.
+
+Estado de clasificación tras la fase: tema global y contraste de logotipo
+IMPLEMENTADOS; responsive del escaparate IMPLEMENTADO con navegador; responsive
+del admin PARCIAL; contenido de servicios, preguntas y métricas editable por el
+tenant.
+
+
+## Auditoría integral de frontend
+
+Rama `audit/frontend-complete`, sobre `feat/storefront-cms-responsive`.
+
+**El runtime nunca sirvió otra rama.** Se verificó que el proceso de `:3000`
+corre desde el mismo árbol de trabajo y que su HTML contiene los marcadores del
+último commit. Lo que faltaba no eran los cambios: era su alcance. La fase
+anterior se detuvo deliberadamente en la portada, así que el resto de la web
+conservaba el lenguaje anterior.
+
+### El panel llevaba puesta la ropa de la tienda
+
+El layout raíz montaba cabecera, pie y botón de WhatsApp en TODAS las rutas. El
+control interno salía con «Catálogo · Servicios · Carrito» encima y el pie de
+marketing completo debajo. Se separa por ruta: `/admin` tiene su propio armazón
+y es el único que debe llevar.
+
+### Trece pantallas del panel no cargaban nunca
+
+Productos, inventario, movimientos, transferencias, recuentos y siete más usan
+`StaffGuard`, que resuelve empresa sólo por membresías. Un master de plataforma
+no tiene ninguna, así que veía «No tienes permisos» en las trece. La API ya
+aceptaba `?company=`; el arreglo es de frontend y no amplía autoridad, porque
+el backend sigue tratando ese parámetro como untrusted.
+
+Además, la empresa elegida vivía en un `useState` de un guard que se monta una
+vez por página: se perdía al navegar.
+
+### Colores de estado
+
+105 textos de estado usaban el extremo claro de cada escala, herencia de cuando
+sólo había tema oscuro. En claro rendían 1.02:1. Se separan dos familias:
+
+    danger / warning / success / info    texto sobre la página — giran
+    *-solid                              relleno con texto encima — no giran
+
+Confundirlas produjo dos defectos seguidos, ambos encontrados midiendo.
+
+### Formularios
+
+58 etiquetas sin asociar a su control, checkout la peor con 11. El lector de
+pantalla anunciaba el campo sin nombre. Lo descubrió el arnés de auditoría al
+no poder iniciar sesión.
+
+### Checkout
+
+No mostraba nada del pedido: ni artículos, ni cantidades, ni total. Se pagaba a
+ciegas.
+
+### Estado
+
+Escaparate y panel comparten sistema visual; 22 rutas × 2 temas sin un solo
+texto por debajo de AA; sin desbordamiento en 320–1440; verificado en Chromium
+y WebKit.
+
+
+## Accesos de desarrollo
+
+La tarjeta de `/auth` anunciaba seis cuentas que no existían, porque la base de
+desarrollo no tenía ningún usuario y nadie había ejecutado `seed_demo_users`.
+
+**La causa de que no se detectara importa más que el defecto.** La auditoría
+anterior capturó esa pantalla 108 veces sin pulsar un solo botón, y su arnés
+entraba con un usuario propio: verificó el mecanismo de login y dio por buena la
+promesa de la interfaz sin comprobarla. Una captura demuestra que algo se pinta,
+no que funcione.
+
+Ahora la interfaz no puede prometer de más: pregunta a
+`GET /api/dev/demo-accounts/` —sólo en desarrollo, 404 en producción— qué
+cuentas existen y cuáles están activas, y no dibuja botón para las que no
+sirven. Eso elimina además la segunda lista escrita a mano.
+
+Y `seed_demo_users` reactiva al refrescar. No lo hacía, y el mensaje que
+producía —«No active account found with the given credentials»— apunta al sitio
+equivocado.
+
+Los seis accesos están cubiertos por un E2E que pulsa el botón, envía el
+formulario, comprueba la sesión por la interfaz y verifica destino y módulos
+visibles. El limitador de 5 intentos por minuto se espera, no se desactiva.
+
+---
+
+## Fase C2.1 — Impuestos Perú, desglose y ticket imprimible
+
+### La pregunta que había que responder antes de escribir nada
+
+**¿`Product.price` incluye el impuesto o no?** De la respuesta dependía todo: si
+no lo incluye, hay que sumar 18 % y todos los precios de la tienda suben; si lo
+incluye, hay que extraerlo y nada cambia de precio.
+
+No se supuso. Se leyó `checkout_services.price_checkout` y
+`pos_services.calculate_pos_totals`, y ambos construyen
+
+    subtotal = Σ(Product.price × cantidad)
+    total    = subtotal − descuento
+
+sin impuesto en ninguna parte. Ese total es exactamente lo que la pasarela
+cobra hoy y lo que el cliente paga. Por tanto **el precio del catálogo es un
+precio final con impuesto incluido**, y el desglose se extrae hacia atrás.
+
+Sumarlo encima habría convertido un artículo de S/ 118 en S/ 139,24 dentro de
+una migración: un cambio de precios de toda la tienda disfrazado de mejora
+contable.
+
+### El impuesto se calcula restando
+
+    base     = total / (1 + tasa)     redondeado a céntimos
+    impuesto = total − base
+
+No es un atajo. La alternativa —calcular `base × tasa` y redondear las dos
+cifras por separado— produce sumas que no cuadran: dos redondeos independientes
+pueden separarse un céntimo del total. Restando, `base + impuesto = total` se
+cumple por construcción, para cualquier importe y cualquier tasa.
+
+Hay una prueba que recorre un importe de cada siete céntimos entre S/ 0,01 y
+S/ 1 000 comprobando la identidad. No es una muestra: si existe un importe donde
+falla, está en ese barrido.
+
+### Por qué la tasa viaja congelada en cada venta
+
+La **Ley N.º 32387** reparte el 18 % entre IGV e Impuesto de Promoción Municipal
+de forma distinta cada año:
+
+| Año | IGV | IPM | Total |
+|---|---|---|---|
+| 2026 | 15,5 % | 2,5 % | 18 % |
+| 2027 | 15,0 % | 3,0 % | 18 % |
+| 2028 | 14,5 % | 3,5 % | 18 % |
+| 2029 | 14,0 % | 4,0 % | 18 % |
+
+Verificado en la página oficial de orientación de SUNAT, no en un blog. El total
+no se mueve, pero el reparto sí, y un documento emitido hoy tiene que seguir
+diciendo lo que dijo. Eso hace obligatorio —no prudente— guardar la tasa con la
+venta.
+
+`Order` ganó seis columnas: `currency`, `subtotal_amount`, `taxable_amount`,
+`tax_amount`, `tax_rate`, `tax_treatment`. `breakdown_for_order()` las **lee**;
+no recalcula nunca. Sólo cae al cálculo en vivo para ventas anteriores a que el
+desglose existiera, y sin escribir nada.
+
+### Se muestra una sola línea de impuesto
+
+Rotulada «IGV», que es lo que muestra la representación impresa peruana y lo que
+el comprador reconoce. Partirla en dos columnas obligaría a redondear dos veces
+—y a que la suma dejara de cuadrar— a cambio de un detalle que el documento no
+necesita separar y que, además, cambia cada año.
+
+### Una autoridad de cálculo
+
+`store/tax_services.py` es la única función que descompone una venta. Sin
+condicionales por `slug`: el piloto no es un caso especial del motor, y hay un
+test que lee el código fuente del módulo y falla si aparece uno.
+
+En el punto de venta el desglose se calcula **dentro de `calculate_pos_totals`**,
+en la misma llamada que el total. La previsualización y la venta leen ese único
+resultado, así que no pueden separarse ni un céntimo: si cada una llamara al
+motor por su cuenta, un cambio en una de las dos llamadas dejaría de verse hasta
+que un cliente reclamara.
+
+### El escaparate no calcula el suyo
+
+Pregunta a `POST /api/checkout/quote/`. El carrito se lee del servidor —no del
+cuerpo de la petición, o un cliente se cotizaría los precios que quisiera— y del
+cuerpo se aceptan sólo la clave de sesión y el cupón.
+
+La alternativa era dividir el total entre 1,18 en el navegador, y eso habría
+creado una segunda autoridad de cálculo: una en Python con `Decimal` y otra en
+JavaScript con coma flotante. `0.1 + 0.2 !== 0.3` no es una curiosidad
+académica; es este error exacto, servido al cliente en pantalla y contradicho por
+el papel que se lleva.
+
+Si la cotización falla, la pantalla **calla**: muestra el total, que es lo que se
+va a cobrar, y no dice nada del impuesto. Mejor callar que inventar una cifra.
+
+### Los dos documentos
+
+| Formato | Ruta | Papel |
+|---|---|---|
+| A4 | `/api/admin/orders/{pk}/sales-note/pdf/` | Hoja, desglose completo |
+| Ticket | `…/pdf/?formato=ticket80` | Rollo de 80 mm, altura continua |
+
+**Sin parámetros sigue devolviendo el A4.** Hay enlaces ya escritos contra esa
+ruta y añadir un formato no puede cambiar lo que devuelve la llamada de siempre.
+
+**No se llama `?format=`.** Se comprobó empíricamente: `format` es el
+`URL_FORMAT_OVERRIDE` de DRF, que negocia el renderizador antes de que la vista
+corra y responde 404 a un valor que no reconoce. El nombre obvio estaba ocupado.
+
+El ticket vive en `store/ticket_services.py`, no en un `if` dentro del A4: son
+dos geometrías sin nada en común —17 cm con tablas de cuatro columnas frente a
+7,2 cm de una sola columna y altura desconocida—, y compartirlas habría
+significado un condicional en cada línea. Lo que sí comparten son los DATOS:
+ambos leen el mismo contexto, que lee el mismo desglose congelado.
+
+Se dibuja **dos veces**: la primera para medir, la segunda sobre una página de
+exactamente esa altura. Sin eso, la impresora escupe palmos de papel en blanco
+tras un ticket de dos líneas.
+
+### La nota se crea al imprimir, no al cobrar
+
+Decisión deliberada. Generarla dentro de la venta metería la reserva de un
+correlativo interno dentro de la transacción que ya mueve stock y cobra: un fallo
+al numerar tumbaría un cobro que sí ocurrió. Y gastaría un número por cada venta
+que nadie llega a imprimir.
+
+No abre la puerta a duplicados. `SalesNote` es uno-a-uno con `Order` y
+`get_or_create_sales_note` es idempotente, así que imprimir cinco veces devuelve
+cinco veces **la misma nota con el mismo correlativo**. La idempotencia del punto
+de venta tampoco se toca: la impresión ocurre después de la venta, fuera de su
+transacción y fuera de su clave.
+
+### Lo que estos documentos NO son
+
+Ninguno es un comprobante electrónico SUNAT. No se firma nada, no se habla con
+SUNAT, no se finge una respuesta, no se marca nada como aceptado. El aviso sigue
+impreso en los dos formatos y el lenguaje es **«solicitado»**, nunca «emitido».
+
+Hay una prueba que lee los dos PDF y falla si aparece «factura emitida», «boleta
+emitida», «comprobante SUNAT» o «factura/boleta electrónica».
+
+**La emisión electrónica real es C2.2 y no está hecha.**
+
+### Los PDF se leen, no se dan por buenos
+
+`pdf.startswith(b'%PDF')` pasa igual si el documento sale en blanco, con el total
+equivocado o con un identificador de pasarela impreso. Las pruebas descomprimen
+los streams —ASCII85 sobre Flate, con `zlib` y `base64` de la biblioteca
+estándar, sin añadir dependencias al proyecto— y comprueban las cifras, el aviso,
+el ancho real del `MediaBox` y que la altura del ticket siga al contenido.
+
+Un detalle que costó encontrar: `pdf_bytes.split(b'stream')` **no sirve**, porque
+la palabra `endstream` contiene `stream`. El cuerpo se quedaba con un `end`
+pegado detrás del terminador `~>`, la decodificación fallaba en silencio y las
+aserciones buscaban su texto dentro de basura.
+
+También se verifica que ninguno de los dos documentos contenga identificadores de
+pasarela, códigos de autorización, tokens, números de tarjeta ni `payment_error`.
+
+### Defecto corregido de paso
+
+El nombre del PDF descargado se componía en el frontend como
+`blackdog-nota-venta-…`: el nombre de **un** inquilino escrito en código
+compartido de una plataforma multiempresa, así que cualquier otra empresa se
+descargaba sus ventas con la marca ajena en el archivo. Ahora se usa el nombre
+que manda el servidor en `Content-Disposition`, construido con el slug de la
+empresa dueña del pedido y filtrado a ASCII seguro.
+
+### Lo que encontró la revisión adversarial
+
+Treinta y dos agentes en seis lentes independientes levantaron 26 hallazgos;
+cada uno pasó por un verificador cuyo trabajo era REFUTARLO. Sobrevivieron dos.
+Reviso a mano los marcados «high» porque al verificador se le instruyó descartar
+ante la duda, y esa instrucción produce falsos negativos — **produjo uno**, y era
+el peor de todos.
+
+Ninguno de estos defectos lo habrían visto los tests que yo mismo escribí,
+porque todos probaban el camino feliz.
+
+**1. Cotizar gastaba el presupuesto de pagar.** `CheckoutQuoteView` nació
+compartiendo `CheckoutThrottle` —el limitador de 10/min— con
+`payments/create-checkout-session/`. Reproducido: doce cotizaciones y la
+creación de la sesión de pago responde 429 sin llegar a ejecutarse.
+
+Era grave por cómo funciona la pantalla: el checkout vuelve a cotizar en CADA
+cambio del carrito o del cupón, así que alguien ajustando cantidades se cerraba
+la compra a sí mismo. **Mirar el checkout se había convertido en un motivo para
+no poder comprar.**
+
+Arreglado con un cubo propio (`checkout_quote`, 60/min). Sigue limitado porque
+recalcula precios y stock, que es trabajo real contra la base de datos.
+
+**2. Una palabra sin espacios se salía del rollo.** El cortador de línea del
+ticket sólo separaba entre palabras. Un nombre como
+`MacBookProM4Max16Pulgadas1TBNegroEspacialConCargadorMagSafe140W` se dibujaba
+entero: 258 pt de ancho sobre una página de 227 pt. No se recortaba con un
+aviso — se salía del papel y desaparecía.
+
+Lo mismo valía para el nombre de la empresa, que va centrado y es texto libre de
+cada inquilino: al desbordar, se sale por los dos lados a la vez.
+
+En el A4 no pasaba porque `Paragraph` parte palabras largas por su cuenta, y esa
+diferencia es justo la que lo hacía difícil de ver: el mismo dato, correcto en un
+documento y perdido en el otro.
+
+Ahora `_wrap` trocea por caracteres, midiendo, cuando una palabra sola no cabe.
+
+**3. Los botones de imprimir se bloqueaban para siempre.** Éste el verificador
+lo DESCARTÓ, y se equivocó. `printSalesNoteTicket` esperaba el `onload` de un
+marco oculto para llamar a imprimir; medido en navegador, con un PDF servido como
+blob ese evento **no dispara**. La promesa no se resolvía nunca, así que los dos
+botones se quedaban en «Preparando…» indefinidamente: veinticinco segundos
+después seguían bloqueados, con el cliente delante y sin más salida que recargar
+a media venta.
+
+Lo resolvió una medición de treinta segundos, no un razonamiento. La espera está
+acotada ahora (3 s), y si el marco no carga el ticket se **descarga** y la
+pantalla lo dice — un botón que promete imprimir y no imprime deja al operador
+mirando una impresora que no ha recibido nada.
+
+**4. El ticket decía «Comprobante: Boleta».** El A4 rotulaba «Comprobante
+solicitado:» y el ticket no, así que el mismo dato afirmaba dos cosas distintas
+según el formato — y la del ticket era la falsa: ese papel no es una boleta, no
+ha habido emisión ni aceptación de SUNAT.
+
+**5. El escaparate y el mostrador redondeaban distinto.** `price_checkout` usaba
+`quantize(CENTS)` a secas —media al par, el redondeo bancario— mientras el punto
+de venta usa media al alza. Medido: el 40 % de los subtotales diverge para algún
+porcentaje corriente de cupón, y con precios reales también (S/ 129,90 al 15 %
+daba 19,48 en la web y 19,49 en la tienda).
+
+Es anterior a C2.1, pero C2.1 lo empeoraba al **congelar e imprimir** esa cifra.
+Se unificó en media al alza, que es lo que esta fase exige para todo importe.
+La dirección importa y se comprobó sobre 6 667 subtotales: redondear el
+DESCUENTO hacia arriba sólo puede bajar el total, así que **ningún cliente paga
+más que antes** por esta corrección.
+
+**6. El admin de Django podía descuadrar una venta cerrada.** `total` era
+editable y los campos del desglose ni se mostraban. Ese formulario no pasa por
+`tax_services`, así que editarlo dejaba la venta diciendo `base + impuesto !=
+total` y el siguiente PDF salía contradictorio consigo mismo.
+
+Recalcular al guardar tampoco valía: reescribiría en silencio un documento ya
+entregado, que es justo lo que el congelado existe para impedir. El dinero de una
+venta cerrada es ahora de sólo lectura, y el desglose se muestra para que un
+descuadre se vea en vez de descubrirse al imprimir. Una corrección de importe es
+una operación comercial —nota de crédito—, no una edición de fila.
+
+**7. `money()` aceptaba floats en silencio.** `Decimal(0.1)` no vale 0,1, y
+redondear ese error a céntimos lo esconde hasta que un total deja de cuadrar.
+Ahora levanta `TypeError`.
+
+**Un agente dejó basura en el repositorio**: `store/tests_dumpticket.py`, un
+arnés de depuración sin aserciones que imprimía dos volcados de PDF en cada
+corrida. Eliminado.
+
+**Las dos pruebas de regresión se verificaron al revés**: se revirtió el arreglo
+y se comprobó que fallan, y se restauró y se comprobó que pasan. Un test que
+pasa igual con el código roto no prueba nada — es el mismo pecado que un test
+que se salta en silencio.
+
+### Deuda declarada
+
+- **`tax_treatment` sólo emite `taxed` hoy.** El campo existe, viaja congelado y
+  los documentos ya saben pintar `exempt` e `inafecta`, pero no hay superficie
+  para marcarlo. Cuando un tenant venda algo exonerado hará falta esa pantalla.
+- **La tasa es una constante del módulo, no configuración por empresa.**
+  `resolve_tax_rate()` ya recibe la empresa, así que el día que haya
+  jurisdicciones distintas no cambia quien llama — pero hoy devuelve 18 % para
+  todos.
+- **Las pantallas escriben `S/` fijo.** El servidor ya manda la moneda en cada
+  desglose, pero el escaparate y el punto de venta la rotulan a mano. Hoy no se
+  nota porque sólo hay PEN; el día que un inquilino use otra, la pantalla y el
+  papel dirán cosas distintas. NO se ha medio-arreglado a propósito: usar el
+  símbolo del servidor sólo en las líneas de impuesto dejaría la misma pantalla
+  mezclando dos notaciones, que es exactamente el defecto que se acaba de
+  corregir en el PDF. Se arregla entero o no se toca.
+- **No hay serie fiscal.** El correlativo `NV-` es interno y así se rotula en los
+  dos documentos. La numeración fiscal pertenece a C2.2.
+
+
+---
+
+## Fase C2.2A.1B — la superficie de la factura electrónica
+
+### Se auditó antes de exponer, y las cinco invariantes tenían un defecto
+
+Ninguno se veía desde las pruebas del camino feliz. Todos habrían sido reales el
+día que alguien usara esto.
+
+**1. No había guarda de ambiente.** La consulta de series no filtraba por
+`environment`: una serie de producción se elegía si era la más antigua. Y no
+existía ninguna configuración fiscal en el proyecto, así que «producción» estaba
+a un literal de distancia. Ahora lo decide el servidor y falla cerrado; crear la
+fila a mano no basta.
+
+**2. «El id más bajo» era política tributaria.** `.filter(...).order_by('pk')
+.first()` elegía la serie. El resolver filtra por empresa, ambiente y sucursal, y
+**falla ante ambigüedad**: un desempate improvisado se convierte en la política
+de la empresa sin que nadie la haya decidido.
+
+**3. Un rechazo reemitía solo.** El queryset excluía `REJECTED`, así que volver a
+pulsar «Emitir» gastaba otro correlativo. SUNAT considera **usado** el número de
+un documento rechazado.
+
+**4. Un 4000+ sin CDR se marcaba aceptado.** Ese código significa «aceptada con
+observaciones» sólo dentro de una constancia. En un `faultstring` no prueba nada.
+
+**5. Dos envíos simultáneos llamaban los dos.** `attempts.count() + 1` se
+calculaba justo antes de la red.
+
+### El defecto que más importaba: el descuento
+
+Una venta de 2 × 118,00 con 18,00 de descuento producía una línea que declaraba
+«cantidad 2, valor unitario 100,00, importe 184,75». Dos por cien no son 184,75:
+la aritmética no cerraba y la rebaja **no aparecía en ninguna parte del
+documento**. SUNAT habría recibido un precio unitario que nadie cobró.
+
+**El XSD lo aceptaba**, porque no comprueba aritmética. Hay un test que lo
+demuestra explícitamente, y existe para que nadie confunda «pasa el esquema» con
+«es correcto».
+
+Se falla cerrado. Un descuento se declara con `cac:AllowanceCharge`, y escribirlo
+exige leer su semántica en la guía: inventarla sería la misma clase de error,
+sólo que más difícil de ver. **FACTURA CON DESCUENTO: PENDIENTE.**
+
+### Concurrencia, ahora con evidencia
+
+Hasta aquí los casos concurrentes se saltaban en SQLite, donde
+`select_for_update` es inocuo. Se ejecutaron contra **PostgreSQL 14.18 real**:
+
+- ocho emisiones simultáneas → ocho correlativos distintos y consecutivos
+- la misma venta dos veces a la vez → un solo documento
+- dos empresas a la vez → contadores aislados
+- dos envíos simultáneos → **una sola** transmisión externa
+
+El último cuenta las llamadas al proveedor con una demora deliberada, para que la
+ventana de carrera sea real y no un accidente del planificador.
+
+### Evidencia sobre PostgreSQL, no sólo sobre SQLite
+
+Los **131 tests fiscales** corren en verde contra PostgreSQL 14.18 real, **sin
+saltarse ninguno**. En SQLite se saltan cuatro —los que necesitan bloqueo por
+fila—, que es la convención del proyecto.
+
+    PostgreSQL   Ran 131 tests · OK
+    SQLite       Ran 131 tests · OK (skipped=4)
+
+Eso es lo que convierte el contador fiscal en algo defendible: `select_for_update`
+sólo significa algo donde hay bloqueo por fila.
+
+### Cinco defectos del arnés de pruebas, todos con salto silencioso
+
+Los E2E fiscales no funcionaron a la primera, y ninguna de las causas era del
+producto:
+
+1. `page.request` no lleva las cookies de sesión y devuelve 401.
+2. El listado de pedidos no trae `receipt_type`: el filtro no encontraba nada.
+3. Un contexto creado a mano no hereda `baseURL`, y el `test.skip` de la entrada
+   saltaba la suite entera.
+4. En Playwright `*` no cruza `/`: el glob no casaba con la barra final y la
+   intercepción no se aplicaba.
+5. Las pruebas responsive volvían a entrar estando ya autenticadas, donde
+   `/auth` no muestra la tarjeta.
+
+Los cinco producían **saltos silenciosos**, que es la clase de fallo que se
+parece demasiado a un aprobado. Quedan escritos porque volverán a aparecer.
+
+### Deuda declarada
+
+- **Factura con descuento**: pendiente, y bloqueada a propósito.
+- **Cobertura comercial completa**: cupones, promociones y ventas de POS no se
+  han auditado una por una contra el generador.
+- **Perfil de firma**: sigue apoyado en los ejemplos de la guía, no en una
+  lectura del anexo. Conviene cerrarlo antes de producción.
+- **Boleta, resumen diario, notas de crédito y débito, producción**: fuera de
+  alcance por decisión, no por olvido.
+
+---
+
+## Fase H4.1 — Personal, onboarding y áreas internas
+
+**Estado: IMPLEMENTADO.** Migración **0083_staff_invitations**, la única de la
+fase. Rama `feat/h4-1-personnel-onboarding`.
+
+### El problema que resuelve
+
+Dar de alta a un trabajador exigía tocar `Membership`, `CompanyRole`,
+`MembershipRoleAssignment` y `MembershipBranchAccess` a mano, cada uno por su
+identificador. Es un trabajo de administrador de base de datos, y quien lleva
+una tienda no lo es. H4.1 lo convierte en un formulario: nombre, correo, rol,
+área y alcance de sucursal, todo elegido por su **nombre**.
+
+### La invitación no concede acceso: lo hace la persona
+
+> **El token prueba que la invitación es auténtica. No prueba quién la usa.**
+
+Quien invita no crea la cuenta de nadie. Crea una invitación con un token que
+sólo existe **hasheado** en la base de datos, se envía por correo y caduca a los
+7 días. Aceptarla exige haber iniciado sesión con **ese** correo.
+
+Esto se pidió explícitamente y se comprobó de tres maneras: prueba de backend,
+prueba de navegador con una sesión de otra persona, y llamada directa a la ruta
+saltándose la pantalla. Las tres responden **401**, que es la respuesta correcta:
+lo que falta no es autoridad, es demostrar quién eres.
+
+### Crear e invitar otra vez no son lo mismo
+
+Un doble clic accidental **no** rota el token. `create_invitation` es
+idempotente: si ya hay una invitación viva para ese correo, la devuelve tal cual.
+Rotar el token allí habría invalidado el correo que la persona ya tenía en la
+bandeja — un fallo que sólo se descubre cuando alguien no puede entrar y nadie
+sabe por qué. Sólo **Reenviar**, que es una decisión explícita, genera uno nuevo.
+
+### Lo que no se dice
+
+El error de «esta persona ya trabaja en otra empresa» no existe. Contestarlo
+convertiría el formulario en un buscador de dónde trabaja la gente. La respuesta
+es la misma —y el efecto es el mismo— se conozca o no el correo de antemano.
+
+En la pantalla pública de aceptación pasa igual: inexistente, alterada,
+caducada, revocada y ya usada comparten **un solo mensaje**. Distinguirlas
+diría a quien prueba tokens si acertó el formato o sólo el plazo.
+
+### Las áreas no dan permisos
+
+Se repite porque es fácil de romper: pertenecer a «Servicio Técnico» no concede
+nada. La autoridad vive en las capacidades del rol. El área organiza, filtra y
+aparece en los informes. Por eso desactivar un área con gente dentro **avisa de
+lo que no pasa**: no quita roles ni permisos, sólo deja de ofrecerse.
+
+### Defectos encontrados al cerrar la fase
+
+Cuatro, y ninguno se veía desde las pruebas que ya estaban verdes.
+
+**1. La pantalla de Personal giraba para siempre.** Leía
+`ctx.selectedCompanyId`, que es el selector del master y vale `null` para quien
+pertenece a una sola empresa — el caso normal, es decir, casi todo el mundo. Se
+encontró **mirando una captura**; el smoke pasaba porque comprobaba que la ruta
+renderizaba. Ahora la empresa sale de `ctx.dashboard.company.id` y hay cinco
+pruebas de Jest que fallan si alguien lo devuelve atrás, comprobado quitando el
+arreglo a propósito: **4 de 5 rojas**.
+
+**2. Crear un área era imposible.** El serializador exigía `slug`, el formulario
+no lo mandaba y «Crear área» respondía 400 **siempre**. La pantalla decía «No se
+pudo crear el área» y no había forma de crear ninguna. El slug se deriva ahora en
+el servidor con `slugify`, la misma convención de las áreas del aprovisionamiento,
+con sufijo numérico si la empresa ya lo tiene tomado.
+
+El detalle que costó encontrar: derivarlo en `create()` **no sirve**. La unicidad
+de `(company, slug)` se comprueba con un validador de conjunto que exige el campo
+antes de mirar ningún valor, así que se deriva en `to_internal_value`.
+
+**3. «Desactivar acceso» aparecía en tu propia ficha.** Nadie puede desactivarse
+a sí mismo —dejaría a la empresa sin quien devuelva el acceso— y el servidor ya
+lo rechazaba con un 400. El botón sólo servía para llegar a ese error. El modelo
+de lectura marca ahora `is_self` y la ficha explica por qué no hay botón.
+
+**4. La página de aceptación ofrecía «Aceptar invitación» a quien no podía.**
+El texto decía «crea tu cuenta con este correo» y justo debajo había un botón
+principal cuyo único destino era un error. Ahora la acción depende de quién esté
+conectado: si la sesión no es la del correo invitado, la página lo dice con
+nombre y apellidos —«estás dentro como X, esta invitación es para Y»— y ofrece
+iniciar sesión. El servidor sigue decidiendo; esto sólo evita el clic inútil.
+
+### Cargando, vacío y sin empresa son tres cosas distintas
+
+Y ahora se ven distintas. «Cargando personal» es que no se sabe todavía; «no hay
+personal que coincida» es que la empresa está y la búsqueda no devolvió nada; y
+«no hay ninguna empresa seleccionada» es que no hay desde dónde mirar. Ese estado
+es real: un rol heredado entra al control interno sin empresa. Confundir los tres
+fue el defecto 1.
+
+### Verificación
+
+- **Playwright, 13 escenarios en navegador real, sin mocks del backend**: carga
+  con una sola membresía, búsqueda, filtros, alta sin escribir identificadores,
+  doble alta, reenvío, revocación, aceptación, control de cuenta, token
+  inventado, desactivar/reactivar, áreas con aviso de impacto, autorización y
+  frontera de tenant. Más el camino del **master con selector explícito**, que es
+  justo lo que el arreglo del defecto 1 podía haber roto.
+- **Revisión visual a 390, 768 y 1440, en claro y oscuro**, de cinco pantallas.
+  Desborde horizontal medido: **0 px en las 30 combinaciones**.
+- La pantalla de Personal se lee de un vistazo en un móvil de 390: nombre,
+  correo, área, roles y sucursales por su nombre, **cero identificadores**.
+
+### Deuda registrada
+
+- **H4.1.1 — interoperabilidad de auth web ↔ v1 interno**: las superficies
+  `/api/v1/internal/<slug>/…` autentican **sólo con Bearer** y la web usa cookies
+  HttpOnly, así que Servicio Técnico responde 401 desde el navegador. Reproducido
+  con evidencia en [h41-servicio-tecnico-401.md](h41-servicio-tecnico-401.md). No
+  se arregla aquí: añadir cookie sin más abriría CSRF en cada mutación de v1.
+  Afecta a servicio, notificaciones, comunicados, anuncios y evidencias.
+- **Lista de invitaciones sin paginar ni plegar**: con muchas pendientes empuja
+  el personal fuera de la primera pantalla. Se ve claramente en las capturas.
+- **Sin reenvío de correo real en desarrollo**: el enlace en claro sólo existe
+  con `DEBUG`, que es lo correcto, pero deja el camino del correo sin probar
+  end-to-end.
+- **H4.2 y H4.3**: fuera de alcance por decisión.
+
+---
+
+## Fase H4.1.1 — Web ↔ v1 interno: autenticación y acceso real del técnico
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama `feat/h4-1-1-web-v1-auth-interop`,
+apilada sobre H4.1. Decisión: [adr-auth-v1-internal.md](adr-auth-v1-internal.md)
+(DEC-API-004).
+
+### El problema
+
+El panel web consume la API interna v1 —servicio técnico, evidencias,
+notificaciones, comunicados— porque la regla del proyecto es una sola API por
+dominio. Esa superficie aceptaba **sólo Bearer**, y la web se autentica con cookie
+HttpOnly. Con la sesión válida, todo respondía 401: 51 de las 70 rutas internas
+tienen consumidor web y ninguna funcionaba desde el navegador. La campana, que
+vive en todo el panel, fallaba en silencio.
+
+Y cada 401 tenía un coste escondido: disparaba un refresh que rota el token y lo
+deja en lista negra, para volver a recibir 401. La base de desarrollo acumulaba
+978 tokens emitidos y 695 revocados.
+
+A eso se sumaba que un técnico **no podía descubrir** el panel: la cabecera sólo
+lo ofrecía a administradores y el login llevaba siempre a la tienda.
+
+### La decisión: una request, un canal
+
+`V1InternalAuthentication` elige qué credencial se evalúa según lo que el cliente
+**presentó**. Header y cookie a la vez es 401, sin comparar identidades; un
+`Authorization` explícito —aunque sea `Basic`, esté vacío o mal formado— nunca cae
+a la cookie; la cookie trae su CSRF y el Bearer no lo necesita. No reimplementa
+nada: orquesta las dos clases existentes, que no cambian.
+
+**Por qué no simplemente apilar las dos clases de DRF.** Se ejecutó antes de
+decidir. Con Bearer primero, «Bearer de A + cookie de B» entraba como A y sin
+CSRF; con la cookie primero, un Bearer inválido caía a la cookie.
+
+### La condición previa: métodos seguros que no escriben
+
+La cookie exime de CSRF a GET, HEAD y OPTIONS. Antes de activarla se ejecutaron
+las 70 rutas con una orden llevada al final de su ciclo, contando SQL:
+**OPTIONS en 70 rutas y GET/HEAD en 41, cero escrituras**. La primera ejecución
+marcó escrituras que venían del propio arnés —acuñar el token dentro de la
+medición registra el token emitido— y se corrigió el arnés, no la conclusión.
+Queda como prueba permanente por los dos canales.
+
+### Defectos encontrados por el camino
+
+1. **Cinco pruebas fijaban el contrato viejo** («la cookie web no abre la
+   superficie interna», «cada vista declara sólo Bearer»). El PASO 1 afirmó que
+   no había ninguna: la búsqueda que lo sostenía no las encontró, y aparecieron al
+   ejecutar la suite. Se reescribieron conservando su intención.
+2. **La subida de evidencias no habría funcionado aun con la autenticación
+   resuelta**: `fetchWithAuth` forzaba `Content-Type: application/json` sobre un
+   `FormData`, sin boundary, y el servidor no encontraba el archivo.
+3. **Tormenta de refresh**: cada 401 refrescaba por su cuenta. Ahora hay un refresh
+   compartido y un único reintento; 403, 404, las rutas de autenticación y las
+   peticiones con `Authorization` explícito no refrescan.
+4. **`?next=` se ignoraba**: el enlace «Iniciar sesión» de la invitación de H4.1
+   devolvía a la portada en vez de a la invitación.
+5. **La campana y la bandeja daban por hecho lo que fallaba**: marcar como leída no
+   miraba la respuesta, y un contador que dejaba de cargar conservaba el último
+   número.
+6. **`isStaffRole` no es el defecto que parecía.** Excluye al técnico, pero es
+   espejo de los permisos legacy del backend, que tampoco lo admiten. Añadirlo
+   abriría 13 páginas cuyo backend responde 403. Se corrigió el docstring del
+   guard que afirmaba lo contrario y se fijó con pruebas.
+7. **El arnés de Playwright confundía la 308 del proxy de Next con la respuesta
+   de la API**: las rutas con barra final se redirigen y el navegador las repite.
+
+### Acceso del técnico y del cliente
+
+La cabecera muestra **Control interno** cuando el servidor dice que hay acceso
+interno —membresía activa o master— y nunca por `user.role`. Tras el login, un
+`next` local manda; sin él, el panel para quien trabaja en una empresa y la
+tienda para quien no. Quien es cliente y trabajador conserva las dos cosas.
+
+Para probarlo existe una séptima cuenta demo, `dev_customer_technician`, con
+ficha de cliente y membresía de técnico. `purge_e2e_data` borra lo que crean las
+pruebas de navegador —sólo lo marcado `[E2E]` o con correo en `e2e.invalid`— para
+no repetir la basura que dejó H4.1.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Backend completo (SQLite) | **3982 OK**, 22 saltadas, 0 errores (1197 s) — baseline 3934 |
+| H4.1.1 dirigido en PostgreSQL 14 | **120 OK, 0 saltadas** |
+| Jest | **291 OK** en 22 suites — baseline 227 en 18 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores, 33 avisos — sin regresión |
+| `next build` | 44/44 |
+| Playwright H4.1.1 | **8/8** |
+| Playwright completo | **108 OK** · 1 fallo · 7 no ejecutados · 1 omitido |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**El fallo y el omitido de la suite completa no son de H4.1.1**, y cada uno se repitió aislado:
+
+- `tax-breakdown · light · 320px` es el inestable conocido de C2.1: el navegador ve el carrito vacío y no pide cotización. Aislado pasa en 1,3 s. Los 7 no ejecutados son las combinaciones que van en serie detrás. **Deuda preexistente C2.1.** — *Corregido en H4.1.2B: el carrito no estaba vacío. La lectura era **rechazada** con 429 por el limitador `cart` (60/min por IP) y el checkout la guardaba como lista vacía. Ver CART-READ-429-01.*
+- `fiscal-invoice · dark · 1440px` se omite cuando esa pasada no encuentra un pedido pagado con factura. Aislado pasa en 1,8 s.
+
+**Auditoría de métodos seguros:** OPTIONS en 70 rutas y GET/HEAD en 41, **0 escrituras**.
+
+**Sabotaje** (sin commitear, archivos restaurados con hash idéntico):
+
+| Protección retirada | Pruebas en rojo |
+|---|---|
+| Rechazo de doble credencial | 2 |
+| Bearer inválido no cae a la cookie | 9 |
+| CSRF del canal cookie | 5 |
+| Puerta de tenant | 3 |
+
+**Tormenta de refresh:** antes, cada 401 costaba una fila `OutstandingToken` y una `BlacklistedToken`. Después, cinco 401 simultáneos hacen **un** refresh, y la navegación del técnico en el navegador no hizo **ninguno**.
+
+**Arnés de navegador.** Además de los tres fallos anotados en el ADR (la 308 del proxy, el anunciador de rutas y la carrera de la tarjeta de accesos), la suite completa destapó que añadir una séptima cuenta demo agota antes el limitador de login y el de peticiones del panel. Las pruebas esperan lo que el servidor indica en vez de desactivarlos.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-SCOPE-01** | **RESUELTO en H4.1.2** | Los pedidos comerciales de v1 interno no filtraban por sucursal. **Preexistente, no introducido por H4.1.1**, igual por ambos canales. Servicio técnico sí filtra, y sus pruebas siguen verdes |
+| **RBAC-LEGACY-01** | **RESUELTO en H4.1.2** | `order_fulfillment_services` decidía los estados permitidos con `UserProfile.role` global, no con capacidades de empresa |
+| **AUTH-REVOCATION-01** | **RESUELTO en H4.1.2B** | El access token no consultaba nada: tras el logout seguía válido hasta ~30 min. Ahora el logout lo revoca por `jti` y el cambio de contraseña cierra todas las sesiones |
+| **AUDIT-INTERNAL-01** | PENDIENTE | Lecturas y rechazos de v1 interno no se auditan; requiere diseño para no generar volúmenes enormes |
+| **NAV-SERVICE-01** | DEFECTO / PENDIENTE | Seis entradas del menú llevan a `/admin/service` |
+| **NAV-01** | DEFECTO / PENDIENTE | «Inventario › Reportes» y «Reportes › Inventario» son la misma pantalla |
+| **CAT-01** | PENDIENTE | Una sola `image_url` por producto; sin subida, galería ni orden. Sin separación activo/publicado: una única bandera decide escaparate y POS |
+| **LEGAL-01** | PENDIENTE | No existen `/terminos`, `/privacidad`, `/garantia`, `/preguntas-frecuentes` ni `/contacto`. Las URLs legales se editan en el panel pero no se enlazan |
+| **LEGAL-02** | PENDIENTE | Sin documento legal versionado |
+| **LEGAL-03** | PARCIAL | `Order` guarda dos booleanos; la garantía queda congelada en `company_snapshot`, los términos no |
+| FAQ | IMPLEMENTADO como dato · PARCIAL en publicación | `StorefrontFaq` completo; sólo se pinta dentro de `/services` |
+| Dirección/contacto | IMPLEMENTADO + DEFECTO | El footer lee el tenant; quedan restos del piloto en código (`DELIVERY_AREQUIPA`, categorías del footer) |
+| **INV-ALERTS** | Infraestructura PARCIAL · alertas PENDIENTE | Riesgo calculado en cada GET y no persistido; sin eventos de inventario ni estado de alerta; `safety_stock` y `lead_time_days` sin escritura por API |
+| INV-SERIAL, SVC-EVIDENCE-UX, NOTIFY-RT, FISCAL-SERVICE | PENDIENTE / PARCIAL | Sin cambios en esta fase |
+| H4.2, H4.3 | PENDIENTE | Fuera de alcance por decisión |
+| Fiscal | PENDIENTE | Factura con descuento, boleta y resumen diario, producción SUNAT |
+| Proxy 308 | OBSERVACIÓN | Toda llamada del navegador con barra final hace una redirección 308 en Next antes de llegar a Django: un viaje de ida y vuelta extra por petición. Preexistente |
+
+---
+
+## Fase H4.1.2 — Autoridad interna: pedidos por sucursal y RBAC por capability
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama
+`feat/h4-1-2-internal-authority-hardening`, apilada sobre H4.1.1. Cierra
+**BRANCH-SCOPE-01** y **RBAC-LEGACY-01** con las decisiones D1–D4. Servicio técnico
+y trade-in se registran al final de esta sección; en esta rama no se implementan.
+
+### El problema
+
+**BRANCH-SCOPE-01 era más ancho de lo registrado.** Todas las superficies de pedidos
+comerciales filtraban sólo por empresa. Un miembro limitado a la sucursal A podía,
+con los pedidos de B y por la web o por la app:
+
+- listarlos, abrirlos e imprimir su recibo;
+- reenviar sus correos y mover su despacho;
+- emitir su nota de venta y su factura, esta con la serie de B.
+
+Además veía en el panel los ingresos de toda la empresa. La analítica comercial y
+los KPIs de inventario sí filtraban por sucursal, así que el dashboard mezclaba en
+una misma pantalla cifras con alcance y cifras sin él.
+
+**RBAC-LEGACY-01.** `allowed_fulfillment_statuses(user)` decidía con el
+`UserProfile.role` global también dentro de una empresa SaaS. Quien tenía perfil
+«inventory» y un rol de empresa con `sales.orders.manage` no podía cancelar. El
+panel web, además, llevaba su propia copia de esa regla, atada al mismo rol.
+
+### La frontera: `visible_orders(user, company)`
+
+Es una función de `tenancy.py`. Todas las superficies parten de ella **antes** de
+buscar, contar, agregar o paginar. Fuera de alcance la respuesta es **404**, la
+misma que para un pedido inexistente.
+
+| Quién | Qué pedidos de la empresa ve |
+|---|---|
+| Master con empresa explícita | todos, también los que no tienen sucursal y los de sucursales cerradas |
+| Puente legacy (sólo el piloto) | todos los del piloto, también los que no tienen sucursal |
+| Membresía `ALL` | todos, también los que no tienen sucursal y los de sucursales cerradas |
+| Membresía `SELECTED` | sólo los despachados por una sucursal **activa** con concesión **activa** |
+| Cualquiera, sobre otra empresa | ninguno |
+
+**Pedidos que ninguna sucursal puede responder (D1).** Un pedido sin
+`fulfillment_branch` —historial anterior a la migración 0025— o de una sucursal
+desactivada no pertenece a ninguna sucursal que opere un miembro `SELECTED`, así
+que ese miembro no lo ve.
+
+- **No se amplió `visible_branches()`.** Responde dónde trabaja hoy una persona, no
+  qué historial hereda.
+- **No se hizo backfill** ni se inventó ninguna sucursal.
+
+**Una sola escalera de autoridad.** La decisión «master / puente / ALL / SELECTED /
+nada» vivía dentro de `visible_branches()`. Se extrajo a `_branch_authority()` y la
+leen las dos funciones, así que sucursales y pedidos no pueden discrepar sobre
+quién tiene alcance de toda la empresa. `visible_branches()` se comporta igual que
+antes, y su batería de la Fase 2D sigue verde en SQLite y en PostgreSQL.
+
+### Superficies protegidas
+
+| Superficie | Antes | Ahora |
+|---|---|---|
+| v1: lista, detalle y despacho | empresa | `visible_orders`; 404 fuera de alcance |
+| Web: lista, detalle y despacho | empresa | ídem |
+| Recibo PDF y reenvío de correo | empresa | ídem; fuera de alcance no se envía nada |
+| Nota de venta: GET, POST y PDF | empresa, «deliberadamente sin sucursal» | ídem; no se gasta correlativo |
+| Comprobante por pedido: GET y POST | empresa | ídem; no se tocan serie ni número |
+| Comprobante por id: enviar, XML, CDR y PDF | empresa | el comprobante hereda el alcance de su pedido (`order__in`) |
+| KPIs de ventas del dashboard | empresa | todas las cifras derivan de una única base con alcance |
+| Ficha de cliente (CRM): historial y totales | empresa | la ficha no se fragmenta; su historial sí tiene alcance |
+
+**La nota de venta cambió de criterio a propósito.** Su docstring decía que la
+sucursal no aplicaba porque es «papel sobre una venta». Pero la nota **lleva** la
+venta —cliente, documento, líneas e importes—, y quien no puede abrir el pedido
+tampoco debe leer ni emitir su nota.
+
+**La ficha de cliente es el «lookup equivalente» que D2 pedía buscar.** No aparecía
+en la auditoría y mostraba, a quien tiene `service.customers.view`, los pedidos e
+importes de todas las sucursales. El cliente sigue siendo de toda la empresa; lo
+que compró en cada sucursal, no.
+
+**Los 404 hablan igual.** El detalle y el despacho respondían con el texto por
+defecto de Django, «No Order matches the given query.», que además nombra el
+modelo. Ahora responden «Orden no encontrada.», como ya lo hacían el recibo y el
+reenvío; en v1, «No encontrado.», como la puerta de empresa.
+
+Ya estaban bien y no se tocaron:
+
+- la analítica comercial;
+- más vendidos y comisiones;
+- el Kardex filtrado por pedido;
+- la creación de ventas del POS.
+
+### RBAC: en SaaS decide la capability (D4 · opción A)
+
+`allowed_fulfillment_statuses(user, company)`:
+
+| Camino | Regla |
+|---|---|
+| Membresía o master | Con `sales.orders.manage` en esa empresa, los siete estados; sin ella, ninguno. El rol global no se consulta |
+| Puente legacy | La regla histórica, intacta: `inventory` mueve mercancía (4 estados); ventas y administración, todos |
+
+- **Quien sólo tiene `sales.orders.view` recibe una lista vacía.** Antes recibía los
+  siete estados, y el PATCH los rechazaba.
+- **El detalle web devuelve `available_fulfillment_transitions`**, igual que v1, y
+  `FulfillmentStatusSelect` pinta esa lista. El componente ya no recibe al usuario,
+  así que no tiene de dónde leer un rol.
+- **Se borró `admin_views._INVENTORY_ALLOWED_FULFILLMENT`**, una segunda copia de la
+  regla que nadie usaba.
+- **No se creó `sales.orders.fulfill` ni ninguna otra capability.**
+
+**Cuatro pruebas cambiaron a propósito**, con la decisión escrita en su docstring:
+
+- `M6InternalFulfillmentTest.test_an_INVENTORY_role_is_limited_to_moving_goods` pasa
+  a llamarse `test_a_global_INVENTORY_role_does_not_narrow_what_the_company_granted`
+  y espera 200 al cancelar.
+- `test_it_reports_the_transitions_that_actor_may_use` espera `[]`.
+- `M12BCommerceEventsTest.test_28` y `test_29` movían el despacho a través del
+  servicio con el propio comprador como actor. Funcionaba porque la regla vieja
+  dejaba fijar cualquier estado a todo rol que no fuera inventory, clientes
+  incluidos. Ahora el actor es una vendedora del piloto. Lo que prueban —que el
+  cliente reciba el aviso— no cambia.
+
+Las de `Phase33FulfillmentStatusChangeTest`, que cubren el puente legacy, siguen
+verdes sin tocarlas.
+
+### Búsqueda estructural
+
+Apariciones de `Order.objects`, `company.orders` y `get_object_or_404(Order` en
+código de producción, después de implementar:
+
+| Dónde | Clase |
+|---|---|
+| `tenancy.visible_orders` | INTERNAL SCOPED — es la frontera |
+| `fiscal_views._fiscal_document` | INTERNAL SCOPED — `order__in=visible_orders` |
+| `sales_analytics_views._paid_orders`; `OrderItem` en más vendidos y analítica; `SalesCommission` en comisiones | INTERNAL SCOPED — por sucursales visibles, desde antes |
+| `tenancy.storefront_orders`, `tenancy.customer_owned_orders`, `v1_checkout_views` (idempotencia: empresa + `user=request.user` + clave) | PÚBLICO / CUSTOMER OWNERSHIP |
+| `admin_views`: `email_send_error` del reenvío y relectura tras el PATCH; `v1_internal_views`: relectura tras el PATCH | SEGURO — el mismo pk que `visible_orders` acaba de resolver |
+| `email_services`, `sales_note_services` (bloqueo), `fiscal_services`, `ticket_services`, `inventory_services.record_sale_stock_movements` | SEGURO — reciben un pedido ya resuelto por quien los llama |
+| `views._confirm` (webhook de pago) | SEGURO — el pk sale de un `PaymentAttempt` del servidor |
+| `pos_services._existing_for_key` | SEGURO — clave de idempotencia secreta, dentro de la empresa; ver POS-IDEMP-409 |
+| `models.assert_all_match_company`, `checkout_services.create_pending_order`, `sequences` | SEGURO — invariante, creación y numeración |
+
+**No quedó ningún acceso interno por id sin frontera.** La bitácora de auditoría
+también contiene entradas de pedidos, pero no es una búsqueda de pedidos: es un
+control de empresa protegido por `memberships.view`. Queda anotada como
+AUDIT-BRANCH-SCOPE-01.
+
+### Lo que encontró la suite completa
+
+La primera ejecución completa dio **4019 pruebas: 1 fallo y 2 errores**. Las
+suites dirigidas, que no incluían esas clases, estaban en verde.
+
+1. **Las dos de M12B descritas arriba.** El servicio de despacho ya no acepta a un
+   cliente como actor. Se corrigió el fixture, no el servicio: relajar el servicio
+   para que las pruebas pasaran habría sido reintroducir RBAC-LEGACY-01.
+2. **La matriz de paridad se protegió a sí misma.** Al anotar el alcance de
+   sucursal escribí `tenancy.visible_orders` y «(H4.1.2)» dentro de la columna
+   *Capability*, y `Ip1ParityManifestTest` exige que todo lo que aparece en esa
+   columna sea una capability del catálogo. La nota pasó a un párrafo bajo la
+   tabla y las filas volvieron a su forma original.
+3. **Una prueba inestable de H4.1, no de esta fase.** La segunda ejecución
+   completa dio 4019 pruebas con **1 fallo**:
+   `H41AcceptEndpointTest.test_every_bad_token_answers_the_same`, caso «alterado».
+   - **Causa.** La prueba altera el token con `self.raw[:-1] + 'z'`, y el token sale
+     de `secrets.token_urlsafe(48)`. Cuando ya termina en `z` —una vez de cada 64—
+     el token «alterado» es el correcto y el endpoint responde 200.
+   - **Evidencia.** Forzando el final del token, falla siempre si acaba en `z` y
+     nunca si acaba en `A`. Aislada falló en 1 de 5 pasadas.
+   - **Decisión.** No se corrige aquí, por alcance. Queda como TEST-H41-TOKEN-FLAKY.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Batería H4.1.2 + `M6InternalFulfillmentTest` + `Phase33FulfillmentStatusChangeTest` | **67 OK** |
+| Dirigido en SQLite: pedidos web y v1, despacho, notas, fiscal, dashboard, clientes, Fases 2B–2E, M6–M8, Phase33 y 60, C22, H4.1.1 y H4.1.2 | **1030 OK**, 6 saltadas |
+| Dirigido en PostgreSQL: H4.1.2, despacho, M6, H4.1.1, M8 y Fase 2D | **310 OK** |
+| Backend completo (SQLite) | **4019 OK**, 22 saltadas, 0 errores (1414 s) — baseline 3982, +37 de H4.1.2. Antes hubo dos ejecuciones con fallos: la primera, 1 fallo y 2 errores, corregidos; la segunda, 1 fallo de TEST-H41-TOKEN-FLAKY. Ver arriba |
+| Jest | **294 OK** en 23 suites — baseline: 291 en 22 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores y 33 avisos, sin regresión |
+| `next build` | 44/44 |
+| Playwright dirigido: `demo-accounts`, `fiscal-invoice`, `h411-auth-interop` y `pos-ticket` | **24 OK** · 2 omitidos |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**Los 2 omitidos no son de H4.1.2.** Son `fiscal-invoice · dark · 390px` y
+`dark · 1440px`: el arnés agota el limitador `admin_orders` mientras busca el
+pedido con factura y se salta la prueba. Ejecutados aislados pasan (1,9 s y
+1,8 s). Queda registrado como E2E-FISCAL-THROTTLE.
+
+**En desarrollo, las cuentas demo no pierden visibilidad.** Sus siete membresías
+son `ALL`, y de los 26 pedidos que había al medir ninguno estaba sin sucursal ni en
+una sucursal cerrada. `dev_inventory`, `dev_technician` y
+`dev_customer_technician` reciben ahora 0 transiciones porque no tienen
+`sales.orders.manage`; el PATCH ya les respondía 403.
+
+### Sabotaje
+
+Cada protección se retiró por separado y se ejecutó la batería de 67 pruebas.
+Después, el archivo se restauró byte a byte con hash verificado. Nada se commiteó.
+
+| Protección retirada | Pruebas en rojo |
+|---|---|
+| A · frontera del detalle, web y v1 | 5 (11 fallos y 1 error contando subtests) |
+| B1 · frontera del recibo PDF | 1 |
+| B2 · frontera fiscal, por pedido y por id | 2 |
+| C · base con alcance de los KPIs del dashboard | 1 |
+| D · SaaS decidido otra vez por `UserProfile.role` | 6 |
+
+### Servicio técnico — registrado, no implementado
+
+Auditoría del PASO 1, confirmada. En H4.1.2 no se toca nada de esto.
+
+- **SVC-INTAKE-WEB — PENDIENTE.** El backend ya crea la orden (`POST
+  service/orders/`), registra el equipo (`POST service/devices/`) y busca clientes
+  (`GET service/customers/`). La web no tiene «Nueva orden de servicio»:
+  `service-console.ts` no exporta ninguna de esas tres llamadas.
+  - Flujo a construir: cliente → equipo → sucursal → falla → condición física →
+    accesorios → evidencias → confirmación → constancia.
+  - Servicio técnico no depende del POS.
+- **Responsabilidad del técnico (regla de producto).**
+  - Puede crear una orden si tiene `service.orders.create`. Es configurable por
+    empresa: no significa que todo técnico pueda, ni que deba usar el POS.
+  - Registra los hechos que ejecuta: diagnóstico, inicio y fin de reparación,
+    trabajo realizado, repuestos, QC y entrega cuando correspondan, y evidencias.
+  - No puede fabricar un estado sin el evento que lo respalda. Los estados
+    sólo-evento de `service_services` ya lo imponen.
+- **SVC-CAP-SPLIT — PROPUESTA PRIORITARIA.**
+  - `service.orders.manage` mezcla asignar, reasignar, desasignar, la transición
+    genérica y cancelar, y el preset Servicio Técnico la incluye.
+  - Hay que separar «registro mi trabajo» de «administro el taller». Nombres
+    orientativos: `service.assignments.manage` y `service.orders.cancel`, con el
+    inicio de diagnóstico en `service.diagnostic.manage`. Los nombres finales salen
+    del catálogo real.
+  - Requiere catálogo, presets y migración, así que va en una fase explícita.
+- **SVC-ASSIGNEE-01 — DEFECTO.**
+  - `eligible_technicians(company)` admite a cualquier usuario con membresía
+    activa, así que alguien de Ventas o de Inventario puede aparecer como técnico
+    asignable.
+  - No es una escalada, porque los endpoints siguen comprobando capabilities. Sí es
+    una inconsistencia operativa y de trazabilidad.
+  - No se arregla aquí. Se resuelve con SVC-CAP-SPLIT, con una regla por
+    capabilities y nunca por el nombre del rol.
+- **Cliente nuevo en recepción.**
+  - El técnico estándar tiene `service.customers.view` y no `manage`: abre órdenes
+    para clientes existentes pero no da de alta a clientes nuevos.
+  - **No se le concede `manage` automáticamente.**
+  - Opciones a decidir en SVC-OPS, con preferencia por el mínimo privilegio: (A) lo
+    da de alta recepción o ventas; (B) la empresa concede `manage` al técnico; (C)
+    una capability de alta más estrecha en una fase futura, si el código y los
+    casos reales la justifican.
+- **SVC-QUOTE-INSHOP — PENDIENTE.**
+  - La decisión sobre una cotización sólo se registra desde la superficie del
+    cliente.
+  - Hace falta que un empleado autorizado registre la de un cliente presencial, por
+    teléfono o por WhatsApp: revisión exacta, decisión, canal, importe congelado,
+    quién la registró, cuándo y constancia.
+  - Nunca «el técnico marca aprobado» sin constancia de quién tomó la decisión.
+- **SVC-QC-SEGREGATION — PROPUESTA.** Hoy quien repara puede hacer el QC, algo
+  válido en un taller pequeño. A futuro podrá exigirse que lo haga otra persona
+  (`checked_by` distinto de quien reparó), configurable por empresa y por tipo de
+  reparación; nunca como regla universal.
+- **Pago y entrega: separación de responsabilidades, no defecto.**
+  - El técnico estándar entrega y no cobra; ventas cobra.
+  - Una empresa que quiera un técnico con caja concede la capability por RBAC.
+  - El preset global no se amplía sin una decisión de producto.
+
+### Trade-in — registrado, no implementado
+
+**TRADE-IN — PENDIENTE.** No existe en backend, frontend ni migraciones. No se
+mezcla con la orden de reparación, y el valor del equipo entregado **no** es un
+`discount_amount`.
+
+**La regla central.** Una venta de S/ 3500 con un equipo entregado valorado en
+S/ 1200 se registra así:
+
+| Concepto | Importe |
+|---|---|
+| Precio comercial | 3500 |
+| Adquisición del equipo usado | 1200 |
+| Crédito aplicado a la liquidación | 1200 |
+| Saldo monetario | 2300 |
+
+Nunca «precio = 2300» ni «descuento = 1200». Tratarlo como descuento tendría cuatro
+efectos:
+
+- recortaría la comisión, que se calcula sobre subtotal menos descuento;
+- falsearía el desglose tributario;
+- imprimiría «Descuento» en el ticket;
+- ocultaría que la empresa adquirió un activo.
+
+**Dominio de referencia:**
+
+- `TradeInCase`.
+- `TradeInDevice`.
+- `TradeInInspection`.
+- `TradeInValuation`: revisión, importe, moneda, evaluador, validez y notas.
+- `TradeInDecision` / `OfferAcceptance`.
+- `TradeInEvidence`: modelo propio sobre el almacenamiento común, sin reutilizar
+  `RepairEvidence`.
+
+La valoración es **manual**: el sistema registra y controla, pero no calcula el valor.
+
+- **Inspección:**
+  - Plantillas por empresa y por tipo de dispositivo. Para un teléfono pueden
+    incluir, si aplica: serial/IMEI, capacidad, color, estado físico, pantalla,
+    cámaras, micrófonos y altavoces, puertos, biometría, batería, conectividad,
+    estado de activación, accesorios y evidencias.
+  - Ningún checklist «iPhone» fijado en el núcleo del SaaS.
+  - No se guardan PIN ni contraseñas.
+- **TRADEIN-OWNERSHIP — PROPUESTA PRIORITARIA.**
+  - Antes de aceptar el equipo físicamente se registran: identidad del cliente
+    según la política, declaración de propiedad y origen, serial/IMEI, constancia
+    de entrega, observaciones y evidencias.
+  - Consultar una lista negra externa de IMEI sería una integración posterior; no
+    se da por existente.
+- **Valoraciones versionadas, nunca sobrescritas.** Bajar de 1200 a 1050 crea una
+  revisión nueva que conserva ambas cifras, quién, cuándo y por qué. El cliente
+  acepta una revisión concreta.
+
+**Preguntas de negocio que deben decidirse ANTES de TRADEIN-POS:**
+
+| | Pregunta |
+|---|---|
+| A | ¿Se aceptan varios equipos como parte de pago de una misma venta? |
+| B | ¿Qué pasa si el valor del trade-in supera el total de la compra? Opciones: no se permite, crédito a favor o devolución de dinero. No se asume ninguna |
+| C | ¿Puede aplicarse una valoración parcialmente? |
+| D | ¿Puede usarse una valoración en más de una venta? Preferencia inicial: no; una valoración aceptada se consume una sola vez |
+| E | ¿Cuánto dura la oferta? |
+| F | ¿Los importes a partir de cierto monto requieren aprobación de un supervisor? |
+| G | ¿Qué ocurre si el cliente acepta y luego se anula la compra? |
+| H | ¿Qué pasa con el equipo que ya quedó en custodia física? |
+
+**Lo que trade-in necesita alrededor:**
+
+- **INV-SERIAL — PENDIENTE.**
+  - Un trade-in aceptado no suma +1 a un producto agregado. Hace falta una unidad
+    serializada: `SerializedStockUnit` o equivalente.
+  - Campos: empresa, sucursal, producto, serial, IMEI, condición, grado, origen
+    (compra, trade-in, devolución…), costo de adquisición y estado.
+  - Estados orientativos: pendiente de QC, reacondicionamiento, lista para venta,
+    reservada, vendida, cuarentena y retirada. Los nombres finales se fijan tras
+    auditarlo.
+- **Un `Device` no es inventario.**
+  - `Device` es el equipo de un cliente en servicio técnico; la unidad serializada
+    es propiedad de la empresa.
+  - Ni `Device` ni `TradeInDevice` funcionan como stock. El flujo es:
+    `TradeInDevice` aceptado → unidad serializada.
+- **REFURB-UNIT — PROPUESTA.**
+  - Un equipo recibido puede necesitar batería, pantalla, limpieza, reparación y QC
+    antes de venderse.
+  - No se crea un cliente ficticio para registrarlo como `RepairOrder`.
+  - Se evaluará un flujo de reacondicionamiento de la unidad, o reutilizar piezas
+    del motor técnico sin mezclar la propiedad del cliente con la de la empresa.
+- **SALE-TENDER-LEDGER — PENDIENTE.**
+  - Una venta puede liquidarse con crédito de trade-in (1200), tarjeta (2000) y
+    efectivo (300). `Order.payment_method` admite un solo medio y no alcanza.
+  - Diseño posible: `OrderSettlement` con `Tender[]` (efectivo, tarjeta,
+    transferencia, crédito de trade-in…).
+- **TRADEIN-REVERSAL — PENDIENTE.**
+  - Anular una venta con trade-in no es reembolsar el pedido: hay dos activos, el
+    producto que salió y el equipo que entró.
+  - La política debe definir si el equipo se devuelve, qué pasa si ya se
+    reacondicionó o se vendió, cómo se revierte el crédito y cómo queda la
+    liquidación.
+- **TRADEIN-MARGIN — PROPUESTA.**
+  - Costo de adquisición 1200 + acondicionamiento 180 = costo total 1380. Venta
+    1850. Margen bruto 470.
+  - Sin mezclar costo, precio y crédito comercial.
+- **FISCAL-TRADEIN — BLOQUEADO** hasta que haya una definición contable y
+  tributaria.
+  - Falta decidir cómo se documenta la adquisición del equipo usado, cómo se
+    representa el crédito, qué importe va en el comprobante de la venta y qué
+    documentos adicionales corresponden.
+  - El motor fiscal no se toca.
+
+### Orden recomendado de fases
+
+1. **H4.1.2** — alcance de sucursal y RBAC legacy (esta fase).
+2. **SVC-OPS-01** — operación real del taller:
+   - nueva orden en la web, recepción guiada y constancia;
+   - SVC-CAP-SPLIT y SVC-ASSIGNEE-01;
+   - aprobación presencial o telefónica;
+   - cadena de custodia y requisitos mínimos por etapa.
+3. **INV-SERIAL-01** — unidad serializada individual.
+4. **TRADEIN-01** — caso, inspección, valoración, oferta, aceptación y evidencias.
+5. **SALE-TENDER-01** — liquidación con varios medios de pago.
+6. **TRADEIN-02** — aceptación física → stock serializado → crédito en el POS.
+7. **CAT-01** — imágenes, publicación y catálogo para productos nuevos y seminuevos.
+
+Siguen pendientes LEGAL-01/02/03, INV-ALERTS, NAV-01, NAV-SERVICE-01, H4.2, H4.3,
+NOTIFY-RT, FISCAL-SERVICE y la deuda fiscal.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-SCOPE-01** | RESUELTO | Ver arriba |
+| **RBAC-LEGACY-01** | RESUELTO en el backend y en el selector de despacho | El resto de la interfaz queda en RBAC-LEGACY-UI-01 |
+| **RBAC-LEGACY-UI-01** | **RESUELTO en H4.1.2A** | La web todavía decide por `user.role` si muestra «Reenviar email» (`canResendEmail`), el panel de nota de venta (`canManageSalesNotes`) y las páginas de `isStaffRole`. El servidor autoriza bien, pero la interfaz puede esconder la acción a quien tiene la capability o mostrarla a quien recibirá 403 |
+| **DASH-SCOPE-LABEL** | PENDIENTE · nuevo | El bloque de ventas del dashboard ya tiene alcance, pero no declara qué sucursales cubre; el de inventario sí (`scope`) |
+| **CRM-HISTORY-CAP** | OBSERVACIÓN · nueva | La ficha de cliente muestra historial e importes con `service.customers.view`, sin exigir `sales.orders.view`. Ya tiene alcance de sucursal; la pregunta de capacidad sigue abierta |
+| **AUDIT-BRANCH-SCOPE-01** | OBSERVACIÓN · nueva | La bitácora de auditoría es de empresa (`memberships.view`) e incluye entradas de pedidos de todas las sucursales, con el correo del cliente en los metadatos |
+| **POS-IDEMP-409** | OBSERVACIÓN · nueva | Repetir una clave de idempotencia del POS con otra cesta responde 409 con el id del pedido existente. La clave es secreta y la genera el dispositivo |
+| **ORDER-BACKFILL-01** | PENDIENTE | Pedidos sin `fulfillment_branch`: 0 en desarrollo; producción sin medir. Backfill sólo en una fase separada y con certeza sobre la sucursal histórica |
+| **E2E-FISCAL-THROTTLE** | **RESUELTO en H4.1.2A** | `fiscal-invoice.spec.ts` busca en cada prueba el pedido con factura abriendo en serie el detalle de cada pedido pagado. Nueve pruebas seguidas superan el limitador `admin_orders` (120/min): las últimas reciben 429, no encuentran pedido y se **omiten en silencio**. Cada venta que crea `pos-ticket` añade una petición por búsqueda: con 26 pedidos se omitía una prueba y con 27, dos. Aisladas pasan. Arreglo en el arnés (buscar una vez y reutilizar el id), no en el limitador |
+| **TEST-H41-TOKEN-FLAKY** | **RESUELTO en H4.1.2A** | `H41AcceptEndpointTest.test_every_bad_token_answers_the_same` construía el token «alterado» sustituyendo el último carácter por `z`. Si el token aleatorio ya acababa en `z` (1 de cada 64 veces), no había alteración y el endpoint respondía 200 |
+| **SVC-INTAKE-WEB** | PENDIENTE | Nueva orden de servicio en la web |
+| **SVC-CAP-SPLIT** | PROPUESTA PRIORITARIA | Separar `service.orders.manage` |
+| **SVC-ASSIGNEE-01** | DEFECTO · nuevo | Cualquier miembro activo es técnico asignable |
+| **SVC-QUOTE-INSHOP** | PENDIENTE | Aprobación del cliente registrada por el personal |
+| **SVC-QC-SEGREGATION** | PROPUESTA | QC por otra persona, configurable |
+| SVC-DELIVERY-ID · SVC-PART-RESERVE · SVC-SLA · SVC-CUSTODY · SVC-STAGE-TEMPLATES | PROPUESTA | Del PASO 1 |
+| **TRADE-IN** | PENDIENTE | Sin implementación |
+| **TRADEIN-OWNERSHIP** | PROPUESTA PRIORITARIA | Propiedad y origen antes de aceptar |
+| **INV-SERIAL** · PRODUCT-CONDITION | PENDIENTE | Unidad serializada y condición por unidad |
+| **REFURB-UNIT** | PROPUESTA · nueva | Reacondicionamiento de una unidad de la empresa |
+| **SALE-TENDER-LEDGER** | PENDIENTE | Liquidación con varios medios de pago |
+| **TRADEIN-REVERSAL** | PENDIENTE · nueva | Anulación con dos activos |
+| **TRADEIN-MARGIN** · TRADEIN-QC · WARRANTY-SERIAL | PROPUESTA | — |
+| **FISCAL-TRADEIN** | BLOQUEADO | Pendiente de definición contable y tributaria |
+| SALES-FULFILL-CAP | DESCARTADA | Opción B de D4: no se crea capability de despacho |
+| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 · fiscal | Sin cambios | Ver H4.1.1 |
+| Inestable C2.1 (`tax-breakdown`) | PREEXISTENTE | **Causa encontrada y resuelta en H4.1.2B** (CART-READ-429-01) |
+
+---
+
+## Fase H4.1.2A — Estabilización y contexto de sucursal
+
+**Estado: IMPLEMENTADO.** Sin migraciones. Rama `feat/h4-1-2a-stabilization-gate`,
+apilada sobre H4.1.2. Cierra **TEST-H41-TOKEN-FLAKY**, **E2E-FISCAL-THROTTLE** y
+**RBAC-LEGACY-UI-01**, más un defecto nuevo: **BRANCH-CONTEXT-UI-01**. Servicio
+técnico, documentos de venta y cotizaciones se auditan al final de esta sección y
+no se implementan aquí.
+
+### BRANCH-CONTEXT-UI-01 — «Sin sucursal» era una frase sobre inventario
+
+Un técnico veía en la barra del panel «Black Dog Store · Sin sucursal» teniendo
+una sucursal asignada.
+
+**La causa no era el acceso, era de dónde salía el dato.** La barra leía
+`dashboard.inventory.branches`, y el backend sólo construye el bloque
+`inventory` para quien tiene `inventory.view` o `inventory.reports`. El preset
+Servicio Técnico no necesita ninguna de las dos, así que `inventory` llegaba
+`null` y la barra concluía «sin sucursal» de un dato que hablaba de otra cosa.
+
+**Evidencia, con `dev_technician` en un navegador real:**
+
+| | Barra del panel | `inventory` | `branch_scope` |
+|---|---|---|---|
+| Antes | Black Dog Store · **Sin sucursal** | `null` | no existía |
+| Después | Black Dog Store · **Tienda principal** | `null` | `mode: all`, 1 sucursal |
+
+Sigue sin capacidad de inventario; ahora sabe dónde trabaja.
+
+**El arreglo.** `tenancy.describe_branch_scope(user, company)` deriva el alcance
+de `visible_branches()` y de la membresía real, y el dashboard lo publica como
+`branch_scope`, dentro del contexto de ACCESO y no del de inventario:
+
+```
+branch_scope: { mode, default_branch, branches[] }
+      mode: platform · legacy · all · selected · none
+```
+
+- **No pide capacidad de inventario** y no expone stock, dinero ni contadores:
+  ids y nombres de sucursal, nada más.
+- **No es autoridad.** Cada petición vuelve a resolver `visible_branches()` en el
+  servidor; esto es lo que la interfaz puede DECIR.
+- **`default_branch` se resuelve contra las sucursales visibles.** Una membresía
+  cuya sucursal preferida fue revocada o desactivada no tiene preferida, y sigue
+  teniendo alcance.
+
+**Y la barra dice tres cosas distintas**, porque cero sucursales no significa lo
+mismo según cómo se conceden: el nombre cuando hay una, «N sucursales» cuando hay
+varias, «Sin sucursales asignadas» a quien las recibe una a una y todavía no
+tiene ninguna, y «Sin sucursales activas» a quien las alcanza todas en una empresa
+que no tiene ninguna abierta.
+
+### RBAC-LEGACY-UI-01 — la interfaz preguntaba al rol global
+
+Las pantallas internas decidían con `UserProfile.role` mientras el backend
+preguntaba la capacidad de la empresa. Las dos respuestas se contradecían en los
+dos sentidos: a quien entra por una invitación —perfil `customer` con capacidades
+reales— la pantalla lo echaba, y a un perfil `sales` sin la capacidad le pintaba
+botones que respondían 403.
+
+**El sustituto es `AccessGuard` + `buildInternalAccess`**, que preguntan al
+servidor. Con contexto de empresa manda la capacidad; sin él —el operador del
+puente legacy, que no tiene Membership— manda su rol, que es lo que el backend
+comprueba en ese camino. Un fallo de red no cae a rol: se muestra el error, porque
+tirar de rol ahí decidiría con menos información y en la dirección de abrir de más.
+
+| Pantalla | Capability | Roles legacy (espejo del backend) |
+|---|---|---|
+| Pedidos: lista y detalle | `sales.orders.view` | inventory · sales · admin · superadmin |
+| Reenviar correo de confirmación | `sales.orders.manage` | admin · superadmin |
+| Nota de venta en el detalle | `sales.notes.manage` | sales · admin · superadmin |
+| Productos: lista y detalle | `products.view` | inventory · sales · admin · superadmin |
+| Crear producto y editar | `products.manage` | admin · superadmin |
+| Ajustar stock desde el producto | `inventory.adjust` | inventory · admin · superadmin |
+| Inventario, movimientos, transferencias, recuentos y kardex | `inventory.view` para abrir; `inventory.adjust` para actuar | inventory · admin · superadmin |
+| Reportes y reposición | `inventory.reports` | sales · inventory · admin · superadmin (reportes) · inventory · admin · superadmin (reposición) |
+| Bitácora de auditoría | `memberships.view` | **ninguno**: sin membresía el backend responde 403 venga el rol que venga |
+
+- **16 archivos migrados**, `ProductsTable` incluida, que calculaba su propio
+  `canManage` desde el rol de la sesión.
+- **Se borraron `StaffGuard` y `AdminGuard`**, y con ellos `isAdminRole`,
+  `canManageInventory` y `canManageSalesNotes`. `isStaffRole` sobrevive por una
+  razón concreta: es la autoridad del operador legacy en `InternalControlGuard`,
+  donde no hay empresa que preguntar.
+- **`AdminShell` reutiliza el contexto** que el guard acaba de traer, así que la
+  navegación no paga dos veces la misma petición.
+
+### TEST-H41-TOKEN-FLAKY — un token alterado que no alteraba nada
+
+La prueba construía el token «alterado» sustituyendo el último carácter por `z`;
+cuando el token aleatorio ya acababa en `z` —1 de cada 64— el token alterado era
+el bueno y el endpoint respondía 200, con toda la razón. Ahora el sustituto es
+distinto del original y la prueba lo comprueba antes de usarlo.
+
+**Evidencia: 120 pasadas seguidas, 0 fallos**, y 0 también forzando el token a
+terminar en `z`, en `y` y en `A`.
+
+**El arnés de medición tenía su propio defecto**, y merece anotarse: la primera
+versión montaba el runner de Django sin `setup_test_environment()`, así que
+`testserver` no estaba en `ALLOWED_HOSTS` y Django respondía 400 a todo. Informó
+de 360 fallos que no existían — un arnés roto acusando a un código sano.
+
+### E2E-FISCAL-THROTTLE — el arnés agotaba una defensa real
+
+`fiscal-invoice.spec.ts` buscaba el pedido con factura en CADA prueba, y buscarlo
+cuesta una lista más el detalle de cada pedido pagado hasta encontrarlo: con los
+datos de desarrollo, **13 peticiones**. Con la carga de la pantalla, unas 15 por
+prueba; nueve pruebas, ~135 peticiones a `admin_orders` en menos de un minuto.
+El limitador —120/min— devolvía 429 a las últimas, la búsqueda contestaba `null`
+y la prueba se **omitía en silencio**. Cada venta nueva del POS empeoraba el
+reparto: con 26 pedidos se omitía una prueba; con 27, dos.
+
+**No se desactivó el limitador.** El pedido se resuelve una vez en `beforeAll` y
+las nueve pruebas reutilizan el id: de ~135 peticiones a ~22. Y para que nadie
+pueda «arreglar» esto quitando la defensa, `H412aAdminOrdersThrottleTest`
+comprueba contra la tasa REAL leída de la configuración que la petición que la
+supera recibe 429.
+
+### E2E-POS-COMBO-SELECTOR — verde por el motivo equivocado
+
+La ejecución completa de Playwright destapó un segundo defecto del arnés, este
+anterior a la fase. `pos-ticket.spec.ts` pulsaba «el primer `button` que contenga
+el nombre del artículo», y el punto de venta sugiere combos cuyas tarjetas
+nombran esos mismos artículos. El primero del DOM era el combo «1× AirPods Pro +
+1× iPhone 15 Pro».
+
+- **Mientras el combo estuvo disponible, la prueba pasaba comprando un combo de
+  dos artículos**, no el artículo que su propio nombre dice vender.
+- Cuando el iPhone 15 Pro se quedó a cero, el combo pasó a estar deshabilitado
+  —con razón: un combo que no se puede completar no se pulsa— y la prueba se
+  quedó tres minutos esperando a que se habilitara.
+- El volcado del navegador lo demostró: dos botones con ese texto, el del combo
+  deshabilitado y el del catálogo habilitado con «18 disp.», y la búsqueda del
+  POS respondiendo 200.
+
+Ahora la prueba pide lo que quiere de verdad: una fila del catálogo que se pueda
+pulsar y que declare unidades disponibles. Aislada pasa en 11 s.
+
+### E2E-LOGIN-RETRY — dos pruebas que no esperaban al limitador
+
+La segunda pasada completa dejó dos rojos más, y los dos con la misma causa,
+dicha por la propia pantalla: **«Solicitud fue regulada (throttled). Se espera
+que esté disponible en 46 segundos»**.
+
+El login admite 5 intentos por minuto y por IP. La suite completa encadena once
+entradas —siete de `demo-accounts`, las de H4.1.1, la fiscal, la del POS y las dos
+de personal—, así que a alguna le toca esperar. `demo-accounts`,
+`h411-auth-interop`, `fiscal-invoice` y `staff-personnel` ya esperaban la ventana
+y reintentaban; `pos-ticket` y `staff-master-selector` no, y traducían una defensa
+que funciona en un fallo del cambio que se estuviera probando.
+
+Ahora hacen lo mismo que los demás. **El limitador no se tocó**, que es justo lo
+que convertiría estas pruebas en unas que ya no prueban lo que se despliega.
+
+### Verificación
+
+| Qué | Resultado |
+|---|---|
+| Dirigido: `branch_scope`, 429 real y dashboard | **42 OK** |
+| Backend completo (SQLite) | **4029 OK**, 22 saltadas, 0 errores (1184 s) — baseline H4.1.2: 4019, más los 10 de esta fase |
+| Jest | **309 OK** en 25 suites — baseline: 294 en 23 |
+| `tsc --noEmit` | limpio |
+| ESLint | 0 errores y 33 avisos, sin regresión |
+| `next build` | 44/44 |
+| **Playwright completo** | **111 OK** · 1 fallo · 5 no ejecutados · 0 flaky (7,6 min) |
+| TEST-H41-TOKEN-FLAKY | **120 pasadas seguidas, 0 fallos**, más `z`, `y` y `A` forzados |
+| `makemigrations --check` · `migrate --plan` | sin cambios · sin operaciones |
+
+**La primera ejecución completa del backend marcó 1 fallo, y era un guardia
+haciendo su trabajo:** `Phase2bDashboardCatalogTest.test_dashboard_payload_shape_is_pinned`
+fija el conjunto de claves del dashboard precisamente para que ningún campo nuevo
+entre sin que alguien lo revise ahí. Se actualizó a propósito, añadiendo
+`branch_scope` a la historia del payload —2C trajo `sales`, 2D `inventory`, 3
+`configuration`— y fijando también su forma interna: `mode`, `default_branch` y
+`branches`, sin cifras que pudieran colarse desde inventario.
+
+**El único rojo de Playwright no es de esta fase.** Es
+`tax-breakdown · checkout · light · 768px`, el inestable conocido de C2.1: el
+navegador ve el carrito vacío y nunca pide la cotización, así que no hay desglose
+que mostrar. Aislado pasa (9/9 en 9,8 s), y los 5 «no ejecutados» son las
+combinaciones que corren en serie detrás.
+
+> **Corrección de H4.1.2B.** «El navegador ve el carrito vacío» era la
+> descripción equivocada, y por eso el defecto sobrevivió dos fases como
+> «inestable». El volcado de la página lo desmiente: la cabecera mostraba **1**
+> artículo mientras el resumen decía no poder leerlo. No era un carrito vacío
+> sino una lectura **rechazada** (429 del limitador `cart`), y el checkout la
+> guardaba como lista vacía. Causa y arreglo en CART-READ-429-01.
+
+**Las tres pasadas completas cuentan la historia de los dos arneses:**
+
+| Pasada | Resultado | Qué faltaba |
+|---|---|---|
+| 1.ª | 110 OK · 2 fallos | el combo del POS y el inestable de C2.1 |
+| 2.ª | 109 OK · 3 fallos | dos logins limitados y C2.1 |
+| 3.ª | **111 OK · 1 fallo** | sólo C2.1 |
+
+### Servicio técnico — auditado, no implementado
+
+- **SVC-INTAKE-WEB = PARCIAL.** El backend recibe equipos desde hace fases:
+  `POST /api/v1/internal/<slug>/service/orders/` con `service.orders.create`,
+  `POST …/service/devices/` con `service.devices.manage` y la búsqueda de
+  clientes con `service.customers.view`. El preset **Servicio Técnico ya tiene
+  `service.orders.create`**, así que **no hace falta el POS** para abrir una
+  orden. Lo que falta es la experiencia web: `service-console.ts` no exporta
+  ninguna de esas tres llamadas.
+- **SVC-MENU-01 — nuevo.** Los seis módulos de servicio (Recepción, Órdenes,
+  Diagnóstico, Reparación, Control de calidad, Entrega) apuntan todos a
+  `/admin/service`, y `internal-modules` marca `service.intake` como
+  `implemented` aunque no existe pantalla de recepción. La clasificación honesta
+  es `partial`; se corrige en SVC-OPS-01, junto con el menú, para no dejar el
+  panel a medio camino entre dos diseños.
+- **Plan de SVC-OPS-01** (`/admin/service/intake` o ruta equivalente):
+  1. **Sucursal**, desde `service/context.available_branches`: una,
+     preseleccionada; varias, elección obligatoria; ninguna, bloqueo explicado.
+  2. **Cliente**: buscar el existente. Dar de alta uno nuevo exige
+     `service.customers.manage`, que el técnico estándar no tiene; se decide
+     entre que lo cree recepción, que la empresa le conceda `manage`, o una
+     capability estrecha `service.customers.create` — esta última con catálogo,
+     presets y migración, es decir, fase propia.
+  3. **Equipo**: buscar o registrar con `service.devices.manage`. Campos reales
+     del modelo: tipo, marca, modelo, serie e IMEI.
+  4. **Recepción**: falla reportada (obligatoria), condición física, accesorios
+     recibidos y notas internas — los campos que el serializer ya acepta.
+  5. **Evidencias** de etapa `intake`, que piden `service.orders.create`.
+  6. **Confirmación**, creación de la orden y salto a su detalle.
+  El menú por colas (diagnóstico, reparación, calidad, entrega) debe ser un
+  listado con filtros del servidor, no seis pantallas repetidas.
+
+### Documentos de venta — auditado, no implementado
+
+- **SALES-DOC-01 = PENDIENTE.** El POS **no ofrece elegir documento**:
+  `create_pos_sale()` no recibe ni guarda `receipt_type`. En la base de
+  desarrollo se ve el efecto: **26 ventas de mostrador con `receipt_type` vacío**
+  y 1 venta online con factura.
+- Tras cobrar, el POS ofrece la **nota de venta** (`ensureSalesNote`, ticket de
+  80 mm o A4). El panel fiscal sólo aparece con `receipt_type == "factura"` y
+  declara que «esta fase sólo emite facturas».
+- **BOLETA electrónica = PENDIENTE** (ver FISCAL-BOLETA-01).
+- **Lo que el backend exige hoy para una factura**: venta pagada,
+  `receipt_type = factura`, desglose tributario congelado, RUC del emisor
+  configurado, serie resoluble para su sucursal y ambiente, y **sin descuento**
+  —ahí falla cerrado, porque el generador todavía no sabe declarar un
+  `AllowanceCharge`—. Una UX que cobre con descuento prometiendo factura sólo
+  puede terminar en un fallo: el selector tiene que impedirlo o explicarlo antes
+  de cobrar, no después.
+- **Requisito obligatorio cuando se implemente**: el tipo de documento debe
+  entrar en `pos_request_fingerprint`. Hoy la huella incluye empresa, sucursal,
+  cliente, vendedor, medio de pago, líneas, descuentos y notas; si el documento
+  no entra, la misma clave de idempotencia con «Nota» y con «Factura» se
+  consideraría la misma intención.
+- **Semántica**: no se inventa `receipt_type = "nota"`. `ReceiptType` representa
+  documentos fiscales (boleta y factura); la nota de venta interna es
+  precisamente lo que NO es un comprobante, y hoy se corresponde con el valor
+  vacío. Cambiar eso tocaría el histórico y exige auditoría previa.
+- **FISCAL-BOLETA-01 = PENDIENTE**, fase fiscal separada: emisión, series, XML,
+  firma, PDF y ticket, envío, CDR y estado, resumen diario cuando corresponda,
+  pruebas y validación en beta antes de producción.
+
+### Cotizaciones comerciales — auditado, no implementado
+
+- **SALES-QUOTE-01 = PENDIENTE.** `internal-modules` declara `sales.quotes` como
+  `pending` y no existe ningún modelo comercial de cotización. **No se confunde
+  con `RepairQuote`**, que es el presupuesto de una reparación: dominios
+  distintos que no se mezclan.
+- **Diseño propuesto**: `SalesQuote` y `SalesQuoteItem` con empresa, sucursal,
+  cliente, vendedor, número, moneda, estado, validez, notas, totales congelados,
+  autor y fecha. Estados conceptuales: borrador, enviada, aceptada, rechazada,
+  expirada y convertida. Los nombres finales salen de las convenciones del repo.
+- **Reglas**: una cotización no descuenta stock, no genera comisión, no es
+  ingreso, no crea nota de venta, no emite ante SUNAT y no mueve inventario. Al
+  convertirla en venta se revalida el stock, se crea el pedido, se cobra, se
+  mueve inventario, se calcula comisión y se emite el documento; el pedido
+  conserva la referencia a la cotización que lo originó.
+- **Versiones**: una cotización enviada no se sobrescribe. Cambiar producto,
+  precio, cantidad o descuento crea una revisión nueva, y el cliente acepta una
+  revisión concreta — el mismo patrón append-only que ya usa `RepairQuote`.
+- **PDF y envío** (A4, impresión, correo, enlace) se diseñan con la identidad del
+  tenant, nunca con la del piloto en el código.
+
+### Deuda registrada
+
+| Clave | Estado | Qué |
+|---|---|---|
+| **BRANCH-CONTEXT-UI-01** | RESUELTO | Ver arriba |
+| **RBAC-LEGACY-UI-01** | RESUELTO | 16 pantallas migradas; `isStaffRole` sobrevive sólo para el puente legacy |
+| **TEST-H41-TOKEN-FLAKY** | RESUELTO | 120 pasadas y tres finales forzados |
+| **E2E-FISCAL-THROTTLE** | RESUELTO | El limitador intacto, con prueba propia del 429 |
+| **E2E-LOGIN-RETRY** | RESUELTO · nuevo | `pos-ticket` y `staff-master-selector` no reintentaban tras el limitador de login (5/min/IP), así que la ráfaga de entradas de la suite completa los volvía rojos. Preexistente |
+| **E2E-POS-COMBO-SELECTOR** | RESUELTO · nuevo | `pos-ticket` pulsaba la tarjeta del combo en vez de la fila del catálogo: pasaba comprando dos artículos, y se volvió roja cuando el combo dejó de estar disponible. Preexistente, encontrada por la suite completa |
+| **SVC-MENU-01** | DEFECTO · nuevo | Seis módulos de servicio apuntan a `/admin/service` y `service.intake` figura como `implemented` sin pantalla de recepción. Se corrige con SVC-OPS-01 |
+| **SVC-INTAKE-WEB** | PARCIAL | Backend completo; falta la experiencia web |
+| **SALES-DOC-01** | PENDIENTE · nuevo | El POS no elige documento; el tipo debe entrar en la huella de idempotencia |
+| **FISCAL-BOLETA-01** | PENDIENTE · nuevo | Boleta electrónica completa, en fase fiscal propia |
+| **SALES-QUOTE-01** | PENDIENTE · nuevo | Cotización comercial, distinta de `RepairQuote` |
+| SVC-ASSIGNEE-01 · SVC-CAP-SPLIT · SVC-QUOTE-INSHOP · SVC-QC-SEGREGATION | Sin cambios | Ver H4.1.2 |
+| TRADE-IN · INV-SERIAL · REFURB-UNIT · SALE-TENDER-LEDGER · TRADEIN-REVERSAL · TRADEIN-MARGIN · TRADEIN-OWNERSHIP · FISCAL-TRADEIN | Sin cambios | Ver H4.1.2 |
+| DASH-SCOPE-LABEL · CRM-HISTORY-CAP · AUDIT-BRANCH-SCOPE-01 · POS-IDEMP-409 · ORDER-BACKFILL-01 | Sin cambios | Ver H4.1.2 |
+| AUTH-REVOCATION-01 · AUDIT-INTERNAL-01 · NAV-01 · NAV-SERVICE-01 · CAT-01 · LEGAL-01/02/03 · INV-ALERTS · NOTIFY-RT · FISCAL-SERVICE · H4.2 · H4.3 | Sin cambios | Ver H4.1.1. AUTH-REVOCATION-01 se cierra en H4.1.2B |
+
+---
+
+## Fase H4.1.2B — Puerta de seguridad: revocación, puente legacy y aislamiento
+
+**Estado: IMPLEMENTADO.** Migración `0084`, la única de la fase. Rama
+`feat/h4-1-2b-security-gate`, apilada sobre H4.1.2A. Fase exclusivamente de
+seguridad: no se implementó SVC-OPS, ni boleta, ni cotizaciones.
+
+### Los tres hallazgos, reproducidos antes de tocar nada
+
+| Clave | Severidad | Qué permitía | Evidencia previa |
+|---|---|---|---|
+| **LEGACY-BRIDGE-REVOCATION-01** | **P0** | Revocar una membresía devolvía acceso al piloto, incluso a quien nunca perteneció a él | `/api/admin/orders/` → **200** en 4 escenarios |
+| **ACCESSGUARD-403-LEGACY-01** | **P0** | Una cuenta revocada recuperaba la interfaz interna, decidida por su rol global | El 403 del panel era la única señal, y no distingue |
+| **AUTH-REVOCATION-01** | **P0** | Un access token robado seguía abriendo la API hasta 30 min después del logout | Mismo Bearer: 200 → logout → **200** |
+
+### LEGACY-BRIDGE-REVOCATION-01
+
+**Causa raíz.** El puente preguntaba `active_memberships(user).exists()`, y eso no
+es «nunca tuvo Membership»: una membresía revocada deja de estar activa, el
+recuento da cero y el puente se abre. **Quitarle el acceso a alguien se lo
+devolvía.** Peor: la relación revocada podía ser con OTRA empresa, y el puente
+concede el piloto — una empresa a la que esa persona nunca perteneció.
+
+| Escenario | Antes | Ahora |
+|---|---|---|
+| Nunca tuvo Membership (legacy genuino) | puente · 200 | puente · 200 |
+| Membership del piloto revocada | puente · 200 | sin puente · 403 |
+| Membership de otra empresa revocada | puente · 200 | sin puente · 403 |
+| Empresa de la Membership desactivada | puente · 200 | sin puente · 403 |
+| Dos relaciones muertas | puente · 200 | sin puente · 403 |
+| Perfil `customer` + revocada | sin puente · 403 | sin puente · 403 |
+
+**La corrección** es una condición que no depende del estado: si la plataforma
+llegó a modelar a alguien con una Membership, ya no es un operador pre-SaaS.
+Alcanza a todo lo que cuelga del puente —catálogo, inventario, pedidos, notas de
+venta, superficie fiscal, KPIs y la regla de despacho—, porque todas preguntan
+por `legacy_catalog_company()` a través de `resolve_catalog_company()`,
+`uses_legacy_bridge()` y `_branch_authority()`.
+
+### ACCESSGUARD-403-LEGACY-01
+
+**Causa raíz.** El panel interpretaba **un rechazo como una credencial**: si el
+dashboard respondía 403, asumía «operador legacy» y volvía a decidir por
+`user.role`. Ese 403 lo reciben exactamente igual el operador pre-SaaS y alguien
+con la membresía revocada, así que el arreglo de H4.1.2A dejaba una puerta
+abierta justo para el caso que H4.1.2B acababa de cerrar en el backend.
+
+**La corrección.** El 403 dice ahora, calculado en el servidor,
+`"legacy_bridge": true | false`. El cliente no deduce: pregunta. Y se falla
+cerrado — sin afirmación explícita no hay puente, y un fallo de red muestra el
+error en vez de caer al rol.
+
+Probado en los nueve casos pedidos: legacy genuino, membresía activa, varias
+empresas sin elegir, membresía revocada, empresa desactivada, rol admin sin
+capability, perfil `customer` con capability, fallo de red y 403 sin cuerpo.
+
+### AUTH-REVOCATION-01
+
+| Paso | Antes | Ahora |
+|---|---|---|
+| Bearer nuevo → superficie interna | 200 | 200 |
+| Logout | 200 | 200 |
+| **El mismo Bearer** | **200** | **401** |
+| Refresh reutilizado | 401 | 401 |
+| Otra sesión del mismo usuario | 200 | 200 (el logout no la toca) |
+| Sesiones previas tras cambiar la contraseña | **200** | **401** |
+| Login posterior | 200 | 200 |
+
+**Causa raíz.** SimpleJWT sólo revoca refresh tokens; el access es válido por sí
+mismo y nadie lo consultaba contra nada. Borrar la cookie deja sin credencial al
+navegador honrado y no le quita nada a quien copió el token.
+
+**La corrección**, detallada en [adr-token-revocation.md](adr-token-revocation.md):
+revocación por `jti` para el logout —cerrar sesión termina ESA sesión, no las del
+resto de dispositivos— y sello por usuario para el cambio o restablecimiento de
+contraseña, que sí es global. Sin cambiar el formato del token, los tiempos de
+vida ni el contrato de la API, y **sin bajar el TTL**, que no es revocar.
+
+**Un defecto propio, encontrado al medir:** la primera versión comparaba
+`iat < sello` y el cambio de contraseña no revocaba nada, porque el login y el
+cambio caían en el mismo segundo. La comparación es ahora inclusiva.
+
+### Matriz RBAC de superficies internas
+
+| Superficie | Autenticación | Tenant | Capability | Sucursal | Puente legacy | Auditoría | Cross-tenant |
+|---|---|---|---|---|---|---|---|
+| Web · pedidos (lista, detalle, despacho, recibo, correo) | cookie + CSRF | `_company_context` | `sales.orders.view` / `.manage` | `visible_orders` | sí, piloto | escritura sí | 404 |
+| Web · notas de venta | cookie + CSRF | ídem | `sales.notes.manage` | `visible_orders` | sí | creación sí | 404 |
+| Web · comprobante fiscal | cookie + CSRF | ídem | `sales.fiscal.view` / `.issue` | hereda del pedido | **no** | emisión y firma | 404 |
+| Web · catálogo | cookie + CSRF | ídem | `products.view` / `.manage` | — | sí | escritura sí | 404 |
+| Web · inventario, transferencias, recuentos | cookie + CSRF | `_branch_context` | `inventory.view` / `.adjust` / `.reports` | sí, por concesión | sí | movimientos sí | 404 |
+| Web · bitácora de auditoría | cookie + CSRF | empresas visibles | `memberships.view` | — | **no** | lectura no | filtrada |
+| Web · personal, roles y áreas | cookie + CSRF | membresía | `memberships.*` / `roles.manage` | — | **no** | sí | 404 |
+| Web · dashboard interno | cookie + CSRF | membresía o master con `?company=` | por bloque | `branch_scope` y KPIs | **no** (403 con señal) | no | 404 |
+| v1 interno · pedidos y servicio | Bearer **o** cookie, nunca ambas | slug de la ruta | por endpoint | `visible_orders` / `visible_branches` | **no** | escrituras sí | 404 |
+| v1 · POS | ídem | ídem | `sales.pos.use` y derivadas | sucursal obligatoria | **no** | venta sí | 404 |
+| Cambio de rol global | cookie + CSRF | plataforma | `is_superuser` | — | no | sí | — |
+| Escaparate público | anónimo o cliente | por dominio/slug | — | — | — | no | contenido público |
+
+**Ninguna ruta interna empresarial decide por el rol global.** Las cinco
+apariciones productivas de `get_user_role()` son: el camino del puente en
+`admin_views` e `inventory_views`, la regla legacy de despacho, la presentación
+del rol en `/api/auth/me/` y la lista de usuarios de plataforma.
+
+### Aislamiento: las negativas, probadas una a una
+
+`H412bIsolationMatrixTest` y la batería H4.1.2: A no lista B · el id real de B
+responde como uno inexistente · A no modifica ni ajusta nada de B · SELECTED no
+alcanza otra sucursal ni los pedidos sin sucursal · una sucursal inactiva no se
+vuelve accesible · una sucursal preferida revocada no amplía el alcance ·
+membresía inactiva y empresa inactiva conceden cero · el master necesita nombrar
+la empresa · ser cliente nunca convierte en personal · un rol propio no hereda
+los privilegios del `UserProfile.role`.
+
+### Paridad de `legacyRoles` entre interfaz y servidor
+
+`AccessGuard` lleva por pantalla la lista de roles que el backend acepta en el
+puente. Es una duplicación deliberada y temporal, y ahora la compara una prueba
+que **lee los `.tsx` de verdad**: 18 guards, 15 pantallas, y cada lista igual al
+conjunto `_LEGACY_*_ROLES` del endpoint que hay detrás. Una pantalla nueva que no
+esté declarada ahí rompe la prueba. Desaparece con el puente.
+
+### Trazabilidad — AUDIT-INTERNAL-01
+
+**Lo que ya deja traza:** unas 90 acciones en 20 módulos — membresías, roles y
+asignaciones, cambio de rol global, invitaciones, stock, transferencias,
+recuentos, comprobantes fiscales, ventas POS, notas de venta, despacho, servicio
+técnico completo, evidencias, comunicados y configuración de empresa.
+
+**Lo que debe dejarla y no la deja:** los **rechazos**. Hoy un intento
+cross-tenant, un 403 por capability o un acceso a una sucursal ajena no dejan
+rastro, así que un intento repetido es invisible. La política queda fijada aquí:
+deben registrarse los rechazos de **escritura** y los de superficie fiscal,
+personal y plataforma, con actor, empresa pedida, ruta y motivo; nunca las
+lecturas corrientes, que sólo producirían ruido. No se implementa en esta fase
+porque exige un punto único —un hook en la resolución de tenant— y medir volumen.
+
+**Ninguna traza contiene credenciales:** ni tokens, ni cookies, ni contraseñas,
+ni secretos CSRF, comprobado en los metadatos y en los logs.
+
+### CART-READ-429-01 — una lectura rechazada no es un carrito vacío
+
+Encontrado al investigar el único rojo de Playwright, que dos informes anteriores
+habían archivado como «inestable conocido de C2.1». No era inestable: era un
+defecto con causa fija, y la descripción que se le había puesto —«el navegador ve
+el carrito vacío»— es justo lo que impidió verlo.
+
+**Reproducido antes de tocar nada.** La lectura nº 60 de `/api/cart/` desde una
+misma IP devuelve `429 · «Se espera que esté disponible en 60 segundos»`: el
+limitador `cart` (60/min) haciendo exactamente su trabajo. El volcado de la
+página del fallo lo confirma — la cabecera mostraba **1** artículo mientras el
+resumen decía no poder leer el carrito.
+
+**La causa.** `fetcher` lanza ante cualquier respuesta no-ok, y el checkout
+guardaba ese fallo como `setItems([])`. Desde ahí la pantalla ya no podía
+distinguir «no has comprado nada» de «no he podido preguntarlo», y el efecto de
+la cotización se apagaba solo: un carrito sin artículos no tiene nada que
+cotizar, así que **el desglose tributario desaparecía sin decir por qué**. La
+suite lo llevaba diciendo dos fases con el mensaje «cotización: no se pidió», que
+era literalmente cierto.
+
+**El arreglo.** `readCart()` devuelve `ok` o `unreadable` —nunca una lista vacía
+por un fallo—, respeta la espera que indica el servidor (`Retry-After`, con el
+texto de DRF como respaldo y un tope de 120 s) y reintenta **una** vez. El
+checkout pinta ahora tres estados distintos: cargando, ilegible (con
+«Reintentar») y vacío de verdad. **El límite no se tocó ni se ensanchó**: el
+arreglo consiste en respetarlo.
+
+**Alcance, comprobado y no supuesto.** `/cart` ya distinguía el fallo con un
+estado `error` propio, y la cabecera conserva el contador anterior cuando la
+lectura falla —por eso el badge decía la verdad mientras el resumen mentía—. La
+confusión era exclusiva del checkout. Ocho pruebas Jest nuevas la fijan, incluido
+que un carrito vacío de verdad sigue siendo `ok`.
+
+### AUTH-REVOCATION-REFRESH-01 — un refresh anterior resucitaba la sesión
+
+Encontrado en revisión externa, **sobre el arreglo de AUTH-REVOCATION-01 ya dado
+por cerrado**. La lección conviene dejarla escrita tal cual: revocar los ACCESS y
+llamar a eso «se cerraron todas tus sesiones» era falso mientras ningún camino de
+REFRESH preguntara nada. Media revocación se parece demasiado a una revocación.
+
+**Reproducido antes de tocar código**, con nueve pruebas nuevas: **siete en rojo,
+todas `200 != 401`**. Tras cambiar —o restablecer— la contraseña, el access viejo
+moría con 401 y acto seguido el refresh viejo entregaba uno nuevo, válido y
+recién emitido. En los dos canales: `/api/v1/auth/refresh/` (nativo) y
+`/api/auth/refresh/` (cookie web).
+
+**La causa.** `V1RefreshView` validaba firma, usuario y `is_active`, y pasaba
+directo a `blacklist()` + `RefreshToken.for_user()`. El `RefreshView` web
+delegaba en `TokenRefreshSerializer`, que sólo sabe de firma, caducidad y lista
+negra. El sello `tokens_valid_after` no se consultaba en ninguno de los dos.
+
+**El arreglo, en dos candados.** `refresh_is_revoked()` se pregunta **antes** de
+rotar, de ennegrecer y de emitir —rotar primero deja el refresh muerto habiendo
+engendrado una credencial viva, que es exactamente el agujero—, y comparte con el
+access la misma definición del umbral (`_issued_before_revocation`). Además,
+`revoke_all_tokens()` ennegrece todos los `OutstandingToken` vivos de la cuenta,
+de modo que la credencial muera también dentro de la propia biblioteca: cualquier
+camino de refresh, presente o futuro, la rechaza sin tener que acordarse de
+preguntar. El sello sigue siendo la autoridad; la lista negra es defensa en
+profundidad. Ver [adr-token-revocation.md](adr-token-revocation.md) §1.1 y §2.
+
+**Lo que NO se rompió**, y está probado: el logout sigue siendo por sesión —cerrar
+en el móvil conserva vivos el access **y** el refresh del mostrador— y un login
+posterior a la revocación funciona con normalidad.
+
+**El borde de `iat`, sin `sleep`.** La prueba fija el sello exactamente en el
+segundo de emisión del token y comprueba que la duda se resuelve cerrando. El
+instante se elige, no se espera: determinista y sin depender de cuándo corra.
+
+### Verificación
+
+| Comprobación | Resultado |
+|---|---|
+| Backend completo (SQLite) | **4059 OK** · 22 omitidas · 20,2 min |
+| Backend · las 14 clases con omitidos (PostgreSQL) | **90 OK** · 3 omitidas · 35,1 s |
+| Backend · aislamiento dirigido (PostgreSQL) | **467 OK** |
+| Seguridad + autenticación H4.1.1 sobre el árbol restaurado | **125 OK** |
+| Jest | **324 OK** · 26 suites |
+| `tsc --noEmit` | limpio |
+| ESLint | **0 errores** · 1 aviso preexistente (checkout, línea 224) |
+| `next build` | compila · **44/44** páginas · exit 0 |
+| Playwright completo | **117 OK** · 0 fallos · 0 flaky · 0 omitidos · 0 «did not run» · 6,3 min |
+| Migraciones | sólo `0084` · `makemigrations --check` limpio |
+
+**Los 22 omitidos, nombrados, porque un omitido callado se parece demasiado a
+uno que pasa.** Diecinueve son pruebas de concurrencia que SQLite no puede
+ejecutar con honestidad —`select_for_update()` es un no-op y las escrituras se
+serializan con un bloqueo de base de datos, así que un verde ahí no probaría nada
+de PostgreSQL—: bajo PostgreSQL **corren y pasan**. Los tres restantes están
+declarados en el propio código: dos porque este catálogo no reserva ninguna
+capacidad, y `M11AntiEscalationTest.test_10e`, cuya regla cubre `test_10d`.
+
+### Sabotaje y mutación
+
+Una protección que nadie vigila es una protección que ya se puede quitar. Cada
+mutación se aplicó sobre el árbol verde y se midió qué se ponía rojo:
+
+| Mutación | Pruebas rojas |
+|---|---|
+| El puente legacy vuelve a preguntar «¿membresías **activas**?» | **3** — reapertura tras revocar, membresía de otro tenant, y la autoridad de despacho volviendo |
+| `legacy_bridge` fijado a `False` en el 403 | **1** — el operador genuino deja de anunciarse |
+| Revocación desactivada en el canal de **cookie** | **1** — el logout web deja de matar su propia cookie |
+| Revocación desactivada en el canal **Bearer** (v1) | **3** — el mismo Bearer tras el logout, el aislamiento entre sesiones y el cierre por contraseña |
+
+Que el sabotaje del canal de cookie tumbe una prueba y el del Bearer tumbe tres
+no es una laguna: son dos comprobaciones en dos archivos, y cada una responde por
+su canal. Los cuatro archivos se restauraron con **hash SHA-256 idéntico** al
+previo, no queda ningún `if False and` en el árbol y la pasada posterior da
+125 OK. No se ha cometido nada del sabotaje.
+
+### Severidad de lo encontrado
+
+| Nivel | Hallazgo | Estado |
+|---|---|---|
+| **P0** | LEGACY-BRIDGE-REVOCATION-01 — revocar devolvía acceso, y a una empresa ajena | **RESUELTO** |
+| **P0** | ACCESSGUARD-403-LEGACY-01 — un rechazo se leía como credencial | **RESUELTO** |
+| **P0** | AUTH-REVOCATION-01 — el logout no cerraba la sesión | **RESUELTO** |
+| **P0** | AUTH-REVOCATION-REFRESH-01 — un refresh anterior resucitaba la sesión tras cambiar o restablecer la contraseña | **RESUELTO** |
+| **P1** | — | ninguno abierto |
+| **P2** | CART-READ-429-01 — un carrito ilegible se mostraba como vacío y apagaba el desglose | **RESUELTO** |
+| **P2** | AUDIT-INTERNAL-01 — los rechazos sensibles no dejan traza; política ya definida, falta el punto único donde engancharla | Abierto |
+| **P2** | Duplicación de `legacyRoles` en la interfaz; mitigada con prueba de paridad que lee los `.tsx` | Abierto, con guardia |
+| **P2** | CRM-HISTORY-CAP — el historial de compras del cliente se sirve con `service.customers.view`, sin exigir `sales.orders.view` | Abierto (H4.1.2) |
+| **P3** | Purga de `RevokedAccessToken`: hoy oportunista al revocar; con volumen real conviene tarea periódica | Abierto |
+| **P3** | Granularidad de un segundo en el sello de revocación, documentada y elegida a conciencia | Aceptado |
+| **P3** | DASH-SCOPE-LABEL · ORDER-BACKFILL-01 · SVC-MENU-01 · POS-IDEMP-409 | Abiertos de fases previas |
+
+### Riesgo residual
+
+- **Ventana de un segundo** entre un cambio de contraseña y un token emitido en
+  ese mismo segundo: se falla hacia rechazar, así que el riesgo es de usabilidad,
+  no de acceso.
+- **El logout de v1 revoca el access token sólo si el cliente lo envía** en la
+  cabecera. Sin ella muere el refresh, como antes. El cliente oficial lo envía.
+- **Detección:** sin traza de rechazos, un intento repetido de cruce de empresa
+  no deja rastro. Es el P2 principal y la razón de que la política quede escrita.
+- **El puente legacy sigue existiendo** para cuentas que nunca tuvieron
+  Membership. Es deuda conocida y su criterio de eliminación no cambia: cuando
+  toda persona tenga Membership, se borra el puente y con él las listas
+  `legacyRoles` de la interfaz.

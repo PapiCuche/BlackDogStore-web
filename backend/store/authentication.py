@@ -7,6 +7,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
+from .token_revocation import token_is_revoked
+
 
 class _CSRFCheck(CsrfViewMiddleware):
     """CsrfViewMiddleware subclass that returns the rejection reason instead of an HttpResponse."""
@@ -56,12 +58,20 @@ class CookieJWTAuthentication(BaseAuthentication):
             raise exceptions.AuthenticationFailed('Token payload inválido.')
 
         try:
-            user = User.objects.get(pk=user_id)
+            # `select_related('profile')`: la comprobación de revocación lee el
+            # sello del perfil, y sin esto costaría una consulta extra por
+            # petición autenticada.
+            user = User.objects.select_related('profile').get(pk=user_id)
         except User.DoesNotExist:
             raise exceptions.AuthenticationFailed('Usuario no encontrado.')
 
         if not user.is_active:
             raise exceptions.AuthenticationFailed('Usuario inactivo.')
+
+        # H4.1.2B — AUTH-REVOCATION-01. Cerrar sesión o cambiar la contraseña
+        # invalidaba el refresh y dejaba vivo el access token hasta media hora.
+        if token_is_revoked(user, validated_token):
+            raise exceptions.AuthenticationFailed('Credenciales inválidas.')
 
         return (user, validated_token)
 

@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { StaffGuard } from "../../components/StaffGuard";
+import { AccessGuard } from "../../components/AccessGuard";
+import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
 import { ProductForm } from "../../components/ProductForm";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
@@ -16,7 +17,7 @@ import {
 } from "../../../lib/admin";
 import type { AuthUser } from "../../../lib/auth";
 
-function ProductDetailContent({ user }: { user: AuthUser }) {
+function ProductDetailContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const { id } = useParams<{ id: string }>();
   const productId = parseInt(id, 10);
 
@@ -25,9 +26,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const canManage = user.role === "admin" || user.role === "superadmin";
-  const canAdjustInventory =
-    user.role === "inventory" || user.role === "admin" || user.role === "superadmin";
+  const canManage = access.can("products.manage", ["admin", "superadmin"]);
+  const canAdjustInventory = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
   useEffect(() => {
     Promise.all([
@@ -47,7 +47,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   if (loading) {
     return (
       <AdminShell user={user}>
-        <p className="text-zinc-500 text-sm">Cargando…</p>
+        <p className="text-muted text-sm">Cargando…</p>
       </AdminShell>
     );
   }
@@ -55,8 +55,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   if (error || !product) {
     return (
       <AdminShell user={user}>
-        <p className="text-red-400 text-sm">{error ?? "Producto no encontrado."}</p>
-        <Link href="/admin/products" className="text-zinc-400 hover:text-zinc-100 text-sm mt-4 block">
+        <p className="text-danger text-sm">{error ?? "Producto no encontrado."}</p>
+        <Link href="/admin/products" className="text-muted hover:text-foreground text-sm mt-4 block">
           ← Volver a productos
         </Link>
       </AdminShell>
@@ -70,50 +70,50 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
           <div>
             <Link
               href="/admin/products"
-              className="text-xs text-zinc-500 hover:text-zinc-300 mb-2 block"
+              className="text-xs text-muted hover:text-foreground/85 mb-2 block"
             >
               ← Volver a productos
             </Link>
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold text-white">{product.name}</h1>
+              <h1 className="text-xl font-semibold text-foreground">{product.name}</h1>
               <ProductStatusBadge isActive={product.is_active} />
             </div>
-            <p className="mt-1 text-sm text-zinc-500">{product.slug}</p>
+            <p className="mt-1 text-sm text-muted">{product.slug}</p>
           </div>
         </div>
 
         <div className="grid grid-cols-3 gap-4 text-sm">
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="text-xs text-zinc-500 mb-1">Precio</p>
-            <p className="text-lg font-semibold text-white">
+          <div className="rounded-lg border border-bd-border bg-surface p-4">
+            <p className="text-xs text-muted mb-1">Precio</p>
+            <p className="text-lg font-semibold text-foreground">
               S/ {parseFloat(product.price).toFixed(2)}
             </p>
           </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="text-xs text-zinc-500 mb-1">Inventario</p>
+          <div className="rounded-lg border border-bd-border bg-surface p-4">
+            <p className="text-xs text-muted mb-1">Inventario</p>
             <p
               className={`text-lg font-semibold ${
                 product.inventory === 0
-                  ? "text-red-400"
+                  ? "text-danger"
                   : product.inventory <= 5
-                    ? "text-yellow-400"
-                    : "text-white"
+                    ? "text-warning"
+                    : "text-foreground"
               }`}
             >
               {product.inventory}
             </p>
           </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="text-xs text-zinc-500 mb-1">Categoría</p>
-            <p className="text-sm font-medium text-zinc-200">
+          <div className="rounded-lg border border-bd-border bg-surface p-4">
+            <p className="text-xs text-muted mb-1">Categoría</p>
+            <p className="text-sm font-medium text-foreground">
               {product.category_name ?? "Sin categoría"}
             </p>
           </div>
         </div>
 
         {canAdjustInventory && (
-          <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-            <h2 className="text-sm font-semibold text-white mb-4">
+          <section className="rounded-xl border border-bd-border bg-surface p-6">
+            <h2 className="text-sm font-semibold text-foreground mb-4">
               Ajuste de inventario
             </h2>
             <InventoryAdjustForm
@@ -127,8 +127,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         )}
 
         {canManage && (
-          <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-            <h2 className="text-sm font-semibold text-white mb-4">
+          <section className="rounded-xl border border-bd-border bg-surface p-6">
+            <h2 className="text-sm font-semibold text-foreground mb-4">
               Editar producto
             </h2>
             <ProductForm
@@ -140,8 +140,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         )}
 
         {!canManage && !canAdjustInventory && (
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-            <p className="text-sm text-zinc-400">
+          <div className="rounded-xl border border-bd-border bg-surface p-6">
+            <p className="text-sm text-muted">
               No tienes permisos para editar este producto o ajustar su inventario.
             </p>
           </div>
@@ -153,6 +153,8 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
 
 export default function ProductDetailPage() {
   return (
-    <StaffGuard>{(user) => <ProductDetailContent user={user} />}</StaffGuard>
+    <AccessGuard capability="products.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <ProductDetailContent user={access.user} access={access} />}
+    </AccessGuard>
   );
 }

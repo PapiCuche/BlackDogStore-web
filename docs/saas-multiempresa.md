@@ -84,7 +84,7 @@ Company ──< Branch
 | Matriz de capacidades empresariales | IMPLEMENTADO | Fase 2A — `COMPANY_CAPABILITIES` |
 | Helpers RBAC empresariales | IMPLEMENTADO | Fase 2A — `can_manage_company_*` |
 | `CompanyContext` | IMPLEMENTADO | Fase 2A |
-| RBAC legacy (`UserProfile.role`) | IMPLEMENTADO / TRANSICIÓN | Sigue gobernando el dominio comercial |
+| RBAC legacy (`UserProfile.role`) | TRANSICIÓN — **ya no es autoridad general** | Desde H4.1.2 el dominio comercial lo deciden las capacidades; el rol sólo cuenta en el puente legacy del piloto, y desde H4.1.2B sólo para quien **nunca** tuvo Membership |
 | Tenantización de `Product`/`Order`/… | PENDIENTE | Fase siguiente — ver §7. |
 | RBAC tenant-aware | PENDIENTE | `get_user_role()` sigue intacto — ver §5. |
 | Branding por empresa | PENDIENTE | Constantes aún en `email_services.py` / `pdf_services.py`. |
@@ -178,7 +178,7 @@ no se puedan sondear ids ajenos.
 | `company_id` arbitrario del cliente | Solo **selecciona** entre empresas ya accesibles; nunca amplía acceso → `CrossTenantError` |
 | Host desconocido / reservado (`www`, `api`, `admin`, `app`) / sin subdominio | `None` — sin tenant, sin fallback |
 | Company inactiva | `has_company_access` = False; `resolve_company_from_host` devuelve `None`; solo el admin de plataforma puede seleccionarla |
-| Membresía inactiva | No cuenta: `active_memberships` la excluye |
+| Membresía inactiva | No cuenta: `active_memberships` la excluye — y **no reabre el puente legacy** (H4.1.2B): haber tenido una Membership es irreversible |
 
 Esta resolución **no** se aplica todavía al e-commerce: catálogo, carrito y
 checkout siguen operando sin tenant, y esa compatibilidad es intencional.
@@ -3243,6 +3243,10 @@ cancelar ventas no— aunque esté clavada al `UserProfile.role` legacy y no a u
 capability. Ensanchar en silencio lo que puede hacer un almacenero no es algo que
 decida un refactor.
 
+> **H4.1.2 (D4 · opción A):** esa restricción queda **sólo en el puente legacy**.
+> Dentro de una empresa decide `sales.orders.manage`, y el rol global no limita ni
+> amplía. Ver «H4.1.2 — Autoridad interna sobre pedidos» al final.
+
 El detalle devuelve `available_fulfillment_transitions`, **desde el servidor**,
 para que la app no cargue una segunda copia de la tabla. Es entrada de
 presentación: el PATCH vuelve a comprobar.
@@ -4267,9 +4271,11 @@ la mentira que toda esta fase evitó.
    sucursal** (modo, concesiones y sucursal predeterminada) sobre la API de
    membresías. Lo que sigue pendiente de esa pantalla es el alta de membresías y
    la edición de roles/áreas personalizados, que siguen siendo deuda de 2A.1.
-33. **Bridge legacy del inventario.** Un operador pre-SaaS sin Membership sigue
-   alcanzando el tenant piloto y **todas** sus sucursales, con su rol legacy como
-   autoridad. Desaparece cuando todo operador tenga Membership.
+33. **Bridge legacy del inventario.** Un operador pre-SaaS que **nunca** tuvo
+   Membership sigue alcanzando el tenant piloto y **todas** sus sucursales, con su
+   rol legacy como autoridad. Desaparece cuando todo operador tenga Membership.
+   H4.1.2B precisó la condición: antes bastaba con no tener ninguna membresía
+   ACTIVA, así que revocar una la reabría.
 
 ### Deuda que deja la Fase 3
 
@@ -4430,3 +4436,361 @@ python manage.py seed_demo_users --purge
 propósito `UserProfile.role` **y** `Membership + CompanyRole + assignment`,
 porque los endpoints comerciales aún autorizan por el primero y las APIs SaaS por
 el segundo. Es un síntoma de la transición, no la arquitectura final.
+
+---
+
+## Evolución de presets: hacia adelante y consciente de su historia
+
+**Regla, fijada en M12B.1 y respaldada por test estructural.**
+
+Una migración que necesite reconocer el estado ANTERIOR de un preset debe
+compararlo contra un conjunto **congelado en su propio archivo**:
+
+```python
+# BIEN — literal en la migración
+PREVIOUS_ADMIN = frozenset({'company.view', 'company.manage', ...})
+
+# MAL — reconstruye el pasado con el catálogo del futuro
+from store.capabilities import ASSIGNABLE_CAPABILITY_CODES
+PREVIOUS_ADMIN = frozenset(ASSIGNABLE_CAPABILITY_CODES) - set(NEW)
+```
+
+La segunda forma **acierta en un upgrade y falla en una instalación desde cero**,
+y falla en silencio: la migración corre, imprime que otorgó la capacidad a cero
+roles, y sigue. Nueve migraciones lo hicieron durante nueve fases.
+
+Lo que sí puede leerse vivo es el **destino**: `Administrador` está definido como
+todo el catálogo asignable de la release, así que apuntar al catálogo vivo es lo
+que hace converger la migración con `provision_company_access_defaults` por
+construcción. Congelado para identificar, vivo para apuntar.
+
+**Un preset estándar no puede contener la misma capability dos veces.** No es más
+autoridad: es un conteo falso que rompe cualquier comparación exacta y hace
+divergir el camino de migración del de provisioning. Hay un test que lo impide.
+
+### Qué significa paridad
+
+No que todo rol histórico se reescriba. Que **un preset de plataforma intacto**
+converja al mismo default por los tres caminos —fresh install, upgrade histórico
+y provisioning de tenant nuevo—. Una personalización del tenant rompe esa
+convergencia **a propósito**, y la migración no está autorizada a deshacerla.
+
+---
+
+## Comunicados: cuatro decisiones que no se renegocian
+
+### 1. `Announcement` es el documento; `Notification`, la copia
+
+Comparten bandeja y no comparten origen. Una notificación automática nace de un
+cambio de negocio; un comunicado nace de que alguien lo escribió. `source`
+distingue las dos sin duplicar la infraestructura, y **no hay una segunda
+bandeja**: `AnnouncementInbox` no existe y no debe existir.
+
+### 2. La audiencia se congela al publicar
+
+Las reglas se resuelven **una vez**, a filas, y esas filas son el registro.
+Volver a resolver al leer reescribiría la historia cada mañana: el empleado
+nuevo parecería haber recibido el mensaje del año pasado, y aquel para quien se
+escribió desaparecería de él el día que cambió de puesto.
+
+Un preview es informativo y puede quedar obsoleto entre que se calcula y se
+pulsa el botón. Por eso `publish` **vuelve a resolver** en vez de confiar en él.
+
+### 3. Global siempre es explícito
+
+La ausencia de tenant significa «lo escribió la plataforma», jamás «va a todos».
+Para alcanzar toda la plataforma hay que escribir `ALL_ACTIVE_COMPANIES`. Una
+lista vacía es un error; una empresa nula no es un broadcast.
+
+### 4. Publicado es inmutable
+
+No hay editar, retirar ni borrar. Una corrección es un comunicado nuevo. Una
+bandeja que puede reescribirse a tu espalda es peor que no tener registro.
+
+---
+
+## Black Dog Store es el tenant piloto, no el branding del SaaS
+
+`NEUTRAL_CONFIG` en `app/lib/storefront.ts` sigue siendo negro, blanco y gris sin
+identidad de nadie. El logo, los colores, el contacto y las políticas de un
+storefront salen de la configuración de SU empresa; una empresa desconocida no
+hereda la marca del piloto.
+
+El copy comercial del piloto vive en sus componentes y **es contenido del
+storefront piloto, no comportamiento del dominio**. Apple, Nasan, Arequipa y los
+plazos de garantía no son reglas de la plataforma.
+
+### Un claim compilado es una promesa que la empresa no tomó
+
+M12D-UX retiró once afirmaciones del storefront. La lección no es que estuvieran
+mal escritas: es que estaban **compiladas**. Un plazo de garantía en el JSX
+compromete a cada tenant que use ese componente con una política que quizá no
+tiene, y la del piloto estaba marcada como pendiente de redactar en su propio
+manual de marca.
+
+Lo verificable va en configuración —`policies.warranty_text` ya existía— y sin
+dato configurado no se dibuja nada. **Un hueco es honesto; un número inventado,
+no.**
+
+Y hay una categoría peor que la cifra sin respaldo: la afirmación que el manual
+de marca **prohíbe**. `title: "Servicio Técnico Apple"` se lee como servicio
+oficial de Apple, y estaba en la metadata que indexa un buscador.
+
+## El contenido comercial es dato del tenant, no código — M12F
+
+Hasta M12F la portada llevaba compilado el nombre de un teléfono. La regla que
+esto establece es corta:
+
+```
+CAMPAÑA COMERCIAL = DATO DEL TENANT
+```
+
+y tiene tres consecuencias que no se renegocian.
+
+**No es un CMS.** No hay HTML, ni Markdown, ni CSS, ni componentes editables
+desde el panel. Hay CAMPOS. Quien edita escribe un título y un texto; no decide
+cómo se pinta. Un editor que acepta marcado es un editor que acepta `<script>`,
+y esto lo rellena personal del tenant, no el equipo que audita el código.
+
+**La caducidad es el punto, no una comodidad.** `ends_at` existe para que la
+preventa del año pasado desaparezca sola. Sin él volveríamos al defecto que la
+fase cerró, sólo que con el texto en la base de datos en vez de en un `<h2>`.
+
+**Guardar no publica.** Son dos acciones con nombres distintos y endpoints
+distintos, precisamente para que el estado no pueda colarse en un `PATCH` de
+contenido. Escribir un borrador y anunciarlo al público no son el mismo gesto.
+
+### Dónde vive cada cosa
+
+```
+CompanySettings          identidad y políticas   — quién eres
+StorefrontPageSettings   contenido permanente    — qué ofreces
+StorefrontCampaign       contenido temporal      — qué anuncias hoy
+```
+
+La tentación es meterlo todo en `CompanySettings`. No: el RUC y un titular de
+portada cambian con frecuencias distintas, los edita gente distinta y fallan de
+formas distintas.
+
+### La autoridad se reutilizó
+
+`company.manage`, la misma que ya gobierna la configuración de la empresa. Crear
+una capacidad nueva habría exigido una migración de presets congelados —la clase
+de cambio que M12B.1 dedicó una fase entera a reparar— a cambio de una
+distinción que hoy no separa a nadie de nadie.
+
+Queda anotado el día que sí la separe: un taller que quiera que su encargado de
+marketing publique campañas **sin** poder cambiar el RUC de la empresa. Ese día
+`storefront.content.manage` tendrá un motivo. Hoy no lo tiene.
+
+### El vocabulario de un tema único
+
+Esta aplicación se escribió cuando sólo había tema oscuro, y eso dejó 2.779
+utilidades de color literales repartidas en 87 ficheros. No eran colores
+arbitrarios: eran ROLES escritos con el vocabulario de aquel momento. `white`
+no significaba blanco, significaba «el color que se lee».
+
+La traducción se hizo redefiniendo los tokens de la paleta, en un sitio, en vez
+de reescribir 2.779 clases. Lo que justifica hacerlo así es que se puede MEDIR:
+84 comprobaciones de contraste resuelven los tokens contra dos temas y dos
+paletas y fallan si un nivel de énfasis deja de leerse.
+
+Las excepciones van a mano y llevan su motivo escrito: texto blanco sobre
+relleno saturado —donde el fondo no cambia con el tema, así que el texto tampoco
+puede— y el verde oficial de WhatsApp, que es identidad de un tercero y no una
+decisión de tema nuestra.
+
+---
+
+## H4.1.1 — Web y nativo en la superficie interna
+
+### Una request, un canal de autenticación — DEC-API-004
+
+La superficie interna `/api/v1/internal/<empresa>/…` sirve a los **dos** clientes
+de la plataforma: la app nativa con `Authorization: Bearer` y el panel web con
+su cookie HttpOnly. No hay una API web paralela. Web y Mobile responden a las
+mismas reglas de dominio, escritas una vez.
+
+Aceptar dos credenciales sólo es seguro con una regla que no admite
+interpretación:
+
+| Lo que el cliente presenta | Resultado |
+|---|---|
+| `Authorization` **y** cookie de acceso | **401** — no se elige identidad, ni siquiera si son del mismo usuario |
+| `Authorization: Bearer <token>` | canal nativo, sin CSRF |
+| `Authorization` de otro esquema, vacío o malformado | **401** — nunca cae a la cookie |
+| sólo la cookie | canal web, **con CSRF** en todo método no seguro |
+| nada | anónimo → 401 |
+
+Tres consecuencias que forman parte de la decisión:
+
+1. **El orquestador es exclusivo de esta superficie.** Se declara en
+   `V1InternalSurfaceMixin` y en ningún otro sitio; el default global sigue siendo
+   sólo cookie, y `/api/admin/`, `/api/auth/`, `/api/v1/auth/`, `/api/v1/customer/`
+   y `/api/v1/platform/` no cambian.
+2. **Los métodos seguros de esta superficie no escriben.** Es la condición que hace
+   aceptable eximirlos de CSRF por cookie, y una prueba permanente la ejecuta en
+   las 70 rutas.
+3. **Las puertas de tenant, sucursal y capacidad no saben por qué canal entró la
+   petición.** Leen `request.user` y el slug de la ruta, y responden igual por
+   Bearer que por cookie.
+
+Detalle, amenazas y alternativas descartadas:
+[adr-auth-v1-internal.md](adr-auth-v1-internal.md).
+
+---
+
+## H4.1.2 — Autoridad interna sobre pedidos
+
+### Dónde trabaja alguien decide qué pedidos ve
+
+`tenancy.visible_orders(user, company)` es la frontera de toda superficie interna
+de pedidos: lista, detalle, despacho, recibo, correo, nota de venta, comprobante,
+ficha de cliente y KPIs. Se aplica antes de buscar, contar, agregar o paginar, y
+fuera de ella la respuesta es 404.
+
+| Autoridad | Pedidos que ve |
+|---|---|
+| Master con empresa explícita | todos los de esa empresa |
+| Puente legacy | todos los del piloto |
+| Membresía `ALL` | todos los de la empresa |
+| Membresía `SELECTED` | los despachados por sus sucursales **activas** con concesión **activa** |
+
+**Decisión D1.** Los pedidos sin sucursal o de sucursales desactivadas sólo los ve
+la autoridad de toda la empresa. `visible_branches()` no se amplía para
+recuperarlos: dice dónde opera hoy una persona, no qué historial hereda. Un
+auditor histórico por sucursal cerrada sería otra decisión.
+
+Las dos preguntas de sucursal —¿qué sucursales?, ¿qué pedidos?— leen la misma
+escalera de autoridad (`_branch_authority`), así que no pueden discrepar sobre
+quién es de toda la empresa.
+
+**La ficha de cliente sigue sin sucursal**, como decidió la Fase 4: un cliente es
+de la empresa. **Su historial de compras, no**: cada compra la despachó una
+sucursal.
+
+### Dos caminos de autoridad, nunca mezclados — D4
+
+| Camino | Quién decide los estados de despacho |
+|---|---|
+| SaaS (membresía o master) | `sales.orders.manage` en esa empresa; `UserProfile.role` no limita ni amplía |
+| Puente legacy (piloto, sin membresía) | el rol legacy: `inventory` mueve mercancía y no cancela |
+
+No se creó ninguna capability. La app y el panel web pintan
+`available_fulfillment_transitions`, que calcula el servidor; ninguno guarda una
+copia de la regla.
+
+---
+
+## H4.1.2A — El alcance de sucursal es contexto de acceso
+
+### Dónde trabajo no se deduce de si veo el inventario
+
+`tenancy.describe_branch_scope(user, company)` responde «qué sucursales alcanza
+esta persona», y el dashboard interno lo publica como `branch_scope`:
+
+| Campo | Qué dice |
+|---|---|
+| `mode` | `platform`, `legacy`, `all`, `selected` o `none` |
+| `default_branch` | dónde abre el panel, resuelto contra las sucursales visibles |
+| `branches` | ids y nombres de las que puede operar |
+
+**Por qué no vive dentro del resumen de inventario.** Ahí vivía, y el backend sólo
+construye ese bloque para quien tiene `inventory.view` o `inventory.reports`. Un
+técnico alcanza sucursales y no tiene ninguna de las dos, así que el panel le
+decía «Sin sucursal»: una frase sobre una capacidad de inventario disfrazada de
+alcance. Dónde trabaja alguien es un hecho sobre esa persona, no sobre el stock.
+
+Lleva ids y nombres, y nada más: sin existencias, sin dinero, sin contadores. Y no
+es autoridad — cada petición vuelve a resolver `visible_branches()` en el servidor.
+
+### La interfaz ofrece lo que el servidor concede
+
+Las pantallas internas preguntaban al `UserProfile.role` global lo que el backend
+decide por capacidad de empresa, y las dos respuestas se contradecían en ambos
+sentidos: quien entraba por una invitación —perfil `customer` con capacidades
+reales— era rechazado por la pantalla, y un perfil `sales` sin la capacidad veía
+botones que respondían 403.
+
+| Contexto | Quién decide qué se ofrece |
+|---|---|
+| Con empresa resuelta | la capacidad que informa el servidor |
+| Sin empresa (puente legacy, sin Membership) | el rol legacy, que es lo que el backend comprueba en ese camino |
+| Master de plataforma | pasa siempre |
+
+`isStaffRole` sobrevive **sólo** para ese puente. Cuando desaparezca el puente,
+desaparece el rol global de la interfaz.
+
+---
+
+## H4.1.2B — Quién es legacy, y quién ya no
+
+### Haber tenido una Membership es irreversible
+
+El puente decidía con «¿tiene membresías **activas**?». Una membresía revocada no
+está activa, así que el recuento daba cero y el puente se abría: **revocarle el
+acceso a alguien se lo devolvía**, ahora como operador del piloto. Reproducido
+antes de corregir, con `/api/admin/orders/` respondiendo 200 en cuatro casos:
+
+| Escenario | Antes | Ahora |
+|---|---|---|
+| Nunca tuvo Membership (legacy genuino) | puente → 200 | puente → 200 |
+| Membership del piloto **revocada** | puente → 200 | sin puente → 403 |
+| Membership de **otra empresa** revocada | puente → 200 | sin puente → 403 |
+| Empresa de la Membership **desactivada** | puente → 200 | sin puente → 403 |
+
+La condición correcta no depende del estado: **si la plataforma llegó a modelar a
+alguien con una Membership, ya no es un operador pre-SaaS**. Que esa relación
+esté revocada significa «sin acceso», que es justo lo que quiso decir quien la
+revocó. El puente sigue existiendo para quien nunca tuvo ninguna, y sólo sobre el
+piloto.
+
+### Un rechazo no es una credencial
+
+El panel interno responde 403 a dos personas muy distintas: el operador pre-SaaS
+que cruza el puente y alguien a quien le revocaron la membresía. La interfaz
+trataba a las dos como legacy —el 403 era su única pista— y devolvía la pantalla
+según el `UserProfile.role`.
+
+Ahora ese 403 **dice cuál de las dos es**, calculado por quien puede saberlo:
+
+```
+403  { "detail": "...", "legacy_bridge": true | false }
+```
+
+El cliente no deduce; pregunta. Y ante un fallo de red no hay puente: sin
+afirmación del servidor, la pantalla no se abre.
+
+### Cerrar todas las sesiones incluye el refresh
+
+Encontrado en revisión externa **sobre un arreglo ya dado por cerrado**, y por eso
+vale la pena que quede en este documento y no sólo en el ADR: la primera versión
+de la revocación global invalidaba los ACCESS y nadie preguntaba por los REFRESH.
+Cambiar o restablecer la contraseña mataba el access viejo y, acto seguido, el
+refresh viejo —anterior al evento, criptográficamente intacto— entregaba uno
+nuevo. La pantalla prometía «se cerraron todas tus sesiones» mientras quien
+tuviera un refresh antiguo se fabricaba una.
+
+```
+cambiar / restablecer la contraseña
+access viejo  → 401          (ya funcionaba)
+refresh viejo → 200 + access NUEVO   ← el defecto, en los dos canales
+```
+
+La regla queda así: **un refresh anterior a un cierre global no puede ser la causa
+de ninguna credencial posterior a él**. Se pregunta antes de rotar, de ennegrecer
+y de emitir; y el cierre global ennegrece además los `OutstandingToken` vivos,
+para que la credencial muera también dentro de la biblioteca y no dependa de que
+cada camino de refresh se acuerde de preguntar.
+
+Lo que no cambia: el logout sigue siendo **por sesión**. Cerrar en el móvil no
+cierra el mostrador, ni su access ni su refresh.
+
+### El rol global no es la autoridad, y los comentarios ya no dicen lo contrario
+
+`v1_auth_serializers.py` seguía afirmando por escrito que `UserProfile.role` era
+«the authoritative permission source in this installation». Dejó de serlo: dentro
+del SaaS deciden Membership → CompanyRole → capacidades → BranchAccess, y el rol
+global sólo sobrevive donde el puente legacy está explícitamente permitido. El
+campo se sigue reportando para que la aplicación elija pantalla de inicio, nunca
+para decidir qué puede hacer alguien.

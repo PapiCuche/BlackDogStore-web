@@ -3,18 +3,16 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AdminProduct, patchAdminProduct } from "../../lib/admin";
-import { AuthUser } from "../../lib/auth";
 import { ProductStatusBadge } from "./ProductStatusBadge";
 
 type Props = {
   products: AdminProduct[];
-  currentUser: AuthUser;
+  /** H4.1.2A: lo decide el servidor, no el rol global de la sesión. */
+  canManage: boolean;
   onChanged: () => void;
 };
 
-export function ProductsTable({ products, currentUser, onChanged }: Props) {
-  const canManage =
-    currentUser.role === "admin" || currentUser.role === "superadmin";
+export function ProductsTable({ products, canManage, onChanged }: Props) {
   const [toggleError, setToggleError] = useState<string | null>(null);
 
   async function toggleActive(product: AdminProduct) {
@@ -33,7 +31,7 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
 
   if (products.length === 0) {
     return (
-      <p className="text-zinc-500 text-sm py-6 text-center">
+      <p className="text-muted text-sm py-6 text-center">
         No hay productos que coincidan.
       </p>
     );
@@ -42,12 +40,12 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
   return (
     <div>
       {toggleError && (
-        <p className="text-sm text-red-400 mb-3">{toggleError}</p>
+        <p className="text-sm text-danger mb-3">{toggleError}</p>
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/[0.08] text-zinc-400">
+            <tr className="border-b border-bd-border text-muted">
               <th className="text-left pb-3 pr-4 font-medium">Nombre</th>
               <th className="text-left pb-3 pr-4 font-medium hidden md:table-cell">
                 Categoría
@@ -64,30 +62,30 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
             {products.map((p) => (
               <tr
                 key={p.id}
-                className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+                className="border-b border-bd-border hover:bg-surface transition-colors"
               >
                 <td className="py-3 pr-4">
                   <Link
                     href={`/admin/products/${p.id}`}
-                    className="text-zinc-100 hover:text-white hover:underline font-medium"
+                    className="text-foreground hover:text-foreground hover:underline font-medium"
                   >
                     {p.name}
                   </Link>
-                  <div className="text-zinc-500 text-xs mt-0.5">{p.slug}</div>
+                  <div className="text-muted text-xs mt-0.5">{p.slug}</div>
                 </td>
-                <td className="py-3 pr-4 text-zinc-400 hidden md:table-cell">
+                <td className="py-3 pr-4 text-muted hidden md:table-cell">
                   {p.category_name ?? "—"}
                 </td>
-                <td className="py-3 pr-4 text-right text-zinc-200">
+                <td className="py-3 pr-4 text-right text-foreground">
                   S/ {parseFloat(p.price).toFixed(2)}
                 </td>
                 <td
                   className={`py-3 pr-4 text-right font-medium ${
                     p.inventory === 0
-                      ? "text-red-400"
+                      ? "text-danger"
                       : p.inventory <= 5
-                        ? "text-yellow-400"
-                        : "text-zinc-200"
+                        ? "text-warning"
+                        : "text-foreground"
                   }`}
                 >
                   {p.inventory}
@@ -99,13 +97,13 @@ export function ProductsTable({ products, currentUser, onChanged }: Props) {
                   <td className="py-3 text-right">
                     <Link
                       href={`/admin/products/${p.id}`}
-                      className="text-zinc-400 hover:text-zinc-100 text-xs mr-4 hover:underline"
+                      className="text-muted hover:text-foreground text-xs mr-4 hover:underline"
                     >
                       Editar
                     </Link>
                     <button
                       onClick={() => toggleActive(p)}
-                      className="text-zinc-400 hover:text-zinc-100 text-xs hover:underline"
+                      className="text-muted hover:text-foreground text-xs hover:underline"
                     >
                       {p.is_active ? "Desactivar" : "Activar"}
                     </button>

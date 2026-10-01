@@ -6,9 +6,17 @@ from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# django-environ — DEBUG defaults True for local dev convenience
+# django-environ — DEBUG DEFAULTS TO FALSE, and that default is a security
+# control, not a preference (ERP-1 · DEBT-01). Every production fail-safe below
+# hangs on `if not DEBUG`: the real SECRET_KEY, ALLOWED_HOSTS, HTTPS/HSTS,
+# Secure cookies, CORS. When DEBUG defaulted to True, a deployment that merely
+# FORGOT to set the variable came up as a developer's machine — signing its JWTs
+# with the public 'changeme-dev-only' key, hosts wide open, demo accounts live.
+# Failing closed is the safe direction: local dev and CI set DEBUG explicitly in
+# their .env, so this changes nothing for them and everything for a misconfigured
+# server, which now refuses to start rather than start insecure.
 env = environ.Env(
-    DEBUG=(bool, True),
+    DEBUG=(bool, False),
 )
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
@@ -89,6 +97,17 @@ REST_FRAMEWORK = {
         'coupon': '20/min',
         'review_create': '5/min',
         'checkout': '10/min',
+        # Cubo PROPIO, separado de 'checkout': cotizar es una lectura que
+        # ocurre en cada cambio del carrito, y compartir presupuesto con el
+        # cobro dejaba al comprador sin poder pagar por haber mirado.
+        'checkout_quote': '60/min',
+        # C2.2A.1. Emitir sale a la red de SUNAT; consultar no.
+        'fiscal_issue': '20/min',
+        'fiscal_read': '120/min',
+        # H4.1. Invitar envía correo a terceros; aceptar es la superficie que
+        # alguien probaría con tokens al azar.
+        'staff_invite': '30/min',
+        'staff_accept': '20/min',
         'cart': '60/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',
@@ -163,6 +182,103 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': env.db_url('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
 }
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — comprobantes de pago electrónicos
+# ---------------------------------------------------------------------------
+#
+# APAGADO POR DEFECTO. Una instalación que no ha configurado nada fiscal no debe
+# poder enviar nada a SUNAT por el hecho de tener el código instalado.
+FISCAL_ENABLED = env.bool('FISCAL_ENABLED', default=False)
+
+# EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
+# falla cerrado ante cualquier valor distinto de «beta»: producción exige un
+# certificado acreditado y credenciales por empresa, y ninguna de las dos cosas
+# existe todavía.
+FISCAL_ENVIRONMENT = env('FISCAL_ENVIRONMENT', default='beta')
+
+# Credenciales y certificado. NO viven en la base de datos: una columna existe
+# para llenarse, y un campo `sol_password` acaba en un serializer, un volcado o
+# una bitácora.
+#
+# Para el entorno de pruebas SUNAT publica credenciales comunes en su Manual del
+# programador; no hay ningún secreto real en un despliegue de desarrollo.
+FISCAL_SOL_RUC = env('FISCAL_SOL_RUC', default='')
+FISCAL_SOL_USER = env('FISCAL_SOL_USER', default='')
+FISCAL_SOL_PASSWORD = env('FISCAL_SOL_PASSWORD', default='')
+FISCAL_CERT_PEM = env('FISCAL_CERT_PEM', default='')
+FISCAL_KEY_PEM = env('FISCAL_KEY_PEM', default='')
+
+# CDT en contenedor PKCS#12 (.p12). Alternativa al par PEM de arriba: NO se
+# configuran ambos a la vez (fiscal_config falla cerrado ante configuración
+# ambigua). La ruta la da el entorno; el código NO la busca en el disco ni la
+# hardcodea. El contenedor se carga y convierte a PEM EN MEMORIA — nunca a /tmp.
+FISCAL_CERT_P12_PATH = env('FISCAL_CERT_P12_PATH', default='')
+FISCAL_CERT_P12_PASSWORD = env('FISCAL_CERT_P12_PASSWORD', default='')
+
+# CONSULTA/RECONCILIACIÓN en línea (getStatusCdr, billConsultService). Capacidad
+# SEPARADA de la emisión: `billConsultService` sólo existe en producción, así que
+# consultarlo de verdad es una decisión propia. Apagada por defecto; encenderla NO
+# habilita `sendBill` producción (resolutores y banderas distintos). El endpoint,
+# si se configura, lo fija el servidor — nunca una petición.
+FISCAL_CONSULT_ENABLED = env.bool('FISCAL_CONSULT_ENABLED', default=False)
+FISCAL_CONSULT_ENDPOINT = env('FISCAL_CONSULT_ENDPOINT', default='')
+
+# Prueba de humo BETA (comando fiscal_beta_smoke). Apagada por defecto: el comando
+# habla con SUNAT de verdad y PERSISTE lo que envía. Se enciende a propósito, nunca
+# en CI ni en producción.
+FISCAL_BETA_SMOKE_ENABLED = env.bool('FISCAL_BETA_SMOKE_ENABLED', default=False)
+
+# ---------------------------------------------------------------------------
+# M12D — evidencias fotográficas
+# ---------------------------------------------------------------------------
+#
+# Neutrales a propósito. Ninguno nombra a Cloudflare: el backend se elige por su
+# rol —"s3" o "filesystem"—, no por su proveedor, y el día que el proveedor
+# cambie sólo cambia el valor de las variables de entorno.
+#
+# Las credenciales viven ÚNICAMENTE en el entorno. No en el repositorio, no en
+# el frontend, no en la base de datos y no en un log.
+EVIDENCE_STORAGE_BACKEND = env('EVIDENCE_STORAGE_BACKEND', default='filesystem')
+EVIDENCE_STORAGE_BUCKET = env('EVIDENCE_STORAGE_BUCKET', default='')
+EVIDENCE_STORAGE_ENDPOINT_URL = env('EVIDENCE_STORAGE_ENDPOINT_URL', default='')
+EVIDENCE_STORAGE_ACCESS_KEY_ID = env('EVIDENCE_STORAGE_ACCESS_KEY_ID', default='')
+EVIDENCE_STORAGE_SECRET_ACCESS_KEY = env(
+    'EVIDENCE_STORAGE_SECRET_ACCESS_KEY', default=''
+)
+EVIDENCE_STORAGE_REGION = env('EVIDENCE_STORAGE_REGION', default='auto')
+#: Corto a propósito. Una URL firmada es una llave temporal; cuanto más dura,
+#: más se parece a un enlace público que alguien puede reenviar.
+EVIDENCE_STORAGE_URL_TTL_SECONDS = env.int(
+    'EVIDENCE_STORAGE_URL_TTL_SECONDS', default=300
+)
+
+#: Lo que se acepta RECIBIR, antes de decodificar nada. Distinto de lo que se
+#: acaba almacenando: una foto de 20 MB es legítima y termina pesando 200 KB.
+SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
+    'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024
+)
+#: El lado mayor de lo que se guarda. Suficiente para ver un golpe o una
+#: rayadura; muy por debajo de los 4032 px que entrega un móvil actual, que no
+#: aportan nada a mirar el estado de un equipo en una pantalla.
+SERVICE_EVIDENCE_MAX_EDGE = env.int('SERVICE_EVIDENCE_MAX_EDGE', default=1600)
+SERVICE_EVIDENCE_IMAGE_QUALITY = env.int('SERVICE_EVIDENCE_IMAGE_QUALITY', default=75)
+#: El piso. Por debajo la compresión empieza a borrar justamente el detalle que
+#: la foto existía para demostrar.
+SERVICE_EVIDENCE_MIN_QUALITY = env.int('SERVICE_EVIDENCE_MIN_QUALITY', default=60)
+#: Un OBJETIVO, no una garantía: si llegar exige destruir la evidencia, se
+#: conserva la imagen más pesada.
+SERVICE_EVIDENCE_TARGET_BYTES = env.int(
+    'SERVICE_EVIDENCE_TARGET_BYTES', default=1_000_000
+)
+SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS = env.int(
+    'SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS', default=6
+)
+#: Contra la bomba de descompresión: un PNG de 20 KB puede declarar 30.000 px de
+#: lado y pedir varios GB al decodificarse. El límite de bytes no lo ve venir.
+SERVICE_EVIDENCE_MAX_PIXELS = env.int(
+    'SERVICE_EVIDENCE_MAX_PIXELS', default=60_000_000
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

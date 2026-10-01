@@ -192,6 +192,7 @@ class V1ServiceOrderListSerializer(serializers.ModelSerializer):
 
 
 class V1ServiceOrderDetailSerializer(V1ServiceOrderListSerializer):
+    customer_notifications = serializers.SerializerMethodField()
     device_detail = V1ServiceDeviceSerializer(source='device', read_only=True)
     received_by_name = serializers.SerializerMethodField()
     history = serializers.SerializerMethodField()
@@ -202,12 +203,32 @@ class V1ServiceOrderDetailSerializer(V1ServiceOrderListSerializer):
         fields = V1ServiceOrderListSerializer.Meta.fields + (
             'reported_issue', 'physical_condition', 'received_accessories',
             'internal_notes', 'received_by_name', 'device_detail',
-            'history', 'assignments', 'available_transitions',
+            'history', 'assignments', 'available_transitions', 'customer_notifications',
         )
         read_only_fields = fields
 
     def get_received_by_name(self, obj) -> str:
         return _user_display(obj.received_by)
+
+    def get_customer_notifications(self, obj):
+        from .models import Notification
+        from .notification_events import EMAIL_WORTHY_EVENTS
+        notes = Notification.objects.filter(
+            company_id=obj.company_id, customer_id=obj.customer_id,
+            audience=Notification.Audience.CUSTOMER,
+            target_type='repair_order', target_id=obj.pk,
+        ).select_related('event').prefetch_related('deliveries').order_by('-created_at', '-pk')[:20]
+        result = []
+        for note in notes:
+            delivery = next((row for row in note.deliveries.all() if row.channel == 'email'), None)
+            email_status = 'not_applicable'
+            if delivery is not None:
+                email_status = delivery.status
+            elif note.event_id and note.event.event_type in EMAIL_WORTHY_EVENTS:
+                email_status = 'pending'
+            result.append({'id': note.pk, 'title': note.title, 'created_at': note.created_at,
+                           'email_status': email_status})
+        return result
 
     def get_history(self, obj):
         return V1ServiceHistorySerializer(
@@ -356,6 +377,7 @@ class V1CustomerRepairEventSerializer(serializers.ModelSerializer):
 
 
 class V1CustomerRepairListSerializer(serializers.ModelSerializer):
+    status = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
     device_summary = serializers.SerializerMethodField()
 
@@ -367,9 +389,17 @@ class V1CustomerRepairListSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
+    def get_status(self, obj) -> str:
+        from .service_services import is_status_customer_visible, customer_visible_history
+        if is_status_customer_visible(obj.company, obj.status):
+            return obj.status
+        visible = customer_visible_history(obj).last()
+        return visible.to_status if visible else ''
+
     def get_status_label(self, obj) -> str:
         labels = self.context.get('status_labels') or {}
-        return labels.get(obj.status, obj.status)
+        code = self.get_status(obj)
+        return labels.get(code, code)
 
     def get_device_summary(self, obj) -> str:
         return obj.device.display_name if obj.device_id else ''

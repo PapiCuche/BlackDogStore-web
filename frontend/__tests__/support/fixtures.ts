@@ -28,6 +28,13 @@ export function dashboard(
   return {
     company: { id: 7, name: 'Taller', slug: 'taller', is_active: true },
     membership: { id: 3, branch: { id: 11, name: 'Sucursal Centro' } },
+    // H4.1.2A: el alcance de sucursal viaja en el contexto de acceso, no dentro
+    // del resumen de inventario, para que exista también sin esa capacidad.
+    branch_scope: {
+      mode: 'all',
+      default_branch: { id: 11, name: 'Sucursal Centro' },
+      branches: [{ id: 11, name: 'Sucursal Centro' }],
+    },
     access: {
       is_platform_admin: false,
       legacy_role: 'technician',

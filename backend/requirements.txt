@@ -31,6 +31,27 @@ django-cors-headers==4.9.0
 # the day someone adds an upload is not the day to discover this was stale.
 Pillow==12.3.0
 
+# M12D — decodificación HEIC/HEIF.
+#
+# Un iPhone con "Alta eficiencia" activado —el ajuste por defecto— entrega
+# HEIC, y Pillow no lo lee sin este plugin. Sin él la fase obligaría a cada
+# técnico a cambiar Ajustes → Cámara → Formatos antes de fotografiar un equipo,
+# que es exactamente el tipo de requisito que la gente olvida justo cuando el
+# equipo ya está abierto sobre la mesa.
+#
+# Se usa SÓLO para DECODIFICAR entradas. El objeto que se almacena es siempre
+# WebP normalizado, así que nada aguas abajo depende de este paquete.
+pillow-heif==1.6.0
+
+# M12D — almacenamiento privado compatible con S3 (Cloudflare R2 en producción).
+#
+# NO se importan al arrancar. `store/evidence_storage.py` los carga sólo cuando
+# el backend seleccionado es S3, de modo que un desarrollo o una suite de tests
+# sin estas dependencias sigue funcionando con FileSystemStorage. El dominio
+# conoce una abstracción; R2 es infraestructura.
+django-storages==1.14.6
+boto3==1.43.87
+
 # WSGI server for production (replaces runserver)
 gunicorn==26.0.0
 
@@ -54,3 +75,28 @@ openpyxl==3.1.5
 # this line a fresh install resolves to whatever is current and the fix is not
 # guaranteed.
 sqlparse==0.6.0
+
+# Firma XMLDSig y validación contra el esquema oficial de SUNAT (C2.2A.1)
+#
+# La biblioteca estándar NO basta: `xml.etree.ElementTree.canonicalize`
+# implementa C14N 2.0 y SUNAT exige `REC-xml-c14n-20010315`, que es la 1.0. No
+# son intercambiables en un documento con prefijos de espacio de nombres, que es
+# exactamente lo que es un UBL.
+#
+# Firmar a mano queda descartado: lo que se firma es el documento CANONICALIZADO,
+# y una canonicalización propia que acierte el 99 % de los casos falla en el 1 %
+# restante de forma indistinguible de una firma falsificada.
+lxml==6.1.3            # BSD-3-Clause — árbol XML y canonicalización C14N 1.0
+signxml==5.1.0         # Apache-2.0 — XMLDSig sobre lxml + cryptography
+cryptography==50.0.1   # Apache-2.0 / BSD — RSA y X.509
+
+# `store/fiscal/provider.py` importa `requests` DIRECTAMENTE para el envío SOAP
+# a SUNAT; hasta ahora sólo llegaba como transitiva de `stripe`, y un despliegue
+# que retirara stripe rompería la emisión con un ModuleNotFoundError. Se declara
+# como dependencia directa.
+requests==2.34.2       # Apache-2.0 — cliente HTTP del envío SOAP a SUNAT
+# El tope de memoria de la respuesta SOAP se apoya en la semántica de urllib3>=2:
+# `response.raw.read(n, decode_content=True)` acota los bytes DESCOMPRIMIDOS a n
+# (en urllib3<2 acotaría los comprimidos, y una respuesta gzip podría exceder el
+# límite antes de la comprobación). Se fija para preservar esa garantía.
+urllib3==2.7.0         # MIT — motor HTTP de requests; requerido >=2 por lo anterior

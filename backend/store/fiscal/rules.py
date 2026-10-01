@@ -1,0 +1,302 @@
+"""
+Las reglas que se comprueban ANTES de tocar la red.
+
+POR QUÉ NO BASTA CON EL ESQUEMA
+-------------------------------
+Un XML puede validar contra el XSD de SUNAT y ser rechazado igualmente: el
+esquema dice qué nodos existen y de qué tipo son, no si la serie de una factura
+empieza por F ni si el IGV cuadra con la base. Esas son reglas de negocio
+tributario y viven aquí.
+
+Comprobarlas en local no duplica al validador de SUNAT: es la diferencia entre
+enterarse en microsegundos, con el dato señalado, y enterarse minutos después
+por un código numérico devuelto por un servidor.
+
+CADA REGLA CITA SU AUTORIDAD, y es siempre un anexo o una resolución de SUNAT,
+nunca un blog. Las URL y las fechas de consulta están en
+`docs/sunat-cpe-requisitos.md`.
+"""
+
+from __future__ import annotations
+
+import re
+from decimal import Decimal
+
+from .data import ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, InvoiceData
+
+#: Catálogo N.º 01.
+INVOICE = '01'
+BOLETA = '03'
+CREDIT_NOTE = '07'
+DEBIT_NOTE = '08'
+
+#: Catálogo N.º 09 — motivos de Nota de Crédito (01..13).
+CATALOG_09 = {f'{n:02d}' for n in range(1, 14)}
+#: Catálogo N.º 10 — motivos de Nota de Débito (01 interés por mora, 02 aumento
+#: en el valor, 03 penalidades/otros).
+CATALOG_10 = {'01', '02', '03'}
+
+#: Anexo N.º 1, campo 8: «La serie debe ser alfanumérica de cuatro (4)
+#: caracteres, siendo el primer caracter de la izquierda la letra F». Para la
+#: boleta, la B (Anexo N.º 2). Reconfirmado por el Anexo N.º 6 vigente desde el
+#: 1.8.2026, numeral 6.1.3.b.1.
+SERIE_PREFIX = {INVOICE: 'F', BOLETA: 'B'}
+SERIE_RE = re.compile(r'^[A-Z0-9]{4}$')
+
+#: Anexo N.º 1, campo 8: «El número correlativo podrá tener hasta ocho (8)
+#: caracteres y se iniciará en uno (1)».
+CORRELATIVO_MAX = 99_999_999
+
+#: Catálogo N.º 06: `6` es RUC.
+DOC_RUC = '6'
+
+#: Catálogo N.º 07: `10` es «Gravado - Operación Onerosa», lo único que esta
+#: fase sabe emitir.
+AFFECTATION_TAXED = '10'
+
+
+class FiscalRuleError(ValueError):
+    """Una regla tributaria incumplida, con el dato señalado."""
+
+
+def _fail(message: str) -> None:
+    raise FiscalRuleError(message)
+
+
+def check_ruc(value: str) -> bool:
+    """
+    Un RUC peruano: 11 dígitos y un prefijo de los que SUNAT asigna.
+
+    NO se implementa el dígito verificador a propósito. Un checksum propio que
+    difiera del de SUNAT produciría rechazos nuestros sobre RUC que SUNAT sí
+    acepta — y ése es un fallo peor que dejar pasar uno que SUNAT rechazará
+    diciendo exactamente qué pasa.
+    """
+    return bool(re.fullmatch(r'(10|15|16|17|20)\d{9}', value or ''))
+
+
+def validate(data: InvoiceData) -> None:
+    """
+    Todo lo comprobable sin red. Levanta al primer incumplimiento.
+
+    De lo estructural a lo aritmético, para que el mensaje señale la causa y no
+    una consecuencia: una serie inválida se dice antes de que las sumas «no
+    cuadren» por culpa de ella.
+    """
+    if data.document_type not in SERIE_PREFIX:
+        _fail(f'Tipo de documento no soportado: {data.document_type!r}. '
+              f'Catálogo N.º 01: {INVOICE} factura, {BOLETA} boleta.')
+
+    prefix = SERIE_PREFIX[data.document_type]
+    if not SERIE_RE.fullmatch(data.serie or ''):
+        _fail(f'La serie debe ser alfanumérica de 4 caracteres; llegó {data.serie!r}.')
+    if not data.serie.startswith(prefix):
+        _fail(f'La serie de un documento tipo {data.document_type} debe empezar '
+              f'por {prefix!r}; llegó {data.serie!r}. (Anexo N.º 1, campo 8.)')
+    if not 1 <= data.correlativo <= CORRELATIVO_MAX:
+        _fail(f'El correlativo se inicia en 1 y admite hasta 8 dígitos; '
+              f'llegó {data.correlativo}.')
+
+    if data.supplier.doc_type != DOC_RUC:
+        _fail('El emisor se identifica siempre con RUC (Catálogo N.º 06, código 6).')
+    if not check_ruc(data.supplier.doc_number):
+        _fail(f'El emisor debe tener un RUC de 11 dígitos; '
+              f'llegó {data.supplier.doc_number!r}.')
+    if not data.supplier.legal_name.strip():
+        _fail('Falta la razón social del emisor.')
+
+    if data.document_type == INVOICE:
+        # Anexo N.º 1, campo 11: «El Tipo de documento será 6 - RUC».
+        if data.customer.doc_type != DOC_RUC:
+            _fail('Una factura exige RUC del adquirente (Catálogo N.º 06, código 6). '
+                  'Para una venta sin RUC corresponde una boleta.')
+        if not check_ruc(data.customer.doc_number):
+            _fail(f'El RUC del adquirente no es válido: {data.customer.doc_number!r}.')
+        if not data.customer.legal_name.strip():
+            _fail('La razón social del adquirente es obligatoria en la factura '
+                  '(Anexo N.º 1, campo 12).')
+
+    if not re.fullmatch(r'[A-Z]{3}', data.currency or ''):
+        _fail(f'La moneda debe ser un código ISO 4217 de 3 letras; '
+              f'llegó {data.currency!r}.')
+
+    # SE FALLA CERRADO ante lo que no se sabe emitir. Un XML con un código de
+    # afectación inventado sería peor que negarse: presentaría ante SUNAT una
+    # declaración que nadie comprobó.
+    for i, line in enumerate(data.lines, 1):
+        if line.tax_affectation != AFFECTATION_TAXED:
+            _fail(f'Línea {i}: esta fase sólo emite operaciones gravadas '
+                  f'(Catálogo N.º 07, código {AFFECTATION_TAXED}). '
+                  f'Llegó {line.tax_affectation!r}.')
+        if line.quantity <= 0:
+            _fail(f'Línea {i}: la cantidad debe ser mayor que cero.')
+        if not line.description.strip():
+            _fail(f'Línea {i}: falta la descripción del ítem.')
+
+    # CADA DESCUENTO LLEVA EL CÓDIGO DE SU NIVEL (Catálogo N.º 53 vigente).
+    #
+    # `00` es de ÍTEM y `02` es GLOBAL, y las reglas de SUNAT los tratan como
+    # cosas distintas: un `00` en el documento es la observación 4291 y, sobre
+    # todo, las reglas de totales (3277, 3278, 3279, 3291) sólo restan los
+    # globales `02`/`04`. Un código en el nivel equivocado deja un documento que
+    # aquí cuadra y que SUNAT recalcula sin el descuento. Esta fase sólo declara
+    # descuentos que afectan a la base —así los congela la venta—; cualquier
+    # otro código se rechaza antes de tocar la red.
+    for i, line in enumerate(data.lines, 1):
+        for allowance in line.allowances:
+            if allowance.reason_code != ALLOWANCE_LINE_TAXABLE:
+                _fail(f'Línea {i}: el descuento lleva el código '
+                      f'{allowance.reason_code!r}; a nivel de ítem esta fase sólo '
+                      f'declara «{ALLOWANCE_LINE_TAXABLE}» (Catálogo N.º 53, '
+                      f'descuento que afecta la base imponible).')
+            _check_multiplier(allowance, f'Línea {i}')
+    for allowance in data.allowances:
+        if allowance.reason_code != ALLOWANCE_GLOBAL_TAXABLE:
+            _fail(f'El descuento global lleva el código {allowance.reason_code!r}; '
+                  f'a nivel de documento esta fase sólo declara '
+                  f'«{ALLOWANCE_GLOBAL_TAXABLE}» (Catálogo N.º 53, descuento global '
+                  f'que afecta la base imponible). Un código de ítem en el '
+                  f'documento es la observación 4291 de SUNAT.')
+        _check_multiplier(allowance, 'El descuento global')
+
+    # Las identidades que C2.1 garantiza en origen. Repetirlas no es
+    # desconfianza: este generador puede recibir datos de otra parte mañana, y
+    # un comprobante que no cuadra no debe poder llegar a existir.
+    #
+    # ERP-FISCAL-1E (VEN-02B). `InvoiceData.check()` levanta `ValueError` plano
+    # —InvoiceData es una estructura pura y no debe importar este módulo para
+    # lanzar `FiscalRuleError`—. Aquí, en la frontera de validación, ese fallo
+    # esperado se traduce al error de dominio que la vista sabe mapear a 400. Sin
+    # esta traducción, un descuadre de redondeo (VEN-02A) escapaba como
+    # `ValueError` y terminaba en HTTP 500.
+    try:
+        data.check()
+    except ValueError as exc:
+        _fail(str(exc))
+
+    for i, line in enumerate(data.lines, 1):
+        esperado = (line.line_amount * line.tax_percent / Decimal('100')).quantize(
+            Decimal('0.01')
+        )
+        if abs(esperado - line.tax_amount) > Decimal('0.01'):
+            _fail(f'Línea {i}: el impuesto declarado ({line.tax_amount}) no '
+                  f'corresponde al {line.tax_percent}% de {line.line_amount}.')
+
+    # UNA SOLA TASA en todo el documento (regla 3462): sin ella no hay «el 18 %
+    # de la base» que comprobar.
+    tasas = {ln.tax_percent for ln in data.lines}
+    if len(tasas) != 1:
+        _fail(f'Todas las líneas deben llevar la misma tasa de IGV; llegaron '
+              f'{sorted(tasas)} (regla 3462).')
+    tasa = next(iter(tasas))
+
+    # EL IMPUESTO DEL DOCUMENTO ES EL DE SU BASE (regla 3291): base imponible ×
+    # tasa, y la base ya tiene restados los descuentos globales. Sin descuento
+    # global, además, las líneas suman exactamente el impuesto del documento; con
+    # él NO: cada línea tributa sobre su valor sin rebajar y el documento sobre
+    # la base rebajada, y la diferencia es precisamente el IGV del descuento.
+    # Sumar líneas y exigir igualdad sería exigir que el descuento no existiera.
+    if not data.allowances:
+        suma = sum((ln.tax_amount for ln in data.lines), Decimal('0.00'))
+        if abs(suma - data.tax_amount) > Decimal('0.01'):
+            _fail(f'Las líneas suman {suma} de impuesto y el documento declara '
+                  f'{data.tax_amount}.')
+    esperado = data.taxable_amount * tasa / Decimal('100')
+    if abs(esperado - data.tax_amount) > Decimal('0.01'):
+        _fail(f'El impuesto declarado ({data.tax_amount}) no corresponde al '
+              f'{tasa}% de la base {data.taxable_amount} (regla 3291).')
+
+    # LA ARITMÉTICA DE CADA LÍNEA TIENE QUE CERRAR (regla 3271).
+    #
+    # `cantidad × valor unitario − descuentos de la línea` debe dar el importe
+    # de la línea. Parece obvio y no lo es: repartir un descuento reduciendo
+    # sólo el importe deja un documento que declara «2 unidades a 100,00» con un
+    # total de línea de 184,75. El XSD lo acepta —no comprueba aritmética— y
+    # SUNAT lo rechaza, o peor, lo acepta con un precio unitario que nadie cobró.
+    #
+    # Un descuento se declara con `cac:AllowanceCharge`, no escondiéndolo en el
+    # importe: el valor unitario sigue siendo el de antes de rebajar, y la
+    # rebaja aparece con su importe y su base.
+    for i, line in enumerate(data.lines, 1):
+        bruto = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        rebaja = sum((a.amount for a in line.allowances), Decimal('0.00'))
+        esperado = bruto - rebaja
+        if abs(esperado - line.line_amount) > Decimal('0.01'):
+            detalle = f' − {rebaja}' if rebaja else ''
+            _fail(
+                f'Línea {i}: {line.quantity} × {line.unit_price}{detalle} = '
+                f'{esperado}, pero el importe declarado es {line.line_amount}. Un '
+                f'descuento no puede esconderse en el importe de la línea: se '
+                f'declara con AllowanceCharge, con su importe y su base.'
+            )
+
+
+def _check_multiplier(allowance, where: str) -> None:
+    """Si se declara un factor, `base × factor` es el importe (reglas 3290/3307)."""
+    if allowance.multiplier is None:
+        return
+    if allowance.multiplier <= 0:
+        _fail(f'{where}: el factor del descuento debe ser mayor que cero.')
+    esperado = (allowance.base_amount * allowance.multiplier).quantize(Decimal('0.01'))
+    if abs(esperado - allowance.amount) > Decimal('0.01'):
+        _fail(f'{where}: {allowance.base_amount} × {allowance.multiplier} = '
+              f'{esperado}, pero el descuento declarado es {allowance.amount}.')
+
+
+def validate_note(data) -> None:
+    """
+    Reglas de una Nota de Crédito (07) o de Débito (08), antes de la red.
+
+    Una nota lleva serie según el ORIGINAL que modifica: la de una nota de factura
+    empieza por F; la de una nota de boleta, por B. El motivo debe existir en el
+    catálogo de su tipo (09 para NC, 10 para ND). El resto —RUC del emisor,
+    afectación gravada, aritmética— se comprueba como en un comprobante.
+    """
+    if data.document_type not in (CREDIT_NOTE, DEBIT_NOTE):
+        _fail(f'Tipo de documento no es una nota: {data.document_type!r}.')
+
+    prefix = SERIE_PREFIX.get(data.original_type)
+    if prefix is None:
+        _fail(f'El comprobante original tiene un tipo no soportado para notas: '
+              f'{data.original_type!r} (sólo {INVOICE} factura, {BOLETA} boleta).')
+    if not SERIE_RE.fullmatch(data.serie or ''):
+        _fail(f'La serie debe ser alfanumérica de 4 caracteres; llegó {data.serie!r}.')
+    if not data.serie.startswith(prefix):
+        _fail(f'Una nota de un comprobante tipo {data.original_type} lleva serie '
+              f'que empieza por {prefix!r}; llegó {data.serie!r}.')
+    if not 1 <= data.correlativo <= CORRELATIVO_MAX:
+        _fail(f'El correlativo se inicia en 1 y admite hasta 8 dígitos; '
+              f'llegó {data.correlativo}.')
+
+    if data.supplier.doc_type != DOC_RUC or not check_ruc(data.supplier.doc_number):
+        _fail('El emisor de una nota se identifica con RUC de 11 dígitos.')
+    if not data.supplier.legal_name.strip():
+        _fail('Falta la razón social del emisor.')
+
+    catalog = CATALOG_09 if data.document_type == CREDIT_NOTE else CATALOG_10
+    which = '09' if data.document_type == CREDIT_NOTE else '10'
+    if data.reason_code not in catalog:
+        _fail(f'Motivo {data.reason_code!r} no está en el Catálogo N.º {which}.')
+
+    if not re.fullmatch(r'[A-Z]{3}', data.currency or ''):
+        _fail(f'La moneda debe ser un código ISO 4217 de 3 letras; '
+              f'llegó {data.currency!r}.')
+
+    for i, line in enumerate(data.lines, 1):
+        if line.tax_affectation != AFFECTATION_TAXED:
+            _fail(f'Línea {i}: esta fase sólo emite notas de operaciones gravadas.')
+        if line.quantity <= 0:
+            _fail(f'Línea {i}: la cantidad debe ser mayor que cero.')
+        if not line.description.strip():
+            _fail(f'Línea {i}: falta la descripción del ítem.')
+
+    try:
+        data.check()
+    except ValueError as exc:
+        _fail(str(exc))
+
+    for i, line in enumerate(data.lines, 1):
+        esperado = (line.quantity * line.unit_price).quantize(Decimal('0.01'))
+        if abs(esperado - line.line_amount) > Decimal('0.01'):
+            _fail(f'Línea {i}: {line.quantity} × {line.unit_price} = {esperado}, '
+                  f'pero el importe declarado es {line.line_amount}.')

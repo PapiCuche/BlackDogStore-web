@@ -8,7 +8,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from .auth_serializers import (
     RegisterSerializer, UserSerializer,
@@ -20,6 +21,7 @@ from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
 from .models import AccountToken
 from .permissions import get_user_role
+from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
     LoginThrottle, RegisterThrottle,
     ResendVerificationThrottle, PasswordResetRequestThrottle,
@@ -119,6 +121,22 @@ class RefreshView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        # H4.1.2B — AUTH-REVOCATION-REFRESH-01. `TokenRefreshSerializer` sólo
+        # sabe de firma, caducidad y lista negra, así que la pregunta por la
+        # revocación global hay que hacerla AQUÍ, antes de que rote nada. Un
+        # refresh anterior al cambio de contraseña entregaba un access nuevo y
+        # perfectamente válido: la sesión resucitaba por la puerta de atrás.
+        try:
+            token = RefreshToken(refresh_cookie)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0])
+
+        user = User.objects.filter(pk=token.get(jwt_settings.USER_ID_CLAIM)).first()
+        if user is None or not user.is_active or refresh_is_revoked(user, token):
+            return Response(
+                {'detail': 'Sesión expirada.'}, status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         serializer = TokenRefreshSerializer(data={'refresh': refresh_cookie})
         try:
             serializer.is_valid(raise_exception=True)
@@ -173,6 +191,23 @@ class LogoutView(APIView):
                 RefreshToken(refresh_cookie).blacklist()
             except TokenError:
                 pass
+
+        # H4.1.2B — AUTH-REVOCATION-01. El access token muere AQUÍ, no cuando
+        # caduque. Antes sólo caía el refresh: borrar la cookie deja sin
+        # credencial al navegador honrado y no le quita nada a quien ya copió el
+        # token, que seguía entrando hasta 30 minutos después de «cerrar sesión».
+        access_cookie = request.COOKIES.get(settings.JWT_COOKIE_ACCESS_NAME)
+        if access_cookie:
+            try:
+                token = AccessToken(access_cookie)
+                revoke_access_token(
+                    User.objects.filter(
+                        pk=token.payload.get(jwt_settings.USER_ID_CLAIM),
+                    ).first(),
+                    token,
+                )
+            except TokenError:
+                pass  # caducado o inválido: ya no abre nada
 
         response = Response({'detail': 'Sesión cerrada.'})
         response.delete_cookie(settings.JWT_COOKIE_ACCESS_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
@@ -304,6 +339,11 @@ class PasswordResetConfirmView(APIView):
         user.set_password(new_password)
         user.save(update_fields=['password'])
 
+        # H4.1.2B — restablecer la contraseña cierra TODAS las sesiones, que es
+        # lo que esta pantalla promete y lo que espera quien la usa porque cree
+        # que alguien entró en su cuenta.
+        revoke_all_tokens(user)
+
         # Blacklist any active refresh token from this session
         refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
         if refresh_cookie:
@@ -341,6 +381,10 @@ class ChangePasswordView(APIView):
 
         request.user.set_password(new_password)
         request.user.save(update_fields=['password'])
+
+        # H4.1.2B — «todas las sesiones quedan invalidadas» ahora es cierto: el
+        # sello del perfil invalida también los access tokens ya emitidos.
+        revoke_all_tokens(request.user)
 
         # Blacklist the current refresh token — all sessions are invalidated
         refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)

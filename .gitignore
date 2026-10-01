@@ -4,6 +4,14 @@ venv/
 __pycache__/
 *.pyc
 .env
+# Fiscal secrets: certificate containers and the local SUNAT env live OUTSIDE
+# the repo (~/.blackdog-secrets/). These are defensive so a stray copy in the
+# tree is never committed. NOT a global *.pem: legitimate public certs/fixtures
+# may need versioning.
+*.p12
+*.pfx
+sunat.env
+.blackdog-secrets/
 .DS_Store
 /.next
 /dist

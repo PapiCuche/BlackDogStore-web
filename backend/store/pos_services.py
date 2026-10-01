@@ -85,6 +85,116 @@ MAX_LINES = 100
 MAX_QUANTITY_PER_LINE = 1000
 MAX_IDEMPOTENCY_KEY = 64
 
+
+def _series_diagnosis(company, branch, document_type, noun):
+    """
+    Por qué esta sucursal no puede emitir este tipo, en términos del operador.
+
+    SE CLASIFICA CONTANDO SERIES, NO LEYENDO EL MENSAJE DE LA EXCEPCIÓN.
+    `resolve_series` levanta `FiscalConfigError` tanto cuando no hay serie como
+    cuando hay dos, y distinguirlo por el texto ataría esta pantalla a la
+    redacción de otra función: el día que alguien mejore una frase, la UI
+    empezaría a mentir. Se vuelve a preguntar a la base con las mismas
+    condiciones y se decide con números.
+    """
+    from .models import FiscalSeries
+    from . import fiscal_config
+
+    try:
+        environment = fiscal_config.resolve_environment()
+    except fiscal_config.FiscalConfigError:
+        return ('UNSUPPORTED_ENVIRONMENT',
+                'El ambiente fiscal configurado en este servidor no está '
+                'habilitado para emitir.')
+
+    activas = FiscalSeries.objects.filter(
+        company=company, document_type=document_type,
+        environment=environment, is_active=True,
+    )
+    de_sucursal = activas.filter(branch=branch).count()
+    de_empresa = activas.filter(branch__isnull=True).count()
+
+    if de_sucursal > 1 or (de_sucursal == 0 and de_empresa > 1):
+        return ('AMBIGUOUS_SERIES',
+                f'Hay más de una serie de {noun} activa que podría aplicarse a '
+                f'«{branch}». Desactive las que no correspondan.')
+    return ('NO_SERIES_FOR_BRANCH',
+            f'Falta una serie de {noun} activa para «{branch}».')
+
+
+def receipt_options(company, branches, actor):
+    """
+    Documentos que este operador puede preparar, y por qué no puede los demás.
+
+    UNA OPCIÓN QUE NO SE PUEDE USAR SE DEVUELVE EXPLICADA, NO ESCONDIDA. Antes se
+    omitía, y el resultado era una pantalla que ofrecía sólo la nota interna sin
+    decir si faltaba un permiso, si la emisión estaba apagada en el servidor o si
+    la empresa no tenía serie: tres causas distintas con el mismo síntoma, y la
+    persona del mostrador sin nada que hacer al respecto.
+
+    LO QUE NO CAMBIA ES QUIÉN PUEDE EMITIR. Un operador sin
+    `sales.fiscal.issue` sigue recibiendo la lista sin las opciones fiscales —ni
+    habilitadas ni explicadas—, porque el estado de las series de la empresa es
+    configuración tributaria y no algo que deba contarse a quien no emite. La
+    explicación es para quien tiene la autoridad y le falta la configuración.
+    Esto informa; no autoriza. El backend sigue decidiendo en cada emisión.
+
+    Cada entrada lleva `branches` con las sucursales donde SÍ se puede usar, más
+    `enabled` y, cuando no, `disabled_code`/`disabled_reason`.
+    """
+    from .tenancy import has_capability
+    from . import fiscal_config, fiscal_services
+
+    options = []
+
+    if has_capability(actor, company, 'sales.notes.manage'):
+        # El resolutor interno aprovisiona secuencias al emitir; llamarlo desde
+        # esta lectura escribiría en la base.
+        options.append({
+            'value': 'sales_note', 'label': 'Nota de venta interna',
+            'branches': [b.pk for b in branches],
+            'enabled': bool(branches),
+            'disabled_code': '' if branches else 'NO_BRANCH',
+            'disabled_reason': '' if branches else 'No hay sucursal disponible.',
+        })
+
+    if not has_capability(actor, company, 'sales.fiscal.issue'):
+        return options
+
+    fiscal_on = fiscal_config.fiscal_enabled()
+    for value, noun in Order.ReceiptType.choices:
+        label = f'{noun} electrónica · BETA'
+        if not fiscal_on:
+            options.append({
+                'value': value, 'label': label, 'branches': [],
+                'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
+                'disabled_reason': ('La emisión electrónica no está habilitada '
+                                    'en este servidor.'),
+            })
+            continue
+
+        document_type = fiscal_services.RECEIPT_TYPE_TO_DOCUMENT_TYPE[value]
+        allowed, code, reason = [], '', ''
+        for branch in branches:
+            try:
+                fiscal_config.resolve_series(
+                    company, branch=branch, document_type=document_type)
+            except fiscal_config.FiscalConfigError:
+                if not code:
+                    code, reason = _series_diagnosis(
+                        company, branch, document_type, noun.lower())
+                continue
+            allowed.append(branch.pk)
+
+        options.append({
+            'value': value, 'label': label, 'branches': allowed,
+            'enabled': bool(allowed),
+            'disabled_code': '' if allowed else (code or 'NO_SERIES_FOR_BRANCH'),
+            'disabled_reason': '' if allowed else (
+                reason or f'Falta una serie de {noun.lower()} activa.'),
+        })
+    return options
+
 _KEY_ALLOWED = re.compile(r'^[\x21-\x7E]{8,64}$')
 
 
@@ -177,7 +287,7 @@ def request_fingerprint(
     *, company, branch, customer_id, seller_id, payment_method, items,
     coupon_code='', manual_discount_type='', manual_discount_value=None,
     discount_reason='', amount_received=None, payment_reference='',
-    external_reference='', sale_notes='', terms_confirmed=False,
+    external_reference='', sale_notes='', terms_confirmed=False, receipt_type=None,
 ) -> str:
     """
     A hash of WHAT THE OPERATOR ASKED FOR — never of what the system worked out.
@@ -243,6 +353,9 @@ def request_fingerprint(
         'sale_notes': ' '.join((sale_notes or '').split()),
         'terms': bool(terms_confirmed),
     }
+    # Preserve fingerprints of older clients, which did not select a document.
+    if receipt_type is not None:
+        payload['receipt_type'] = receipt_type
     blob = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
@@ -283,6 +396,35 @@ def _checked_text(value, limit: int, label: str) -> str:
     if len(text) > limit:
         raise PosValidationError(f'{label} supera {limit} caracteres.')
     return text
+
+
+def _tax_breakdown(company, total, subtotal, discount_amount):
+    """El desglose de esta venta, según la única autoridad de cálculo."""
+    from .company_settings import get_company_settings
+    from .tax_services import breakdown_from_total
+
+    settings_row = get_company_settings(company)
+    return breakdown_from_total(
+        total=total, subtotal=subtotal, discount_amount=discount_amount,
+        currency=(getattr(settings_row, 'currency', '') or 'PEN'), company=company,
+    )
+
+
+def tax_snapshot_fields(breakdown) -> dict:
+    """
+    Un desglose ya calculado, traducido a columnas de `Order`.
+
+    Traduce; no calcula. Es la diferencia entre congelar lo que se enseñó y
+    congelar algo parecido.
+    """
+    return {
+        'currency': breakdown.currency,
+        'subtotal_amount': breakdown.subtotal,
+        'taxable_amount': breakdown.taxable_amount,
+        'tax_amount': breakdown.tax_amount,
+        'tax_rate': breakdown.tax_rate,
+        'tax_treatment': breakdown.tax_treatment,
+    }
 
 
 def _money(value) -> Decimal:
@@ -413,6 +555,12 @@ def calculate_pos_totals(company, products, items, *, discount) -> dict:
         'subtotal': subtotal,
         'discount_amount': discount_amount,
         'total': total,
+        # EL DESGLOSE SALE DE AQUÍ, del mismo sitio que el total y por el mismo
+        # motivo que dice el docstring: la previsualización y la venta lo leen
+        # de este único cálculo, así que no pueden separarse ni un céntimo. Si
+        # cada una llamara al motor por su cuenta, un cambio en una de las dos
+        # llamadas dejaría de verse hasta que un cliente reclamara.
+        'tax': _tax_breakdown(company, total, subtotal, discount_amount),
     }
 
 
@@ -685,6 +833,39 @@ def build_pos_sale(
     if payment_method not in PaymentMethod.values:
         raise PosValidationError('Método de pago inválido.')
 
+    # THE COUNTER CANNOT DECLARE ITSELF GATEWAY-PAID.
+    #
+    # `ONLINE` does not describe a way of handing money over: it means the
+    # storefront's gateway captured it, and the only server-side evidence of that
+    # is a `PaymentTransaction` the notification endpoint verified and authorised.
+    # A counter sale has no such record — this module does not even import the
+    # model — so at the till the value can only ever be an unverified claim.
+    #
+    # It was already refused everywhere EXCEPT here: `context_payload` filters it
+    # out of the offered list («the gateway method belongs to the online channel;
+    # a counter cannot pick it»), and this module's own docstring separates the two
+    # channels by exactly this property. But `PaymentMethod.values` contains it, so
+    # the membership check above waved it through, and neither view re-checked what
+    # it forwarded. A value hidden in the UI is not validated: the API is reachable
+    # without the UI, and a direct POST produced a sale marked PAID.
+    #
+    # Worse, it also skipped the money: `resolve_cash` returns `(None, None)` for
+    # anything that is not CASH, so `online` bought exemption from
+    # `amount_received` and from the change calculation at the same time.
+    #
+    # The refusal lives HERE, in the shared pricing core, so the sale and the
+    # preview inherit one rule and calling the service directly cannot bypass it.
+    # This is NOT a statement that a till may never take a gateway payment; it is
+    # that today nothing at the counter can prove one happened. The day the POS
+    # gains a real integration, the condition to relax is this one, and what must
+    # replace it is a verified transaction — never a string from the request.
+    if payment_method == PaymentMethod.ONLINE:
+        raise PosValidationError(
+            'El pago en línea lo confirma la pasarela, no el mostrador. '
+            'Registra cómo se recibió el dinero: efectivo, tarjeta, '
+            'transferencia u otro.'
+        )
+
     items = normalize_items(items)
     products = resolve_pos_products(company, items)
     customer = resolve_pos_customer(company, customer)
@@ -784,6 +965,7 @@ def create_pos_sale(
     payment_reference: str = '',
     external_reference: str = '',
     sale_notes: str = '',
+    receipt_type=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
     request=None,
@@ -856,6 +1038,7 @@ def create_pos_sale(
         external_reference=external_reference,
         sale_notes=sale_notes,
         terms_confirmed=terms_confirmed,
+        receipt_type=receipt_type,
     )
 
     # Same key + same request → hand back what was already created.
@@ -878,6 +1061,19 @@ def create_pos_sale(
         may_apply_manual_discount=may_apply_manual_discount,
     )
 
+    if receipt_type is not None:
+        from .tenancy import has_capability
+        if receipt_type not in ('sales_note', *Order.ReceiptType.values):
+            raise PosValidationError('Tipo de comprobante no soportado.')
+        capability = ('sales.notes.manage' if receipt_type == 'sales_note'
+                      else 'sales.fiscal.issue')
+        if not has_capability(actor, company, capability):
+            raise PosPermissionError('No tienes permiso para emitir este documento.')
+        if receipt_type != 'sales_note':
+            from .fiscal_config import fiscal_enabled
+            if not fiscal_enabled():
+                raise PosValidationError('La emisión fiscal no está habilitada.')
+
     now = timezone.now()
     seller = priced['seller']
     discount = priced['discount']
@@ -890,6 +1086,7 @@ def create_pos_sale(
         company_snapshot=build_identity_snapshot(company, branch),
         sales_channel=SalesChannel.POS,
         payment_method=payment_method,
+        receipt_type=receipt_type if receipt_type in Order.ReceiptType.values else '',
         sold_by=seller if getattr(seller, 'is_authenticated', False) else None,
         seller_name_snapshot=seller_display_name(seller),
         pos_idempotency_key=idempotency_key,
@@ -897,6 +1094,9 @@ def create_pos_sale(
         total=priced['total'],
         discount_amount=priced['discount_amount'],
         coupon_code=discount['coupon_code'],
+        # Se congela EL MISMO desglose que vio el operador en pantalla, no uno
+        # equivalente recalculado aquí.
+        **tax_snapshot_fields(priced['tax']),
         discount_source=discount['source'],
         discount_reason=discount['reason'],
         discount_authorized_by=(
@@ -943,16 +1143,51 @@ def create_pos_sale(
         for product, quantity, unit_price in priced['lines']
     ])
 
-    # STRICT: raises InsufficientStockError, which unwinds this whole
-    # transaction. Nothing was captured, so nothing needs repairing.
-    inventory_services.record_sale_stock_movements(order, actor=actor, strict=True)
-
-    # THE PROMOTION SNAPSHOT, written before the commission so a failure
-    # anywhere still unwinds all three together.
+    # THE PROMOTION SNAPSHOT, before any document that has to read it.
+    #
+    # ERP-FISCAL-6: a boleta or factura declares a promotion's discount line by
+    # line from `AppliedPromotion`, and the receipt is prepared inside this same
+    # transaction, a few lines below. Written after the receipt — where it used
+    # to be — the snapshot did not exist yet when the fiscal generator looked
+    # for it, and every promoted basket with a fiscal receipt failed with «no
+    # conserva ninguna promoción aplicada». It still sits inside the one
+    # transaction with the lines, the stock and the commission, so a failure
+    # anywhere unwinds all of them together.
     if priced['promotions']['discount'] > 0:
         from . import promotion_services
 
         promotion_services.freeze(order, priced['promotions'])
+
+    # Local document preparation is atomic with the sale. No signing, network
+    # or claim of SUNAT acceptance happens here. Unsupported fiscal baskets
+    # unwind the sale AND the number through the existing fiscal validator.
+    if receipt_type == 'sales_note':
+        from .sales_note_services import get_or_create_sales_note, SalesNoteError
+        from .sequences import SequenceError
+        try:
+            document, _ = get_or_create_sales_note(order, actor=actor)
+        except (SalesNoteError, SequenceError) as exc:
+            raise PosValidationError(str(exc)) from exc
+    elif receipt_type is not None:
+        from .fiscal_services import get_or_create_fiscal_document, FiscalError
+        try:
+            document, _ = get_or_create_fiscal_document(order)
+        except FiscalError as exc:
+            raise PosValidationError(str(exc)) from exc
+
+    if receipt_type is not None:
+        AdminAuditLog.log(
+            actor=actor, company=company, request=request,
+            action=('sales_note_created' if receipt_type == 'sales_note'
+                    else 'fiscal_document_created'),
+            target_type='sales_note' if receipt_type == 'sales_note' else 'fiscal_document',
+            target_id=document.pk,
+            metadata={'order_id': order.pk, 'origin': 'pos'},
+        )
+
+    # STRICT: raises InsufficientStockError, which unwinds this whole
+    # transaction. Nothing was captured, so nothing needs repairing.
+    inventory_services.record_sale_stock_movements(order, actor=actor, strict=True)
 
     # THE COMMISSION IS WRITTEN ONLY WHEN THERE IS SOMETHING TO OWE.
     #

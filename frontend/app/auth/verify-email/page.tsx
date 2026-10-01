@@ -28,23 +28,23 @@ function VerifyEmailContent() {
   }, [searchParams]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12">
+    <div className="min-h-screen bg-background px-6 py-12">
       <div className="mx-auto max-w-md text-center">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-10">
+        <div className="rounded-2xl border border-bd-border bg-surface p-10">
           {state === "loading" && (
             <>
-              <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              <p className="text-slate-400">Verificando tu correo…</p>
+              <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+              <p className="text-muted">Verificando tu correo…</p>
             </>
           )}
           {state === "success" && (
             <>
-              <p className="text-sm uppercase tracking-widest text-white/40">Verificación</p>
-              <h1 className="mt-2 text-2xl font-bold text-white">Correo verificado</h1>
-              <p className="mt-4 text-slate-400">{message}</p>
+              <p className="text-sm uppercase tracking-widest text-muted">Verificación</p>
+              <h1 className="mt-2 text-2xl font-bold text-foreground">Correo verificado</h1>
+              <p className="mt-4 text-muted">{message}</p>
               <a
                 href="/auth"
-                className="mt-6 inline-block rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-zinc-200"
+                className="mt-6 inline-block rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90"
               >
                 Iniciar sesión
               </a>
@@ -52,13 +52,13 @@ function VerifyEmailContent() {
           )}
           {state === "error" && (
             <>
-              <p className="text-sm uppercase tracking-widest text-white/40">Error</p>
-              <h1 className="mt-2 text-2xl font-bold text-white">No se pudo verificar</h1>
-              <p className="mt-4 text-slate-400">{message}</p>
+              <p className="text-sm uppercase tracking-widest text-muted">Error</p>
+              <h1 className="mt-2 text-2xl font-bold text-foreground">No se pudo verificar</h1>
+              <p className="mt-4 text-muted">{message}</p>
               <div className="mt-6 space-y-2">
                 <a
                   href="/auth"
-                  className="block rounded-full border border-white/20 px-6 py-3 text-sm font-semibold text-white transition hover:bg-white/5"
+                  className="block rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface"
                 >
                   Volver al inicio de sesión
                 </a>
@@ -75,8 +75,8 @@ export default function VerifyEmailPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-zinc-950">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
         </div>
       }
     >

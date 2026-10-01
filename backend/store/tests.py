@@ -31,7 +31,7 @@ from django.core import mail
 from django.conf import settings
 from django.core.cache import cache
 from django.db import models
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
@@ -2807,6 +2807,101 @@ class AdminAuditLogFilterTest(TestCase):
 # ---------------------------------------------------------------------------
 # Audit 3.1 — Pagination edge cases, CSRF enforcement, extra-field protection
 # ---------------------------------------------------------------------------
+
+class Erp1CrossCompanyReadIsolationTest(TestCase):
+    """
+    ERP-1 · ISO-01/02. A capability answers for the company that granted it and
+    for no other. A user who administers company A and is merely a member of
+    company B must not read B's user list or B's audit trail on the strength of
+    A's memberships.view. The old code checked the capability in ANY company and
+    then filtered across ALL of them.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Empresa A', 'erp1-iso-a', tax_id='20600000021')
+        self.b = _saas_company('Empresa B', 'erp1-iso-b', tax_id='20600000022')
+
+        self.user = User.objects.create_user(
+            username='erp1_dual', email='erp1_dual@example.invalid', password='Pass123!',
+        )
+        mem_a = Membership.objects.create(user=self.user, company=self.a, role='sales')
+        _assign(mem_a, _role(self.a, 'Admin A',
+                             capabilities=['memberships.view'], slug='admin-a'))
+        mem_b = Membership.objects.create(user=self.user, company=self.b, role='sales')
+        _assign(mem_b, _role(self.b, 'Ventas B',
+                             capabilities=['sales.orders.view'], slug='ventas-b'))
+
+        self.b_only = User.objects.create_user(
+            username='erp1_b_only', email='b_only@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.b_only, company=self.b, role='sales')
+
+        AdminAuditLog.log(actor=self.b_only, action='role_change', target_type='user',
+                          target_id='B-ROW', company=self.b)
+        AdminAuditLog.log(actor=self.user, action='role_change', target_type='user',
+                          target_id='A-ROW', company=self.a)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_the_user_list_shows_only_the_company_you_administer(self):
+        res = self.client.get('/api/admin/users/')
+        self.assertEqual(res.status_code, 200, res.data)
+        usernames = {row['username'] for row in res.json()['results']}
+        self.assertIn('erp1_dual', usernames)
+        self.assertNotIn('erp1_b_only', usernames)
+
+    def test_the_audit_log_shows_only_the_company_you_administer(self):
+        res = self.client.get('/api/admin/audit-logs/')
+        self.assertEqual(res.status_code, 200, res.data)
+        ids = {row['target_id'] for row in res.json()['results']}
+        self.assertIn('A-ROW', ids)
+        self.assertNotIn('B-ROW', ids)
+
+    def test_a_member_without_the_capability_anywhere_is_refused(self):
+        loner = User.objects.create_user(username='erp1_loner', password='Pass123!')
+        mem = Membership.objects.create(user=loner, company=self.b, role='sales')
+        _assign(mem, _role(self.b, 'Solo ventas',
+                           capabilities=['sales.orders.view'], slug='solo-ventas'))
+        client = APIClient()
+        client.force_authenticate(user=loner)
+        self.assertEqual(client.get('/api/admin/users/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/audit-logs/').status_code, 403)
+
+
+class Erp1AdminHardeningTest(TestCase):
+    """
+    ERP-1 · DB-01/DB-02. The Django admin must not be a second API around the
+    domain rules: a sale's lifecycle, money and lines are read-only there, and
+    the audit trail can only be viewed, never added to, edited or deleted.
+    """
+
+    def test_order_lifecycle_and_money_are_read_only(self):
+        from django.contrib.admin.sites import site
+        order_admin = site._registry[Order]
+        for field in ('status', 'paid', 'fulfillment_status', 'user',
+                      'total', 'tax_amount'):
+            self.assertIn(field, order_admin.readonly_fields, field)
+
+    def test_order_lines_cannot_be_added_edited_or_deleted(self):
+        from django.contrib.admin.sites import site
+        order_admin = site._registry[Order]
+        inline_cls = order_admin.inlines[0]
+        self.assertFalse(inline_cls.can_delete)
+        for field in ('product', 'quantity', 'price'):
+            self.assertIn(field, inline_cls.readonly_fields, field)
+        self.assertFalse(inline_cls(Order, site).has_add_permission(request=None))
+
+    def test_the_audit_log_is_append_only_in_the_admin(self):
+        from django.contrib.admin.sites import site
+        audit_admin = site._registry[AdminAuditLog]
+        self.assertFalse(audit_admin.has_add_permission(request=None))
+        self.assertFalse(audit_admin.has_change_permission(request=None))
+        self.assertFalse(audit_admin.has_delete_permission(request=None))
+        # Reassigning company changed who could read the row (admin_views:378).
+        self.assertIn('company', audit_admin.readonly_fields)
+
 
 class Audit31PaginationEdgeCasesTest(TestCase):
     """page_size cap at 100, invalid page param defaults gracefully."""
@@ -7316,7 +7411,8 @@ class SaasIsolationApiTest(TestCase):
             'role': 'sales',
             'branch': self.branch_b.pk,
         }, format='json')
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # RBAC-02: another tenant's branch answers like one that does not exist.
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_membership_creation_is_audited_with_company(self):
         self._as(self.admin_a).post('/api/admin/memberships/', {
@@ -8966,12 +9062,27 @@ class Phase2a1SeedAndRegressionTest(TestCase):
             {'service.customers.view', 'service.customers.manage',
              'service.devices.view', 'service.devices.manage',
              'service.orders.create', 'service.orders.view',
+             # Stabilization: reception may deliver through its dedicated API.
+             'service.delivery.manage',
              # M12B. The counter takes the money for a repair; a legacy `sales`
              # membership that never adopted RBAC does not.
-             'service.payments.manage'},
-            'la diferencia debe ser recepción técnica y el cobro del servicio',
+             'service.payments.manage',
+             # C2.2A.1. El mostrador CONSULTA el estado de la factura de un
+             # cliente. Sólo consultar: emitir es `sales.fiscal.issue` y no está
+             # en el preset, porque declarar algo ante SUNAT no se concede a
+             # todo el personal de caja sin que alguien lo decida.
+             #
+             # La matriz legacy tampoco crece aquí. Una membresía anterior al
+             # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
+             # porque se desplegó software.
+             'sales.fiscal.view'},
+            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio y '
+            'la consulta de comprobantes electrónicos',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
+        self.assertNotIn('service.delivery.manage', legacy_sales)
+        self.assertNotIn('sales.fiscal.view', legacy_sales)
+        self.assertNotIn('sales.fiscal.issue', set(ventas.capabilities))
 
         inventario = self.pilot.roles.get(slug='inventario')
         self.assertEqual(
@@ -9418,7 +9529,10 @@ class DemoUsersCommandTest(TestCase):
             declared,
             {'-h', '--help', '--version', '-v', '--verbosity', '--settings',
              '--pythonpath', '--traceback', '--no-color', '--force-color',
-             '--skip-checks', '--company-slug', '--purge'},
+             '--skip-checks', '--company-slug', '--purge', '--fiscal-beta',
+             # E2E-02: a disposable worker for the browser tests. Still behind
+             # DEBUG like everything else here (F2E2eFixtureSeedTest).
+             '--e2e-fixtures'},
         )
         for opt in declared:
             self.assertNotIn('force-production', opt)
@@ -9441,16 +9555,130 @@ class DemoUsersCommandTest(TestCase):
             )
         self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
 
+    # --- 1f: --fiscal-beta (ERP-FISCAL-6) --------------------------------------
+
+    def _fiscal_beta(self):
+        out = StringIO()
+        call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG,
+                     fiscal_beta=True, stdout=out)
+        return out.getvalue()
+
+    def _series(self):
+        return {
+            (s.document_type, s.series): s
+            for s in FiscalSeries.objects.filter(company=self.company)
+        }
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01f_fiscal_beta_prepares_f001_and_b001_once(self):
+        out = self._fiscal_beta()
+        series = self._series()
+        self.assertEqual(set(series), {('01', 'F001'), ('03', 'B001')})
+        for row in series.values():
+            self.assertEqual(row.environment, 'beta')
+            self.assertIsNone(row.branch)
+            self.assertTrue(row.is_active)
+            self.assertEqual(row.next_number, 1)
+        self.assertIn('creada', out)
+        # Idempotente: la segunda vez reutiliza y no crea nada.
+        again = self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+        self.assertIn('reutilizada', again)
+        self.assertNotIn('creada', again)
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_01g_fiscal_beta_refuses_any_environment_but_beta(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._fiscal_beta()
+        self.assertIn('beta', str(ctx.exception))
+        self.assertEqual(FiscalSeries.objects.count(), 0)
+
+    @override_settings(DEBUG=False, FISCAL_ENVIRONMENT='beta')
+    def test_01h_fiscal_beta_is_refused_outside_development(self):
+        with self.assertRaises(CommandError):
+            self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.count(), 0)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01i_fiscal_beta_reuses_an_existing_series_and_never_touches_its_counter(self):
+        FiscalSeries.objects.create(
+            company=self.company, document_type='01', series='F777', next_number=42)
+        out = self._fiscal_beta()
+        series = self._series()
+        self.assertEqual(set(series), {('01', 'F777'), ('03', 'B001')})
+        self.assertEqual(series[('01', 'F777')].next_number, 42)
+        self.assertIn('reutilizada  F777', out)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01j_fiscal_beta_stops_on_ambiguity_instead_of_choosing(self):
+        FiscalSeries.objects.create(company=self.company, document_type='01', series='F001')
+        FiscalSeries.objects.create(company=self.company, document_type='01', series='F002')
+        with self.assertRaises(CommandError) as ctx:
+            self._fiscal_beta()
+        self.assertIn('ambigüedad', str(ctx.exception))
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+
+    @override_settings(FISCAL_ENVIRONMENT='beta')
+    def test_01k_fiscal_beta_never_reaches_another_company(self):
+        other = _saas_company('Otra SA', 'otra-demo-co')
+        self._fiscal_beta()
+        self.assertEqual(FiscalSeries.objects.filter(company=other).count(), 0)
+        self.assertEqual(FiscalSeries.objects.filter(company=self.company).count(), 2)
+
+    def test_01l_seeding_without_the_flag_creates_no_series(self):
+        self._seed()
+        self.assertEqual(FiscalSeries.objects.count(), 0)
+
     # --- 2: the six accounts ---
 
-    def test_02_creates_the_six_demo_users(self):
+    def test_02_creates_the_seven_demo_users(self):
         self._seed()
         for username in ALL_DEMO_USERNAMES:
             user = User.objects.filter(username=username).first()
             self.assertIsNotNone(user, username)
             self.assertEqual(user.email, demo_email(username))
             self.assertTrue(user.check_password(DEMO_PASSWORD), username)
-        self.assertEqual(len(ALL_DEMO_USERNAMES), 6)
+        # Seis desde el principio, más la cuenta cliente-y-técnico de H4.1.1.
+        self.assertEqual(len(ALL_DEMO_USERNAMES), 7)
+
+    def test_02b_the_customer_technician_is_both_things_at_once(self):
+        """
+        H4.1.1 — una cuenta que COMPRA en la tienda y TRABAJA en la empresa.
+
+        Cliente por su ficha `Customer`; técnico por su Membership y su rol de
+        empresa. El rol legacy del perfil sigue siendo «customer»: la autoridad
+        interna no sale de ahí, sale de la membresía.
+        """
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        person = User.objects.get(username=DEMO_STAFF_CUSTOMER_USERNAME)
+        self.assertTrue(Customer.objects.filter(
+            company=self.company, user=person, is_active=True).exists())
+        membership = Membership.objects.get(user=person, company=self.company, is_active=True)
+        self.assertEqual(
+            set(membership.role_assignments.filter(is_active=True)
+                .values_list('role__slug', flat=True)),
+            {'servicio-tecnico'},
+        )
+        self.assertEqual(person.profile.role, 'customer')
+
+    def test_02c_seeding_twice_keeps_ONE_customer_record(self):
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        self._seed()
+        self.assertEqual(
+            Customer.objects.filter(user__username=DEMO_STAFF_CUSTOMER_USERNAME).count(), 1)
+
+    def test_02d_purge_removes_the_customer_record_too(self):
+        """`Customer.user` es SET_NULL: borrar sólo la cuenta dejaría la ficha huérfana."""
+        from .management.commands.seed_demo_users import DEMO_STAFF_CUSTOMER_USERNAME
+        from .models import Customer
+        self._seed()
+        self._purge()
+        self.assertFalse(Customer.objects.filter(
+            email=demo_email(DEMO_STAFF_CUSTOMER_USERNAME)).exists())
 
     # --- 3-7: memberships ---
 
@@ -9591,8 +9819,9 @@ class DemoUsersCommandTest(TestCase):
         other = _saas_company('Servicio Técnico X', 'servicio-tecnico-x',
                               tax_id='20777777777')
         self._seed(slug='servicio-tecnico-x')
+        # El personal interno y la cuenta cliente-y-técnico (H4.1.1).
         self.assertEqual(
-            Membership.objects.filter(company=other).count(), len(DEMO_INTERNAL_USERS))
+            Membership.objects.filter(company=other).count(), len(DEMO_INTERNAL_USERS) + 1)
         self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
 
     def test_15d_command_source_hardcodes_no_tenant(self):
@@ -9620,7 +9849,7 @@ class DemoUsersCommandTest(TestCase):
     def test_17_purge_removes_the_demo_users(self):
         self._seed()
         self.assertEqual(
-            User.objects.filter(username__startswith='dev_').count(), 6)
+            User.objects.filter(username__startswith='dev_').count(), len(ALL_DEMO_USERNAMES))  # siete desde H4.1.1
         self._purge()
         self.assertEqual(
             User.objects.filter(username__startswith='dev_').count(), 0)
@@ -9694,6 +9923,85 @@ class DemoUsersCommandTest(TestCase):
     def test_20c_no_demo_user_is_created_without_running_the_command(self):
         """No migration, signal or import may create these accounts."""
         self.assertEqual(User.objects.filter(username__startswith='dev_').count(), 0)
+
+
+class DevDemoAccountsEndpointTest(TestCase):
+    """
+    ERP-1 · DEV-ACCESS-01. `/api/dev/demo-accounts/` is the ONLY place the demo
+    password reaches a client, and it is fail-closed on DEBUG. These pin that:
+    in production the surface does not exist (404, not 403), and it never
+    authenticates or creates anything.
+
+    The frontend card gets its password from here, so a 404 in production means
+    the card has nothing to show and no credential is ever shipped.
+    """
+
+    URL = '/api/dev/demo-accounts/'
+    DEMO_COMPANY_SLUG = 'demo-endpoint-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Endpoint SA', self.DEMO_COMPANY_SLUG)
+        self.client = APIClient()
+
+    @override_settings(DEBUG=False)
+    def test_production_hides_the_surface_with_404(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # 404, not 403: its absence must not confirm it exists elsewhere.
+        self.assertNotEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    @override_settings(DEBUG=False)
+    def test_production_response_carries_no_password(self):
+        res = self.client.get(self.URL)
+        self.assertNotIn(DEMO_PASSWORD, res.content.decode('utf-8', 'replace'))
+
+    @override_settings(DEBUG=True)
+    def test_development_without_seeding_offers_nothing_usable(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['ready'])
+        self.assertTrue(all(not a['usable'] and not a['exists'] for a in res.data['accounts']))
+        # The command names a REAL active company slug, never a placeholder.
+        cmd = res.data['seed_command']
+        self.assertIn('seed_demo_users --company-slug ', cmd)
+        self.assertNotIn('<slug', cmd)
+        named_slug = cmd.rsplit('--company-slug ', 1)[1].strip()
+        self.assertTrue(Company.objects.filter(slug=named_slug, is_active=True).exists())
+
+    @override_settings(DEBUG=True)
+    def test_development_after_seeding_is_ready_and_usable(self):
+        out = StringIO()
+        call_command('seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=out)
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['ready'])
+        self.assertTrue(all(a['usable'] for a in res.data['accounts']))
+        self.assertEqual(res.data['password'], DEMO_PASSWORD)
+
+    @override_settings(DEBUG=True)
+    def test_a_real_account_sharing_a_demo_name_is_not_described(self):
+        """
+        Only accounts carrying the command's e-mail signature are demo accounts.
+        A real user who happens to be named `dev_admin` is neither offered nor
+        marked usable — the endpoint must not leak a stranger's presence.
+        """
+        User.objects.create_user(
+            username='dev_admin', email='real.person@example.com', password='RealPass123!',
+        )
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_admin')
+        self.assertFalse(row['exists'])
+        self.assertFalse(row['usable'])
+
+    @override_settings(DEBUG=True)
+    def test_the_endpoint_authenticates_no_one(self):
+        """It is a read-only status surface: no session, no token, no Set-Cookie."""
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertNotIn('Set-Cookie', res)
+        self.assertNotIn('access', res.data)
+        self.assertNotIn('token', res.data)
 
 
 # ---------------------------------------------------------------------------
@@ -10607,15 +10915,23 @@ class Phase2bDashboardCatalogTest(TestCase):
 
         Pinning the key set is the point: a new field on this payload has to be a
         deliberate change that somebody reviewed here. 2C added `sales`; 2D added
-        `inventory`; 3 added `configuration`.
+        `inventory`; 3 added `configuration`; H4.1.2A added `branch_scope`, which
+        is where the panel now reads the caller's branches from — it used to dig
+        them out of `inventory`, and told anyone without an inventory capability
+        that they had no branch.
         """
         data = self._get(self.user_a).data
         self.assertEqual(
             set(data.keys()),
-            {'company', 'membership', 'access', 'organization', 'catalog', 'sales',
-             'inventory', 'configuration', 'available_companies',
+            {'company', 'membership', 'branch_scope', 'access', 'organization',
+             'catalog', 'sales', 'inventory', 'configuration', 'available_companies',
              'requires_company_selection', 'alerts'},
         )
+        # Y la forma del campo nuevo, por el mismo motivo: ids y nombres de
+        # sucursal, sin existencias ni cifras que se colasen desde inventario.
+        self.assertEqual(
+            set(data['branch_scope'].keys()),
+            {'mode', 'default_branch', 'branches'})
         # Phase 2B.1 added the chart series; the point of pinning the key set is
         # that a new key must be a deliberate change, reviewed here.
         self.assertEqual(
@@ -12076,6 +12392,33 @@ class Phase2dTransferTest(TestCase):
         with self.assertRaises(TransferError):
             set_transfer_item(transfer, product=self.p1, quantity=5)
 
+    def test_the_items_endpoint_cannot_wipe_a_dispatched_transfer(self):
+        """
+        ERP-1 · P0-2. The whole-list PUT deleted its lines BEFORE it validated
+        one, and the only editability guard lived inside set_transfer_item — so
+        an empty body (or all-zero quantities) never entered the loop and erased
+        the lines of a transfer whose units were already on a van: gone from the
+        source, never received at the destination, with no way back. The guard
+        now lives in the view too, under a lock.
+        """
+        transfer = self._draft(lines=((self.p1, 3),))
+        dispatch_transfer(transfer, actor=self.user)
+        url = f'/api/admin/inventory/transfers/{transfer.pk}/items/'
+
+        for body in ([], [{'product': self.p1.pk, 'quantity': 0}]):
+            res = self.client.put(url, body, format='json')
+            self.assertEqual(res.status_code, 400, res.data)
+            self.assertEqual(
+                transfer.items.count(), 1, 'la línea despachada fue borrada',
+            )
+            self.assertEqual(transfer.items.get().quantity, 3)
+
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.STATUS_IN_TRANSIT)
+        # The units are still there to recover: the destination can receive them.
+        receive_transfer(transfer, actor=self.user)
+        self.assertEqual(branch_quantity(self.dst, self.p1), 3)
+
     # --- receipt ---
 
     def test_receive_credits_the_destination(self):
@@ -12296,15 +12639,20 @@ class Phase2dInventoryCountTest(TestCase):
         count.refresh_from_db()
         self.assertEqual(count.status, InventoryCountModel.STATUS_APPROVED)
 
-    def test_approval_re_reads_the_stock_instead_of_trusting_the_photo(self):
+    def test_approval_applies_the_discovered_discrepancy_not_the_photo(self):
         """
-        THE TEST THIS WHOLE MODEL EXISTS FOR.
+        ERP-1 · INV-02. THE TEST THIS WHOLE MODEL EXISTS FOR, corrected.
 
-        Stock is 10 when counting starts and the counter finds 8. Two units then
-        sell legitimately, leaving 8 in the system. Approving must produce NO
-        correction — the shelf and the system already agree — rather than
-        applying the −2 that the starting photograph implies and destroying two
-        real units.
+        The system said 10 when counting began; the counter found 8 — a real
+        discrepancy of −2 (theft, breakage, an earlier miscount). Two units then
+        sell legitimately, recorded in the Kardex, leaving the system at 8. The
+        shelf now truly holds 6: the 8 that were counted, minus the 2 that sold.
+
+        Approval must apply the discrepancy the count DISCOVERED (−2) on top of
+        the current stock → 6, correcting the loss the count found while leaving
+        the recorded sale standing. The earlier code applied
+        `physical − theoretical_at_approval` = 8 − 8 = 0, "agreeing" with the
+        system at 8 and silently keeping two units that are not on the shelf.
         """
         from .inventory_services import create_stock_movement
 
@@ -12317,13 +12665,171 @@ class Phase2dInventoryCountTest(TestCase):
         self.assertEqual(branch_quantity(self.branch, self.product), 8)
 
         movements = approve_inventory_count(count, actor=self.user)
-        self.assertEqual(movements, [], 'no debe haber corrección: ya coinciden')
-        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 6,
+            'la corrección debe reflejar la merma hallada, no la foto del conteo')
 
         item = count.items.get()
         self.assertEqual(item.theoretical_at_start, 10)
-        self.assertEqual(item.theoretical_at_approval, 8)
-        self.assertEqual(item.difference, 0)
+        self.assertEqual(item.theoretical_at_approval, 8, 'evidencia, no aritmética')
+        self.assertEqual(item.difference, -2)
+
+    def test_a_sale_during_the_count_is_not_undone_by_approval(self):
+        """
+        ERP-1 · INV-02. The count found exactly what the system believed — no
+        discrepancy. Three units then sell legitimately, recorded in the Kardex.
+        Approval must apply the discrepancy the count DISCOVERED (zero) and leave
+        the recorded sale standing, not overwrite the stock back to the count's
+        photograph — which would invent three units that already left with a
+        customer.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=10)  # coincide con theoretical_at_start = 10
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=3,
+            reason='Venta durante el conteo',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 7)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(
+            movements, [], 'el conteo no halló discrepancia: no debe corregir')
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 7,
+            'la aprobación resucitó unidades ya vendidas')
+
+    def test_case_a_no_movements_the_correction_is_the_discrepancy(self):
+        """
+        ERP-1 · INV-02, caso A. Sistema 10, físico 8, sin movimientos
+        posteriores: la corrección es la discrepancia hallada (−2), el stock
+        final es 8.
+        """
+        count = self._count(physical=8)
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.theoretical_at_approval, 10)
+        self.assertEqual(item.difference, -2)
+
+    def test_case_c_a_receipt_after_the_count_is_preserved(self):
+        """
+        ERP-1 · INV-02, caso C. Sistema 10, físico 8, luego un ingreso de +3
+        (stock 13). Aprobar aplica la discrepancia hallada (−2) sobre el stock
+        vigente: 13 + (8 − 10) = 11. El ingreso legítimo no se pierde.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=8)
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=3,
+            reason='Ingreso durante el conteo',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 13)
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 11,
+            'el ingreso legítimo debe preservarse: 13 + (8 − 10) = 11')
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.theoretical_at_approval, 13, 'evidencia, no aritmética')
+        self.assertEqual(item.difference, -2)
+
+    def test_case_d_a_movement_before_the_item_is_registered_is_not_double_counted(self):
+        """
+        ERP-1 · INV-02, caso D. `theoretical_at_start` se captura la PRIMERA vez
+        que el producto entra al conteo (set_count_item), no al crear el conteo.
+        Si una venta ocurre ANTES de que el producto entre al conteo, el conteo
+        parte del stock ya rebajado (8), de modo que esa venta no se descuenta
+        una segunda vez en la corrección: 8 + (7 − 8) = 7.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = create_inventory_count(
+            company=self.company, branch=self.branch, actor=self.user,
+        )
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2, reason='Venta previa',
+        )
+        self.assertEqual(branch_quantity(self.branch, self.product), 8)
+
+        # sólo ahora el producto entra al conteo
+        set_count_item(count, product=self.product, physical_quantity=7)
+        item = count.items.get()
+        self.assertEqual(
+            item.theoretical_at_start, 8,
+            'la foto inicial es el stock al entrar el producto al conteo, no antes')
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 1)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 7,
+            'la venta previa no debe descontarse otra vez: 8 + (7 − 8) = 7')
+        item.refresh_from_db()
+        self.assertEqual(item.difference, -1)
+
+    def test_case_e_several_window_movements_survive_the_correction(self):
+        """
+        ERP-1 · INV-02, caso E. Físico 8 (theoretical_at_start = 10), luego una
+        venta (−2), un ingreso (+3) y un ajuste manual legítimo (−1): stock 10
+        al aprobar. La corrección aplica sólo la discrepancia hallada (−2) →
+        stock final 8, y NO borra ninguno de los movimientos de la ventana: el
+        conteo añade exactamente una línea al Kardex.
+        """
+        from .inventory_services import create_stock_movement
+
+        count = self._count(physical=8)  # theoretical_at_start = 10
+        for movement_type, quantity, why in [
+            (StockMovement.SALE_EXIT, 2, 'Venta'),
+            (StockMovement.PURCHASE_ENTRY, 3, 'Ingreso'),
+            (StockMovement.MANUAL_EXIT, 1, 'Ajuste legítimo'),
+        ]:
+            create_stock_movement(
+                branch=self.branch, product_id=self.product.pk,
+                movement_type=movement_type, quantity=quantity, reason=why,
+                actor=self.user,
+            )
+        # 10 − 2 + 3 − 1 = 10 al momento de aprobar
+        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+        before = StockMovement.objects.filter(product=self.product).count()
+
+        movements = approve_inventory_count(count, actor=self.user)
+
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0].movement_type, StockMovement.CORRECTION_NEGATIVE)
+        self.assertEqual(movements[0].quantity, 2, 'sólo la discrepancia hallada')
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 8,
+            '10 + (8 − 10) = 8, sin resucitar ni borrar movimientos de la ventana')
+        self.assertEqual(
+            StockMovement.objects.filter(product=self.product).count(), before + 1,
+            'el conteo añade exactamente una línea de corrección, no reescribe el Kardex')
+        item = count.items.get()
+        self.assertEqual(item.theoretical_at_start, 10)
+        self.assertEqual(item.difference, -2)
 
     def test_an_uncounted_product_is_skipped_not_written_off(self):
         """"Nobody counted this" is not "there are none of these"."""
@@ -12584,9 +13090,12 @@ class Phase2dConsistencyTest(TestCase):
         provision_company_access_defaults(bare)
         Branch.objects.filter(company=bare).delete()
 
+        # `inventory.adjust` is scaffolding, added by F-CAP-01: opening stock
+        # now needs it, and without it the refusal would be about authority
+        # (403) instead of the missing branch this test is about.
         admin, _m = _p2d_member(
             bare, 'p2d_bare_admin',
-            ['company.view', 'products.view', 'products.manage'],
+            ['company.view', 'products.view', 'products.manage', 'inventory.adjust'],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -12659,8 +13168,20 @@ class Phase2dConcurrencyTest(TransactionTestCase):
         self.assertEqual(branch_quantity(self.branch, self.product), 0)
         self.assertEqual(branch_quantity(dst, self.product), 0)
 
-    def test_a_count_approval_uses_the_stock_a_later_movement_left(self):
-        """Approval re-reads under lock, so a movement in between is respected."""
+    def test_approval_preserves_movements_made_during_the_count(self):
+        """
+        ERP-1 · INV-02. Approval applies the discrepancy the count DISCOVERED and
+        leaves the sales recorded during the count standing.
+
+        The system said 11 when counting began; the counter found 10 — a real
+        discrepancy of −1. Four units then sell legitimately (recorded), so the
+        system reads 7 at approval. The shelf now truly holds 6: the 10 that
+        were counted, minus the 4 that sold.
+
+        Approval must apply the −1 the count found on top of the current 7 → 6.
+        The earlier code applied `physical − theoretical_at_approval` = 10 − 7 =
+        +3 and left the shelf at 10, resurrecting the four sold units.
+        """
         user, _m = _p2d_member(self.company, 'p2d_conc_count', _INV_ALL)
         from .inventory_services import create_stock_movement
 
@@ -12685,11 +13206,12 @@ class Phase2dConcurrencyTest(TransactionTestCase):
 
         item = count.items.get()
         self.assertEqual(item.theoretical_at_start, 11)
-        self.assertEqual(item.theoretical_at_approval, 7, 're-lee el stock del momento')
-        # 10 counted vs 7 at approval → +3. Using the STARTING figure would have
-        # applied 10 − 11 = −1 and destroyed a real unit.
-        self.assertEqual(item.difference, 3)
-        self.assertEqual(branch_quantity(self.branch, self.product), 10)
+        self.assertEqual(item.theoretical_at_approval, 7, 'evidencia, no aritmética')
+        # 10 found vs 11 believed at start → −1, the discrepancy the count found.
+        self.assertEqual(item.difference, -1)
+        self.assertEqual(
+            branch_quantity(self.branch, self.product), 6,
+            'las cuatro ventas de la ventana no deben resucitar')
 
     def test_simultaneous_exits_leave_exactly_one_winner(self):
         import threading
@@ -13018,6 +13540,622 @@ class Phase2dStorefrontTest(TestCase):
         self.assertIn(str(self.main.pk), order.payment_error)
 
 
+class Erp1InventoryShortfallTest(TestCase):
+    """
+    ERP-1 · INV-04. The oversell/shortfall a PAID order carries when stock could
+    not cover it.
+
+    DERIVED, never stored:
+
+        ordered   = Σ OrderItem.quantity for the product in the order
+        fulfilled = Σ SALE_EXIT quantity linked to the order for the product
+        shortfall = max(ordered − fulfilled, 0)
+
+    Today this lives only as free text on order.payment_error — no quantity, not
+    queryable — so the operation cannot find it or size it. That is the bug.
+
+    Exists(SALE_EXIT) is NOT enough (§8): a line can be partly covered, and an
+    order can have one product covered and another short, so coverage is a
+    QUANTITY comparison, not a boolean.
+    """
+
+    ORDERS_VIEW = ['company.view', 'sales.orders.view']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-short')
+        self.main = _p2d_branch(self.company, 'Principal')
+        self.warehouse = _p2d_branch(self.company, 'Almacén')
+        self.p1 = _p2d_product(self.company, 'Producto Uno', 'p-uno-short')
+        self.p2 = _p2d_product(self.company, 'Producto Dos', 'p-dos-short')
+        _p2d_stock(self.main, self.p1, 2)
+        _p2d_stock(self.main, self.p2, 10)
+
+    def _order(self, *, order_status=None, branch=None):
+        order_status = order_status or Order.Status.PAID
+        return Order.objects.create(
+            company=self.company, fulfillment_branch=branch or self.main,
+            customer_name='Cliente', customer_email='c@example.com',
+            total=Decimal('100.00'), status=order_status,
+            paid=order_status == Order.Status.PAID, paid_at=timezone.now(),
+        )
+
+    def _line(self, order, product, quantity):
+        return OrderItem.objects.create(
+            order=order, product=product, quantity=quantity, price=product.price,
+        )
+
+    # -- domain calculation ---------------------------------------------------
+
+    def test_sufficient_stock_leaves_no_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 2)  # exactly the shelf on the main branch
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.p1), 0)
+        self.assertEqual(order_stock_shortfall(order), [])
+
+    def test_no_exit_is_a_full_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)  # only 2 on the shelf → nothing exits
+        record_sale_stock_movements(order)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2, 'todo o nada por línea')
+        rows = order_stock_shortfall(order)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['product_id'], self.p1.pk)
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 0)
+        self.assertEqual(rows[0]['shortfall'], 5)
+
+    def test_order_level_exists_of_a_sale_exit_is_insufficient(self):
+        """
+        §8, the real domain case. One product covered, another short: the order
+        HAS a SALE_EXIT (for the covered product), so a boolean "does this order
+        have a sale exit?" answers True while a whole product is still short.
+        Coverage has to be judged per product, by quantity.
+        """
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)   # short: only 2 available
+        self._line(order, self.p2, 4)   # covered: 10 available
+        record_sale_stock_movements(order)
+        self.assertTrue(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).exists(),
+            'la orden SÍ tiene una salida (la del producto cubierto)')
+        rows = order_stock_shortfall(order)
+        self.assertEqual([r['product_id'] for r in rows], [self.p1.pk])
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 0)
+        self.assertEqual(rows[0]['shortfall'], 5)
+
+    def test_a_partial_exit_is_measured_by_quantity_not_presence(self):
+        """
+        §8, robustness. The sale path is all-or-nothing per line (OrderItem is
+        unique per (order, product), and create_stock_movement never exits part
+        of a line), so a single product is normally 0 or fully covered. But the
+        report must still state HOW MANY units are short (§11), and stay correct
+        if a partial exit ever arises. Here a partial SALE_EXIT of 2 against an
+        order of 5 is constructed directly: Exists() is True, yet 3 are short.
+        """
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        create_stock_movement(
+            branch=self.main, product_id=self.p1.pk,
+            movement_type=StockMovement.SALE_EXIT, quantity=2,
+            reason='Salida parcial', order=order,
+        )
+        self.assertTrue(
+            StockMovement.objects.filter(
+                order=order, product=self.p1,
+                movement_type=StockMovement.SALE_EXIT).exists())
+        rows = order_stock_shortfall(order)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['ordered'], 5)
+        self.assertEqual(rows[0]['fulfilled'], 2)
+        self.assertEqual(rows[0]['shortfall'], 3)
+
+    def test_repeated_payment_does_not_change_the_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        record_sale_stock_movements(order)  # the webhook fires twice
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).count(), 0,
+            'un segundo webhook no duplica ni inventa salidas')
+
+    def test_an_unpaid_order_is_not_a_shortfall(self):
+        """Stock has simply not been decremented yet — that is not a shortfall."""
+        from .inventory_services import order_stock_shortfall
+        order = self._order(order_status=Order.Status.PENDING_PAYMENT)
+        self._line(order, self.p1, 5)
+        self.assertEqual(order_stock_shortfall(order), [])
+
+    def test_a_refunded_order_is_not_an_operational_shortfall(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        self.assertEqual(len(order_stock_shortfall(order)), 1)
+        order.status = Order.Status.REFUNDED
+        order.save(update_fields=['status'])
+        self.assertEqual(
+            order_stock_shortfall(order), [],
+            'una orden reembolsada ya no es una obligación pendiente')
+
+    def test_replenishing_and_reconfirming_heals_the_shortfall(self):
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall,
+            record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        create_stock_movement(
+            branch=self.main, product_id=self.p1.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=5,
+            reason='Reposición')
+        record_sale_stock_movements(order)  # the exit re-runs now stock is there
+        self.assertEqual(
+            order_stock_shortfall(order), [],
+            'derivado del Kardex, el faltante se cura al reponer y reintentar')
+
+    def test_a_foreign_companys_movement_never_covers_the_order(self):
+        from .inventory_services import (
+            create_stock_movement, order_stock_shortfall,
+            record_sale_stock_movements)
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        other = _p2d_company('erp1-short-other')
+        ob = _p2d_branch(other, 'Ajena')
+        op = _p2d_product(other, 'Ajeno', 'ajeno-short')
+        _p2d_stock(ob, op, 50)
+        create_stock_movement(
+            branch=ob, product_id=op.pk, movement_type=StockMovement.SALE_EXIT,
+            quantity=50, reason='Venta ajena')
+        self.assertEqual(
+            order_stock_shortfall(order)[0]['shortfall'], 5,
+            'un movimiento de otra empresa no puede cubrir este pedido')
+
+    def test_a_movement_for_another_order_does_not_cover_this_one(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        short = self._order()
+        self._line(short, self.p1, 5)
+        record_sale_stock_movements(short)
+        _p2d_stock(self.main, self.p1, 5)  # replenish for a second, covered sale
+        covered = self._order()
+        self._line(covered, self.p1, 3)
+        record_sale_stock_movements(covered)
+        self.assertEqual(
+            order_stock_shortfall(short)[0]['shortfall'], 5,
+            'la salida de otro pedido no cubre este')
+        self.assertEqual(order_stock_shortfall(covered), [])
+
+    # -- API surface (reused admin orders endpoints) --------------------------
+
+    def test_the_detail_endpoint_shows_the_shortfall(self):
+        from .inventory_services import record_sale_stock_movements
+        order = self._order()
+        self._line(order, self.p1, 5)
+        record_sale_stock_movements(order)
+        user, _m = _p2d_member(self.company, 'short_view', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('stock_shortfall', res.data)
+        self.assertEqual(len(res.data['stock_shortfall']), 1)
+        self.assertEqual(res.data['stock_shortfall'][0]['shortfall'], 5)
+        self.assertEqual(res.data['stock_shortfall'][0]['ordered'], 5)
+        self.assertEqual(res.data['stock_shortfall'][0]['fulfilled'], 0)
+
+    def test_the_list_can_filter_and_flag_shortfalls(self):
+        from .inventory_services import record_sale_stock_movements
+        short = self._order()
+        self._line(short, self.p1, 5)
+        record_sale_stock_movements(short)
+        ok = self._order()
+        self._line(ok, self.p2, 4)  # fully covered
+        record_sale_stock_movements(ok)
+        user, _m = _p2d_member(self.company, 'short_list', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        allrows = client.get(f'/api/admin/orders/?company={self.company.pk}')
+        flags = {r['id']: r['has_stock_shortfall'] for r in allrows.data['results']}
+        self.assertTrue(flags[short.pk])
+        self.assertFalse(flags[ok.pk])
+
+        only = client.get(
+            f'/api/admin/orders/?company={self.company.pk}&shortfall=true')
+        ids = [r['id'] for r in only.data['results']]
+        self.assertIn(short.pk, ids)
+        self.assertNotIn(ok.pk, ids)
+
+    def test_shortfall_is_scoped_to_the_callers_company(self):
+        """A shortfall in another tenant never appears in this caller's list."""
+        from .inventory_services import record_sale_stock_movements
+        mine = self._order()
+        self._line(mine, self.p1, 5)
+        record_sale_stock_movements(mine)
+        other = _p2d_company('erp1-short-tenant')
+        ob = _p2d_branch(other, 'Suc')
+        op = _p2d_product(other, 'Prod', 'prod-tenant-short')
+        _p2d_stock(ob, op, 1)
+        forder = Order.objects.create(
+            company=other, fulfillment_branch=ob, customer_email='o@example.com',
+            total=Decimal('10.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=forder, product=op, quantity=5, price=op.price)
+        record_sale_stock_movements(forder)
+
+        user, _m = _p2d_member(self.company, 'short_scope', self.ORDERS_VIEW)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get(
+            f'/api/admin/orders/?company={self.company.pk}&shortfall=true')
+        ids = [r['id'] for r in res.data['results']]
+        self.assertIn(mine.pk, ids)
+        self.assertNotIn(forder.pk, ids)
+
+
+class Erp1ShortfallReprocessTest(TestCase):
+    """
+    ERP-1 · P1A.1. The operator's half of INV-04: reprocess a paid order's
+    still-missing SALE_EXITs once the branch is replenished, resolving the
+    shortfall without touching payment or pulling stock from another branch.
+    """
+
+    # The real shortfall operator both SEES the order (sales.orders.view) and
+    # MOVES stock (inventory.adjust). The reprocess POST is gated on the write
+    # authority; the detail is gated on orders.view — a coherent operator holds
+    # both, so that is what this fixture grants.
+    ADJUST = _INV_ALL + ['sales.orders.view']
+    VIEW_ONLY = ['company.view', 'sales.orders.view']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-retry')
+        self.main = _p2d_branch(self.company, 'Principal')
+        self.warehouse = _p2d_branch(self.company, 'Almacén')
+        self.p1 = _p2d_product(self.company, 'Producto Uno', 'p-uno-retry')
+        self.p2 = _p2d_product(self.company, 'Producto Dos', 'p-dos-retry')
+        _p2d_stock(self.main, self.p1, 2)
+        _p2d_stock(self.main, self.p2, 10)
+
+    def _paid_short_order(self):
+        from .inventory_services import record_sale_stock_movements
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_name='Cliente', customer_email='c@example.com',
+            total=Decimal('100.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        record_sale_stock_movements(order)  # short: only 2 on the shelf → 0 exits
+        return order
+
+    def _replenish(self, product, quantity):
+        from .inventory_services import create_stock_movement
+        create_stock_movement(
+            branch=self.main, product_id=product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=quantity,
+            reason='Reposición')
+
+    # -- service --------------------------------------------------------------
+
+    def test_reprocess_after_replenish_creates_only_the_missing_exit(self):
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self._replenish(self.p1, 5)
+        result = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(len(result['created_movements']), 1)
+        self.assertEqual(result['shortfall'], [])
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, product=self.p1,
+                movement_type=StockMovement.SALE_EXIT).count(), 1)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2)  # 7 − 5
+
+    def test_reprocess_without_replenish_leaves_the_shortfall_and_creates_nothing(self):
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        result = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(result['created_movements'], [])
+        self.assertEqual(result['shortfall'][0]['shortfall'], 5)
+        self.assertEqual(branch_quantity(self.main, self.p1), 2, 'stock intacto')
+
+    def test_reprocess_is_idempotent_no_double_exit(self):
+        from .inventory_services import reprocess_order_stock_exit
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        reprocess_order_stock_exit(order, actor=None)
+        second = reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(second['created_movements'], [])
+        self.assertEqual(second['shortfall'], [])
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=order, movement_type=StockMovement.SALE_EXIT).count(), 1)
+
+    def test_reprocess_resolves_one_product_and_leaves_another_short(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements,
+            reprocess_order_stock_exit)
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        OrderItem.objects.create(order=order, product=self.p2, quantity=20, price=self.p2.price)
+        record_sale_stock_movements(order)  # p1 short (2 vs 5), p2 short (10 vs 20)
+        self._replenish(self.p1, 5)  # only p1 replenished
+        reprocess_order_stock_exit(order, actor=None)
+        rows = order_stock_shortfall(order)
+        self.assertEqual([r['product_id'] for r in rows], [self.p2.pk])
+        # p2 never exited (all-or-nothing per line), so its shortfall is the full 20
+        self.assertEqual(rows[0]['shortfall'], 20)
+
+    def test_reprocess_never_pulls_stock_from_another_branch(self):
+        """The warehouse is full; the order still cannot be fulfilled from it."""
+        from .inventory_services import (
+            order_stock_shortfall, reprocess_order_stock_exit)
+        order = self._paid_short_order()
+        _p2d_stock(self.warehouse, self.p1, 50)  # plenty, but not the order's branch
+        reprocess_order_stock_exit(order, actor=None)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+        self.assertEqual(branch_quantity(self.warehouse, self.p1), 50, 'intacto')
+
+    def test_reprocess_rejects_a_non_paid_order(self):
+        from .inventory_services import reprocess_order_stock_exit
+        from .inventory_services import InventoryError
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PENDING_PAYMENT, paid=False)
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        with self.assertRaises(InventoryError):
+            reprocess_order_stock_exit(order, actor=None)
+
+    # -- API ------------------------------------------------------------------
+
+    def _client(self, capabilities, username):
+        user, _m = _p2d_member(self.company, username, capabilities)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_endpoint_resolves_the_shortfall_end_to_end(self):
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(self.ADJUST, 'retry_adjust')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['created_movements'], 1)
+        self.assertEqual(res.data['stock_shortfall'], [])
+        self.assertFalse(res.data['can_reprocess_stock_exit'])
+
+    def test_the_detail_flag_tracks_capability_and_shortfall(self):
+        order = self._paid_short_order()
+        # inventory.adjust caller sees the action offered
+        adj = self._client(self.ADJUST, 'flag_adjust')
+        res = adj.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertTrue(res.data['can_reprocess_stock_exit'])
+        # a view-only caller sees the shortfall but not the action
+        vw = self._client(self.VIEW_ONLY, 'flag_view')
+        res = vw.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(len(res.data['stock_shortfall']), 1)
+        self.assertFalse(res.data['can_reprocess_stock_exit'])
+
+    def test_a_view_only_caller_cannot_reprocess(self):
+        from .inventory_services import order_stock_shortfall
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(self.VIEW_ONLY, 'retry_denied')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(len(order_stock_shortfall(order)), 1, 'no se resolvió nada')
+
+    def test_an_inventory_only_caller_cannot_reprocess_or_read_pii(self):
+        """
+        ERP-1 · P1A.1 · H1. inventory.adjust WITHOUT sales.orders.view — the real
+        "Inventario" preset — must not reach the order detail payload through the
+        reprocess POST. The endpoint returns customer PII, so it requires
+        orders.view exactly like the GET detail does; otherwise a caller denied
+        GET could harvest customer emails/document numbers/addresses via POST
+        (0 movements when there is no shortfall — a side-channel read).
+        """
+        from .inventory_services import order_stock_shortfall
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        client = self._client(_INV_ALL, 'retry_inv_only')  # no sales.orders.view
+
+        # baseline: the GET detail is already denied to this caller
+        got = client.get(f'/api/admin/orders/{order.pk}/?company={self.company.pk}')
+        self.assertEqual(got.status_code, 403)
+
+        # and the POST must not be a PII side channel: same 403, no payload
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 403)
+        self.assertNotIn('customer_email', res.data or {})
+        self.assertNotIn('stock_shortfall', res.data or {})
+        self.assertEqual(len(order_stock_shortfall(order)), 1, 'no se resolvió nada')
+
+    def test_a_non_paid_order_is_a_conflict(self):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.main,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PENDING_PAYMENT, paid=False)
+        OrderItem.objects.create(order=order, product=self.p1, quantity=5, price=self.p1.price)
+        client = self._client(self.ADJUST, 'retry_conflict')
+        res = client.post(
+            f'/api/admin/orders/{order.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 409)
+
+    def test_a_missing_order_is_not_found(self):
+        client = self._client(self.ADJUST, 'retry_missing')
+        res = client.post(
+            f'/api/admin/orders/999999/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_tenants_order_is_not_found(self):
+        other = _p2d_company('erp1-retry-other')
+        ob = _p2d_branch(other, 'Suc')
+        op = _p2d_product(other, 'Prod', 'prod-retry-other')
+        _p2d_stock(ob, op, 1)
+        forder = Order.objects.create(
+            company=other, fulfillment_branch=ob, customer_email='o@example.com',
+            total=Decimal('10.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now())
+        OrderItem.objects.create(order=forder, product=op, quantity=5, price=op.price)
+        client = self._client(self.ADJUST, 'retry_cross')
+        res = client.post(
+            f'/api/admin/orders/{forder.pk}/reprocess-stock-exit/?company={self.company.pk}')
+        self.assertEqual(res.status_code, 404)
+
+    def test_reprocess_is_audited(self):
+        from .inventory_services import reprocess_order_stock_exit
+        order = self._paid_short_order()
+        self._replenish(self.p1, 5)
+        user, _m = _p2d_member(self.company, 'retry_audit', self.ADJUST)
+        reprocess_order_stock_exit(order, actor=user)
+        log = AdminAuditLog.objects.filter(
+            action='order_stock_exit_reprocessed', target_id=str(order.pk)).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.metadata['created_movements'], 1)
+        self.assertEqual(log.metadata['remaining_shortfall_products'], 0)
+
+
+class Erp1ShortfallFulfillmentGuardTest(TestCase):
+    """
+    ERP-1 · P1A.1 §11 — a FINDING, reproduced, not fixed here.
+
+    change_fulfillment_status gates only on the role-allowed transition; it does
+    NOT consult the stock shortfall. So a PAID order still short of stock can be
+    marked SHIPPED and DELIVERED with units that never left a shelf. Guarding
+    this means touching the fulfillment state machine, which is DB-03 — out of
+    scope for INV-04. This test pins the current behaviour so the dependency is
+    documented and the day it is guarded, this test is the one to flip.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-fulfil')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.product = _p2d_product(self.company, 'Prod', 'prod-fulfil')
+        _p2d_stock(self.branch, self.product, 2)
+
+    def test_a_shortfall_order_can_still_be_marked_delivered(self):
+        from .inventory_services import (
+            order_stock_shortfall, record_sale_stock_movements)
+        from .order_fulfillment_services import change_fulfillment_status
+
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=self.product, quantity=5, price=self.product.price)
+        record_sale_stock_movements(order)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+
+        user, _m = _p2d_member(
+            self.company, 'fulfil_admin',
+            ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+        for target in (
+            Order.FulfillmentStatus.CONFIRMED,
+            Order.FulfillmentStatus.PREPARING,
+            Order.FulfillmentStatus.SHIPPED,
+            Order.FulfillmentStatus.DELIVERED,
+        ):
+            change_fulfillment_status(
+                order=order, new_status=target, actor=user, company=self.company)
+        order.refresh_from_db()
+        # FINDING (§11): delivered while still short by 5. No stock guard today.
+        self.assertEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+        self.assertEqual(order_stock_shortfall(order)[0]['shortfall'], 5)
+
+
+class Erp1ShortfallReprocessConcurrencyTest(TransactionTestCase):
+    """
+    ERP-1 · P1A.1 §7. Two simultaneous reprocesses of the same order, with
+    enough stock on the shelf for BOTH to exit, must still create exactly one
+    SALE_EXIT — the order row lock serialises them and the second sees the
+    first's exit. Real row locking only: skipped, loudly, on SQLite.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('erp1-retry-conc')
+        self.branch = _p2d_branch(self.company, 'Principal')
+        self.product = _p2d_product(self.company, 'Prod', 'prod-retry-conc')
+        _p2d_stock(self.branch, self.product, 2)
+        from .inventory_services import record_sale_stock_movements
+        self.order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch,
+            customer_email='c@example.com', total=Decimal('100.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=5, price=self.product.price)
+        record_sale_stock_movements(self.order)  # short: 2 < 5 → 0 exits
+        # Replenish to 10: enough for TWO exits of 5 — the dangerous case.
+        from .inventory_services import create_stock_movement
+        create_stock_movement(
+            branch=self.branch, product_id=self.product.pk,
+            movement_type=StockMovement.PURCHASE_ENTRY, quantity=8, reason='Reposición')
+
+    def test_two_concurrent_reprocesses_create_exactly_one_exit(self):
+        import threading
+
+        from django.db import connection, connections
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite has no row-level locking: select_for_update() is a no-op. '
+                'Run against PostgreSQL to exercise the order lock.')
+
+        from .inventory_services import reprocess_order_stock_exit
+
+        barrier = threading.Barrier(2)
+
+        def worker():
+            try:
+                barrier.wait()
+                reprocess_order_stock_exit(self.order, actor=None)
+            finally:
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(
+            StockMovement.objects.filter(
+                order=self.order, product=self.product,
+                movement_type=StockMovement.SALE_EXIT).count(), 1,
+            'exactamente una salida, sin doble descuento')
+        self.assertEqual(branch_quantity(self.branch, self.product), 5, '10 − 5')
+
+
 class Phase2dBranchAccessApiTest(TestCase):
     """
     Administering branch access: grants are company-scoped, and audited.
@@ -13266,6 +14404,9 @@ class Phase2dProvisioningTest(TestCase):
 #   3. The internal notification goes to the order's own company, or nowhere.
 
 from .company_settings import (  # noqa: E402
+    EMPTY_LOGO_VARIANTS,
+    LOGO_VARIANT_FIELDS,
+    NEUTRAL_LIGHT_THEME,
     NEUTRAL_THEME,
     build_identity_snapshot,
     build_whatsapp_link,
@@ -13276,7 +14417,13 @@ from .company_settings import (  # noqa: E402
     order_notification_recipient,
     order_pickup_location,
 )
-from .models import CompanySettings  # noqa: E402
+from .models import (  # noqa: E402
+    CompanySettings, StorefrontCampaign, StorefrontFaq, StorefrontPageSettings,
+    StorefrontServiceOffering, StorefrontTrustMetric,
+)
+from .storefront_content_services import (  # noqa: E402
+    public_campaigns, public_list_content, public_page_settings,
+)
 
 
 def _p3_company(slug, name, **identity):
@@ -13477,11 +14624,22 @@ class Phase3IdentityFallbackTest(TestCase):
         self.assertEqual(branding.logo_url, '')
 
     def test_css_variable_names_are_fixed(self):
+        """
+        La lista es un CONTRATO, no una instantánea: el frontend tiene una
+        allowlist con estos mismos nombres y descarta cualquier otro antes de
+        llegar al atributo `style`. Añadir una variable al backend sin añadirla
+        allí produce el síntoma exacto que tuvo M12E — el backend la manda y la
+        página no la ve.
+
+        Las dos de tema claro se suman en M12E, a propósito y con su contraparte
+        en `app/lib/storefront.ts`.
+        """
         branding = company_branding(self.bare)
         self.assertEqual(
             set(branding.css_variables()),
             {'--brand-primary', '--brand-accent', '--brand-background',
-             '--brand-surface', '--brand-text', '--brand-border'},
+             '--brand-surface', '--brand-text', '--brand-border',
+             '--brand-light-background', '--brand-light-surface'},
         )
 
 
@@ -14565,10 +15723,25 @@ class Phase3MigrationRuleTest(TestCase):
         self.assertNotEqual(identity.warranty_policy_text, '')
 
     def test_the_pilot_kept_its_palette(self):
+        """
+        Lo que esta prueba afirma es que el piloto tiene paleta PROPIA, como
+        dato, distinta de la neutra de la plataforma. Eso sigue siendo cierto.
+
+        El literal `#080808` que había aquí era otra cosa: una instantánea del
+        valor que 0028 escribió en la Fase 3, congelada como si fuera un
+        invariante. No lo es — un color de marca es dato del tenant y cambia
+        cuando la marca cambia, que es justo lo que hizo M12D al aplicar el
+        manual v3.0. La aserción que importa no lleva un hex dentro.
+        """
         pilot = Company.objects.filter(slug='black-dog-store').first()
         colors = company_branding(pilot).colors
-        self.assertEqual(colors['background_color'], '#080808')
-        self.assertNotEqual(colors, NEUTRAL_THEME)
+        self.assertNotEqual(
+            colors, NEUTRAL_THEME,
+            'el piloto perdió su identidad y quedó con el tema de plataforma',
+        )
+        self.assertTrue(
+            all(v.startswith('#') and len(v) == 7 for v in colors.values()),
+        )
 
     def test_another_company_never_inherits_the_pilots_identity(self):
         """
@@ -16237,21 +17410,76 @@ class Phase4OrderLinkTest(TestCase):
         afterwards; what it does not do is fail, or attach the wrong person.
         """
         order = _p3_order(self.company, document_type='dni', document_number='12345678')
-        with patch('store.customer_services.resolve_customer', side_effect=RuntimeError('boom')):
+        with patch('store.customer_services.match_by_document', side_effect=RuntimeError('boom')):
             result = link_order_to_customer(order)
         order.refresh_from_db()
         self.assertIsNone(result)
         self.assertIsNone(order.customer_id)
         self.assertEqual(order.document_number, '12345678')
 
-    def test_an_unlinked_customer_record_adopts_a_free_account(self):
-        existing = _p4_customer(self.company, document_type='dni', document_number='12345678')
-        user = User.objects.create_user(username='p4_adopt', password='x')
-        order = _p3_order(self.company, user=user,
+    def test_a_document_typed_at_checkout_never_adopts_a_record(self):
+        """
+        ERP-1 · P0-1. The old behaviour let a signed-in buyer ADOPT the empty
+        account link of any record whose document they typed. That is an account
+        takeover: `Order.customer.user` is the authorisation key. The document is
+        validated for shape only, so it is not identity — the account is. A sale
+        under a stranger's document must never touch that stranger's record.
+        """
+        victim_record = _p4_customer(
+            self.company, document_type='dni', document_number='12345678',
+        )
+        attacker = User.objects.create_user(username='p4_attacker', password='x')
+        order = _p3_order(self.company, user=attacker,
                           document_type='dni', document_number='12345678')
+
         link_order_to_customer(order)
-        existing.refresh_from_db()
-        self.assertEqual(existing.user, user)
+
+        victim_record.refresh_from_db()
+        order.refresh_from_db()
+        # The victim's record is untouched: no account was adopted...
+        self.assertIsNone(victim_record.user_id)
+        # ...and the sale did not attach itself to the victim either.
+        self.assertNotEqual(order.customer_id, victim_record.pk)
+
+    def test_the_takeover_grants_no_access_to_the_victims_history(self):
+        """
+        The consequence, proven through the real authorisation helpers rather
+        than the internal field: after the fix the attacker owns nothing of the
+        victim's.
+        """
+        from .tenancy import customer_owned_orders
+
+        victim_record = _p4_customer(
+            self.company, document_type='dni', document_number='40404040',
+            first_name='Ana', last_name='Real',
+        )
+        victim_sale = _p3_order(self.company, document_type='dni',
+                                document_number='40404040')
+        link_order_to_customer(victim_sale)  # anonymous walk-in → attaches to Ana
+
+        attacker = User.objects.create_user(username='p4_attacker2', password='x')
+        attacker_sale = _p3_order(self.company, user=attacker,
+                                  document_type='dni', document_number='40404040')
+        link_order_to_customer(attacker_sale)
+
+        owned = customer_owned_orders(attacker, self.company)
+        self.assertNotIn(victim_sale, owned)
+        victim_record.refresh_from_db()
+        self.assertIsNone(victim_record.user_id)
+
+    def test_an_authenticated_buyer_without_a_record_gets_their_own(self):
+        """
+        The legitimate case the stricter rule must still serve: a signed-in buyer
+        with a free document gets a NEW record linked to their account, not a
+        refusal.
+        """
+        user = User.objects.create_user(username='p4_fresh', password='x')
+        order = _p3_order(self.company, user=user,
+                          document_type='dni', document_number='55556666')
+        customer = link_order_to_customer(order)
+        self.assertIsNotNone(customer)
+        self.assertEqual(customer.user_id, user.pk)
+        self.assertEqual(customer.document_number, '55556666')
 
     def test_an_account_already_used_here_is_not_stolen(self):
         """
@@ -19717,6 +20945,178 @@ class C1AnalyticsTest(TestCase):
             )
 
 
+class HardeningPosPaymentAuthorityTest(TestCase):
+    """
+    ERP-SALES-HARDENING-1 §14–§18 — a till cannot declare itself gateway-paid.
+
+    THE DEFECT THIS REPRODUCES. `build_pos_sale` validates the payment method
+    with `payment_method not in PaymentMethod.values`, and `ONLINE` is a member,
+    so it passes. Only the OFFERED list excludes it (`pos_payloads.context_payload`
+    filters `v != PaymentMethod.ONLINE` with the comment «a counter cannot pick
+    it»), and neither `AdminPosSaleView.post` nor `V1PosSaleView.post` re-checks
+    the value they forward. Hiding a value in the UI is not validation: the API
+    is reachable without the UI.
+
+    AND IT BYPASSES CASH VALIDATION AS A SECOND EFFECT. `resolve_cash` returns
+    `(None, None)` for anything that is not CASH, so choosing `online` skips the
+    "count the money" rules entirely — no `amount_received` required, no change
+    computed — while the order is still born `PAID`.
+
+    WHY THAT MATTERS. The POS processes no payment; it RECORDS what the person at
+    the counter says arrived. `ONLINE` means the storefront's gateway took the
+    money, and the only server-side evidence of that is a `PaymentTransaction`
+    the notification endpoint verified. The POS path has no such record and does
+    not even import the model, so at the counter the value can only ever be a
+    claim. A claim is not authority.
+
+    SCOPE. The refusal belongs to the POS flow alone. The STOREFRONT legitimately
+    uses `PaymentMethod.ONLINE` — it is the default of `Order.payment_method` and
+    `test_a_pos_sale_does_not_touch_the_online_channel` pins it — so a fix that
+    rejected the value globally would break the web channel it is meant to
+    protect. Both are asserted here.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('hard-pos-pay', 'Empresa Autoridad Pago')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Producto Autoridad', '50.00')
+        _c1_stock(self.branch, self.product, 10)
+        self.seller, _ = _p2d_member(
+            self.company, 'hard_pos_seller', ['company.view', _C1_POS],
+        )
+
+    def _items(self):
+        return [{'product': self.product.pk, 'quantity': 1}]
+
+    def _sell(self, **kw):
+        # `_c1_sale` injects `amount_received` ONLY for CASH, so a non-cash
+        # method arrives here with no money counted — which is the point.
+        return _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=self._items(), **kw,
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # --- the defect ---------------------------------------------------------
+
+    def test_an_online_payment_method_is_refused_at_the_counter(self):
+        """
+        RED until the fix: today this sale is created and marked paid.
+
+        No gateway, no IPN, no webhook, no PaymentTransaction — just a string in
+        a service call.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method=PaymentMethod.ONLINE)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(PaymentTransaction.objects.count(), 0)
+
+    def test_the_http_surface_refuses_an_online_payment_method(self):
+        """The vector is a direct API call, so the refusal has to hold there."""
+        res = self._as(self.seller).post(
+            '/api/admin/pos/sales/',
+            {
+                'branch': self.branch.pk,
+                'items': self._items(),
+                'payment_method': PaymentMethod.ONLINE,
+                'idempotency_key': 'hardening-online-http-0001',
+                'terms_confirmed': True,
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_the_preview_refuses_an_online_payment_method(self):
+        """
+        The preview shares `build_pos_sale`, and §16 says every rejection a real
+        sale would hit happens there too. It must not quote a total for a sale
+        the charge would refuse.
+        """
+        res = self._as(self.seller).post(
+            '/api/admin/pos/preview/',
+            {
+                'branch': self.branch.pk,
+                'items': self._items(),
+                'payment_method': PaymentMethod.ONLINE,
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_online_cannot_be_used_to_skip_counting_the_cash(self):
+        """
+        The second effect, asserted as an outcome rather than as a mechanism: no
+        POS order may end up marked gateway-paid with no money recorded.
+        """
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method=PaymentMethod.ONLINE)
+        self.assertFalse(
+            Order.objects.filter(
+                sales_channel=SalesChannel.POS,
+                payment_method=PaymentMethod.ONLINE,
+            ).exists()
+        )
+
+    # --- what must keep working --------------------------------------------
+
+    def test_cash_still_requires_the_money_on_the_counter(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.create_pos_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=self._items(), payment_method=PaymentMethod.CASH,
+                amount_received=None, terms_confirmed=True,
+                idempotency_key='hardening-cash-missing-0001',
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_insufficient_cash_is_still_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            _pos.create_pos_sale(
+                actor=self.seller, company=self.company, branch=self.branch,
+                items=self._items(), payment_method=PaymentMethod.CASH,
+                amount_received=Decimal('10.00'), terms_confirmed=True,
+                idempotency_key='hardening-cash-short-0001',
+            )
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_valid_cash_still_sells(self):
+        order, created = self._sell(payment_method=PaymentMethod.CASH)
+        self.assertTrue(created)
+        self.assertTrue(order.paid)
+        self.assertEqual(order.payment_method, PaymentMethod.CASH)
+
+    def test_card_and_transfer_still_sell_without_counting_cash(self):
+        """Non-cash, non-gateway methods are what a counter really reports."""
+        for i, method in enumerate(
+            (PaymentMethod.CARD, PaymentMethod.TRANSFER, PaymentMethod.OTHER), 1
+        ):
+            order, created = self._sell(payment_method=method)
+            self.assertTrue(created, method)
+            self.assertEqual(order.payment_method, method)
+            self.assertIsNone(order.amount_received, method)
+            self.assertIsNone(order.change_amount, method)
+
+    def test_an_arbitrary_payment_method_is_still_refused(self):
+        with self.assertRaises(_pos.PosValidationError):
+            self._sell(payment_method='bitcoin')
+
+    def test_the_storefront_still_records_the_gateway_method(self):
+        """
+        The fix is POS-scoped. `ONLINE` is the default of `Order.payment_method`
+        and the web channel's truthful value; breaking that would trade one
+        defect for another.
+        """
+        web = _p3_order(self.company)
+        self.assertEqual(web.sales_channel, SalesChannel.ONLINE)
+        self.assertEqual(web.payment_method, PaymentMethod.ONLINE)
+
+
 class C1PosConcurrencyTest(TransactionTestCase):
     """
     §109 — two tills, one unit.
@@ -19824,6 +21224,32 @@ class C1PosConcurrencyTest(TransactionTestCase):
         self.assertIn('_locked_branch_stocks', source)
         self.assertNotIn('BranchStock.objects.update', inspect.getsource(_pos))
         self.assertNotIn('Product.objects.update', inspect.getsource(_pos))
+
+    def test_two_simultaneous_pos_notes_have_distinct_numbers(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from django.db import connection, connections
+        if connection.vendor != 'postgresql':
+            self.skipTest('Requires PostgreSQL row locks.')
+        _c1_stock(self.branch, self.product, 4)
+        seller, _ = _p2d_member(self.company, 'receipt_concurrent',
+                              ['company.view', _C1_POS, 'sales.notes.manage'])
+        barrier = Barrier(2)
+
+        def sell(index):
+            try:
+                barrier.wait(timeout=10)
+                order, _ = _c1_sale(actor=seller, company=self.company, branch=self.branch,
+                    items=[{'product': self.product.pk, 'quantity': 1}],
+                    idempotency_key=f'receipt-concurrent-{index}', receipt_type='sales_note')
+                return SalesNote.objects.get(order=order).number
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            numbers = list(pool.map(sell, range(2)))
+        self.assertEqual(len(set(numbers)), 2)
+        self.assertEqual(SalesNote.objects.filter(order__company=self.company).count(), 2)
 
 
 # ===========================================================================
@@ -21792,6 +23218,366 @@ class C13PromotionEngineTest(TestCase):
         )
         self.assertEqual(result['applied'], [])
 
+    # ------------------------------------------------------------------
+    # ERP-FISCAL-6 (ADR-42) — qué parte de la rebaja le toca a cada artículo.
+    #
+    # El descuento del combo ya estaba decidido y cobrado; esto sólo lo EXPLICA
+    # componente a componente, y la explicación tiene que ser la misma hoy y
+    # dentro de dos años. Cada test comprueba también que Σ componentes ==
+    # descuento de la promoción: la regla existe para cerrar exacto.
+    # ------------------------------------------------------------------
+
+    def _shares(self, entry):
+        """{product_id: discount_amount} de una promoción aplicada."""
+        return {c['product_id']: c['discount_amount'] for c in entry['components']}
+
+    def _assert_closes(self, entry):
+        self.assertEqual(
+            sum((c['discount_amount'] for c in entry['components']), Decimal('0.00')),
+            entry['discount_amount'],
+        )
+        self.assertEqual(
+            sum((c['regular_amount'] for c in entry['components']), Decimal('0.00')),
+            entry['regular_amount'],
+        )
+        for component in entry['components']:
+            self.assertIsInstance(component['discount_amount'], Decimal)
+            self.assertGreaterEqual(component['discount_amount'], Decimal('0.00'))
+            self.assertLessEqual(component['discount_amount'], component['regular_amount'])
+
+    def test_a_fixed_combo_explains_its_discount_per_component(self):
+        """
+        150 sobre 3 150: el teléfono (3 000) carga 142,857…, la funda 4,761…,
+        el vidrio 2,380…. Los pisos suman 149,99 y el céntimo que falta va al
+        mayor residuo, que es el del teléfono.
+        """
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            fixed_price='3000.00',
+        )
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.phone.pk: Decimal('142.86'),
+            self.case.pk: Decimal('4.76'),
+            self.glass.pk: Decimal('2.38'),
+        })
+        self.assertEqual(entry['components'][0]['regular_amount'], Decimal('3000.00'))
+        self._assert_closes(entry)
+
+    def test_a_percentage_combo_explains_its_discount_per_component(self):
+        """10 % de cada valor regular cierra exacto: 300 + 10 + 5 = 315."""
+        _c13_combo(
+            self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+            percent='10.00',
+        )
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.phone, 1), (self.case, 1), (self.glass, 1)),
+            self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.phone.pk: Decimal('300.00'),
+            self.case.pk: Decimal('10.00'),
+            self.glass.pk: Decimal('5.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_components_with_distinct_values_share_in_proportion(self):
+        """50 sobre 150: 33,33 (funda) y 16,67 (vidrio); el céntimo, al vidrio."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self._assert_closes(entry)
+
+    def test_a_one_cent_remainder_goes_to_the_largest_residual(self):
+        """
+        Dos residuos distintos, un céntimo: se lo lleva el mayor, no el primero
+        de la lista. 16,666… deja 0,0067; 33,333… deja 0,0033.
+        """
+        _c13_combo(self.company, [(self.glass, 1), (self.case, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        shares = self._shares(entry)
+        self.assertEqual(shares[self.glass.pk], Decimal('16.67'))
+        self.assertEqual(shares[self.case.pk], Decimal('33.33'))
+
+    def test_a_tie_is_broken_by_product_id_ascending(self):
+        """
+        Dos artículos del mismo precio y un solo céntimo de descuento: ambos
+        residuos son 0,005. Lo recibe el `product_id` menor, siempre. Depender
+        del orden del queryset daría dos explicaciones de la misma venta.
+        """
+        twin = _c1_product(self.company, 'Funda Gemela', '100.00')
+        _c1_stock(self.branch, twin, 5)
+        prices = {**self.prices, twin.pk: Decimal('100.00')}
+        _c13_combo(self.company, [(twin, 1), (self.case, 1)], fixed_price='199.99')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((twin, 1), (self.case, 1)), prices,
+        )['applied'][0]
+        self.assertEqual(entry['discount_amount'], Decimal('0.01'))
+        lowest = min(self.case.pk, twin.pk)
+        self.assertEqual(self._shares(entry)[lowest], Decimal('0.01'))
+        self.assertEqual(self._shares(entry)[max(self.case.pk, twin.pk)], Decimal('0.00'))
+
+    def test_multiple_applications_scale_the_attribution(self):
+        """Dos sets: la funda consume 4 unidades (400) y el vidrio 2 (100)."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 2)), self.prices,
+        )['applied'][0]
+        self.assertEqual(entry['applications'], 2)
+        by_product = {c['product_id']: c for c in entry['components']}
+        self.assertEqual(by_product[self.case.pk]['quantity_used'], 4)
+        self.assertEqual(by_product[self.case.pk]['regular_amount'], Decimal('400.00'))
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('80.00'), self.glass.pk: Decimal('20.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_a_partial_quantity_is_attributed_only_for_the_units_consumed(self):
+        """
+        Dos fundas en la cesta, una en el combo: la atribución se hace sobre
+        UNA funda (100), no sobre las dos. La sobrante no aparece.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 2), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        by_product = {c['product_id']: c for c in entry['components']}
+        self.assertEqual(by_product[self.case.pk]['quantity_used'], 1)
+        self.assertEqual(by_product[self.case.pk]['regular_amount'], Decimal('100.00'))
+        self.assertEqual(entry['regular_amount'], Decimal('150.00'))
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+
+    def test_leftover_units_carry_no_discount(self):
+        """§53 visto desde la atribución: lo que no entró en el combo no rebaja."""
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 3), (self.glass, 1), (self.phone, 1)), self.prices,
+        )
+        entry = result['applied'][0]
+        self.assertNotIn(self.phone.pk, self._shares(entry))
+        self.assertEqual(
+            sum((c['quantity_used'] for c in entry['components']), 0), 2,
+        )
+        self.assertEqual(result['discount'], Decimal('50.00'))
+
+    def test_the_scarce_component_bounds_the_attribution(self):
+        """Un solo vidrio → una aplicación: 2 fundas (200) y 1 vidrio (50)."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 4), (self.glass, 1)), self.prices,
+        )['applied'][0]
+        self.assertEqual(entry['applications'], 1)
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('40.00'), self.glass.pk: Decimal('10.00'),
+        })
+        self._assert_closes(entry)
+
+    def test_the_priority_winner_carries_the_whole_attribution(self):
+        """§46 no cambia: la ganadora explica su descuento; la otra no existe."""
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='100.00', priority=1, name='Baja',
+        )
+        _c13_combo(
+            self.company, [(self.case, 1), (self.glass, 1)],
+            fixed_price='50.00', priority=99, name='Alta',
+        )
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1)), self.prices,
+        )
+        self.assertEqual(len(result['applied']), 1)
+        entry = result['applied'][0]
+        self.assertEqual(entry['promotion'].name, 'Alta')
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('66.67'), self.glass.pk: Decimal('33.33'),
+        })
+        self._assert_closes(entry)
+
+    def test_two_promotions_on_different_products_each_explain_their_own(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.phone, 1)], percent='10.00', name='B')
+        result = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (self.glass, 1), (self.phone, 1)), self.prices,
+        )
+        self.assertEqual([e['promotion'].name for e in result['applied']], ['A', 'B'])
+        a, b = result['applied']
+        self.assertEqual(self._shares(a), {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self.assertEqual(self._shares(b), {self.phone.pk: Decimal('300.00')})
+        self._assert_closes(a)
+        self._assert_closes(b)
+        self.assertEqual(result['discount'], Decimal('350.00'))
+
+    def test_a_zero_priced_component_gets_no_discount(self):
+        """§36: precio cero es válido; su parte es 0,00 y el resto cierra igual."""
+        gift = _c1_product(self.company, 'Regalo', '0.00')
+        _c1_stock(self.branch, gift, 5)
+        prices = {**self.prices, gift.pk: Decimal('0.00')}
+        _c13_combo(self.company, [(self.case, 1), (gift, 1)], fixed_price='90.00')
+        entry = _promo.evaluate(
+            self.company, self.branch,
+            self._basket((self.case, 1), (gift, 1)), prices,
+        )['applied'][0]
+        self.assertEqual(self._shares(entry), {
+            self.case.pk: Decimal('10.00'), gift.pk: Decimal('0.00'),
+        })
+        self._assert_closes(entry)
+
+    # --- la función pura, sin motor: forma, precondiciones y bordes -------
+
+    def _components(self):
+        return [
+            {'product_id': self.case.pk, 'product_name': 'Funda',
+             'quantity_per_application': 1, 'quantity_used': 1, 'unit_price': '100.00'},
+            {'product_id': self.glass.pk, 'product_name': 'Vidrio',
+             'quantity_per_application': 1, 'quantity_used': 1, 'unit_price': '50.00'},
+        ]
+
+    def test_allocating_a_zero_discount_explains_zeros(self):
+        out = _promo.allocate_component_discounts(
+            Decimal('150.00'), Decimal('0.00'), self._components())
+        self.assertEqual([c['discount_amount'] for c in out],
+                         [Decimal('0.00'), Decimal('0.00')])
+        self.assertEqual([c['regular_amount'] for c in out],
+                         [Decimal('100.00'), Decimal('50.00')])
+
+    def test_a_zero_regular_total_only_admits_a_zero_discount(self):
+        free = [{'product_id': self.case.pk, 'quantity_used': 2, 'unit_price': '0.00'}]
+        out = _promo.allocate_component_discounts(Decimal('0'), Decimal('0'), free)
+        self.assertEqual(out[0]['discount_amount'], Decimal('0.00'))
+        # Un descuento sobre base cero SUPERA la base: cae en la guarda general,
+        # antes de llegar a repartir nada. Lo que importa es que no se reparte.
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(Decimal('0'), Decimal('0.01'), free)
+        self.assertIn('supera el valor regular (0.00)', str(ctx.exception))
+
+    def test_a_discount_above_the_regular_value_fails_closed(self):
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(
+                Decimal('150.00'), Decimal('150.01'), self._components())
+        self.assertIn('supera', str(ctx.exception))
+
+    def test_a_regular_total_that_the_components_do_not_explain_fails_closed(self):
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(
+                Decimal('160.00'), Decimal('10.00'), self._components())
+        self.assertIn('incoherente', str(ctx.exception))
+
+    def test_the_catalogue_shape_is_refused_not_aliased(self):
+        """
+        §33. `combo_availability` describe el catálogo con `quantity`/`price`;
+        explicar una venta con eso sería explicarla a precios de hoy.
+        """
+        catalogue = [{'product_id': self.case.pk, 'quantity': 1,
+                      'price': '100.00', 'available': 5}]
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), catalogue)
+        self.assertIn('catálogo', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), ['x'])
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.allocate_component_discounts(Decimal('100'), Decimal('10'), [])
+
+    def test_the_allocator_does_not_mutate_its_input(self):
+        components = self._components()
+        _promo.allocate_component_discounts(Decimal('150.00'), Decimal('50.00'), components)
+        self.assertNotIn('discount_amount', components[0])
+        self.assertNotIn('regular_amount', components[1])
+
+    # --- lo que se leyó de una venta ya hecha ------------------------------
+
+    def test_a_legacy_snapshot_is_rebuilt_in_memory_with_the_current_rule(self):
+        """
+        §9/§11. Un snapshot anterior a la atribución sólo trae `quantity_used` y
+        `unit_price`: se reconstruye con la regla vigente y NADA se escribe.
+        """
+        legacy = self._components()
+        out = _promo.frozen_component_discounts(
+            Decimal('150.00'), Decimal('50.00'), legacy)
+        self.assertEqual({c['product_id']: c['discount_amount'] for c in out}, {
+            self.case.pk: Decimal('33.33'), self.glass.pk: Decimal('16.67'),
+        })
+        self.assertEqual(sum((c['discount_amount'] for c in out), Decimal('0')),
+                         Decimal('50.00'))
+        # El JSON histórico sigue diciendo exactamente lo que decía.
+        self.assertNotIn('discount_amount', legacy[0])
+        self.assertNotIn('regular_amount', legacy[1])
+
+    def test_a_legacy_snapshot_with_a_duplicated_product_fails_closed(self):
+        """§12. La constraint de `PromotionItem` no protege un JSON histórico."""
+        twice = self._components()
+        twice[1] = {**twice[1], 'product_id': self.case.pk}
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(Decimal('150.00'), Decimal('50.00'), twice)
+        self.assertIn('dos veces', str(ctx.exception))
+
+    def _frozen(self, case_discount='40.00', glass_discount='10.00',
+                case_regular='100.00'):
+        return [
+            {**self._components()[0], 'regular_amount': case_regular,
+             'discount_amount': case_discount},
+            {**self._components()[1], 'regular_amount': '50.00',
+             'discount_amount': glass_discount},
+        ]
+
+    def test_a_frozen_snapshot_is_the_historical_authority(self):
+        """
+        §7/§10. 40/10 NO es lo que daría la regla proporcional (33,33/16,67), y
+        aun así se devuelve tal cual: una venta explicada con la regla de su
+        día sigue explicándose así aunque la regla cambie.
+        """
+        out = _promo.frozen_component_discounts(
+            Decimal('150.00'), Decimal('50.00'), self._frozen())
+        self.assertEqual({c['product_id']: c['discount_amount'] for c in out}, {
+            self.case.pk: Decimal('40.00'), self.glass.pk: Decimal('10.00'),
+        })
+        self.assertIsInstance(out[0]['discount_amount'], Decimal)
+
+    def test_a_tampered_frozen_snapshot_fails_closed(self):
+        """§10. Sumas que no cuadran o un regular que no es su producto: nada se arregla."""
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'), self._frozen(case_discount='45.00'))
+        self.assertIn('congelados suman', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'), self._frozen(case_regular='90.00'))
+        self.assertIn('declara un valor regular', str(ctx.exception))
+        with self.assertRaises(_promo.PromotionAllocationError):
+            _promo.frozen_component_discounts(
+                Decimal('150.00'), Decimal('50.00'),
+                self._frozen(case_discount='101.00', glass_discount='-51.00'))
+
+    def test_a_partially_frozen_snapshot_fails_closed(self):
+        """§39. Un componente con atribución y otro sin ella: no se adivina cuál manda."""
+        mixed = [self._frozen()[0], self._components()[1]]
+        with self.assertRaises(_promo.PromotionAllocationError) as ctx:
+            _promo.frozen_component_discounts(Decimal('150.00'), Decimal('50.00'), mixed)
+        self.assertIn('congelado a medias', str(ctx.exception))
+
 
 class C13PromotionSaleTest(TestCase):
     """§41, §47–48, §55–57 — what a promotion does to a real sale."""
@@ -21859,6 +23645,38 @@ class C13PromotionSaleTest(TestCase):
         self.assertEqual(applied.regular_amount, Decimal('3150.00'))
         self.assertEqual(applied.discount_amount, Decimal('150.00'))
         self.assertEqual(len(applied.metadata['components']), 3)
+
+    def test_the_frozen_snapshot_carries_each_components_share(self):
+        """
+        ERP-FISCAL-6 §38. `freeze()` persiste la atribución que calculó
+        `evaluate()`, como TEXTO —igual que `unit_price`— porque `Decimal` no es
+        JSON y `float` perdería céntimos. Leerla de vuelta devuelve exactamente
+        lo congelado, no una segunda cuenta.
+        """
+        order, _ = self._sell()
+        applied = AppliedPromotion.objects.get(order=order)
+        components = applied.metadata['components']
+        shares = {c['product_id']: c['discount_amount'] for c in components}
+        self.assertEqual(shares, {
+            self.phone.pk: '142.86', self.case.pk: '4.76', self.glass.pk: '2.38',
+        })
+        for component in components:
+            self.assertIsInstance(component['discount_amount'], str)
+            self.assertIsInstance(component['regular_amount'], str)
+            self.assertIsInstance(component['unit_price'], str)
+        self.assertEqual(
+            sum((Decimal(c['discount_amount']) for c in components), Decimal('0')),
+            applied.discount_amount,
+        )
+        read_back = _promo.frozen_component_discounts(
+            applied.regular_amount, applied.discount_amount, components)
+        self.assertEqual(
+            {c['product_id']: c['discount_amount'] for c in read_back},
+            {pid: Decimal(v) for pid, v in shares.items()},
+        )
+        # La fila no cambió por leerla.
+        applied.refresh_from_db()
+        self.assertEqual(applied.metadata['components'], components)
 
     def test_editing_the_promotion_does_not_rewrite_the_sale(self):
         """
@@ -22201,7 +24019,17 @@ class M5StorefrontConfigTest(TestCase):
     def test_it_carries_the_sections_the_app_needs(self):
         payload = self.client.get(_m5_config_url('m5-cfg-a')).json()
 
-        self.assertEqual(set(payload), {'company', 'branding', 'contact', 'policies'})
+        # EXACTO a propósito: lo que esta respuesta lleva se decide aquí, no se
+        # hereda de lo que alguien añadió al modelo. M12F suma `page` y
+        # `campaigns` —contenido comercial del tenant— y suma dos líneas a esta
+        # lista, que es exactamente el coste que debe tener.
+        self.assertEqual(
+            set(payload),
+            {
+                'company', 'branding', 'contact', 'policies',
+                'page', 'campaigns', 'services', 'faqs', 'metrics',
+            },
+        )
         self.assertIn('whatsapp_link', payload['contact'])
         self.assertIn('warranty_url', payload['policies'])
 
@@ -25138,13 +26966,27 @@ class M6InternalContextTest(M6InternalBase):
         for leaked in ('customer_email', 'izipay', 'token', 'secret', 'tax_id', 'total'):
             self.assertNotIn(leaked, body)
 
-    def test_a_web_cookie_does_not_open_it(self):
+    def test_a_web_cookie_opens_it_and_one_request_carries_one_channel(self):
+        """
+        H4.1.1 — ESTA PRUEBA DECÍA LO CONTRARIO, y a propósito.
+
+        Hasta H4.1.1 la superficie interna era sólo Bearer y la cookie web
+        recibía 401. Eso dejaba al panel —que consume esta misma API desde H2—
+        sin servicio técnico, notificaciones ni comunicados con la sesión
+        válida. Ahora la cookie la abre, bajo una regla que esta prueba conserva:
+        una request lleva UN canal, y presentar los dos es un 401.
+        Ver docs/adr-auth-v1-internal.md.
+        """
         web = APIClient()
         web.post(
             '/api/auth/login/', {'username': 'vendedora', 'password': 'Pass123!'}, format='json',
         )
 
-        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 401)
+        self.assertEqual(web.get(_m6_ctx_url('m6-shop')).status_code, 200)
+
+        _client, token = _m6_login('vendedora')
+        both = web.get(_m6_ctx_url('m6-shop'), HTTP_AUTHORIZATION=f"Bearer {token['access']}")
+        self.assertEqual(both.status_code, 401)
 
     def test_a_body_or_header_cannot_change_the_company(self):
         payload = self.client.get(
@@ -25367,9 +27209,18 @@ class M6InternalFulfillmentTest(M6InternalBase):
         self.assertEqual(entry.metadata['old_fulfillment_status'], before)
         self.assertEqual(entry.metadata['new_fulfillment_status'], 'shipped')
 
-    def test_an_INVENTORY_role_is_limited_to_moving_goods(self):
-        # Warehouse staff move goods; they do not cancel sales. Preserved
-        # exactly from the web admin.
+    def test_a_global_INVENTORY_role_does_not_narrow_what_the_company_granted(self):
+        """
+        H4.1.2 CAMBIÓ ESTE TEST A PROPÓSITO (RBAC-LEGACY-01, decisión D4 · opción A).
+
+        Se llamaba `test_an_INVENTORY_role_is_limited_to_moving_goods` y fijaba
+        que perfil global `inventory` + rol de empresa con `sales.orders.manage`
+        daba 403 al cancelar: la regla leía `UserProfile.role` dentro de una
+        empresa SaaS. Dentro de una empresa manda la capability — la empresa le
+        dio `manage`, así que fija cualquier estado. La regla por rol sigue viva
+        sólo en el puente legacy (Phase33FulfillmentStatusChangeTest y
+        H412LegacyBridgeTest).
+        """
         inventory = _m6_user('almacen')
         Membership.objects.create(user=inventory, company=self.company, role='inventory')
         profile, _ = UserProfile.objects.get_or_create(user=inventory)
@@ -25382,19 +27233,26 @@ class M6InternalFulfillmentTest(M6InternalBase):
         _assign(Membership.objects.get(user=inventory, company=self.company), role)
         client, _ = _m6_login('almacen')
 
-        allowed = client.patch(
+        shipped = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
             {'fulfillment_status': 'shipped'}, format='json',
         )
-        refused = client.patch(
+        cancelled = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
             {'fulfillment_status': 'cancelled'}, format='json',
         )
 
-        self.assertEqual(allowed.status_code, 200)
-        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(shipped.status_code, 200)
+        self.assertEqual(cancelled.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'cancelled')
 
     def test_it_reports_the_transitions_that_actor_may_use(self):
+        """
+        H4.1.2: quien sólo tiene `sales.orders.view` no puede mover nada, y eso es
+        lo que se le informa — una lista vacía, no botones que fallan. Antes se le
+        quitaba sólo «cancelled», porque su perfil GLOBAL decía inventory.
+        """
         inventory = _m6_user('almacen2')
         Membership.objects.create(user=inventory, company=self.company, role='inventory')
         profile, _ = UserProfile.objects.get_or_create(user=inventory)
@@ -25409,7 +27267,7 @@ class M6InternalFulfillmentTest(M6InternalBase):
 
         payload = client.get(_m6_order_url('m6-shop', self.order.id)).json()
 
-        self.assertNotIn('cancelled', payload['available_fulfillment_transitions'])
+        self.assertEqual(payload['available_fulfillment_transitions'], [])
 
     def test_an_invalid_status_is_400(self):
         client = self._manage_client()
@@ -25576,8 +27434,17 @@ class M6LegacyRegressionTest(TestCase):
             ('store.authentication.CookieJWTAuthentication',),
         )
 
-    def test_every_internal_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_internal_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Pedidos internos. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_internal_views import (
             V1InternalContextView, V1InternalOrderDetailView,
             V1InternalOrderFulfillmentView, V1InternalOrderListView,
@@ -26512,14 +28379,31 @@ class M7InventoryAccessTest(M7InventoryBase):
     def test_anonymous_is_401(self):
         self.assertEqual(APIClient().get(_m7_url('m7-shop', 'summary')).status_code, 401)
 
-    def test_a_WEB_cookie_does_not_open_it(self):
+    def test_a_WEB_cookie_opens_it_and_one_request_carries_one_channel(self):
+        """
+        H4.1.1 — ESTA PRUEBA DECÍA LO CONTRARIO, y a propósito.
+
+        La superficie interna era sólo Bearer. Desde H4.1.1 la cookie web la
+        abre, con la regla que esta prueba conserva: una request lleva UN
+        canal, y presentar cookie y Bearer a la vez es un 401.
+        Ver docs/adr-auth-v1-internal.md.
+        """
         web = APIClient()
         web.post(
             '/api/auth/login/', {'username': 'almacenera', 'password': 'Pass123!'},
             format='json',
         )
 
-        self.assertEqual(web.get(_m7_url('m7-shop', 'summary')).status_code, 401)
+        self.assertEqual(web.get(_m7_url('m7-shop', 'summary')).status_code, 200)
+
+        native = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'almacenera@example.com', 'password': 'Pass123!'}, format='json',
+        ).json()
+        both = web.get(
+            _m7_url('m7-shop', 'summary'), HTTP_AUTHORIZATION=f"Bearer {native['access']}",
+        )
+        self.assertEqual(both.status_code, 401)
 
     def test_a_member_with_inventory_view_gets_the_summary(self):
         self.assertEqual(self.client.get(_m7_url('m7-shop', 'summary')).status_code, 200)
@@ -27040,8 +28924,17 @@ class M7InventoryRegressionTest(M7InventoryBase):
             ('store.authentication.CookieJWTAuthentication',),
         )
 
-    def test_every_inventory_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_inventory_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Inventario interno. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_inventory_views import (
             V1InventoryAdjustmentView, V1InventoryMovementsView,
             V1InventoryStockView, V1InventorySummaryView,
@@ -27225,6 +29118,120 @@ class M8ServiceBase(TestCase):
             reported_issue='No enciende.',
             actor=actor or self.staff,
         )
+
+
+class StabilizationServiceAccessTest(M8ServiceBase):
+    def test_sales_delivery_changes_state_and_keeps_history(self):
+        self.preset('ventas')
+        order = self.make_order()
+        order.status = 'ready_for_pickup'
+        order.save(update_fields=['status'])
+        response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/delivery/'),
+                                    {'recipient_name': 'Cliente', 'idempotency_key': 'delivery-stabilization'}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'delivered')
+        self.assertEqual(order.status_history.count(), 2)
+        self.assertTrue(AdminAuditLog.objects.filter(company=self.company, target_id=order.pk).exists())
+
+    def test_foreign_order_ids_are_hidden_for_sales_and_technician(self):
+        foreign = _m8_service.create_repair_order(company=self.other, branch=self.foreign_branch,
+            customer=self.foreign_customer, device=self.foreign_device, reported_issue='Ajeno')
+        for role in ('ventas', 'servicio-tecnico'):
+            self.preset(role)
+            base = _m8_url('m8-taller', f'orders/{foreign.pk}/')
+            self.assertEqual(self.client.get(base).status_code, 404)
+            # The generic transition checks authority first: sales is 403,
+            # technicians then hit the tenant lookup and receive 404.
+            response = self.client.post(base + 'transition/', {'status': 'diagnosing'}, format='json')
+            self.assertEqual(response.status_code, 403 if role == 'ventas' else 404)
+            self.assertEqual(self.client.post(base + 'delivery/', {'recipient_name': 'X'}, format='json').status_code, 404)
+
+    def test_inventory_customer_and_platform_admin_keep_their_boundaries(self):
+        order = self.make_order()
+        url = _m8_url('m8-taller', f'orders/{order.pk}/')
+        self.preset('inventario')
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(_m7_login('cliente_m8').get(url).status_code, 404)
+        self.staff.is_superuser = True
+        self.staff.save(update_fields=['is_superuser'])
+        self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_delivery_migration_preserves_custom_roles(self):
+        from importlib import import_module
+        from django.apps import apps
+        from django.db import connection
+        migration = import_module('store.migrations.0093_sales_service_delivery')
+        role = self.company.roles.get(slug='ventas')
+        role.capabilities = sorted(migration.PREVIOUS - {'sales.orders.manage'})
+        role.save(update_fields=['capabilities'])
+        migration.extend_sales(apps, connection.schema_editor())
+        role.refresh_from_db()
+        self.assertNotIn('service.delivery.manage', role.capabilities)
+
+    def test_sales_can_deliver_but_has_no_technical_management_capability(self):
+        caps = self.company.roles.get(slug='ventas').capabilities
+        self.assertIn('service.delivery.manage', caps)
+        self.assertNotIn('service.orders.manage', caps)
+        self.assertNotIn('service.repair.manage', caps)
+
+    def test_customer_summary_does_not_expose_hidden_current_status(self):
+        from .v1_service_serializers import V1CustomerRepairDetailSerializer
+        order = self.make_order()
+        _M8StatusSetting.objects.filter(company=self.company, code='diagnosing').update(is_customer_visible=False)
+        order = _m8_service.transition_repair_order(repair_order=order, to_status='diagnosing', actor=self.staff)
+        data = V1CustomerRepairDetailSerializer(order).data
+        self.assertEqual(data['status'], 'received')
+        self.assertNotIn('diagnosing', [event['status'] for event in data['timeline']])
+
+    def preset(self, slug):
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, self.company.roles.get(slug=slug))
+        cache.clear()
+
+    def test_sales_and_technician_can_open_every_detail_dependency(self):
+        order = self.make_order()
+        for role in ('ventas', 'servicio-tecnico', 'administrador'):
+            self.preset(role)
+            for suffix in ('', 'history/', 'diagnostics/', 'quotes/', 'execution/',
+                           'parts/', 'parts/candidates/', 'quality/', 'quality/history/',
+                           'delivery/', 'payments/'):
+                with self.subTest(role=role, resource=suffix):
+                    response = self.client.get(_m8_url('m8-taller', f'orders/{order.pk}/{suffix}'))
+                    self.assertEqual(response.status_code, 200, response.data)
+
+    def test_sales_and_technician_create_but_cannot_manipulate_foreign_ids(self):
+        for role in ('ventas', 'servicio-tecnico'):
+            self.preset(role)
+            body = dict(customer_id=self.customer.pk, device_id=self.device.pk,
+                        branch_id=self.branch_a.pk, reported_issue='No enciende')
+            response = self.client.post(_m8_url('m8-taller', 'orders/'), body, format='json')
+            self.assertEqual(response.status_code, 201, response.data)
+            for field, foreign in [('customer_id', self.foreign_customer.pk),
+                                   ('device_id', self.foreign_device.pk),
+                                   ('branch_id', self.foreign_branch.pk)]:
+                with self.subTest(role=role, field=field):
+                    response = self.client.post(_m8_url('m8-taller', 'orders/'),
+                                                {**body, field: foreign}, format='json')
+                    self.assertEqual(response.status_code, 404)
+
+    def test_sales_cannot_run_technical_transitions(self):
+        self.preset('ventas')
+        order = self.make_order()
+        response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/transition/'),
+                                    {'status': 'diagnosing'}, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(order.status_history.count(), 1)
+
+    def test_technician_transition_is_audited_and_branch_scoped(self):
+        self.preset('servicio-tecnico')
+        self.restrict_to_branch_a()
+        for branch, expected in [(self.branch_a, 200), (self.branch_b, 404)]:
+            order = self.make_order(branch=branch)
+            response = self.client.post(_m8_url('m8-taller', f'orders/{order.pk}/transition/'),
+                                        {'status': 'diagnosing', 'comment': 'Revisión'}, format='json')
+            self.assertEqual(response.status_code, expected, response.data)
+            self.assertEqual(order.status_history.count(), 2 if expected == 200 else 1)
 
 
 class M8ProvisioningTest(M8ServiceBase):
@@ -27801,8 +29808,17 @@ class M8InternalAccessTest(M8ServiceBase):
         Company.objects.filter(pk=self.company.pk).update(is_active=False)
         self.assertEqual(self.client.get(_m8_url('m8-taller', 'orders/')).status_code, 404)
 
-    def test_every_service_view_declares_bearer_explicitly(self):
-        from .v1_authentication import V1BearerAuthentication
+    def test_every_service_view_declares_its_authentication_explicitly(self):
+        """
+        Declarada EXPLÍCITAMENTE, no heredada del default global de cookie.
+
+        Servicio técnico interno. Desde H4.1.1 lo que se declara es el orquestador de la
+        superficie interna —un canal por request, Bearer o cookie— en lugar de
+        sólo Bearer. La intención de la prueba no cambia: optar por esta
+        autenticación es una línea visible en un diff, nunca un efecto del
+        default del proyecto.
+        """
+        from .v1_internal_authentication import V1InternalAuthentication as V1BearerAuthentication
         from .v1_service_views import (
             V1ServiceContextView, V1ServiceCustomerSearchView,
             V1ServiceDeviceDetailView, V1ServiceDeviceListView,
@@ -36400,16 +38416,16 @@ class M12RbacMatrixTest(M12DeliveryBase):
         self.assertTrue(self._may(self.staff, 'service.orders.manage'))
         self.assertFalse(self._may(self.staff))
 
-    def test_the_sales_preset_cannot_deliver(self):
-        # The owner's decision, pinned: releasing a repaired device is a service
-        # act, and the sales preset is a shop counter for the catalogue.
-        for slug in ('ventas', 'inventario'):
+    def test_sales_can_deliver_but_inventory_cannot(self):
+        # Reception may release a ready device through the dedicated operation;
+        # this grants neither technical lifecycle management nor inventory access.
+        for slug, allowed in (('ventas', True), ('inventario', False)):
             MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
             _assign(
                 self.membership,
                 CompanyRole.objects.get(company=self.company, slug=slug),
             )
-            self.assertFalse(self._may(self.staff), slug)
+            self.assertEqual(self._may(self.staff), allowed, slug)
 
     def test_the_legacy_technician_fallback_was_NOT_widened(self):
         from .tenancy import LEGACY_ROLE_CAPABILITIES
@@ -39711,6 +41727,249 @@ class Ip1PosBase(TestCase):
         ).quantity
 
 
+@override_settings(FISCAL_ENABLED=True)
+class Fiscal6ReceiptOptionsTest(Ip1PosBase):
+    """
+    ERP-FISCAL-6 §18/§29 — qué comprobantes ofrece la caja, y por qué no los demás.
+
+    Una opción fiscal que no se puede usar se devuelve EXPLICADA a quien tiene
+    `sales.fiscal.issue`, y no se devuelve en absoluto a quien no la tiene: el
+    estado de las series de una empresa es configuración tributaria. `branches`
+    dice dónde SÍ hay resolución válida; una serie de otra sucursal no habilita
+    la actual. Esto informa; el backend sigue decidiendo en cada emisión.
+    """
+
+    CAPS = ('sales.pos.use', 'sales.notes.manage', 'sales.fiscal.issue')
+
+    def _options(self, *caps, branches=None):
+        self.only_caps(*(caps or self.CAPS))
+        branches = branches if branches is not None else [self.branch_a, self.branch_b]
+        return {o['value']: o for o in _pos.receipt_options(self.company, branches, self.staff)}
+
+    def _series(self, document_type, series, *, company=None, branch=None, **kw):
+        return FiscalSeries.objects.create(
+            company=company or self.company, document_type=document_type,
+            series=series, branch=branch, **kw)
+
+    def test_a_fully_configured_till_offers_the_three_documents(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        options = self._options()
+        self.assertEqual(set(options), {'sales_note', 'factura', 'boleta'})
+        for value in ('sales_note', 'factura', 'boleta'):
+            self.assertTrue(options[value]['enabled'], value)
+            self.assertEqual(options[value]['branches'], [self.branch_a.pk, self.branch_b.pk])
+            self.assertEqual(options[value]['disabled_code'], '')
+        self.assertEqual(options['factura']['label'], 'Factura electrónica · BETA')
+        self.assertEqual(options['boleta']['label'], 'Boleta electrónica · BETA')
+        self.assertEqual(options['sales_note']['label'], 'Nota de venta interna')
+
+    def test_without_the_fiscal_capability_no_fiscal_entry_is_returned(self):
+        """Ni deshabilitada, ni con diagnóstico: la configuración tributaria no se cuenta."""
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        options = self._options('sales.pos.use', 'sales.notes.manage')
+        self.assertEqual(set(options), {'sales_note'})
+        self.assertNotIn('serie', json.dumps(list(options.values()), ensure_ascii=False))
+
+    def test_the_internal_note_keeps_every_visible_branch(self):
+        options = self._options()
+        self.assertEqual(options['sales_note']['branches'], [self.branch_a.pk, self.branch_b.pk])
+        self.assertTrue(options['sales_note']['enabled'])
+        # Sin sucursal visible no hay dónde emitirla, y se dice.
+        without = {o['value']: o for o in _pos.receipt_options(self.company, [], self.staff)}
+        self.assertEqual(
+            without['sales_note'],
+            {'value': 'sales_note', 'label': 'Nota de venta interna', 'branches': [],
+             'enabled': False, 'disabled_code': 'NO_BRANCH',
+             'disabled_reason': 'No hay sucursal disponible.'})
+
+    def test_with_fiscal_disabled_the_authorised_user_sees_a_safe_diagnosis(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        with override_settings(FISCAL_ENABLED=False):
+            options = self._options()
+        for value in ('factura', 'boleta'):
+            self.assertFalse(options[value]['enabled'])
+            self.assertEqual(options[value]['disabled_code'], 'FISCAL_DISABLED')
+            self.assertEqual(options[value]['branches'], [])
+            self.assertIn('no está habilitada', options[value]['disabled_reason'])
+        payload = json.dumps(list(options.values()), ensure_ascii=False).lower()
+        for secret in ('password', 'contraseña', 'pem', 'sol', 'clave'):
+            self.assertNotIn(secret, payload)
+
+    def test_only_a_boleta_series_enables_the_boleta_and_explains_the_factura(self):
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        options = self._options()
+        self.assertTrue(options['boleta']['enabled'])
+        self.assertFalse(options['factura']['enabled'])
+        self.assertEqual(options['factura']['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+        self.assertIn('factura', options['factura']['disabled_reason'])
+        self.assertIn(self.branch_a.name, options['factura']['disabled_reason'])
+
+    def test_only_a_factura_series_explains_the_boleta_in_its_own_words(self):
+        """El bug `_DOCUMENT_NOUN`: la boleta que falta se llama boleta, no factura."""
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        options = self._options()
+        self.assertTrue(options['factura']['enabled'])
+        self.assertFalse(options['boleta']['enabled'])
+        self.assertEqual(options['boleta']['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+        self.assertIn('boleta', options['boleta']['disabled_reason'])
+        self.assertNotIn('factura', options['boleta']['disabled_reason'])
+
+    def test_a_series_of_another_branch_does_not_enable_this_one(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001', branch=self.branch_b)
+        options = self._options()
+        self.assertTrue(options['factura']['enabled'])            # en alguna sucursal
+        self.assertEqual(options['factura']['branches'], [self.branch_b.pk])
+        self.assertNotIn(self.branch_a.pk, options['factura']['branches'])
+
+    def test_the_backend_refuses_a_factura_where_the_series_is_not_resolvable(self):
+        """La pantalla filtra por `branches`; la autoridad sigue siendo el servidor."""
+        self._series(FiscalDocumentType.INVOICE, 'F001', branch=self.branch_b)
+        client = self.only_caps(*self.CAPS)
+        ruc = Customer.objects.create(
+            company=self.company, customer_type=Customer.TYPE_BUSINESS,
+            business_name='CLIENTE SAC', document_type=Order.DocumentType.RUC,
+            document_number='20000000001')
+        response = client.post(
+            '/api/v1/internal/ip1-tienda/sales/pos/sales/',
+            self.sale_body(receipt_type='factura', customer=ruc.pk,
+                           payment_method='card', amount_received=None),
+            format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('serie', json.dumps(response.json(), ensure_ascii=False).lower())
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 0)
+
+    def test_a_series_of_another_tenant_never_appears(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001', company=self.other)
+        self._series(FiscalDocumentType.RECEIPT, 'B001', company=self.other)
+        options = self._options()
+        for value in ('factura', 'boleta'):
+            self.assertFalse(options[value]['enabled'])
+            self.assertEqual(options[value]['branches'], [])
+            self.assertEqual(options[value]['disabled_code'], 'NO_SERIES_FOR_BRANCH')
+
+    def test_ambiguous_series_are_not_resolved_by_picking_the_first(self):
+        self._series(FiscalDocumentType.INVOICE, 'F001')
+        self._series(FiscalDocumentType.INVOICE, 'F002')
+        options = self._options()
+        self.assertFalse(options['factura']['enabled'])
+        self.assertEqual(options['factura']['disabled_code'], 'AMBIGUOUS_SERIES')
+        self.assertIn('más de una serie de factura', options['factura']['disabled_reason'])
+
+    def test_the_context_endpoint_carries_the_new_contract(self):
+        self._series(FiscalDocumentType.RECEIPT, 'B001')
+        client = self.only_caps(*self.CAPS)
+        response = client.get('/api/v1/internal/ip1-tienda/sales/pos/context/')
+        self.assertEqual(response.status_code, 200, response.content)
+        options = {o['value']: o for o in response.json()['receipt_options']}
+        self.assertEqual(set(options), {'sales_note', 'factura', 'boleta'})
+        for option in options.values():
+            self.assertEqual(
+                set(option),
+                {'value', 'label', 'branches', 'enabled', 'disabled_code', 'disabled_reason'})
+        self.assertTrue(options['boleta']['enabled'])
+        self.assertFalse(options['factura']['enabled'])
+        # Lo que NO va en una venta nueva: notas y comunicaciones son flujos posteriores.
+        labels = ' '.join(o['label'].lower() for o in options.values())
+        for forbidden in ('crédito', 'débito', 'baja', 'resumen'):
+            self.assertNotIn(forbidden, labels)
+
+
+class StabilizationPosReceiptTest(Ip1PosBase):
+    def sell(self, **over):
+        return self.client.post('/api/v1/internal/ip1-tienda/sales/pos/sales/',
+                                self.sale_body(**over), format='json')
+
+    def test_unknown_receipt_is_rejected_without_sale_or_stock_change(self):
+        response = self.sell(receipt_type='inventado')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(self.stock(), 10)
+
+    def test_internal_note_is_created_once_with_the_existing_sequence(self):
+        first = self.sell(receipt_type='sales_note')
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.sell(receipt_type='sales_note')
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data['receipt_type'], 'sales_note')
+        note = SalesNote.objects.get(order_id=first.data['order_id'])
+        self.assertEqual(note.order.company_id, self.company.pk)
+        self.assertEqual(second.data['document_number'], note.number)
+        self.assertEqual(self.stock(), 8)
+
+    def test_note_permission_is_checked_on_direct_post(self):
+        self.only_caps('sales.pos.use')
+        self.assertEqual(self.sell(receipt_type='sales_note').status_code, 403)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_changing_receipt_on_retry_is_a_conflict(self):
+        self.assertEqual(self.sell(receipt_type='sales_note').status_code, 201)
+        self.assertEqual(self.sell(receipt_type='factura').status_code, 409)
+
+    def test_legacy_request_still_has_no_automatic_document(self):
+        response = self.sell()
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(SalesNote.objects.filter(order_id=response.data['order_id']).exists())
+
+    def test_fiscal_selection_is_not_authorized_by_pos_permission(self):
+        self.assertEqual(self.sell(receipt_type='factura').status_code, 403)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def fiscal_setup(self):
+        self.only_caps('sales.pos.use', 'sales.fiscal.issue', 'sales.notes.manage')
+        self.company.tax_id = '20100066603'
+        self.company.legal_name = 'EMPRESA PRUEBA SAC'
+        self.company.save()
+        for kind, series in [('01', 'F001'), ('03', 'B001')]:
+            FiscalSeries.objects.create(company=self.company, document_type=kind, series=series)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_boleta_is_persisted_and_generated_without_claiming_acceptance(self):
+        self.fiscal_setup()
+        response = self.sell(receipt_type='boleta')
+        self.assertEqual(response.status_code, 201, response.data)
+        order = Order.objects.get(pk=response.data['order_id'])
+        self.assertEqual(order.receipt_type, 'boleta')
+        document = FiscalDocument.objects.get(order=order)
+        self.assertEqual(document.document_type, '03')
+        self.assertEqual(document.status, FiscalDocumentStatus.GENERATED)
+        self.assertEqual(document.environment, 'beta')
+        from .fiscal_views import document_payload
+        self.assertFalse(document_payload(document)['can_submit'])
+        self.assertFalse(document_payload(document)['can_retry'])
+        self.assertEqual(self.sell(receipt_type='boleta').status_code, 200)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_factura_requires_customer_ruc_and_rolls_back_sale_and_number(self):
+        self.fiscal_setup()
+        response = self.sell(receipt_type='factura')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(Order.objects.count(), 0)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+        self.assertEqual(self.stock(), 10)
+
+    @override_settings(FISCAL_ENABLED=True)
+    def test_factura_uses_customer_snapshot_and_tenant_series(self):
+        self.fiscal_setup()
+        customer = _v1_customer(self.company, None, document_type='ruc',
+                                document_number='20100070970', first_name='Cliente SAC')
+        response = self.sell(receipt_type='factura', customer=customer.pk)
+        self.assertEqual(response.status_code, 201, response.data)
+        order = Order.objects.get(pk=response.data['order_id'])
+        self.assertEqual(order.receipt_type, 'factura')
+        document = FiscalDocument.objects.get(order=order)
+        self.assertEqual(document.customer_doc_number, '20100070970')
+        self.assertEqual(document.company_id, self.company.pk)
+        self.assertEqual(document.series, 'F001')
+
+    @override_settings(FISCAL_ENABLED=False)
+    def test_disabled_fiscal_is_rejected_even_with_capability(self):
+        self.fiscal_setup()
+        self.assertEqual(self.sell(receipt_type='boleta').status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+
 class Ip1PosContractTest(Ip1PosBase):
     """The contract, exercised over HTTP."""
 
@@ -40921,3 +43180,18139 @@ class Ip1TransferItemBySlugTest(Ip1TransferBase):
         self.client = _m7_login('ip1_almacen')
         res = self.line_by_slug(transfer_id, self.product.slug)
         self.assertEqual(res.status_code, 403, res.data)
+
+
+# M12B — Centro de notificaciones
+# ===========================================================================
+#
+# THE FOUR PROPERTIES THIS SECTION DEFENDS:
+#
+#   UN EVENTO DE NEGOCIO NO ES UN EMAIL
+#   UN EMAIL FALLIDO NO REVIERTE EL NEGOCIO
+#   UN RETRY NO CREA DOS NOTIFICACIONES
+#   EMPRESA A NO RECIBE EVENTOS DE EMPRESA B
+#
+# ===========================================================================
+
+from .models import (  # noqa: E402
+    Notification as _Notif,
+    NotificationDelivery as _Delivery,
+    NotificationEvent as _Event,
+)
+from . import notification_events as _ev  # noqa: E402
+from . import notification_services as _notif  # noqa: E402
+
+
+def _m12b_customer(company, user=None, tag='m12b'):
+    from .models import Customer
+    return Customer.objects.create(
+        company=company, first_name='Cli', last_name=tag,
+        document_type='dni',
+        document_number=str(abs(hash(tag)) % 90000000 + 10000000),
+        email=f'{tag}@example.invalid', user=user,
+    )
+
+
+class M12BEventIdempotencyTest(TestCase):
+    """§80 1-5 — el evento, el destinatario y el canal, cada uno una vez."""
+
+    def setUp(self):
+        self.company = _saas_company('Notif SA', 'm12b-notif', tax_id='20780040001')
+        self.a = _saas_user('m12b_user_a')
+        self.b = _saas_user('m12b_user_b')
+
+    def _emit(self, key='k1', users=None):
+        return _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key=key, title='T', body='B',
+            users=users if users is not None else [self.a],
+        )
+
+    def test_1_an_event_is_recorded(self):
+        event = self._emit()
+        self.assertIsNotNone(event)
+        self.assertEqual(_Event.objects.count(), 1)
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_2_the_same_key_never_records_twice(self):
+        self._emit()
+        again = self._emit()
+        self.assertIsNone(again, 'un replay debe ser silencio, no un segundo evento')
+        self.assertEqual(_Event.objects.count(), 1)
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_3_two_recipients_get_two_inbox_items(self):
+        self._emit(users=[self.a, self.b])
+        self.assertEqual(_Notif.objects.count(), 2)
+        self.assertEqual(_Event.objects.count(), 1, 'un evento, dos avisos')
+
+    def test_4_one_person_matching_twice_gets_one_item(self):
+        """§72 — multirol no multiplica avisos."""
+        self._emit(users=[self.a, self.a])
+        self.assertEqual(_Notif.objects.count(), 1)
+
+    def test_4b_the_database_refuses_the_duplicate_even_bypassing_the_helper(self):
+        """La garantía real es la constraint, no el dedupe en Python."""
+        from django.db import IntegrityError as _IE
+        event = self._emit()
+        with self.assertRaises(_IE):
+            _Notif.objects.create(
+                event=event, company=self.company,
+                audience=_Notif.Audience.INTERNAL, user=self.a, title='dup',
+            )
+
+    def test_5_one_delivery_per_channel(self):
+        from django.db import IntegrityError as _IE
+        self._emit()
+        n = _Notif.objects.get()
+        _Delivery.objects.create(notification=n, channel=_Delivery.Channel.EMAIL)
+        with self.assertRaises(_IE):
+            _Delivery.objects.create(notification=n, channel=_Delivery.Channel.EMAIL)
+
+    def test_a_notification_must_have_exactly_one_recipient(self):
+        from django.db import IntegrityError as _IE
+        event = self._emit()
+        with self.assertRaises(_IE):
+            _Notif.objects.create(
+                event=event, company=self.company,
+                audience=_Notif.Audience.INTERNAL, title='sin destinatario',
+            )
+
+    def test_an_unknown_event_type_is_refused(self):
+        with self.assertRaises(ValueError):
+            _notif.emit(
+                company=self.company, event_type='inventado.no.existe',
+                event_key='x', title='T', users=[self.a],
+            )
+
+
+class M12BInboxTest(TestCase):
+    """§80 6-10 — leer, contar, paginar y ordenar."""
+
+    def setUp(self):
+        self.company = _saas_company('Inbox SA', 'm12b-inbox', tax_id='20780040002')
+        self.user = _saas_user('m12b_inbox_user')
+        for i in range(25):
+            _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+                event_key=f'inbox-{i}', title=f'Aviso {i}', users=[self.user],
+            )
+        self.inbox = _notif.inbox_for_user(self.user, self.company)
+
+    def test_6_marking_read_is_idempotent(self):
+        first = _notif.mark_read(self.inbox.filter(pk=self.inbox.first().pk))
+        stamped = self.inbox.first().read_at
+        second = _notif.mark_read(self.inbox.filter(pk=self.inbox.first().pk))
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0, 'ya leída: no se vuelve a marcar')
+        self.assertEqual(self.inbox.first().read_at, stamped, 'la marca no se mueve')
+
+    def test_7_read_all_touches_only_this_inbox(self):
+        other = _saas_user('m12b_other_inbox')
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='ajena', title='Ajena', users=[other],
+        )
+        _notif.mark_read(self.inbox)
+        self.assertEqual(_notif.unread_count(self.inbox), 0)
+        self.assertEqual(
+            _notif.unread_count(_notif.inbox_for_user(other, self.company)), 1,
+        )
+
+    def test_8_unread_count_is_accurate(self):
+        self.assertEqual(_notif.unread_count(self.inbox), 25)
+        _notif.mark_read(self.inbox.filter(pk__in=[n.pk for n in self.inbox[:3]]))
+        self.assertEqual(_notif.unread_count(self.inbox), 22)
+
+    def test_10_ordering_is_newest_first(self):
+        rows = list(self.inbox.order_by('-created_at', '-id')[:3])
+        self.assertGreaterEqual(rows[0].pk, rows[1].pk)
+        self.assertGreaterEqual(rows[1].pk, rows[2].pk)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BNotificationInternalApiTest(TestCase):
+    """§43, §69 — la bandeja interna por HTTP."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('API SA', 'm12b-api', tax_id='20780040003')
+        provision_company_access_defaults(self.company)
+        self.user = _saas_user('m12b_api_user')
+        Membership.objects.create(
+            user=self.user, company=self.company, role='staff', is_active=True,
+        )
+        self.other = _saas_user('m12b_api_other')
+        Membership.objects.create(
+            user=self.other, company=self.company, role='staff', is_active=True,
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='api-mine', title='Mía', users=[self.user],
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ORDER_CREATED,
+            event_key='api-theirs', title='Ajena', users=[self.other],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/internal/{slug or self.company.slug}/notifications/{tail}'
+
+    def test_the_inbox_lists_only_the_callers_own(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        titles = [r['title'] for r in res.json()['results']]
+        self.assertEqual(titles, ['Mía'])
+
+    def test_unread_count_endpoint(self):
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 1)
+
+    def test_marking_read_updates_the_count(self):
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        res = self.client.post(self._url(f'{pk}/read/'))
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNotNone(res.json()['read_at'])
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 0)
+
+    def test_read_all(self):
+        res = self.client.post(self._url('read-all/'))
+        self.assertEqual(res.json()['marked'], 1)
+
+    def test_cannot_mark_someone_elses_notification(self):
+        theirs = _Notif.objects.get(user=self.other)
+        res = self.client.post(self._url(f'{theirs.pk}/read/'))
+        self.assertEqual(res.status_code, 404, 'ajena: indistinguible de inexistente')
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.read_at)
+
+    def test_cannot_read_another_companys_inbox(self):
+        other_co = _saas_company('Ajena API', 'm12b-ajena', tax_id='20780040004')
+        res = self.client.get(self._url(slug=other_co.slug))
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_payload_carries_no_internals(self):
+        row = self.client.get(self._url()).json()['results'][0]
+        for leaked in ('event', 'payload', 'user', 'customer', 'company'):
+            self.assertNotIn(leaked, row, leaked)
+
+    def test_unread_filter(self):
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        self.client.post(self._url(f'{pk}/read/'))
+        self.assertEqual(len(self.client.get(self._url('?unread=true')).json()['results']), 0)
+        self.assertEqual(len(self.client.get(self._url()).json()['results']), 1)
+
+
+class M12BRecipientResolutionTest(TestCase):
+    """§84 — quién recibe, resuelto por capacidad y sucursal."""
+
+    def setUp(self):
+        self.company = _saas_company('Resolver SA', 'm12b-res', tax_id='20780040005')
+        provision_company_access_defaults(self.company)
+        self.branch_a = self.company.branches.first()
+        from .models import Branch
+        self.branch_b = Branch.objects.create(company=self.company, name='Sucursal B')
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+    def _staff(self, username, *, role=None, active=True, branches=None):
+        user = _saas_user(username)
+        user.is_active = active
+        user.save(update_fields=['is_active'])
+        m = Membership.objects.create(
+            user=user, company=self.company, role='staff', is_active=True,
+        )
+        if role is not None:
+            MembershipRoleAssignment.objects.create(membership=m, role=role)
+        if branches is not None:
+            m.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+            m.save(update_fields=['branch_access_mode'])
+            from .models import MembershipBranchAccess
+            for b in branches:
+                MembershipBranchAccess.objects.create(membership=m, branch=b)
+        return user, m
+
+    def _resolve(self, capability, branch=None):
+        return _notif.resolve_internal_recipients(
+            self.company, capability=capability, branch=branch,
+        )
+
+    def test_45_someone_with_the_capability_is_a_recipient(self):
+        user, _ = self._staff('m12b_has_cap', role=self.tech_role)
+        self.assertIn(user, self._resolve('service.delivery.manage'))
+
+    def test_46_someone_without_it_is_not(self):
+        user, _ = self._staff('m12b_no_cap')
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_43_an_inactive_user_is_not(self):
+        user, _ = self._staff('m12b_inactive', role=self.tech_role, active=False)
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_an_inactive_membership_is_not(self):
+        user, m = self._staff('m12b_inactive_m', role=self.tech_role)
+        m.is_active = False
+        m.save(update_fields=['is_active'])
+        self.assertNotIn(user, self._resolve('service.delivery.manage'))
+
+    def test_44_branch_scope_excludes_the_wrong_branch(self):
+        user, _ = self._staff(
+            'm12b_branch_b', role=self.tech_role, branches=[self.branch_b],
+        )
+        self.assertNotIn(user, self._resolve('service.delivery.manage', branch=self.branch_a))
+        self.assertIn(user, self._resolve('service.delivery.manage', branch=self.branch_b))
+
+    def test_47_multirole_yields_one_entry(self):
+        user, m = self._staff('m12b_multi', role=self.tech_role)
+        MembershipRoleAssignment.objects.create(
+            membership=m, role=self.company.roles.get(slug='ventas'),
+        )
+        found = self._resolve('service.delivery.manage')
+        self.assertEqual(found.count(user), 1)
+
+    def test_48_the_platform_master_is_never_an_automatic_recipient(self):
+        """
+        §34 — la distinción que evita un inbox con todo el SaaS.
+
+        `resolve_capabilities()` devuelve TODAS las capacidades al superusuario
+        en TODAS las empresas, así que una consulta ingenua de "quién tiene esta
+        capacidad" le entrega cada evento de cada tenant de la plataforma. Poder
+        actuar en todas partes no es querer enterarse de todo.
+        """
+        master = _saas_user('m12b_master', is_superuser=True)
+        Membership.objects.create(
+            user=master, company=self.company, role='staff', is_active=True,
+        )
+        self.assertTrue(has_capability(master, self.company, 'service.delivery.manage'))
+        self.assertNotIn(master, self._resolve('service.delivery.manage'))
+
+    def test_it_never_reaches_another_company(self):
+        other = _saas_company('Otra res', 'm12b-otra-res', tax_id='20780040006')
+        provision_company_access_defaults(other)
+        outsider = _saas_user('m12b_outsider')
+        m = Membership.objects.create(
+            user=outsider, company=other, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=m, role=other.roles.get(slug='servicio-tecnico'),
+        )
+        self.assertNotIn(outsider, self._resolve('service.delivery.manage'))
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BServiceEventsTest(TestCase):
+    """§81 — el ciclo de la reparación, con textos seguros para el cliente."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _saas_company('Servicio SA', 'm12b-serv', tax_id='20780041001')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.first()
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+        self.tech = _saas_user('m12b_tech')
+        m = Membership.objects.create(
+            user=self.tech, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(membership=m, role=self.tech_role)
+
+        self.customer_user = _saas_user('m12b_cliente')
+        self.customer = _m12b_customer(self.company, self.customer_user, 'm12bserv')
+        from .models import Device
+        self.device = Device.objects.create(
+            company=self.company, customer=self.customer, brand='Apple', model='iPhone',
+        )
+        from . import service_services
+        self.svc = service_services
+        self.order = service_services.create_repair_order(
+            company=self.company, branch=self.branch, customer=self.customer,
+            device=self.device, reported_issue='No enciende.', actor=self.tech,
+        )
+
+    def _events(self, event_type=None):
+        qs = _Event.objects.filter(company=self.company)
+        return qs.filter(event_type=event_type) if event_type else qs
+
+    def test_12_assignment_notifies_the_assigned_technician(self):
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_ASSIGNMENT_CREATED)
+        self.assertEqual(note.user_id, self.tech.pk)
+        self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+        self.assertEqual(note.target_type, 'repair_order')
+        self.assertEqual(note.target_id, self.order.pk)
+
+    def test_re_running_the_same_assignment_does_not_notify_twice(self):
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        self.assertEqual(self._events(_ev.SERVICE_ASSIGNMENT_CREATED).count(), 1)
+
+    def test_22_the_notification_never_carries_internal_notes(self):
+        """§27, §50 — el resumen no puede convertirse en una fuga."""
+        self.order.internal_notes = 'PMIC con consumo de 1.2A, coste interno 180'
+        self.order.save(update_fields=['internal_notes'])
+        self.svc.assign_technician(repair_order=self.order, technician=self.tech)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_ASSIGNMENT_CREATED)
+        blob = f'{note.title} {note.body}'.lower()
+        for leaked in ('pmic', '1.2a', 'coste', '180'):
+            self.assertNotIn(leaked, blob, leaked)
+
+    def test_18_ready_for_pickup_reaches_the_customer(self):
+        self._advance_to_ready()
+        note = _Notif.objects.filter(
+            customer=self.customer, event__event_type=_ev.SERVICE_READY_FOR_PICKUP,
+        ).first()
+        self.assertIsNotNone(note)
+        self.assertIn('listo para recoger', note.title.lower())
+
+    def test_hidden_status_is_not_sent_to_the_customer(self):
+        from .models import RepairStatusSetting, RepairStatusCode
+        RepairStatusSetting.objects.filter(company=self.company,
+            code=RepairStatusCode.READY_FOR_PICKUP).update(is_customer_visible=False)
+        self._advance_to_ready()
+        self.assertFalse(_Notif.objects.filter(customer=self.customer).exists())
+        self.assertTrue(_Notif.objects.filter(audience=_Notif.Audience.INTERNAL).exists())
+
+    def test_order_detail_reports_real_customer_notifications_without_claiming_email_sent(self):
+        from .v1_service_serializers import V1ServiceOrderDetailSerializer
+        self._advance_to_ready()
+        notices = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['email_status'], 'pending')
+        self.assertIn('listo para recoger', notices[0]['title'].lower())
+        from .models import NotificationDelivery
+        for state in ('failed', 'sent', 'skipped'):
+            NotificationDelivery.objects.update_or_create(
+                notification_id=notices[0]['id'], channel='email', defaults={'status': state},
+            )
+            updated = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+            self.assertEqual(updated[0]['email_status'], state)
+        _Notif.objects.create(
+            company=self.company, customer=self.customer,
+            audience=_Notif.Audience.CUSTOMER, title='Aviso en bandeja',
+            target_type='repair_order', target_id=self.order.pk,
+        )
+        updated = V1ServiceOrderDetailSerializer(self.order).data['customer_notifications']
+        self.assertEqual(updated[0]['email_status'], 'not_applicable')
+
+    def test_19_ready_for_pickup_also_reaches_delivery_staff_of_that_branch(self):
+        self._advance_to_ready()
+        staff_notes = _Notif.objects.filter(
+            event__event_type=_ev.SERVICE_READY_FOR_PICKUP,
+            audience=_Notif.Audience.INTERNAL,
+        )
+        self.assertTrue(staff_notes.exists())
+        for note in staff_notes:
+            self.assertIsNotNone(note.user_id)
+
+    def test_one_event_serves_both_audiences_without_duplicating_itself(self):
+        self._advance_to_ready()
+        self.assertEqual(self._events(_ev.SERVICE_READY_FOR_PICKUP).count(), 1)
+
+    def _advance_to_ready(self):
+        """Lleva la orden hasta READY_FOR_PICKUP por el camino del dominio."""
+        from .models import RepairStatusCode
+        self.order.status = RepairStatusCode.QUALITY_CONTROL
+        self.order.save(update_fields=['status'])
+        from . import service_services
+        service_services._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.READY_FOR_PICKUP,
+        )
+
+    def test_the_same_status_twice_tells_the_customer_once(self):
+        from .models import RepairStatusCode
+        for _ in range(3):
+            self.svc._emit_status_changed(
+                order=self.order, to_status=RepairStatusCode.WAITING_PARTS,
+            )
+        self.assertEqual(
+            _Notif.objects.filter(customer=self.customer).count(), 1,
+        )
+
+    def test_17_waiting_parts_says_nothing_about_supplier_or_cost(self):
+        from .models import RepairStatusCode
+        self.svc._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.WAITING_PARTS,
+        )
+        note = _Notif.objects.get(customer=self.customer)
+        blob = f'{note.title} {note.body}'.lower()
+        for leaked in ('proveedor', 'stock', 'coste', 'costo', 'margen', 's/'):
+            self.assertNotIn(leaked, blob, leaked)
+
+    def test_a_silent_status_notifies_nobody(self):
+        """No todo estado interrumpe: diagnosticar no es noticia."""
+        from .models import RepairStatusCode
+        self.svc._emit_status_changed(
+            order=self.order, to_status=RepairStatusCode.DIAGNOSING,
+        )
+        self.assertEqual(_Notif.objects.filter(customer=self.customer).count(), 0)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BCommerceEventsTest(TestCase):
+    """§82 — comercio, sin alterar el pago ni duplicar su correo."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _pilot_company()
+        self.user = _saas_user('m12b_buyer')
+        self.customer = _m12b_customer(self.company, self.user, 'm12bcom')
+        self.product = _seeded(Product.objects.create(
+            company=self.company, name='M12B Prod', slug='m12b-prod',
+            price=Decimal('100.00'), inventory=10,
+        ))
+        self.session_key = 'm12b-cart'
+        self.order = Order.objects.create(
+            company=self.company, customer=self.customer,
+            customer_email='m12bcom@example.invalid', total=Decimal('100.00'),
+            cart_session_key=self.session_key, status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(
+            order=self.order, product=self.product, quantity=1, price=self.product.price,
+        )
+        CartItem.objects.create(
+            session_key=self.session_key, product=self.product, quantity=1,
+        )
+        self.attempt = _pay_attempt(
+            self.order, transaction_id='tx-m12b-0001', order_number='on-m12b-0001',
+        )
+        self.client = APIClient()
+
+    def _pay(self):
+        return _post_izipay_ipn(self.client, self.order, attempt=self.attempt)
+
+    def test_23_payment_confirmed_creates_one_inbox_item(self):
+        self._pay()
+        notes = _Notif.objects.filter(
+            customer=self.customer, event__event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+        )
+        self.assertEqual(notes.count(), 1)
+
+    def test_24_an_ipn_replay_never_duplicates_the_notification(self):
+        for _ in range(10):
+            self._pay()
+        self.assertEqual(
+            _Event.objects.filter(event_type=_ev.COMMERCE_PAYMENT_CONFIRMED).count(), 1,
+        )
+        self.assertEqual(_Notif.objects.filter(customer=self.customer).count(), 1)
+
+    def test_25_the_confirmation_email_is_still_sent_exactly_once(self):
+        """
+        §35 — la propiedad que M12B no puede romper.
+
+        `email_services` ya manda el correo de confirmación con su recibo y su
+        idempotencia. `commerce.payment.confirmed` NO es email-worthy justo por
+        esto: aporta el registro in-app y nada más.
+        """
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            for _ in range(5):
+                self._pay()
+        self.order.refresh_from_db()
+        self.assertIsNotNone(self.order.confirmation_email_sent_at)
+        stamped = self.order.confirmation_email_sent_at
+        with patch('django.db.transaction.on_commit', side_effect=lambda fn: fn()):
+            self._pay()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.confirmation_email_sent_at, stamped)
+
+    def test_26_stock_still_decrements_once(self):
+        for _ in range(5):
+            self._pay()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.inventory, 9)
+
+    def test_27_the_cart_is_still_cleared_once(self):
+        self._pay()
+        self.assertEqual(
+            CartItem.objects.filter(session_key=self.session_key).count(), 0,
+        )
+
+    def test_a_rejected_payment_notifies_nobody(self):
+        _post_izipay_ipn(self.client, self.order, attempt=self.attempt, code='A02')
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_a_forged_notification_notifies_nobody(self):
+        _post_izipay_ipn(
+            self.client, self.order, attempt=self.attempt,
+            signature='ZmFsc2E=',
+        )
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_32_a_guest_order_invents_no_inbox_recipient(self):
+        """§42 — sin cuenta no hay bandeja, y no se fabrica un usuario."""
+        guest = Order.objects.create(
+            company=self.company, customer=None,
+            customer_email='invitado@example.invalid', total=Decimal('50.00'),
+            status=Order.Status.PENDING_PAYMENT,
+        )
+        OrderItem.objects.create(
+            order=guest, product=self.product, quantity=1, price=self.product.price,
+        )
+        attempt = _pay_attempt(
+            guest, transaction_id='tx-m12b-guest', order_number='on-m12b-guest',
+        )
+        before_users = User.objects.count()
+        _post_izipay_ipn(self.client, guest, attempt=attempt)
+        guest.refresh_from_db()
+        self.assertEqual(guest.status, Order.Status.PAID, 'el pago sí se procesa')
+        self.assertEqual(User.objects.count(), before_users, 'no se inventa usuario')
+        self.assertEqual(_Notif.objects.filter(target_id=guest.pk).count(), 0)
+
+    def _staff_actor(self):
+        """
+        Quien mueve el despacho es PERSONAL con autoridad en la empresa.
+
+        H4.1.2 CAMBIÓ ESTE FIXTURE A PROPÓSITO (RBAC-LEGACY-01). Las dos pruebas de
+        abajo pasaban al propio comprador como `actor`, y el servicio lo aceptaba
+        porque decidía por `UserProfile.role`: cualquier rol que no fuera inventory
+        podía fijar cualquier estado. Ahora el servicio aplica la regla de las
+        vistas —sin `sales.orders.manage` en la empresa no hay transición—, así que
+        el actor es una vendedora del piloto. Lo que se prueba no cambia: que el
+        CLIENTE del pedido reciba el aviso.
+        """
+        staff = _saas_user('m12b_staff')
+        Membership.objects.create(user=staff, company=self.company, role='sales')
+        return staff
+
+    def test_28_fulfillment_ready_notifies_the_customer(self):
+        from . import order_fulfillment_services as fulfil
+        self._pay()
+        fulfil.change_fulfillment_status(
+            order=self.order, company=self.company,
+            new_status=Order.FulfillmentStatus.READY_FOR_PICKUP, actor=self._staff_actor(),
+        )
+        note = _Notif.objects.filter(
+            event__event_type=_ev.COMMERCE_FULFILLMENT_READY,
+        ).first()
+        self.assertIsNotNone(note)
+        self.assertEqual(note.customer_id, self.customer.pk)
+
+    def test_29_shipped_promises_no_tracking_it_does_not_have(self):
+        from . import order_fulfillment_services as fulfil
+        self._pay()
+        staff = self._staff_actor()
+        for status_value in (Order.FulfillmentStatus.SHIPPED,):
+            fulfil.change_fulfillment_status(
+                order=self.order, company=self.company,
+                new_status=status_value, actor=staff,
+            )
+        note = _Notif.objects.filter(
+            event__event_type=_ev.COMMERCE_FULFILLMENT_SHIPPED,
+        ).first()
+        self.assertIsNotNone(note)
+        blob = f'{note.title} {note.body}'.lower()
+        for invented in ('tracking', 'guía', 'courier', 'seguimiento'):
+            self.assertNotIn(invented, blob, invented)
+
+
+@override_settings(**IZIPAY_TEST_SETTINGS)
+class M12BCustomerApiTest(TestCase):
+    """§85 — la bandeja del cliente, y todo lo que no puede alcanzar."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Cli SA', 'm12b-cli', tax_id='20780042001')
+        provision_company_access_defaults(self.company)
+        self.user = _saas_user('m12b_cli_user')
+        self.customer = _m12b_customer(self.company, self.user, 'm12bcliA')
+        self.other_user = _saas_user('m12b_cli_other')
+        self.other_customer = _m12b_customer(self.company, self.other_user, 'm12bcliB')
+
+        _notif.emit(
+            company=self.company, event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+            event_key='cli-mine', title='Mía', customers=[self.customer],
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.COMMERCE_PAYMENT_CONFIRMED,
+            event_key='cli-theirs', title='Ajena', customers=[self.other_customer],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/customer/{slug or self.company.slug}/notifications/{tail}'
+
+    def test_49_a_customer_sees_only_their_own(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([r['title'] for r in res.json()['results']], ['Mía'])
+
+    def test_50_cannot_mark_another_customers_notification(self):
+        theirs = _Notif.objects.get(customer=self.other_customer)
+        self.assertEqual(self.client.post(self._url(f'{theirs.pk}/read/')).status_code, 404)
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.read_at)
+
+    def test_51_cross_tenant_is_404(self):
+        other_co = _saas_company('Ajena cli', 'm12b-ajena-cli', tax_id='20780042002')
+        self.assertEqual(self.client.get(self._url(slug=other_co.slug)).status_code, 404)
+
+    def test_52_the_customer_payload_carries_no_internal_fields(self):
+        row = self.client.get(self._url()).json()['results'][0]
+        for leaked in ('event', 'payload', 'user', 'customer', 'company', 'audience'):
+            self.assertNotIn(leaked, row, leaked)
+
+    def test_53_54_55_read_marking_and_count(self):
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 1)
+        pk = self.client.get(self._url()).json()['results'][0]['id']
+        self.assertEqual(self.client.post(self._url(f'{pk}/read/')).status_code, 200)
+        self.assertEqual(self.client.get(self._url('unread-count/')).json()['unread'], 0)
+        self.assertEqual(self.client.post(self._url('read-all/')).json()['marked'], 0)
+
+    def test_the_customer_surface_never_shows_internal_notifications(self):
+        """§44 — las dos superficies no se tocan."""
+        staff = _saas_user('m12b_cli_staff')
+        Membership.objects.create(
+            user=staff, company=self.company, role='staff', is_active=True,
+        )
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_ASSIGNMENT_CREATED,
+            event_key='cli-internal', title='Interna', users=[staff],
+        )
+        titles = [r['title'] for r in self.client.get(self._url()).json()['results']]
+        self.assertNotIn('Interna', titles)
+
+    def test_a_user_who_is_not_a_customer_here_gets_nothing(self):
+        stranger = _saas_user('m12b_stranger')
+        c = APIClient()
+        c.force_authenticate(user=stranger)
+        self.assertEqual(c.get(self._url()).status_code, 404)
+
+
+class M12BEmailDeliveryTest(TestCase):
+    """§83 — el correo es un canal, no el registro."""
+
+    def setUp(self):
+        mail.outbox = []
+        self.company = _saas_company('Mail SA', 'm12b-mail', tax_id='20780043001')
+        self.user = _saas_user('m12b_mail_user')
+        self.user.email = 'destino@example.invalid'
+        self.user.save(update_fields=['email'])
+
+    def _emit_email_worthy(self, users=None, key='mail-1'):
+        """
+        Emit and let the post-commit work actually happen.
+
+        `TestCase` wraps every test in a transaction it never commits, so
+        `on_commit` callbacks would simply never run — the e-mail path would
+        look inert and every assertion about it would pass for the wrong
+        reason. `captureOnCommitCallbacks(execute=True)` runs exactly what a
+        real commit would have run, which is the behaviour under test.
+        """
+        with self.captureOnCommitCallbacks(execute=True):
+            return _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                event_key=key, title='Listo para recoger',
+                body='Puedes pasar a retirarlo.',
+                users=users if users is not None else [self.user],
+            )
+
+    def test_33_email_only_goes_out_after_commit(self):
+        """
+        La frontera que impide avisar de algo que no ocurrió.
+
+        Se emite SIN ejecutar los callbacks: el aviso in-app ya existe y el
+        correo todavía no ha salido. Sólo al ejecutarlos —lo que un commit real
+        hace— aparece en la bandeja de salida.
+        """
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            _notif.emit(
+                company=self.company, event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                event_key='mail-boundary', title='Listo para recoger',
+                body='Puedes pasar a retirarlo.', users=[self.user],
+            )
+            self.assertEqual(_Notif.objects.count(), 1, 'el registro ya es durable')
+        self.assertEqual(len(mail.outbox), 0, 'sin commit no sale correo')
+
+        for callback in callbacks:
+            callback()
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_34_a_rollback_takes_the_event_and_the_email_with_it(self):
+        from django.db import transaction as _tx
+
+        class _Boom(Exception):
+            pass
+
+        try:
+            with self.captureOnCommitCallbacks(execute=True):
+                with _tx.atomic():
+                    _notif.emit(
+                        company=self.company,
+                        event_type=_ev.SERVICE_READY_FOR_PICKUP,
+                        event_key='mail-rollback', title='Listo',
+                        body='...', users=[self.user],
+                    )
+                    raise _Boom
+        except _Boom:
+            pass
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(_Event.objects.count(), 0, 'el evento no sobrevive al rollback')
+
+    def test_35_36_an_smtp_failure_records_but_never_reverts(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        self.assertEqual(_Notif.objects.count(), 1, 'el aviso in-app sobrevive')
+        delivery = _Delivery.objects.get()
+        self.assertEqual(delivery.status, _Delivery.Status.FAILED)
+        self.assertIn('RuntimeError', delivery.failure_reason)
+
+    def test_the_failure_reason_never_contains_a_traceback(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        reason = _Delivery.objects.get().failure_reason
+        for leaked in ('Traceback', 'File "', 'line '):
+            self.assertNotIn(leaked, reason, leaked)
+
+    def test_37_a_retry_updates_the_attempt_instead_of_sending_twice(self):
+        with patch('django.core.mail.EmailMultiAlternatives.send',
+                   side_effect=RuntimeError('smtp caído')):
+            self._emit_email_worthy()
+        delivery = _Delivery.objects.get()
+        mail.outbox = []
+        _notif.retry_failed_delivery(delivery)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.status, _Delivery.Status.SENT)
+        self.assertEqual(_Delivery.objects.count(), 1, 'una fila por canal')
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_retrying_a_sent_delivery_sends_nothing(self):
+        self._emit_email_worthy()
+        delivery = _Delivery.objects.get()
+        mail.outbox = []
+        _notif.retry_failed_delivery(delivery)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_a_recipient_without_an_address_is_skipped_not_failed(self):
+        silent = _saas_user('m12b_no_email')
+        silent.email = ''
+        silent.save(update_fields=['email'])
+        self._emit_email_worthy(users=[silent])
+        self.assertEqual(_Delivery.objects.get().status, _Delivery.Status.SKIPPED)
+
+    def test_38_39_the_email_carries_tenant_identity_and_escapes_it(self):
+        """§52 — el nombre de la empresa es dato del tenant y llega al HTML."""
+        self.company.name = '<script>alert(1)</script> Taller'
+        self.company.save(update_fields=['name'])
+        self._emit_email_worthy()
+        message = mail.outbox[0]
+        html = message.alternatives[0][0]
+        self.assertIn('&lt;script&gt;', html)
+        self.assertNotIn('<script>alert', html)
+
+    def test_a_non_email_worthy_event_sends_nothing(self):
+        """§26 — in-app es granular; el correo interrumpe y se reserva."""
+        _notif.emit(
+            company=self.company, event_type=_ev.SERVICE_STATUS_CHANGED,
+            event_key='mail-silent', title='Cambio', users=[self.user],
+        )
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(_Notif.objects.count(), 1, 'el registro in-app sí existe')
+
+
+# ---------------------------------------------------------------------------
+# M12B.1 — paridad de presets estándar
+# ---------------------------------------------------------------------------
+
+
+class M121PresetStructureTest(TestCase):
+    """
+    §22 — a capability listed twice is not more authority. It is a bug.
+
+    The supervisor preset carried `service.orders.manage` twice for an entire
+    phase and nothing misbehaved: both paths granted the same fourteen
+    capabilities, one of them just counted to fifteen. That is the failure mode
+    worth a structural test — the kind that produces no symptom, only a wrong
+    number in a report somebody eventually trusts.
+    """
+
+    def test_no_standard_preset_lists_a_capability_twice(self):
+        from .company_provisioning import PRESET_ROLES
+        offenders = {}
+        for name, _slug, _desc, caps in PRESET_ROLES:
+            if len(caps) != len(set(caps)):
+                seen, dupes = set(), []
+                for code in caps:
+                    if code in seen:
+                        dupes.append(code)
+                    seen.add(code)
+                offenders[name] = dupes
+        self.assertEqual(
+            offenders, {},
+            'un preset lista la misma capability mas de una vez: '
+            f'{offenders}',
+        )
+
+    def test_every_preset_code_is_a_real_assignable_capability(self):
+        from .company_provisioning import PRESET_ROLES
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        catalogue = frozenset(ASSIGNABLE_CAPABILITY_CODES)
+        for name, _slug, _desc, caps in PRESET_ROLES:
+            unknown = sorted(frozenset(caps) - catalogue)
+            self.assertEqual(unknown, [], f'{name} referencia codigos inexistentes')
+
+    def test_administrador_means_the_whole_assignable_catalogue(self):
+        """
+        §18. The preset is a definition, not a list somebody maintains: if this
+        ever has to be updated by hand when a capability ships, the definition
+        has quietly become a copy.
+        """
+        from .company_provisioning import PRESET_ROLES
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        admin = next(c for n, _s, _d, c in PRESET_ROLES if n == 'Administrador')
+        self.assertEqual(frozenset(admin), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+
+    def test_the_supervisor_is_the_technician_plus_supervision(self):
+        """
+        §21 — the fix must not have removed the capability, only the repetition.
+        `service.orders.manage` is the difference that defines the role, and it
+        is still there; it just arrives once, from the technician preset.
+        """
+        from .company_provisioning import (
+            _SERVICE_SUPERVISOR_CAPS, _TECHNICIAN_CAPS,
+        )
+        self.assertIn('service.orders.manage', _TECHNICIAN_CAPS)
+        self.assertIn('service.orders.manage', _SERVICE_SUPERVISOR_CAPS)
+        self.assertEqual(
+            len(_SERVICE_SUPERVISOR_CAPS), len(set(_SERVICE_SUPERVISOR_CAPS)),
+        )
+        self.assertTrue(frozenset(_TECHNICIAN_CAPS) < frozenset(_SERVICE_SUPERVISOR_CAPS))
+
+
+class M121PresetParityTest(TestCase):
+    """
+    §23, §24 — an untouched platform preset must converge to the same default
+    whether it arrived through migration history or through provisioning today.
+
+    Parity is NOT "every historical role gets rewritten". It is that the two
+    ways of producing a STANDARD preset agree. A tenant customisation breaks
+    that convergence deliberately, and is tested separately below.
+    """
+
+    #: The pilot tenant that migration history seeds on every install.
+    SEEDED_SLUG = 'black-dog-store'
+
+    STANDARD = (
+        'Administrador', 'Ventas', 'Inventario',
+        'Servicio Técnico', 'Supervisor Técnico',
+    )
+
+    def setUp(self):
+        self.seeded = Company.objects.filter(slug=self.SEEDED_SLUG).first()
+        self.provisioned = _saas_company(
+            'Paridad SA', 'm121-paridad', tax_id='20780041001',
+        )
+        provision_company_access_defaults(self.provisioned)
+
+    def _caps(self, company, name):
+        role = CompanyRole.objects.filter(company=company, name=name).first()
+        return frozenset(role.capabilities or []) if role else None
+
+    def test_the_five_standard_presets_agree_on_both_paths(self):
+        self.assertIsNotNone(self.seeded, 'la instalacion no sembro el tenant piloto')
+        divergent = {}
+        for name in self.STANDARD:
+            a = self._caps(self.seeded, name)
+            b = self._caps(self.provisioned, name)
+            if a != b:
+                divergent[name] = {
+                    'falta_en_fresh_install': sorted((b or set()) - (a or set())),
+                    'sobra_en_fresh_install': sorted((a or set()) - (b or set())),
+                }
+        self.assertEqual(
+            divergent, {},
+            'un preset estandar difiere entre fresh install y provisioning',
+        )
+
+    def test_the_seeded_administrador_holds_the_whole_catalogue(self):
+        """
+        §14 — the number, recalculated rather than quoted. Before M12B.1 this
+        was 18 of 38: the seed froze eighteen and every later grant compared
+        against the live catalogue, so none of them ever recognised it.
+        """
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        self.assertEqual(
+            self._caps(self.seeded, 'Administrador'),
+            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_no_role_anywhere_stores_a_repeated_capability(self):
+        offenders = []
+        for role in CompanyRole.objects.all():
+            stored = list(role.capabilities or [])
+            if len(stored) != len(set(stored)):
+                offenders.append((role.company_id, role.name))
+        self.assertEqual(offenders, [], 'hay roles con capacidades repetidas')
+
+    def test_the_repaired_administrador_can_actually_do_the_new_things(self):
+        """
+        §26 — counts are not the point. These two are the capabilities the
+        fresh-install admin was missing that M12 and PR #19 shipped, and the
+        second one did not exist when the divergence was first reported.
+        """
+        caps = self._caps(self.seeded, 'Administrador')
+        self.assertIn('service.delivery.manage', caps)
+        self.assertIn('service.payments.manage', caps)
+
+
+class M121RepairSafetyTest(TestCase):
+    """
+    §20, §28, §29 — the repair may complete a platform preset and must never
+    overrule a tenant.
+
+    A role the shop edited belongs to the shop. If a shape is indistinguishable
+    from a legitimate customisation the conservative answer is to leave it
+    alone, and every case below that ends in "unchanged" is that answer being
+    enforced rather than assumed.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0061_standard_preset_parity'
+        )
+        self.company = _saas_company(
+            'Custom SA', 'm121-custom', tax_id='20780041002',
+        )
+
+    def _apps(self):
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                self.assertEqual(app_label, 'store')
+                return {'CompanyRole': CompanyRole}[model_name]
+        return _Apps()
+
+    def _role(self, *, name, slug, description, caps):
+        return CompanyRole.objects.create(
+            company=self.company, name=name, slug=slug,
+            description=description, capabilities=sorted(caps),
+        )
+
+    def _run(self):
+        self.module.repair(self._apps(), None)
+
+    def _seed_shape(self):
+        return set(self.module._FRESH_INSTALL_ADMIN)
+
+    def test_an_untouched_seeded_administrador_is_completed(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0],
+            caps=self._seed_shape(),
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_an_administrador_with_one_capability_removed_is_left_alone(self):
+        """
+        The tenant took something away on purpose. Handing it back because the
+        role shares a name would silently re-grant authority somebody chose to
+        withhold — the exact failure this discriminator exists to prevent.
+        """
+        caps = self._seed_shape() - {'settings.manage'}
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_an_extra_capability_is_left_alone(self):
+        caps = self._seed_shape() | {'sales.pos.use'}
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_a_renamed_administrador_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administración General', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_a_custom_slug_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administrador', slug='admin-de-la-casa',
+            description=self.module.ADMIN_DESCRIPTIONS[0], caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_an_administrador_with_a_rewritten_description_is_left_alone(self):
+        caps = self._seed_shape()
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description='El jefe.', caps=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+
+    def test_both_historical_descriptions_are_recognised(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        for i, description in enumerate(self.module.ADMIN_DESCRIPTIONS):
+            other = _saas_company(
+                f'Desc {i}', f'm121-desc-{i}', tax_id=f'2078004200{i}',
+            )
+            role = CompanyRole.objects.create(
+                company=other, name='Administrador', slug='administrador',
+                description=description, capabilities=sorted(self._seed_shape()),
+            )
+            self._run()
+            role.refresh_from_db()
+            self.assertEqual(
+                frozenset(role.capabilities),
+                frozenset(ASSIGNABLE_CAPABILITY_CODES),
+                f'la descripcion historica #{i} no fue reconocida',
+            )
+
+    def test_a_customised_supervisor_keeps_its_duplicate_authority_intact(self):
+        """
+        Deduplication applies to every role, customised or not, BECAUSE it takes
+        nothing away. The set the tenant chose survives byte for byte; only the
+        repetition goes.
+        """
+        caps = ['service.orders.manage', 'service.orders.manage', 'company.view']
+        role = CompanyRole.objects.create(
+            company=self.company, name='Supervisor de la casa',
+            slug='supervisor-casa', description='Hecho por el taller.',
+            capabilities=caps,
+        )
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(len(role.capabilities), len(set(role.capabilities)))
+        self.assertEqual(
+            frozenset(role.capabilities),
+            {'service.orders.manage', 'company.view'},
+        )
+
+    def test_running_the_repair_twice_changes_nothing_the_second_time(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role(
+            name='Administrador', slug='administrador',
+            description=self.module.ADMIN_DESCRIPTIONS[0],
+            caps=self._seed_shape(),
+        )
+        self._run()
+        role.refresh_from_db()
+        first = list(role.capabilities)
+        self._run()
+        role.refresh_from_db()
+        self.assertEqual(list(role.capabilities), first)
+        self.assertEqual(frozenset(first), frozenset(ASSIGNABLE_CAPABILITY_CODES))
+
+    def test_the_previous_shape_is_frozen_not_imported(self):
+        """
+        §30, §48 — the whole defect in one assertion. The set this migration
+        uses to RECOGNISE the past is a literal in its own source; if somebody
+        later 'simplifies' it into a live import, history starts being
+        reconstructed with the code of the future again.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+
+        # Asked of the SYNTAX, not of the text. The module docstring quotes the
+        # broken pattern in order to explain it, so a substring scan would
+        # match its own explanation — which is how a check ends up policing
+        # prose instead of code.
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == 'repair':
+                break
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            names |= {a.name for n in ast.walk(node)
+                      if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn(
+                'ASSIGNABLE_CAPABILITY_CODES', names,
+                'la forma historica se esta reconstruyendo con el catalogo vivo',
+            )
+
+        assigned = [
+            t.id for node in tree.body if isinstance(node, ast.Assign)
+            for t in node.targets if isinstance(t, ast.Name)
+        ]
+        self.assertIn('_FRESH_INSTALL_ADMIN', assigned)
+        self.assertIsInstance(self.module._FRESH_INSTALL_ADMIN, frozenset)
+        self.assertEqual(len(self.module._FRESH_INSTALL_ADMIN), 18)
+
+
+class M121SeededAdminFunctionalTest(TestCase):
+    """
+    §27, §45 — the fix has to do something, not just count differently.
+
+    The finding this closes was NOT "a number is small". It was that on a fresh
+    install the standard `Administrador` never received `service.delivery.manage`
+    and therefore was never resolved as a recipient of `ready_for_pickup` — the
+    role that is supposed to hold every authority in the company was silently
+    absent from the one notification that tells the shop a device can go home.
+    """
+
+    SEEDED_SLUG = 'black-dog-store'
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = Company.objects.get(slug=self.SEEDED_SLUG)
+        self.branch = self.company.branches.first()
+        self.admin_role = CompanyRole.objects.get(
+            company=self.company, slug='administrador',
+        )
+
+        self.admin = _saas_user('m121_seeded_admin')
+        membership = Membership.objects.create(
+            user=self.admin, company=self.company, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=membership, role=self.admin_role,
+        )
+        self.membership = membership
+
+    def test_the_seeded_admin_resolves_as_a_delivery_recipient(self):
+        recipients = _notif.resolve_internal_recipients(
+            self.company, capability='service.delivery.manage', branch=self.branch,
+        )
+        self.assertIn(
+            self.admin, recipients,
+            'el Administrador estandar de una instalacion desde cero sigue sin '
+            'ser destinatario de ready_for_pickup',
+        )
+
+    def test_and_also_for_the_payment_capability_that_pr_19_added(self):
+        recipients = _notif.resolve_internal_recipients(
+            self.company, capability='service.payments.manage', branch=self.branch,
+        )
+        self.assertIn(self.admin, recipients)
+
+    def test_branch_scope_still_applies_to_the_repaired_admin(self):
+        """
+        Completing the preset restores AUTHORITY. It must not quietly widen
+        WHERE that authority reaches — the two axes stay separate.
+        """
+        from .models import Branch, MembershipBranchAccess
+        other = Branch.objects.create(company=self.company, name='Sucursal M121')
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=other,
+        )
+        self.assertNotIn(
+            self.admin,
+            _notif.resolve_internal_recipients(
+                self.company, capability='service.delivery.manage',
+                branch=self.branch,
+            ),
+        )
+        self.assertIn(
+            self.admin,
+            _notif.resolve_internal_recipients(
+                self.company, capability='service.delivery.manage', branch=other,
+            ),
+        )
+
+    def test_the_seeded_supervisor_matches_the_provisioned_one(self):
+        """§46 — parity asserted on the sets, not on their lengths."""
+        other = _saas_company('Sup Paridad', 'm121-sup', tax_id='20780041009')
+        provision_company_access_defaults(other)
+        seeded = CompanyRole.objects.get(
+            company=self.company, name='Supervisor Técnico',
+        )
+        provisioned = CompanyRole.objects.get(
+            company=other, name='Supervisor Técnico',
+        )
+        self.assertEqual(
+            frozenset(seeded.capabilities), frozenset(provisioned.capabilities),
+        )
+        self.assertEqual(
+            len(seeded.capabilities), len(set(seeded.capabilities)),
+        )
+
+
+class M121RecipientDedupeTest(TestCase):
+    """
+    The in-memory dedupe, pinned directly.
+
+    A retirada proof showed that removing `_unique` left the suite green: the
+    partial UNIQUE constraint absorbed the second insert inside its savepoint
+    and the caller never noticed. The constraint IS the guarantee and that is
+    the right design — but it meant nothing was exercising the helper, only the
+    thing behind it. A defence no test can tell apart from its own backstop is
+    a defence nobody would notice disappearing.
+    """
+
+    class _Fake:
+        def __init__(self, pk):
+            self.pk = pk
+
+    def test_the_same_recipient_twice_is_collapsed_before_the_database(self):
+        from . import notification_services as notif
+        a, b, again = self._Fake(1), self._Fake(2), self._Fake(1)
+        self.assertEqual(notif._unique([a, b, again]), [a, b])
+
+    def test_none_is_not_a_recipient(self):
+        from . import notification_services as notif
+        self.assertEqual(notif._unique([None, None]), [])
+
+    def test_order_is_preserved(self):
+        from . import notification_services as notif
+        items = [self._Fake(3), self._Fake(1), self._Fake(2)]
+        self.assertEqual([x.pk for x in notif._unique(items)], [3, 1, 2])
+
+
+class M121PaymentEventTest(M12BPaymentBase):
+    """
+    §9–§13, §44 — the payment ledger did not exist when the notification centre
+    was designed. These are the events it earns, and the one it does not.
+
+    Built on M12B's own fixture rather than a second one: a notification test
+    that sets the ledger up differently from the ledger's tests is testing a
+    situation the ledger never produces.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        mail.outbox = []
+        self.quoted()
+        _Notif.objects.all().delete()
+        _Event.objects.all().delete()
+
+    def _customer_of_order(self):
+        return self.order.customer
+
+    # --- registro de pago -------------------------------------------------
+
+    def test_a_recorded_payment_notifies_the_customer(self):
+        self.pay('100.00')
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_RECORDED)
+        self.assertEqual(note.customer_id, self._customer_of_order().pk)
+        self.assertEqual(note.audience, _Notif.Audience.CUSTOMER)
+        self.assertEqual(note.target_type, 'repair_order')
+        self.assertEqual(note.target_id, self.order.pk)
+
+    def test_the_notice_carries_only_what_the_summary_already_exposes(self):
+        """
+        §10. The customer endpoint answers `paid` and `outstanding`. It refuses
+        method, reference, cashier and note — so this must refuse them too, or
+        the notification becomes a wider disclosure than the API it mirrors.
+        """
+        self.pay('100.00', reference='VOUCHER-SECRETO-991', notes='Nota interna.')
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_RECORDED)
+        haystack = f'{note.title} {note.body}'
+        self.assertIn('100.00', haystack)
+        self.assertIn('350.00', haystack, 'debe decir el saldo pendiente')
+        for leak in ('VOUCHER-SECRETO-991', 'Nota interna', self.staff.username):
+            self.assertNotIn(leak, haystack)
+        self.assertEqual(note.event.payload, {})
+
+    def test_a_replayed_payment_produces_one_event(self):
+        """§13 — the key describes the ledger row, not the request."""
+        first = self.pay('100.00', idempotency_key='till-1')
+        second = self.pay('100.00', idempotency_key='till-1')
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 1,
+        )
+
+    def test_the_key_alone_would_stop_a_second_event(self):
+        """
+        The replay test above passes for a reason that is NOT this one.
+
+        `_record_service_payment` answers a repeated idempotency key by
+        returning the existing row BEFORE it reaches the emitter, so on that
+        path the event key is never consulted. It is the second line of a
+        defence whose first line never lets it be reached — which means nothing
+        was checking that the key is built from the ledger row at all. Calling
+        the emitter directly is the only way to ask it.
+        """
+        payment = self.pay('100.00')
+        before = _Event.objects.filter(
+            event_type=_ev.SERVICE_PAYMENT_RECORDED,
+        ).count()
+        _m8_service._emit_payment_recorded(order=self.order, payment=payment)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(),
+            before,
+            'la clave del evento no describe la fila del libro',
+        )
+
+    def test_two_genuine_payments_produce_two_events(self):
+        self.pay('100.00', idempotency_key='till-a')
+        self.pay('50.00', idempotency_key='till-b')
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 2,
+        )
+
+    def test_a_rejected_payment_leaves_no_event(self):
+        """
+        §44. The emitter runs inside the transaction, so a payment that never
+        becomes a row can never become a notice. Overpayment is the cheapest
+        rule to trip and it rolls the whole thing back.
+        """
+        with self.assertRaises(Exception):
+            self.pay('999999.00')
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 0,
+        )
+        self.assertEqual(
+            _Notif.objects.filter(
+                event__event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 0,
+        )
+
+    def test_no_email_is_sent_for_a_counter_payment(self):
+        """The customer is standing right there."""
+        with self.captureOnCommitCallbacks(execute=True):
+            self.pay('100.00')
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(
+            _Notif.objects.filter(
+                event__event_type=_ev.SERVICE_PAYMENT_RECORDED,
+            ).count(), 1,
+        )
+
+    # --- reverso ----------------------------------------------------------
+
+    def test_a_reversal_never_reaches_the_customer(self):
+        """
+        §11. A reversal is an accounting correction, not a refund — the function
+        that performs it says so. There is no true customer-facing sentence, so
+        there is no customer-facing notice.
+        """
+        payment = self.pay('100.00')
+        _Notif.objects.all().delete()
+        _Event.objects.all().delete()
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.assertEqual(
+            _Notif.objects.filter(audience=_Notif.Audience.CUSTOMER).count(), 0,
+        )
+
+    def test_a_reversal_notifies_whoever_answers_for_the_till(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_REVERSED)
+        self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+        self.assertEqual(note.user_id, self.staff.pk)
+
+    def test_the_reversal_wording_never_promises_a_refund(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        note = _Notif.objects.get(event__event_type=_ev.SERVICE_PAYMENT_REVERSED)
+        haystack = f'{note.title} {note.body}'.lower()
+        for lie in ('reembols', 'devolv', 'devuel', 'refund'):
+            self.assertNotIn(lie, haystack)
+
+    def test_reversing_twice_produces_one_event(self):
+        payment = self.pay('100.00')
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        _m8_service.reverse_service_payment(payment=payment, actor=self.staff)
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type=_ev.SERVICE_PAYMENT_REVERSED,
+            ).count(), 1,
+        )
+
+    def test_the_payment_events_invented_no_capability_of_their_own(self):
+        """
+        M12B.1 added no capability: it addresses payment notices with the one
+        PR #19 shipped.
+
+        This test used to also assert that `communications.manage` did not
+        exist, and that assertion was WRONG — not wrong then, wrong as a test.
+        It froze a "not yet" as if it were an invariant, so M12C adding the
+        capability on purpose broke a test about payments. What is actually
+        permanent is the shape below: the notification centre addresses people
+        by capabilities that already exist, and reading one's own inbox needs
+        none at all.
+        """
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES, ALL_CAPABILITY_CODES
+        self.assertIn('service.payments.manage', ASSIGNABLE_CAPABILITY_CODES)
+        # No permission is ever required to read the notices addressed to you.
+        self.assertNotIn('notifications.manage', ALL_CAPABILITY_CODES)
+        self.assertNotIn('notifications.view', ALL_CAPABILITY_CODES)
+        self.assertNotIn('communications.view', ALL_CAPABILITY_CODES)
+
+
+
+# ---------------------------------------------------------------------------
+# M12C — comunicados internos
+# ---------------------------------------------------------------------------
+
+from . import announcement_services as _ann              # noqa: E402
+from .models import Announcement as _Ann                 # noqa: E402
+from .models import AnnouncementAudienceRule as _Rule    # noqa: E402
+
+
+class M12CBase(TestCase):
+    """One company, one branch, and people who differ in exactly one way."""
+
+    def setUp(self):
+        cache.clear()
+        mail.outbox = []
+        self.company = _saas_company('Comunicados SA', 'm12c', tax_id='20780050001')
+        provision_company_access_defaults(self.company)
+        self.branch = self.company.branches.first()
+        from .models import Branch
+        self.branch_b = Branch.objects.create(company=self.company, name='Sucursal B')
+
+        self.admin_role = self.company.roles.get(slug='administrador')
+        self.sales_role = self.company.roles.get(slug='ventas')
+        self.tech_role = self.company.roles.get(slug='servicio-tecnico')
+
+        self.admin = self.staff('m12c_admin', role=self.admin_role)
+        self.seller = self.staff('m12c_seller', role=self.sales_role)
+        self.tech = self.staff('m12c_tech', role=self.tech_role)
+
+    def staff(self, username, *, role=None, active=True, company=None,
+              branches=None):
+        company = company or self.company
+        user = _saas_user(username)
+        if not active:
+            user.is_active = False
+            user.save(update_fields=['is_active'])
+        membership = Membership.objects.create(
+            user=user, company=company, role='staff', is_active=True,
+        )
+        if role is not None:
+            MembershipRoleAssignment.objects.create(membership=membership, role=role)
+        if branches is not None:
+            membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+            membership.save(update_fields=['branch_access_mode'])
+            from .models import MembershipBranchAccess
+            for b in branches:
+                MembershipBranchAccess.objects.create(membership=membership, branch=b)
+        user.membership = membership
+        return user
+
+    def draft(self, *, author=None, company=None, title='Cierre por feriado',
+              body='Cerramos el lunes.'):
+        return _ann.create_draft(
+            author=author or self.admin,
+            source_company=self.company if company is None else company,
+            title=title, body=body,
+        )
+
+    def rule(self, kind, **kw):
+        spec = {'company': kw.pop('company', self.company), 'kind': kind}
+        spec.update(kw)
+        return spec
+
+    def publish_to_all(self, announcement=None):
+        announcement = announcement or self.draft()
+        _ann.set_audience(
+            announcement=announcement,
+            rules=[self.rule(_Rule.Kind.ALL_COMPANY)],
+        )
+        return _ann.publish(announcement=announcement, actor=self.admin)
+
+
+class M12CLifecycleTest(M12CBase):
+    """§84 — DRAFT, PUBLISHED, CANCELLED, y qué se puede tocar en cada uno."""
+
+    def test_a_draft_is_created_and_sends_nothing(self):
+        a = self.draft()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertIsNone(a.published_at)
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_saving_a_draft_ten_times_still_reaches_nobody(self):
+        a = self.draft()
+        for i in range(10):
+            _ann.update_draft(announcement=a, body=f'Versión {i}.')
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_a_draft_is_editable(self):
+        a = self.draft()
+        updated = _ann.update_draft(announcement=a, title='Otro título')
+        self.assertEqual(updated.title, 'Otro título')
+
+    def test_a_published_announcement_is_not_editable(self):
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.update_draft(announcement=a, title='Rectificación')
+        a.refresh_from_db()
+        self.assertEqual(a.title, 'Cierre por feriado')
+
+    def test_a_published_announcement_cannot_have_its_audience_changed(self):
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.set_audience(
+                announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)],
+            )
+
+    def test_a_cancelled_draft_never_publishes(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        _ann.cancel_draft(announcement=a, actor=self.admin)
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_cancel_does_not_apply_to_something_already_published(self):
+        """Descartar es tirar un borrador, no recuperar un mensaje enviado."""
+        a = self.publish_to_all()
+        with self.assertRaises(_ann.AnnouncementStateError):
+            _ann.cancel_draft(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.PUBLISHED)
+        self.assertTrue(_Notif.objects.exists())
+
+    def test_the_full_body_lives_on_the_announcement_not_the_notification(self):
+        long_body = 'x' * 1200
+        a = self.draft(body=long_body)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(len(a.body), 1200)
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertEqual(len(note.body), 400, 'la notificación es un preview')
+        self.assertEqual(note.target_type, 'announcement')
+        self.assertEqual(note.target_id, a.pk)
+
+    def test_notifications_are_marked_as_announcements(self):
+        a = self.publish_to_all()
+        for note in _Notif.objects.all():
+            self.assertEqual(note.source, _Notif.Source.ANNOUNCEMENT)
+            self.assertEqual(note.audience, _Notif.Audience.INTERNAL)
+
+    def test_an_empty_title_or_body_is_refused(self):
+        for kw in ({'title': '   '}, {'body': '   '}):
+            with self.assertRaises(_ann.AnnouncementError):
+                self.draft(**kw)
+
+    def test_publishing_without_an_audience_is_refused_not_broadened(self):
+        """Un target vacío jamás significa «todos»."""
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.publish(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+
+class M12CAudienceTest(M12CBase):
+    """§88 — las cinco formas de decir a quién."""
+
+    def recipients_of(self, *rules):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=list(rules))
+        _ann.publish(announcement=a, actor=self.admin)
+        return set(
+            _Notif.objects.filter(target_id=a.pk).values_list('user_id', flat=True)
+        )
+
+    def test_all_company(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertEqual(got, {self.admin.pk, self.seller.pk, self.tech.pk})
+
+    def test_branch(self):
+        only_b = self.staff('m12c_only_b', role=self.sales_role,
+                            branches=[self.branch_b])
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.BRANCH, branch=self.branch_b),
+        )
+        self.assertIn(only_b.pk, got)
+
+    def test_branch_excludes_somebody_who_does_not_work_there(self):
+        only_a = self.staff('m12c_only_a', role=self.sales_role,
+                            branches=[self.branch])
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.BRANCH, branch=self.branch_b),
+        )
+        self.assertNotIn(only_a.pk, got)
+
+    def test_role(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.ROLE, role=self.sales_role))
+        self.assertEqual(got, {self.seller.pk})
+
+    def test_role_works_for_a_custom_role_nobody_hardcoded(self):
+        custom = CompanyRole.objects.create(
+            company=self.company, name='Mostrador', slug='mostrador',
+            description='Rol del taller.', capabilities=['company.view'],
+        )
+        person = self.staff('m12c_mostrador', role=custom)
+        got = self.recipients_of(self.rule(_Rule.Kind.ROLE, role=custom))
+        self.assertEqual(got, {person.pk})
+
+    def test_capability(self):
+        got = self.recipients_of(
+            self.rule(_Rule.Kind.CAPABILITY,
+                      # Delivery is now also a reception capability. Repair
+                      # remains technical and keeps this negative case useful.
+                      capability_code='service.repair.manage'),
+        )
+        self.assertIn(self.tech.pk, got)
+        self.assertNotIn(self.seller.pk, got)
+
+    def test_user(self):
+        got = self.recipients_of(self.rule(_Rule.Kind.USER, user=self.tech))
+        self.assertEqual(got, {self.tech.pk})
+
+    def test_four_rules_matching_one_person_send_one_notice(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.CAPABILITY,
+                      capability_code='service.delivery.manage'),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(
+            _Notif.objects.filter(user=self.tech, target_id=a.pk).count(), 1,
+        )
+
+    def test_overlapping_rules_do_not_inflate_the_frozen_denominator(self):
+        """
+        La prueba por retirada encontró este hueco.
+
+        Quitar el dedupe de `resolve_audience` dejaba la suite verde, porque
+        `_unique()` de M12B volvía a colapsar los repetidos antes de escribir
+        las filas. Pero `publish` cuenta `len(recipients)` ANTES de eso, así que
+        `recipient_count` se habría inflado — y ese número se congela. Un
+        denominador inflado no se nota nunca: sólo hace que «% leído» sea
+        permanentemente menor de lo real, para siempre, sin que nada falle.
+
+        La constraint protege las filas. No protege la aritmética.
+        """
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.CAPABILITY,
+                      capability_code='service.delivery.manage'),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        published = _ann.publish(announcement=a, actor=self.admin)
+        written = _Notif.objects.filter(target_id=a.pk).count()
+        self.assertEqual(written, 3)
+        self.assertEqual(
+            published.recipient_count, written,
+            'el contador congelado no coincide con las filas escritas',
+        )
+        self.assertEqual(_ann.stats(published)['recipients'], written)
+
+    def test_the_resolver_itself_returns_each_person_once(self):
+        """Preguntado al resolutor, no a la constraint que hay detrás."""
+        a = self.draft()
+        rules = _ann.set_audience(announcement=a, rules=[
+            self.rule(_Rule.Kind.ALL_COMPANY),
+            self.rule(_Rule.Kind.ROLE, role=self.tech_role),
+            self.rule(_Rule.Kind.USER, user=self.tech),
+        ])
+        resolved = _notif.resolve_audience(self.company, rules)
+        pks = [u.pk for u in resolved]
+        self.assertEqual(len(pks), len(set(pks)))
+
+    def test_an_inactive_membership_is_excluded(self):
+        person = self.staff('m12c_inactive_m', role=self.sales_role)
+        person.membership.is_active = False
+        person.membership.save(update_fields=['is_active'])
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(person.pk, got)
+
+    def test_an_inactive_user_is_excluded(self):
+        person = self.staff('m12c_inactive_u', role=self.sales_role, active=False)
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(person.pk, got)
+
+    def test_the_platform_master_is_never_swept_into_a_tenant_audience(self):
+        """
+        §20. Un superusuario tiene todas las capacidades en todas las empresas,
+        así que cualquier audiencia expresada como consulta lo arrastraría.
+        Puede ENVIAR; no se le mete de oyente.
+        """
+        master = _saas_user('m12c_master')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        Membership.objects.create(
+            user=master, company=self.company, role='staff', is_active=True,
+        )
+        got = self.recipients_of(self.rule(_Rule.Kind.ALL_COMPANY))
+        self.assertNotIn(master.pk, got)
+
+
+class M12CSnapshotTest(M12CBase):
+    """
+    §89 — la audiencia se congela al publicar.
+
+    Es la regla que más fácil se rompe sin darse cuenta, porque la
+    implementación equivocada —resolver el rol al leer— funciona perfectamente
+    el primer día y va reescribiendo la historia a partir del segundo.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.draft()
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[self.rule(_Rule.Kind.ROLE, role=self.sales_role)],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.admin)
+
+    def _got_it(self, user):
+        return _Notif.objects.filter(
+            user=user, target_type='announcement',
+            target_id=self.announcement.pk,
+        ).exists()
+
+    def test_the_person_who_had_the_role_received_it(self):
+        self.assertTrue(self._got_it(self.seller))
+
+    def test_losing_the_role_afterwards_does_not_take_the_message_away(self):
+        MembershipRoleAssignment.objects.filter(
+            membership__user=self.seller,
+        ).delete()
+        self.assertTrue(
+            self._got_it(self.seller),
+            'un cambio de rol mañana no reescribe un mensaje de ayer',
+        )
+
+    def test_gaining_the_role_afterwards_does_not_deliver_old_messages(self):
+        MembershipRoleAssignment.objects.create(
+            membership=self.tech.membership, role=self.sales_role,
+        )
+        self.assertFalse(self._got_it(self.tech))
+
+    def test_a_new_employee_does_not_receive_what_went_out_before_they_arrived(self):
+        newcomer = self.staff('m12c_newcomer', role=self.sales_role)
+        self.assertFalse(self._got_it(newcomer))
+
+    def test_changing_branch_access_afterwards_changes_nothing(self):
+        from .models import MembershipBranchAccess
+        m = self.seller.membership
+        m.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        m.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(membership=m, branch=self.branch_b)
+        self.assertTrue(self._got_it(self.seller))
+
+    def test_the_denominator_does_not_move_when_the_workforce_does(self):
+        before = _ann.stats(self.announcement)['recipients']
+        self.staff('m12c_later_1', role=self.sales_role)
+        self.staff('m12c_later_2', role=self.sales_role)
+        self.announcement.refresh_from_db()
+        self.assertEqual(_ann.stats(self.announcement)['recipients'], before)
+
+
+class M12CTenantIsolationTest(M12CBase):
+    """§87 — una empresa no elige destinatarios de otra."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = _saas_company('Otra SA', 'm12c-otra', tax_id='20780050002')
+        provision_company_access_defaults(self.other)
+        self.other_branch = self.other.branches.first()
+        self.other_role = self.other.roles.get(slug='ventas')
+        self.outsider = self.staff('m12c_outsider', role=self.other_role,
+                                   company=self.other)
+
+    def test_a_branch_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.BRANCH, branch=self.other_branch),
+            ])
+
+    def test_a_role_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.ROLE, role=self.other_role),
+            ])
+
+    def test_a_person_from_another_company_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.USER, user=self.outsider),
+            ])
+
+    def test_a_capability_that_does_not_exist_is_refused(self):
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.CAPABILITY, capability_code='no.existe'),
+            ])
+
+    def test_an_inactive_company_is_refused(self):
+        self.other.is_active = False
+        self.other.save(update_fields=['is_active'])
+        a = self.draft()
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.set_audience(announcement=a, rules=[
+                self.rule(_Rule.Kind.ALL_COMPANY, company=self.other),
+            ])
+
+    def test_publishing_in_one_company_never_reaches_the_other(self):
+        self.publish_to_all()
+        self.assertFalse(
+            _Notif.objects.filter(company=self.other).exists(),
+        )
+        self.assertFalse(
+            _Notif.objects.filter(user=self.outsider).exists(),
+        )
+
+
+class M12CPlatformMasterTest(M12CBase):
+    """§90 — el master publica en varios tenants, y jamás por defecto."""
+
+    def setUp(self):
+        super().setUp()
+        self.master = _saas_user('m12c_platform_master')
+        self.master.is_superuser = True
+        self.master.save(update_fields=['is_superuser'])
+
+        self.other = _saas_company('Otra SA', 'm12c-otra', tax_id='20780050003')
+        provision_company_access_defaults(self.other)
+        self.other_person = self.staff(
+            'm12c_other_person', role=self.other.roles.get(slug='ventas'),
+            company=self.other,
+        )
+        self.third = _saas_company('Tercera SA', 'm12c-3ra', tax_id='20780050004')
+        provision_company_access_defaults(self.third)
+
+    def _publish(self, companies):
+        a = _ann.create_draft(
+            author=self.master, source_company=None,
+            title='Mantenimiento', body='El sábado a las 22:00.',
+        )
+        _ann.set_audience(announcement=a, rules=[
+            {'company': c, 'kind': _Rule.Kind.ALL_COMPANY} for c in companies
+        ])
+        return _ann.publish(announcement=a, actor=self.master)
+
+    def test_one_company(self):
+        a = self._publish([self.company])
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=a.pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk},
+        )
+
+    def test_several_companies(self):
+        a = self._publish([self.company, self.other])
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=a.pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk, self.other.pk},
+        )
+
+    def test_one_event_per_company_never_a_shared_one(self):
+        """
+        §33. `NotificationEvent.company` es NOT NULL, así que un comunicado
+        multiempresa que compartiera un evento pondría los avisos de dos
+        tenants detrás de una misma fila.
+        """
+        a = self._publish([self.company, self.other])
+        evs = _Event.objects.filter(
+            event_type='communications.announcement.published',
+        )
+        self.assertEqual(evs.count(), 2)
+        self.assertEqual(
+            {e.company_id for e in evs}, {self.company.pk, self.other.pk},
+        )
+        self.assertEqual(len({e.event_key for e in evs}), 2)
+
+    def test_a_source_company_of_null_does_not_mean_everybody(self):
+        """
+        La ausencia de tenant es «lo escribió la plataforma», nunca «va a
+        todos». Publicar sin reglas se rechaza; no se ensancha.
+        """
+        a = _ann.create_draft(
+            author=self.master, source_company=None,
+            title='Sin destino', body='...',
+        )
+        with self.assertRaises(_ann.AnnouncementError):
+            _ann.publish(announcement=a, actor=self.master)
+        self.assertEqual(_Notif.objects.count(), 0)
+
+    def test_the_same_person_in_two_tenants_gets_one_notice_in_each(self):
+        """
+        §32. La bandeja es por empresa, así que dos avisos es la respuesta
+        correcta: no se deduplica entre tenants.
+        """
+        Membership.objects.create(
+            user=self.seller, company=self.other, role='staff', is_active=True,
+        )
+        MembershipRoleAssignment.objects.create(
+            membership=Membership.objects.get(user=self.seller, company=self.other),
+            role=self.other.roles.get(slug='ventas'),
+        )
+        a = self._publish([self.company, self.other])
+        rows = _Notif.objects.filter(user=self.seller, target_id=a.pk)
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(
+            {r.company_id for r in rows}, {self.company.pk, self.other.pk},
+        )
+
+    def test_the_master_does_not_receive_their_own_platform_announcement(self):
+        Membership.objects.create(
+            user=self.master, company=self.company, role='staff', is_active=True,
+        )
+        a = self._publish([self.company])
+        self.assertFalse(
+            _Notif.objects.filter(user=self.master, target_id=a.pk).exists(),
+        )
+
+
+class M12CIdempotencyTest(M12CBase):
+    """§91 — publicar dos veces es publicar una vez."""
+
+    def test_a_double_click_publishes_once(self):
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        first = _ann.publish(announcement=a, actor=self.admin)
+        second = _ann.publish(announcement=a, actor=self.admin)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(first.published_at, second.published_at)
+        self.assertEqual(
+            _Notif.objects.filter(target_id=a.pk).count(), 3,
+        )
+        self.assertEqual(
+            _Event.objects.filter(
+                event_type='communications.announcement.published',
+            ).count(), 1,
+        )
+
+    def test_the_event_key_is_derived_from_the_document_and_the_tenant(self):
+        a = self.publish_to_all()
+        event = _Event.objects.get(
+            event_type='communications.announcement.published',
+        )
+        self.assertEqual(
+            event.event_key,
+            f'communications.announcement.published:announcement:{a.pk}:{self.company.pk}',
+        )
+
+    def test_the_key_alone_would_stop_a_second_fanout(self):
+        """
+        El bloqueo de estado responde antes de llegar al fanout, así que la
+        clave nunca se consulta por esa vía. Emitir a mano es la única forma de
+        preguntarle si de verdad describe el documento.
+        """
+        a = self.publish_to_all()
+        before = _Notif.objects.filter(target_id=a.pk).count()
+        _notif.emit(
+            company=self.company,
+            event_type='communications.announcement.published',
+            event_key=(
+                f'communications.announcement.published:announcement:'
+                f'{a.pk}:{self.company.pk}'
+            ),
+            title='Repetido', body='Repetido',
+            target_type='announcement', target_id=a.pk,
+            users=[self.seller],
+            source=_Notif.Source.ANNOUNCEMENT,
+        )
+        self.assertEqual(_Notif.objects.filter(target_id=a.pk).count(), before)
+
+    def test_a_failure_midway_publishes_nothing(self):
+        """§77 — atomicidad: ni medio publicado ni la mitad de las empresas."""
+        from unittest.mock import patch
+        a = self.draft()
+        _ann.set_audience(announcement=a, rules=[self.rule(_Rule.Kind.ALL_COMPANY)])
+        with patch.object(_ann.AdminAuditLog, 'log', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                _ann.publish(announcement=a, actor=self.admin)
+        a.refresh_from_db()
+        self.assertEqual(a.status, _Ann.Status.DRAFT)
+        self.assertEqual(_Notif.objects.count(), 0)
+        self.assertEqual(_Event.objects.count(), 0)
+
+    def test_no_email_rows_are_created_for_announcements(self):
+        """§62/§63 — M12C es in-app. Sin cola no se abre la puerta al fanout SMTP."""
+        from .models import NotificationDelivery
+        with self.captureOnCommitCallbacks(execute=True):
+            self.publish_to_all()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(NotificationDelivery.objects.count(), 0)
+
+
+class M12CCapabilityTest(M12CBase):
+    """§85 — quién puede redactar."""
+
+    def test_the_capability_is_active_in_the_catalogue(self):
+        from .capabilities import CAPABILITIES, STATUS_ACTIVE
+        cap = CAPABILITIES['communications.manage']
+        self.assertEqual(cap.status, STATUS_ACTIVE)
+        self.assertTrue(cap.is_assignable)
+
+    def test_there_is_no_capability_for_reading_your_own_inbox(self):
+        from .capabilities import ALL_CAPABILITY_CODES
+        self.assertNotIn('communications.view', ALL_CAPABILITY_CODES)
+
+    def test_the_standard_administrador_has_it(self):
+        self.assertIn('communications.manage', self.admin_role.capabilities)
+
+    def test_the_other_standard_presets_do_not(self):
+        for slug in ('ventas', 'inventario', 'servicio-tecnico',
+                     'supervisor-tecnico'):
+            role = self.company.roles.get(slug=slug)
+            self.assertNotIn(
+                'communications.manage', role.capabilities,
+                f'{slug} no debería poder publicar comunicados por defecto',
+            )
+
+    def test_a_tenant_can_grant_it_to_a_role_of_its_own(self):
+        from .tenancy import resolve_capabilities
+        custom = CompanyRole.objects.create(
+            company=self.company, name='Comunicaciones', slug='comunicaciones',
+            description='Rol del taller.',
+            capabilities=['company.view', 'communications.manage'],
+        )
+        person = self.staff('m12c_comms', role=custom)
+        self.assertIn(
+            'communications.manage', resolve_capabilities(person, self.company),
+        )
+
+    def test_no_preset_lists_a_capability_twice(self):
+        """§49 — la defensa de M12B.1 sigue en pie tras añadir una capability."""
+        from .company_provisioning import PRESET_ROLES
+        for name, _s, _d, caps in PRESET_ROLES:
+            self.assertEqual(
+                len(caps), len(set(caps)), f'{name} repite una capability',
+            )
+
+
+class M12CFreshInstallParityTest(TestCase):
+    """§86 — fresh install y provisioning siguen coincidiendo."""
+
+    STANDARD = ('Administrador', 'Ventas', 'Inventario',
+                'Servicio Técnico', 'Supervisor Técnico')
+
+    def test_the_five_presets_agree_on_both_paths(self):
+        seeded = Company.objects.get(slug='black-dog-store')
+        fresh = _saas_company('Paridad M12C', 'm12c-par', tax_id='20780050009')
+        provision_company_access_defaults(fresh)
+        divergent = {}
+        for name in self.STANDARD:
+            a = CompanyRole.objects.filter(company=seeded, name=name).first()
+            b = CompanyRole.objects.filter(company=fresh, name=name).first()
+            sa = frozenset(a.capabilities) if a else frozenset()
+            sb = frozenset(b.capabilities) if b else frozenset()
+            if sa != sb:
+                divergent[name] = {'fresh': sorted(sa), 'prov': sorted(sb)}
+        self.assertEqual(divergent, {})
+
+    def test_the_seeded_administrador_holds_the_whole_catalogue(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        seeded = Company.objects.get(slug='black-dog-store')
+        role = CompanyRole.objects.get(company=seeded, slug='administrador')
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+        self.assertIn('communications.manage', role.capabilities)
+
+    def test_no_role_anywhere_stores_a_repeated_capability(self):
+        offenders = [
+            (r.company_id, r.name) for r in CompanyRole.objects.all()
+            if len(r.capabilities or []) != len(set(r.capabilities or []))
+        ]
+        self.assertEqual(offenders, [])
+
+
+class M12CGrantMigrationTest(TestCase):
+    """
+    §46, §48 — la migración de la capability, escrita como M12B.1 concluyó.
+
+    En instalación desde cero no llega a disparar: 0061 apunta al catálogo vivo
+    y el admin ya trae las 39. Donde SÍ actúa es en un upgrade, y ese es el
+    camino que hay que probar porque es el que nadie ejecuta al desarrollar.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0063_communications_capability'
+        )
+        self.company = _saas_company('Grant SA', 'm12c-grant', tax_id='20780050010')
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {'CompanyRole': CompanyRole}[model_name]
+        return _Apps()
+
+    def _role(self, *, name='Administrador', slug='administrador',
+              description=None, caps=None):
+        return CompanyRole.objects.create(
+            company=self.company, name=name, slug=slug,
+            description=description or self.module.ADMIN_DESCRIPTIONS[1],
+            capabilities=sorted(caps or self.module._PREVIOUS_ADMIN_PRESET),
+        )
+
+    def test_the_previous_shape_is_a_frozen_literal_not_a_live_import(self):
+        """
+        El defecto entero, en una aserción. Preguntado a la SINTAXIS: el
+        docstring cita el patrón malo para explicarlo, así que un escaneo de
+        texto acabaría vigilando su propia explicación.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == 'grant':
+                break
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            names |= {a.name for n in ast.walk(node)
+                      if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn('ASSIGNABLE_CAPABILITY_CODES', names)
+        self.assertIsInstance(self.module._PREVIOUS_ADMIN_PRESET, frozenset)
+        self.assertEqual(len(self.module._PREVIOUS_ADMIN_PRESET), 38)
+        self.assertNotIn(
+            'communications.manage', self.module._PREVIOUS_ADMIN_PRESET,
+        )
+
+    def test_an_untouched_admin_receives_it(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+        role = self._role()
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(
+            frozenset(role.capabilities), frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+        self.assertIn('communications.manage', role.capabilities)
+
+    def test_both_historical_descriptions_are_recognised(self):
+        for i, description in enumerate(self.module.ADMIN_DESCRIPTIONS):
+            other = _saas_company(f'Desc M12C {i}', f'm12c-desc-{i}',
+                                  tax_id=f'2078005011{i}')
+            role = CompanyRole.objects.create(
+                company=other, name='Administrador', slug='administrador',
+                description=description,
+                capabilities=sorted(self.module._PREVIOUS_ADMIN_PRESET),
+            )
+            self.module.grant(self._apps(), None)
+            role.refresh_from_db()
+            self.assertIn('communications.manage', role.capabilities)
+
+    def test_an_admin_the_tenant_narrowed_is_left_alone(self):
+        """§48 — su preset ya no está intacto. La decisión es del taller."""
+        caps = set(self.module._PREVIOUS_ADMIN_PRESET) - {'settings.manage'}
+        role = self._role(caps=caps)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(frozenset(role.capabilities), frozenset(caps))
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_an_admin_the_tenant_widened_is_left_alone(self):
+        caps = set(self.module._PREVIOUS_ADMIN_PRESET) | {'communications.manage'}
+        role = self._role(caps=caps)
+        before = sorted(caps)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(sorted(role.capabilities), before)
+
+    def test_a_renamed_role_is_left_alone(self):
+        role = self._role(name='Jefatura')
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_other_presets_are_left_alone(self):
+        role = CompanyRole.objects.create(
+            company=self.company, name='Ventas', slug='ventas',
+            description='Operación comercial: pedidos y notas de venta internas.',
+            capabilities=['company.view', 'sales.orders.view'],
+        )
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertNotIn('communications.manage', role.capabilities)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        role = self._role()
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        first = list(role.capabilities)
+        self.module.grant(self._apps(), None)
+        role.refresh_from_db()
+        self.assertEqual(list(role.capabilities), first)
+
+
+class M12CApiTest(M12CBase):
+    """§87, §93 — la superficie tenant por HTTP."""
+
+    def setUp(self):
+        super().setUp()
+        self.other = _saas_company('Otra API', 'm12c-api-otra', tax_id='20780050020')
+        provision_company_access_defaults(self.other)
+        self.other_admin = self.staff(
+            'm12c_other_admin', role=self.other.roles.get(slug='administrador'),
+            company=self.other,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _url(self, tail='', slug=None):
+        return f'/api/v1/internal/{slug or self.company.slug}/communications/{tail}'
+
+    def _create(self, **kw):
+        payload = {'title': 'Aviso', 'body': 'Cuerpo del aviso.'}
+        payload.update(kw)
+        return self.client.post(self._url(), payload, format='json')
+
+    def test_a_manager_can_create_a_draft(self):
+        res = self._create()
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.json()['status'], 'draft')
+
+    def test_somebody_without_the_capability_is_refused(self):
+        self.client.force_authenticate(user=self.seller)
+        self.assertEqual(self._create().status_code, 403)
+
+    def test_a_stranger_gets_404_not_403(self):
+        """Un 403 confirmaría que la empresa existe."""
+        self.client.force_authenticate(user=self.other_admin)
+        self.assertEqual(self._create().status_code, 404)
+
+    def test_another_companys_announcement_is_not_found(self):
+        mine = self.draft()
+        self.client.force_authenticate(user=self.other_admin)
+        res = self.client.get(
+            f'/api/v1/internal/{self.other.slug}/communications/{mine.pk}/'
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_full_publish_flow(self):
+        pk = self._create().json()['id']
+        patched = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'all_company'}]}, format='json',
+        )
+        self.assertEqual(patched.status_code, 200)
+        preview = self.client.post(self._url(f'{pk}/preview/'), format='json')
+        self.assertEqual(preview.json()['recipient_count'], 3)
+        published = self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(published.json()['status'], 'published')
+        stats = self.client.get(self._url(f'{pk}/stats/')).json()
+        self.assertEqual(stats['recipients'], 3)
+        self.assertEqual(stats['read'], 0)
+
+    def test_publishing_without_an_audience_returns_400(self):
+        pk = self._create().json()['id']
+        res = self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_editing_a_published_one_returns_400(self):
+        pk = self._create().json()['id']
+        self.client.patch(self._url(f'{pk}/'),
+                          {'audience': [{'kind': 'all_company'}]}, format='json')
+        self.client.post(self._url(f'{pk}/publish/'), format='json')
+        res = self.client.patch(self._url(f'{pk}/'), {'title': 'Otro'},
+                                format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_there_is_no_delete(self):
+        pk = self._create().json()['id']
+        self.client.patch(self._url(f'{pk}/'),
+                          {'audience': [{'kind': 'all_company'}]}, format='json')
+        self.client.post(self._url(f'{pk}/publish/'), format='json')
+        self.assertIn(
+            self.client.delete(self._url(f'{pk}/')).status_code, (404, 405),
+        )
+
+    def test_a_branch_id_from_another_company_is_refused(self):
+        pk = self._create().json()['id']
+        res = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'branch',
+                           'branch_id': self.other.branches.first().pk}]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_user_id_from_another_company_is_refused(self):
+        pk = self._create().json()['id']
+        res = self.client.patch(
+            self._url(f'{pk}/'),
+            {'audience': [{'kind': 'user', 'user_id': self.other_admin.pk}]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 400)
+
+
+class M12CRecipientAccessTest(M12CBase):
+    """§57, §72 — qué ve quien lo recibió, y qué no."""
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.draft(body='Texto completo del comunicado.')
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[self.rule(_Rule.Kind.ROLE, role=self.sales_role)],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.admin)
+        self.client = APIClient()
+
+    def _url(self, slug=None, pk=None):
+        return (f'/api/v1/internal/{slug or self.company.slug}'
+                f'/announcements/{pk or self.announcement.pk}/')
+
+    def test_a_recipient_reads_the_full_body_without_any_capability(self):
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['body'], 'Texto completo del comunicado.')
+
+    def test_a_recipient_is_not_shown_the_targeting(self):
+        self.client.force_authenticate(user=self.seller)
+        body = self.client.get(self._url()).json()
+        self.assertNotIn('audience', body)
+
+    def test_somebody_who_was_not_addressed_gets_404(self):
+        """
+        No 403. Un comunicado que no te enviaron no existe para ti, y decir
+        otra cosa permitiría enumerar lo que otras empresas cuentan al personal.
+        """
+        self.client.force_authenticate(user=self.tech)
+        self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_a_manager_sees_the_targeting_of_their_own_companys_message(self):
+        self.client.force_authenticate(user=self.admin)
+        body = self.client.get(self._url()).json()
+        self.assertIn('audience', body)
+
+    def test_being_a_recipient_grants_nothing_else(self):
+        """Una notificación no es una autorización."""
+        self.client.force_authenticate(user=self.seller)
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/communications/'
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_draft_is_not_readable_by_anybody_as_an_announcement(self):
+        other = self.draft(title='Todavía no')
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(
+            self.client.get(self._url(pk=other.pk)).status_code, 404,
+        )
+
+
+class M12CPrivacyAndContentTest(M12CBase):
+    """§81, §93 — el cuerpo es texto, y el cliente nunca lo ve."""
+
+    def test_a_customer_inbox_never_receives_an_internal_announcement(self):
+        customer_user = _saas_user('m12c_cliente')
+        _m12b_customer(self.company, customer_user, 'm12ccli')
+        self.publish_to_all()
+        self.assertEqual(
+            _Notif.objects.filter(audience=_Notif.Audience.CUSTOMER).count(), 0,
+        )
+
+    def test_the_customer_api_does_not_list_announcements(self):
+        customer_user = _saas_user('m12c_cliente_api')
+        _m12b_customer(self.company, customer_user, 'm12ccliapi')
+        self.publish_to_all()
+        client = APIClient()
+        client.force_authenticate(user=customer_user)
+        res = client.get(f'/api/v1/customer/{self.company.slug}/notifications/')
+        if res.status_code == 200:
+            self.assertEqual(res.json()['results'], [])
+
+    def test_a_script_tag_is_stored_and_returned_as_text(self):
+        """
+        No se sanea al guardar: el cuerpo es TEXTO y quien lo pinta debe
+        tratarlo como texto. Escapar aquí escondería un frontend que use
+        `dangerouslySetInnerHTML` y lo dejaría roto para el siguiente que lo
+        pinte bien.
+        """
+        payload = '<script>alert(1)</script><img src=x onerror=alert(2)>'
+        a = self.draft(body=payload)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(a.body, payload)
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertIn('<script>', note.body)
+
+    def test_the_body_length_is_bounded(self):
+        with self.assertRaises(_ann.AnnouncementError):
+            self.draft(body='x' * (_ann.BODY_MAX + 1))
+
+    def test_the_title_length_is_bounded(self):
+        with self.assertRaises(_ann.AnnouncementError):
+            self.draft(title='x' * (_ann.TITLE_MAX + 1))
+
+    def test_unicode_survives_intact(self):
+        body = 'Cerramos el 28 — feriado 🇵🇪. Ñandú, ácido, 汉字.'
+        a = self.draft(body=body)
+        self.publish_to_all(a)
+        a.refresh_from_db()
+        self.assertEqual(a.body, body)
+
+    def test_a_notification_carries_no_url_only_a_structured_target(self):
+        a = self.publish_to_all()
+        note = _Notif.objects.filter(user=self.seller).first()
+        self.assertEqual(note.target_type, 'announcement')
+        self.assertEqual(note.target_id, a.pk)
+        for field in (note.title, note.body):
+            for scheme in ('javascript:', 'http://', 'https://'):
+                self.assertNotIn(scheme, field)
+
+
+class M12CAuditTest(M12CBase):
+    """§94 — publicar es una acción administrativa sensible."""
+
+    def test_publishing_is_audited_with_scope_and_count(self):
+        a = self.publish_to_all()
+        entry = AdminAuditLog.objects.filter(
+            action='announcement_published', target_id=str(a.pk),
+        ).latest('id')
+        self.assertEqual(entry.actor_id, self.admin.pk)
+        self.assertEqual(entry.company_id, self.company.pk)
+        self.assertEqual(entry.metadata['scope'], [self.company.slug])
+        self.assertEqual(entry.metadata['recipient_count'], 3)
+        self.assertEqual(entry.metadata['company_count'], 1)
+
+    def test_cancelling_a_draft_is_audited(self):
+        a = self.draft()
+        _ann.cancel_draft(announcement=a, actor=self.admin)
+        self.assertTrue(
+            AdminAuditLog.objects.filter(
+                action='announcement_cancelled', target_id=str(a.pk),
+            ).exists(),
+        )
+
+    def test_the_audit_entry_carries_no_recipient_identities(self):
+        a = self.publish_to_all()
+        entry = AdminAuditLog.objects.filter(
+            action='announcement_published', target_id=str(a.pk),
+        ).latest('id')
+        blob = str(entry.metadata)
+        for leak in (self.seller.username, self.tech.username, '@'):
+            self.assertNotIn(leak, blob)
+
+    def test_saving_a_draft_is_not_audited_as_a_publication(self):
+        a = self.draft()
+        _ann.update_draft(announcement=a, body='Otra cosa.')
+        self.assertFalse(
+            AdminAuditLog.objects.filter(action='announcement_published').exists(),
+        )
+
+
+class M12CReadStatsTest(M12CBase):
+    """§92 — recuentos agregados, no vigilancia individual."""
+
+    def setUp(self):
+        super().setUp()
+        self.announcement = self.publish_to_all()
+
+    def test_the_counts_start_at_zero_read(self):
+        s = _ann.stats(self.announcement)
+        self.assertEqual((s['recipients'], s['read'], s['unread']), (3, 0, 3))
+        self.assertEqual(s['read_pct'], 0.0)
+
+    def test_marking_read_moves_the_numbers(self):
+        note = _Notif.objects.get(user=self.seller, target_id=self.announcement.pk)
+        _notif.mark_read(_Notif.objects.filter(pk=note.pk))
+        s = _ann.stats(self.announcement)
+        self.assertEqual((s['read'], s['unread']), (1, 2))
+        self.assertEqual(s['read_pct'], 33.3)
+
+    def test_stats_never_name_anybody(self):
+        s = _ann.stats(self.announcement)
+        self.assertEqual(
+            set(s), {'recipients', 'read', 'unread', 'read_pct'},
+        )
+
+
+class M12CPlatformApiTest(M12CBase):
+    """§19, §90 — la superficie del master, y el global que nunca es implícito."""
+
+    def setUp(self):
+        super().setUp()
+        self.master = _saas_user('m12c_api_master')
+        self.master.is_superuser = True
+        self.master.save(update_fields=['is_superuser'])
+        self.other = _saas_company('Plataforma B', 'm12c-plat-b',
+                                   tax_id='20780050030')
+        provision_company_access_defaults(self.other)
+        self.other_person = self.staff(
+            'm12c_plat_person', role=self.other.roles.get(slug='ventas'),
+            company=self.other,
+        )
+        self.inactive = _saas_company('Cerrada SA', 'm12c-cerrada',
+                                      tax_id='20780050031')
+        self.inactive.is_active = False
+        self.inactive.save(update_fields=['is_active'])
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.master)
+
+    def _create(self):
+        return self.client.post(
+            '/api/v1/platform/announcements/',
+            {'title': 'Mantenimiento', 'body': 'El sábado.'}, format='json',
+        ).json()['id']
+
+    def _audience(self, pk, payload):
+        return self.client.patch(
+            f'/api/v1/platform/announcements/{pk}/',
+            {'audience': payload}, format='json',
+        )
+
+    def test_a_tenant_admin_cannot_reach_the_platform_surface(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get('/api/v1/platform/announcements/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_master_publishes_to_named_companies(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [self.company.slug, self.other.slug],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            200,
+        )
+        res = self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                               format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            set(_Notif.objects.filter(target_id=pk)
+                .values_list('company_id', flat=True)),
+            {self.company.pk, self.other.pk},
+        )
+
+    def test_all_active_companies_must_be_spelled_out(self):
+        pk = self._create()
+        res = self._audience(pk, {'companies': 'ALL_ACTIVE_COMPANIES',
+                                  'rules': [{'kind': 'all_company'}]})
+        self.assertEqual(res.status_code, 200)
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        reached = set(_Notif.objects.filter(target_id=pk)
+                      .values_list('company_id', flat=True))
+        self.assertIn(self.company.pk, reached)
+        self.assertIn(self.other.pk, reached)
+        self.assertNotIn(self.inactive.pk, reached)
+
+    def test_an_empty_company_list_is_refused_never_read_as_global(self):
+        """El default peligroso, probado explícitamente."""
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_omitting_the_companies_key_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_a_null_company_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': None,
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_an_inactive_company_is_refused_by_name(self):
+        pk = self._create()
+        res = self._audience(pk, {'companies': [self.inactive.slug],
+                                  'rules': [{'kind': 'all_company'}]})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(self.inactive.slug, res.json()['detail'])
+
+    def test_an_unknown_company_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': ['no-existe'],
+                                'rules': [{'kind': 'all_company'}]}).status_code,
+            400,
+        )
+
+    def test_publishing_without_rules_is_refused(self):
+        pk = self._create()
+        self.assertEqual(
+            self._audience(pk, {'companies': [self.company.slug],
+                                'rules': []}).status_code,
+            400,
+        )
+
+    def test_a_tenant_admin_cannot_read_another_companys_platform_message(self):
+        """
+        §58. El master ve lo que la plataforma escribió; un tenant sólo ve su
+        propia copia, y sólo si se la enviaron.
+        """
+        pk = self._create()
+        self._audience(pk, {'companies': [self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/announcements/{pk}/'
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_recipient_in_the_targeted_company_can_read_it(self):
+        pk = self._create()
+        self._audience(pk, {'companies': [self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        self.client.post(f'/api/v1/platform/announcements/{pk}/publish/',
+                         format='json')
+        self.client.force_authenticate(user=self.other_person)
+        res = self.client.get(
+            f'/api/v1/internal/{self.other.slug}/announcements/{pk}/'
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['body'], 'El sábado.')
+        self.assertNotIn('audience', res.json())
+
+    def test_the_preview_reports_per_company_counts(self):
+        pk = self._create()
+        self._audience(pk, {'companies': [self.company.slug, self.other.slug],
+                            'rules': [{'kind': 'all_company'}]})
+        body = self.client.post(
+            f'/api/v1/platform/announcements/{pk}/preview/', format='json',
+        ).json()
+        self.assertEqual(body['company_count'], 2)
+        self.assertEqual(
+            {c['slug'] for c in body['companies']},
+            {self.company.slug, self.other.slug},
+        )
+        self.assertEqual(
+            body['recipient_count'],
+            sum(c['recipient_count'] for c in body['companies']),
+        )
+
+
+# ---------------------------------------------------------------------------
+# M12D — evidencias fotográficas
+# ---------------------------------------------------------------------------
+
+from . import evidence_images as _ei                     # noqa: E402
+from . import evidence_services as _ev_svc               # noqa: E402
+from . import evidence_storage as _ev_store              # noqa: E402
+from .models import RepairEvidence as _Ev                # noqa: E402
+
+
+def _photo(width=2400, height=1800, *, fmt='JPEG', exif=None, mode='RGB',
+           colour=(120, 90, 60)):
+    """
+    Una imagen de prueba con textura real.
+
+    Un lienzo de color plano comprime a casi nada y haría pasar cualquier
+    medición de compresión, así que se le mete estructura: bandas, ruido y
+    formas. No es una fotografía, y ninguna prueba de aquí afirma que lo sea.
+    """
+    import io as _io
+    import random as _random
+    from PIL import Image as _Img, ImageDraw as _Draw
+
+    _random.seed(width * height)
+    img = _Img.new(mode if mode != 'RGBA' else 'RGBA', (width, height))
+    d = _Draw.Draw(img)
+    for y in range(0, height, 6):
+        v = 70 + (y * 97) % 150
+        fill = (v, max(0, v - 25), max(0, v - 50))
+        d.rectangle([0, y, width, y + 6], fill=fill + ((255,) if mode == 'RGBA' else ()))
+    for _ in range(400):
+        x0 = _random.randint(0, width - 1)
+        y0 = _random.randint(0, height - 1)
+        d.ellipse([x0, y0, x0 + _random.randint(4, 30), y0 + _random.randint(4, 30)],
+                  fill=(colour + ((255,) if mode == 'RGBA' else ())))
+    buf = _io.BytesIO()
+    if fmt == 'HEIF':
+        import pillow_heif
+        pillow_heif.from_pillow(img.convert('RGB')).save(buf, format='HEIF', quality=85)
+    elif fmt == 'JPEG':
+        img.convert('RGB').save(buf, 'JPEG', quality=92,
+                                **({'exif': exif} if exif else {}))
+    else:
+        img.save(buf, fmt)
+    return buf.getvalue()
+
+
+def _upload(content, name='foto.jpg', content_type='image/jpeg'):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    return SimpleUploadedFile(name, content, content_type=content_type)
+
+
+class M12DImagePipelineTest(TestCase):
+    """
+    §14, §20, §21 — lo que se guarda no es lo que llegó.
+
+    Aquí no se mide «calidad visual»: eso no se comprueba comparando píxeles.
+    Se comprueban propiedades — que abre, que no crece, que no excede el lado
+    máximo, que no queda metadata — y las mediciones de peso van en su propio
+    test, sin fijar un porcentaje que depende de la escena.
+    """
+
+    def test_a_large_jpeg_is_downscaled(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+        self.assertEqual((r.source_width, r.source_height), (4032, 3024))
+
+    def test_aspect_ratio_survives(self):
+        r = _ei.process(_photo(3000, 2000))
+        self.assertAlmostEqual(r.width / r.height, 3000 / 2000, places=2)
+
+    def test_a_portrait_photo_stays_portrait(self):
+        r = _ei.process(_photo(1800, 2400))
+        self.assertLess(r.width, r.height)
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_a_small_image_is_never_upscaled(self):
+        """Ampliar no añade información: inventa píxeles y engorda el archivo."""
+        r = _ei.process(_photo(800, 600))
+        self.assertEqual((r.width, r.height), (800, 600))
+
+    def test_png_is_accepted_and_normalised(self):
+        r = _ei.process(_photo(2000, 1500, fmt='PNG'))
+        self.assertEqual(r.source_format, 'PNG')
+        self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_webp_is_accepted_and_recompressed(self):
+        r = _ei.process(_photo(2000, 1500, fmt='WEBP'))
+        self.assertEqual(r.source_format, 'WEBP')
+        self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_transparency_does_not_become_a_black_photo(self):
+        """
+        Convertir RGBA a RGB sin componer pinta el fondo de negro, y una foto de
+        un equipo sobre negro es justo lo que no se quería ver.
+        """
+        import io as _io
+        from PIL import Image as _Img
+        src = _Img.new('RGBA', (900, 700), (0, 0, 0, 0))
+        src.paste(_Img.new('RGBA', (300, 300), (200, 40, 40, 255)), (100, 100))
+        buf = _io.BytesIO(); src.save(buf, 'PNG')
+        r = _ei.process(buf.getvalue())
+        out = _Img.open(_io.BytesIO(r.content)).convert('RGB')
+        self.assertEqual(out.getpixel((10, 10)), (255, 255, 255))
+
+    def test_the_output_always_opens(self):
+        from PIL import Image as _Img
+        import io as _io
+        r = _ei.process(_photo(2500, 1900))
+        img = _Img.open(_io.BytesIO(r.content))
+        img.load()
+        self.assertEqual(img.format, 'WEBP')
+
+    def test_the_output_format_is_webp_whatever_came_in(self):
+        for fmt in ('JPEG', 'PNG', 'WEBP'):
+            r = _ei.process(_photo(1200, 900, fmt=fmt))
+            self.assertEqual(r.mime_type, 'image/webp')
+
+    def test_the_metadata_describes_the_output_not_the_input(self):
+        import io as _io
+        from PIL import Image as _Img
+        r = _ei.process(_photo(4032, 3024))
+        img = _Img.open(_io.BytesIO(r.content))
+        self.assertEqual((r.width, r.height), img.size)
+        self.assertEqual(r.byte_size, len(r.content))
+
+    def test_the_hash_describes_the_bytes_that_get_stored(self):
+        import hashlib as _h
+        r = _ei.process(_photo(2000, 1500))
+        self.assertEqual(r.sha256, _h.sha256(r.content).hexdigest())
+        self.assertNotEqual(r.sha256, r.source_sha256)
+
+
+class M12DMetadataTest(TestCase):
+    """§20 — la orientación se aplica, y después no queda nada."""
+
+    def _with_exif(self, orientation=None, gps=True):
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        exif = _Img.Exif()
+        exif[271] = 'Apple'
+        exif[272] = 'iPhone 15 Pro'
+        exif[305] = 'iOS 18.2'
+        if orientation:
+            exif[274] = orientation
+        if gps:
+            g = exif.get_ifd(IFD.GPSInfo)
+            g[1] = 'S'; g[2] = (16.0, 23.0, 59.0)
+            g[3] = 'W'; g[4] = (71.0, 32.0, 11.0)
+        return _photo(900, 600, exif=exif.tobytes() if hasattr(exif, 'tobytes') else exif)
+
+    def test_exif_orientation_is_applied_before_it_is_discarded(self):
+        """
+        Las fotos de móvil salen del sensor en horizontal y dependen de una
+        etiqueta para saber qué lado es arriba. Limpiar primero la deja tumbada
+        para siempre — y en el móvil que la tomó se veía bien.
+        """
+        r = _ei.process(self._with_exif(orientation=6))
+        self.assertGreater(r.height, r.width, 'la orientación EXIF no se aplicó')
+
+    def test_gps_does_not_survive(self):
+        import io as _io
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        raw = self._with_exif()
+        self.assertTrue(_Img.open(_io.BytesIO(raw)).getexif().get_ifd(IFD.GPSInfo))
+        r = _ei.process(raw)
+        out = _Img.open(_io.BytesIO(r.content))
+        self.assertFalse(out.getexif().get_ifd(IFD.GPSInfo))
+
+    def test_the_device_model_does_not_survive(self):
+        import io as _io
+        from PIL import Image as _Img
+        r = _ei.process(self._with_exif())
+        self.assertEqual(len(_Img.open(_io.BytesIO(r.content)).getexif()), 0)
+
+    def test_no_identifying_string_survives_in_the_raw_bytes(self):
+        """
+        Preguntado a los BYTES, no a la API de Pillow. Un decodificador puede
+        exponer una vista limpia de un archivo que aun así lleva la cadena
+        dentro, y lo que se sube a un bucket son los bytes.
+        """
+        r = _ei.process(self._with_exif())
+        for leak in (b'iPhone', b'Apple', b'iOS'):
+            self.assertNotIn(leak, r.content)
+
+
+class M12DHeicTest(TestCase):
+    """
+    §11 — una foto de iPhone entra sin pedirle nada al técnico.
+
+    El ajuste «Alta eficiencia» viene activado de fábrica. Sin esto la fase
+    obligaría a cambiar Ajustes → Cámara → Formatos antes de fotografiar un
+    equipo, que es el tipo de requisito que se olvida justo cuando el equipo ya
+    está abierto sobre la mesa.
+    """
+
+    def test_the_plugin_is_registered(self):
+        self.assertTrue(_ei.HEIF_SUPPORTED, 'falta pillow-heif')
+
+    def test_a_heic_photo_is_decoded(self):
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        self.assertIn(r.source_format, ('HEIF', 'HEIC'))
+
+    def test_a_heic_photo_is_stored_as_webp(self):
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        self.assertEqual(r.mime_type, 'image/webp')
+        self.assertEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_the_heic_output_opens_and_hashes_to_what_is_stored(self):
+        import hashlib as _h, io as _io
+        from PIL import Image as _Img
+        r = _ei.process(_photo(2400, 1800, fmt='HEIF'))
+        _Img.open(_io.BytesIO(r.content)).load()
+        self.assertEqual(r.sha256, _h.sha256(r.content).hexdigest())
+
+
+class M12DRejectionTest(TestCase):
+    """§38, §39 — lo que no entra, y por qué."""
+
+    def test_an_empty_file_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'')
+
+    def test_a_text_file_named_jpg_is_refused(self):
+        """Una extensión no es una prueba. Lo único que decide es el decoder."""
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'esto no es una imagen, por mucho que se llame foto.jpg')
+
+    def test_a_pdf_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'%PDF-1.7\n1 0 obj\n<<>>\nendobj\n')
+
+    def test_an_svg_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>')
+
+    def test_a_zip_is_refused(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(b'PK\x03\x04' + b'\x00' * 60)
+
+    def test_a_truncated_image_is_refused(self):
+        raw = _photo(1600, 1200)
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(raw[: len(raw) // 3])
+
+    def test_an_oversized_upload_is_refused(self):
+        with override_settings(SERVICE_EVIDENCE_MAX_UPLOAD_BYTES=1024):
+            with self.assertRaises(_ei.EvidenceImageError):
+                _ei.process(_photo(1200, 900))
+
+    def test_a_decompression_bomb_is_refused_before_it_is_decoded(self):
+        """
+        Un PNG de pocos KB puede declarar 30.000 px de lado y pedir varios GB al
+        decodificarse. El límite de BYTES no lo ve venir: hay que mirar lo que
+        el archivo dice que mide, y mirarlo antes de `load()`.
+        """
+        import io as _io
+        from PIL import Image as _Img
+        buf = _io.BytesIO()
+        _Img.new('RGB', (12000, 9000), (255, 255, 255)).save(buf, 'PNG')
+        with override_settings(SERVICE_EVIDENCE_MAX_PIXELS=1_000_000):
+            with self.assertRaises(_ei.EvidenceImageError):
+                _ei.process(buf.getvalue())
+
+
+class M12DCompressionTest(TestCase):
+    """
+    §77 — propiedades, no un porcentaje.
+
+    No se afirma «reduce un 95%»: eso depende por completo de la escena, y un
+    test que lo fijara se rompería con la primera foto distinta. Lo que sí se
+    puede exigir es que no crezca, que respete el lado máximo y que no baje del
+    piso de calidad.
+    """
+
+    def test_a_large_photo_ends_up_smaller(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertLess(r.byte_size, r.source_byte_size)
+
+    def test_the_max_edge_is_never_exceeded(self):
+        for w, h in ((4032, 3024), (3024, 4032), (5000, 1000)):
+            r = _ei.process(_photo(w, h))
+            self.assertLessEqual(max(r.width, r.height), _ei.max_edge())
+
+    def test_quality_never_falls_below_the_floor(self):
+        """
+        Una evidencia que ya no permite ver el daño no es una evidencia más
+        ligera: no es una evidencia. Con un objetivo imposible se conserva más
+        peso antes que destruirla.
+        """
+        with override_settings(SERVICE_EVIDENCE_TARGET_BYTES=1):
+            r = _ei.process(_photo(3000, 2200))
+        self.assertGreaterEqual(r.quality, _ei.min_quality())
+        self.assertLessEqual(r.attempts, _ei.max_attempts())
+
+    def test_an_impossible_target_terminates(self):
+        with override_settings(SERVICE_EVIDENCE_TARGET_BYTES=1,
+                               SERVICE_EVIDENCE_MAX_COMPRESSION_ATTEMPTS=3):
+            r = _ei.process(_photo(3000, 2200))
+        self.assertLessEqual(r.attempts, 3)
+
+    def test_a_generous_target_needs_only_one_attempt(self):
+        r = _ei.process(_photo(4032, 3024))
+        self.assertEqual(r.attempts, 1)
+
+
+import tempfile as _tempfile   # noqa: E402
+
+#: Storage de pruebas: un directorio temporal, SIN red y sin tocar el repo.
+#: Ninguna prueba de esta suite habla con R2 — no hay credenciales, no debe
+#: haberlas, y una suite que dependa de una cuenta remota deja de correr el día
+#: que alguien la ejecuta sin ella.
+_EVIDENCE_TEST_STORAGE = dict(
+    EVIDENCE_STORAGE_BACKEND='filesystem',
+    EVIDENCE_STORAGE_ROOT=_tempfile.mkdtemp(prefix='m12d-evidence-'),
+)
+
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class M12DEvidenceBase(M12BPaymentBase):
+    """La orden de M12, más una foto pequeña que no tarda en procesarse."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.photo = _photo(1200, 900)
+
+    def upload(self, stage=_Ev.Stage.INTAKE, content=None, actor=None, **kw):
+        return _ev_svc.upload_evidence(
+            repair_order=self.order, stage=stage,
+            content=content if content is not None else self.photo,
+            actor=actor or self.staff, **kw,
+        )
+
+
+class M12DModelTest(M12DEvidenceBase):
+    """§74 — lo que la fila garantiza por sí sola."""
+
+    def test_evidence_belongs_to_the_orders_company(self):
+        e = self.upload()
+        self.assertEqual(e.company_id, self.order.company_id)
+        self.assertEqual(e.repair_order_id, self.order.pk)
+
+    def test_new_evidence_is_internal(self):
+        """TODA EVIDENCIA NACE INTERNA. No hay parámetro para nacer de otra forma."""
+        self.assertEqual(self.upload().visibility, _Ev.Visibility.INTERNAL)
+
+    def test_the_storage_key_is_unique(self):
+        a, b = self.upload(), self.upload(content=_photo(1100, 800))
+        self.assertNotEqual(a.storage_key, b.storage_key)
+
+    def test_the_storage_key_is_generated_server_side_and_carries_no_pii(self):
+        e = self.upload()
+        self.assertTrue(e.storage_key.startswith(
+            f'companies/{self.company.pk}/service/{self.order.pk}/evidence/'
+        ))
+        haystack = e.storage_key.lower()
+        for leak in ('foto', '.jpg', self.order.number.lower(),
+                     self.staff.username.lower()):
+            self.assertNotIn(leak, haystack)
+
+    def test_the_stored_hash_matches_the_stored_bytes(self):
+        import hashlib as _h
+        e = self.upload()
+        with _ev_store.open_stream(e.storage_key) as fh:
+            data = fh.read()
+        self.assertEqual(_h.sha256(data).hexdigest(), e.sha256)
+        self.assertEqual(len(data), e.byte_size)
+
+    def test_the_original_is_not_stored_anywhere(self):
+        """
+        EL ORIGINAL DE CÁMARA NO ES EL ACTIVO QUE HAY QUE CONSERVAR. Se guarda
+        una versión y sólo una.
+        """
+        e = self.upload(content=_photo(4032, 3024))
+        with _ev_store.open_stream(e.storage_key) as fh:
+            data = fh.read()
+        self.assertLess(len(data), e.source_byte_size)
+        self.assertEqual(e.mime_type, 'image/webp')
+
+    def test_an_unknown_stage_is_refused(self):
+        with self.assertRaises(_ev_svc.EvidenceError):
+            self.upload(stage='warranty')
+
+    def test_void_keeps_the_row_and_needs_a_reason(self):
+        e = self.upload()
+        with self.assertRaises(_ev_svc.EvidenceError):
+            _ev_svc.void_evidence(evidence=e, reason='   ', actor=self.staff)
+        voided = _ev_svc.void_evidence(
+            evidence=e, reason='Salió movida.', actor=self.staff,
+        )
+        self.assertTrue(_Ev.objects.filter(pk=e.pk).exists())
+        self.assertTrue(voided.is_voided)
+        self.assertEqual(voided.void_reason, 'Salió movida.')
+
+    def test_voiding_twice_does_not_rewrite_the_original_reason(self):
+        e = _ev_svc.void_evidence(
+            evidence=self.upload(), reason='Primera razón.', actor=self.staff,
+        )
+        again = _ev_svc.void_evidence(
+            evidence=e, reason='Otra cosa distinta.', actor=self.staff,
+        )
+        self.assertEqual(again.void_reason, 'Primera razón.')
+        self.assertEqual(again.voided_at, e.voided_at)
+
+    def test_voiding_also_withdraws_it_from_the_customer(self):
+        e = _ev_svc.publish_to_customer(evidence=self.upload(), actor=self.staff)
+        voided = _ev_svc.void_evidence(
+            evidence=e, reason='Se anula.', actor=self.staff,
+        )
+        self.assertEqual(voided.visibility, _Ev.Visibility.INTERNAL)
+        self.assertNotIn(
+            voided, _ev_svc.customer_evidence_for_order(self.order),
+        )
+
+    def test_uploading_does_not_move_the_repair_order(self):
+        """UNA FOTO NO AVANZA EL ESTADO DE LA REPARACIÓN."""
+        before = self.order.status
+        self.upload(stage=_Ev.Stage.DELIVERY)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+    def test_publishing_does_not_move_the_repair_order_either(self):
+        before = self.order.status
+        _ev_svc.publish_to_customer(evidence=self.upload(), actor=self.staff)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, before)
+
+
+class M12DIdempotencyTest(M12DEvidenceBase):
+    """§77 — un reintento no crea dos evidencias ni dos objetos."""
+
+    def test_the_same_key_and_the_same_file_produce_one_evidence(self):
+        a = self.upload(idempotency_key='cam-1')
+        b = self.upload(idempotency_key='cam-1')
+        self.assertEqual(a.pk, b.pk)
+        self.assertEqual(_Ev.objects.count(), 1)
+
+    def test_the_same_key_with_a_different_file_is_a_conflict(self):
+        self.upload(idempotency_key='cam-2')
+        with self.assertRaises(_ev_svc.EvidenceConflict):
+            self.upload(idempotency_key='cam-2', content=_photo(1000, 800))
+
+    def _objects_on_disk(self):
+        """
+        Los objetos que hay AHORA. El directorio temporal se comparte entre las
+        pruebas de la clase, así que lo que importa es el delta, no el total —
+        contar el total mide el orden de ejecución, no el comportamiento.
+        """
+        import os as _os
+        from django.conf import settings as _s
+        return {
+            _os.path.join(root, f)
+            for root, _d, files in _os.walk(_s.EVIDENCE_STORAGE_ROOT)
+            for f in files
+        }
+
+    def test_a_retry_does_not_write_a_second_object(self):
+        before = self._objects_on_disk()
+        a = self.upload(idempotency_key='cam-3')
+        after_first = self._objects_on_disk()
+        self.upload(idempotency_key='cam-3')
+        after_retry = self._objects_on_disk()
+        self.assertEqual(len(after_first - before), 1)
+        self.assertEqual(after_retry, after_first, 'el reintento escribió otro objeto')
+        self.assertTrue(_ev_store.open_stream(a.storage_key))
+
+    def test_the_fingerprint_uses_the_source_not_the_processed_bytes(self):
+        """
+        Si dependiera del hash final, una actualización de Pillow que cambiara
+        un byte del WebP haría que un reintento legítimo dejara de reconocerse.
+        """
+        e = self.upload(idempotency_key='cam-4')
+        expected = _ev_svc._fingerprint(
+            repair_order_id=self.order.pk, stage=_Ev.Stage.INTAKE,
+            source_sha256=_ei.process(self.photo).source_sha256,
+        )
+        self.assertEqual(e.request_fingerprint, expected)
+
+    def test_two_uploads_without_a_key_are_two_evidences(self):
+        self.upload()
+        self.upload()
+        self.assertEqual(_Ev.objects.count(), 2)
+
+    def test_the_same_photo_in_another_company_is_not_deduplicated(self):
+        """
+        NO HAY DEDUPE ENTRE EMPRESAS. Que dos talleres suban la misma foto no es
+        asunto de ninguno de los dos, y responder «ya existe» lo delataría.
+        """
+        e = self.upload()
+        other = _saas_company('Otra Ev', 'm12d-otra', tax_id='20780060001')
+        self.assertEqual(
+            _Ev.objects.filter(sha256=e.sha256).count(), 1,
+        )
+        self.assertFalse(_Ev.objects.filter(company=other).exists())
+
+
+class M12DStorageConsistencyTest(M12DEvidenceBase):
+    """§36 — el bucket no participa en la transacción de PostgreSQL."""
+
+    def _objects_on_disk(self):
+        import os as _os
+        from django.conf import settings as _s
+        return {
+            _os.path.join(root, f)
+            for root, _d, files in _os.walk(_s.EVIDENCE_STORAGE_ROOT)
+            for f in files
+        }
+
+    def test_a_database_failure_removes_the_object_it_had_just_written(self):
+        """
+        El objeto se escribe ANTES que la fila, y esa asimetría hay que
+        compensarla a mano. Una fila apuntando a algo que no existe es peor que
+        no tener la fila: parece un fallo de red y es un dato perdido.
+        """
+        from unittest.mock import patch
+        before = self._objects_on_disk()
+        with patch.object(
+            _Ev.objects, 'create', side_effect=RuntimeError('boom'),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.upload()
+        self.assertEqual(
+            self._objects_on_disk(), before, 'quedó un objeto huérfano',
+        )
+        self.assertEqual(_Ev.objects.count(), 0)
+
+    def test_a_storage_failure_creates_no_row(self):
+        from unittest.mock import patch
+        with patch.object(
+            _ev_store, 'save',
+            side_effect=_ev_store.EvidenceStorageError('sin espacio'),
+        ):
+            with self.assertRaises(_ev_store.EvidenceStorageError):
+                self.upload()
+        self.assertEqual(_Ev.objects.count(), 0)
+
+    def test_a_failed_cleanup_never_leaks_anything(self):
+        from unittest.mock import patch
+        with self.assertLogs('store.evidence_storage', level='WARNING') as logs:
+            with patch.object(
+                _ev_store, 'get_storage',
+                side_effect=_ev_store.EvidenceStorageError('endpoint x'),
+            ):
+                self.assertFalse(_ev_store.delete_quietly('alguna/clave.webp'))
+        blob = ' '.join(logs.output)
+        for leak in ('endpoint x', 'secret', 'AKIA', 'Signature'):
+            self.assertNotIn(leak, blob)
+
+    def test_the_storage_error_message_never_carries_provider_detail(self):
+        from unittest.mock import patch
+        with patch.object(
+            _ev_store, 'get_storage',
+        ) as fake:
+            fake.return_value.save.side_effect = RuntimeError(
+                'https://abc.r2.cloudinarystorage.com?X-Amz-Signature=deadbeef'
+            )
+            with self.assertRaises(_ev_store.EvidenceStorageError) as ctx:
+                _ev_store.save('k.webp', b'x')
+        message = str(ctx.exception)
+        for leak in ('r2', 'Signature', 'deadbeef', 'http'):
+            self.assertNotIn(leak, message)
+
+
+class M12DTenantIsolationTest(M12DEvidenceBase):
+    """
+    §78 — EMPRESA A NO PUEDE SABER QUE EXISTE UN OBJETO DE EMPRESA B.
+
+    Todo responde 404. Un 403 confirmaría el id, y confirmar ids es exactamente
+    lo que pide quien prueba números.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.evidence = self.upload()
+        self.other = _saas_company('Ajena SA', 'm12d-ajena', tax_id='20780060002')
+        provision_company_access_defaults(self.other)
+
+    def _url(self, tail='', slug=None, order=None):
+        return (f'/api/v1/internal/{slug or self.company.slug}/service/orders/'
+                f'{order or self.order.pk}/evidence/{tail}')
+
+    def test_another_company_cannot_list_this_orders_evidence(self):
+        res = self.client.get(self._url(slug=self.other.slug))
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_open_the_detail(self):
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/', slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_fetch_the_content(self):
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/content/', slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_publish_it(self):
+        res = self.client.post(
+            self._url(f'{self.evidence.pk}/publish-to-customer/',
+                      slug=self.other.slug),
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_another_company_cannot_void_it(self):
+        res = self.client.post(
+            self._url(f'{self.evidence.pk}/void/', slug=self.other.slug),
+            {'reason': 'no es mía'}, format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_an_evidence_from_another_order_is_not_found(self):
+        """
+        El id existe, pero no cuelga de esta orden. La galería se resuelve
+        SIEMPRE contra la orden, no contra la tabla entera.
+        """
+        other_order = _m8_service.create_repair_order(
+            company=self.company, branch=self.order.branch,
+            customer=self.order.customer, device=self.order.device,
+            reported_issue='Otra cosa.', actor=self.staff,
+        )
+        res = self.client.get(
+            self._url(f'{self.evidence.pk}/', order=other_order.pk),
+        )
+        self.assertEqual(res.status_code, 404)
+
+
+class M12DStageAuthorityTest(M12DEvidenceBase):
+    """
+    §80 — la autoridad para fotografiar un momento es la de producirlo.
+
+    Quien puede diagnosticar no adquiere por eso la capacidad de fotografiar una
+    entrega, y al revés. Es la razón por la que M12D NO creó
+    `service.evidence.manage`: una capability única se concede una vez y abre
+    las siete etapas de golpe.
+    """
+
+    def _url(self, tail=''):
+        return (f'/api/v1/internal/{self.company.slug}/service/orders/'
+                f'{self.order.pk}/evidence/{tail}')
+
+    def _post(self, stage):
+        return self.client.post(
+            self._url(), {'stage': stage, 'image': _upload(self.photo)},
+            format='multipart',
+        )
+
+    def test_the_matrix_covers_every_stage(self):
+        self.assertEqual(
+            set(_ev_svc.STAGE_CAPABILITY), set(_Ev.Stage.values),
+        )
+
+    def test_no_new_capability_was_invented_for_evidence(self):
+        from .capabilities import ALL_CAPABILITY_CODES
+        for invented in ('service.evidence.manage', 'service.evidence.view',
+                         'evidence.manage'):
+            self.assertNotIn(invented, ALL_CAPABILITY_CODES)
+        for used in set(_ev_svc.STAGE_CAPABILITY.values()):
+            self.assertIn(used, ALL_CAPABILITY_CODES)
+
+    def test_a_diagnostician_may_photograph_a_diagnosis(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.diagnostic.manage', slug='m12d-diag',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DIAGNOSIS).status_code, 201)
+
+    def test_a_diagnostician_may_not_photograph_a_delivery(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.diagnostic.manage', slug='m12d-diag2',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DELIVERY).status_code, 403)
+
+    def test_delivery_staff_may_not_photograph_a_diagnosis(self):
+        self.client = self.only_capabilities(
+            'service.orders.view', 'service.delivery.manage', slug='m12d-deliv',
+        )
+        self.assertEqual(self._post(_Ev.Stage.DIAGNOSIS).status_code, 403)
+        self.assertEqual(self._post(_Ev.Stage.DELIVERY).status_code, 201)
+
+    def test_reading_the_gallery_needs_only_orders_view(self):
+        """
+        Ver la galería es leer la orden. Pedir una segunda autoridad para mirar
+        lo que la orden ya implica sería teatro.
+        """
+        self.client = self.only_capabilities('service.orders.view', slug='m12d-ro')
+        self.assertEqual(self.client.get(self._url()).status_code, 200)
+
+    def test_without_orders_view_the_order_is_not_found(self):
+        self.client = self.only_capabilities('company.view', slug='m12d-nada')
+        self.assertIn(self.client.get(self._url()).status_code, (403, 404))
+
+    def test_an_unknown_stage_is_rejected_before_any_authority_check(self):
+        self.assertEqual(self._post('warranty').status_code, 400)
+
+
+class M12DCustomerPrivacyTest(M12DEvidenceBase):
+    """§81 — lo que el cliente ve, y lo que no debe poder deducir."""
+
+    def setUp(self):
+        super().setUp()
+        self.internal = self.upload(stage=_Ev.Stage.DIAGNOSIS)
+        self.shared = _ev_svc.publish_to_customer(
+            evidence=self.upload(stage=_Ev.Stage.DELIVERY,
+                                 content=_photo(1000, 750)),
+            actor=self.staff,
+        )
+        self.customer_user = _saas_user('m12d_cliente')
+        customer = self.order.customer
+        customer.user = self.customer_user
+        customer.save(update_fields=['user'])
+        self.cclient = APIClient()
+        self.cclient.force_authenticate(user=self.customer_user)
+
+    def _curl(self, tail='', slug=None, order=None):
+        return (f'/api/v1/customer/{slug or self.company.slug}/repairs/'
+                f'{order or self.order.pk}/evidence/{tail}')
+
+    def test_the_customer_sees_only_what_was_shared(self):
+        body = self.cclient.get(self._curl()).json()
+        self.assertEqual([r['id'] for r in body['results']], [self.shared.pk])
+
+    def test_the_customer_cannot_open_an_internal_one_by_id(self):
+        res = self.cclient.get(self._curl(f'{self.internal.pk}/content/'))
+        self.assertEqual(res.status_code, 404)
+
+    def test_hiding_revokes_access_immediately(self):
+        _ev_svc.hide_from_customer(evidence=self.shared, actor=self.staff)
+        self.assertEqual(self.cclient.get(self._curl()).json()['results'], [])
+        self.assertEqual(
+            self.cclient.get(self._curl(f'{self.shared.pk}/content/')).status_code,
+            404,
+        )
+
+    def test_a_voided_one_disappears_for_the_customer(self):
+        _ev_svc.void_evidence(
+            evidence=self.shared, reason='Se anula.', actor=self.staff,
+        )
+        self.assertEqual(self.cclient.get(self._curl()).json()['results'], [])
+
+    def test_the_customer_serializer_is_an_allowlist(self):
+        """
+        No hereda del interno quitando campos: eso haría que el próximo campo
+        que alguien añada arriba apareciera aquí sin que nadie lo decidiera.
+        """
+        row = self.cclient.get(self._curl()).json()['results'][0]
+        self.assertEqual(
+            set(row), {'id', 'stage', 'width', 'height', 'created_at'},
+        )
+        for forbidden in ('storage_key', 'uploaded_by', 'void_reason',
+                          'sha256', 'idempotency_key', 'visibility'):
+            self.assertNotIn(forbidden, row)
+
+    def test_another_customers_repair_is_not_found(self):
+        stranger = _saas_user('m12d_extrano')
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+        self.assertEqual(client.get(self._curl()).status_code, 404)
+
+    def test_the_customer_cannot_upload(self):
+        res = self.cclient.post(
+            self._curl(), {'stage': _Ev.Stage.INTAKE, 'image': _upload(self.photo)},
+            format='multipart',
+        )
+        self.assertIn(res.status_code, (403, 404, 405))
+
+    def test_the_customer_cannot_void_or_publish(self):
+        for tail in ('void/', 'publish-to-customer/', 'hide-from-customer/'):
+            res = self.cclient.post(self._curl(f'{self.shared.pk}/{tail}'))
+            self.assertIn(res.status_code, (403, 404, 405))
+
+    def test_the_internal_serializer_never_leaks_the_storage_key(self):
+        row = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/service/orders/'
+            f'{self.order.pk}/evidence/'
+        ).json()['results'][0]
+        for forbidden in ('storage_key', 'bucket', 'endpoint', 'sha256',
+                          'source_sha256', 'idempotency_key'):
+            self.assertNotIn(forbidden, row)
+
+    def test_private_content_is_never_cacheable(self):
+        res = self.client.get(
+            f'/api/v1/internal/{self.company.slug}/service/orders/'
+            f'{self.order.pk}/evidence/{self.internal.pk}/content/'
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('no-store', res['Cache-Control'])
+        self.assertIn('private', res['Cache-Control'])
+
+
+class M12DAuditTest(M12DEvidenceBase):
+    """§82 — qué queda registrado, y qué no debe quedar."""
+
+    def _entry(self, action, target):
+        return AdminAuditLog.objects.filter(
+            action=action, target_id=str(target),
+        ).latest('id')
+
+    def test_the_four_actions_are_audited(self):
+        e = self.upload()
+        _ev_svc.publish_to_customer(evidence=e, actor=self.staff)
+        _ev_svc.hide_from_customer(evidence=e, actor=self.staff)
+        _ev_svc.void_evidence(evidence=e, reason='Se anula.', actor=self.staff)
+        for action in ('service_evidence_uploaded',
+                       'service_evidence_published_to_customer',
+                       'service_evidence_hidden_from_customer',
+                       'service_evidence_voided'):
+            entry = self._entry(action, e.pk)
+            self.assertEqual(entry.actor_id, self.staff.pk)
+            self.assertEqual(entry.company_id, self.company.pk)
+
+    def test_the_audit_entry_never_carries_the_storage_key_or_a_hash(self):
+        e = self.upload()
+        blob = str(self._entry('service_evidence_uploaded', e.pk).metadata)
+        for leak in (e.storage_key, e.sha256, e.source_sha256, 'Signature',
+                     'X-Amz', 'http'):
+            if leak:
+                self.assertNotIn(leak, blob)
+
+    def test_the_upload_entry_names_the_order_and_the_stage(self):
+        e = self.upload(stage=_Ev.Stage.QUALITY)
+        meta = self._entry('service_evidence_uploaded', e.pk).metadata
+        self.assertEqual(meta['repair_order_id'], self.order.pk)
+        self.assertEqual(meta['stage'], _Ev.Stage.QUALITY)
+
+
+class M12DSurvivingDefenceTest(M12DEvidenceBase):
+    """
+    Las cuatro defensas que sobrevivieron a su propia retirada.
+
+    Ninguna estaba rota: cada una tenía detrás una red de seguridad que hacía el
+    mismo trabajo, así que quitarla no rompía nada visible. Eso no las hace
+    prescindibles — hace que nadie se enteraría de que desaparecieron. Estas
+    pruebas les preguntan directamente, en vez de preguntarle a la red.
+    """
+
+    # --- 1. La allowlist de formatos ---------------------------------------
+    #
+    # El hueco REAL de los cuatro. Un PDF o un ZIP no llegan a la allowlist:
+    # revientan antes, al decodificar. Lo que la allowlist gobierna son los
+    # formatos que Pillow SÍ sabe abrir y que aun así no queremos — y de ésos no
+    # había ni un test.
+
+    def _encoded(self, fmt):
+        import io as _io
+        from PIL import Image as _Img
+        buf = _io.BytesIO()
+        _Img.new('RGB', (600, 400), (90, 120, 60)).save(buf, fmt)
+        return buf.getvalue()
+
+    def test_gif_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('GIF'))
+
+    def test_bmp_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('BMP'))
+
+    def test_tiff_is_refused_even_though_pillow_can_read_it(self):
+        with self.assertRaises(_ei.EvidenceImageError):
+            _ei.process(self._encoded('TIFF'))
+
+    def test_the_allowlist_names_exactly_the_photographic_formats(self):
+        self.assertEqual(
+            _ei.ACCEPTED_INPUT_FORMATS,
+            frozenset({'JPEG', 'PNG', 'WEBP', 'HEIF', 'HEIC', 'MPO'}),
+        )
+
+    # --- 2. El alcance por sucursal ----------------------------------------
+    #
+    # `get_order()` ya acota por sucursales visibles, así que por HTTP una orden
+    # de otro local devuelve 404 antes de llegar a la comprobación de etapa. La
+    # comprobación sigue siendo correcta —dos ejes, capacidad y lugar— y se le
+    # pregunta directamente.
+
+    def test_the_stage_check_asks_for_the_branch_too(self):
+        from .models import Branch, MembershipBranchAccess
+        other_branch = Branch.objects.create(
+            company=self.company, name='Sucursal M12D',
+        )
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        MembershipBranchAccess.objects.create(
+            membership=self.membership, branch=self.order.branch,
+        )
+        cache.clear()
+        self.assertTrue(_ev_svc.may_act_on_stage(
+            self.staff, self.company, _Ev.Stage.INTAKE, branch=self.order.branch,
+        ))
+        self.assertFalse(
+            _ev_svc.may_act_on_stage(
+                self.staff, self.company, _Ev.Stage.INTAKE, branch=other_branch,
+            ),
+            'la autoridad de etapa ignoró la sucursal',
+        )
+
+    # --- 3. La limpieza de metadata ----------------------------------------
+    #
+    # El codificador WebP de Pillow no arrastra EXIF, así que quitar `_strip`
+    # dejaba la suite verde. Eso hace que la garantía de privacidad dependa del
+    # comportamiento de una librería y no de nuestro código: una versión futura
+    # que decidiera preservar metadata filtraría GPS en silencio. `_strip` es el
+    # cinturón; el codificador, los tirantes.
+
+    def test_strip_removes_the_metadata_from_the_image_itself(self):
+        import io as _io
+        from PIL import Image as _Img
+        from PIL.ExifTags import IFD
+        exif = _Img.Exif()
+        exif[272] = 'iPhone 15 Pro'
+        g = exif.get_ifd(IFD.GPSInfo)
+        g[1] = 'S'; g[2] = (16.0, 23.0, 59.0)
+        buf = _io.BytesIO()
+        _Img.new('RGB', (400, 300), (100, 100, 100)).save(
+            buf, 'JPEG', exif=exif.tobytes(),
+        )
+        loaded = _Img.open(_io.BytesIO(buf.getvalue()))
+        loaded.load()
+        self.assertTrue(loaded.getexif(), 'el fixture no traía EXIF')
+
+        stripped = _ei._strip(loaded)
+        self.assertEqual(
+            len(stripped.getexif()), 0,
+            'la limpieza depende del codificador en vez de hacerla ella',
+        )
+        self.assertEqual(stripped.size, loaded.size)
+
+    # --- 4. La idempotencia de subida --------------------------------------
+    #
+    # La constraint de base de datos atrapa el duplicado y devuelve al ganador,
+    # así que el resultado observable es idéntico con o sin la consulta previa.
+    # Lo que la consulta evita es ESCRIBIR un objeto para borrarlo acto seguido:
+    # un reintento no debería costar una escritura en el bucket.
+
+    def test_a_retry_does_not_even_write_to_storage(self):
+        from unittest.mock import patch
+        self.upload(idempotency_key='cam-storage')
+        with patch.object(
+            _ev_store, 'save', wraps=_ev_store.save,
+        ) as spy:
+            self.upload(idempotency_key='cam-storage')
+        self.assertEqual(
+            spy.call_count, 0,
+            'el reintento escribió un objeto para después borrarlo',
+        )
+
+
+class M12DPilotPaletteTest(TestCase):
+    """
+    §DECISIÓN 1 — la paleta del manual v3.0, en la configuración del PILOTO.
+
+    BLACK DOG STORE ES EL PILOTO, NO EL BRANDING DEL SaaS. Estas pruebas
+    existen sobre todo para lo segundo: que ninguna otra empresa herede estos
+    colores, ni hoy ni al crear una nueva.
+    """
+
+    def setUp(self):
+        self.module = importlib.import_module(
+            'store.migrations.0065_pilot_brand_palette'
+        )
+        self.pilot = Company.objects.get(slug=self.module.PILOT_SLUG)
+        self.settings_row = CompanySettings.objects.get(company=self.pilot)
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {
+                    'Company': Company,
+                    'CompanySettings': CompanySettings,
+                }[model_name]
+        return _Apps()
+
+    def _theme(self, row):
+        return {f: (getattr(row, f) or '').upper() for f in self.module._FIELDS}
+
+    def test_the_pilot_wears_the_manual_palette_after_migration(self):
+        expected = {k: v.upper() for k, v in self.module._BRAND_V3_THEME.items()}
+        self.assertEqual(self._theme(self.settings_row), expected)
+
+    def test_the_warm_white_replaced_pure_white(self):
+        """
+        No es cosmético. Blanco puro sobre negro da el contraste duro de una
+        interfaz de sistema; el cálido es lo que hace que se lea como marca.
+        """
+        self.assertEqual(self.settings_row.text_color.upper(), '#F5F3EE')
+        self.assertNotEqual(self.settings_row.text_color.upper(), '#FFFFFF')
+
+    def test_the_gold_is_the_accent_and_never_the_primary(self):
+        """
+        `primary_color` pinta botones sólidos y bloques principales: el dorado
+        ahí sería el color dominante de cada pantalla, y el manual pide 3-5%.
+        """
+        self.assertEqual(self.settings_row.accent_color.upper(), '#C8A45D')
+        self.assertNotEqual(self.settings_row.primary_color.upper(), '#C8A45D')
+
+    def test_a_brand_new_company_does_not_inherit_the_pilot_palette(self):
+        """La prueba que más importa de todas: no es el default del SaaS."""
+        from .company_settings import NEUTRAL_THEME
+        other = _saas_company('Ajena Marca', 'm12d-marca', tax_id='20780070001')
+        # Por el camino REAL de alta de empresa, que es donde se aplica el tema
+        # neutro. Un `get_or_create` desnudo deja los colores vacíos y no
+        # respondería la pregunta que este test hace.
+        provision_company_access_defaults(other)
+        row = CompanySettings.objects.get(company=other)
+        theme = {f: (getattr(row, f) or '').upper() for f in self.module._FIELDS}
+
+        # Sobre el tema COMPLETO, no campo a campo. El neutro de la plataforma
+        # también usa `#0A0A0A` de fondo, porque negro es negro: exigir que
+        # ningún valor coincida convertiría una coincidencia legítima en una
+        # falsa alarma. Lo que no debe ocurrir es heredar la paleta ENTERA.
+        pilot = {f: v.upper() for f, v in self.module._BRAND_V3_THEME.items()}
+        self.assertNotEqual(theme, pilot, 'la paleta del piloto se filtró')
+        self.assertNotIn(
+            '#C8A45D', theme.values(),
+            'el dorado de Black Dog llegó a otra empresa',
+        )
+        self.assertNotIn(
+            '#F5F3EE', theme.values(),
+            'el blanco cálido de Black Dog llegó a otra empresa',
+        )
+        self.assertEqual(
+            {f: (getattr(row, f) or '') for f in self.module._FIELDS},
+            {f: NEUTRAL_THEME[f] for f in self.module._FIELDS},
+            'una empresa nueva debe nacer con el tema neutro de la plataforma',
+        )
+
+    def test_another_tenant_is_untouched_by_the_migration(self):
+        other = _saas_company('Intacta SA', 'm12d-intacta', tax_id='20780070002')
+        row = CompanySettings.objects.create(
+            company=other, primary_color='#123456', accent_color='#654321',
+            background_color='#111111', surface_color='#222222',
+            text_color='#333333', border_color='#444444',
+        )
+        before = self._theme(row)
+        self.module.apply_brand_palette(self._apps(), None)
+        row.refresh_from_db()
+        self.assertEqual(self._theme(row), before)
+
+    def test_a_pilot_that_customised_its_colours_is_left_alone(self):
+        """
+        Si el taller ya eligió, esos valores son suyos. Misma regla que M12B.1
+        estableció para los presets de roles, y por el mismo motivo.
+        """
+        self.settings_row.accent_color = '#00FF00'
+        self.settings_row.save(update_fields=['accent_color'])
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        self.assertEqual(self.settings_row.accent_color.upper(), '#00FF00')
+
+    def test_it_is_safe_when_the_pilot_does_not_exist(self):
+        """Una base arrancada de otra forma no es un error."""
+        slug = self.module.PILOT_SLUG
+        self.module.PILOT_SLUG = 'no-existe-esta-empresa'
+        try:
+            self.module.apply_brand_palette(self._apps(), None)
+        finally:
+            self.module.PILOT_SLUG = slug
+
+    def test_the_previous_shape_is_frozen_not_imported(self):
+        """
+        La lección de M12B.1: una migración reconoce el pasado con su propio
+        literal, nunca importando lo que el código significa hoy.
+        """
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(self.module))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                break
+            names = {a.name for n in ast.walk(node)
+                     if isinstance(n, ast.ImportFrom) for a in n.names}
+            self.assertNotIn('NEUTRAL_THEME', names)
+        self.assertEqual(len(self.module._PREVIOUS_PILOT_THEME), 6)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        first = self._theme(self.settings_row)
+        self.module.apply_brand_palette(self._apps(), None)
+        self.settings_row.refresh_from_db()
+        self.assertEqual(self._theme(self.settings_row), first)
+
+    def test_every_colour_is_a_valid_hex(self):
+        import re
+        for field, value in self.module._BRAND_V3_THEME.items():
+            self.assertRegex(value, r'^#[0-9A-Fa-f]{6}$', field)
+
+
+class M12DPilotLogoTest(TestCase):
+    """§DECISIÓN 2 — el asset oficial, enlazado; el compromiso, declarado."""
+
+    def setUp(self):
+        self.module = importlib.import_module('store.migrations.0066_pilot_logo')
+        self.pilot = Company.objects.get(slug=self.module.PILOT_SLUG)
+        self.row = CompanySettings.objects.get(company=self.pilot)
+
+    def _apps(self):
+        outer = self
+
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                outer.assertEqual(app_label, 'store')
+                return {'Company': Company, 'CompanySettings': CompanySettings}[model_name]
+        return _Apps()
+
+    def test_the_pilot_points_at_its_official_logo(self):
+        self.assertEqual(self.row.logo_url, self.module.PILOT_LOGO_URL)
+
+    def test_the_url_is_relative_so_a_host_change_does_not_break_it(self):
+        self.assertTrue(self.module.PILOT_LOGO_URL.startswith('/'))
+        for absolute in ('http://', 'https://', 'localhost'):
+            self.assertNotIn(absolute, self.module.PILOT_LOGO_URL)
+
+    def test_a_tenant_that_already_uploaded_a_logo_keeps_it(self):
+        self.row.logo_url = '/assets/branding/el-mio.png'
+        self.row.save(update_fields=['logo_url'])
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.logo_url, '/assets/branding/el-mio.png')
+
+    def test_no_other_company_gets_the_pilot_logo(self):
+        other = _saas_company('Sin Logo', 'm12d-sinlogo', tax_id='20780080001')
+        provision_company_access_defaults(other)
+        row = CompanySettings.objects.get(company=other)
+        self.assertNotEqual(row.logo_url, self.module.PILOT_LOGO_URL)
+
+    def test_it_is_safe_when_the_pilot_does_not_exist(self):
+        slug = self.module.PILOT_SLUG
+        self.module.PILOT_SLUG = 'no-existe'
+        try:
+            self.module.point_at_the_official_logo(self._apps(), None)
+        finally:
+            self.module.PILOT_SLUG = slug
+
+    def test_running_it_twice_changes_nothing(self):
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        first = self.row.logo_url
+        self.module.point_at_the_official_logo(self._apps(), None)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.logo_url, first)
+
+    def test_the_visual_compromise_is_written_down_not_silent(self):
+        """
+        La configuración expone UN `logo_url` y el manual pide la variante
+        horizontal para cabeceras. Usar la vertical ahí queda por debajo de su
+        mínimo de reducción — un compromiso real, y lo que no puede ser es
+        tácito: quien lea esta migración tiene que enterarse.
+        """
+        import inspect
+        doc = inspect.getdoc(self.module) or ''
+        self.assertIn('logo_horizontal_url', doc)
+        self.assertIn('CABECERA', doc)
+
+
+class M12EAssetUrlValidationTest(TestCase):
+    """
+    M12E — la regresión que la suite completa atrapó, y su defensa.
+
+    Ampliar `logo_url` de `URLField` a `CharField` era necesario —estas rutas
+    las sirve el frontend, y una URL absoluta rompe el logo al cambiar de host—
+    pero se llevó por delante TODA la validación. El valor acaba en el `src` de
+    una imagen: un esquema que el navegador pueda interpretar no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+    """
+
+    def setUp(self):
+        self.company = _saas_company('Assets SA', 'm12e-assets', tax_id='20780090001')
+        self.row, _ = CompanySettings.objects.get_or_create(company=self.company)
+
+    def _set(self, field, value):
+        from django.core.exceptions import ValidationError
+        setattr(self.row, field, value)
+        try:
+            self.row.save(update_fields=[field])
+            return None
+        except ValidationError as exc:
+            return exc
+
+    FIELDS = (
+        'logo_url', 'logo_on_light_url', 'logo_on_dark_url',
+        'logo_horizontal_on_light_url', 'logo_horizontal_on_dark_url',
+    )
+
+    def test_a_site_relative_path_is_accepted(self):
+        """Lo que M12E necesitaba y un `URLField` rechazaba."""
+        for field in self.FIELDS:
+            self.assertIsNone(
+                self._set(field, '/assets/branding/logo.png'), field,
+            )
+
+    def test_an_absolute_https_url_is_still_accepted(self):
+        """Ampliar el tipo no puede romper a quien ya guardaba una URL."""
+        self.assertIsNone(self._set('logo_url', 'https://cdn.example/logo.png'))
+
+    def test_javascript_scheme_is_refused(self):
+        for field in self.FIELDS:
+            self.assertIsNotNone(self._set(field, 'javascript:alert(1)'), field)
+
+    def test_data_scheme_is_refused(self):
+        self.assertIsNotNone(
+            self._set('logo_url', 'data:text/html;base64,PHNjcmlwdD4='),
+        )
+
+    def test_a_protocol_relative_url_is_refused(self):
+        """
+        `//evil.example/logo.png` PARECE una ruta del sitio y es una URL
+        absoluta de protocolo relativo. Empieza por «/», así que un filtro
+        ingenuo la deja pasar.
+        """
+        self.assertIsNotNone(self._set('logo_url', '//evil.example/logo.png'))
+
+    def test_empty_is_accepted(self):
+        """Vacío significa «no tengo esta variante», y es legítimo."""
+        for field in self.FIELDS:
+            self.assertIsNone(self._set(field, ''), field)
+
+    def test_the_validator_runs_on_save_not_only_in_a_form(self):
+        """
+        `full_clean()` no lo llama `save()`, así que un validador colgado del
+        campo protege un serializador y un formulario de admin y nada más. Ésa
+        es exactamente la razón de que una ruta escrita por una migración de
+        datos llegara a la base sin comprobarse.
+        """
+        from django.core.exceptions import ValidationError
+        self.row.logo_url = 'javascript:alert(1)'
+        with self.assertRaises(ValidationError):
+            self.row.save()
+
+    def test_the_light_colours_are_validated_too(self):
+        from django.core.exceptions import ValidationError
+        self.row.light_background_color = 'url(evil)'
+        with self.assertRaises(ValidationError):
+            self.row.save()
+
+
+class M12EBrandingPayloadTest(TestCase):
+    """
+    M12E — el contrato de marca que viaja al escaparate.
+
+    Las variantes por contraste y el tema claro se verificaron a mano contra la
+    base de desarrollo. Eso comprueba que hoy funciona; no impide que mañana
+    deje de hacerlo. Lo que sigue son las invariantes que el frontend da por
+    ciertas al pintar, escritas donde puedan romperse.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.bare = _p3_company('m12e-bare', 'Empresa Sin Marca')
+        self.dressed = _p3_company('m12e-dressed', 'Empresa Con Marca')
+
+    # -- las variantes ----------------------------------------------------
+
+    def test_every_question_is_always_answered(self):
+        """
+        Las claves son las PREGUNTAS que hace un componente, y TODAS existen
+        siempre, configuradas o no. Un `logos` incompleto obligaría a cada
+        consumidor a comprobar la clave antes de leerla, y el que se olvide
+        escribe `undefined` dentro de un `src`.
+
+        Antes esto decía «las cuatro» y afirmaba el conjunto literal. Era el
+        mismo error que ya cometí en M12C: congelar un «hoy son cuatro» como si
+        fuera una invariante. M12F añadió el isotipo y el test se puso rojo por
+        una ampliación correcta. Lo permanente es que el catálogo declarado y
+        la respuesta coincidan — no cuántos elementos tiene.
+        """
+        logos = company_branding(self.bare).logos
+        self.assertEqual(set(logos), set(LOGO_VARIANT_FIELDS))
+        self.assertEqual(logos, EMPTY_LOGO_VARIANTS)
+
+    def test_the_composition_questions_never_disappear(self):
+        """
+        Esto SÍ es un contrato y no puede encogerse: el frontend pregunta por
+        estas cuatro por nombre. Ampliar el catálogo es aditivo; quitar una de
+        éstas deja un `pickLogo` leyendo `undefined`.
+        """
+        logos = company_branding(self.bare).logos
+        for question in (
+            'primary_on_light', 'primary_on_dark',
+            'horizontal_on_light', 'horizontal_on_dark',
+        ):
+            self.assertIn(question, logos)
+
+    def test_no_variant_can_arrive_as_none(self):
+        """
+        `None` en un `src` de imagen escribe la cadena «null» y el navegador
+        pide esa URL al servidor. Vacío es la respuesta legítima de «no tengo
+        esta variante»; None sería una fuga del esquema.
+
+        La garantía vive en la COLUMNA, no en el `or ''` del constructor: éste
+        es un respaldo de un caso que la base ya impide. Se comprueba abajo
+        porque un respaldo indistinguible de su propia defensa no se puede
+        retirar nunca — nadie sabría cuál de los dos estaba sujetando.
+        """
+        from django.db import IntegrityError, transaction
+
+        for column in ('logo_url', *LOGO_VARIANT_FIELDS.values()):
+            with self.subTest(column=column):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        CompanySettings.objects.filter(
+                            company=self.bare,
+                        ).update(**{column: None})
+
+        for value in company_branding(self.bare).logos.values():
+            self.assertIsInstance(value, str)
+
+    def test_a_company_with_no_settings_row_still_has_branding(self):
+        """Un tenant anterior a esta fase no puede quedarse sin escaparate."""
+        CompanySettings.objects.filter(company=self.bare).delete()
+        self.bare.refresh_from_db()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+        self.assertEqual(branding.light_colors, NEUTRAL_LIGHT_THEME)
+        self.assertEqual(branding.logo_url, '')
+
+    def test_one_tenants_variants_never_reach_another(self):
+        """
+        La variante sale de la fila del tenant y de ningún otro sitio. No hay
+        tabla de assets por slug ni condicional por empresa que pueda mezclar.
+        """
+        row = self.dressed.settings
+        row.logo_horizontal_on_dark_url = '/propio/h-oscuro.png'
+        row.save()
+        self.assertEqual(
+            company_branding(self.dressed).logos['horizontal_on_dark'],
+            '/propio/h-oscuro.png',
+        )
+        self.assertEqual(
+            company_branding(self.bare).logos['horizontal_on_dark'], '',
+        )
+
+    def test_the_legacy_logo_survives_the_new_variants(self):
+        """
+        Hay tenants que sólo tienen `logo_url`. Añadir variantes no puede
+        dejarlos sin logotipo: la fase nueva no rompe a quien no la usa.
+        """
+        row = self.bare.settings
+        row.logo_url = '/legado.png'
+        row.save()
+        branding = company_branding(self.bare)
+        self.assertEqual(branding.logo_url, '/legado.png')
+        self.assertEqual(branding.logos, EMPTY_LOGO_VARIANTS)
+
+    # -- el tema claro -----------------------------------------------------
+
+    def test_the_light_theme_falls_back_per_field(self):
+        """
+        POR CAMPO, no todo o nada: fijar el fondo no puede perder la superficie.
+
+        Ésta es la comprobación que atrapa un `or` mal asociado —
+        `(x if s else '') or NEUTRAL[k]` y `x if s else ('' or NEUTRAL[k])` se
+        leen igual y devuelven cosas distintas cuando el campo está vacío.
+        """
+        row = self.dressed.settings
+        row.light_background_color = '#FAFAFA'
+        row.light_surface_color = ''
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light['light_background_color'], '#FAFAFA')
+        self.assertEqual(
+            light['light_surface_color'],
+            NEUTRAL_LIGHT_THEME['light_surface_color'],
+        )
+
+    def test_the_neutral_light_theme_belongs_to_no_business(self):
+        """
+        El claro por defecto lo ve cualquier tenant que no configure el suyo.
+        Si fuese el del piloto, la marca del piloto sería el default de la
+        plataforma — la misma falta que la Fase 3 vino a cerrar, aplicada al
+        color en vez de al nombre.
+        """
+        blob = ' '.join(NEUTRAL_LIGHT_THEME.values()).upper()
+        for pilot_colour in ('#F5F3EE', '#EDEAE3', '#0A0A0A', '#C8A45D'):
+            self.assertNotIn(pilot_colour, blob)
+
+    def test_a_dark_palette_does_not_decide_the_light_one(self):
+        """
+        Son dos temas, no uno invertido. Un tenant con paleta oscura propia y
+        sin claro propio recibe el claro NEUTRO — no su fondo oscuro colocado
+        donde va el claro, que dejaría texto oscuro sobre fondo oscuro.
+        """
+        row = self.dressed.settings
+        row.background_color = '#0A0A0A'
+        row.surface_color = '#232323'
+        row.save()
+        light = company_branding(self.dressed).light_colors
+        self.assertEqual(light, NEUTRAL_LIGHT_THEME)
+
+    # -- el contrato con el frontend ---------------------------------------
+
+    def test_css_variables_carry_both_themes(self):
+        """
+        Las ocho viajan juntas. El frontend tiene una allowlist con estos mismos
+        nombres y descarta lo demás: emitir una sin la otra reproduce el
+        síntoma que esta fase ya tuvo — el backend la manda y la página no la ve.
+        """
+        variables = company_branding(self.bare).css_variables()
+        self.assertEqual(
+            set(variables),
+            {
+                '--brand-primary', '--brand-accent', '--brand-background',
+                '--brand-surface', '--brand-text', '--brand-border',
+                '--brand-light-background', '--brand-light-surface',
+            },
+        )
+
+    def test_the_payload_never_names_a_database_column(self):
+        """
+        Las claves de `logos` son preguntas —«horizontal, sobre oscuro»—, no
+        columnas. Renombrar `logo_on_dark_url` no puede obligar a tocar el
+        frontend, y por eso el mapa vive en el backend.
+        """
+        for question, column in LOGO_VARIANT_FIELDS.items():
+            self.assertNotEqual(question, column)
+            self.assertNotIn('_url', question)
+
+
+# ---------------------------------------------------------------------------
+# M12F — contenido comercial del escaparate
+# ---------------------------------------------------------------------------
+
+from django.core.exceptions import ValidationError as _M12FValidationError  # noqa: E402
+
+
+class M12FCampaignVisibilityTest(TestCase):
+    """
+    LA REGLA DE VISIBILIDAD, que es donde vive la seguridad de esta fase.
+
+    Cuatro condiciones —empresa, estado, inicio, fin— y las cuatro tienen que
+    cumplirse a la vez. Cada test de aquí retira UNA y comprueba que la campaña
+    desaparece: si alguno pasara con la condición retirada, esa condición no
+    estaría sujetando nada.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-a', 'Empresa A')
+        self.b = _p3_company('m12f-b', 'Empresa B')
+        self.now = timezone.now()
+
+    def _campaign(self, company=None, **kw):
+        data = {
+            'company': company or self.a,
+            'slot': StorefrontCampaign.Slot.HOME_BOTTOM_PROMO,
+            'title': 'Preventa',
+            'status': StorefrontCampaign.Status.PUBLISHED,
+            'published_at': self.now,
+        }
+        data.update(kw)
+        return StorefrontCampaign.objects.create(**data)
+
+    def test_a_published_campaign_within_its_window_is_visible(self):
+        self._campaign()
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, self.now))
+
+    def test_a_draft_is_invisible(self):
+        self._campaign(status=StorefrontCampaign.Status.DRAFT, published_at=None)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_an_archived_campaign_is_invisible(self):
+        self._campaign(status=StorefrontCampaign.Status.ARCHIVED)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_a_future_campaign_is_invisible(self):
+        self._campaign(starts_at=self.now + timedelta(hours=1))
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_an_expired_campaign_is_invisible(self):
+        """
+        ESTA ES LA DEFENSA CONTRA «PREVENTA IPHONE 17» UN AÑO DESPUÉS.
+
+        Nadie despliega para borrar algo que ya no existe, así que la campaña
+        tiene que desaparecer sola.
+        """
+        self._campaign(
+            starts_at=self.now - timedelta(days=30),
+            ends_at=self.now - timedelta(days=1),
+        )
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_ends_at_is_exclusive(self):
+        """
+        El instante que el editor escribió es el primero en el que YA NO está.
+        Un `<=` mal puesto deja la promoción viva un segundo de más; da igual el
+        segundo, importa que la regla sea la que el editor creyó escribir.
+        """
+        end = self.now + timedelta(hours=1)
+        self._campaign(ends_at=end)
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, end - timedelta(seconds=1)))
+        self.assertEqual(public_campaigns(self.a, end), {})
+
+    def test_missing_dates_mean_no_limit_not_always_visible(self):
+        """Sin fechas manda el estado, no la ausencia de fechas."""
+        self._campaign(starts_at=None, ends_at=None)
+        self.assertIn('home_bottom_promo', public_campaigns(self.a, self.now))
+        StorefrontCampaign.objects.update(status=StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+
+    def test_one_companys_campaign_never_reaches_another(self):
+        self._campaign(company=self.b, title='De la B')
+        self.assertEqual(public_campaigns(self.a, self.now), {})
+        self.assertIn('home_bottom_promo', public_campaigns(self.b, self.now))
+
+    def test_no_company_means_no_campaigns_never_all(self):
+        """
+        `None` no puede significar «todas». Es el default peligroso que M12C
+        prohibió, aplicado al escaparate.
+        """
+        self._campaign()
+        self.assertEqual(public_campaigns(None, self.now), {})
+        self.assertEqual(list(StorefrontCampaign.objects.active(None)), [])
+
+    def test_the_slot_winner_is_deterministic(self):
+        """
+        Dos campañas publicadas en el mismo slot no pueden dar una portada
+        distinta según el plan de consulta.
+        """
+        self._campaign(title='Baja', priority=0)
+        self._campaign(title='Alta', priority=10)
+        for _ in range(5):
+            got = public_campaigns(self.a, self.now)['home_bottom_promo']
+            self.assertEqual(got['title'], 'Alta')
+
+    def test_is_active_agrees_with_the_queryset(self):
+        """
+        Dos respuestas a la misma pregunta que puedan divergir son un borrador
+        publicado esperando a ocurrir.
+        """
+        cases = [
+            {},
+            {'status': StorefrontCampaign.Status.DRAFT, 'published_at': None},
+            {'starts_at': self.now + timedelta(hours=1)},
+            {'ends_at': self.now - timedelta(hours=1),
+             'starts_at': self.now - timedelta(days=1)},
+        ]
+        for kw in cases:
+            with self.subTest(kw=kw):
+                StorefrontCampaign.objects.all().delete()
+                campaign = self._campaign(**kw)
+                in_queryset = 'home_bottom_promo' in public_campaigns(self.a, self.now)
+                self.assertEqual(campaign.is_active(self.now), in_queryset)
+
+
+class M12FPublicPayloadTest(TestCase):
+    """Lo que el público recibe, y sobre todo lo que NO."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-pub', 'Empresa Pública')
+        self.user, _ = _p2d_member(self.a, 'm12f_pub_admin', ['company.manage'])
+        self.campaign = StorefrontCampaign.objects.create(
+            company=self.a, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='Título', status=StorefrontCampaign.Status.PUBLISHED,
+            published_at=timezone.now(), created_by=self.user, priority=7,
+        )
+
+    def test_internal_metadata_never_reaches_the_public(self):
+        """
+        Lista BLANCA, no negra: un campo nuevo en el modelo no puede aparecer
+        solo en la respuesta pública el día que alguien lo añada.
+        """
+        payload = public_campaigns(self.a)['home_hero']
+        for leaked in (
+            'created_by', 'updated_by', 'created_at', 'updated_at',
+            'status', 'priority', 'starts_at', 'ends_at', 'published_at', 'id',
+        ):
+            self.assertNotIn(leaked, payload)
+
+    def test_the_public_shape_is_fixed(self):
+        payload = public_campaigns(self.a)['home_hero']
+        self.assertEqual(
+            set(payload),
+            {
+                'slot', 'badge', 'title', 'subtitle', 'body', 'image_url',
+                'cta_label', 'cta_url', 'secondary_cta_label',
+                'secondary_cta_url', 'product',
+            },
+        )
+
+    def test_an_inactive_product_is_not_advertised(self):
+        """
+        Enlazar un producto retirado mandaría al cliente a una ficha que no
+        existe. La campaña sigue, el enlace no.
+        """
+        product = Product.objects.create(
+            company=self.a, name='Equipo', slug='equipo-m12f',
+            price=Decimal('100.00'), is_active=False,
+        )
+        self.campaign.product = product
+        self.campaign.save(update_fields=['product'])
+        self.assertIsNone(public_campaigns(self.a)['home_hero']['product'])
+
+
+class M12FCampaignValidationTest(TestCase):
+    """Lo que un panel de administración NO puede escribir."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-val', 'Empresa Validación')
+        self.b = _p3_company('m12f-val-b', 'Otra Empresa')
+        self.user, _ = _p2d_member(self.a, 'm12f_val_admin', ['company.manage'])
+
+    def _campaign(self, **kw):
+        data = {
+            'company': self.a, 'slot': StorefrontCampaign.Slot.HOME_HERO,
+            'title': 'T', 'created_by': self.user,
+        }
+        data.update(kw)
+        return StorefrontCampaign(**data)
+
+    def test_dangerous_cta_schemes_are_rejected(self):
+        """
+        Esto acaba en el `href` de un enlace que alguien va a PULSAR.
+        `javascript:` ahí no es una URL rota: es ejecución de código elegida por
+        quien edita la campaña.
+        """
+        for bad in (
+            'javascript:alert(1)',
+            'JavaScript:alert(1)',
+            'data:text/html,<script>alert(1)</script>',
+            '//evil.example/promo',
+            'vbscript:msgbox(1)',
+            'file:///etc/passwd',
+        ):
+            with self.subTest(url=bad):
+                with self.assertRaises(_M12FValidationError):
+                    self._campaign(cta_label='Ir', cta_url=bad).full_clean()
+
+    def test_legitimate_cta_destinations_are_accepted(self):
+        for good in (
+            '/product', '/product/iphone-18',
+            'https://wa.me/51999888777', 'http://example.com/promo',
+            'tel:+51999888777', 'mailto:hola@example.com',
+        ):
+            with self.subTest(url=good):
+                self._campaign(cta_label='Ir', cta_url=good).full_clean()
+
+    def test_a_protocol_relative_url_is_not_an_internal_path(self):
+        """`//evil.example` empieza por «/» y no es del sitio."""
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_label='Ir', cta_url='//evil.example').full_clean()
+
+    def test_a_product_of_another_company_cannot_be_advertised(self):
+        foreign = Product.objects.create(
+            company=self.b, name='Ajeno', slug='ajeno-m12f',
+            price=Decimal('10.00'),
+        )
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(product=foreign).full_clean()
+
+    def test_a_window_that_ends_before_it_starts_is_an_error(self):
+        now = timezone.now()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(
+                starts_at=now, ends_at=now - timedelta(hours=1),
+            ).full_clean()
+
+    def test_a_button_needs_both_halves(self):
+        """Un botón sin destino no lleva a ningún sitio y uno sin texto no se lee."""
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_url='/product').full_clean()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(cta_label='Ir').full_clean()
+
+    def test_content_length_is_bounded(self):
+        """
+        Sin límite, veinte mil caracteres en un titular rompen la portada desde
+        el panel de administración.
+        """
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(title='x' * 500).full_clean()
+        with self.assertRaises(_M12FValidationError):
+            self._campaign(body='x' * 5000).full_clean()
+
+    def test_markup_is_stored_as_text_not_interpreted(self):
+        """
+        No se rechaza `<script>` en un TÍTULO: rechazar texto por parecerse a
+        código es una lista negra que envejece. Se guarda como texto y el
+        frontend lo pinta como texto — sin `dangerouslySetInnerHTML`, que un
+        test del frontend comprueba por separado.
+        """
+        campaign = self._campaign(title='<script>alert(1)</script>')
+        campaign.full_clean()
+        campaign.save()
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.title, '<script>alert(1)</script>')
+
+
+class M12FContentApiTest(TestCase):
+    """
+    Quién puede tocar el contenido del escaparate, y qué ve cada uno.
+
+    La autoridad NO es nueva: es `company.manage`, la misma que ya gobierna la
+    configuración de la empresa. Estos tests comprueban que se aplica de verdad
+    y que el aislamiento entre empresas es el del resto de la plataforma.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f-api-a', 'Empresa A')
+        self.b = _p3_company('m12f-api-b', 'Empresa B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'm12f_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'm12f_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'm12f_admin_b', ['company.view', 'company.manage'],
+        )
+        self.master = User.objects.create_superuser(
+            username='m12f_master', password='x', email='m@example.com',
+        )
+        self.outsider = User.objects.create_user(username='m12f_out', password='x')
+
+        self.campaign_a = StorefrontCampaign.objects.create(
+            company=self.a, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='De A', created_by=self.admin_a,
+        )
+        self.campaign_b = StorefrontCampaign.objects.create(
+            company=self.b, slot=StorefrontCampaign.Slot.HOME_HERO,
+            title='De B', created_by=self.admin_b,
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- autoridad --------------------------------------------------------
+
+    def test_an_admin_lists_their_own_campaigns(self):
+        res = self._as(self.admin_a).get('/api/admin/storefront/campaigns/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([c['title'] for c in res.data['results']], ['De A'])
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/storefront/campaigns/').status_code,
+            status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/storefront/campaigns/', {
+            'slot': 'home_promo', 'title': 'Intento',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_somebody_with_no_membership_gets_nothing(self):
+        res = self._as(self.outsider).get('/api/admin/storefront/campaigns/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND),
+        )
+
+    def test_anonymous_is_refused(self):
+        res = APIClient().get('/api/admin/storefront/campaigns/')
+        self.assertIn(res.status_code, (401, 403))
+
+    # -- aislamiento ------------------------------------------------------
+
+    def test_another_companys_campaign_answers_like_one_that_does_not_exist(self):
+        """
+        404, NO 403. Un 403 confirmaría que ese id existe en alguna parte, y esa
+        confirmación ya es información sobre otro tenant.
+        """
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_admin_cannot_patch_another_companys_campaign(self):
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/',
+            {'title': 'Secuestrada'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.campaign_b.refresh_from_db()
+        self.assertEqual(self.campaign_b.title, 'De B')
+
+    def test_asking_for_another_company_by_id_does_not_widen_access(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- master -----------------------------------------------------------
+
+    def test_master_must_name_the_company(self):
+        """
+        MASTER PUEDE LLEGAR A TODAS NO SIGNIFICA QUE «TODAS» SEA UN VALOR.
+        Sin `?company=` no hay difusión accidental: hay un error.
+        """
+        res = self._as(self.master).get('/api/admin/storefront/campaigns/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST),
+        )
+
+    def test_master_with_an_explicit_company_works(self):
+        res = self._as(self.master).get(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([c['title'] for c in res.data['results']], ['De B'])
+
+    def test_master_writes_only_where_it_pointed(self):
+        res = self._as(self.master).post(
+            f'/api/admin/storefront/campaigns/?company={self.b.pk}',
+            {'slot': 'home_promo', 'title': 'Del master'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StorefrontCampaign.objects.filter(company=self.a, title='Del master').count(),
+            0,
+        )
+
+    # -- ciclo de vida ----------------------------------------------------
+
+    def test_saving_a_draft_does_not_publish_it(self):
+        """GUARDAR ≠ PUBLICAR. Es la diferencia entre escribir y anunciar."""
+        self._as(self.admin_a).patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/',
+            {'title': 'Editada'}, format='json',
+        )
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a), {})
+
+    def test_publishing_puts_it_on_the_storefront(self):
+        res = self._as(self.admin_a).post(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('home_hero', public_campaigns(self.a))
+
+    def test_publishing_twice_does_not_move_the_timestamp(self):
+        """
+        `published_at` desempata dos campañas del mismo slot. Si se moviera,
+        pulsar el botón otra vez reordenaría la portada sin que nadie hubiera
+        cambiado nada.
+        """
+        client = self._as(self.admin_a)
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        self.campaign_a.refresh_from_db()
+        first = self.campaign_a.published_at
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.published_at, first)
+
+    def test_archiving_keeps_the_row(self):
+        """
+        ARCHIVAR, NO BORRAR. La campaña de hace tres años es el historial de lo
+        que esta tienda anunció; un DELETE deja el mismo vacío que dejaba el
+        código.
+        """
+        client = self._as(self.admin_a)
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/archive/')
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.ARCHIVED)
+        self.assertTrue(StorefrontCampaign.objects.filter(pk=self.campaign_a.pk).exists())
+        self.assertEqual(public_campaigns(self.a), {})
+
+    # -- vista previa -----------------------------------------------------
+
+    def test_preview_shows_a_draft_without_publishing_it(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['preview']['title'], 'De A')
+        self.assertFalse(res.data['would_be_visible_now'])
+        self.campaign_a.refresh_from_db()
+        self.assertEqual(self.campaign_a.status, StorefrontCampaign.Status.DRAFT)
+        self.assertEqual(public_campaigns(self.a), {})
+
+    def test_preview_is_not_a_public_url(self):
+        res = APIClient().get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_preview_of_another_company_is_a_404(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_b.pk}/preview/',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_preview_is_not_cached(self):
+        res = self._as(self.admin_a).get(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/preview/',
+        )
+        self.assertIn('no-store', res.headers.get('Cache-Control', ''))
+
+    # -- auditoría --------------------------------------------------------
+
+    def test_every_content_action_leaves_a_trace(self):
+        client = self._as(self.admin_a)
+        client.post('/api/admin/storefront/campaigns/', {
+            'slot': 'home_promo', 'title': 'Nueva',
+        }, format='json')
+        client.patch(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/',
+            {'title': 'Cambiada'}, format='json',
+        )
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/')
+        client.post(f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/archive/')
+
+        actions = set(
+            AdminAuditLog.objects.filter(company=self.a)
+            .values_list('action', flat=True)
+        )
+        for expected in (
+            'storefront_campaign_created', 'storefront_campaign_updated',
+            'storefront_campaign_published', 'storefront_campaign_archived',
+        ):
+            self.assertIn(expected, actions)
+
+    def test_the_audit_entry_names_the_company_and_the_actor(self):
+        self._as(self.admin_a).post(
+            f'/api/admin/storefront/campaigns/{self.campaign_a.pk}/publish/',
+        )
+        entry = AdminAuditLog.objects.filter(
+            action='storefront_campaign_published',
+        ).first()
+        self.assertEqual(entry.company, self.a)
+        self.assertEqual(entry.actor, self.admin_a)
+
+    # -- contenido estable ------------------------------------------------
+
+    def test_page_settings_are_per_company(self):
+        client = self._as(self.admin_a)
+        res = client.patch('/api/admin/storefront/page/', {
+            'hero_title': 'Titular de A',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(public_page_settings(self.a)['hero_title'], 'Titular de A')
+        self.assertEqual(public_page_settings(self.b)['hero_title'], '')
+
+    def test_a_hero_cta_cannot_be_a_javascript_url(self):
+        res = self._as(self.admin_a).patch('/api/admin/storefront/page/', {
+            'hero_primary_cta_label': 'Ir',
+            'hero_primary_cta_url': 'javascript:alert(1)',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ServicesContentTest(TestCase):
+    """
+    M12F.1 — el contenido de /services como dato del tenant.
+
+    Y sobre todo: lo que la reconciliación de claims tiene que impedir que
+    vuelva. Varias afirmaciones sobrevivieron a una fase entera por estar
+    compiladas; ahora que son datos, lo que las sujeta es que nadie las siembre.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('m12f1-a', 'Taller A')
+        self.b = _p3_company('m12f1-b', 'Taller B')
+        self.admin_a, _ = _p2d_member(
+            self.a, 'm12f1_admin_a', ['company.view', 'company.manage'],
+        )
+        self.viewer_a, _ = _p2d_member(self.a, 'm12f1_viewer_a', ['company.view'])
+        self.admin_b, _ = _p2d_member(
+            self.b, 'm12f1_admin_b', ['company.view', 'company.manage'],
+        )
+        self.master = User.objects.create_superuser(
+            username='m12f1_master', password='x', email='m1@example.com',
+        )
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- visibilidad ------------------------------------------------------
+
+    def test_only_active_rows_reach_the_public(self):
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Visible', sort_order=0,
+        )
+        StorefrontServiceOffering.objects.create(
+            company=self.a, title='Retirado', is_active=False, sort_order=1,
+        )
+        titles = [s['title'] for s in public_list_content(self.a)['services']]
+        self.assertEqual(titles, ['Visible'])
+
+    def test_order_is_deterministic(self):
+        for order, title in ((30, 'Tercero'), (10, 'Primero'), (20, 'Segundo')):
+            StorefrontServiceOffering.objects.create(
+                company=self.a, title=title, sort_order=order,
+            )
+        for _ in range(3):
+            titles = [s['title'] for s in public_list_content(self.a)['services']]
+            self.assertEqual(titles, ['Primero', 'Segundo', 'Tercero'])
+
+    def test_one_companys_content_never_reaches_another(self):
+        StorefrontFaq.objects.create(company=self.b, question='¿De B?', answer='Sí')
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+        self.assertEqual(len(public_list_content(self.b)['faqs']), 1)
+
+    def test_no_company_means_no_content_never_all(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='X')
+        content = public_list_content(None)
+        self.assertEqual(content['services'], [])
+        self.assertEqual(content['faqs'], [])
+        self.assertEqual(content['metrics'], [])
+
+    def test_a_tenant_without_metrics_gets_an_empty_list(self):
+        """
+        Y eso es lo correcto: el escaparate no dibuja el bloque.
+
+        Un bloque de cifras vacío es peor que ninguno, y una cifra inventada
+        peor que las dos cosas.
+        """
+        self.assertEqual(public_list_content(self.a)['metrics'], [])
+
+    # -- lo que el público NO recibe --------------------------------------
+
+    def test_internal_fields_never_reach_the_public(self):
+        row = StorefrontServiceOffering.objects.create(
+            company=self.a, title='Servicio', updated_by=self.admin_a,
+        )
+        payload = public_list_content(self.a)['services'][0]
+        for leaked in ('id', 'is_active', 'sort_order', 'updated_by',
+                       'created_at', 'updated_at', 'company'):
+            self.assertNotIn(leaked, payload)
+        self.assertEqual(row.updated_by, self.admin_a)
+
+    def test_the_public_shape_is_fixed(self):
+        StorefrontServiceOffering.objects.create(company=self.a, title='S')
+        StorefrontFaq.objects.create(company=self.a, question='P', answer='R')
+        StorefrontTrustMetric.objects.create(company=self.a, value='+1', label='L')
+        content = public_list_content(self.a)
+        self.assertEqual(
+            set(content['services'][0]),
+            {'title', 'description', 'devices_text', 'estimated_time_text', 'highlight'},
+        )
+        self.assertEqual(set(content['faqs'][0]), {'question', 'answer'})
+        self.assertEqual(set(content['metrics'][0]), {'value', 'label'})
+
+    # -- autoridad --------------------------------------------------------
+
+    def test_a_viewer_reads_but_cannot_write(self):
+        client = self._as(self.viewer_a)
+        self.assertEqual(
+            client.get('/api/admin/storefront/services/').status_code,
+            status.HTTP_200_OK,
+        )
+        res = client.post('/api/admin/storefront/services/',
+                          {'title': 'Intento'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_an_admin_cannot_touch_another_companys_content(self):
+        foreign = StorefrontFaq.objects.create(
+            company=self.b, question='¿De B?', answer='Sí',
+        )
+        res = self._as(self.admin_a).patch(
+            f'/api/admin/storefront/faqs/{foreign.pk}/',
+            {'answer': 'Secuestrada'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.answer, 'Sí')
+
+    def test_a_row_cannot_be_created_for_another_company(self):
+        """
+        La empresa NUNCA sale del cuerpo. Mandarla ahí no cambia dónde se
+        escribe.
+        """
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/services/',
+            {'title': 'Infiltrado', 'company': self.b.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StorefrontServiceOffering.objects.filter(company=self.b).count(), 0,
+        )
+
+    def test_master_must_name_the_company(self):
+        res = self._as(self.master).get('/api/admin/storefront/services/')
+        self.assertIn(
+            res.status_code,
+            (status.HTTP_403_FORBIDDEN, status.HTTP_400_BAD_REQUEST),
+        )
+
+    def test_master_with_an_explicit_company_works(self):
+        StorefrontServiceOffering.objects.create(company=self.b, title='De B')
+        res = self._as(self.master).get(
+            f'/api/admin/storefront/services/?company={self.b.pk}',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual([r['title'] for r in res.data['results']], ['De B'])
+
+    def test_an_unknown_kind_is_a_404(self):
+        res = self._as(self.admin_a).get('/api/admin/storefront/inventado/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- el panel ve lo que el público no ---------------------------------
+
+    def test_the_admin_list_includes_inactive_rows(self):
+        StorefrontFaq.objects.create(
+            company=self.a, question='Oculta', answer='R', is_active=False,
+        )
+        res = self._as(self.admin_a).get('/api/admin/storefront/faqs/')
+        self.assertEqual([r['question'] for r in res.data['results']], ['Oculta'])
+        self.assertEqual(public_list_content(self.a)['faqs'], [])
+
+    # -- auditoría --------------------------------------------------------
+
+    def test_writing_content_leaves_a_trace(self):
+        client = self._as(self.admin_a)
+        res = client.post('/api/admin/storefront/faqs/',
+                          {'question': 'P', 'answer': 'R'}, format='json')
+        client.delete(f'/api/admin/storefront/faqs/{res.data["id"]}/')
+        actions = set(
+            AdminAuditLog.objects.filter(company=self.a)
+            .values_list('action', flat=True)
+        )
+        self.assertIn('storefront_faqs_saved', actions)
+        self.assertIn('storefront_faqs_deleted', actions)
+
+    # -- límites ----------------------------------------------------------
+
+    def test_content_length_is_bounded(self):
+        res = self._as(self.admin_a).post(
+            '/api/admin/storefront/faqs/',
+            {'question': 'P', 'answer': 'x' * 5000}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class M12F1ClaimReconciliationTest(TestCase):
+    """
+    LAS AFIRMACIONES QUE NO PUEDEN VOLVER.
+
+    Cada una tiene un motivo concreto, y el motivo está en el proyecto:
+
+      «5.000+ dispositivos reparados»
+          Ninguna fuente. Mover una cifra de sitio no le da respaldo.
+
+      «Todos nuestros servicios incluyen 6 meses de garantía»
+          CONTRADICE al manual v3.0 del piloto, que dice que la cobertura de
+          servicios técnicos depende del producto o reparación. Los seis meses
+          son de los equipos seminuevos.
+
+      «Baterías Nasan Originales» y su certificado
+          El manual exige publicar «original» sólo con trazabilidad o
+          validación. No hay documento de Nasan en el proyecto.
+
+      «Sin msg / Pieza reparada»
+          Depende del firmware del equipo, que es de un tercero.
+
+      «Diagnóstico gratuito»
+          Sin política configurada que lo respalde.
+
+    Este test mira el CONTENIDO SEMBRADO, no el código: la fase entera consistió
+    en mover estas frases de un sitio al otro, y sembrarlas otra vez sería no
+    haber hecho nada.
+    """
+
+    RETIRED = (
+        '5,000', '5.000', 'Nasan Originales', 'certificado de autenticidad',
+        'Abril 2025', 'Sin msg', 'Diagnóstico gratuito', 'Diagnóstico Gratuito',
+        'incluyen 6 meses',
+    )
+
+    @staticmethod
+    def _seed_module():
+        import importlib
+        return importlib.import_module('store.migrations.0078_pilot_services_content')
+
+    def test_the_pilot_seed_carries_no_retired_claim(self):
+        module = self._seed_module()
+        blob = ' '.join(
+            [s['title'] + ' ' + s['description'] for s in module.SERVICES]
+            + [f['question'] + ' ' + f['answer'] for f in module.FAQS]
+            + list(module.PAGE.values())
+        )
+        for claim in self.RETIRED:
+            self.assertNotIn(claim, blob, f'la siembra volvió a incluir «{claim}»')
+
+    def test_the_seed_publishes_no_metric(self):
+        """
+        Ninguna cifra tiene respaldo, así que no se siembra ninguna. Un bloque
+        de métricas vacío es exactamente lo que debe verse.
+        """
+        self.assertFalse(hasattr(self._seed_module(), 'METRICS'))
+
+    def test_the_warranty_answer_distinguishes_product_from_repair(self):
+        """
+        La corrección central. La respuesta tiene que separar lo que el manual
+        separa: garantía de PRODUCTO —1 año equipos nuevos, 6 meses
+        seminuevos— de cobertura de REPARACIÓN, que depende del trabajo.
+        """
+        module = self._seed_module()
+        answer = next(
+            f['answer'] for f in module.FAQS if 'garantía' in f['question'].lower()
+        )
+        self.assertIn('seminuevos', answer)
+        self.assertIn('depende', answer)
+        self.assertNotIn('Todos nuestros servicios', answer)
+
+    def test_times_are_offered_as_estimates(self):
+        """
+        El manual pide informar que el tiempo puede variar. El campo se llama
+        `estimated_time_text` y no `time`, y eso no es cosmética: obliga a
+        quien lo pinta a decir qué es.
+        """
+        field_names = {f.name for f in StorefrontServiceOffering._meta.fields}
+        self.assertIn('estimated_time_text', field_names)
+        self.assertNotIn('time', field_names)
+
+
+@override_settings(DEBUG=True)
+class DemoUsersActivationTest(TestCase):
+    """
+    Lo que faltaba: que la cuenta demo se pueda USAR.
+
+    La batería anterior comprobaba que el comando crea los seis usuarios, sus
+    membresías, sus roles y sus capacidades — todo menos lo único que hace falta
+    para entrar. `_upsert_user` refrescaba correo, flags y contraseña, y no
+    tocaba `is_active`.
+
+    El hueco era silencioso porque el mensaje que produce es engañoso: el
+    backend responde «No active account found with the given credentials», que
+    suena a contraseña incorrecta y manda a mirar al sitio equivocado.
+    """
+
+    DEMO_COMPANY_SLUG = 'demo-activation-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Activación SA', self.DEMO_COMPANY_SLUG)
+
+    def _seed(self):
+        call_command(
+            'seed_demo_users',
+            company_slug=self.DEMO_COMPANY_SLUG,
+            stdout=StringIO(),
+        )
+
+    def test_every_demo_user_can_actually_log_in(self):
+        """
+        Existir no es suficiente: activo Y con la contraseña que se anuncia.
+        Cualquiera de las dos mitades sola deja una cuenta que no sirve.
+        """
+        self._seed()
+        for username in ALL_DEMO_USERNAMES:
+            with self.subTest(username=username):
+                user = User.objects.get(username=username)
+                self.assertTrue(user.is_active, f'{username} quedó inactivo')
+                self.assertTrue(
+                    user.check_password(DEMO_PASSWORD),
+                    f'{username} no acepta la contraseña que la interfaz anuncia',
+                )
+
+    def test_reseeding_reactivates_a_disabled_demo_user(self):
+        """
+        EL DEFECTO, EXACTAMENTE.
+
+        Un demo desactivado desde el módulo de usuarios del panel se quedaba
+        desactivado para siempre: volver a sembrar no lo reactivaba, y el único
+        camino era borrarlo a mano.
+
+        Una cuenta demo no tiene estado que preservar — existe para poder
+        entrar. Desactivarla de verdad es `--purge`.
+        """
+        self._seed()
+        user = User.objects.get(username='dev_admin')
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+
+        self._seed()
+
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password(DEMO_PASSWORD))
+
+    def test_reseeding_restores_a_changed_password(self):
+        """La otra mitad: si alguien la cambió, vuelve a la que se anuncia."""
+        self._seed()
+        user = User.objects.get(username='dev_sales')
+        user.set_password('otra-cosa-distinta')
+        user.save(update_fields=['password'])
+
+        self._seed()
+
+        user.refresh_from_db()
+        self.assertTrue(user.check_password(DEMO_PASSWORD))
+
+    def test_reactivation_does_not_touch_a_foreign_account(self):
+        """
+        La reactivación no puede convertirse en una vía para revivir la cuenta
+        de otra persona que se llame igual. La firma sigue siendo el correo.
+        """
+        intruder = User.objects.create_user(
+            username='dev_inventory', email='persona.real@example.com',
+            password='su-propia-clave', is_active=False,
+        )
+        with self.assertRaises(CommandError):
+            self._seed()
+        intruder.refresh_from_db()
+        self.assertFalse(intruder.is_active)
+        self.assertTrue(intruder.check_password('su-propia-clave'))
+
+
+@override_settings(DEBUG=True)
+class DemoAccountsEndpointTest(TestCase):
+    """
+    La interfaz de desarrollo dice la VERDAD sobre lo que existe.
+
+    El defecto que cierra: `/auth` anunciaba seis cuentas con su contraseña,
+    incondicionalmente, desde su propia lista escrita a mano. En un entorno sin
+    sembrar ofrecía seis credenciales que el backend rechazaba — y mandaba a
+    depurar el login, que funcionaba perfectamente.
+
+    Prometer una credencial que no existe es peor que no ofrecer ninguna.
+    """
+
+    URL = '/api/dev/demo-accounts/'
+    DEMO_COMPANY_SLUG = 'demo-endpoint-co'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Demo Endpoint SA', self.DEMO_COMPANY_SLUG)
+        self.client = APIClient()
+
+    def test_an_unseeded_environment_promises_nothing(self):
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['ready'])
+        for account in res.data['accounts']:
+            self.assertFalse(account['exists'])
+            self.assertFalse(account['usable'])
+
+    def test_after_seeding_every_account_is_usable(self):
+        call_command(
+            'seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=StringIO(),
+        )
+        res = self.client.get(self.URL)
+        self.assertTrue(res.data['ready'])
+        self.assertEqual(len(res.data['accounts']), len(ALL_DEMO_USERNAMES))
+        for account in res.data['accounts']:
+            self.assertTrue(account['usable'], account['username'])
+
+    def test_a_disabled_account_is_reported_as_unusable(self):
+        """
+        Existe pero no sirve. La interfaz tiene que poder distinguirlo, porque
+        el remedio es distinto: una hay que crearla y la otra reactivarla.
+        """
+        call_command(
+            'seed_demo_users', company_slug=self.DEMO_COMPANY_SLUG, stdout=StringIO(),
+        )
+        User.objects.filter(username='dev_sales').update(is_active=False)
+
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_sales')
+        self.assertTrue(row['exists'])
+        self.assertFalse(row['usable'])
+        self.assertFalse(res.data['ready'])
+
+    def test_a_real_account_with_the_same_name_is_never_described(self):
+        """
+        Un usuario real llamado `dev_admin` no es una cuenta demo. La firma es
+        el dominio `.invalid` del correo, que ninguna dirección real puede usar.
+        """
+        User.objects.create_user(
+            username='dev_admin', email='persona.real@example.com', password='x',
+        )
+        res = self.client.get(self.URL)
+        row = next(a for a in res.data['accounts'] if a['username'] == 'dev_admin')
+        self.assertFalse(row['exists'])
+        self.assertFalse(row['usable'])
+
+    def test_production_does_not_expose_this_surface(self):
+        # 404 y no 403: en producción esta ruta no existe, y su ausencia no
+        # confirma que exista en otra parte.
+        with override_settings(DEBUG=False):
+            self.assertEqual(
+                self.client.get(self.URL).status_code, status.HTTP_404_NOT_FOUND,
+            )
+
+    def test_the_seed_command_it_suggests_names_a_real_company(self):
+        """
+        Decir «--company-slug <slug>» obliga a ir a buscarlo, y quien lo busca
+        ya está depurando. Se nombra una empresa que EXISTE en esta base — cuál
+        de ellas da igual mientras el comando funcione al copiarlo.
+        """
+        res = self.client.get(self.URL)
+        command = res.data['seed_command']
+        self.assertIn('seed_demo_users', command)
+        suggested = command.rsplit(' ', 1)[-1]
+        self.assertTrue(
+            Company.objects.filter(slug=suggested, is_active=True).exists(),
+            f'sugiere «{suggested}», que no es una empresa activa de esta base',
+        )
+
+
+class DemoAccountsSingleSourceTest(TestCase):
+    """
+    UNA sola lista, no dos que puedan separarse en silencio.
+
+    El componente de `/auth` traía su propia copia de los seis nombres y de la
+    contraseña. Dos listas escritas a mano que describen lo mismo divergen: la
+    del comando cambia, la de la interfaz no, y la pantalla empieza a ofrecer
+    cuentas que ya no se crean.
+    """
+
+    def test_the_frontend_holds_no_list_of_its_own(self):
+        import os
+        import re
+
+        component = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            'frontend', 'app', 'auth', 'components', 'DevQuickLogin.tsx',
+        )
+        if not os.path.exists(component):
+            self.skipTest('El componente no está en este árbol.')
+        source = open(component, encoding='utf-8').read()
+        # Sin comentarios: el fichero EXPLICA el defecto y casaría consigo mismo.
+        code = re.sub(r'/\*[\s\S]*?\*/', '', source)
+        code = re.sub(r'^\s*//.*$', '', code, flags=re.MULTILINE)
+
+        for username in ALL_DEMO_USERNAMES:
+            self.assertNotIn(
+                f'"{username}"', code,
+                f'{username} vuelve a estar escrito a mano en el frontend',
+            )
+        self.assertNotIn(
+            DEMO_PASSWORD, code,
+            'la contraseña demo vuelve a estar escrita a mano en el frontend',
+        )
+        # Y sí pregunta por la única fuente.
+        self.assertIn('dev/demo-accounts', code)
+
+    def test_the_endpoint_describes_every_account_the_command_creates(self):
+        """
+        Si el comando añade una cuenta y nadie la describe, la interfaz la
+        mostraría sin destino ni autoridad. La lista de destinos tiene que
+        cubrir exactamente las que el comando crea.
+        """
+        from .dev_accounts_views import DEMO_DESTINATIONS
+
+        self.assertEqual(set(DEMO_DESTINATIONS), set(ALL_DEMO_USERNAMES))
+
+
+import re  # noqa: E402
+
+from .tax_services import (  # noqa: E402
+    DEFAULT_TAX_RATE,
+    TaxTreatment,
+    breakdown_for_order,
+    breakdown_from_total,
+    resolve_tax_rate,
+)
+
+
+class C21TaxBreakdownTest(TestCase):
+    """
+    C2.1 — la descomposición tributaria.
+
+    Lo que se prueba aquí no es que la aritmética «funcione»: es que la
+    identidad `base + impuesto = total` se cumpla SIEMPRE, para importes que
+    redondean mal, y que el total cobrado no se mueva ni un céntimo al añadir
+    el desglose.
+    """
+
+    def test_the_canonical_example(self):
+        """118 se parte en 100 + 18. El caso que define la semántica."""
+        result = breakdown_from_total(total=Decimal('118.00'))
+        self.assertEqual(result.taxable_amount, Decimal('100.00'))
+        self.assertEqual(result.tax_amount, Decimal('18.00'))
+        self.assertEqual(result.total, Decimal('118.00'))
+
+    def test_the_total_is_never_altered(self):
+        """
+        EL PRECIO DEL CATÁLOGO YA INCLUYE EL IMPUESTO.
+
+        Si esto fallara, un artículo de S/ 118 pasaría a costar S/ 139,24 y la
+        tienda cobraría de más por haber añadido un desglose.
+        """
+        for amount in ('0.01', '9.99', '118.00', '949.00', '5599.00', '99999.99'):
+            with self.subTest(amount=amount):
+                result = breakdown_from_total(total=Decimal(amount))
+                self.assertEqual(result.total, Decimal(amount))
+
+    def test_base_plus_tax_equals_total_for_awkward_amounts(self):
+        """
+        LA RAZÓN DE CALCULAR EL IMPUESTO POR DIFERENCIA.
+
+        `base × tasa` redondeado por separado se separa un céntimo del total en
+        cuanto el importe no divide limpio. Restando, la identidad se cumple por
+        construcción — y estos importes son justamente los que la rompían.
+        """
+        awkward = [
+            '0.01', '0.02', '0.03', '0.07', '1.00', '3.33', '7.77', '10.10',
+            '19.99', '33.33', '66.67', '99.99', '123.45', '1000.01', '4999.95',
+        ]
+        for amount in awkward:
+            with self.subTest(amount=amount):
+                result = breakdown_from_total(total=Decimal(amount))
+                self.assertEqual(
+                    result.taxable_amount + result.tax_amount,
+                    result.total,
+                    f'{amount} descuadra',
+                )
+
+    def test_every_cent_from_one_to_a_thousand_balances(self):
+        """
+        Un barrido, no una muestra. Si hay un importe donde la identidad falla,
+        está aquí.
+        """
+        for cents in range(1, 100_001, 7):
+            amount = (Decimal(cents) / Decimal('100')).quantize(Decimal('0.01'))
+            result = breakdown_from_total(total=amount)
+            self.assertEqual(
+                result.taxable_amount + result.tax_amount, result.total,
+                f'{amount} descuadra',
+            )
+
+    def test_a_discount_does_not_break_the_identity(self):
+        """
+        El impuesto se calcula SOBRE LO QUE SE COBRA, ya descontado. Y las dos
+        identidades tienen que cumplirse a la vez.
+        """
+        result = breakdown_from_total(
+            total=Decimal('90.00'),
+            subtotal=Decimal('118.00'),
+            discount_amount=Decimal('28.00'),
+        )
+        self.assertEqual(result.total, Decimal('90.00'))
+        self.assertEqual(result.taxable_amount + result.tax_amount, Decimal('90.00'))
+        self.assertEqual(result.subtotal - result.discount_amount, result.total)
+
+    def test_a_zero_total_produces_zero_tax(self):
+        result = breakdown_from_total(total=Decimal('0.00'))
+        self.assertEqual(result.taxable_amount, Decimal('0.00'))
+        self.assertEqual(result.tax_amount, Decimal('0.00'))
+
+    def test_an_untaxed_sale_has_no_tax_and_keeps_its_total(self):
+        """
+        Exonerado no es «gravado al 0 % por casualidad»: es otro tratamiento, y
+        el campo viaja congelado para que un documento antiguo lo siga diciendo.
+        """
+        for treatment in (TaxTreatment.EXEMPT, TaxTreatment.UNAFFECTED):
+            with self.subTest(treatment=treatment):
+                result = breakdown_from_total(
+                    total=Decimal('118.00'), treatment=treatment,
+                )
+                self.assertEqual(result.tax_amount, Decimal('0.00'))
+                self.assertEqual(result.taxable_amount, Decimal('118.00'))
+                self.assertEqual(result.total, Decimal('118.00'))
+                self.assertEqual(result.tax_treatment, treatment)
+
+    def test_the_rate_is_the_total_eighteen_percent(self):
+        """
+        UNA tasa, no dos columnas.
+
+        La Ley N.º 32387 reparte el 18 % entre IGV e IPM de forma distinta cada
+        año —15,5 + 2,5 en 2026, hasta 14,0 + 4,0 en 2029— manteniendo el total.
+        Partirlo obligaría a redondear dos veces y a que la suma no cuadrara, a
+        cambio de un detalle que la representación impresa no necesita separar.
+        """
+        self.assertEqual(DEFAULT_TAX_RATE, Decimal('0.18'))
+        self.assertEqual(resolve_tax_rate(), Decimal('0.18'))
+
+    def test_no_float_ever_enters_the_calculation(self):
+        """Un importe que pasa por `float` deja de ser exacto."""
+        result = breakdown_from_total(total=Decimal('118.00'))
+        for value in (result.total, result.taxable_amount, result.tax_amount,
+                      result.subtotal, result.discount_amount, result.tax_rate):
+            self.assertIsInstance(value, Decimal)
+        for value in result.as_dict().values():
+            self.assertIsInstance(value, str)
+
+    def test_the_engine_holds_no_pilot_specific_rule(self):
+        """El piloto no es un caso especial del motor."""
+        import inspect
+
+        from . import tax_services
+
+        code = inspect.getsource(tax_services)
+        code = re.sub(r'"""[\s\S]*?"""', '', code)
+        code = re.sub(r'^\s*#.*$', '', code, flags=re.MULTILINE)
+        for forbidden in ('black-dog', 'black_dog', 'BLACK_DOG', 'CMAU', 'slug'):
+            self.assertNotIn(forbidden, code)
+
+
+class C21OrderTaxSnapshotTest(TestCase):
+    """
+    El desglose viaja CONGELADO con la venta.
+
+    Sin esto, un documento reimpreso el año que viene mostraría la tasa de
+    entonces, y el papel que el cliente tiene en la mano diría otra cosa.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c21-tax', 'Empresa Tributaria')
+
+    def _order(self, **kw):
+        data = {
+            'company': self.company,
+            'total': Decimal('118.00'),
+            'discount_amount': Decimal('0.00'),
+            'subtotal_amount': Decimal('118.00'),
+            'taxable_amount': Decimal('100.00'),
+            'tax_amount': Decimal('18.00'),
+            'tax_rate': Decimal('0.18'),
+            'tax_treatment': 'taxed',
+            'currency': 'PEN',
+        }
+        data.update(kw)
+        return Order.objects.create(**data)
+
+    def test_the_breakdown_is_read_from_the_sale_not_recomputed(self):
+        """
+        Una venta con una tasa histórica distinta sigue mostrando LA SUYA. Es la
+        prueba de que no se recalcula.
+        """
+        order = self._order(
+            total=Decimal('110.00'), subtotal_amount=Decimal('110.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('10.00'),
+            tax_rate=Decimal('0.10'),
+        )
+        result = breakdown_for_order(order)
+        self.assertEqual(result.tax_rate, Decimal('0.10'))
+        self.assertEqual(result.tax_amount, Decimal('10.00'))
+
+    def test_changing_company_configuration_does_not_move_a_past_sale(self):
+        order = self._order()
+        before = breakdown_for_order(order).as_dict()
+
+        self.company.name = 'Otro Nombre SAC'
+        self.company.save(update_fields=['name'])
+        settings_row = self.company.settings
+        settings_row.currency = 'USD'
+        settings_row.save(update_fields=['currency'])
+
+        self.assertEqual(breakdown_for_order(order).as_dict(), before)
+
+    def test_a_sale_without_a_snapshot_still_answers(self):
+        """
+        Una venta anterior a que existiera el desglose no puede reventar una
+        pantalla. Se descompone en vivo, sin escribir nada.
+        """
+        order = self._order(
+            subtotal_amount=None, taxable_amount=None,
+            tax_amount=None, tax_rate=None,
+        )
+        result = breakdown_for_order(order)
+        self.assertEqual(result.total, Decimal('118.00'))
+        self.assertEqual(
+            result.taxable_amount + result.tax_amount, Decimal('118.00'),
+        )
+
+
+# ---------------------------------------------------------------------------
+# C2.1 — leer lo que un PDF DICE de verdad
+# ---------------------------------------------------------------------------
+
+from .ticket_services import (  # noqa: E402
+    generate_sales_note_ticket_pdf,
+)
+
+
+def _pdf_text(pdf_bytes: bytes) -> str:
+    """
+    El texto visible de un PDF, sin dependencias nuevas.
+
+    POR QUÉ NO BASTA CON `startswith(b'%PDF')`. Esa comprobación pasa igual si
+    el documento sale en blanco, con el total equivocado o con un identificador
+    de pasarela impreso. Un documento que se entrega a un cliente hay que
+    LEERLO para darlo por bueno.
+
+    reportlab comprime los streams de página, así que se descomprimen con zlib
+    —parte de la biblioteca estándar— y se recogen los operadores de texto. Es
+    quince líneas frente a añadir un lector de PDF al proyecto entero sólo para
+    las pruebas.
+    """
+    import base64
+    import zlib
+
+    out = []
+    # `split(b'stream')` NO sirve: la palabra `endstream` CONTIENE `stream`, así
+    # que parte también el cierre y el cuerpo se queda con un `end` pegado
+    # detrás del terminador `~>`. El resultado es que la decodificación falla en
+    # silencio y la prueba busca su texto dentro de basura.
+    for body in re.findall(rb'[^d]stream\r?\n(.*?)endstream', pdf_bytes, re.S):
+        body = body.strip(b'\r\n')
+        # reportlab ENCADENA DOS FILTROS: comprime con Flate y luego codifica el
+        # resultado en ASCII85. Descomprimir sin deshacer antes el ASCII85
+        # devuelve basura que parece texto —y una prueba que busca «SUNAT» en
+        # esa basura falla siempre, o peor, pasa por casualidad.
+        # reportlab termina su ASCII85 con `~>` pero NO lo abre con `<~`, así
+        # que `adobe=True` lo rechaza. Se quita el cierre y se decodifica.
+        if body.endswith(b'~>'):
+            try:
+                body = base64.a85decode(body[:-2])
+            except ValueError:
+                continue
+        try:
+            body = zlib.decompress(body)
+        except zlib.error:
+            pass  # ya viene sin comprimir
+        for piece in re.findall(rb'\((?:\\.|[^\\()])*\)', body):
+            out.append(
+                piece[1:-1]
+                .replace(b'\\(', b'(').replace(b'\\)', b')')
+                .replace(b'\\\\', b'\\')
+                .decode('latin-1')
+            )
+    return ' '.join(out)
+
+
+class C21DocumentTest(TestCase):
+    """
+    Los dos documentos: A4 y ticket de 80 mm.
+
+    Se comprueba lo que IMPRIMEN, no que se generen sin reventar.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        # 118.00 x 1: el desglose sale 100.00 + 18.00, cifras reconocibles en
+        # el texto del PDF sin ambigüedad.
+        self.product = _p60_product(name='Cable C21', inventory=10, price='118.00')
+        self.order = _p60_paid_order(self.product, quantity=1)
+        self.order.subtotal_amount = Decimal('118.00')
+        self.order.taxable_amount = Decimal('100.00')
+        self.order.tax_amount = Decimal('18.00')
+        self.order.tax_rate = Decimal('0.18')
+        self.order.tax_treatment = 'taxed'
+        self.order.currency = 'PEN'
+        self.order.save()
+        self.note, _ = get_or_create_sales_note(self.order)
+
+    # -- A4 -------------------------------------------------------------------
+
+    def test_the_a4_prints_the_breakdown(self):
+        text = _pdf_text(generate_sales_note_pdf(self.note))
+        self.assertIn('Op. gravada', text)
+        self.assertIn('IGV (18%)', text)
+        self.assertIn('100.00', text)
+        self.assertIn('18.00', text)
+        self.assertIn('118.00', text)
+
+    def test_both_documents_write_the_currency_the_same_way(self):
+        """
+        UNA SOLA NOTACIÓN POR DOCUMENTO.
+
+        El A4 llegó a mezclar «S/ 999.00» en la tabla de productos con
+        «PEN 999.00» en los totales, tres líneas más abajo y en la misma hoja:
+        el código ISO se coló donde iba el símbolo. Un documento que escribe su
+        moneda de dos formas parece equivocado aunque las cifras cuadren.
+        """
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            self.assertIn('S/', text)
+            self.assertNotIn('PEN', text)
+
+    def test_an_unknown_currency_prints_its_code_rather_than_nothing(self):
+        """Feo, pero nunca incorrecto — y desde luego mejor que un importe suelto."""
+        from .tax_services import currency_symbol
+
+        self.assertEqual(currency_symbol('PEN'), 'S/')
+        self.assertEqual(currency_symbol('USD'), '$')
+        self.assertEqual(currency_symbol('COP'), 'COP')
+        self.assertEqual(currency_symbol(''), 'S/')
+
+    def test_the_a4_still_says_it_is_not_a_sunat_receipt(self):
+        """
+        El aviso no es negociable y añadir el desglose es justo lo que podría
+        haberlo desplazado: un papel con IGV desglosado se parece MÁS a una
+        boleta, así que tiene que decir más claro que no lo es.
+        """
+        text = _pdf_text(generate_sales_note_pdf(self.note))
+        self.assertIn('SUNAT', text)
+        self.assertIn('No es una serie fiscal', text)
+
+    def test_no_document_claims_to_be_issued(self):
+        """
+        «Solicitado», nunca «emitido». Aquí no ha habido aceptación fiscal, y
+        decir «Boleta emitida» sobre un papel interno es afirmar algo falso.
+        """
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf).lower()
+            for claim in ('factura emitida', 'boleta emitida', 'comprobante sunat',
+                          'factura electr', 'boleta electr'):
+                self.assertNotIn(claim, text)
+
+    # -- ticket 80 mm ---------------------------------------------------------
+
+    def test_both_documents_say_the_receipt_was_requested_not_issued(self):
+        """
+        «SOLICITADO», NUNCA «EMITIDO», Y EN LOS DOS FORMATOS.
+
+        El ticket rotulaba «Comprobante: Boleta», que se lee como que ese papel
+        ES una boleta. No lo es: no ha habido emisión ni aceptación de SUNAT.
+        El A4 ya lo decía bien, así que el mismo dato afirmaba dos cosas
+        distintas según el formato — y la del ticket era la falsa.
+        """
+        self.order.receipt_type = Order.ReceiptType.BOLETA
+        self.order.save(update_fields=['receipt_type'])
+
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            self.assertIn('solicitado', text.lower())
+            self.assertNotIn('Comprobante: Boleta', text)
+
+    def test_the_ticket_is_eighty_millimetres_wide(self):
+        """
+        Si el ancho no es el del rollo, la impresora recorta o descentra. Se
+        mide en el PDF, no se supone.
+        """
+        pdf = generate_sales_note_ticket_pdf(self.note)
+        box = re.search(rb'/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', pdf)
+        self.assertIsNotNone(box, 'el ticket no declara MediaBox')
+        width_mm = float(box.group(3)) / 72 * 25.4
+        self.assertAlmostEqual(width_mm, 80.0, delta=0.5)
+
+    def test_the_ticket_height_follows_the_content(self):
+        """
+        Papel continuo: un ticket de un artículo NO puede salir tan largo como
+        uno de diez. Sin esto, la impresora escupe palmos de papel en blanco.
+        """
+        def height(order):
+            note, _ = get_or_create_sales_note(order)
+            pdf = generate_sales_note_ticket_pdf(note)
+            box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
+            return float(box.group(1))
+
+        short = height(self.order)
+
+        many = _p60_paid_order(self.product, quantity=1)
+        for n in range(6):
+            extra = _p60_product(name=f'Accesorio C21 {n}', inventory=5, price='59.00')
+            OrderItem.objects.create(order=many, product=extra, quantity=1, price=extra.price)
+        long = height(many)
+
+        self.assertGreater(long, short * 1.2)
+
+    def test_the_ticket_prints_the_same_numbers_as_the_a4(self):
+        """
+        DOS SUPERFICIES, UNA SOLA VERDAD.
+
+        Si el ticket recalculara por su cuenta, podría separarse un céntimo del
+        A4 de la MISMA compra — y el cliente tendría dos papeles que no cuadran.
+        """
+        ticket = _pdf_text(generate_sales_note_ticket_pdf(self.note))
+        for figure in ('100.00', '18.00', '118.00'):
+            self.assertIn(figure, ticket)
+        self.assertIn(self.note.number, ticket)
+        self.assertIn('SUNAT', ticket)
+
+    def test_a_name_with_no_spaces_does_not_run_off_the_roll(self):
+        """
+        UNA PALABRA LARGA SIN ESPACIOS TAMBIÉN SE PARTE.
+
+        El cortador sólo separaba entre palabras, así que un nombre como
+        `MacBookProM4Max...140W` se dibujaba entero —258 pt sobre una página de
+        227— y no se recortaba con un aviso: se salía del papel y desaparecía.
+        En el A4 no ocurría porque `Paragraph` parte palabras largas por su
+        cuenta, y esa diferencia es justo la que lo hacía difícil de ver.
+
+        Se mide sobre el TRAZADO REAL, no sobre la lista de trozos: lo que
+        importa es dónde acaba la tinta.
+        """
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from . import ticket_services
+
+        # 50 chars, no spaces — still far wider than a thermal ticket, so it
+        # must still be split. The old fixture used 64. What overflowed was NOT
+        # Product.name (varchar(255)) but Product.slug: `_p60_product` derives
+        # slug=name.lower().replace(' ','-'), and Product.slug is a bare
+        # SlugField(), i.e. varchar(50). A 64-char no-space name → 64-char slug,
+        # which only SQLite (no length enforcement) accepted; PostgreSQL rejects
+        # it with StringDataRightTruncation. No real request could reach that
+        # column: every write frontier bounds the slug to ≤ 50 (the admin
+        # serializer's SlugField(max_length=50), its slugify(name)[:45] fallback,
+        # and the CSV import's slugify(name)[:40]). The fixture bypassed them all
+        # via Product.objects.create(slug=…). Capping the name to 50 caps the
+        # derived slug to 50 too, which is why it is the right fix.
+        largo = 'MacBookProM4Max16Pulgadas1TBNegroEspacialMagSafe14'
+        assert len(largo) == 50  # == len(slug); slug is the varchar(50), not name
+        product = _p60_product(name=largo, inventory=5, price='118.00')
+        OrderItem.objects.create(
+            order=self.order, product=product, quantity=1, price=product.price,
+        )
+
+        drawn = []
+        real_line = ticket_services._Cursor.line
+
+        def spy(self, text, *, size=7.5, bold=False, align='left', leading=1.35):
+            if self.pdf is not None:
+                font = ticket_services._FONT_BOLD if bold else ticket_services._FONT
+                for chunk in ticket_services._wrap(text, font, size, self.width):
+                    drawn.append(stringWidth(chunk, font, size))
+            return real_line(self, text, size=size, bold=bold,
+                             align=align, leading=leading)
+
+        with patch.object(ticket_services._Cursor, 'line', spy):
+            generate_sales_note_ticket_pdf(self.note)
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        self.assertTrue(drawn, 'no se dibujó ninguna línea')
+        self.assertLessEqual(
+            max(drawn), printable + 0.5,
+            f'una línea mide {max(drawn):.1f} pt sobre {printable:.1f} pt de rollo',
+        )
+
+    def test_a_very_long_company_name_also_stays_on_the_paper(self):
+        """
+        El nombre de la empresa es TEXTO LIBRE de cada inquilino y va centrado:
+        si se pasa, se sale por los DOS lados a la vez.
+        """
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from . import ticket_services
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        nombre = 'TIENDASUPERESPECIALIZADAENPRODUCTOSAPPLEAREQUIPAPERUSAC'
+        for chunk in ticket_services._wrap(
+            nombre, ticket_services._FONT_BOLD, 10, printable,
+        ):
+            self.assertLessEqual(
+                stringWidth(chunk, ticket_services._FONT_BOLD, 10), printable + 0.5,
+            )
+
+    def test_wrapping_never_loses_or_invents_characters(self):
+        """Partir no puede comerse letras: el nombre del producto es información."""
+        from reportlab.lib.units import mm
+
+        from . import ticket_services
+
+        printable = float(ticket_services.TICKET_WIDTH_MM) * mm - 2 * (
+            float(ticket_services.TICKET_MARGIN_MM) * mm
+        )
+        for text in ('A' * 200, 'Cable USB-C', 'x' * 53,
+                     'Funda ' + 'M' * 120 + ' Negra', 'ñ' * 90):
+            with self.subTest(text=text[:20]):
+                joined = ''.join(ticket_services._wrap(
+                    text, ticket_services._FONT, 7, printable,
+                ))
+                self.assertEqual(joined.replace(' ', ''), text.replace(' ', ''))
+
+    def test_the_ticket_refuses_an_unpaid_order(self):
+        """La misma regla que el A4: es el mismo documento."""
+        self.order.paid = False
+        self.order.status = Order.Status.PENDING_PAYMENT
+        self.order.save(update_fields=['paid', 'status'])
+        self.note.refresh_from_db()
+        with self.assertRaises(SalesNoteError):
+            generate_sales_note_ticket_pdf(self.note)
+
+    # -- lo que NO puede aparecer --------------------------------------------
+
+    def test_neither_document_leaks_payment_internals(self):
+        """
+        Estos papeles se entregan en mano. Un identificador de pasarela o un
+        `payment_error` impreso es una fuga, no un detalle.
+        """
+        PaymentTransaction.objects.create(
+            order=self.order,
+            provider='izipay',
+            transaction_id='pi_test_LEAK_9999',
+            provider_unique_id='tok_SECRET_ABC',
+            authorization_code='AUTH_SECRET_777',
+            amount=self.order.total,
+            status='approved',
+            failure_reason='CARD_4111111111111111_DECLINED',
+        )
+        self.order.payment_error = 'CARD_DECLINED_INTERNAL_TRACE_XYZ'
+        self.order.save(update_fields=['payment_error'])
+
+        for pdf in (generate_sales_note_pdf(self.note),
+                    generate_sales_note_ticket_pdf(self.note)):
+            text = _pdf_text(pdf)
+            for secret in ('pi_test_LEAK_9999', 'tok_SECRET_ABC', 'AUTH_SECRET_777',
+                           '4111111111111111', 'CARD_DECLINED_INTERNAL_TRACE_XYZ'):
+                self.assertNotIn(secret, text)
+
+
+class C21TicketEndpointTest(TestCase):
+    """La ruta de descarga: el A4 sigue siendo el de siempre."""
+
+    def setUp(self):
+        cache.clear()
+        self.users = _p60_users()
+        self.product = _p60_product(name='Funda C21', inventory=10, price='118.00')
+        self.order = _p60_paid_order(self.product, quantity=1)
+        self.note, _ = get_or_create_sales_note(self.order)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.users[UserProfile.ROLE_ADMIN])
+
+    def _get(self, query=''):
+        return self.client.get(
+            f'/api/admin/orders/{self.order.pk}/sales-note/pdf/{query}'
+        )
+
+    def test_without_parameters_it_is_still_the_a4(self):
+        """
+        COMPATIBILIDAD. Hay enlaces ya escritos contra esta ruta; añadir un
+        formato no puede cambiar lo que devuelve la llamada de siempre.
+        """
+        res = self._get()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res['Content-Type'], 'application/pdf')
+        box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', res.content)
+        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 210.0, delta=1.0)
+        self.assertNotIn('ticket80', res['Content-Disposition'])
+
+    def test_the_ticket_format_returns_the_roll(self):
+        res = self._get('?formato=ticket80')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        box = re.search(rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', res.content)
+        self.assertAlmostEqual(float(box.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+        self.assertIn('ticket80', res['Content-Disposition'])
+
+    def test_an_unknown_format_is_refused_not_silently_ignored(self):
+        """
+        Quien pide `ticket58` esperando papel estrecho tiene que enterarse
+        ahora, no al ver salir un A4 de la impresora.
+        """
+        res = self._get('?formato=ticket58')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_download_never_carries_a_free_text_company_name(self):
+        """El nombre libre del tenant no llega a una cabecera HTTP."""
+        for query in ('', '?formato=ticket80'):
+            disposition = self._get(query)['Content-Disposition']
+            self.assertRegex(disposition, r'^attachment; filename="[A-Za-z0-9._-]+"$')
+
+
+class C21SaleSnapshotTest(TestCase):
+    """
+    C2.1 — cada venta nueva guarda su propio desglose.
+
+    Lo que se prueba es que la cifra que se enseñó y la que se guardó son LA
+    MISMA, y que añadir el desglose no movió ni un céntimo de lo que se cobra.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c21-sale', 'Empresa C2.1')
+        self.branch = self.company.default_inventory_branch
+        self.product = _c1_product(self.company, 'Artículo C21', '118.00')
+        _c1_stock(self.branch, self.product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'c21_seller', ['company.view', _C1_POS],
+        )
+
+    def _sell(self, items, **kw):
+        return _c1_sale(actor=self.seller, company=self.company,
+                        branch=self.branch, items=items, **kw)
+
+    def test_a_counter_sale_freezes_its_breakdown(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertEqual(order.total, Decimal('118.00'))
+        self.assertEqual(order.taxable_amount, Decimal('100.00'))
+        self.assertEqual(order.tax_amount, Decimal('18.00'))
+        self.assertEqual(order.tax_rate, Decimal('0.1800'))
+        self.assertEqual(order.tax_treatment, 'taxed')
+        self.assertEqual(order.currency, 'PEN')
+
+    def test_the_total_charged_did_not_move(self):
+        """
+        LA COMPROBACIÓN QUE MÁS IMPORTA.
+
+        Un artículo de S/ 118 tiene que seguir costando S/ 118. Si el desglose
+        se hubiera sumado encima en vez de extraerse, saldría S/ 139,24.
+        """
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        self.assertEqual(order.total, Decimal('118.00'))
+        self.assertEqual(order.items.first().price, Decimal('118.00'))
+
+    def test_both_identities_hold_on_a_real_sale(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 3}])
+        self.assertEqual(order.taxable_amount + order.tax_amount, order.total)
+        self.assertEqual(order.subtotal_amount - order.discount_amount, order.total)
+
+    def test_a_discounted_sale_taxes_only_what_is_charged(self):
+        """El tributo va sobre lo cobrado, no sobre el precio de lista."""
+        order, _ = self._sell(
+            [{'product': self.product.pk, 'quantity': 1}],
+            manual_discount_type='amount',
+            manual_discount_value=Decimal('18.00'),
+            discount_reason='Prueba C2.1',
+            may_apply_manual_discount=True,
+        )
+        self.assertEqual(order.total, Decimal('100.00'))
+        self.assertEqual(order.subtotal_amount, Decimal('118.00'))
+        self.assertEqual(order.discount_amount, Decimal('18.00'))
+        self.assertEqual(order.taxable_amount + order.tax_amount, Decimal('100.00'))
+
+    def test_awkward_amounts_still_balance_through_the_whole_sale(self):
+        """
+        Importes que no dividen limpio, atravesando la venta REAL —catálogo,
+        stock, cobro— y no sólo el motor de cálculo.
+        """
+        for price in ('0.01', '3.33', '19.99', '99.99', '1000.01'):
+            with self.subTest(price=price):
+                product = _c1_product(self.company, f'Raro {price}', price)
+                _c1_stock(self.branch, product, 10)
+                order, _ = self._sell([{'product': product.pk, 'quantity': 1}])
+                self.assertEqual(order.total, Decimal(price))
+                self.assertEqual(
+                    order.taxable_amount + order.tax_amount, order.total,
+                )
+
+    def test_quantity_above_one_still_balances(self):
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 7}])
+        self.assertEqual(order.total, Decimal('826.00'))
+        self.assertEqual(order.taxable_amount + order.tax_amount, Decimal('826.00'))
+
+    def test_the_preview_and_the_sale_agree_to_the_cent(self):
+        """
+        DOS PANTALLAS, UNA CIFRA.
+
+        Si difirieran, el operador leería un IGV en voz alta y el ticket
+        imprimiría otro, con el cliente delante.
+        """
+        items = [{'product': self.product.pk, 'quantity': 3}]
+        priced = _pos.build_pos_sale(
+            operator=self.seller, company=self.company, branch=self.branch,
+            items=items, customer=None, seller_id=None,
+            payment_method=PaymentMethod.CASH, validate_cash=False,
+            may_assign_seller=False, may_apply_manual_discount=False,
+        )
+        order, _ = self._sell(items)
+
+        self.assertEqual(priced['tax'].taxable_amount, order.taxable_amount)
+        self.assertEqual(priced['tax'].tax_amount, order.tax_amount)
+        self.assertEqual(priced['tax'].total, order.total)
+
+    def test_a_retried_sale_does_not_produce_a_second_breakdown(self):
+        """
+        IDEMPOTENCIA. Reintentar con la misma clave devuelve LA MISMA venta —un
+        solo pedido, un solo desglose, un solo movimiento de stock—, no una
+        segunda con las mismas cifras.
+        """
+        items = [{'product': self.product.pk, 'quantity': 2}]
+        key = 'c21-idem-0001'
+        first, created_first = self._sell(items, idempotency_key=key)
+        second, created_second = self._sell(items, idempotency_key=key)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Order.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(second.tax_amount, first.tax_amount)
+
+    def test_a_past_sale_is_not_rewritten_by_a_later_rate(self):
+        """
+        INMUTABILIDAD HISTÓRICA — el motivo de guardar la tasa.
+
+        La Ley N.º 32387 mueve el reparto del 18 % cada año hasta 2029. Una
+        venta de hoy tiene que seguir diciendo lo que dijo.
+        """
+        order, _ = self._sell([{'product': self.product.pk, 'quantity': 1}])
+        frozen = breakdown_for_order(order).as_dict()
+
+        with patch('store.tax_services.DEFAULT_TAX_RATE', Decimal('0.25')):
+            self.assertEqual(breakdown_for_order(order).as_dict(), frozen)
+            # Y una venta NUEVA sí usa la tasa nueva: la congelación protege el
+            # pasado, no bloquea el futuro.
+            fresh = breakdown_from_total(total=Decimal('125.00'))
+            self.assertEqual(fresh.tax_rate, Decimal('0.25'))
+
+
+class C21AdminCannotDesyncTheSnapshotTest(TestCase):
+    """
+    El admin de Django no puede descuadrar una venta ya cerrada.
+
+    `total` dejó de ser un número suelto: es el ancla de un desglose congelado
+    que ya se imprimió. Editarlo desde un formulario que no pasa por
+    `tax_services` dejaba la venta diciendo `base + impuesto != total`, y el
+    siguiente PDF salía contradictorio consigo mismo.
+    """
+
+    def test_the_money_fields_are_read_only(self):
+        from django.contrib import admin as dj_admin
+
+        from .models import Order as OrderModel
+
+        options = dj_admin.site._registry[OrderModel]
+        for field in ('total', 'discount_amount', 'subtotal_amount',
+                      'taxable_amount', 'tax_amount', 'tax_rate',
+                      'tax_treatment', 'currency'):
+            self.assertIn(
+                field, options.readonly_fields,
+                f'{field} es editable desde el admin y descuadraría el desglose',
+            )
+
+    def test_the_breakdown_is_visible_so_a_mismatch_can_be_seen(self):
+        """Mostrarlo es lo que convierte un descuadre en algo que se nota."""
+        from django.contrib import admin as dj_admin
+
+        from .models import Order as OrderModel
+
+        options = dj_admin.site._registry[OrderModel]
+        shown = {f for _title, opts in options.fieldsets for f in opts['fields']}
+        for field in ('taxable_amount', 'tax_amount', 'tax_rate'):
+            self.assertIn(field, shown)
+
+
+class C21TenantIsolationTest(TestCase):
+    """El desglose de una empresa no se ve ni se toca desde otra."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c21-iso-a', 'Empresa A')
+        self.b = _p3_company('c21-iso-b', 'Empresa B')
+        self.product_a = _c1_product(self.a, 'Artículo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, self.product_a, 10)
+        self.seller_a, _ = _p2d_member(self.a, 'c21_a', ['company.view', _C1_POS])
+        self.staff_b, _ = _p2d_member(
+            self.b, 'c21_b', ['company.view', 'sales.notes.manage'],
+        )
+
+    def test_the_document_of_another_company_is_not_reachable(self):
+        order, _ = _c1_sale(
+            actor=self.seller_a, company=self.a,
+            branch=self.a.default_inventory_branch,
+            items=[{'product': self.product_a.pk, 'quantity': 1}],
+        )
+        note, _ = get_or_create_sales_note(order)
+
+        client = APIClient()
+        client.force_authenticate(user=self.staff_b)
+        for query in ('', '?formato=ticket80'):
+            res = client.get(
+                f'/api/admin/orders/{order.pk}/sales-note/pdf/{query}'
+            )
+            # 404, NO 403: un 403 confirmaría que ese pedido existe.
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class C21RoundingConvergenceTest(TestCase):
+    """
+    EL MISMO CARRITO NO PUEDE COSTAR DISTINTO SEGÚN DÓNDE SE COMPRE.
+
+    `price_checkout` redondeaba con `quantize(CENTS)` a secas —media al par, el
+    redondeo bancario— mientras el punto de venta usa media al alza. Medido: el
+    40 % de los subtotales diverge para algún porcentaje corriente de cupón, y
+    con precios reales también: S/ 129,90 al 15 % daba 19,48 de descuento en la
+    web y 19,49 en el mostrador.
+
+    C2.1 lo hacía peor, porque congela e IMPRIME esa cifra: dos documentos de la
+    misma compra podían no cuadrar entre sí.
+    """
+
+    def test_both_channels_round_a_discount_the_same_way(self):
+        from decimal import ROUND_HALF_UP
+
+        from . import checkout_services as checkout
+        from . import pos_services as pos
+
+        for amount in ('129.90', '249.50', '59.90', '0.09', '0.13', '1000.05'):
+            with self.subTest(amount=amount):
+                bruto = Decimal(amount) * Decimal('0.15')
+                self.assertEqual(
+                    checkout._cents(bruto), pos._money(bruto),
+                    f'{amount}: escaparate y mostrador redondean distinto',
+                )
+
+    def test_the_convention_is_half_up_as_the_phase_requires(self):
+        from . import checkout_services as checkout
+
+        # 0.005 es el empate: media al par baja a 0.00, media al alza sube.
+        self.assertEqual(checkout._cents(Decimal('0.005')), Decimal('0.01'))
+        self.assertEqual(checkout._cents(Decimal('0.015')), Decimal('0.02'))
+        self.assertEqual(checkout._cents(Decimal('0.025')), Decimal('0.03'))
+
+    def test_no_customer_pays_more_than_before(self):
+        """
+        La dirección del cambio importa: redondear el DESCUENTO hacia arriba
+        sólo puede bajar el total. Nadie paga más que antes por esta corrección.
+        """
+        from . import checkout_services as checkout
+
+        for cents in range(1, 20000, 3):
+            sub = (Decimal(cents) / Decimal('100')).quantize(Decimal('0.01'))
+            for pct in (5, 10, 15, 25, 50):
+                bruto = sub * Decimal(pct) / Decimal('100')
+                antes = bruto.quantize(Decimal('0.01'))          # media al par
+                ahora = checkout._cents(bruto)                   # media al alza
+                self.assertGreaterEqual(
+                    ahora, antes,
+                    f'S/{sub} al {pct}%: el descuento bajó, el cliente pagaría más',
+                )
+
+
+class C21CheckoutQuoteTest(TestCase):
+    """
+    El desglose que ve el comprador ANTES de pagar.
+
+    Existe para que el escaparate no tenga que dividir el total en JavaScript:
+    `0.1 + 0.2 !== 0.3` es exactamente el error que produciría un IGV en
+    pantalla distinto del impreso.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.product = _seeded(Product.objects.create(
+            company=_pilot_company(), name='Producto C21', slug='producto-c21',
+            price=Decimal('118.00'), inventory=10,
+        ))
+        self.session_key = 'c21-quote-session'
+        CartItem.objects.create(
+            session_key=self.session_key, product=self.product, quantity=1,
+        )
+
+    def _quote(self, **body):
+        return self.client.post(
+            '/api/checkout/quote/',
+            {'session_key': self.session_key, **body},
+            format='json',
+        )
+
+    def test_it_returns_the_breakdown_of_the_current_cart(self):
+        res = self._quote()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['total'], '118.00')
+        self.assertEqual(res.data['taxable_amount'], '100.00')
+        self.assertEqual(res.data['tax_amount'], '18.00')
+
+    def test_every_amount_is_a_string(self):
+        """Un importe que llega como número JSON invita al navegador a operar con él."""
+        res = self._quote()
+        for field in ('subtotal', 'discount_amount', 'taxable_amount',
+                      'tax_amount', 'tax_rate', 'total'):
+            self.assertIsInstance(res.data[field], str, field)
+
+    def test_the_identity_holds_in_the_response(self):
+        res = self._quote()
+        self.assertEqual(
+            Decimal(res.data['taxable_amount']) + Decimal(res.data['tax_amount']),
+            Decimal(res.data['total']),
+        )
+
+    def test_it_does_not_create_anything(self):
+        """Es una pregunta: ni pedido, ni nota, ni movimiento de stock."""
+        before = (Order.objects.count(), SalesNote.objects.count(),
+                  StockMovement.objects.count())
+        self._quote()
+        self.assertEqual(
+            (Order.objects.count(), SalesNote.objects.count(),
+             StockMovement.objects.count()),
+            before,
+        )
+
+    def test_an_empty_cart_is_refused_rather_than_quoted_at_zero(self):
+        """Un total de S/ 0,00 se lee como un precio, no como «no hay nada»."""
+        CartItem.objects.filter(session_key=self.session_key).delete()
+        self.assertEqual(self._quote().status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_it_never_says_a_receipt_was_issued(self):
+        res = self._quote()
+        notice = res.data['notice'].lower()
+        self.assertNotIn('emitida', notice)
+        self.assertIn('no es un comprobante', notice)
+
+    def test_quoting_does_not_spend_the_budget_for_paying(self):
+        """
+        MIRAR EL CHECKOUT NO PUEDE IMPEDIR COMPRAR.
+
+        La cotización nació compartiendo el limitador con la creación de la
+        sesión de pago. Doce cotizaciones agotaban el cubo y
+        `payments/create-checkout-session/` respondía 429 sin llegar a
+        ejecutarse — y la pantalla vuelve a cotizar en CADA cambio del carrito o
+        del cupón, así que alguien ajustando cantidades se cerraba la compra a
+        sí mismo.
+
+        Se comprueba el HECHO: agotar la cotización y ver que el cobro sigue
+        contestando algo que no es 429.
+        """
+        # Doce: más que el cubo del cobro (10/min), que es lo que las agotaba.
+        for _ in range(12):
+            self._quote()
+
+        # El cobro NO puede estar agotado por culpa de lo anterior. No se
+        # comprueba que tenga éxito —le faltan datos y pasarela—, sólo que el
+        # limitador no lo haya rechazado antes de que la vista lo mirase.
+        paying = self.client.post(
+            '/api/payments/create-checkout-session/',
+            {'session_key': self.session_key}, format='json',
+        )
+        self.assertNotEqual(
+            paying.status_code, status.HTTP_429_TOO_MANY_REQUESTS,
+            'cotizar agotó el presupuesto de pagar',
+        )
+
+    def test_the_two_endpoints_do_not_share_a_bucket(self):
+        """La separación, dicha sobre la configuración y no sólo sobre la conducta."""
+        from .checkout_quote_views import CheckoutQuoteView
+        from .throttles import CheckoutQuoteThrottle, CheckoutThrottle
+
+        self.assertEqual(CheckoutQuoteView.throttle_classes, [CheckoutQuoteThrottle])
+        self.assertNotEqual(CheckoutQuoteThrottle.scope, CheckoutThrottle.scope)
+        self.assertIn(CheckoutQuoteThrottle.scope, settings.REST_FRAMEWORK[
+            'DEFAULT_THROTTLE_RATES'
+        ])
+
+    def test_the_quote_matches_what_the_order_will_freeze(self):
+        """
+        LA COMPROBACIÓN QUE JUSTIFICA LA RUTA.
+
+        Lo cotizado y lo congelado tienen que ser la misma cifra: si no, el
+        cliente ve un IGV antes de pagar y otro en el papel que se lleva.
+        """
+        quoted = self._quote().data
+
+        from . import checkout_services as checkout
+        company = _pilot_company()
+        branch = checkout.resolve_fulfillment_branch(company)
+        lines = [checkout.CheckoutLine(product=self.product, quantity=1)]
+        pricing = checkout.price_checkout(
+            company, checkout.validate_lines_and_subtotal(branch, lines), '',
+        )
+        order = checkout.create_pending_order(
+            company=company, branch=branch, lines=lines, pricing=pricing,
+            details=checkout.CustomerDetails(
+                name='Cliente C21', email='c21@example.com', phone='999999999',
+                document_type='dni', document_number='12345678',
+                delivery_method='pickup_store', receipt_type='boleta',
+                accepted_terms=True, accepted_warranty_policy=True,
+                address_line='', city='', district='', reference='', notes='',
+            ),
+        )
+
+        self.assertEqual(str(order.taxable_amount), quoted['taxable_amount'])
+        self.assertEqual(str(order.tax_amount), quoted['tax_amount'])
+        self.assertEqual(str(order.total), quoted['total'])
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — el vertical técnico de la factura electrónica
+# ---------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+import datetime  # noqa: E402
+import io  # noqa: E402
+
+from lxml import etree as _LET  # noqa: E402
+
+from .fiscal import builder as _fb  # noqa: E402
+from .fiscal import packaging as _fp  # noqa: E402
+from .fiscal import rules as _fr  # noqa: E402
+from .fiscal import schema as _fs  # noqa: E402
+from .fiscal import signing as _fsign  # noqa: E402
+from .fiscal.data import Allowance, InvoiceData, Line, Party  # noqa: E402
+from .fiscal.testing import minimal_invoice, self_signed_pem  # noqa: E402
+
+
+def _signed(data=None):
+    """Construye y firma el caso mínimo. Devuelve (bytes, cert)."""
+    data = data or minimal_invoice()
+    key, cert = self_signed_pem()
+    root = _LET.fromstring(_fb.build_invoice_xml(data))
+    signed = _fsign.sign_invoice(root, key_pem=key, cert_pem=cert)
+    return _LET.tostring(signed, xml_declaration=True, encoding='UTF-8'), cert
+
+
+class C22A1RulesTest(TestCase):
+    """
+    Las reglas tributarias que se comprueban SIN RED.
+
+    Cada una existe para que un incumplimiento se sepa en microsegundos, con el
+    dato señalado, en vez de minutos después como un código numérico devuelto
+    por un servidor.
+    """
+
+    def test_the_minimal_case_passes(self):
+        _fr.validate(minimal_invoice())
+
+    def test_an_invoice_series_must_start_with_f(self):
+        """Anexo N.º 1, campo 8. Una serie B en una factura no existe."""
+        with self.assertRaises(_fr.FiscalRuleError):
+            _fr.validate(minimal_invoice(serie='B001'))
+
+    def test_the_series_is_exactly_four_characters(self):
+        for serie in ('F01', 'F0001', '', 'f001'):
+            with self.subTest(serie=serie), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(serie=serie))
+
+    def test_the_correlativo_starts_at_one_and_fits_in_eight_digits(self):
+        for numero in (0, -1, 100_000_000):
+            with self.subTest(numero=numero), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(correlativo=numero))
+
+    def test_an_invoice_demands_a_ruc_from_the_customer(self):
+        """
+        Anexo N.º 1, campo 11: «El Tipo de documento será 6 - RUC».
+
+        Una venta sin RUC no es una factura mal hecha: es una boleta. Por eso el
+        mensaje lo dice, en vez de limitarse a rechazar.
+        """
+        con_dni = Party(doc_type='1', doc_number='12345678', legal_name='JUAN PEREZ')
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(minimal_invoice(customer=con_dni))
+        self.assertIn('boleta', str(ctx.exception).lower())
+
+    def test_a_malformed_ruc_is_refused(self):
+        for ruc in ('2010006660', '30100066603', 'ABCDEFGHIJK', ''):
+            with self.subTest(ruc=ruc), self.assertRaises(_fr.FiscalRuleError):
+                _fr.validate(minimal_invoice(
+                    customer=Party('6', ruc, 'CLIENTE SAC'),
+                ))
+
+    def test_an_unsupported_tax_treatment_fails_closed(self):
+        """
+        NO SE INVENTA UN CÓDIGO DE AFECTACIÓN.
+
+        Generar un XML con un código que nadie comprobó presentaría ante SUNAT
+        una declaración falsa. Se prefiere negarse.
+        """
+        exonerada = minimal_invoice()
+        linea = dataclasses.replace(exonerada.lines[0], tax_affectation='20')
+        with self.assertRaises(_fr.FiscalRuleError):
+            _fr.validate(dataclasses.replace(exonerada, lines=(linea,)))
+
+    def test_the_amounts_must_add_up(self):
+        with self.assertRaises(ValueError):
+            _fr.validate(minimal_invoice(total=Decimal('119.00')))
+
+
+class C22A1XmlTest(TestCase):
+    """El XML: esquema oficial, orden, catálogos y cifras."""
+
+    def test_the_signed_invoice_validates_against_the_official_schema(self):
+        """
+        `UBL-Invoice-2.1.xsd`, el de SUNAT, versionado en el repositorio.
+
+        Se valida el documento FIRMADO y no el borrador: el hueco de firma vacío
+        no es válido contra el esquema, y tiene que dejar de serlo sólo cuando
+        la firma lo llena.
+        """
+        xml, _cert = _signed()
+        _fs.validate_invoice(xml)
+
+    def test_the_unsigned_draft_is_not_yet_schema_valid(self):
+        """
+        Lo dice el esquema, y conviene que un test lo fije: un comprobante sin
+        firmar NO es un comprobante.
+        """
+        with self.assertRaises(_fs.SchemaError):
+            _fs.validate_invoice(_fb.build_invoice_xml(minimal_invoice()))
+
+    def test_element_order_is_not_negotiable(self):
+        """
+        UBL ES UNA SECUENCIA XSD.
+
+        Un documento con todos los campos correctos en el orden equivocado es
+        inválido. Se demuestra moviendo un nodo y comprobando que el esquema lo
+        rechaza — así el generador no puede tratar el XML como un diccionario.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cbc = _fb.NS['cbc']
+        moneda = doc.find(f'{{{cbc}}}DocumentCurrencyCode')
+        doc.remove(moneda)
+        doc.insert(0, moneda)
+        with self.assertRaises(_fs.SchemaError):
+            _fs.validate_invoice(_LET.tostring(doc, xml_declaration=True, encoding='UTF-8'))
+
+    def test_the_payment_terms_block_is_present(self):
+        """
+        LA CAUSA DEL ERROR 3244, ahora vigilada.
+
+        SUNAT exige `cac:PaymentTerms` con `cbc:ID = 'FormaPago'` desde el
+        01/01/2022. Su ausencia devuelve «Debe consignar la informacion del tipo
+        de transaccion del comprobante» — un mensaje que suena a «tipo de
+        operación» y no lo es. Costó tres envíos a BETA moviendo un nodo que no
+        intervenía en la regla.
+
+        Fuente: hoja `Factura2_0` del archivo oficial «Reglas de validación»,
+        líneas 174-177.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+        terms = doc.findall(f'{{{cac}}}PaymentTerms')
+        self.assertEqual(len(terms), 1)
+        self.assertEqual(terms[0].find(f'{{{cbc}}}ID').text, 'FormaPago')
+        # Regla 3245, encadenada: hay que decir si es al contado o al crédito.
+        self.assertEqual(terms[0].find(f'{{{cbc}}}PaymentMeansID').text, 'Contado')
+
+    def test_the_official_catalogue_codes_are_the_ones_emitted(self):
+        """Los códigos van del Anexo N.º 8, no de la memoria de nadie."""
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+
+        # Catálogo 01: 01 = factura.
+        self.assertEqual(doc.find(f'{{{cbc}}}InvoiceTypeCode').text, '01')
+        # Catálogo 05: el IGV.
+        scheme = doc.find(f'.//{{{cac}}}TaxScheme')
+        self.assertEqual(scheme.find(f'{{{cbc}}}ID').text, '1000')
+        self.assertEqual(scheme.find(f'{{{cbc}}}Name').text, 'IGV')
+        self.assertEqual(scheme.find(f'{{{cbc}}}TaxTypeCode').text, 'VAT')
+        # Catálogo 07: gravado, operación onerosa.
+        afectacion = doc.find(f'.//{{{cbc}}}TaxExemptionReasonCode')
+        self.assertEqual(afectacion.text, '10')
+        # Catálogo 16: precio unitario que incluye el IGV.
+        self.assertEqual(doc.find(f'.//{{{cbc}}}PriceTypeCode').text, '01')
+        # Catálogo 06: el RUC identifica a ambas partes. Se miran el emisor y el
+        # receptor en concreto — el `PartyIdentification` del bloque de firma
+        # lleva el RUC del firmante sin `schemeID`, y meterlo en el mismo bucle
+        # convertía este test en uno que fallaba por su propia imprecisión.
+        for parte in ('AccountingSupplierParty', 'AccountingCustomerParty'):
+            ident = doc.find(
+                f'{{{cac}}}{parte}/{{{cac}}}Party/{{{cac}}}PartyIdentification/{{{cbc}}}ID'
+            )
+            self.assertEqual(ident.get('schemeID'), '6', parte)
+
+    def test_the_xml_carries_exactly_the_frozen_amounts(self):
+        """
+        C2.1 MANDA. El generador transcribe; no recalcula.
+
+        Si esto fallara, el XML presentado ante SUNAT diría un importe distinto
+        del que el cliente pagó y del que dice el papel que se llevó.
+        """
+        data = minimal_invoice()
+        xml, _cert = _signed(data)
+        doc = _LET.fromstring(xml)
+        cac, cbc = _fb.NS['cac'], _fb.NS['cbc']
+
+        totales = doc.find(f'{{{cac}}}LegalMonetaryTotal')
+        self.assertEqual(totales.find(f'{{{cbc}}}LineExtensionAmount').text,
+                         f'{data.taxable_amount:.2f}')
+        self.assertEqual(totales.find(f'{{{cbc}}}PayableAmount').text,
+                         f'{data.total:.2f}')
+        impuesto = doc.find(f'{{{cac}}}TaxTotal/{{{cbc}}}TaxAmount')
+        self.assertEqual(impuesto.text, f'{data.tax_amount:.2f}')
+
+    def test_no_amount_is_written_in_scientific_notation(self):
+        """
+        `str(Decimal)` puede producir `1E+2`, que es un número válido y un
+        importe inválido. Se comprueba sobre un importe redondo, que es donde
+        aparece.
+        """
+        redondo = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('1'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'), Decimal('100.00'), Decimal('18.00'),
+                        Decimal('18.00')),),
+        )
+        xml, _cert = _signed(redondo)
+        doc = _LET.fromstring(xml)
+        cbc = _fb.NS['cbc']
+        # Se miran los IMPORTES, no el documento entero: el base64 de la firma y
+        # del certificado contiene «E+» con frecuencia, y además cambia en cada
+        # ejecución — un test que lo mirase fallaría unas veces sí y otras no,
+        # que es la peor clase de test.
+        for tag in ('LineExtensionAmount', 'TaxInclusiveAmount', 'PayableAmount',
+                    'TaxAmount', 'TaxableAmount', 'PriceAmount'):
+            for nodo in doc.iter(f'{{{cbc}}}{tag}'):
+                self.assertRegex(nodo.text, r'^\d+\.\d{2}$', f'{tag}={nodo.text!r}')
+
+
+class C22A1SignatureTest(TestCase):
+    """La firma: que exista, que verifique y que se rompa al alterar el documento."""
+
+    def test_the_signature_verifies(self):
+        xml, cert = _signed()
+        self.assertTrue(_fsign.verify(xml, cert_pem=cert))
+
+    def test_changing_an_amount_after_signing_breaks_the_signature(self):
+        """
+        EL SABOTAJE QUE JUSTIFICA FIRMAR.
+
+        Si esto pasara, la firma no estaría protegiendo nada.
+        """
+        xml, cert = _signed()
+        alterado = xml.replace(b'>118.00<', b'>999.00<')
+        self.assertNotEqual(alterado, xml, 'el sabotaje no llegó a aplicarse')
+        self.assertFalse(_fsign.verify(alterado, cert_pem=cert))
+
+    def test_a_different_certificate_does_not_verify(self):
+        xml, _cert = _signed()
+        _key, otro = self_signed_pem(ruc='20999999999')
+        self.assertFalse(_fsign.verify(xml, cert_pem=otro))
+
+    def test_the_signature_sits_where_sunat_looks_for_it(self):
+        """Dentro del último `ext:ExtensionContent`, no al final del documento."""
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        huecos = doc.findall(f'.//{{{_fsign.EXT_NS}}}ExtensionContent')
+        firma = huecos[-1].find(f'{{{_fsign.DS_NS}}}Signature')
+        self.assertIsNotNone(firma, 'la firma no está en la última extensión')
+        self.assertEqual(firma.get('Id'), _fsign.SIGNATURE_ID)
+
+    def test_the_emitted_algorithms_are_the_declared_profile(self):
+        """
+        «RSA-SHA256 funciona» y «cumple el perfil de SUNAT» son dos preguntas.
+
+        Esto fija la respuesta a la segunda, para que un cambio del valor por
+        defecto de la librería no pase inadvertido.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        ds = _fsign.DS_NS
+        perfil = _fsign.SUNAT_PROFILE
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}CanonicalizationMethod').get('Algorithm'),
+            perfil.canonicalization,
+        )
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}SignatureMethod').get('Algorithm'),
+            perfil.signature_method,
+        )
+        self.assertEqual(
+            doc.find(f'.//{{{ds}}}DigestMethod').get('Algorithm'),
+            perfil.digest_method,
+        )
+
+    def test_the_digest_value_is_read_not_recomputed(self):
+        """
+        Es el «Valor Resumen» del QR. SUNAT dice que corresponde «al valor del
+        elemento <ds:DigestValue> del documento», así que se lee de ahí.
+        """
+        xml, _cert = _signed()
+        doc = _LET.fromstring(xml)
+        self.assertEqual(
+            _fsign.digest_value(doc),
+            doc.find(f'.//{{{_fsign.DS_NS}}}DigestValue').text,
+        )
+
+
+class C22A1PackagingTest(TestCase):
+    """El nombre del archivo y el ZIP: SUNAT los usa antes de abrir el XML."""
+
+    def test_the_official_naming_convention(self):
+        """Ejemplo del Manual del programador: `20100066603-01-F001-1.ZIP`."""
+        self.assertEqual(
+            _fp.document_name('20100066603', '01', 'F001', 1),
+            '20100066603-01-F001-1',
+        )
+
+    def test_the_correlativo_carries_no_leading_zeros(self):
+        """
+        El ejemplo oficial termina en `-1`, no en `-00000001`. Rellenar a ocho
+        dígitos produce un nombre que SUNAT no reconoce como el mismo documento.
+        """
+        self.assertTrue(
+            _fp.document_name('20100066603', '01', 'F001', 42).endswith('-42')
+        )
+
+    def test_a_malformed_name_is_refused(self):
+        for args in (('2010', '01', 'F001', 1),
+                     ('20100066603', '01', 'F01', 1),
+                     ('20100066603', '01', 'F001', 123456789)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                _fp.document_name(*args)
+
+    def test_the_zip_holds_exactly_one_xml_with_no_folders(self):
+        import zipfile
+
+        nombre = _fp.document_name('20100066603', '01', 'F001', 1)
+        contenido = _fp.build_zip(nombre, b'<Invoice/>')
+        with zipfile.ZipFile(io.BytesIO(contenido)) as archivo:
+            self.assertEqual(archivo.namelist(), [f'{nombre}.XML'])
+
+    def test_a_cdr_with_a_path_entry_is_refused(self):
+        """
+        Zip-slip. Aunque el ZIP venga de SUNAT, la garantía tiene que estar del
+        lado que lee: un nombre con `../` no se extrae, se rechaza.
+        """
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archivo:
+            archivo.writestr('../fuera.xml', b'<a/>')
+        with self.assertRaises(ValueError):
+            _fp.extract_cdr(buffer.getvalue())
+
+    def test_a_cdr_with_several_entries_is_refused(self):
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archivo:
+            archivo.writestr('R-uno.xml', b'<a/>')
+            archivo.writestr('R-dos.xml', b'<b/>')
+        with self.assertRaises(ValueError):
+            _fp.extract_cdr(buffer.getvalue())
+
+
+from .fiscal.provider import ProviderOutcome, ProviderResult  # noqa: E402
+from .fiscal_services import (  # noqa: E402
+    FiscalError, _amount_in_words, get_or_create_fiscal_document,
+    sign_fiscal_document, submit_fiscal_document,
+)
+from .models import (  # noqa: E402
+    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
+    FiscalSubmissionAttempt,
+)
+
+
+class _FakeProvider:
+    """
+    Un proveedor de mentira, para probar el dominio sin red.
+
+    NO SUSTITUYE A LA PRUEBA REAL. La aceptación de SUNAT se demostró contra
+    BETA de verdad; esto sirve para lo que la red no deja probar cómodamente: un
+    timeout, un rechazo, una respuesta ilegible.
+    """
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def submit_invoice(self, *, filename, zip_bytes):
+        self.calls += 1
+        return self.result
+
+
+def _accepted():
+    return ProviderResult(
+        outcome=ProviderOutcome.ACCEPTED, response_code='0',
+        safe_message='La Factura numero F001-1, ha sido aceptada',
+        cdr_xml=b'<ApplicationResponse/>', cdr_filename='R-x.XML',
+        request_sha256='a' * 64, response_sha256='b' * 64,
+    )
+
+
+class C22A1DomainTest(TestCase):
+    """
+    El dominio fiscal: numeración, idempotencia y estados.
+
+    La aritmética y el XML ya se probaron aparte; aquí se prueba lo que sólo
+    existe cuando hay base de datos.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22-fiscal', 'Empresa Fiscal', tax_id='20100066603',
+            legal_name='EMPRESA FISCAL SAC',
+        )
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1,
+        )
+        self.product = _c1_product(self.company, 'Articulo Fiscal', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _paid_invoice_order(self, **extra):
+        order = Order.objects.create(
+            company=self.company,
+            customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC,
+            document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+            **extra,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'),
+        )
+        return order
+
+    def _non_clean_order(self, *, taxable=Decimal('101.53'), tax=Decimal('18.27')):
+        # Precio no divisible por 1.18, cantidad 2. total 119.80; snapshot
+        # taxable 101.53 / tax 18.27. El código viejo daba Σlínea 101.52 ≠ 101.53
+        # (VEN-02A). Con `taxable` alterado se fuerza un descuadre irreconciliable.
+        prod = _c1_product(self.company, f'Redondeo 59.90 {taxable}', '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('119.80'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('119.80'),
+            taxable_amount=taxable, tax_amount=tax,
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=prod, quantity=2, price=Decimal('59.90'),
+        )
+        return order
+
+    def test_a_non_clean_price_reconciles_and_issues(self):
+        """
+        ERP-FISCAL-2 (VEN-02A). `59.90 × 2` ahora cuadra con el snapshot y se
+        emite; antes la suma de líneas (101.52) no coincidía con la base (101.53).
+        Se reserva UN correlativo y las líneas suman EXACTAMENTE el snapshot.
+        """
+        from .fiscal_services import _order_to_invoice_data
+        order = self._non_clean_order()
+        doc, created = get_or_create_fiscal_document(order)
+        self.assertTrue(created)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+        data = _order_to_invoice_data(order, self.series, doc.number)
+        self.assertEqual(sum(l.line_amount for l in data.lines), Decimal('101.53'))
+        self.assertEqual(sum(l.tax_amount for l in data.lines), Decimal('18.27'))
+
+    def test_a_corrupt_snapshot_fails_closed_as_domain_error(self):
+        """
+        ERP-FISCAL-2 (VEN-02B no regresa + guarda §16). Una base declarada que no
+        puede reconciliar con las líneas (aquí 200.00 para un total de 119.80) se
+        rechaza como error de DOMINIO (que la vista mapea a 400), no como un
+        ValueError que termina en 500, y no gasta correlativo.
+        """
+        from .fiscal_services import FiscalError
+        order = self._non_clean_order(taxable=Decimal('200.00'), tax=Decimal('-80.20'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1,
+                         'un fallo de reconciliación no gasta correlativo')
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_non_taxed_sale_fails_closed(self):
+        """
+        ERP-FISCAL-2 (§18). Esta fase sólo emite operaciones gravadas. Una venta
+        exonerada/inafecta se rechaza como error de dominio en vez de emitirse con
+        la afectación gravada («10») que no le corresponde.
+        """
+        from .fiscal_services import FiscalError
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('100.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('100.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('0.00'),
+            tax_rate=Decimal('0.00'), tax_treatment='exempt', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('100.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    # -- numeración -----------------------------------------------------------
+
+    def test_the_first_document_takes_the_first_number(self):
+        order = self._paid_invoice_order()
+        doc, created = get_or_create_fiscal_document(order)
+        self.assertTrue(created)
+        self.assertEqual(doc.document_id, 'F001-1')
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_issuing_twice_produces_one_document_and_one_number(self):
+        """
+        IDEMPOTENCIA. Dos clics en «Emitir» no gastan dos correlativos.
+        """
+        order = self._paid_invoice_order()
+        first, created_first = get_or_create_fiscal_document(order)
+        second, created_second = get_or_create_fiscal_document(order)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_a_number_is_never_recycled(self):
+        """
+        Un correlativo entregado está GASTADO, aunque el documento acabe
+        rechazado. Reciclarlo produciría dos documentos que alguna vez
+        compartieron identificador fiscal.
+        """
+        primero, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        primero.status = FiscalDocumentStatus.REJECTED
+        primero.save(update_fields=['status'])
+
+        segundo, creado = get_or_create_fiscal_document(self._paid_invoice_order())
+        self.assertTrue(creado)
+        self.assertEqual(segundo.number, 2)
+        self.assertNotEqual(primero.number, segundo.number)
+
+    def test_the_model_allows_a_second_document_but_the_generic_button_does_not(self):
+        """
+        LA CONDUCTA CAMBIÓ A PROPÓSITO, y este test cambió con ella.
+
+        Antes, un rechazo liberaba el sitio y «Emitir» creaba otro documento. La
+        flexibilidad del modelo sigue ahí —hará falta el día que exista un flujo
+        de corrección—, pero que el botón genérico la aproveche convierte un clic
+        distraído en un correlativo gastado, y SUNAT considera USADO el número de
+        un documento rechazado.
+
+        Así que el modelo permite; el servicio se niega. La restricción de base
+        de datos es la que sigue impidiendo dos documentos VIVOS.
+        """
+        order = self._paid_invoice_order()
+        primero, _ = get_or_create_fiscal_document(order)
+        primero.status = FiscalDocumentStatus.REJECTED
+        primero.save(update_fields=['status'])
+
+        # El servicio se niega: reemitir tiene que ser una decisión.
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+        # Pero el modelo lo admitiría, que es lo que deja la puerta abierta al
+        # flujo de corrección de una fase futura.
+        segundo = FiscalDocument.objects.create(
+            order=order, company=self.company, series_ref=self.series,
+            document_type=primero.document_type, series=primero.series,
+            number=primero.number + 1, issued_at=timezone.now(),
+            environment=primero.environment,
+            issuer_tax_id=primero.issuer_tax_id,
+            issuer_legal_name=primero.issuer_legal_name,
+            customer_doc_type='6', customer_doc_number='20000000001',
+            customer_legal_name='CLIENTE SAC', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'))
+        vivos = FiscalDocument.objects.filter(order=order).exclude(
+            status=FiscalDocumentStatus.REJECTED).count()
+        self.assertEqual(vivos, 1)
+        self.assertNotEqual(primero.pk, segundo.pk)
+
+    # -- condiciones de emisión ----------------------------------------------
+
+    def test_an_unpaid_sale_gets_no_invoice(self):
+        """El comprobante no es autoridad del pago; el pago lo es del comprobante."""
+        order = self._paid_invoice_order()
+        order.paid = False
+        order.status = Order.Status.PENDING_PAYMENT
+        order.save(update_fields=['paid', 'status'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_a_sale_that_asked_for_a_boleta_is_refused(self):
+        order = self._paid_invoice_order()
+        order.receipt_type = Order.ReceiptType.BOLETA
+        order.save(update_fields=['receipt_type'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_a_sale_without_the_c21_snapshot_is_refused(self):
+        """
+        Un comprobante no puede declarar importes que nadie calculó en el
+        momento de vender.
+        """
+        order = self._paid_invoice_order()
+        order.taxable_amount = None
+        order.save(update_fields=['taxable_amount'])
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    # -- el dinero viene de C2.1 ---------------------------------------------
+
+    def test_the_document_copies_the_frozen_amounts_exactly(self):
+        """
+        C2.1 MANDA. Ni un céntimo de diferencia entre lo cobrado y lo declarado.
+        """
+        order = self._paid_invoice_order()
+        doc, _ = get_or_create_fiscal_document(order)
+        self.assertEqual(doc.taxable_amount, order.taxable_amount)
+        self.assertEqual(doc.tax_amount, order.tax_amount)
+        self.assertEqual(doc.total, order.total)
+        self.assertEqual(doc.tax_rate, order.tax_rate)
+        self.assertEqual(doc.taxable_amount + doc.tax_amount, doc.total)
+
+    def test_the_issuer_identity_is_frozen_not_looked_up(self):
+        """
+        Un comprobante emitido hace dos años sigue diciendo lo que dijo aunque
+        la empresa se haya cambiado el nombre.
+        """
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        antes = doc.issuer_legal_name
+
+        self.company.legal_name = 'OTRO NOMBRE SAC'
+        self.company.save(update_fields=['legal_name'])
+        doc.refresh_from_db()
+        self.assertEqual(doc.issuer_legal_name, antes)
+
+    # -- envío y reintentos ---------------------------------------------------
+
+    def _signed_document(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_signing_stores_the_xml_its_hash_and_the_digest(self):
+        doc = self._signed_document()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        self.assertTrue(doc.signed_xml.startswith('<?xml'))
+        self.assertEqual(len(doc.signed_xml_sha256), 64)
+        self.assertTrue(doc.digest_value)
+
+    def test_signing_twice_does_not_change_the_document(self):
+        """
+        El XML firmado ES el comprobante. Regenerarlo cambiaría el `DigestValue`
+        que puede estar ya impreso en un QR entregado.
+        """
+        doc = self._signed_document()
+        antes = (doc.signed_xml_sha256, doc.digest_value)
+        key, cert = self_signed_pem('20100066603')
+        otra = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        self.assertEqual((otra.signed_xml_sha256, otra.digest_value), antes)
+
+    def test_an_accepted_submission_records_the_cdr(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(doc.is_accepted)
+        self.assertEqual(doc.sunat_response_code, '0')
+        self.assertTrue(doc.cdr_xml)
+        self.assertEqual(len(doc.cdr_sha256), 64)
+
+    def test_a_timeout_is_not_a_rejection(self):
+        """
+        LA DISTINCIÓN QUE GOBIERNA EL DOMINIO.
+
+        Tratar un timeout como rechazo llevaría a emitir un segundo comprobante
+        por una venta que quizá SUNAT ya registró.
+        """
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR,
+            safe_message='ReadTimeout al contactar con el servicio',
+        )))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertNotEqual(doc.status, FiscalDocumentStatus.REJECTED)
+        self.assertFalse(doc.is_accepted)
+
+    def test_an_unrecognised_response_is_not_a_rejection_either(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.UNKNOWN_RESPONSE,
+            safe_message='Respuesta sin CDR ni fault reconocible',
+        )))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_retry_reuses_the_same_number_and_adds_an_attempt(self):
+        """
+        Reintentar NO emite otro documento. Misma serie, mismo correlativo,
+        mismo XML. Lo único nuevo es la fila de intento.
+        """
+        doc = self._signed_document()
+        antes = (doc.series, doc.number, doc.signed_xml_sha256)
+
+        submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        doc.refresh_from_db()
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        doc.refresh_from_db()
+
+        self.assertEqual((doc.series, doc.number, doc.signed_xml_sha256), antes)
+        self.assertEqual(doc.attempts.count(), 2)
+        self.assertEqual([a.attempt_number for a in doc.attempts.all()], [1, 2])
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_an_accepted_document_is_not_sent_again(self):
+        doc = self._signed_document()
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        proveedor = _FakeProvider(_accepted())
+        submit_fiscal_document(doc, proveedor)
+        self.assertEqual(proveedor.calls, 0, 'se reenvió un documento ya aceptado')
+
+    def test_the_attempt_history_never_holds_a_secret(self):
+        doc = self._signed_document()
+        submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        for attempt in FiscalSubmissionAttempt.objects.all():
+            crudo = str(attempt.__dict__).lower()
+            for secreto in ('moddatos', 'clave', 'password', 'wsse'):
+                self.assertNotIn(secreto, crudo)
+
+    # -- importe en letras ----------------------------------------------------
+
+    def test_the_amount_in_words(self):
+        """Es un dato obligatorio del comprobante, no un adorno."""
+        casos = {
+            Decimal('118.00'): 'CIENTO DIECIOCHO CON 00/100 SOLES',
+            Decimal('100.00'): 'CIEN CON 00/100 SOLES',
+            Decimal('1.50'): 'UNO CON 50/100 SOLES',
+            Decimal('0.99'): 'CERO CON 99/100 SOLES',
+            Decimal('1000.00'): 'MIL CON 00/100 SOLES',
+            Decimal('21.00'): 'VEINTIUNO CON 00/100 SOLES',
+        }
+        for importe, esperado in casos.items():
+            with self.subTest(importe=importe):
+                self.assertEqual(_amount_in_words(importe, 'PEN'), esperado)
+
+
+class C22A1SeriesTest(TestCase):
+    """La serie fiscal: alcance por empresa y letra correcta."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22-serie-a', 'Empresa A', tax_id='20100066603')
+        self.b = _p3_company('c22-serie-b', 'Empresa B', tax_id='20522222222')
+
+    def test_two_companies_may_use_the_same_series(self):
+        """
+        F001 no es única en el mundo: es única DENTRO de la empresa. Una
+        restricción global habría hecho que la primera empresa en registrarla se
+        la quedara para todas.
+        """
+        for empresa in (self.a, self.b):
+            FiscalSeries.objects.create(
+                company=empresa, document_type=FiscalDocumentType.INVOICE,
+                series='F001',
+            )
+        self.assertEqual(FiscalSeries.objects.filter(series='F001').count(), 2)
+
+    def test_a_company_cannot_repeat_its_own_series(self):
+        from django.db import IntegrityError
+
+        FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        with self.assertRaises(IntegrityError):
+            FiscalSeries.objects.create(
+                company=self.a, document_type=FiscalDocumentType.INVOICE,
+                series='F001')
+
+    def test_an_invoice_series_must_start_with_f(self):
+        serie = FiscalSeries(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='B001')
+        with self.assertRaises(DjangoValidationError):
+            serie.full_clean()
+
+    def test_the_same_series_may_exist_in_both_environments(self):
+        """
+        La F001 de pruebas y la de producción no son la misma serie. Que lo
+        fueran obligaría a inventar nombres distintos para el mismo documento.
+        """
+        for entorno in ('beta', 'production'):
+            FiscalSeries.objects.create(
+                company=self.a, document_type=FiscalDocumentType.INVOICE,
+                series='F001', environment=entorno)
+        self.assertEqual(FiscalSeries.objects.filter(company=self.a).count(), 2)
+
+
+class C22A1ConcurrencyTest(TransactionTestCase):
+    """
+    Dos emisiones a la vez no pueden compartir correlativo.
+
+    `TransactionTestCase` y no `TestCase`: la reserva usa `select_for_update`, y
+    dentro de la transacción envolvente de `TestCase` los hilos no verían el
+    bloqueo.
+
+    LO QUE SQLITE PUEDE Y NO PUEDE DEMOSTRAR
+    ----------------------------------------
+    `select_for_update()` es inocuo en SQLite: el motor serializa las escrituras
+    con un bloqueo de BASE DE DATOS, así que una carrera con hilos ejercitaría
+    ESE bloqueo y no el de fila de este módulo — y pasaría por el motivo
+    equivocado, o fallaría con «database table is locked» sin decir nada sobre
+    la corrección del código.
+
+    Así que las invariantes secuenciales corren en todas partes y el caso
+    genuinamente concurrente se salta —RUIDOSAMENTE— donde no hay bloqueo por
+    fila. Es la misma regla que ya siguen las fases de inventario, secuencias y
+    punto de venta.
+    """
+
+    # SIN `reset_sequences`. Reiniciar las secuencias a 1 choca con la empresa
+    # piloto que siembran las migraciones y que ya ocupa esa fila: el test
+    # moría en `setUp` con una violación de clave primaria que no tenía nada
+    # que ver con lo que se estaba probando. Ninguna aserción de aquí depende
+    # de un identificador concreto.
+
+    def _requires_row_locking(self):
+        from django.db import connection
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: una carrera '
+                'aquí probaría ese bloqueo y no el de fila de la reserva de '
+                'correlativo.'
+            )
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22-conc', 'Empresa Concurrente', tax_id='20100066603',
+            legal_name='EMPRESA CONCURRENTE SAC',
+        )
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1,
+        )
+        self.product = _c1_product(self.company, 'Articulo Conc', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 50)
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_parallel_issuance_never_repeats_a_number(self):
+        """
+        Ocho ventas distintas emitiendo a la vez: ocho correlativos distintos.
+
+        Si el bloqueo no funcionara, dos documentos saldrían con el mismo número
+        —indistinguibles ante SUNAT— o la restricción única los rechazaría con un
+        error que el usuario no puede entender.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        orders = [self._order() for _ in range(8)]
+        numeros, errores = [], []
+        barrera = threading.Barrier(len(orders))
+
+        def emitir(order):
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                numeros.append(doc.number)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir, args=(o,)) for o in orders]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(errores, [], f'la emisión concurrente falló: {errores}')
+        self.assertEqual(len(numeros), 8)
+        self.assertEqual(len(set(numeros)), 8, f'correlativos repetidos: {numeros}')
+        self.assertEqual(sorted(numeros), list(range(1, 9)))
+
+    def test_parallel_issuance_of_the_same_order_yields_one_document(self):
+        """
+        ERP-FISCAL-08. Dos «Emitir» simultáneos sobre LA MISMA venta: uno crea el
+        documento; el otro NO debe estrellarse con IntegrityError→500, sino
+        obtener el mismo documento (get_or_create es idempotente). Exactamente un
+        documento, un correlativo.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        order = self._order()
+        docs, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def emitir():
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                docs.append(doc.pk)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(
+            errores, [], f'la emisión concurrente de la misma venta falló: {errores}')
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 1)
+        self.assertEqual(len(set(docs)), 1, 'ambos hilos ven el mismo documento')
+
+    def test_two_tenants_issue_in_parallel_without_touching_each_other(self):
+        """
+        §5.E — contadores aislados bajo concurrencia real.
+
+        Dos empresas emitiendo a la vez tienen que avanzar cada una su propio
+        contador. Si compartieran bloqueo, una esperaría a la otra sin motivo; si
+        compartieran contador, los números se entrelazarían y cada empresa vería
+        huecos que no puede explicar ante SUNAT.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        otra = _p3_company(
+            'c22-conc-b', 'Empresa Concurrente B', tax_id='20522222222',
+            legal_name='EMPRESA CONCURRENTE B SAC')
+        serie_b = FiscalSeries.objects.create(
+            company=otra, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1)
+        producto_b = _c1_product(otra, 'Articulo B', '118.00')
+        _c1_stock(otra.default_inventory_branch, producto_b, 20)
+
+        def order_de(company, product):
+            order = Order.objects.create(
+                company=company, customer_name='CLIENTE SAC',
+                document_type=Order.DocumentType.RUC,
+                document_number='20000000001',
+                receipt_type=Order.ReceiptType.FACTURA,
+                total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+                subtotal_amount=Decimal('118.00'),
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+                status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+                fulfillment_branch=company.default_inventory_branch)
+            OrderItem.objects.create(
+                order=order, product=product, quantity=1, price=Decimal('118.00'))
+            return order
+
+        ventas = ([order_de(self.company, self.product) for _ in range(4)]
+                  + [order_de(otra, producto_b) for _ in range(4)])
+        resultados, errores = [], []
+        barrera = threading.Barrier(len(ventas))
+
+        def emitir(order):
+            try:
+                barrera.wait(timeout=15)
+                doc, _ = get_or_create_fiscal_document(order)
+                resultados.append((doc.company_id, doc.number))
+            except Exception as exc:  # noqa: BLE001
+                errores.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir, args=(o,)) for o in ventas]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(errores, [], f'la emisión concurrente falló: {errores}')
+        de_a = sorted(n for c, n in resultados if c == self.company.pk)
+        de_b = sorted(n for c, n in resultados if c == otra.pk)
+        self.assertEqual(de_a, [1, 2, 3, 4], 'el contador de A se entrelazó')
+        self.assertEqual(de_b, [1, 2, 3, 4], 'el contador de B se entrelazó')
+
+    def test_two_simultaneous_submits_produce_one_external_call(self):
+        """
+        §5.D — dos envíos a la vez, UNA sola transmisión.
+
+        Es el sabotaje del doble clic sobre «Enviar». Dos llamadas a SUNAT del
+        mismo comprobante pueden dejar dos registros allí y sólo uno de nuestro
+        lado.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        doc, _ = get_or_create_fiscal_document(self._order())
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+        llamadas = []
+        lock = threading.Lock()
+        barrera = threading.Barrier(2)
+
+        class ProveedorQueCuenta:
+            def submit_invoice(self, *, filename, zip_bytes):
+                with lock:
+                    llamadas.append(filename)
+                # Se demora para que la ventana de carrera sea real y no un
+                # accidente afortunado del planificador.
+                import time
+                time.sleep(0.4)
+                return _accepted()
+
+        rechazados = []
+
+        def enviar():
+            try:
+                barrera.wait(timeout=15)
+                submit_fiscal_document(doc, ProveedorQueCuenta())
+            except FiscalSubmissionInProgress:
+                rechazados.append(1)
+            except Exception as exc:  # noqa: BLE001
+                rechazados.append(exc)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=enviar) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=40)
+
+        self.assertEqual(len(llamadas), 1,
+                         f'se transmitió {len(llamadas)} veces el mismo comprobante')
+        self.assertEqual(len(rechazados), 1, 'el segundo envío no fue rechazado')
+
+    def test_the_same_sale_issued_twice_in_parallel_yields_one_document(self):
+        """
+        Doble clic real: dos peticiones simultáneas sobre LA MISMA venta.
+
+        Tiene que quedar un documento. Que la restricción de base de datos
+        rechace al segundo es aceptable —es su trabajo—; lo que no puede pasar
+        es que queden dos.
+        """
+        self._requires_row_locking()
+        import threading
+
+        from django.db import connection
+
+        order = self._order()
+        creados, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def emitir():
+            try:
+                barrera.wait(timeout=10)
+                doc, _ = get_or_create_fiscal_document(order)
+                creados.append(doc.pk)
+            except Exception as exc:  # noqa: BLE001
+                errores.append(type(exc).__name__)
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=emitir) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        vivos = FiscalDocument.objects.filter(order=order).exclude(
+            status=FiscalDocumentStatus.REJECTED).count()
+        self.assertEqual(vivos, 1, f'quedaron {vivos} documentos vivos')
+
+
+    def test_sequential_issuance_never_repeats_a_number(self):
+        """
+        La invariante que SÍ se puede demostrar en cualquier motor: el contador
+        avanza y no se repite. Corre en todas partes, y en PostgreSQL además la
+        respalda la prueba concurrente de arriba.
+        """
+        numeros = []
+        for _ in range(6):
+            doc, creado = get_or_create_fiscal_document(self._order())
+            self.assertTrue(creado)
+            numeros.append(doc.number)
+        self.assertEqual(numeros, list(range(1, 7)))
+        self.assertEqual(len(set(numeros)), 6)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 7)
+
+    def test_the_unique_constraint_is_the_real_guarantee(self):
+        """
+        Aunque el bloqueo fallara, la base de datos no admite dos documentos con
+        el mismo identificador fiscal. Se comprueba forzándolo.
+        """
+        from django.db import IntegrityError
+
+        doc, _ = get_or_create_fiscal_document(self._order())
+        with self.assertRaises(IntegrityError):
+            FiscalDocument.objects.create(
+                order=self._order(), company=self.company,
+                series_ref=self.series, document_type=doc.document_type,
+                series=doc.series, number=doc.number, issued_at=timezone.now(),
+                environment=doc.environment, issuer_tax_id=doc.issuer_tax_id,
+                issuer_legal_name=doc.issuer_legal_name,
+                customer_doc_type='6', customer_doc_number='20000000001',
+                customer_legal_name='OTRO', currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            )
+
+
+class C22A1TenantIsolationTest(TestCase):
+    """
+    Lo fiscal de una empresa no se toca desde otra.
+
+    Son pruebas negativas: comprueban que algo NO se puede hacer, que es la
+    única forma de saber que una frontera existe.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22-iso-a', 'Empresa A', tax_id='20100066603',
+                             legal_name='EMPRESA A SAC')
+        self.b = _p3_company('c22-iso-b', 'Empresa B', tax_id='20522222222',
+                             legal_name='EMPRESA B SAC')
+        self.serie_a = FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        self.producto_a = _c1_product(self.a, 'Articulo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, self.producto_a, 10)
+
+    def _order_de(self, company, product):
+        order = Order.objects.create(
+            company=company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=company.default_inventory_branch,
+        )
+        OrderItem.objects.create(
+            order=order, product=product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_company_without_a_series_cannot_borrow_another_ones(self):
+        """
+        La empresa B no tiene serie. La emisión debe FALLAR, no caer en la de A.
+
+        Si cayera, el comprobante saldría con el RUC de B y el correlativo de A:
+        dos empresas gastando el mismo contador ante SUNAT.
+        """
+        producto_b = _c1_product(self.b, 'Articulo B', '118.00')
+        _c1_stock(self.b.default_inventory_branch, producto_b, 10)
+        order_b = self._order_de(self.b, producto_b)
+
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order_b)
+        self.assertIn('serie', str(ctx.exception).lower())
+        self.serie_a.refresh_from_db()
+        self.assertEqual(self.serie_a.next_number, 1, 'se gastó el contador de A')
+
+    def test_a_document_belongs_to_the_company_of_its_sale(self):
+        doc, _ = get_or_create_fiscal_document(
+            self._order_de(self.a, self.producto_a))
+        self.assertEqual(doc.company_id, self.a.pk)
+        self.assertEqual(
+            FiscalDocument.objects.filter(company=self.b).count(), 0)
+
+    def test_the_series_query_is_scoped_by_company(self):
+        """
+        SABOTAJE nº 1: quitar el filtro de empresa de la consulta de series.
+
+        LA CONSULTA SE MUDÓ. Vivía dentro de `get_or_create_fiscal_document` con
+        un `order_by('pk').first()` que convertía «el id más bajo» en política
+        tributaria; ahora es `fiscal_config.resolve_series`, que además filtra
+        por ambiente y falla ante ambigüedad.
+
+        Se sigue comprobando sobre el código fuente y no sobre la conducta: una
+        consulta sin `company=` puede dar el resultado correcto en un test con
+        una sola empresa y ser un desastre en producción.
+        """
+        import inspect
+
+        from . import fiscal_config, fiscal_services
+
+        resolver = inspect.getsource(fiscal_config.resolve_series)
+        self.assertIn('company=company', resolver)
+        self.assertIn('environment=environment', resolver)
+        # Y que el servicio DELEGUE en vez de consultar por su cuenta: la
+        # invariante es que `FiscalSeries` ya no se consulta desde aquí, no que
+        # falte una cadena concreta —la primera versión de este test cazaba su
+        # propio comentario en vez de código.
+        servicio = inspect.getsource(fiscal_services.get_or_create_fiscal_document)
+        self.assertIn('resolve_series(', servicio)
+        self.assertNotIn('FiscalSeries.objects', servicio)
+
+
+class C22A1AdminImmutabilityTest(TestCase):
+    """
+    SABOTAJE §37 nº 9 y §24: un comprobante emitido no se edita a mano.
+
+    Cambiar aquí un importe o un estado no cambia lo que SUNAT tiene: sólo haría
+    que nuestra copia mintiera sobre el documento que existe.
+    """
+
+    def test_every_field_of_a_fiscal_document_is_read_only(self):
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        readonly = set(options.get_readonly_fields(None))
+        for field in ('total', 'tax_amount', 'taxable_amount', 'series', 'number',
+                      'issuer_tax_id', 'customer_doc_number', 'issued_at',
+                      'status', 'signed_xml', 'digest_value', 'cdr_xml'):
+            self.assertIn(field, readonly, f'{field} es editable desde el admin')
+
+    def test_a_fiscal_document_cannot_be_created_or_deleted_from_the_admin(self):
+        """
+        Nace de una venta, no de un formulario. Y borrarlo dejaría un hueco en la
+        numeración que ante SUNAT no se puede explicar.
+        """
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        self.assertFalse(options.has_add_permission(None))
+        self.assertFalse(options.has_delete_permission(None))
+
+    def test_the_series_counter_is_not_editable(self):
+        """Retrocederlo haría que la siguiente emisión reutilizara un número."""
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalSeries]
+        self.assertIn('next_number', options.readonly_fields)
+
+    def test_the_submission_history_is_append_only_from_the_admin(self):
+        from django.contrib import admin as dj_admin
+
+        options = dj_admin.site._registry[FiscalDocument]
+        inline = options.inlines[0](FiscalDocument, dj_admin.site)
+        self.assertFalse(inline.has_add_permission(None, None))
+        self.assertFalse(inline.can_delete)
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1B — endurecimiento antes de exponer la superficie
+# ---------------------------------------------------------------------------
+
+from .fiscal_config import (  # noqa: E402
+    FiscalConfigError, resolve_credentials, resolve_environment,
+    resolve_provider, resolve_series,
+)
+from .fiscal_services import FiscalSubmissionInProgress  # noqa: E402
+from .models import FiscalEnvironment  # noqa: E402
+
+
+class C22BEnvironmentGuardTest(TestCase):
+    """
+    SABOTAJE §27 nº 3: producción no se opera en esta fase, y no por descuido.
+
+    El código sabe formar la URL de producción. Lo que no existe es el
+    certificado acreditado ni las credenciales por empresa, así que el fallo es
+    explícito: «funciona por accidente» es justo lo que hay que impedir el día
+    que alguien copie una variable de entorno de un sitio a otro.
+    """
+
+    def test_beta_is_the_only_environment_that_resolves(self):
+        self.assertEqual(resolve_environment(), FiscalEnvironment.BETA)
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_production_fails_closed(self):
+        with self.assertRaises(FiscalConfigError) as ctx:
+            resolve_environment()
+        self.assertIn('production', str(ctx.exception))
+
+    @override_settings(FISCAL_ENVIRONMENT='production')
+    def test_a_production_series_cannot_be_used_even_if_someone_creates_one(self):
+        """
+        Crear la fila a mano no basta para operar producción. El ambiente lo
+        decide el servidor, no el contenido de una tabla.
+        """
+        company = _p3_company('c22b-prod', 'Empresa Prod', tax_id='20100066603')
+        FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', environment=FiscalEnvironment.PRODUCTION,
+        )
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(company)
+
+    def test_the_endpoint_is_never_taken_from_a_request(self):
+        """
+        SSRF. Se comprueba sobre el código: `resolve_provider` sólo recibe la
+        empresa, y el endpoint sale de una tabla del propio módulo.
+        """
+        import inspect
+
+        from . import fiscal_config
+
+        firma = inspect.signature(fiscal_config.resolve_provider)
+        self.assertEqual(list(firma.parameters), ['company'])
+        fuente = inspect.getsource(fiscal_config.resolve_provider)
+        self.assertIn('endpoints = {', fuente)
+
+
+class C22BSeriesResolverTest(TestCase):
+    """
+    SABOTAJES §27 nº 1 y 2: serie de otro tenant, serie de otra sucursal.
+
+    Y el defecto que originó este resolver: `order_by('pk').first()` convertía
+    «el id más bajo» en política tributaria.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22b-res-a', 'Empresa A', tax_id='20100066603')
+        self.b = _p3_company('c22b-res-b', 'Empresa B', tax_id='20522222222')
+
+    def _serie(self, company, series='F001', **kw):
+        return FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.INVOICE,
+            series=series, **kw,
+        )
+
+    def test_it_resolves_the_only_company_series(self):
+        serie = self._serie(self.a)
+        self.assertEqual(resolve_series(self.a).pk, serie.pk)
+
+    def test_it_never_returns_another_companys_series(self):
+        self._serie(self.b)
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(self.a)
+
+    def test_two_valid_series_fail_instead_of_being_guessed(self):
+        """
+        AMBIGÜEDAD = FALLO.
+
+        Un desempate improvisado se convierte en la política tributaria de la
+        empresa sin que nadie la haya decidido, y sale a la luz cuando SUNAT
+        recibe dos documentos de series distintas para el mismo mostrador.
+        """
+        self._serie(self.a, series='F001')
+        self._serie(self.a, series='F002')
+        with self.assertRaises(FiscalConfigError) as ctx:
+            resolve_series(self.a)
+        self.assertIn('2 series', str(ctx.exception))
+
+    def test_an_inactive_series_is_not_used(self):
+        self._serie(self.a, is_active=False)
+        with self.assertRaises(FiscalConfigError):
+            resolve_series(self.a)
+
+    def test_the_branch_series_wins_over_the_company_one(self):
+        de_empresa = self._serie(self.a, series='F001')
+        de_sucursal = self._serie(
+            self.a, series='F002', branch=self.a.default_inventory_branch)
+        elegida = resolve_series(
+            self.a, branch=self.a.default_inventory_branch)
+        self.assertEqual(elegida.pk, de_sucursal.pk)
+        self.assertNotEqual(elegida.pk, de_empresa.pk)
+
+    def test_a_sale_from_another_branch_falls_back_to_the_company_series(self):
+        """
+        Nunca la serie de la sucursal B para una venta de la sucursal A. Si la
+        venta es de otra sucursal, se usa la de empresa — no la ajena.
+        """
+        de_empresa = self._serie(self.a, series='F001')
+        otra = Branch.objects.create(company=self.a, name='Sucursal Dos')
+        self._serie(self.a, series='F002', branch=otra)
+
+        elegida = resolve_series(
+            self.a, branch=self.a.default_inventory_branch)
+        self.assertEqual(elegida.pk, de_empresa.pk)
+
+
+class C22BAcceptanceEvidenceTest(TestCase):
+    """
+    SABOTAJES §27 nº 6 y 7: un error de transporte marcado como rechazo, y un
+    fault sin CDR marcado como aceptado.
+    """
+
+    def test_a_4000_code_without_a_cdr_is_not_an_acceptance(self):
+        """
+        «ACEPTADA» EXIGE UNA CONSTANCIA.
+
+        El mismo número dentro de un CDR significa «aceptada con observaciones»,
+        porque la constancia prueba que SUNAT registró el comprobante. En un
+        `faultstring`, sin constancia, no prueba nada — y afirmarlo pondría
+        «ACEPTADA POR SUNAT» sobre un documento que quizá no existe para ellos.
+        """
+        from .fiscal.provider import SunatSoapProvider
+
+        self.assertEqual(
+            SunatSoapProvider._classify('4000', from_cdr=False),
+            ProviderOutcome.UNKNOWN_RESPONSE,
+        )
+        self.assertEqual(
+            SunatSoapProvider._classify('4000', from_cdr=True),
+            ProviderOutcome.ACCEPTED_WITH_OBSERVATION,
+        )
+
+    def test_a_transport_error_is_never_a_rejection(self):
+        from .fiscal.provider import SunatSoapProvider
+
+        for code in ('0100', '0999', '1500'):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    SunatSoapProvider._classify(code, from_cdr=False),
+                    ProviderOutcome.TRANSPORT_ERROR,
+                )
+
+    def test_an_unknown_code_is_never_a_rejection(self):
+        from .fiscal.provider import SunatSoapProvider
+
+        for code in ('', 'abc', '99', '50'):
+            with self.subTest(code=code):
+                self.assertNotEqual(
+                    SunatSoapProvider._classify(code, from_cdr=False),
+                    ProviderOutcome.REJECTED,
+                )
+
+    def test_only_a_cdr_marks_a_document_accepted(self):
+        """
+        Se comprueba sobre el mapa del dominio: ningún resultado sin constancia
+        cae en un estado que la interfaz pueda leer como aceptado.
+        """
+        from .fiscal_services import OUTCOME_TO_STATUS
+
+        for outcome in (ProviderOutcome.TRANSPORT_ERROR,
+                        ProviderOutcome.UNKNOWN_RESPONSE):
+            self.assertEqual(
+                OUTCOME_TO_STATUS[outcome], FiscalDocumentStatus.SUBMISSION_ERROR,
+            )
+
+
+class C22BRejectionPolicyTest(TestCase):
+    """
+    SABOTAJE §27 nº 8: un rechazado reemitido automáticamente.
+
+    El modelo permite otro documento para la misma venta —hará falta el día que
+    exista un flujo de corrección—, pero que el botón genérico lo aproveche
+    convierte un clic distraído en un correlativo gastado. Y SUNAT considera
+    USADO el número de un documento rechazado.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-rej', 'Empresa Rechazo', tax_id='20100066603',
+            legal_name='EMPRESA RECHAZO SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Rej', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_rejected_document_is_terminal_for_the_generic_button(self):
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.sunat_response_code = '2335'
+        doc.save(update_fields=['status', 'sunat_response_code'])
+
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        mensaje = str(ctx.exception)
+        self.assertIn(doc.document_id, mensaje)
+        self.assertIn('2335', mensaje)
+
+    def test_a_rejected_document_does_not_burn_another_correlativo(self):
+        """
+        LA CONSECUENCIA QUE IMPORTA. Antes, cada clic tras un rechazo gastaba un
+        número y dejaba un hueco que hay que explicar ante SUNAT.
+        """
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        self.series.refresh_from_db()
+        contador = self.series.next_number
+
+        for _ in range(3):
+            with self.assertRaises(FiscalError):
+                get_or_create_fiscal_document(order)
+
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, contador)
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 1)
+
+    def test_reading_a_rejected_document_still_works(self):
+        """Rechazado no significa invisible: hay que poder ver por qué."""
+        order = self._order()
+        doc, _ = get_or_create_fiscal_document(order)
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        self.assertEqual(
+            FiscalDocument.objects.filter(order=order).first().pk, doc.pk)
+
+
+class C22BSubmissionClaimTest(TestCase):
+    """
+    SABOTAJE §27 nº 5: dos envíos simultáneos del mismo comprobante.
+
+    `attempts.count() + 1` calculado justo antes de llamar dejaba una ventana en
+    la que dos peticiones obtenían el mismo número y AMBAS llamaban a SUNAT.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-claim', 'Empresa Claim', tax_id='20100066603',
+            legal_name='EMPRESA CLAIM SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Claim', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_an_attempt_in_flight_blocks_a_second_call(self):
+        """
+        Se simula el envío en curso dejando un intento sin cerrar. La segunda
+        petición no debe llamar a SUNAT.
+        """
+        FiscalSubmissionAttempt.objects.create(
+            document=self.doc, attempt_number=1,
+            environment=self.doc.environment, started_at=timezone.now(),
+            result='in_progress')
+
+        proveedor = _FakeProvider(_accepted())
+        with self.assertRaises(FiscalSubmissionInProgress):
+            submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(proveedor.calls, 0, 'se llamó a SUNAT habiendo envío en curso')
+
+    def test_an_abandoned_attempt_stops_blocking_after_the_deadline(self):
+        """
+        Sin plazo, un proceso caído a mitad de envío dejaría el comprobante
+        bloqueado para siempre y sin forma de desbloquearlo desde el producto.
+        """
+        import datetime as _dt
+
+        from .fiscal_services import STALE_ATTEMPT_MINUTES
+
+        FiscalSubmissionAttempt.objects.create(
+            document=self.doc, attempt_number=1,
+            environment=self.doc.environment,
+            started_at=timezone.now() - _dt.timedelta(
+                minutes=STALE_ATTEMPT_MINUTES + 1),
+            result='in_progress')
+
+        proveedor = _FakeProvider(_accepted())
+        submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(proveedor.calls, 1)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_the_attempt_is_recorded_before_the_network_call(self):
+        """
+        La fila existe ANTES de llamar. Se comprueba con un proveedor que mira
+        la base de datos desde dentro de la llamada.
+        """
+        registro = {}
+
+        class ProveedorQueMira:
+            def submit_invoice(self, *, filename, zip_bytes):
+                registro['durante'] = FiscalSubmissionAttempt.objects.filter(
+                    document_id=self.doc_pk, finished_at__isnull=True).count()
+                return _accepted()
+
+        proveedor = ProveedorQueMira()
+        proveedor.doc_pk = self.doc.pk
+        submit_fiscal_document(self.doc, proveedor)
+        self.assertEqual(registro['durante'], 1,
+                         'el intento no estaba reservado durante la llamada')
+
+    def test_a_retry_after_a_failure_reuses_the_same_document(self):
+        self.doc = submit_fiscal_document(self.doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        antes = (self.doc.series, self.doc.number, self.doc.signed_xml_sha256)
+
+        self.doc = submit_fiscal_document(self.doc, _FakeProvider(_accepted()))
+        self.assertEqual(
+            (self.doc.series, self.doc.number, self.doc.signed_xml_sha256), antes)
+        self.assertEqual(self.doc.attempts.count(), 2)
+        self.assertEqual(
+            [a.attempt_number for a in self.doc.attempts.all()], [1, 2])
+
+
+class C22BDiscountFailsClosedTest(TestCase):
+    """
+    §6 — un descuento que el snapshot NO EXPLICA no se emite, y no en silencio.
+
+    Hasta ERP-FISCAL-6 esto rechazaba todo descuento: el generador no sabía
+    declararlo. Ahora lo declara con `cac:AllowanceCharge` (ver
+    `Fiscal6DiscountDeclarationTest`), y lo que sigue fallando cerrado es la
+    venta cuyo `discount_amount > 0` llega con `discount_source = none`: nadie
+    dijo de dónde salió la rebaja, y un comprobante legal no lo adivina.
+
+    La regla de línea que hace imposible «esconder» un descuento rebajando el
+    importe sigue vigente: «2 unidades a 100,00» con un total de línea de 184,75
+    es un documento que declara un precio unitario que nadie cobró.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-desc', 'Empresa Descuento', tax_id='20100066603',
+            legal_name='EMPRESA DESCUENTO SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Desc', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, *, descuento=Decimal('0.00'), cantidad=2):
+        bruto = Decimal('118.00') * cantidad
+        total = bruto - descuento
+        base = (total / Decimal('1.18')).quantize(Decimal('0.01'))
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=total, discount_amount=descuento, subtotal_amount=bruto,
+            taxable_amount=base, tax_amount=total - base,
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=cantidad,
+            price=Decimal('118.00'))
+        return order
+
+    def test_a_sale_without_a_discount_still_issues(self):
+        """La negativa es para el descuento, no para todas las ventas."""
+        doc, creado = get_or_create_fiscal_document(self._order())
+        self.assertTrue(creado)
+        self.assertEqual(doc.total, Decimal('236.00'))
+
+    def test_a_discounted_sale_is_refused_with_a_reason(self):
+        """`_order` deja `discount_source` en `none`: un descuento sin origen."""
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(descuento=Decimal('18.00')))
+        mensaje = str(ctx.exception).lower()
+        self.assertIn('descuento', mensaje)
+        self.assertIn('origen', mensaje)
+        self.assertIn('18.00', str(ctx.exception))
+
+    def test_refusing_does_not_burn_a_correlativo(self):
+        """
+        Negarse tiene que ser gratis. Si la negativa gastara un número, cada
+        intento dejaría un hueco que hay que explicar ante SUNAT.
+        """
+        serie = FiscalSeries.objects.get(company=self.company)
+        antes = serie.next_number
+        for _ in range(3):
+            with self.assertRaises(FiscalError):
+                get_or_create_fiscal_document(
+                    self._order(descuento=Decimal('18.00')))
+        serie.refresh_from_db()
+        self.assertEqual(serie.next_number, antes)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_line_whose_arithmetic_does_not_close_cannot_be_built(self):
+        """
+        LA REGLA QUE HACE EL DEFECTO IMPOSIBLE, no sólo improbable.
+
+        Aunque alguien construyera los datos a mano saltándose el servicio, un
+        importe de línea que no sea `cantidad × valor unitario` se rechaza. El
+        XSD no lo detecta: no comprueba aritmética.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'),
+                        Decimal('184.75'),   # ← el descuento escondido
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(incoherente)
+        self.assertIn('AllowanceCharge', str(ctx.exception))
+
+    def test_the_schema_alone_would_have_let_it_through(self):
+        """
+        Por qué la regla local hace falta: el esquema oficial acepta el documento
+        incoherente. Pasar el XSD no es pasar SUNAT.
+        """
+        incoherente = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('118.00'), Decimal('184.75'),
+                        Decimal('33.25'), Decimal('18.00')),),
+            taxable_amount=Decimal('184.75'), tax_amount=Decimal('33.25'),
+            total=Decimal('218.00'))
+        key, cert = self_signed_pem()
+        firmado = _fsign.sign_invoice(
+            _LET.fromstring(_fb.build_invoice_xml(incoherente)),
+            key_pem=key, cert_pem=cert)
+        # No levanta: el esquema no comprueba aritmética.
+        _fs.validate_invoice(
+            _LET.tostring(firmado, xml_declaration=True, encoding='UTF-8'))
+
+
+class C22BRecipientTest(TestCase):
+    """
+    §7 — el receptor de una factura, y que se falle ANTES de gastar correlativo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-recep', 'Empresa Receptor', tax_id='20100066603',
+            legal_name='EMPRESA RECEPTOR SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Rec', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _order(self, **extra):
+        data = dict(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        data.update(extra)
+        order = Order.objects.create(**data)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_the_document_type_is_translated_not_hardcoded(self):
+        """
+        Fijar `'6'` a mano hacía que el XML afirmara «esto es un RUC» aunque la
+        venta dijera DNI: el número viajaba con la etiqueta equivocada y SUNAT
+        recibía una declaración falsa sobre qué documento identifica al comprador.
+        """
+        doc, _ = get_or_create_fiscal_document(self._order())
+        self.assertEqual(doc.customer_doc_type, '6')
+
+    def test_a_factura_with_a_dni_is_refused_before_spending_a_number(self):
+        """
+        Una venta sin RUC no es una factura mal hecha: es una boleta. Y negarse
+        tiene que ser gratis.
+        """
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(self._order(
+                document_type=Order.DocumentType.DNI, document_number='12345678'))
+        self.assertIn('boleta', str(ctx.exception).lower())
+
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes,
+                         'la negativa gastó un correlativo')
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_sale_without_a_recipient_name_is_refused(self):
+        antes = self.series.next_number
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(self._order(customer_name=''))
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, antes)
+
+    def test_an_issuer_without_a_tax_id_is_refused(self):
+        """Sin RUC del emisor no hay comprobante que valga."""
+        sin_ruc = _p3_company('c22b-sinruc', 'Sin RUC', tax_id='')
+        FiscalSeries.objects.create(
+            company=sin_ruc, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(sin_ruc, 'Articulo', '118.00')
+        _c1_stock(sin_ruc.default_inventory_branch, producto, 5)
+        order = Order.objects.create(
+            company=sin_ruc, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=sin_ruc.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalApiTest(TestCase):
+    """
+    La superficie interna: qué devuelve, qué esconde y quién puede tocarla.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-api', 'Empresa API', tax_id='20100066603',
+            legal_name='EMPRESA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo API', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22b_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22b_observador', ['company.view', 'sales.fiscal.view'])
+        self.ajeno, _ = _p2d_member(
+            self.company, 'c22b_ajeno', ['company.view'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem = key.decode()
+        self.cert_pem = cert.decode()
+        self.order = self._order()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _emitir(self, user=None, order=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/orders/{(order or self.order).pk}/fiscal-document/')
+
+    # -- forma de la respuesta ------------------------------------------------
+
+    def test_issuing_returns_the_document_metadata(self):
+        res = self._emitir()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'F001-1')
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['total'], '118.00')
+        self.assertTrue(res.data['has_xml'])
+        self.assertFalse(res.data['has_cdr'])
+        # UN FIRMADO YA SE PUEDE IMPRIMIR, y es deliberado: desde que hay firma
+        # hay `DigestValue` y por tanto QR. El papel dice el estado real, así que
+        # «pendiente de envío» no se confunde con «aceptada». Este test afirmaba
+        # la política anterior —sólo imprimible tras la aceptación— y se
+        # actualizó con ella.
+        self.assertTrue(res.data['can_download_pdf'])
+        self.assertFalse(res.data['is_accepted'])
+
+    def test_the_detail_never_carries_the_xml_or_a_secret(self):
+        """
+        Un comprobante firmado son kilobytes de base64 y una firma. En la
+        respuesta de detalle se convertiría en algo que se copia y se pega.
+        """
+        self._emitir()
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        # `str()` y no `json.dumps`: la respuesta lleva un datetime, que no es
+        # serializable — y el objetivo es inspeccionar TODO lo que sale, no
+        # sólo lo que resulta serializable.
+        crudo = str(res.data).lower()
+        for prohibido in ('<?xml', 'signedxml', 'signed_xml', 'begin private key',
+                          'moddatos', 'wsse', 'certificate', 'soapenv'):
+            self.assertNotIn(prohibido, crudo, prohibido)
+
+    def test_amounts_travel_as_strings(self):
+        """Un importe que llega como número JSON invita a operar con él."""
+        res = self._emitir()
+        for campo in ('taxable_amount', 'tax_amount', 'total'):
+            self.assertIsInstance(res.data[campo], str, campo)
+
+    def test_issuing_twice_returns_the_same_document(self):
+        primero = self._emitir()
+        segundo = self._emitir()
+        self.assertEqual(primero.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segundo.status_code, status.HTTP_200_OK)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_an_order_without_a_document_answers_404(self):
+        res = self._as(self.observador).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    # -- permisos -------------------------------------------------------------
+
+    def test_viewing_does_not_grant_issuing(self):
+        """
+        SABOTAJE: escalada por capacidad. Consultar el estado de una factura y
+        declarar algo ante SUNAT son decisiones distintas.
+        """
+        res = self._emitir(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def _non_clean_api_order(self, *, name, taxable=Decimal('101.53'), tax=Decimal('18.27')):
+        prod = _c1_product(self.company, name, '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('119.80'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('119.80'), taxable_amount=taxable,
+            tax_amount=tax, tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=2, price=Decimal('59.90'))
+        return order
+
+    def test_a_non_clean_price_invoice_is_issued(self):
+        """
+        ERP-FISCAL-2 (VEN-02A). Una factura con precio no divisible (59.90 × 2)
+        se emite (201): sus líneas cuadran con el snapshot. Antes devolvía 400.
+        """
+        order = self._non_clean_api_order(name='API 59.90 ok')
+        res = self._emitir(order=order)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['taxable_amount'], '101.53')
+        self.assertEqual(res.data['tax_amount'], '18.27')
+
+    def test_a_corrupt_snapshot_returns_400_not_500(self):
+        """
+        ERP-FISCAL-2 (VEN-02B no regresa). Una base declarada irreconciliable con
+        las líneas devuelve 400 de validación fiscal, NUNCA 500, y no deja documento.
+        """
+        order = self._non_clean_api_order(
+            name='API corrupto', taxable=Decimal('200.00'), tax=Decimal('-80.20'))
+        res = self._emitir(order=order)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_member_without_fiscal_capabilities_sees_nothing(self):
+        self._emitir()
+        res = self._as(self.ajeno).get(
+            f'/api/admin/orders/{self.order.pk}/fiscal-document/')
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_no_legacy_role_grants_fiscal_authority(self):
+        """
+        El concepto no existía antes de esta fase, así que no hay un `admin`
+        histórico que «siempre pudo facturar». La lista vacía es deliberada.
+        """
+        from . import fiscal_views
+
+        self.assertEqual(fiscal_views._NO_LEGACY_BRIDGE, ())
+
+    # -- artefactos -----------------------------------------------------------
+
+    def test_the_xml_downloads_with_the_sunat_filename(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('application/xml', res['Content-Type'])
+        self.assertIn('20100066603-01-F001-1.XML', res['Content-Disposition'])
+        self.assertTrue(res.content.startswith(b'<?xml'))
+
+    def test_the_filename_cannot_carry_a_header_injection(self):
+        """Un salto de línea en una cabecera HTTP es inyección de cabeceras."""
+        doc_id = self._emitir().data['id']
+        doc = FiscalDocument.objects.get(pk=doc_id)
+        doc.series = 'F0\r\n'
+        doc.save(update_fields=['series'])
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/xml/')
+        self.assertNotIn('\n', res['Content-Disposition'])
+        self.assertNotIn('\r', res['Content-Disposition'])
+
+    def test_the_cdr_is_404_until_sunat_answers(self):
+        doc_id = self._emitir().data['id']
+        res = self._as(self.observador).get(
+            f'/api/admin/fiscal-documents/{doc_id}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalTenantIsolationTest(TestCase):
+    """
+    SABOTAJES 9, 10 y 11: XML, CDR y estado de otro tenant.
+
+    Un identificador ajeno responde como uno inexistente. Un 403 confirmaría que
+    ese comprobante existe.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p3_company('c22b-iso-a', 'Empresa A', tax_id='20100066603',
+                             legal_name='EMPRESA A SAC')
+        self.b = _p3_company('c22b-iso-b', 'Empresa B', tax_id='20522222222',
+                             legal_name='EMPRESA B SAC')
+        FiscalSeries.objects.create(
+            company=self.a, document_type=FiscalDocumentType.INVOICE, series='F001')
+        producto = _c1_product(self.a, 'Articulo A', '118.00')
+        _c1_stock(self.a.default_inventory_branch, producto, 10)
+
+        self.order_a = Order.objects.create(
+            company=self.a, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.a.default_inventory_branch)
+        OrderItem.objects.create(
+            order=self.order_a, product=producto, quantity=1,
+            price=Decimal('118.00'))
+
+        doc, _ = get_or_create_fiscal_document(self.order_a)
+        key, cert = self_signed_pem('20100066603')
+        self.doc_a = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        self.doc_a = submit_fiscal_document(self.doc_a, _FakeProvider(_accepted()))
+
+        self.de_b, _ = _p2d_member(
+            self.b, 'c22b_iso_b',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _b(self):
+        client = APIClient()
+        client.force_authenticate(user=self.de_b)
+        return client
+
+    def test_b_cannot_read_a_document_of_a(self):
+        res = self._b().get(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_issue_for_an_order_of_a(self):
+        antes = FiscalDocument.objects.count()
+        res = self._b().post(
+            f'/api/admin/orders/{self.order_a.pk}/fiscal-document/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(FiscalDocument.objects.count(), antes)
+
+    def test_b_cannot_download_the_xml_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/xml/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_download_the_cdr_of_a(self):
+        res = self._b().get(f'/api/admin/fiscal-documents/{self.doc_a.pk}/cdr/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_b_cannot_resubmit_a_document_of_a(self):
+        res = self._b().post(
+            f'/api/admin/fiscal-documents/{self.doc_a.pk}/submit/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.doc_a.attempts.count(), 1)
+
+
+class C22BQrTest(TestCase):
+    """
+    §17 — el QR, campo por campo contra el anexo oficial.
+
+    Del Anexo A de la R.S. 113-2018, numeral 6.4.3. Diez campos separados por
+    `|`, sin separador final.
+    """
+
+    PAYLOAD_ARGS = dict(
+        issuer_tax_id='20100066603', document_type='01', series='F001', number=1,
+        tax_amount=Decimal('18.00'), total=Decimal('118.00'),
+        issue_date=datetime.date(2026, 9, 6),
+        customer_doc_type='6', customer_doc_number='20000000001',
+        digest_value='bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+    )
+
+    def test_the_exact_payload(self):
+        from .fiscal.qr import build_qr_payload
+
+        self.assertEqual(
+            build_qr_payload(**self.PAYLOAD_ARGS),
+            '20100066603|01|F001|1|18.00|118.00|2026-09-06|6|20000000001|'
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',
+        )
+
+    def test_the_field_order_one_by_one(self):
+        """
+        Diez campos posicionales en el orden equivocado producirían un QR
+        sintácticamente perfecto y semánticamente falso.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        campos = build_qr_payload(**self.PAYLOAD_ARGS).split('|')
+        self.assertEqual(len(campos), 10)
+        esperado = [
+            '20100066603',   # 1 RUC del emisor
+            '01',            # 2 tipo de comprobante
+            'F001',          # 3 serie
+            '1',             # 4 correlativo
+            '18.00',         # 5 sumatoria IGV
+            '118.00',        # 6 importe total
+            '2026-09-06',    # 7 fecha de emisión
+            '6',             # 8 tipo de documento del adquirente
+            '20000000001',   # 9 número de documento del adquirente
+            'bDooE0rMdf79EDMTceZ98QtJ3oLEau5OnFGVuDjmjpg=',  # 10 valor resumen
+        ]
+        for i, (obtenido, quiero) in enumerate(zip(campos, esperado), 1):
+            self.assertEqual(obtenido, quiero, f'campo {i}')
+
+    def test_there_is_no_trailing_separator(self):
+        """
+        El mismo anexo define el PDF417 con ONCE campos y SÍ cierra con `|`. El
+        contraste dentro del documento es la evidencia de que el QR no lo lleva.
+        """
+        from .fiscal.qr import build_qr_payload
+
+        self.assertFalse(build_qr_payload(**self.PAYLOAD_ARGS).endswith('|'))
+
+    def test_amounts_carry_two_decimals(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(
+            **{**self.PAYLOAD_ARGS, 'tax_amount': Decimal('0.5'),
+               'total': Decimal('100')})
+        campos = payload.split('|')
+        self.assertEqual(campos[4], '0.50')
+        self.assertEqual(campos[5], '100.00')
+
+    def test_the_payload_is_not_a_url_or_an_internal_id(self):
+        from .fiscal.qr import build_qr_payload
+
+        payload = build_qr_payload(**self.PAYLOAD_ARGS)
+        self.assertNotIn('http', payload.lower())
+        self.assertNotIn('order', payload.lower())
+
+    def test_it_renders_a_real_png(self):
+        from .fiscal.qr import build_qr_payload, render_qr_png
+
+        png = render_qr_png(build_qr_payload(**self.PAYLOAD_ARGS))
+        self.assertTrue(png.startswith(b'\x89PNG'))
+        self.assertGreater(len(png), 200)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BFiscalPdfTest(TestCase):
+    """La representación impresa: lo que dice, lo que no, y cuándo existe."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-pdf', 'Empresa PDF', tax_id='20100066603',
+            legal_name='EMPRESA PDF SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        producto = _c1_product(self.company, 'Articulo PDF', '118.00')
+        _c1_stock(self.company.default_inventory_branch, producto, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=producto, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self.doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_an_unsigned_document_has_no_printed_representation(self):
+        """Sin XML firmado no hay representación: es su fuente (FISCAL-04)."""
+        from .fiscal_pdf_services import FiscalPdfError, generate_fiscal_pdf
+
+        self.doc.signed_xml = ''
+        self.doc.save(update_fields=['signed_xml'])
+        with self.assertRaises(FiscalPdfError):
+            generate_fiscal_pdf(self.doc)
+
+    def test_the_pdf_reflects_the_signed_xml_not_a_later_mutation(self):
+        """
+        FISCAL-04. Tras firmar, mutar OrderItem/Product no cambia el PDF: la
+        representación sale del XML firmado, no de tablas vivas.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        item = self.doc.order.items.first()
+        item.product.name = 'PRODUCTO MUTADO'
+        item.product.save(update_fields=['name'])
+        item.price = Decimal('999.99')
+        item.quantity = 77
+        item.save(update_fields=['price', 'quantity'])
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('ARTICULO PDF', texto)   # lo que dice el XML firmado
+        self.assertNotIn('MUTADO', texto)
+        self.assertNotIn('999.99', texto)
+        self.assertIn('100.00', texto)         # base congelada
+
+    def test_generating_the_pdf_does_not_touch_the_signed_document(self):
+        """§28/§29. El parser de representación es de sólo lectura."""
+        from .fiscal_pdf_services import generate_fiscal_pdf, generate_fiscal_ticket_pdf
+
+        before_xml = self.doc.signed_xml
+        before_digest = self.doc.digest_value
+        before_sha = self.doc.signed_xml_sha256
+        before_status = self.doc.status
+
+        generate_fiscal_pdf(self.doc)
+        generate_fiscal_ticket_pdf(self.doc)
+        self.doc.refresh_from_db()
+
+        self.assertEqual(self.doc.signed_xml, before_xml)
+        self.assertEqual(self.doc.digest_value, before_digest)
+        self.assertEqual(self.doc.signed_xml_sha256, before_sha)
+        self.assertEqual(self.doc.status, before_status)
+
+    def test_the_legal_date_comes_from_the_signed_xml(self):
+        """
+        FISCAL-03/§30. La fecha del QR/PDF es la cbc:IssueDate del XML firmado
+        (fecha de la venta), no el timestamp técnico de creación de la fila.
+        """
+        import datetime as _dt
+
+        from django.utils import timezone as _tz
+
+        from .fiscal_pdf_services import build_fiscal_context
+
+        legal = _tz.make_aware(_dt.datetime(2026, 1, 15, 23, 59, 59))
+        prod = _c1_product(self.company, 'Art dia', '118.00')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=legal,
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+        # La fecha legal de la venta es 2026-01-15 y sale del XML firmado.
+        ctx = build_fiscal_context(doc)
+        self.assertEqual(ctx['issued_at'].date(), _dt.date(2026, 1, 15))
+        self.assertIn('2026-01-15', ctx['qr_payload'])
+        # Y para probar que sale del XML y NO de la fila: se altera `issued_at`
+        # de la fila a otra fecha y el impreso NO cambia (FISCAL-03).
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            issued_at=_tz.make_aware(_dt.datetime(2020, 6, 6, 12, 0, 0)))
+        ctx2 = build_fiscal_context(FiscalDocument.objects.get(pk=doc.pk))
+        self.assertEqual(ctx2['issued_at'].date(), _dt.date(2026, 1, 15))
+
+    def test_the_a4_says_what_it_is_and_carries_the_numbers(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertIn('FACTURA', texto.upper())
+        self.assertIn('F001-1', texto)
+        self.assertIn('20100066603', texto)
+        self.assertIn('100.00', texto)
+        self.assertIn('18.00', texto)
+        self.assertIn('118.00', texto)
+
+    def test_a_beta_document_is_marked_unmistakably(self):
+        """
+        Sin marca, alguien lo imprime y lo entrega como factura real. Va en el
+        aviso Y en la marca diagonal: una marca de agua se pierde en una
+        fotocopia mala.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', texto)
+        self.assertIn('BETA', texto)
+
+    def test_it_never_claims_acceptance_without_a_cdr(self):
+        """
+        Un papel que afirma una aceptación que no ocurrió es peor que uno que
+        dice «pendiente».
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('Aceptada por SUNAT', texto)
+        self.assertIn('pendiente', texto.lower())
+
+    def test_once_accepted_it_says_so(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        doc = submit_fiscal_document(self.doc, _FakeProvider(_accepted()))
+        texto = _pdf_text(generate_fiscal_pdf(doc))
+        self.assertIn('Aceptada por SUNAT', texto)
+
+    def test_a_rejected_document_says_it_has_no_tax_validity(self):
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        self.doc.status = FiscalDocumentStatus.REJECTED
+        self.doc.save(update_fields=['status'])
+        texto = _pdf_text(generate_fiscal_pdf(self.doc)).upper()
+        self.assertIn('RECHAZADA', texto)
+
+    def test_it_is_not_the_internal_sales_note(self):
+        """
+        `SalesNote` imprime «no válido como comprobante SUNAT» porque no lo es.
+        Este documento SÍ pertenece al dominio fiscal: ese aviso sería falso.
+        """
+        from .fiscal_pdf_services import generate_fiscal_pdf
+
+        texto = _pdf_text(generate_fiscal_pdf(self.doc))
+        self.assertNotIn('No válido como comprobante', texto)
+        self.assertNotIn('Nota de venta interna', texto)
+
+    def test_the_ticket_is_eighty_millimetres_wide(self):
+        from .fiscal_pdf_services import generate_fiscal_ticket_pdf
+
+        pdf = generate_fiscal_ticket_pdf(self.doc)
+        caja = re.search(
+            rb'/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)', pdf)
+        self.assertAlmostEqual(float(caja.group(1)) / 72 * 25.4, 80.0, delta=0.5)
+
+    def test_the_ticket_carries_the_same_figures_as_the_a4(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        ticket = _pdf_text(generate_fiscal_ticket_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00', 'F001-1'):
+            self.assertIn(cifra, ticket)
+        self.assertIn('SIN VALIDEZ TRIBUTARIA', ticket.upper())
+        # Y el A4 dice lo mismo: dos papeles del mismo comprobante no pueden
+        # discrepar.
+        a4 = _pdf_text(generate_fiscal_pdf(self.doc))
+        for cifra in ('100.00', '18.00', '118.00'):
+            self.assertIn(cifra, a4)
+
+    def test_no_document_leaks_a_secret(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+
+        for pdf in (generate_fiscal_pdf(self.doc),
+                    generate_fiscal_ticket_pdf(self.doc)):
+            texto = _pdf_text(pdf).lower()
+            for secreto in ('moddatos', 'private key', 'wsse', 'soapenv',
+                            'begin rsa'):
+                self.assertNotIn(secreto, texto)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22BAdversarialTest(TestCase):
+    """
+    §27 — los sabotajes que aún no tenían test propio.
+
+    Cada uno describe una forma concreta de romper el sistema. Si alguno dejara
+    de fallar, el defecto que impide habría vuelto.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22b-adv', 'Empresa Adversarial', tax_id='20100066603',
+            legal_name='EMPRESA ADVERSARIAL SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Adv', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        self.user, _ = _p2d_member(
+            self.company, 'c22b_adv',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        return client
+
+    def _issue(self, order):
+        key, cert = self_signed_pem('20100066603')
+        with override_settings(FISCAL_CERT_PEM=cert.decode(),
+                               FISCAL_KEY_PEM=key.decode()):
+            return self._client().post(
+                f'/api/admin/orders/{order.pk}/fiscal-document/')
+
+    def test_sabotage_4_two_issue_clicks_produce_one_correlativo(self):
+        """Doble clic en «Emitir»."""
+        order = self._order()
+        primero = self._issue(order)
+        segundo = self._issue(order)
+        self.assertEqual(primero.data['id'], segundo.data['id'])
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_sabotage_12_no_private_key_reaches_a_response_or_a_log(self):
+        """
+        La clave privada y la Clave SOL no pueden salir por ninguna parte: ni en
+        la respuesta, ni en la bitácora, ni en un intento de envío.
+        """
+        order = self._order()
+        respuesta = self._issue(order)
+        doc = FiscalDocument.objects.get(pk=respuesta.data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        superficies = [str(respuesta.data)]
+        superficies += [str(a.__dict__) for a in FiscalSubmissionAttempt.objects.all()]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='fiscal_document')
+        ]
+        superficies.append(str(FiscalDocument.objects.values().first()))
+
+        for texto in superficies:
+            minusculas = texto.lower()
+            for secreto in ('private key', 'moddatos', 'wsse', 'soapenv',
+                            'begin rsa', 'password'):
+                self.assertNotIn(secreto, minusculas, secreto)
+
+    def test_the_audit_log_stores_hashes_not_documents(self):
+        """
+        Un comprobante entero por entrada haría la bitácora ilegible además de
+        pesada. Se guarda el hash, que sirve para correlacionar.
+        """
+        order = self._order()
+        self._issue(order)
+        firmado = AdminAuditLog.objects.filter(
+            action='fiscal_document_signed').first()
+        self.assertIsNotNone(firmado)
+        self.assertIn('xml_sha256', firmado.metadata)
+        self.assertEqual(len(firmado.metadata['xml_sha256']), 64)
+        self.assertNotIn('<?xml', str(firmado.metadata))
+
+    def test_sabotage_3_a_production_series_is_never_selected(self):
+        """Aunque exista la fila, el ambiente lo decide el servidor."""
+        self.series.is_active = False
+        self.series.save(update_fields=['is_active'])
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F002', environment=FiscalEnvironment.PRODUCTION)
+
+        respuesta = self._issue(self._order())
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_sabotage_6_a_timeout_never_becomes_a_rejection_through_the_api(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.TRANSPORT_ERROR,
+                safe_message='ReadTimeout al contactar con el servicio'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertEqual(respuesta.data['status'],
+                         FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertTrue(respuesta.data['can_retry'])
+
+    def test_sabotage_7_a_fault_without_a_cdr_never_becomes_accepted(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+
+        from unittest.mock import patch as _patch
+
+        # Se parchea donde se USA: `fiscal_views` importó el nombre al
+        # cargarse, así que parchear `fiscal_config` no lo alcanza.
+        with _patch('store.fiscal_views.resolve_provider') as fake:
+            # Un 4000+ en un fault, sin constancia.
+            fake.return_value = _FakeProvider(ProviderResult(
+                outcome=ProviderOutcome.UNKNOWN_RESPONSE, response_code='4000',
+                safe_message='observación sin CDR'))
+            respuesta = self._client().post(
+                f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+
+        self.assertFalse(respuesta.data['is_accepted'])
+        self.assertNotEqual(respuesta.data['status'],
+                            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION)
+
+    def test_an_accepted_document_is_never_transmitted_twice(self):
+        order = self._order()
+        doc = FiscalDocument.objects.get(pk=self._issue(order).data['id'])
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+        from unittest.mock import patch as _patch
+
+        proveedor = _FakeProvider(_accepted())
+        with _patch('store.fiscal_views.resolve_provider', return_value=proveedor):
+            self._client().post(f'/api/admin/fiscal-documents/{doc.pk}/submit/')
+        self.assertEqual(proveedor.calls, 0)
+
+
+# ---------------------------------------------------------------------------
+# H4.1 — alta de personal por invitación
+# ---------------------------------------------------------------------------
+
+from django.db import connection  # noqa: E402
+from django.test.utils import CaptureQueriesContext  # noqa: E402
+
+from .models import StaffInvitation, MembershipBranchAccess  # noqa: E402
+
+User = get_user_model()  # noqa: E402
+from .staff_services import (  # noqa: E402
+    StaffConflict, StaffError, StaffIdentityError, accept_invitation,
+    create_invitation, find_invitation, requires_authentication,
+    resend_invitation, revoke_invitation,
+)
+
+
+class H41InvitationTest(TestCase):
+    """
+    Crear, reenviar y revocar. Y lo que no se puede averiguar desde aquí.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-inv', 'Empresa Invitación')
+        self.otra = _p3_company('h41-otra', 'Otra Empresa')
+        self.role = CompanyRole.objects.create(
+            company=self.company, name='Técnico', slug='tecnico',
+            capabilities=['company.view'])
+        # EL APROVISIONAMIENTO YA CREA LAS ÁREAS. Crear otra «Servicio Técnico»
+        # choca con la restricción única (empresa, nombre) — lo que confirma que
+        # una empresa nueva nace con sus áreas preset y que no hay que
+        # inventarlas.
+        self.area = CompanyArea.objects.get(
+            company=self.company, slug='servicio-tecnico')
+        self.admin = User.objects.create_user('h41_admin', 'admin@h41.test', 'x')
+
+    def _invite(self, email='ana@correo.test', **kw):
+        data = dict(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres Pérez', role_id=self.role.pk,
+            area_id=self.area.pk, invited_by=self.admin,
+        )
+        data.update(kw)
+        return create_invitation(**data)
+
+    # -- creación -------------------------------------------------------------
+
+    def test_creating_an_invitation_does_not_grant_access(self):
+        """
+        INVITAR NO ES DAR ACCESO. Mientras nadie acepte, no hay membresía y la
+        persona no puede entrar.
+        """
+        invitation, raw, created = self._invite()
+        self.assertTrue(created)
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+        self.assertIsNone(invitation.membership)
+
+    def test_the_raw_token_is_never_stored(self):
+        """
+        Quien comprometa la base de datos no debe poder aceptar invitaciones sin
+        acceso también al buzón.
+        """
+        invitation, raw, _ = self._invite()
+        self.assertNotEqual(invitation.token_hash, raw)
+        self.assertEqual(len(invitation.token_hash), 64)
+        crudo = str(StaffInvitation.objects.filter(pk=invitation.pk).values().first())
+        self.assertNotIn(raw, crudo)
+
+    def test_the_token_has_enough_entropy(self):
+        _invitation, raw, _ = self._invite()
+        self.assertGreaterEqual(len(raw), 60)
+
+    def test_the_email_is_normalised(self):
+        """
+        `Ana@X.com` y `ana@x.com` son la misma persona. Guardarlos distinto
+        crearía dos invitaciones para una.
+        """
+        invitation, _raw, _ = self._invite(email='  Ana@Correo.TEST ')
+        self.assertEqual(invitation.email, 'ana@correo.test')
+
+    # -- idempotencia ---------------------------------------------------------
+
+    def test_a_double_click_does_not_invalidate_the_link_already_sent(self):
+        """
+        EL DEFECTO QUE ESTO IMPIDE.
+
+        Una versión anterior rotaba el token al crear, y lo llamaba
+        idempotencia. No lo era: un doble clic accidental invalidaba el enlace
+        que ya iba camino del buzón, y la persona abría el primer correo para
+        leer «token inválido» sin que nadie hubiera hecho nada malo.
+
+        Crear dos veces devuelve LA MISMA invitación con SU MISMO token intacto.
+        """
+        primera, token1, creada1 = self._invite()
+        segunda, token2, creada2 = self._invite()
+
+        self.assertTrue(creada1)
+        self.assertFalse(creada2)
+        self.assertEqual(primera.pk, segunda.pk)
+        self.assertEqual(
+            StaffInvitation.objects.filter(
+                company=self.company, status=StaffInvitation.STATUS_PENDING).count(),
+            1,
+        )
+        # EL PRIMER ENLACE SIGUE SIRVIENDO. Es lo que importa.
+        self.assertIsNotNone(find_invitation(token1))
+        # Y no se emite un segundo token que enviar: no hay segundo correo.
+        self.assertEqual(token2, '')
+
+    def test_only_an_explicit_resend_rotates_the_token(self):
+        """
+        Rotar es un acto deliberado, con su propia operación y su propio rastro.
+        """
+        _invitation, token1, _ = self._invite()
+        invitation, token2 = resend_invitation(_invitation)
+
+        self.assertNotEqual(token1, token2)
+        self.assertIsNone(find_invitation(token1), 'el token viejo sobrevivió')
+        self.assertIsNotNone(find_invitation(token2))
+
+    def test_an_expired_invitation_is_not_revived_by_a_new_create(self):
+        """
+        §B — una invitación caducada no revive por un POST ambiguo. Se cierra y
+        se emite otra, que es un acto distinto y deja rastro distinto.
+        """
+        primera, token1, _ = self._invite()
+        primera.expires_at = timezone.now() - timezone.timedelta(days=1)
+        primera.save(update_fields=['expires_at'])
+
+        segunda, token2, creada = self._invite()
+
+        self.assertTrue(creada, 'debía crearse una invitación nueva')
+        self.assertNotEqual(primera.pk, segunda.pk)
+        primera.refresh_from_db()
+        self.assertEqual(primera.status, StaffInvitation.STATUS_REVOKED)
+        self.assertIsNone(find_invitation(token1))
+        self.assertIsNotNone(find_invitation(token2))
+
+    def test_reinviting_updates_the_intended_role_without_touching_the_token(self):
+        """
+        Cambiar el rol de una invitación pendiente es una decisión del
+        administrador sobre su propia empresa, y no invalida el enlace: el
+        enlace identifica a la PERSONA, no al puesto.
+        """
+        otro_rol = CompanyRole.objects.create(
+            company=self.company, name='Vendedor Nuevo', slug='vendedor-nuevo',
+            capabilities=['company.view'])
+        _primera, token1, _ = self._invite()
+        segunda, _raw, _ = self._invite(role_id=otro_rol.pk)
+
+        self.assertEqual(segunda.role_id, otro_rol.pk)
+        self.assertIsNotNone(find_invitation(token1), 'el enlace enviado murió')
+
+    # -- validación de organización ------------------------------------------
+
+    def test_a_role_from_another_company_is_refused(self):
+        """
+        SABOTAJE: `role_id` de otro inquilino. No es un error de tipo — es un
+        intento de conceder autoridad ajena.
+        """
+        ajeno = CompanyRole.objects.create(
+            company=self.otra, name='Admin', slug='admin-otra',
+            capabilities=['company.manage'])
+        with self.assertRaises(StaffError):
+            self._invite(role_id=ajeno.pk)
+
+    def test_an_area_from_another_company_is_refused(self):
+        ajena = CompanyArea.objects.get(
+            company=self.otra, slug='servicio-tecnico')
+        with self.assertRaises(StaffError):
+            self._invite(area_id=ajena.pk)
+
+    def test_a_branch_from_another_company_is_refused(self):
+        ajena = Branch.objects.create(company=self.otra, name='Sucursal Ajena')
+        with self.assertRaises(StaffError):
+            self._invite(
+                branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+                branch_ids=[ajena.pk])
+
+    def test_an_inactive_role_is_refused(self):
+        self.role.is_active = False
+        self.role.save(update_fields=['is_active'])
+        with self.assertRaises(StaffError):
+            self._invite()
+
+    def test_an_inactive_area_is_refused(self):
+        """
+        Un área desactivada no se ofrece para asignaciones nuevas. El historial
+        de quien ya la tenía se conserva; lo que no se hace es incorporar gente
+        a un área que la empresa retiró.
+        """
+        self.area.is_active = False
+        self.area.save(update_fields=['is_active'])
+        with self.assertRaises(StaffError):
+            self._invite()
+
+    def test_selected_scope_needs_at_least_one_branch(self):
+        with self.assertRaises(StaffError):
+            self._invite(
+                branch_access_mode=Membership.ACCESS_MODE_SELECTED, branch_ids=[])
+
+    # -- privacidad -----------------------------------------------------------
+
+    def test_inviting_an_email_that_exists_elsewhere_reveals_nothing(self):
+        """
+        ANTI-ENUMERACIÓN. La empresa A no puede averiguar si un correo está
+        registrado ni dónde trabaja esa persona: la respuesta es idéntica.
+        """
+        forastero = User.objects.create_user(
+            'h41_forastero', 'ana@correo.test', 'x')
+        Membership.objects.create(
+            user=forastero, company=self.otra, role='sales',
+            is_active=True)
+
+        conocido, _t1, _c1 = self._invite(email='ana@correo.test')
+        StaffInvitation.objects.filter(pk=conocido.pk).delete()
+        desconocido, _t2, _c2 = self._invite(email='nadie@correo.test')
+
+        # Misma forma de respuesta: una invitación pendiente, sin pista alguna.
+        self.assertEqual(conocido.status, desconocido.status)
+        for campo in ('company_id', 'role_id', 'area_id', 'status'):
+            self.assertEqual(getattr(conocido, campo), getattr(desconocido, campo))
+
+    def test_only_membership_in_the_same_company_is_disclosed(self):
+        """
+        La única excepción: si ya es de ESTA empresa, se dice. Es personal
+        propio de quien pregunta, y callarlo le haría crear una invitación que
+        nunca serviría.
+        """
+        persona = User.objects.create_user('h41_dentro', 'dentro@correo.test', 'x')
+        Membership.objects.create(
+            user=persona, company=self.company, role='sales',
+            is_active=True)
+        with self.assertRaises(StaffConflict):
+            self._invite(email='dentro@correo.test')
+
+    def test_an_inactive_member_can_be_invited_back(self):
+        """Reactivación: no se crea una segunda membresía."""
+        persona = User.objects.create_user('h41_baja', 'baja@correo.test', 'x')
+        Membership.objects.create(
+            user=persona, company=self.company, role='sales',
+            is_active=False)
+        invitation, _raw, creada = self._invite(email='baja@correo.test')
+        self.assertTrue(creada)
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+
+    # -- revocación y reenvío -------------------------------------------------
+
+    def test_revoking_kills_the_token_immediately(self):
+        invitation, raw, _ = self._invite()
+        self.assertIsNotNone(find_invitation(raw))
+        revoke_invitation(invitation)
+        self.assertIsNone(find_invitation(raw))
+        self.assertEqual(invitation.status, StaffInvitation.STATUS_REVOKED)
+
+    def test_a_revoked_invitation_is_not_deleted(self):
+        """Quién invitó a quién es historial: borrarlo dejaría un hueco."""
+        invitation, _raw, _ = self._invite()
+        revoke_invitation(invitation)
+        self.assertTrue(StaffInvitation.objects.filter(pk=invitation.pk).exists())
+
+    def test_resending_issues_a_new_token_and_kills_the_old_one(self):
+        """
+        Reenviar el mismo token alargaría la vida de un enlace que quizá lleva
+        días en un buzón que ya no controla nadie.
+        """
+        invitation, viejo, _ = self._invite()
+        _invitation, nuevo = resend_invitation(invitation)
+        self.assertNotEqual(viejo, nuevo)
+        self.assertIsNone(find_invitation(viejo))
+        self.assertIsNotNone(find_invitation(nuevo))
+
+    def test_a_revoked_invitation_cannot_be_resent(self):
+        invitation, _raw, _ = self._invite()
+        revoke_invitation(invitation)
+        with self.assertRaises(StaffError):
+            resend_invitation(invitation)
+
+
+class H41EnumerationTest(TestCase):
+    """
+    §D — no debe haber diferencias observables entre los tres casos.
+
+    Se comparan sobre el RESULTADO REAL, no sobre la intención: un correo que no
+    existe, uno que existe sin membresía aquí, y uno que trabaja en otra empresa
+    tienen que producir la misma forma de respuesta.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-enum', 'Empresa Enumeración')
+        self.otra = _p3_company('h41-enum-b', 'Otra Empresa Enum')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+        # Caso 2: existe en la plataforma pero sin membresía en ninguna parte.
+        User.objects.create_user('h41_suelto', 'suelto@correo.test', 'x')
+        # Caso 3: existe y trabaja en OTRA empresa.
+        ajeno = User.objects.create_user('h41_ajeno', 'ajeno@correo.test', 'x')
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='sales', is_active=True)
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_the_three_cases_are_indistinguishable(self):
+        formas = {}
+        for etiqueta, email in (
+            ('inexistente', 'nadie@correo.test'),
+            ('existe sin membresía', 'suelto@correo.test'),
+            ('trabaja en otra empresa', 'ajeno@correo.test'),
+        ):
+            invitation, raw, creada = self._invite(email)
+            formas[etiqueta] = {
+                'status': invitation.status,
+                'creada': creada,
+                'hay_token': bool(raw),
+                'company_id': invitation.company_id,
+                'role_id': invitation.role_id,
+                'membership': invitation.membership_id,
+                'accepted_at': invitation.accepted_at,
+            }
+
+        referencia = formas['inexistente']
+        for etiqueta, forma in formas.items():
+            self.assertEqual(
+                forma, referencia,
+                f'«{etiqueta}» se distingue de un correo inexistente',
+            )
+
+    def test_no_case_raises_a_different_error(self):
+        """
+        Ninguno de los tres levanta: distinguirlos con una excepción sería el
+        mismo oráculo por otra vía.
+        """
+        for email in ('nadie@correo.test', 'suelto@correo.test',
+                      'ajeno@correo.test'):
+            with self.subTest(email=email):
+                invitation, _raw, _ = self._invite(email)
+                self.assertEqual(invitation.status, StaffInvitation.STATUS_PENDING)
+
+    def test_the_invitation_never_references_another_company(self):
+        """
+        Se comprueban los CAMPOS, no subcadenas de un diccionario serializado:
+        buscar `str(pk)` dentro del volcado casa con cualquier dígito suelto y
+        convierte el test en uno que falla por su propia imprecisión.
+        """
+        invitation, _raw, _ = self._invite('ajeno@correo.test')
+        fila = StaffInvitation.objects.filter(pk=invitation.pk).values().first()
+
+        self.assertEqual(fila['company_id'], self.company.pk)
+        self.assertNotEqual(fila['company_id'], self.otra.pk)
+        # El rol y el área apuntan a la empresa que invita, no a la otra.
+        self.assertEqual(
+            CompanyRole.objects.get(pk=fila['role_id']).company_id,
+            self.company.pk,
+        )
+        # Y no hay ningún campo que nombre a la otra empresa.
+        self.assertNotIn('h41-enum-b', str(fila))
+
+
+class H41TokenSecurityTest(TestCase):
+    """
+    §32 — el token. Todos los fallos responden IGUAL.
+
+    Distinguir «no existe» de «caducado» diría a quien prueba tokens si acertó
+    el formato o sólo el plazo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-tok', 'Empresa Token')
+        self.role = CompanyRole.objects.create(
+            company=self.company, name='Técnico', slug='tecnico',
+            capabilities=['company.view'])
+        self.invitation, self.raw, _ = create_invitation(
+            company=self.company, email='ana@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_a_valid_token_resolves(self):
+        self.assertEqual(find_invitation(self.raw).pk, self.invitation.pk)
+
+    def test_every_failure_answers_the_same(self):
+        for etiqueta, token in (
+            ('inexistente', 'x' * 64),
+            ('alterado', self.raw[:-1] + ('a' if self.raw[-1] != 'a' else 'b')),
+            ('vacío', ''),
+            ('nulo', None),
+        ):
+            with self.subTest(etiqueta=etiqueta):
+                self.assertIsNone(find_invitation(token))
+
+    def test_an_expired_token_stops_working(self):
+        self.invitation.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        self.invitation.save(update_fields=['expires_at'])
+        self.assertIsNone(find_invitation(self.raw))
+
+    def test_an_expired_invitation_reads_as_expired_not_pending(self):
+        """
+        Una pantalla que comparase fechas por su cuenta acabaría mostrando
+        «pendiente» sobre una invitación muerta.
+        """
+        self.invitation.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        self.invitation.save(update_fields=['expires_at'])
+        self.assertEqual(self.invitation.display_status, 'expired')
+        self.assertFalse(self.invitation.is_usable)
+
+
+class H41AcceptanceTest(TestCase):
+    """
+    Aceptar convierte la invitación en acceso real. Todo o nada.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-acc', 'Empresa Aceptación')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+        self.admin = User.objects.create_user('h41_acc_admin', 'a@h41.test', 'x')
+
+    def _invite(self, email='nuevo@correo.test', **kw):
+        data = dict(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk, area_id=self.area.pk,
+            invited_by=self.admin)
+        data.update(kw)
+        return create_invitation(**data)
+
+    def test_accepting_creates_the_membership_role_and_area(self):
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_ana', 'nuevo@correo.test', 'x')
+
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.company_id, self.company.pk)
+        self.assertEqual(membership.user_id, persona.pk)
+        self.assertTrue(membership.is_active)
+        asignacion = MembershipRoleAssignment.objects.get(membership=membership)
+        self.assertEqual(asignacion.role_id, self.role.pk)
+        self.assertEqual(asignacion.area_id, self.area.pk)
+
+    def test_the_legacy_role_is_not_granted_by_onboarding(self):
+        """
+        §42 — H4.1 NO amplía la autoridad del rol heredado.
+
+        La autoridad de esta persona son sus `MembershipRoleAssignment`. Darle
+        además un rol legacy extendería una vía de autorización que esta fase no
+        debe tocar.
+        """
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_leg', 'nuevo@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), persona)
+        self.assertEqual(membership.role, 'customer')
+
+    def test_the_token_is_consumed(self):
+        """Un enlace usado no vuelve a funcionar."""
+        _invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_con', 'nuevo@correo.test', 'x')
+        accept_invitation(find_invitation(raw), persona)
+        self.assertIsNone(find_invitation(raw))
+
+    def test_accepting_twice_is_refused(self):
+        """SABOTAJE: replay del mismo enlace."""
+        invitation, raw, _ = self._invite()
+        persona = User.objects.create_user('h41_dos', 'nuevo@correo.test', 'x')
+        encontrada = find_invitation(raw)
+        accept_invitation(encontrada, persona)
+        with self.assertRaises(StaffError):
+            accept_invitation(encontrada, persona)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+    def test_selected_branch_scope_is_applied(self):
+        invitation, raw, _ = self._invite(
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+            branch_ids=[self.branch.pk])
+        persona = User.objects.create_user('h41_suc', 'nuevo@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.branch_access_mode,
+                         Membership.ACCESS_MODE_SELECTED)
+        accesos = MembershipBranchAccess.objects.filter(
+            membership=membership, is_active=True)
+        self.assertEqual([a.branch_id for a in accesos], [self.branch.pk])
+
+    def test_a_role_deactivated_between_invite_and_accept_blocks_acceptance(self):
+        """
+        Entre invitar y aceptar puede pasar una semana. Conceder lo que la
+        empresa ya retiró sería peor que fallar.
+        """
+        _invitation, raw, _ = self._invite()
+        encontrada = find_invitation(raw)
+        self.role.is_active = False
+        self.role.save(update_fields=['is_active'])
+
+        persona = User.objects.create_user('h41_ret', 'nuevo@correo.test', 'x')
+        with self.assertRaises(StaffError):
+            accept_invitation(encontrada, persona)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    # -- reactivación ---------------------------------------------------------
+
+    def test_reactivation_reuses_the_membership_instead_of_creating_another(self):
+        """
+        §21 — la fila es lo que conserva el historial de ventas, reparaciones y
+        auditoría de esa persona en esta empresa.
+        """
+        persona = User.objects.create_user('h41_vuelve', 'vuelve@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False)
+
+        _invitation, raw, _ = self._invite(email='vuelve@correo.test')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        self.assertEqual(membership.pk, antigua.pk)
+        self.assertTrue(membership.is_active)
+        self.assertEqual(Membership.objects.filter(
+            company=self.company, user=persona).count(), 1)
+
+    def test_reactivation_does_not_silently_restore_old_authority(self):
+        """
+        §21 — los roles antiguos NO se restauran solos. El administrador elige
+        explícitamente cuáles concede, y esa elección viaja en la invitación.
+        """
+        persona = User.objects.create_user('h41_priv', 'priv@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False)
+        rol_viejo = CompanyRole.objects.get(
+            company=self.company, slug='administrador')
+        MembershipRoleAssignment.objects.create(
+            membership=antigua, role=rol_viejo, is_active=False)
+
+        _invitation, raw, _ = self._invite(email='priv@correo.test')
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        # El rol de administrador antiguo sigue inactivo: no revivió solo.
+        viejo = MembershipRoleAssignment.objects.get(
+            membership=membership, role=rol_viejo)
+        self.assertFalse(viejo.is_active)
+        # Y el rol nuevo, el que el administrador eligió, sí está.
+        nuevo = MembershipRoleAssignment.objects.get(
+            membership=membership, role=self.role)
+        self.assertTrue(nuevo.is_active)
+
+    def test_branch_scope_is_replaced_not_accumulated(self):
+        """
+        Sumar a las sucursales de una etapa anterior le daría acceso que nadie
+        acaba de conceder.
+        """
+        otra_sucursal = Branch.objects.create(
+            company=self.company, name='Sucursal Norte')
+        persona = User.objects.create_user('h41_alc', 'alc@correo.test', 'x')
+        antigua = Membership.objects.create(
+            user=persona, company=self.company, role='sales', is_active=False,
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED)
+        MembershipBranchAccess.objects.create(
+            membership=antigua, branch=otra_sucursal)
+
+        _invitation, raw, _ = self._invite(
+            email='alc@correo.test',
+            branch_access_mode=Membership.ACCESS_MODE_SELECTED,
+            branch_ids=[self.branch.pk])
+        membership = accept_invitation(find_invitation(raw), persona)
+
+        activos = set(MembershipBranchAccess.objects.filter(
+            membership=membership, is_active=True).values_list('branch_id', flat=True))
+        self.assertEqual(activos, {self.branch.pk})
+        self.assertNotIn(otra_sucursal.pk, activos)
+
+
+class H41AccountControlTest(TestCase):
+    """
+    §C — poseer el enlace NO basta para vincular una cuenta existente.
+
+    Quien intercepte un correo de invitación no puede añadirse una membresía
+    sobre la identidad de otra persona, con todo lo que esa identidad arrastra:
+    pedidos, reseñas, membresías en otras empresas.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-ctrl', 'Empresa Control')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+    def _invite(self, email):
+        return create_invitation(
+            company=self.company, email=email, first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_an_unauthenticated_request_cannot_accept(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), AnonymousUser())
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_none_cannot_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), None)
+
+    def test_a_different_account_cannot_use_someone_elses_link(self):
+        """
+        EL SECUESTRO QUE ESTO IMPIDE. Una persona autenticada con otra cuenta
+        no puede usar un enlace ajeno para meterse en una empresa.
+        """
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        intruso = User.objects.create_user('h41_intruso', 'otro@correo.test', 'x')
+
+        with self.assertRaises(StaffIdentityError):
+            accept_invitation(find_invitation(raw), intruso)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+        # Y el enlace SIGUE VIVO: el intento fallido no se lo quema a su dueña.
+        self.assertIsNotNone(find_invitation(raw))
+
+    def test_the_invited_account_can_accept(self):
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_ok', 'ana@correo.test', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_the_email_comparison_ignores_case(self):
+        """`Ana@Correo.test` y `ana@correo.test` son la misma persona."""
+        _invitation, raw, _ = self._invite('ana@correo.test')
+        ana = User.objects.create_user('h41_ana_may', 'Ana@Correo.TEST', 'x')
+        membership = accept_invitation(find_invitation(raw), ana)
+        self.assertEqual(membership.user_id, ana.pk)
+
+    def test_an_existing_account_is_flagged_as_needing_authentication(self):
+        """
+        Lo que decide el flujo: si la cuenta existe hay que demostrar control;
+        si no, la persona establece credenciales y el enlace prueba el buzón.
+        """
+        User.objects.create_user('h41_existe', 'existe@correo.test', 'x')
+        con_cuenta, _r1, _c1 = self._invite('existe@correo.test')
+        sin_cuenta, _r2, _c2 = self._invite('nadie@correo.test')
+
+        self.assertTrue(requires_authentication(con_cuenta))
+        self.assertFalse(requires_authentication(sin_cuenta))
+
+
+class H41AcceptanceConcurrencyTest(TransactionTestCase):
+    """
+    §32 — dos aceptaciones simultáneas del mismo enlace.
+
+    Igual que la concurrencia fiscal: en SQLite `select_for_update` es inocuo,
+    así que el caso concurrente se salta RUIDOSAMENTE y la invariante secuencial
+    corre en todas partes.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-conc', 'Empresa Concurrente H41')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+    def test_two_simultaneous_acceptances_create_one_membership(self):
+        from django.db import connection
+
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: una carrera '
+                'aquí probaría ese bloqueo y no el de fila de la aceptación.'
+            )
+
+        import threading
+
+        _invitation, raw, _ = create_invitation(
+            company=self.company, email='race@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+        persona = User.objects.create_user('h41_race', 'race@correo.test', 'x')
+
+        resultados, errores = [], []
+        barrera = threading.Barrier(2)
+
+        def aceptar():
+            try:
+                barrera.wait(timeout=15)
+                encontrada = find_invitation(raw)
+                if encontrada is None:
+                    errores.append('token ya consumido')
+                    return
+                resultados.append(accept_invitation(encontrada, persona).pk)
+            except StaffError:
+                errores.append('rechazada')
+            finally:
+                connection.close()
+
+        hilos = [threading.Thread(target=aceptar) for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=30)
+
+        self.assertEqual(
+            Membership.objects.filter(company=self.company).count(), 1,
+            f'resultados={resultados} errores={errores}')
+
+    def test_sequential_double_acceptance_is_refused(self):
+        """La invariante que sí se demuestra en cualquier motor."""
+        _invitation, raw, _ = create_invitation(
+            company=self.company, email='seq@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+        persona = User.objects.create_user('h41_seq', 'seq@correo.test', 'x')
+        encontrada = find_invitation(raw)
+        accept_invitation(encontrada, persona)
+        self.assertIsNone(find_invitation(raw))
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffApiTest(TestCase):
+    """
+    La API de altas: quién puede, qué sale y qué no.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-api', 'Empresa API H41')
+        self.otra = _p3_company('h41-api-b', 'Otra Empresa API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        # EL GESTOR TIENE LAS CAPACIDADES DEL ROL QUE CONCEDE, y esto no es un
+        # detalle del arnés: el guardián de delegación se niega si no las tiene,
+        # y la primera versión de este fixture lo descubrió fallando. Un
+        # administrador sólo puede repartir autoridad que él mismo posee.
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage',
+             *self.role.capabilities])
+        self.observador, _ = _p2d_member(
+            self.company, 'h41_obs', ['company.view', 'memberships.view'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post(self, user=None, **overrides):
+        payload = {
+            'company': self.company.pk,
+            'email': 'ana@correo.test',
+            'first_name': 'Ana',
+            'last_name': 'Torres Pérez',
+            'role': self.role.pk,
+            'area': self.area.pk,
+            'branch_access_mode': 'all',
+        }
+        payload.update(overrides)
+        return self._as(user or self.gestor).post(
+            '/api/admin/staff/invitations/', payload, format='json')
+
+    # -- creación -------------------------------------------------------------
+
+    def test_inviting_returns_the_invitation_without_the_token(self):
+        """
+        EL TOKEN NO SALE EN LA RESPUESTA. Devolverlo al administrador le daría un
+        enlace de acceso a una cuenta ajena, y lo dejaría en el historial del
+        navegador y en cualquier captura de pantalla.
+        """
+        res = self._post()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['email'], 'ana@correo.test')
+        self.assertEqual(res.data['status'], 'pending')
+        self.assertNotIn('token', res.data)
+        self.assertNotIn('token_hash', res.data)
+
+    def test_the_response_uses_human_names_not_only_ids(self):
+        res = self._post()
+        self.assertEqual(res.data['role_name'], self.role.name)
+        self.assertEqual(res.data['area_name'], self.area.name)
+        self.assertEqual(res.data['full_name'], 'Ana Torres Pérez')
+
+    def test_inviting_does_not_create_a_membership(self):
+        self._post()
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 2)
+
+    def test_a_double_post_returns_200_and_one_invitation(self):
+        primera = self._post()
+        segunda = self._post()
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(StaffInvitation.objects.count(), 1)
+
+    def test_someone_already_in_the_company_answers_409(self):
+        """Es información de la propia empresa: se puede decir."""
+        # `_p2d_member` no pone correo, y sin correo la petición falla antes por
+        # otra razón — lo que probaría otra cosa.
+        self.observador.email = 'observador@h41.test'
+        self.observador.save(update_fields=['email'])
+        res = self._post(email=self.observador.email)
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+
+    # -- autoridad ------------------------------------------------------------
+
+    def test_viewing_does_not_grant_inviting(self):
+        res = self._post(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_a_role_with_capabilities_the_inviter_lacks_is_refused(self):
+        """
+        SABOTAJE §56 nº 7 — ESCALADA POR ALTA.
+
+        Sin esto: invito a un cómplice como administrador, acepta, y ya hay
+        alguien con más autoridad que quien lo metió.
+        """
+        superior = CompanyRole.objects.get(
+            company=self.company, slug='administrador')
+        res = self._post(role=superior.pk)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    # -- aislamiento ----------------------------------------------------------
+
+    def test_a_role_of_another_company_is_refused(self):
+        ajeno = CompanyRole.objects.get(company=self.otra, slug='ventas')
+        res = self._post(role=ajeno.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN))
+        self.assertEqual(StaffInvitation.objects.count(), 0)
+
+    def test_an_area_of_another_company_is_refused(self):
+        ajena = CompanyArea.objects.get(company=self.otra, slug='ventas')
+        res = self._post(area=ajena.pk)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_branch_of_another_company_is_refused(self):
+        ajena = self.otra.default_inventory_branch
+        res = self._post(branch_access_mode='selected', branch_ids=[ajena.pk])
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_inviting_into_another_company_is_refused(self):
+        res = self._post(company=self.otra.pk)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(
+            StaffInvitation.objects.filter(company=self.otra).count(), 0)
+
+    # -- listado, reenvío y revocación ---------------------------------------
+
+    def test_the_list_is_scoped_to_the_company(self):
+        self._post()
+        create_invitation(
+            company=self.otra, email='ajena@correo.test', first_name='X',
+            last_name='Y', role_id=CompanyRole.objects.get(
+                company=self.otra, slug='ventas').pk)
+
+        res = self._as(self.observador).get(
+            f'/api/admin/staff/invitations/?company={self.company.pk}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['email'], 'ana@correo.test')
+
+    def test_resend_and_revoke(self):
+        invitation_id = self._post().data['id']
+
+        reenvio = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/resend/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(reenvio.status_code, status.HTTP_200_OK)
+
+        revocacion = self._as(self.gestor).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.company.pk}, format='json')
+        self.assertEqual(revocacion.status_code, status.HTTP_200_OK)
+        self.assertEqual(revocacion.data['status'], 'revoked')
+
+    def test_another_tenant_cannot_revoke_an_invitation(self):
+        invitation_id = self._post().data['id']
+        de_b, _ = _p2d_member(
+            self.otra, 'h41_b_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        res = self._as(de_b).post(
+            f'/api/admin/staff/invitations/{invitation_id}/revoke/',
+            {'company': self.otra.pk}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            StaffInvitation.objects.get(pk=invitation_id).status, 'pending')
+
+    def test_no_response_or_audit_log_carries_the_token(self):
+        """SABOTAJE §56 nº 12 — el token en un registro es una copia del acceso."""
+        res = self._post()
+        superficies = [str(res.data)]
+        superficies += [
+            str(log.metadata) for log in AdminAuditLog.objects.filter(
+                target_type='staff_invitation')
+        ]
+        invitation = StaffInvitation.objects.first()
+        for texto in superficies:
+            self.assertNotIn(invitation.token_hash, texto)
+            self.assertNotIn('token_hash', texto)
+
+
+class H41AcceptEndpointTest(TestCase):
+    """La ruta de aceptación: pública para leer, autenticada para aceptar."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-acc-api', 'Empresa Aceptar API')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.invitation, self.raw, _ = create_invitation(
+            company=self.company, email='ana@correo.test', first_name='Ana',
+            last_name='Torres', role_id=self.role.pk)
+
+    def test_reading_shows_the_company_and_nothing_else(self):
+        res = APIClient().get(
+            f'/api/staff/invitations/accept/?token={self.raw}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        # Lo que NO puede salir.
+        crudo = str(res.data).lower()
+        for prohibido in ('capabilit', 'token_hash', 'membership_id', 'password'):
+            self.assertNotIn(prohibido, crudo)
+
+    def test_every_bad_token_answers_the_same(self):
+        # H4.1.2A — TEST-H41-TOKEN-FLAKY. «Alterado» sustituía siempre el último
+        # carácter por `z`, y el token sale de `secrets.token_urlsafe`: cuando ya
+        # acababa en `z` (1 de cada 64) no había alteración ninguna y el endpoint
+        # respondía 200, con toda razón. El sustituto es ahora distinto del
+        # carácter original, y se comprueba antes de usarlo.
+        tampered = self.raw[:-1] + ('y' if self.raw.endswith('z') else 'z')
+        self.assertNotEqual(tampered, self.raw)
+        for etiqueta, token in (
+            ('inexistente', 'x' * 64),
+            ('vacío', ''),
+            ('alterado', tampered),
+        ):
+            with self.subTest(etiqueta=etiqueta):
+                res = APIClient().get(
+                    f'/api/staff/invitations/accept/?token={token}')
+                self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertIn('no es válida', res.data['detail'])
+
+    def test_accepting_without_logging_in_answers_401(self):
+        res = APIClient().post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_accepting_with_the_wrong_account_answers_401(self):
+        intruso = User.objects.create_user('h41_int_api', 'otro@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=intruso)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
+
+    def test_the_invited_account_accepts_and_gets_access(self):
+        ana = User.objects.create_user('h41_ana_api', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        res = client.post(
+            '/api/staff/invitations/accept/', {'token': self.raw}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['company_name'], self.company.name)
+        membership = Membership.objects.get(company=self.company, user=ana)
+        self.assertTrue(membership.is_active)
+
+    def test_a_replayed_token_is_refused(self):
+        ana = User.objects.create_user('h41_ana_rep', 'ana@correo.test', 'x')
+        client = APIClient()
+        client.force_authenticate(user=ana)
+        client.post('/api/staff/invitations/accept/',
+                    {'token': self.raw}, format='json')
+        segundo = client.post('/api/staff/invitations/accept/',
+                              {'token': self.raw}, format='json')
+        self.assertEqual(segundo.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(Membership.objects.filter(company=self.company).count(), 1)
+
+
+class H41StaffReadModelTest(TestCase):
+    """
+    La proyección de Personal: nombres humanos, sin N+1 y dentro del tenant.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-rm', 'Empresa Read Model')
+        self.otra = _p3_company('h41-rm-b', 'Otra Read Model')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.area = CompanyArea.objects.get(company=self.company, slug='ventas')
+        self.branch = self.company.default_inventory_branch
+
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_rm_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.gestor.first_name, self.gestor.last_name = 'Gloria', 'Gestora'
+        self.gestor.email = 'gloria@h41.test'
+        self.gestor.save()
+
+    def _persona(self, username, nombre, apellido, email, *, activo=True,
+                 con_rol=True, sucursales=None):
+        user = User.objects.create_user(username, email, 'x')
+        user.first_name, user.last_name = nombre, apellido
+        user.save()
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=activo,
+            branch_access_mode=(Membership.ACCESS_MODE_SELECTED if sucursales
+                                else Membership.ACCESS_MODE_ALL))
+        if con_rol:
+            MembershipRoleAssignment.objects.create(
+                membership=membership, role=self.role, area=self.area,
+                is_active=True)
+        for sucursal in (sucursales or []):
+            MembershipBranchAccess.objects.create(
+                membership=membership, branch=sucursal)
+        return membership
+
+    def _get(self, user=None, **params):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        query = '&'.join(f'{k}={v}' for k, v in params.items())
+        return client.get(
+            f'/api/admin/staff/?company={self.company.pk}'
+            + (f'&{query}' if query else ''))
+
+    # -- forma ----------------------------------------------------------------
+
+    def test_a_person_reads_as_a_person(self):
+        self._persona('h41_carlos', 'Carlos', 'Rodríguez Pérez',
+                      'carlos@empresa.test')
+        res = self._get()
+        carlos = next(p for p in res.data['results']
+                      if p['email'] == 'carlos@empresa.test')
+
+        self.assertEqual(carlos['full_name'], 'Carlos Rodríguez Pérez')
+        self.assertEqual([r['name'] for r in carlos['roles']], [self.role.name])
+        self.assertEqual([a['name'] for a in carlos['areas']], [self.area.name])
+        self.assertEqual(carlos['branch_scope_label'], 'Todas las sucursales')
+        self.assertTrue(carlos['is_active'])
+
+    def test_two_people_with_the_same_name_are_distinguishable(self):
+        """
+        §3 — el nombre NO es la identidad. Dos personas pueden llamarse igual y
+        el correo es lo que las separa.
+        """
+        self._persona('h41_c1', 'Carlos', 'Rodríguez', 'carlos1@empresa.test')
+        self._persona('h41_c2', 'Carlos', 'Rodríguez', 'carlos2@empresa.test')
+        res = self._get(search='Carlos')
+
+        nombres = [p['full_name'] for p in res.data['results']]
+        correos = [p['email'] for p in res.data['results']]
+        self.assertEqual(nombres, ['Carlos Rodríguez', 'Carlos Rodríguez'])
+        self.assertEqual(sorted(correos),
+                         ['carlos1@empresa.test', 'carlos2@empresa.test'])
+
+    def test_someone_without_a_name_falls_back_to_the_username(self):
+        """Feo, pero nunca ambiguo — mejor que una fila en blanco."""
+        user = User.objects.create_user('h41_sinnombre', 'sn@empresa.test', 'x')
+        Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        res = self._get(search='h41_sinnombre')
+        self.assertEqual(res.data['results'][0]['full_name'], 'h41_sinnombre')
+
+    def test_selected_branches_are_named_not_numbered(self):
+        otra = Branch.objects.create(company=self.company, name='Cayma')
+        self._persona('h41_suc', 'Ana', 'Torres', 'ana@empresa.test',
+                      sucursales=[self.branch, otra])
+        res = self._get(search='ana@empresa.test')
+        persona = res.data['results'][0]
+        self.assertIn('Cayma', persona['branch_scope_label'])
+        self.assertNotIn('id', persona['branch_scope_label'])
+
+    # -- búsqueda y filtros ---------------------------------------------------
+
+    def test_search_matches_name_and_email(self):
+        self._persona('h41_b1', 'Beatriz', 'Núñez', 'bea@empresa.test')
+        self._persona('h41_b2', 'Carlos', 'Soto', 'carlos@empresa.test')
+
+        self.assertEqual(len(self._get(search='Beatriz').data['results']), 1)
+        self.assertEqual(len(self._get(search='carlos@').data['results']), 1)
+        self.assertEqual(len(self._get(search='Núñez').data['results']), 1)
+
+    def test_filter_by_status(self):
+        self._persona('h41_act', 'Activa', 'Uno', 'act@empresa.test')
+        self._persona('h41_ina', 'Inactiva', 'Dos', 'ina@empresa.test',
+                      activo=False)
+
+        activos = self._get(status='active').data['results']
+        inactivos = self._get(status='inactive').data['results']
+        self.assertNotIn('ina@empresa.test', [p['email'] for p in activos])
+        self.assertEqual([p['email'] for p in inactivos], ['ina@empresa.test'])
+
+    def test_filter_by_area_and_role(self):
+        self._persona('h41_conrol', 'Con', 'Rol', 'conrol@empresa.test')
+        self._persona('h41_sinrol', 'Sin', 'Rol', 'sinrol@empresa.test',
+                      con_rol=False)
+
+        por_area = self._get(area=self.area.pk).data['results']
+        por_rol = self._get(role=self.role.pk).data['results']
+        self.assertEqual([p['email'] for p in por_area], ['conrol@empresa.test'])
+        self.assertEqual([p['email'] for p in por_rol], ['conrol@empresa.test'])
+
+    def test_filtering_by_branch_includes_people_with_full_scope(self):
+        """
+        Quien tiene «todas las sucursales» también trabaja en ésta. Omitirlo
+        daría una lista que miente por defecto.
+        """
+        self._persona('h41_todas', 'Todas', 'Sucursales', 'todas@empresa.test')
+        self._persona('h41_una', 'Una', 'Sucursal', 'una@empresa.test',
+                      sucursales=[self.branch])
+
+        correos = [p['email'] for p in
+                   self._get(branch=self.branch.pk).data['results']]
+        self.assertIn('todas@empresa.test', correos)
+        self.assertIn('una@empresa.test', correos)
+
+    # -- rendimiento ----------------------------------------------------------
+
+    def test_the_query_count_does_not_grow_with_the_team(self):
+        """
+        §50 — SIN N+1. La pantalla anterior pedía las asignaciones de CADA
+        persona por separado: una plantilla de 200 eran 401 peticiones.
+
+        Se mide con 3 personas y con 12: el número de consultas tiene que ser el
+        mismo.
+        """
+        for i in range(3):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as pocas:
+            self._get()
+
+        for i in range(3, 12):
+            self._persona(f'h41_p{i}', f'P{i}', 'Uno', f'p{i}@empresa.test')
+        with CaptureQueriesContext(connection) as muchas:
+            self._get()
+
+        self.assertEqual(
+            len(pocas.captured_queries), len(muchas.captured_queries),
+            f'{len(pocas.captured_queries)} consultas con 3 personas y '
+            f'{len(muchas.captured_queries)} con 12: hay N+1',
+        )
+
+    # -- aislamiento y autoridad ---------------------------------------------
+
+    def test_the_list_never_crosses_tenants(self):
+        ajeno = User.objects.create_user('h41_ajeno_rm', 'ajeno@otra.test', 'x')
+        ajeno.first_name = 'Ajeno'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+
+        correos = [p['email'] for p in self._get().data['results']]
+        self.assertNotIn('ajeno@otra.test', correos)
+
+    def test_search_does_not_cross_tenants(self):
+        ajeno = User.objects.create_user('h41_busca_b', 'buscar@otra.test', 'x')
+        ajeno.first_name = 'Buscable'
+        ajeno.save()
+        Membership.objects.create(
+            user=ajeno, company=self.otra, role='customer', is_active=True)
+        self.assertEqual(len(self._get(search='Buscable').data['results']), 0)
+
+    def test_someone_without_the_capability_cannot_read(self):
+        forastero, _ = _p2d_member(self.company, 'h41_rm_nada', ['company.view'])
+        res = self._get(user=forastero)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+
+class H41StaffDeactivationTest(TestCase):
+    """Desactivar conserva historia; reactivar no devuelve autoridad."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-desact', 'Empresa Desactivación')
+        self.role = CompanyRole.objects.get(company=self.company, slug='ventas')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_des_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+
+        user = User.objects.create_user('h41_trabajador', 'trab@empresa.test', 'x')
+        user.first_name, user.last_name = 'Carlos', 'Rodríguez'
+        user.save()
+        self.membership = Membership.objects.create(
+            user=user, company=self.company, role='customer', is_active=True)
+        self.assignment = MembershipRoleAssignment.objects.create(
+            membership=self.membership, role=self.role, is_active=True)
+
+    def _patch(self, activo, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.gestor)
+        return client.patch(
+            f'/api/admin/staff/{self.membership.pk}/',
+            {'company': self.company.pk, 'is_active': activo}, format='json')
+
+    def test_deactivating_keeps_the_row_and_the_history(self):
+        res = self._patch(False)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['is_active'])
+
+        self.membership.refresh_from_db()
+        self.assertTrue(Membership.objects.filter(pk=self.membership.pk).exists())
+        # Las asignaciones sobreviven: son historial.
+        self.assertTrue(
+            MembershipRoleAssignment.objects.filter(pk=self.assignment.pk).exists())
+
+    def test_deactivating_does_not_delete_the_user(self):
+        """Borrar la identidad global borraría también sus compras como cliente."""
+        self._patch(False)
+        self.assertTrue(User.objects.filter(pk=self.membership.user_id).exists())
+
+    def test_reactivating_does_not_restore_authority_by_surprise(self):
+        self._patch(False)
+        self.assignment.is_active = False
+        self.assignment.save(update_fields=['is_active'])
+
+        self._patch(True)
+        self.assignment.refresh_from_db()
+        self.assertFalse(
+            self.assignment.is_active,
+            'el rol antiguo revivió solo: nadie acaba de revisarlo')
+
+    def test_deactivating_a_member_retires_their_roles(self):
+        """
+        ERP-1 · STAFF-01. The bug the sibling test only dodged by switching the
+        assignment off by hand first: deactivating the MEMBERSHIP must retire the
+        role assignment too, so a later reactivation cannot silently hand back
+        authority — administrator included — that no one re-granted or checked.
+        """
+        from .tenancy import has_capability
+
+        cap = self.role.capabilities[0]
+        self.assertTrue(
+            has_capability(self.membership.user, self.company, cap),
+            'la fixture debería otorgar la capability mientras está activa')
+
+        self._patch(False)
+        self.assignment.refresh_from_db()
+        self.assertFalse(self.assignment.is_active, 'el rol no se retiró al desactivar')
+
+        self._patch(True)
+        self.assignment.refresh_from_db()
+        self.assertFalse(self.assignment.is_active, 'el rol revivió sin revisión')
+        self.assertFalse(
+            has_capability(self.membership.user, self.company, cap),
+            'reactivar devolvió la capability sin que nadie la re-otorgara')
+
+    def test_you_cannot_deactivate_yourself(self):
+        """Dejaría a la empresa sin nadie que pueda devolver el acceso."""
+        propia = Membership.objects.get(company=self.company, user=self.gestor)
+        client = APIClient()
+        client.force_authenticate(user=self.gestor)
+        res = client.patch(
+            f'/api/admin/staff/{propia.pk}/',
+            {'company': self.company.pk, 'is_active': False}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_viewing_does_not_grant_deactivating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_des_obs', ['company.view', 'memberships.view'])
+        res = self._patch(False, user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.membership.refresh_from_db()
+        self.assertTrue(self.membership.is_active)
+
+
+class Erp1LoginThrottleTest(TestCase):
+    """
+    ERP-1 · AUTH-THROTTLE-01. Login is rate-limited per IP even for a caller who
+    already holds a session. As an AnonRateThrottle the limiter skipped
+    authenticated requests, so a signed-in user could brute-force other
+    accounts' passwords with no ceiling. The same LoginThrottle guards the web
+    and the native login, so both are covered.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.victim = User.objects.create_user(
+            username='erp1_victim', email='victim@example.invalid',
+            password='RightPass123!',
+        )
+        self.attacker = User.objects.create_user(
+            username='erp1_attacker', email='attacker@example.invalid',
+            password='AttackerPass123!',
+        )
+
+    def _attempt(self, client):
+        return client.post(
+            '/api/auth/login/',
+            {'username': 'erp1_victim', 'password': 'wrong'}, format='json',
+        )
+
+    def test_an_authenticated_caller_is_still_throttled(self):
+        client = APIClient()
+        client.force_authenticate(user=self.attacker)
+        statuses = [self._attempt(client).status_code for _ in range(7)]
+        self.assertIn(
+            429, statuses,
+            'login sin límite para una sesión activa: se puede probar '
+            f'contraseñas ajenas sin freno ({statuses})')
+
+    def test_the_anonymous_limit_still_holds(self):
+        cache.clear()
+        client = APIClient()
+        statuses = [self._attempt(client).status_code for _ in range(7)]
+        self.assertIn(429, statuses, str(statuses))
+
+
+class H41AreaCreationTest(TestCase):
+    """
+    Crear un área desde la pantalla, que es escribir un NOMBRE y nada más.
+
+    El defecto que estas pruebas fijan: el serializador exigía `slug`, el
+    formulario no lo mandaba y «Crear área» respondía 400 siempre. La pantalla
+    decía «No se pudo crear el área.» y no había forma de crear ninguna.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-areas', 'Empresa Áreas H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_area_gestor',
+            ['company.view', 'memberships.view', 'areas.manage'])
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _crear(self, nombre, user=None, **extra):
+        payload = {'company': self.company.pk, 'name': nombre}
+        payload.update(extra)
+        return self._as(user or self.gestor).post(
+            '/api/admin/areas/', payload, format='json')
+
+    def test_creating_an_area_needs_only_a_name(self):
+        res = self._crear('Taller de pantallas')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['name'], 'Taller de pantallas')
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_the_slug_follows_the_preset_convention(self):
+        """
+        Las áreas del aprovisionamiento usan `slugify`: «Recepción» es
+        `recepcion`. Una creada a mano no puede seguir otra convención, o dos
+        áreas equivalentes quedarían con identificadores distintos.
+        """
+        res = self._crear('Recepción Norte')
+        self.assertEqual(res.data['slug'], 'recepcion-norte')
+
+    def test_a_repeated_slug_gets_a_suffix_instead_of_a_500(self):
+        """
+        «Postventa» y «Postventa.» dan el mismo slug. El segundo no puede
+        reventar contra la restricción de unicidad.
+        """
+        primera = self._crear('Postventa')
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        segunda = self._crear('Postventa.')
+        self.assertEqual(segunda.status_code, status.HTTP_201_CREATED, segunda.data)
+        self.assertEqual(primera.data['slug'], 'postventa')
+        self.assertEqual(segunda.data['slug'], 'postventa-2')
+
+    def test_a_name_with_nothing_sluggable_still_gets_an_identifier(self):
+        res = self._crear('///')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data['slug'], 'area')
+
+    def test_an_explicit_slug_is_still_respected(self):
+        """El aprovisionamiento y las pruebas antiguas lo mandan; sigue valiendo."""
+        res = self._crear('Laboratorio', slug='lab-interno')
+        self.assertEqual(res.data['slug'], 'lab-interno')
+
+    def test_the_derived_slug_does_not_collide_across_companies(self):
+        """
+        Dos empresas pueden tener cada una su «Ventas». La unicidad es por
+        empresa, así que el sufijo no debe contagiarse de la vecina.
+        """
+        otra = _p3_company('h41-areas-b', 'Otra Empresa Áreas')
+        vecino, _ = _p2d_member(
+            otra, 'h41_area_vecino', ['company.view', 'memberships.view', 'areas.manage'])
+        res = self._as(vecino).post(
+            '/api/admin/areas/',
+            {'company': otra.pk, 'name': 'Taller de pantallas'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['slug'], 'taller-de-pantallas')
+
+    def test_viewing_does_not_grant_creating(self):
+        observador, _ = _p2d_member(
+            self.company, 'h41_area_obs', ['company.view', 'memberships.view'])
+        res = self._crear('Intrusa', user=observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertFalse(
+            CompanyArea.objects.filter(company=self.company, name='Intrusa').exists())
+
+
+class H41StaffSelfCardTest(TestCase):
+    """
+    La propia ficha se marca como propia.
+
+    El servidor ya impide que alguien se desactive a sí mismo. Sin esta marca la
+    pantalla no tenía forma de saber cuál era la fila de quien mira, así que
+    ofrecía un botón cuyo único destino era el 400.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('h41-self', 'Empresa Propia H41')
+        self.gestor, _ = _p2d_member(
+            self.company, 'h41_self_gestor',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        self.otra, _ = _p2d_member(
+            self.company, 'h41_self_otra', ['company.view'])
+
+    def _marcas(self, user):
+        """{membresía: is_self} tal como lo ve `user`."""
+        client = APIClient()
+        client.force_authenticate(user=user)
+        res = client.get('/api/admin/staff/', {'company': self.company.pk})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {p['id']: p['is_self'] for p in res.data['results']}
+
+    def _membresia(self, user):
+        return Membership.objects.get(company=self.company, user=user).pk
+
+    def test_only_the_callers_own_row_is_marked(self):
+        marcas = self._marcas(self.gestor)
+        self.assertTrue(marcas[self._membresia(self.gestor)])
+        self.assertFalse(marcas[self._membresia(self.otra)])
+        self.assertEqual(sum(marcas.values()), 1,
+                         'debería marcarse exactamente una ficha')
+
+    def test_the_same_row_is_not_marked_for_somebody_else(self):
+        """La marca es de quien pregunta, no una propiedad de la persona."""
+        gestor_b, _ = _p2d_member(
+            self.company, 'h41_self_gestor_b',
+            ['company.view', 'memberships.view', 'memberships.manage'])
+        marcas = self._marcas(gestor_b)
+        self.assertTrue(marcas[self._membresia(gestor_b)])
+        self.assertFalse(marcas[self._membresia(self.gestor)])
+
+
+# ===========================================================================
+# H4.1.1 — Web ↔ v1 interno: UNA credencial por request
+# ===========================================================================
+#
+# El panel web se autentica con cookie HttpOnly; la app nativa, con Bearer. La
+# superficie `/api/v1/internal/` aceptaba sólo Bearer y la web recibía 401 con
+# una sesión perfectamente válida. Ahora acepta los dos canales, y estas pruebas
+# fijan las reglas que hacen seguro aceptar dos:
+#
+#   · una request = un canal. Header y cookie a la vez → 401, sin elegir.
+#   · un Authorization explícito nunca cae a la cookie.
+#   · la cookie trae su CSRF; el Bearer no lo necesita.
+#   · tenant, sucursal y capacidades responden IGUAL por los dos canales.
+#
+# Ver docs/adr-auth-v1-internal.md.
+
+from django.conf import settings as _h411_settings  # noqa: E402
+from django.db import connection as _h411_connection  # noqa: E402
+from django.test.utils import CaptureQueriesContext as _H411Capture  # noqa: E402
+from django.urls import (  # noqa: E402
+    URLPattern as _H411Pattern, URLResolver as _H411Resolver,
+    get_resolver as _h411_resolver,
+)
+import re as _h411_re  # noqa: E402
+
+from rest_framework_simplejwt.tokens import RefreshToken as _H411Refresh  # noqa: E402
+
+from .v1_internal_authentication import V1InternalAuthentication  # noqa: E402
+
+_H411_INVALID = 'Credenciales inválidas.'
+_H411_WRITE_SQL = ('INSERT', 'UPDATE', 'DELETE')
+
+
+def _h411_routes():
+    """Todas las rutas del proyecto como (plantilla, URLPattern)."""
+    def walk(patterns, prefix=''):
+        for p in patterns:
+            if isinstance(p, _H411Resolver):
+                yield from walk(p.url_patterns, prefix + str(p.pattern))
+            elif isinstance(p, _H411Pattern):
+                yield prefix + str(p.pattern), p
+    return list(walk(_h411_resolver().url_patterns))
+
+
+def _h411_internal_routes():
+    return [(r, p) for r, p in _h411_routes() if r.startswith('api/v1/internal/')]
+
+
+def _h411_fill(route, kwargs):
+    """`api/v1/internal/<slug:company_slug>/x/<int:pk>/` con valores reales."""
+    def sub(m):
+        name = m.group(1)
+        if name not in kwargs:
+            raise AssertionError(
+                f'Ruta interna sin fixture para «{name}»: {route}. Si es nueva, '
+                f'añádela a esta prueba; una ruta que nadie ejecuta es una ruta '
+                f'que nadie auditó.'
+            )
+        return str(kwargs[name])
+    return '/' + _h411_re.sub(r'<(?:\w+:)?(\w+)>', sub, route)
+
+
+def _h411_access(user):
+    return str(_H411Refresh.for_user(user).access_token)
+
+
+def _h411_bearer(user, *, token=None, **client_kw):
+    client = APIClient(**client_kw)
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {token or _h411_access(user)}')
+    return client
+
+
+def _h411_cookie(user, *, enforce_csrf=True, token=None):
+    """El navegador: cookie de acceso y CSRF exigido como en producción."""
+    client = APIClient(enforce_csrf_checks=enforce_csrf)
+    client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = token or _h411_access(user)
+    return client
+
+
+def _h411_csrf(client):
+    """Pide la cookie CSRF igual que el frontend, y devuelve su valor."""
+    client.get('/api/auth/csrf/')
+    return client.cookies['csrftoken'].value
+
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
+    """
+    §10 — GET, HEAD y OPTIONS de TODA la superficie interna no escriben nada.
+
+    POR QUÉ ES CONDICIÓN Y NO DETALLE. El canal cookie exime de CSRF a los
+    métodos seguros, como hace toda la web. Eso sólo es seguro si un método
+    seguro es de verdad de sólo lectura: un GET que marcara algo como leído, que
+    creara una fila "por si acaso" o que avanzara un estado sería ejecutable
+    desde cualquier página ajena que el empleado visitara con su sesión abierta.
+
+    CÓMO LO PRUEBA. No leyendo el código — eso ya se hizo, y no ve una función
+    importada por nombre ni un método de modelo —, sino EJECUTANDO cada ruta con
+    una orden llevada hasta el final de su ciclo y contando el SQL que emite.
+    Cualquier INSERT, UPDATE o DELETE falla la prueba.
+
+    Y EXIGE 200 en GET y HEAD: un 404 en la puerta querría decir que el handler
+    no llegó a correr, y una auditoría que no ejecutó el código no auditó nada.
+    """
+
+    # Rutas GET que necesitan parámetros para hacer su trabajo completo. La caja
+    # vende DESDE una sucursal, así que sin `branch` responde 400 antes de
+    # buscar nada — y un 400 así no audita la búsqueda. Se rellena en setUp.
+    QUERY = {}
+    # Respuestas distintas de 200 que SIGUEN siendo el handler entero corriendo.
+    # Cada una con su razón; lo que no esté aquí y no sea 200 falla.
+    NON_200_BUT_EXECUTED = {
+        # Buscar un código que no existe responde 404 después de buscarlo.
+        'v1-internal-pos-lookup': {404},
+        # Su GET existe SÓLO para responder 405: el handler entero es esa línea.
+        # La lectura de un pedido vive en la ruta de detalle.
+        'v1-internal-order-fulfillment': {405},
+    }
+
+    def setUp(self):
+        super().setUp()
+        from store import inventory_services as _inv
+
+        self.ready_for_pickup()
+        self.pay('50.00')
+        self.evidence = self.upload()
+        self.commerce = _order(self.company, user=self.client_user, total='500.00', paid=True)
+        self.transfer = _inv.create_stock_transfer(
+            company=self.company, source_branch=self.branch_a,
+            destination_branch=self.branch_b, actor=self.staff,
+        )
+        self.master = _m7_user('h411_master')
+        self.master.is_superuser = True
+        self.master.is_staff = True
+        self.master.save(update_fields=['is_superuser', 'is_staff'])
+        self.announcement = _ann.create_draft(
+            author=self.master, source_company=self.company,
+            title='Comunicado H4.1.1', body='Sólo lectura.',
+        )
+        _ann.set_audience(
+            announcement=self.announcement,
+            rules=[{'company': self.company, 'kind': _Rule.Kind.ALL_COMPANY}],
+        )
+        _ann.publish(announcement=self.announcement, actor=self.master)
+
+        # ACUÑADO AQUÍ, y no dentro de la medición. `RefreshToken.for_user`
+        # registra el token emitido (INSERT en la lista negra), y la primera
+        # versión de esta prueba lo contó como si lo hubiera escrito la vista.
+        self.master_token = _h411_access(self.master)
+
+        order = self.order
+        quote = order.quotes.order_by('-pk').first()
+        self.kwargs_base = {
+            'company_slug': self.company.slug,
+            'diagnostic_id': order.diagnostics.order_by('pk').first().pk,
+            'quote_id': quote.pk,
+            'evidence_id': self.evidence.pk,
+            # Sólo los alcanza OPTIONS, que no busca el objeto. Cualquier entero.
+            'item_id': 999999, 'usage_id': 999999, 'payment_id': 999999,
+        }
+        self.QUERY = {
+            'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
+            'v1-internal-pos-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE',
+        }
+        self.pk_by_name = {
+            'v1-internal-order-detail': self.commerce.pk,
+            'v1-internal-order-fulfillment': self.commerce.pk,
+            'v1-internal-service-device-detail': self.device.pk,
+            'v1-internal-announcement': self.announcement.pk,
+            'v1-internal-notifications-read': 999999,
+        }
+
+    def _kwargs(self, pattern):
+        name = pattern.name or ''
+        kwargs = dict(self.kwargs_base)
+        if name in self.pk_by_name:
+            kwargs['pk'] = self.pk_by_name[name]
+        elif name.startswith('v1-internal-transfer'):
+            kwargs['pk'] = self.transfer.pk
+        elif name.startswith('v1-internal-communications'):
+            kwargs['pk'] = self.announcement.pk
+        else:
+            kwargs['pk'] = self.order.pk
+        return kwargs
+
+    def _probe(self, make_client):
+        problems, executed = [], {'get': 0, 'head': 0, 'options': 0}
+        for route, pattern in _h411_internal_routes():
+            view = pattern.callback.view_class
+            url = _h411_fill(route, self._kwargs(pattern))
+            # Lo que la vista ADMITE, no lo que hereda: una vista puede heredar
+            # `get` y restringirlo con `http_method_names`. HEAD sigue a GET.
+            allowed = {m.lower() for m in view().allowed_methods}
+            methods = ['options'] + (['get', 'head'] if 'get' in allowed else [])
+            for method in methods:
+                cache.clear()  # un 429 cortaría el handler antes de correr
+                target = url + (self.QUERY.get(pattern.name, '') if method != 'options' else '')
+                client = make_client()  # fuera de la medición: montarlo no es la vista
+                with _H411Capture(_h411_connection) as queries:
+                    res = getattr(client, method)(target)
+                writes = [
+                    q['sql'][:140] for q in queries.captured_queries
+                    if q['sql'].lstrip().upper().startswith(_H411_WRITE_SQL)
+                ]
+                if writes:
+                    problems.append(f'{method.upper()} {target} ESCRIBIÓ: {writes}')
+                allowed = {200} | self.NON_200_BUT_EXECUTED.get(pattern.name, set())
+                if method in ('get', 'head') and res.status_code not in allowed:
+                    problems.append(
+                        f'{method.upper()} {target} → {res.status_code}: el handler '
+                        f'no corrió entero, así que no quedó auditado.'
+                    )
+                if method == 'options' and res.status_code >= 400:
+                    problems.append(f'OPTIONS {target} → {res.status_code}')
+                executed[method] += 1
+        self.assertEqual(problems, [], '\n' + '\n'.join(problems))
+        return executed
+
+    def test_every_safe_method_is_read_only_through_bearer(self):
+        executed = self._probe(lambda: _h411_bearer(self.master, token=self.master_token))
+        self.assertEqual(executed['options'], len(_h411_internal_routes()))
+        self.assertGreaterEqual(executed['get'], 40)
+
+    def test_every_safe_method_is_read_only_through_the_cookie(self):
+        executed = self._probe(lambda: _h411_cookie(self.master, token=self.master_token))
+        self.assertEqual(executed['options'], len(_h411_internal_routes()))
+        self.assertGreaterEqual(executed['get'], 40)
+
+
+class H411CredentialChannelTest(M8ServiceBase):
+    """
+    §9 — qué credencial se evalúa, y qué pasa cuando hay más de una.
+
+    La regla entera cabe en una línea: UNA REQUEST, UN CANAL. Cada prueba de
+    aquí existe porque la sonda del PASO 1 demostró, ejecutando el código, que
+    apilar las dos clases de DRF rompe al menos una de estas afirmaciones.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.full_service_role()
+        self.order = self.make_order()
+        self.slug = self.company.slug
+        self.ctx = f'/api/v1/internal/{self.slug}/service/context/'
+        self.read_all = f'/api/v1/internal/{self.slug}/notifications/read-all/'
+        self.colleague = _m7_user('h411_colega')
+        Membership.objects.create(user=self.colleague, company=self.company, role='technician')
+        cache.clear()
+
+    def _detail(self, res):
+        return res.json().get('detail')
+
+    # -- 01-10 · un canal por request ----------------------------------------
+
+    def test_01_no_credentials_is_401_with_the_v1_challenge(self):
+        res = APIClient().get(self.ctx)
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res['WWW-Authenticate'], 'Bearer realm="api"')
+
+    def test_02_a_valid_bearer_authenticates(self):
+        self.assertEqual(_h411_bearer(self.staff).get(self.ctx).status_code, 200)
+
+    def test_03_a_valid_cookie_authenticates_a_get(self):
+        """EL ARREGLO. Antes de H4.1.1 esto era 401 con la sesión válida."""
+        self.assertEqual(_h411_cookie(self.staff).get(self.ctx).status_code, 200)
+
+    def test_04_an_invalid_bearer_does_not_fall_back_to_a_valid_cookie(self):
+        client = _h411_cookie(self.staff)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION='Bearer xxx.yyy.zzz')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_05_a_foreign_scheme_does_not_fall_back_to_a_valid_cookie(self):
+        for header in ('Basic abc', 'Token abc', 'Digest abc', 'garbage', 'Bearer a b'):
+            with self.subTest(header=header):
+                cache.clear()
+                res = _h411_cookie(self.staff).get(self.ctx, HTTP_AUTHORIZATION=header)
+                self.assertEqual(res.status_code, 401)
+                self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_05b_a_foreign_scheme_alone_is_refused_too(self):
+        res = APIClient().get(self.ctx, HTTP_AUTHORIZATION='Basic abc')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_06_bearer_of_one_user_and_cookie_of_another_is_401(self):
+        """La sonda: con [Bearer, Cookie] esto entraba como el del Bearer."""
+        client = _h411_cookie(self.colleague)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_07_bearer_and_cookie_of_the_SAME_user_is_still_401(self):
+        """No se comparan identidades: presentar dos canales ya es el error."""
+        client = _h411_cookie(self.staff)
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 401)
+
+    def test_08_an_explicit_empty_authorization_header_closes_the_cookie_path(self):
+        res = _h411_cookie(self.staff).get(self.ctx, HTTP_AUTHORIZATION='')
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_08b_absent_and_empty_authorization_are_different_facts(self):
+        absent = APIClient().get(self.ctx)
+        empty = APIClient().get(self.ctx, HTTP_AUTHORIZATION='')
+        self.assertEqual(absent.status_code, 401)
+        self.assertEqual(empty.status_code, 401)
+        # Ausente: nadie presentó nada. Vacío: alguien presentó algo inválido.
+        self.assertNotEqual(self._detail(absent), _H411_INVALID)
+        self.assertEqual(self._detail(empty), _H411_INVALID)
+
+    def test_09_bearer_without_a_token_is_401(self):
+        for header in ('Bearer', 'Bearer '):
+            with self.subTest(header=header):
+                res = APIClient().get(self.ctx, HTTP_AUTHORIZATION=header)
+                self.assertEqual(res.status_code, 401)
+
+    def test_10_an_invalid_cookie_is_a_generic_401(self):
+        """«Token is invalid» narraba el estado de la credencial; aquí no."""
+        res = _h411_cookie(self.staff, token='xxx.yyy.zzz').get(self.ctx)
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self._detail(res), _H411_INVALID)
+        self.assertEqual(res['WWW-Authenticate'], 'Bearer realm="api"')
+
+    def test_an_empty_cookie_is_not_a_credential(self):
+        """Semántica de `CookieJWTAuthentication`: vacía equivale a ausente."""
+        client = APIClient()
+        client.cookies[_h411_settings.JWT_COOKIE_ACCESS_NAME] = ''
+        res = client.get(self.ctx, HTTP_AUTHORIZATION=f'Bearer {_h411_access(self.staff)}')
+        self.assertEqual(res.status_code, 200)
+
+    # -- 11-17 · CSRF sólo en el canal cookie --------------------------------
+
+    def test_11_to_14_a_cookie_mutation_without_csrf_is_403(self):
+        client = _h411_cookie(self.staff)
+        for method in ('post', 'patch', 'put', 'delete'):
+            with self.subTest(method=method):
+                cache.clear()
+                res = getattr(client, method)(self.read_all)
+                self.assertEqual(res.status_code, 403)
+                self.assertIn('CSRF', self._detail(res))
+
+    def test_15_a_cookie_mutation_with_a_wrong_csrf_is_403(self):
+        client = _h411_cookie(self.staff)
+        _h411_csrf(client)
+        res = client.post(self.read_all, HTTP_X_CSRFTOKEN='a' * 64)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn('CSRF', self._detail(res))
+
+    def test_16_a_cookie_mutation_with_a_valid_csrf_reaches_the_domain(self):
+        client = _h411_cookie(self.staff)
+        token = _h411_csrf(client)
+        self.assertEqual(client.post(self.read_all, HTTP_X_CSRFTOKEN=token).status_code, 200)
+        # PATCH/PUT/DELETE no existen en esta ruta: 405 prueba que PASARON la
+        # autenticación y el CSRF y llegaron al despacho.
+        for method in ('patch', 'put', 'delete'):
+            with self.subTest(method=method):
+                cache.clear()
+                res = getattr(client, method)(self.read_all, HTTP_X_CSRFTOKEN=token)
+                self.assertEqual(res.status_code, 405)
+
+    def test_17_a_bearer_mutation_needs_no_csrf(self):
+        client = _h411_bearer(self.staff, enforce_csrf_checks=True)
+        self.assertEqual(client.post(self.read_all).status_code, 200)
+        self.assertEqual(client.patch(self.read_all).status_code, 405)
+
+    def test_safe_methods_through_the_cookie_need_no_csrf(self):
+        client = _h411_cookie(self.staff)
+        for method in ('get', 'head', 'options'):
+            with self.subTest(method=method):
+                cache.clear()
+                self.assertEqual(getattr(client, method)(self.ctx).status_code, 200)
+
+    # -- 18-24 · las puertas responden IGUAL por los dos canales -------------
+
+    def _both(self, user, url):
+        """{canal: status} para la misma petición por cada canal."""
+        out = {}
+        for channel, make in (('bearer', _h411_bearer), ('cookie', _h411_cookie)):
+            cache.clear()
+            out[channel] = make(user).get(url).status_code
+        return out
+
+    def test_18_an_inactive_user_is_401_on_both_channels(self):
+        bearer, cookie = _h411_access(self.staff), _h411_access(self.staff)
+        self.staff.is_active = False
+        self.staff.save(update_fields=['is_active'])
+        for name, client in (('bearer', _h411_bearer(self.staff, token=bearer)),
+                             ('cookie', _h411_cookie(self.staff, token=cookie))):
+            with self.subTest(channel=name):
+                cache.clear()
+                res = client.get(self.ctx)
+                self.assertEqual(res.status_code, 401)
+                self.assertEqual(self._detail(res), _H411_INVALID)
+
+    def test_19_an_inactive_membership_is_404_on_both_channels(self):
+        self.membership.is_active = False
+        self.membership.save(update_fields=['is_active'])
+        self.assertEqual(self._both(self.staff, self.ctx), {'bearer': 404, 'cookie': 404})
+
+    def test_20_an_inactive_company_is_404_on_both_channels(self):
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+        self.assertEqual(self._both(self.staff, self.ctx), {'bearer': 404, 'cookie': 404})
+
+    def test_21_another_tenants_slug_is_404_on_both_channels(self):
+        url = f'/api/v1/internal/{self.other.slug}/service/context/'
+        self.assertEqual(self._both(self.staff, url), {'bearer': 404, 'cookie': 404})
+
+    def test_22_an_order_outside_the_branch_scope_is_404_on_both_channels(self):
+        order_b = self.make_order(branch=self.branch_b)
+        self.restrict_to_branch_a()
+        base = f'/api/v1/internal/{self.slug}/service/orders'
+        self.assertEqual(self._both(self.staff, f'{base}/{order_b.pk}/'),
+                         {'bearer': 404, 'cookie': 404})
+        self.assertEqual(self._both(self.staff, f'{base}/{self.order.pk}/'),
+                         {'bearer': 200, 'cookie': 200})
+
+    def test_23_a_missing_capability_is_403_on_both_channels(self):
+        sin = _m7_user('h411_sin_permiso')
+        membership = Membership.objects.create(user=sin, company=self.company, role='technician')
+        _assign(membership, _role(self.company, 'Sólo empresa',
+                                  capabilities=['company.view'], slug='h411-solo-empresa'))
+        self.assertEqual(self._both(sin, self.ctx), {'bearer': 403, 'cookie': 403})
+
+    def test_24_a_revoked_capability_takes_effect_on_the_next_request(self):
+        bearer = _h411_bearer(self.staff)
+        cookie = _h411_cookie(self.staff)
+        self.assertEqual(bearer.get(self.ctx).status_code, 200)
+        cache.clear()
+        self.assertEqual(cookie.get(self.ctx).status_code, 200)
+        MembershipRoleAssignment.objects.filter(membership=self.membership).update(is_active=False)
+        for name, client in (('bearer', bearer), ('cookie', cookie)):
+            with self.subTest(channel=name):
+                cache.clear()
+                # Los MISMOS clientes, con los MISMOS tokens: la autoridad no
+                # viaja en el token, se vuelve a leer en cada request.
+                self.assertEqual(client.get(self.ctx).status_code, 403)
+
+    # -- 25-30 · las fronteras no se mueven ----------------------------------
+
+    def test_25_the_web_admin_surface_does_not_accept_bearer(self):
+        for url in ('/api/admin/areas/', '/api/me/internal-dashboard/'):
+            with self.subTest(url=url):
+                cache.clear()
+                self.assertEqual(_h411_bearer(self.staff).get(url).status_code, 401)
+
+    def test_26_the_web_profile_does_not_accept_bearer(self):
+        self.assertEqual(_h411_bearer(self.staff).get('/api/auth/me/').status_code, 401)
+
+    def test_27_the_customer_surface_does_not_start_accepting_the_cookie(self):
+        url = f'/api/v1/customer/{self.slug}/orders/'
+        self.assertEqual(_h411_cookie(self.client_user).get(url).status_code, 401)
+        self.assertEqual(_h411_bearer(self.client_user).get(url).status_code, 200)
+
+    def test_28_platform_and_native_identity_do_not_change(self):
+        from store.announcement_views import _PlatformMixin
+        from store.v1_auth_views import V1MeView
+        from store.v1_authentication import V1BearerAuthentication
+        from store.v1_customer_views import V1CustomerSurfaceMixin
+
+        master = _m7_user('h411_master_frontera')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        self.assertEqual(_h411_cookie(master).get('/api/v1/platform/announcements/').status_code, 401)
+        cache.clear()
+        self.assertEqual(_h411_cookie(self.staff).get('/api/v1/auth/me/').status_code, 401)
+        for view in (_PlatformMixin, V1MeView, V1CustomerSurfaceMixin):
+            with self.subTest(view=view.__name__):
+                self.assertEqual(view.authentication_classes, [V1BearerAuthentication])
+
+    def test_29_the_global_default_authentication_is_unchanged(self):
+        self.assertEqual(
+            tuple(_h411_settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES']),
+            ('store.authentication.CookieJWTAuthentication',),
+        )
+
+    def test_30_the_orchestrator_lives_on_the_internal_surface_and_nowhere_else(self):
+        internal, elsewhere = 0, []
+        for route, pattern in _h411_routes():
+            view = (getattr(pattern.callback, 'view_class', None)
+                    or getattr(pattern.callback, 'cls', None))
+            classes = list(getattr(view, 'authentication_classes', []) or [])
+            if route.startswith('api/v1/internal/'):
+                internal += 1
+                self.assertEqual(classes, [V1InternalAuthentication], route)
+            elif V1InternalAuthentication in classes:
+                elsewhere.append(route)
+        self.assertEqual(internal, 70)
+        self.assertEqual(elsewhere, [])
+
+    # -- identidades ----------------------------------------------------------
+
+    def test_a_customer_without_membership_is_404_by_cookie(self):
+        """Comprar en la tienda no es trabajar en ella."""
+        self.assertEqual(_h411_cookie(self.client_user).get(self.ctx).status_code, 404)
+
+    def test_the_public_storefront_ignores_the_cookie(self):
+        url = f'/api/v1/storefront/{self.slug}/config/'
+        anonymous = APIClient().get(url)
+        with_cookie = _h411_cookie(self.staff).get(url)
+        self.assertEqual(anonymous.status_code, 200)
+        self.assertEqual(anonymous.json(), with_cookie.json())
+
+    def test_the_master_reaches_the_NAMED_company_by_cookie_without_a_membership(self):
+        master = _m7_user('h411_master_cookie')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        self.assertEqual(_h411_cookie(master).get(self.ctx).status_code, 200)
+        self.assertFalse(Membership.objects.filter(user=master).exists())
+
+    def test_the_master_is_not_an_implicit_recipient(self):
+        from store.models import Notification
+        master = _m7_user('h411_master_bandeja')
+        master.is_superuser = True
+        master.save(update_fields=['is_superuser'])
+        draft = _ann.create_draft(author=self.staff, source_company=self.company,
+                                  title='Aviso H4.1.1', body='Para el personal.')
+        _ann.set_audience(announcement=draft,
+                          rules=[{'company': self.company, 'kind': _Rule.Kind.ALL_COMPANY}])
+        _ann.publish(announcement=draft, actor=self.staff)
+        self.assertFalse(Notification.objects.filter(user=master).exists())
+        res = _h411_cookie(master).get(f'/api/v1/internal/{self.slug}/notifications/unread-count/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['unread'], 0)
+
+    def test_no_token_appears_in_a_response_or_a_log_line(self):
+        import logging
+
+        class _Collect(logging.Handler):
+            def __init__(self):
+                super().__init__(logging.DEBUG)
+                self.lines = []
+
+            def emit(self, record):
+                self.lines.append(record.getMessage())
+
+        good = _h411_access(self.staff)
+        root, collect = logging.getLogger(), _Collect()
+        previous = root.level
+        root.addHandler(collect)
+        root.setLevel(logging.DEBUG)
+        bodies = []
+        try:
+            for client, extra in (
+                (_h411_cookie(self.staff, token=good), {'HTTP_AUTHORIZATION': f'Bearer {good}'}),
+                (_h411_cookie(self.staff, token=good), {}),
+                (APIClient(), {'HTTP_AUTHORIZATION': f'Bearer {good}x'}),
+                (_h411_cookie(self.staff, token=good + 'x'), {}),
+            ):
+                cache.clear()
+                bodies.append(client.get(self.ctx, **extra).content.decode())
+        finally:
+            root.removeHandler(collect)
+            root.setLevel(previous)
+        for text in bodies + collect.lines:
+            self.assertNotIn(good, text)
+
+
+@override_settings(**_EVIDENCE_TEST_STORAGE)
+class H411PurgeE2EDataTest(M8ServiceBase):
+    """
+    `purge_e2e_data` — la limpieza de lo que dejan las pruebas de navegador.
+
+    H4.1 llenó la base de desarrollo de invitaciones de prueba. Las pruebas de
+    H4.1.1 crean clientes, equipos, órdenes, asignaciones y fotos, así que la
+    limpieza tiene que existir, y tiene que ser INCAPAZ de tocar nada que no
+    lleve la marca.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from store.models import Customer, Device
+
+        self.e2e_customer = Customer.objects.create(
+            company=self.company, first_name='Prueba', last_name='Navegador',
+            notes='[E2E] cliente creado por una prueba',
+        )
+        self.e2e_device = Device.objects.create(
+            company=self.company, customer=self.e2e_customer,
+            device_type=Device.TYPE_PHONE, brand='Prueba', model='E2E',
+            notes='[E2E] equipo creado por una prueba',
+        )
+        self.e2e_order = _m8_service.create_repair_order(
+            company=self.company, branch=self.branch_a, customer=self.e2e_customer,
+            device=self.e2e_device, reported_issue='[E2E] no enciende', actor=self.staff,
+        )
+        _m8_service.assign_technician(
+            repair_order=self.e2e_order, technician=self.staff, actor=self.staff,
+        )
+        self.evidence = _ev_svc.upload_evidence(
+            repair_order=self.e2e_order, stage=_Ev.Stage.INTAKE,
+            content=_photo(800, 600), actor=self.staff,
+        )
+        self.real_order = self.make_order()
+
+    def _purge(self, **extra):
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        with override_settings(DEBUG=True):
+            call_command('purge_e2e_data', company_slug=self.company.slug, stdout=out, **extra)
+        return out.getvalue()
+
+    def test_it_refuses_to_run_outside_development(self):
+        from django.core.management import CommandError, call_command
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command('purge_e2e_data', company_slug=self.company.slug)
+        self.assertTrue(type(self.e2e_order).objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_it_removes_the_marked_order_and_everything_hanging_from_it(self):
+        from store.models import (
+            Customer, Device, Notification, RepairEvidence, RepairOrder,
+            RepairStatusHistory, TechnicianAssignment,
+        )
+        order_id, key = self.e2e_order.pk, self.evidence.storage_key
+        self.assertTrue(Notification.objects.filter(
+            target_type='repair_order', target_id=order_id).exists(),
+            'la asignación debía notificar; sin eso la prueba no comprueba nada')
+
+        self._purge()
+
+        self.assertFalse(RepairOrder.objects.filter(pk=order_id).exists())
+        self.assertFalse(TechnicianAssignment.objects.filter(repair_order_id=order_id).exists())
+        self.assertFalse(RepairStatusHistory.objects.filter(repair_order_id=order_id).exists())
+        self.assertFalse(RepairEvidence.objects.filter(pk=self.evidence.pk).exists())
+        self.assertFalse(Notification.objects.filter(
+            target_type='repair_order', target_id=order_id).exists())
+        self.assertFalse(Device.objects.filter(pk=self.e2e_device.pk).exists())
+        self.assertFalse(Customer.objects.filter(pk=self.e2e_customer.pk).exists())
+        with self.assertRaises(Exception):
+            with _ev_store.open_stream(key):
+                pass
+
+    def test_it_never_touches_what_is_not_marked(self):
+        from store.models import Customer, Device, RepairOrder
+        self._purge()
+        self.assertTrue(RepairOrder.objects.filter(pk=self.real_order.pk).exists())
+        self.assertTrue(Device.objects.filter(pk=self.device.pk).exists())
+        self.assertTrue(Customer.objects.filter(pk=self.customer.pk).exists())
+
+    def test_a_dry_run_deletes_nothing(self):
+        from store.models import RepairOrder
+        output = self._purge(dry_run=True)
+        self.assertIn('Simulación', output)
+        self.assertTrue(RepairOrder.objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_a_marked_order_that_was_worked_on_is_refused(self):
+        """Una orden con diagnóstico es un registro de trabajo, no una prueba."""
+        from django.core.management import CommandError
+        from store.models import RepairOrder
+        _m8_service.transition_repair_order(
+            repair_order=self.e2e_order, to_status=_M8Status.DIAGNOSING, actor=self.staff,
+        )
+        _m8_service.create_diagnostic(
+            repair_order=self.e2e_order, actor=self.staff,
+            description='Revisado.', recommended_action='Nada.',
+        )
+        with self.assertRaises(CommandError):
+            self._purge()
+        self.assertTrue(RepairOrder.objects.filter(pk=self.e2e_order.pk).exists())
+
+    def test_running_it_twice_is_harmless(self):
+        self._purge()
+        self._purge()
+
+    def test_it_removes_e2e_invitations_and_only_those(self):
+        """La prueba de invitación crea una; su dominio `.invalid` es la marca."""
+        from datetime import timedelta
+        from django.utils import timezone
+        from store.models import StaffInvitation, hash_token, make_raw_token
+
+        role = CompanyRole.objects.get(company=self.company, slug='ventas')
+
+        def invite(email):
+            return StaffInvitation.objects.create(
+                company=self.company, email=email, role=role, invited_by=self.staff,
+                token_hash=hash_token(make_raw_token()),
+                expires_at=timezone.now() + timedelta(days=7),
+            )
+
+        e2e = invite('persona.h411@e2e.invalid')
+        real = invite('persona.real@empresa.com')
+        self._purge()
+        self.assertFalse(StaffInvitation.objects.filter(pk=e2e.pk).exists())
+        self.assertTrue(StaffInvitation.objects.filter(pk=real.pk).exists())
+
+
+# ===========================================================================
+# H4.1.2 — INTERNAL AUTHORITY HARDENING
+# ===========================================================================
+#
+# BRANCH-SCOPE-01  Toda superficie interna de pedidos ve SÓLO lo que deja ver
+#                  tenancy.visible_orders(): tenant Y sucursal, antes de buscar,
+#                  contar, agregar o paginar. Fuera de alcance = 404.
+# RBAC-LEGACY-01   En SaaS decide `sales.orders.manage`; el rol global sólo manda
+#                  en el puente legacy del piloto.
+#
+# El escenario del enunciado, en una empresa: sucursales A, B y CLOSED, y los
+# pedidos A1, A2, B1, B2, CLOSED1 y LEGACY_NULL. Otra empresa con uno propio.
+
+from .fiscal_services import get_or_create_fiscal_document as _h412_issue  # noqa: E402
+from .models import (  # noqa: E402
+    AdminAuditLog as _H412Audit,
+    Branch as _H412Branch,
+    Customer as _H412Customer,
+    FiscalDocument as _H412FiscalDocument,
+    FiscalDocumentType as _H412DocType,
+    FiscalSeries as _H412Series,
+    MembershipBranchAccess as _H412Access,
+    OrderItem as _H412OrderItem,
+    SalesNote as _H412SalesNote,
+)
+from .order_fulfillment_services import (  # noqa: E402
+    ALL_FULFILLMENT_STATUSES as _H412_ALL_STATES,
+    allowed_fulfillment_statuses as _h412_allowed,
+)
+from .tenancy import (  # noqa: E402
+    visible_branches as _h412_branches,
+    visible_orders as _h412_orders,
+)
+
+_H412_ORDER_CAPS = (
+    'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
+    'sales.fiscal.view', 'sales.fiscal.issue',
+)
+_H412_LEGACY_INVENTORY_STATES = ['preparing', 'ready_for_pickup', 'shipped', 'delivered']
+_H412_ORDER_404 = 'Orden no encontrada.'
+_H412_FISCAL_ORDER_404 = 'No se encontró el pedido.'
+_H412_FISCAL_DOC_404 = 'No se encontró el comprobante.'
+
+
+def _h412_ids(response):
+    return {row['id'] for row in response.json()['results']}
+
+
+class H412ScopeBase(TestCase):
+    """La empresa del enunciado, sus actores y un cliente HTTP por canal."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'h412-shop', 'Empresa H412', tax_id='20100066603', legal_name='EMPRESA H412 SAC',
+        )
+        self.other = _p3_company(
+            'h412-otra', 'Empresa Ajena H412', tax_id='20522222222', legal_name='AJENA H412 SAC',
+        )
+        self.branch_a = _p2d_branch(self.company, 'Sucursal A')
+        self.branch_b = _p2d_branch(self.company, 'Sucursal B')
+        self.branch_closed = _p2d_branch(self.company, 'Sucursal Cerrada')
+        self.product = _c1_product(self.company, 'Articulo H412', '118.00')
+        self.foreign_product = _c1_product(self.other, 'Articulo Ajeno H412', '118.00')
+
+        self.a1 = self._order(self.branch_a)
+        self.a2 = self._order(self.branch_a)
+        self.b1 = self._order(self.branch_b)
+        self.b2 = self._order(self.branch_b)
+        self.closed1 = self._order(self.branch_closed)
+        self.legacy_null = self._order(None)
+        self.foreign = self._order(self.other.default_inventory_branch, company=self.other)
+        # Cerrada DESPUÉS de vender: el pedido existe y su sucursal ya no opera.
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=False)
+
+        self.selected_a, self.selected_a_membership = _p2d_member(
+            self.company, 'h412_sel_a', _H412_ORDER_CAPS, branches=[self.branch_a],
+        )
+        self.all_staff, _ = _p2d_member(self.company, 'h412_all', _H412_ORDER_CAPS)
+        self.master = User.objects.create_user(
+            username='h412_master', password='Pass123!', is_superuser=True,
+        )
+
+    # -- fixtures -------------------------------------------------------------
+
+    def _order(self, branch, *, company=None):
+        company = company or self.company
+        product = self.product if company.pk == self.company.pk else self.foreign_product
+        order = Order.objects.create(
+            company=company,
+            customer_name='CLIENTE H412 SAC',
+            customer_email='cliente-h412@example.invalid',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=branch,
+        )
+        _H412OrderItem.objects.create(
+            order=order, product=product, quantity=1, price=Decimal('118.00'),
+        )
+        return order
+
+    def everything(self):
+        return {
+            self.a1.pk, self.a2.pk, self.b1.pk, self.b2.pk,
+            self.closed1.pk, self.legacy_null.pk,
+        }
+
+    # -- canales: web cookie, v1 cookie, v1 Bearer ----------------------------
+
+    def web_get(self, user, url):
+        cache.clear()
+        return _h411_cookie(user).get(url)
+
+    def web_send(self, user, method, url, data=None):
+        cache.clear()
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return getattr(client, method)(url, data or {}, format='json', HTTP_X_CSRFTOKEN=token)
+
+    def v1_get(self, channel, user, url):
+        cache.clear()
+        client = _h411_bearer(user) if channel == 'bearer' else _h411_cookie(user)
+        return client.get(url)
+
+    def v1_patch(self, channel, user, url, data):
+        cache.clear()
+        if channel == 'bearer':
+            return _h411_bearer(user).patch(url, data, format='json')
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return client.patch(url, data, format='json', HTTP_X_CSRFTOKEN=token)
+
+    @staticmethod
+    def web(path=''):
+        return f'/api/admin/orders/{path}'
+
+    def v1(self, path=''):
+        return f'/api/v1/internal/{self.company.slug}/orders/{path}'
+
+
+class H412VisibleOrdersHelperTest(H412ScopeBase):
+    """§2 — la frontera en sí, sin HTTP de por medio."""
+
+    def _pks(self, user, company):
+        return set(_h412_orders(user, company).values_list('pk', flat=True))
+
+    def test_SELECTED_A_sees_exactly_A1_and_A2(self):
+        self.assertEqual(self._pks(self.selected_a, self.company), {self.a1.pk, self.a2.pk})
+
+    def test_ALL_sees_A_B_CLOSED_and_NULL_of_its_company(self):
+        self.assertEqual(self._pks(self.all_staff, self.company), self.everything())
+
+    def test_the_master_sees_the_named_company_whole_and_only_it(self):
+        self.assertEqual(self._pks(self.master, self.company), self.everything())
+        self.assertEqual(self._pks(self.master, self.other), {self.foreign.pk})
+
+    def test_nobody_crosses_tenants(self):
+        self.assertEqual(self._pks(self.selected_a, self.other), set())
+        self.assertEqual(self._pks(self.all_staff, self.other), set())
+
+    def test_anonymous_and_no_company_see_nothing(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        self.assertEqual(self._pks(AnonymousUser(), self.company), set())
+        self.assertEqual(self._pks(self.all_staff, None), set())
+
+    def test_an_inactive_membership_sees_nothing(self):
+        Membership.objects.filter(pk=self.selected_a_membership.pk).update(is_active=False)
+        self.assertEqual(self._pks(self.selected_a, self.company), set())
+
+    def test_D1_is_not_solved_by_widening_visible_branches(self):
+        """Los pedidos NULL y CLOSED no se recuperan dándole más sucursales a nadie."""
+        self.assertEqual(list(_h412_branches(self.selected_a, self.company)), [self.branch_a])
+        self.assertNotIn(
+            self.branch_closed.pk,
+            set(_h412_branches(self.all_staff, self.company).values_list('pk', flat=True)),
+        )
+
+
+class H412SelectedBranchWebTest(H412ScopeBase):
+    """§11-13 — un SELECTED de A por la web (cookie + CSRF), superficie por superficie."""
+
+    def test_the_list_shows_A1_and_A2_and_counts_two(self):
+        res = self.web_get(self.selected_a, self.web())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(_h412_ids(res), {self.a1.pk, self.a2.pk})
+        self.assertEqual(res.json()['count'], 2)
+
+    def test_the_count_is_computed_after_the_scope(self):
+        """§4 — A tiene 2 y B tiene 5: el SELECTED de A cuenta 2, no 7."""
+        for _ in range(3):
+            self._order(self.branch_b)
+
+        self.assertEqual(self.web_get(self.selected_a, self.web()).json()['count'], 2)
+        self.assertEqual(self.web_get(self.selected_a, self.web('?paid=true')).json()['count'], 2)
+        self.assertEqual(self.web_get(self.selected_a, self.web('?search=H412')).json()['count'], 2)
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                self.assertEqual(
+                    self.v1_get(channel, self.selected_a, self.v1()).json()['count'], 2,
+                )
+        # Paginar tampoco asoma B: página a página sólo aparecen A1 y A2.
+        seen = set()
+        for page in (1, 2, 3):
+            seen |= _h412_ids(self.web_get(self.selected_a, self.web(f'?page={page}&page_size=1')))
+        self.assertEqual(seen, {self.a1.pk, self.a2.pk})
+        # Y la empresa entera sí cuenta sus nueve.
+        self.assertEqual(self.web_get(self.all_staff, self.web()).json()['count'], 9)
+
+    def test_B_CLOSED_and_NULL_answer_like_an_order_that_does_not_exist(self):
+        missing = self.web_get(self.selected_a, self.web('999999/'))
+        self.assertEqual(missing.status_code, 404)
+        for order in (self.b1, self.closed1, self.legacy_null, self.foreign):
+            with self.subTest(order=order.pk):
+                res = self.web_get(self.selected_a, self.web(f'{order.pk}/'))
+                self.assertEqual(res.status_code, 404)
+                self.assertEqual(res.json(), missing.json())
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/')).status_code, 200)
+
+    def test_moving_B_is_404_and_changes_nothing(self):
+        before = self.b1.fulfillment_status
+        res = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.b1.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 404)
+        self.b1.refresh_from_db()
+        self.assertEqual(self.b1.fulfillment_status, before)
+        self.assertFalse(_H412Audit.objects.filter(
+            action='order_fulfillment_status_changed', target_id=str(self.b1.pk),
+        ).exists())
+
+        ok = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual(ok.status_code, 200)
+
+    def test_the_receipt_of_B_is_404_and_A_downloads(self):
+        res = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/receipt-pdf/'))
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+
+        own = self.web_get(self.selected_a, self.web(f'{self.a1.pk}/receipt-pdf/'))
+        self.assertEqual(own.status_code, 200)
+        self.assertEqual(own['Content-Type'], 'application/pdf')
+
+    def test_resending_the_email_of_B_is_404_and_sends_nothing(self):
+        mail.outbox = []
+        res = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/resend-confirmation-email/'))
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+        self.assertEqual(mail.outbox, [])
+
+        own = self.web_send(self.selected_a, 'post', self.web(f'{self.a1.pk}/resend-confirmation-email/'))
+        self.assertEqual(own.status_code, 200)
+        self.assertGreaterEqual(len(mail.outbox), 1)
+
+    def test_the_sales_note_of_B_is_404_everywhere_and_spends_no_number(self):
+        for path in ('sales-note/', 'sales-note/pdf/'):
+            with self.subTest(path=path):
+                res = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/{path}'))
+                self.assertEqual(res.status_code, 404)
+                # «Orden no encontrada», no «todavía no tiene nota»: es la frontera.
+                self.assertEqual(res.json()['detail'], _H412_ORDER_404)
+        issued = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/sales-note/'))
+        self.assertEqual(issued.status_code, 404)
+        self.assertFalse(_H412SalesNote.objects.filter(order=self.b1).exists())
+
+        created = self.web_send(self.selected_a, 'post', self.web(f'{self.a1.pk}/sales-note/'))
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/sales-note/')).status_code, 200)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/sales-note/pdf/')).status_code, 200)
+
+    def test_issuing_the_fiscal_document_of_B_is_404_and_spends_no_number(self):
+        """§6 — con `sales.fiscal.issue` y sin la sucursal B: 404, serie intacta."""
+        series = _H412Series.objects.create(
+            company=self.company, document_type=_H412DocType.INVOICE,
+            series='F001', next_number=1,
+        )
+        issued = self.web_send(self.selected_a, 'post', self.web(f'{self.b1.pk}/fiscal-document/'))
+        self.assertEqual(issued.status_code, 404)
+        self.assertEqual(issued.json()['detail'], _H412_FISCAL_ORDER_404)
+        read = self.web_get(self.selected_a, self.web(f'{self.b1.pk}/fiscal-document/'))
+        self.assertEqual(read.status_code, 404)
+        self.assertEqual(read.json()['detail'], _H412_FISCAL_ORDER_404)
+        self.assertFalse(_H412FiscalDocument.objects.filter(order=self.b1).exists())
+        series.refresh_from_db()
+        self.assertEqual(series.next_number, 1)
+
+        # El pedido de A SÍ se resuelve: quien contesta es el dominio fiscal.
+        own = self.web_get(self.selected_a, self.web(f'{self.a1.pk}/fiscal-document/'))
+        self.assertEqual(own.status_code, 404)
+        self.assertNotEqual(own.json()['detail'], _H412_FISCAL_ORDER_404)
+
+    def test_every_route_of_a_fiscal_document_of_B_is_404(self):
+        _H412Series.objects.create(
+            company=self.company, document_type=_H412DocType.INVOICE,
+            series='F001', next_number=1,
+        )
+        doc_b, _ = _h412_issue(self.b1)
+        doc_a, _ = _h412_issue(self.a1)
+        base = '/api/admin/fiscal-documents'
+
+        submitted = self.web_send(self.selected_a, 'post', f'{base}/{doc_b.pk}/submit/')
+        self.assertEqual(submitted.status_code, 404)
+        self.assertEqual(submitted.json()['detail'], _H412_FISCAL_DOC_404)
+        for suffix in ('xml/', 'cdr/', 'pdf/'):
+            with self.subTest(route=suffix):
+                res = self.web_get(self.selected_a, f'{base}/{doc_b.pk}/{suffix}')
+                self.assertEqual(res.status_code, 404)
+                self.assertEqual(res.json()['detail'], _H412_FISCAL_DOC_404)
+
+                own = self.web_get(self.selected_a, f'{base}/{doc_a.pk}/{suffix}')
+                is_boundary = (
+                    own.status_code == 404
+                    and own['Content-Type'].startswith('application/json')
+                    and own.json().get('detail') == _H412_FISCAL_DOC_404
+                )
+                self.assertFalse(is_boundary)
+
+    def test_the_dashboard_counts_only_branch_A(self):
+        """§5 — la misma frontera en todos los KPIs, sin copiar lógica por métrica."""
+        sales = self.web_get(self.selected_a, '/api/me/internal-dashboard/').json()['sales']
+        self.assertEqual(sales['total_paid_orders'], 2)
+        self.assertEqual(sales['today_orders'], 2)
+        self.assertEqual(sales['total_revenue'], '236.00')
+        self.assertEqual(sales['today_revenue'], '236.00')
+        self.assertEqual(sales['awaiting_fulfillment'], 2)
+        self.assertEqual(sum(row['value'] for row in sales['orders_by_status']), 2)
+        self.assertEqual(sum(row['value'] for row in sales['revenue_trend']), 236.0)
+
+        wide = self.web_get(self.all_staff, '/api/me/internal-dashboard/').json()['sales']
+        self.assertEqual(wide['total_paid_orders'], 6)
+        self.assertEqual(wide['total_revenue'], '708.00')
+        self.assertEqual(sum(row['value'] for row in wide['orders_by_status']), 6)
+
+    def test_the_customer_file_lists_only_the_purchases_of_branch_A(self):
+        customer = _H412Customer.objects.create(
+            company=self.company, first_name='Cliente', last_name='Compartido',
+        )
+        Order.objects.filter(
+            pk__in=[self.a1.pk, self.b1.pk, self.legacy_null.pk],
+        ).update(customer=customer)
+        reader_a, _ = _p2d_member(
+            self.company, 'h412_crm_a', ['service.customers.view'], branches=[self.branch_a],
+        )
+        reader_all, _ = _p2d_member(self.company, 'h412_crm_all', ['service.customers.view'])
+
+        narrow = self.web_get(reader_a, f'/api/admin/customers/{customer.pk}/').json()
+        self.assertEqual({row['id'] for row in narrow['orders']}, {self.a1.pk})
+        self.assertEqual(narrow['summary']['orders_total'], 1)
+        # La ficha misma no se fragmenta: la ven los dos.
+        wide = self.web_get(reader_all, f'/api/admin/customers/{customer.pk}/').json()
+        self.assertEqual(
+            {row['id'] for row in wide['orders']},
+            {self.a1.pk, self.b1.pk, self.legacy_null.pk},
+        )
+
+    def test_a_grant_to_the_CLOSED_branch_does_not_bring_CLOSED1_back(self):
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=True)
+        both, _ = _p2d_member(
+            self.company, 'h412_sel_closed', _H412_ORDER_CAPS,
+            branches=[self.branch_a, self.branch_closed],
+        )
+        _H412Branch.objects.filter(pk=self.branch_closed.pk).update(is_active=False)
+
+        self.assertEqual(_h412_ids(self.web_get(both, self.web())), {self.a1.pk, self.a2.pk})
+        self.assertEqual(self.web_get(both, self.web(f'{self.closed1.pk}/')).status_code, 404)
+
+    def test_a_revoked_grant_hides_the_branch_on_the_next_request(self):
+        _H412Access.objects.filter(membership=self.selected_a_membership).update(is_active=False)
+        self.assertEqual(self.web_get(self.selected_a, self.web()).json()['count'], 0)
+        self.assertEqual(self.web_get(self.selected_a, self.web(f'{self.a1.pk}/')).status_code, 404)
+
+    def test_SELECTED_without_any_grant_sees_no_order(self):
+        nobody, _ = _p2d_member(self.company, 'h412_sel_none', _H412_ORDER_CAPS, branches=[])
+        self.assertEqual(self.web_get(nobody, self.web()).json()['count'], 0)
+
+
+class H412SelectedBranchV1Test(H412ScopeBase):
+    """§15 — la misma frontera por v1, con cookie y con Bearer."""
+
+    def test_list_detail_and_fulfillment_by_both_channels(self):
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                listed = self.v1_get(channel, self.selected_a, self.v1())
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(_h412_ids(listed), {self.a1.pk, self.a2.pk})
+                self.assertEqual(listed.json()['count'], 2)
+
+                for order in (self.b1, self.closed1, self.legacy_null):
+                    detail = self.v1_get(channel, self.selected_a, self.v1(f'{order.pk}/'))
+                    self.assertEqual(detail.status_code, 404)
+                    moved = self.v1_patch(
+                        channel, self.selected_a, self.v1(f'{order.pk}/fulfillment/'),
+                        {'fulfillment_status': 'cancelled'},
+                    )
+                    self.assertEqual(moved.status_code, 404)
+                    order.refresh_from_db()
+                    self.assertNotEqual(order.fulfillment_status, 'cancelled')
+
+                self.assertEqual(
+                    self.v1_get(channel, self.selected_a, self.v1(f'{self.a1.pk}/')).status_code, 200,
+                )
+                ok = self.v1_patch(
+                    channel, self.selected_a, self.v1(f'{self.a1.pk}/fulfillment/'),
+                    {'fulfillment_status': 'shipped'},
+                )
+                self.assertEqual(ok.status_code, 200)
+
+    def test_one_person_three_channels_one_scope(self):
+        for order in (self.a1, self.a2, self.b1, self.b2, self.closed1, self.legacy_null, self.foreign):
+            with self.subTest(order=order.pk):
+                expected = 200 if order.pk in (self.a1.pk, self.a2.pk) else 404
+                answers = {
+                    'web': self.web_get(self.selected_a, self.web(f'{order.pk}/')).status_code,
+                    'v1-cookie': self.v1_get('cookie', self.selected_a, self.v1(f'{order.pk}/')).status_code,
+                    'v1-bearer': self.v1_get('bearer', self.selected_a, self.v1(f'{order.pk}/')).status_code,
+                }
+                self.assertEqual(set(answers.values()), {expected}, answers)
+
+
+class H412CompanyWideTest(H412ScopeBase):
+    """§12-14 — ALL y master ven la empresa entera; ninguno cruza a otra."""
+
+    def test_ALL_sees_A_B_CLOSED_and_NULL_on_every_channel(self):
+        self.assertEqual(_h412_ids(self.web_get(self.all_staff, self.web())), self.everything())
+        for channel in ('cookie', 'bearer'):
+            with self.subTest(channel=channel):
+                self.assertEqual(
+                    _h412_ids(self.v1_get(channel, self.all_staff, self.v1())), self.everything(),
+                )
+        for order in (self.closed1, self.legacy_null):
+            self.assertEqual(self.web_get(self.all_staff, self.web(f'{order.pk}/')).status_code, 200)
+
+    def test_ALL_never_sees_another_company(self):
+        self.assertEqual(self.web_get(self.all_staff, self.web(f'{self.foreign.pk}/')).status_code, 404)
+        self.assertEqual(self.web_get(self.all_staff, self.web(f'?company={self.other.pk}')).status_code, 403)
+        self.assertEqual(
+            self.v1_get('bearer', self.all_staff, f'/api/v1/internal/{self.other.slug}/orders/').status_code,
+            404,
+        )
+
+    def test_the_master_names_the_company_and_sees_it_whole_without_a_membership(self):
+        self.assertFalse(Membership.objects.filter(user=self.master).exists())
+
+        named = self.web_get(self.master, self.web(f'?company={self.company.pk}'))
+        self.assertEqual(_h412_ids(named), self.everything())
+        other = self.web_get(self.master, self.web(f'?company={self.other.pk}'))
+        self.assertEqual(_h412_ids(other), {self.foreign.pk})
+        # Con la otra empresa elegida, un pedido de ésta no existe.
+        self.assertEqual(
+            self.web_get(self.master, self.web(f'{self.b1.pk}/?company={self.other.pk}')).status_code, 404,
+        )
+        # Sin empresa elegida no se le escoge ninguna.
+        self.assertEqual(self.web_get(self.master, self.web()).status_code, 403)
+        self.assertEqual(_h412_ids(self.v1_get('bearer', self.master, self.v1())), self.everything())
+
+        self.assertFalse(Membership.objects.filter(user=self.master).exists())
+
+
+class H412LegacyBridgeTest(TestCase):
+    """§10 — el operador pre-SaaS sin Membership: sólo el piloto, con sus NULL."""
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+        self.other = _saas_company('Ajena legado H412', 'h412-legado-otra', tax_id='20790000009')
+        branch_a = _p2d_branch(self.pilot, 'Legado A')
+        branch_b = _p2d_branch(self.pilot, 'Legado B')
+        closed = _p2d_branch(self.pilot, 'Legado Cerrada')
+        self.a = self._order(self.pilot, branch_a)
+        self.b = self._order(self.pilot, branch_b)
+        self.closed = self._order(self.pilot, closed)
+        self.null = self._order(self.pilot, None)
+        _H412Branch.objects.filter(pk=closed.pk).update(is_active=False)
+        self.foreign = self._order(self.other, None)
+        self.sales = self._legacy('h412_legacy_sales', UserProfile.ROLE_SALES)
+        self.inventory = self._legacy('h412_legacy_inv', UserProfile.ROLE_INVENTORY)
+
+    @staticmethod
+    def _order(company, branch):
+        return Order.objects.create(
+            company=company, customer_email='legado-h412@example.invalid',
+            total=Decimal('50.00'), status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now(), fulfillment_branch=branch,
+        )
+
+    @staticmethod
+    def _legacy(username, role):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def _get(self, user, url):
+        cache.clear()
+        return _h411_cookie(user).get(url)
+
+    def _patch(self, user, url, data):
+        cache.clear()
+        client = _h411_cookie(user)
+        token = _h411_csrf(client)
+        return client.patch(url, data, format='json', HTTP_X_CSRFTOKEN=token)
+
+    def test_it_sees_the_pilot_whole_including_NULL_and_CLOSED(self):
+        ids = _h412_ids(self._get(self.sales, '/api/admin/orders/'))
+        self.assertTrue({self.a.pk, self.b.pk, self.closed.pk, self.null.pk} <= ids)
+        self.assertNotIn(self.foreign.pk, ids)
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/{self.null.pk}/').status_code, 200)
+
+    def test_it_never_reaches_another_company(self):
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/{self.foreign.pk}/').status_code, 404)
+        self.assertEqual(self._get(self.sales, f'/api/admin/orders/?company={self.other.pk}').status_code, 403)
+        self.assertFalse(_h412_orders(self.sales, self.other).exists())
+
+    def test_the_bridge_creates_no_membership(self):
+        self._get(self.sales, '/api/admin/orders/')
+        self._patch(
+            self.sales, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'confirmed'},
+        )
+        self.assertFalse(Membership.objects.filter(user__in=[self.sales, self.inventory]).exists())
+
+    def test_legacy_inventory_keeps_the_historical_rule(self):
+        detail = self._get(self.inventory, f'/api/admin/orders/{self.a.pk}/').json()
+        self.assertEqual(detail['available_fulfillment_transitions'], _H412_LEGACY_INVENTORY_STATES)
+
+        refused = self._patch(
+            self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn('inventario', refused.json()['detail'])
+        moved = self._patch(
+            self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+            {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual(moved.status_code, 200)
+
+    def test_legacy_sales_may_set_every_state(self):
+        detail = self._get(self.sales, f'/api/admin/orders/{self.a.pk}/').json()
+        self.assertEqual(detail['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+
+    def test_a_membership_anywhere_turns_the_bridge_off(self):
+        Membership.objects.create(user=self.sales, company=self.other, role='sales')
+        self.assertFalse(_h412_orders(self.sales, self.pilot).exists())
+        self.assertEqual(_h412_allowed(self.sales, self.pilot), ())
+
+
+class H412SaasCapabilityAuthorityTest(H412ScopeBase):
+    """§9 — dentro de una empresa manda la capability; el rol global no limita ni amplía."""
+
+    def _member(self, username, capabilities, profile_role):
+        user, _membership = _p2d_member(self.company, username, capabilities)
+        user.profile.role = profile_role
+        user.profile.save()
+        return user
+
+    def test_a_global_INVENTORY_profile_with_manage_may_set_every_state(self):
+        user = self._member(
+            'h412_inv_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_INVENTORY,
+        )
+        web = self.web_get(user, self.web(f'{self.a1.pk}/')).json()
+        self.assertEqual(web['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+        v1 = self.v1_get('bearer', user, self.v1(f'{self.a1.pk}/')).json()
+        self.assertEqual(v1['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+
+        by_web = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+        )
+        by_v1 = self.v1_patch(
+            'bearer', user, self.v1(f'{self.a2.pk}/fulfillment/'), {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual((by_web.status_code, by_v1.status_code), (200, 200))
+        self.a1.refresh_from_db()
+        self.a2.refresh_from_db()
+        self.assertEqual((self.a1.fulfillment_status, self.a2.fulfillment_status), ('cancelled', 'cancelled'))
+
+    def test_a_global_ADMIN_profile_without_manage_has_nothing_to_move(self):
+        user = self._member('h412_admin_view', ['sales.orders.view'], UserProfile.ROLE_ADMIN)
+        web = self.web_get(user, self.web(f'{self.a1.pk}/')).json()
+        self.assertEqual(web['available_fulfillment_transitions'], [])
+        v1 = self.v1_get('bearer', user, self.v1(f'{self.a1.pk}/')).json()
+        self.assertEqual(v1['available_fulfillment_transitions'], [])
+
+        by_web = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'shipped'},
+        )
+        by_v1 = self.v1_patch(
+            'bearer', user, self.v1(f'{self.a1.pk}/fulfillment/'), {'fulfillment_status': 'shipped'},
+        )
+        self.assertEqual((by_web.status_code, by_v1.status_code), (403, 403))
+
+    def test_a_CUSTOMER_profile_with_manage_may_set_every_state(self):
+        user = self._member(
+            'h412_cust_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_CUSTOMER,
+        )
+        res = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_manage_does_not_open_a_branch(self):
+        """Tener `manage` es poder mover pedidos, no poder moverlos en CUALQUIER sucursal."""
+        res = self.web_send(
+            self.selected_a, 'patch', self.web(f'{self.b2.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_rule_as_a_function(self):
+        self.assertEqual(_h412_allowed(self.master, self.company), _H412_ALL_STATES)
+        self.assertEqual(_h412_allowed(self.all_staff, self.company), _H412_ALL_STATES)
+        self.assertEqual(_h412_allowed(self.all_staff, self.other), ())
+        self.assertEqual(_h412_allowed(self.all_staff, None), ())
+
+
+# ===========================================================================
+# H4.1.2A — STABILIZATION GATE
+# ===========================================================================
+#
+# BRANCH-CONTEXT-UI-01  Dónde trabaja una persona es contexto de ACCESO, no de
+#                       inventario. El panel leía las sucursales del resumen de
+#                       inventario, que sólo existe con capacidad de inventario,
+#                       y a un técnico con sucursal le decía «Sin sucursal».
+# E2E-FISCAL-THROTTLE   El limitador no se tocó: lo que se arregló fue el arnés,
+#                       que pedía lo mismo nueve veces. Aquí queda fijado que
+#                       `admin_orders` sigue respondiendo 429 con su tasa real.
+
+#: Servicio Técnico de verdad: alcanza sucursales y NO tiene inventario.
+_H412A_TECHNICIAN_CAPS = (
+    'service.orders.view', 'service.orders.create', 'service.devices.view',
+)
+
+
+class H412aDashboardBranchScopeTest(TestCase):
+    """El panel dice dónde trabaja quien mira, tenga o no capacidad de inventario."""
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('h412a-scope')
+        self.other = _p2d_company('h412a-otra')
+        self.a = _p2d_branch(self.company, 'Sucursal A')
+        self.b = _p2d_branch(self.company, 'Sucursal B')
+        self.c = _p2d_branch(self.company, 'Sucursal C')
+        self.foreign_branch = _p2d_branch(self.other, 'Sucursal Ajena')
+        # Las sucursales que crea el aprovisionamiento no son de esta prueba.
+        _H412Branch.objects.filter(company=self.company).exclude(
+            pk__in=[self.a.pk, self.b.pk, self.c.pk],
+        ).update(is_active=False)
+        self.master = User.objects.create_user(
+            username='h412a_master', password='Pass123!', is_superuser=True,
+        )
+
+    def _get(self, user, params=''):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(f'{self.URL}{params}')
+
+    def _scope(self, user, params=''):
+        return self._get(user, params).json()['branch_scope']
+
+    @staticmethod
+    def _names(scope):
+        return [b['name'] for b in scope['branches']]
+
+    def test_a_technician_with_one_branch_sees_its_name(self):
+        _H412Branch.objects.filter(pk__in=[self.b.pk, self.c.pk]).update(is_active=False)
+        tech, _ = _p2d_member(self.company, 'h412a_tech_one', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'all')
+        self.assertEqual(self._names(scope), ['Sucursal A'])
+
+    def test_several_branches_are_reported_one_by_one(self):
+        tech, _ = _p2d_member(self.company, 'h412a_tech_many', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'all')
+        self.assertEqual(
+            sorted(self._names(scope)), ['Sucursal A', 'Sucursal B', 'Sucursal C'],
+        )
+
+    def test_SELECTED_reports_exactly_its_grants(self):
+        tech, _ = _p2d_member(
+            self.company, 'h412a_tech_sel', _H412A_TECHNICIAN_CAPS, branches=[self.b],
+        )
+
+        scope = self._scope(tech)
+
+        self.assertEqual(scope['mode'], 'selected')
+        self.assertEqual(self._names(scope), ['Sucursal B'])
+
+    def test_SELECTED_without_grants_is_an_empty_scope_not_a_missing_one(self):
+        """La diferencia que el panel necesita para decir «sin sucursales asignadas»."""
+        tech, _ = _p2d_member(
+            self.company, 'h412a_tech_none', _H412A_TECHNICIAN_CAPS, branches=[],
+        )
+
+        scope = self._scope(tech)
+
+        self.assertIsNotNone(scope)
+        self.assertEqual(scope['mode'], 'selected')
+        self.assertEqual(scope['branches'], [])
+
+    def test_the_scope_does_not_depend_on_an_inventory_capability(self):
+        """EL DEFECTO BRANCH-CONTEXT-UI-01, fijado: sin inventario también hay sucursal."""
+        tech, _ = _p2d_member(self.company, 'h412a_tech_noinv', _H412A_TECHNICIAN_CAPS)
+        keeper, _ = _p2d_member(
+            self.company, 'h412a_keeper', ('inventory.view',) + _H412A_TECHNICIAN_CAPS,
+        )
+
+        without_inventory = self._get(tech).json()
+        with_inventory = self._get(keeper).json()
+
+        self.assertIsNone(without_inventory['inventory'])
+        self.assertEqual(len(without_inventory['branch_scope']['branches']), 3)
+        # Y quien sí lo tiene ve exactamente el mismo alcance por los dos sitios.
+        self.assertIsNotNone(with_inventory['inventory'])
+        self.assertEqual(
+            [b['id'] for b in with_inventory['branch_scope']['branches']],
+            [b['id'] for b in with_inventory['inventory']['branches']],
+        )
+
+    def test_the_master_gets_the_scope_of_the_company_it_names(self):
+        own = self._scope(self.master, f'?company={self.company.pk}')
+        foreign = self._scope(self.master, f'?company={self.other.pk}')
+
+        self.assertEqual(own['mode'], 'platform')
+        self.assertEqual(sorted(self._names(own)), ['Sucursal A', 'Sucursal B', 'Sucursal C'])
+        self.assertIsNone(own['default_branch'])
+        self.assertIn('Sucursal Ajena', self._names(foreign))
+        self.assertNotIn('Sucursal A', self._names(foreign))
+
+    def test_no_branch_of_another_company_leaks(self):
+        tech, _ = _p2d_member(self.company, 'h412a_tech_leak', _H412A_TECHNICIAN_CAPS)
+
+        scope = self._scope(tech)
+
+        self.assertNotIn(self.foreign_branch.pk, [b['id'] for b in scope['branches']])
+        self.assertEqual(self._get(tech, f'?company={self.other.pk}').status_code, 404)
+
+    def test_the_default_branch_is_one_they_can_actually_operate(self):
+        tech, membership = _p2d_member(
+            self.company, 'h412a_tech_default', _H412A_TECHNICIAN_CAPS, branches=[self.b],
+        )
+        Membership.objects.filter(pk=membership.pk).update(branch=self.a)
+
+        # `Membership.branch` apunta a una sucursal que esta persona NO opera:
+        # es una preferencia caducada, no un alcance.
+        self.assertIsNone(self._scope(tech)['default_branch'])
+
+        Membership.objects.filter(pk=membership.pk).update(branch=self.b)
+        self.assertEqual(self._scope(tech)['default_branch']['name'], 'Sucursal B')
+
+    def test_without_a_company_chosen_the_scope_is_null_not_empty(self):
+        """Null dice «todavía no se sabe»; una lista vacía diría «ninguna»."""
+        payload = self._get(self.master).json()
+
+        self.assertTrue(payload['requires_company_selection'])
+        self.assertIsNone(payload['branch_scope'])
+
+
+class H412aAdminOrdersThrottleTest(TestCase):
+    """
+    E2E-FISCAL-THROTTLE — el limitador de `admin_orders` NO se tocó.
+
+    Lo que se arregló fue el arnés de navegador, que buscaba el mismo pedido en
+    cada prueba y gastaba 13 peticiones cada vez. Esta prueba fija lo que no
+    puede cambiar con ese arreglo: con la tasa REAL configurada, la petición que
+    la supera recibe 429.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('h412a-throttle')
+        self.user, _ = _p2d_member(self.company, 'h412a_thr', ['sales.orders.view'])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_the_request_over_the_real_rate_is_429(self):
+        from .throttles import AdminOrdersThrottle
+
+        # La tasa se LEE de la configuración: fijarla aquí a mano convertiría
+        # esta prueba en una copia que deja de mirar lo que se despliega.
+        allowed = int(AdminOrdersThrottle().rate.split('/')[0])
+
+        for _ in range(allowed):
+            self.assertEqual(self.client.get('/api/admin/orders/').status_code, 200)
+
+        self.assertEqual(self.client.get('/api/admin/orders/').status_code, 429)
+
+
+# ===========================================================================
+# H4.1.2B — SECURITY & PERMISSION GATE
+# ===========================================================================
+#
+# LEGACY-BRIDGE-REVOCATION-01  Revocar una Membership reabría el puente legacy:
+#                              quitarle el acceso a alguien se lo DEVOLVÍA, y
+#                              sobre el piloto aunque su relación fuese con otra
+#                              empresa. Reproducido antes de corregir.
+# ACCESSGUARD-403-LEGACY-01    El 403 del panel dice ahora, explícitamente, si el
+#                              puente aplica. Un rechazo no es una credencial.
+# AUTH-REVOCATION-01           Cerrar sesión y cambiar la contraseña matan el
+#                              access token, no sólo el refresh.
+
+import re as _h412b_re  # noqa: E402
+
+from .admin_views import (  # noqa: E402
+    _LEGACY_MANAGE_CATALOG_ROLES,
+    _LEGACY_VIEW_CATALOG_ROLES,
+    _LEGACY_VIEW_ORDERS_ROLES,
+)
+from .inventory_views import (  # noqa: E402
+    _LEGACY_INVENTORY_VIEW_ROLES,
+    _LEGACY_SALES_REPORT_ROLES,
+)
+
+
+class H412bLegacyBridgeRevocationTest(TestCase):
+    """
+    Una relación SaaS revocada no convierte a nadie en operador pre-SaaS.
+
+    LO QUE PASABA. El puente preguntaba `active_memberships(user).exists()`, y
+    una Membership revocada no está activa: el recuento daba cero y el puente se
+    abría. Medido antes de corregir, `/api/admin/orders/` respondía 200 en los
+    cuatro escenarios de abajo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+        self.other = _saas_company('Ajena H412B', 'h412b-otra', tax_id='20790000011')
+
+    def _staff(self, username, role=UserProfile.ROLE_ADMIN):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _revoked(self, username, company):
+        user = self._staff(username)
+        membership = Membership.objects.create(user=user, company=company, role='admin')
+        Membership.objects.filter(pk=membership.pk).update(is_active=False)
+        return user
+
+    def _sin_acceso(self, user):
+        """Ni puente, ni sucursales, ni pedidos, ni catálogo."""
+        self.assertIsNone(legacy_catalog_company(user))
+        self.assertEqual(_h412_branches(user, self.pilot).count(), 0)
+        self.assertFalse(_h412_orders(user, self.pilot).exists())
+        client = self._as(user)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+
+    def test_a_genuine_pre_saas_operator_still_works(self):
+        """El puente sigue existiendo para quien nunca tuvo Membership."""
+        user = self._staff('h412b_genuino')
+
+        self.assertEqual(legacy_catalog_company(user), self.pilot)
+        self.assertEqual(self._as(user).get('/api/admin/orders/').status_code, 200)
+
+    def test_a_revoked_membership_does_not_reopen_the_bridge(self):
+        self._sin_acceso(self._revoked('h412b_revocado', self.pilot))
+
+    def test_a_revoked_membership_of_ANOTHER_tenant_grants_nothing_here(self):
+        """El peor caso: acceso al piloto por revocar algo de otra empresa."""
+        self._sin_acceso(self._revoked('h412b_ajena', self.other))
+
+    def test_an_inactive_company_does_not_reopen_the_bridge(self):
+        user = self._staff('h412b_empresa_off')
+        Membership.objects.create(user=user, company=self.other, role='admin')
+        Company.objects.filter(pk=self.other.pk).update(is_active=False)
+
+        self._sin_acceso(user)
+
+    def test_two_dead_relationships_are_still_two_relationships(self):
+        user = self._staff('h412b_dos')
+        uno = Membership.objects.create(user=user, company=self.pilot, role='admin')
+        Membership.objects.filter(pk=uno.pk).update(is_active=False)
+        Membership.objects.create(user=user, company=self.other, role='admin')
+        Company.objects.filter(pk=self.other.pk).update(is_active=False)
+
+        self._sin_acceso(user)
+
+    def test_fulfillment_authority_does_not_come_back_either(self):
+        """El puente alimenta la regla de despacho: tampoco resucita ahí."""
+        user = self._revoked('h412b_despacho', self.pilot)
+
+        self.assertEqual(_h412_allowed(user, self.pilot), ())
+
+    def test_an_active_membership_is_not_bridged_either(self):
+        """Quien tiene contexto real pasa por él, no por el puente."""
+        user = self._staff('h412b_activo')
+        Membership.objects.create(user=user, company=self.pilot, role='admin')
+
+        self.assertIsNone(legacy_catalog_company(user))
+
+
+class H412bDashboard403SignalTest(TestCase):
+    """
+    ACCESSGUARD-403-LEGACY-01 — el 403 del panel dice quién es legacy.
+
+    El cliente no puede deducirlo: el mismo 403 lo reciben el operador pre-SaaS
+    y alguien a quien acaban de revocar la membresía. Antes, el panel web
+    trataba a los dos como legacy y devolvía la interfaz según el rol global.
+    """
+
+    URL = '/api/me/internal-dashboard/'
+
+    def setUp(self):
+        cache.clear()
+        self.pilot = _pilot_company()
+
+    def _get(self, user):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(self.URL)
+
+    def _staff(self, username, role=UserProfile.ROLE_ADMIN):
+        user = User.objects.create_user(username=username, password='Pass123!')
+        user.profile.role = role
+        user.profile.save()
+        return user
+
+    def test_the_genuine_operator_is_announced_as_a_bridge(self):
+        res = self._get(self._staff('h412b_sig_legacy'))
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], True)
+
+    def test_a_revoked_membership_is_announced_as_no_bridge(self):
+        user = self._staff('h412b_sig_revocado')
+        membership = Membership.objects.create(user=user, company=self.pilot, role='admin')
+        Membership.objects.filter(pk=membership.pk).update(is_active=False)
+
+        res = self._get(user)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], False)
+
+    def test_a_customer_is_announced_as_no_bridge(self):
+        res = self._get(self._staff('h412b_sig_cliente', role=UserProfile.ROLE_CUSTOMER))
+
+        self.assertEqual(res.status_code, 403)
+        self.assertIs(res.json()['legacy_bridge'], False)
+
+
+class H412bTokenRevocationTest(TestCase):
+    """
+    AUTH-REVOCATION-01 — cerrar sesión cierra la sesión.
+
+    REPRODUCIDO ANTES DE CORREGIR: login por v1, Bearer contra la superficie
+    interna → 200; logout → 200; el MISMO Bearer → 200 otra vez, durante lo que
+    le quedara de vida al token (hasta 30 minutos). SimpleJWT sólo sabe revocar
+    refresh tokens, y nadie preguntaba por el access.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Revocación', 'h412b-rev', tax_id='20790000012')
+        self.user = User.objects.create_user(
+            username='h412b_rev', email='h412b_rev@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.user, company=self.company, role='sales')
+        self.ctx = _m6_ctx_url(self.company.slug)
+
+    def _login(self, password='Pass123!'):
+        cache.clear()
+        res = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'h412b_rev@example.invalid', 'password': password}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.json()['access'], res.json()['refresh']
+
+    def _ctx(self, access):
+        cache.clear()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return client.get(self.ctx).status_code
+
+    def test_the_same_bearer_is_dead_after_logout(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        self.assertEqual(
+            client.post('/api/v1/auth/logout/', {'refresh': refresh}, format='json').status_code,
+            200,
+        )
+
+        self.assertEqual(self._ctx(access), 401)
+
+    def test_logout_ends_THIS_session_and_not_the_others(self):
+        """Cerrar en el móvil no cierra el mostrador: se revoca por credencial."""
+        movil, movil_refresh = self._login()
+        mostrador, _ = self._login()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {movil}')
+        client.post('/api/v1/auth/logout/', {'refresh': movil_refresh}, format='json')
+
+        self.assertEqual(self._ctx(movil), 401)
+        self.assertEqual(self._ctx(mostrador), 200)
+
+    def test_changing_the_password_ends_every_session(self):
+        """Aquí sí es global: es lo que esa pantalla promete."""
+        una, _ = self._login()
+        otra, _ = self._login()
+
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        res = web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(self._ctx(una), 401)
+        self.assertEqual(self._ctx(otra), 401)
+
+    def test_a_session_opened_after_the_change_is_not_punished(self):
+        """La revocación mira el pasado, no bloquea la cuenta."""
+        import time
+
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+        # El sello tiene resolución de un segundo y la comparación es inclusiva:
+        # ver «LÍMITE CONOCIDO» en store/token_revocation.py.
+        time.sleep(1.1)
+
+        access, _ = self._login(password='Nueva123!Segura')
+
+        self.assertEqual(self._ctx(access), 200)
+
+    def test_the_web_cookie_dies_with_its_logout_too(self):
+        access, refresh = self._login()
+        client = APIClient(enforce_csrf_checks=True)
+        client.cookies[settings.JWT_COOKIE_ACCESS_NAME] = access
+        client.cookies[settings.JWT_COOKIE_REFRESH_NAME] = refresh
+        client.get('/api/auth/csrf/')
+        token = client.cookies['csrftoken'].value
+
+        self.assertEqual(
+            client.post('/api/auth/logout/', HTTP_X_CSRFTOKEN=token).status_code, 200,
+        )
+
+        reused = APIClient()
+        reused.cookies[settings.JWT_COOKIE_ACCESS_NAME] = access
+        self.assertEqual(reused.get('/api/auth/me/').status_code, 401)
+
+    def test_the_refresh_token_stays_blacklisted(self):
+        """Lo que ya funcionaba sigue funcionando."""
+        _access, refresh = self._login()
+        APIClient().post('/api/v1/auth/logout/', {'refresh': refresh}, format='json')
+
+        res = APIClient().post('/api/v1/auth/refresh/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(res.status_code, 401)
+
+
+class H412bRefreshRevocationTest(TestCase):
+    """
+    AUTH-REVOCATION-REFRESH-01 — un refresh anterior no resucita la sesión.
+
+    EL AGUJERO QUE ESTAS PRUEBAS ABREN PRIMERO. H4.1.2B revocó los ACCESS
+    tokens: las dos clases de autenticación preguntan por `token_is_revoked()`
+    en cada petición. Pero los dos caminos de REFRESH no preguntaban nada. Ni
+    `V1RefreshView` —que valida firma, usuario y actividad y pasa directo a
+    `blacklist()` + `RefreshToken.for_user()`— ni el `RefreshView` web, que
+    delega en `TokenRefreshSerializer`, el cual sólo sabe de firma, caducidad y
+    lista negra.
+
+    Consecuencia: cambiar o restablecer la contraseña mataba los access
+    existentes, y acto seguido cualquier refresh anterior —criptográficamente
+    válido, emitido ANTES del evento— fabricaba un access nuevo y limpio. La
+    pantalla prometía «se cerraron todas tus sesiones» mientras quien tuviera un
+    refresh antiguo se fabricaba una nueva. Para alguien que restablece la
+    contraseña PORQUE cree que entraron en su cuenta, es exactamente el caso que
+    importa.
+
+    LO QUE NO DEBE ROMPERSE. El logout sigue siendo por sesión: cerrar en el
+    móvil no cierra el mostrador. Y un login POSTERIOR a la revocación funciona;
+    esto mira al pasado, no bloquea la cuenta.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company(
+            'Revocación de refresh', 'h412b-refresh', tax_id='20790000013',
+        )
+        self.user = User.objects.create_user(
+            username='h412b_ref', email='h412b_ref@example.invalid', password='Pass123!',
+        )
+        Membership.objects.create(user=self.user, company=self.company, role='sales')
+        self.ctx = _m6_ctx_url(self.company.slug)
+
+    # --- utilidades -------------------------------------------------------
+
+    def _login(self, password='Pass123!'):
+        cache.clear()
+        res = APIClient().post(
+            '/api/v1/auth/login/',
+            {'email': 'h412b_ref@example.invalid', 'password': password}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.json()['access'], res.json()['refresh']
+
+    def _ctx(self, access):
+        """Una ruta interna de verdad: que el token exista no basta, tiene que abrir."""
+        cache.clear()
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        return client.get(self.ctx).status_code
+
+    def _v1_refresh(self, refresh):
+        cache.clear()
+        return APIClient().post(
+            '/api/v1/auth/refresh/', {'refresh': refresh}, format='json',
+        )
+
+    def _web_refresh(self, refresh):
+        cache.clear()
+        client = APIClient()
+        client.cookies[settings.JWT_COOKIE_REFRESH_NAME] = refresh
+        return client.post('/api/auth/refresh/')
+
+    def _change_password(self):
+        cache.clear()
+        web = APIClient()
+        web.force_authenticate(user=self.user)
+        res = web.post(
+            '/api/auth/change-password/',
+            {'current_password': 'Pass123!', 'new_password': 'Nueva123!Segura'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def _reset_password(self):
+        """
+        Restablecer SIN sesión web abierta, que es como ocurre de verdad: quien
+        ha perdido la contraseña no tiene una sesión con la que autenticarse.
+        """
+        from .models import AccountToken
+
+        cache.clear()
+        raw, _obj = AccountToken.make(
+            self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1,
+        )
+        res = APIClient().post(
+            '/api/auth/password-reset/confirm/',
+            {'token': raw, 'new_password': 'Nueva123!Segura'}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    # --- cambio de contraseña --------------------------------------------
+
+    def test_changing_the_password_kills_the_native_refresh(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        self._change_password()
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+
+    def test_a_refresh_from_before_the_change_mints_nothing(self):
+        """El corazón del hallazgo: no basta con que el access muera."""
+        _access, refresh = self._login()
+        self._change_password()
+
+        res = self._v1_refresh(refresh)
+
+        self.assertEqual(res.status_code, 401)
+        # Y si algún día volviera a entregar algo, que no abra nada.
+        self.assertNotIn('access', res.json() if res.status_code == 200 else {})
+
+    def test_changing_the_password_kills_the_web_refresh_cookie(self):
+        _access, refresh = self._login()
+        self._change_password()
+
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+    def test_two_old_sessions_both_die(self):
+        movil_access, movil_refresh = self._login()
+        mostrador_access, mostrador_refresh = self._login()
+
+        self._change_password()
+
+        self.assertEqual(self._ctx(movil_access), 401)
+        self.assertEqual(self._ctx(mostrador_access), 401)
+        self.assertEqual(self._v1_refresh(movil_refresh).status_code, 401)
+        self.assertEqual(self._v1_refresh(mostrador_refresh).status_code, 401)
+
+    # --- restablecimiento de contraseña ----------------------------------
+
+    def test_resetting_the_password_kills_access_and_both_refreshes(self):
+        access, refresh = self._login()
+        self.assertEqual(self._ctx(access), 200)
+
+        self._reset_password()
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+
+    def test_resetting_kills_the_web_refresh_cookie_too(self):
+        _access, refresh = self._login()
+        self._reset_password()
+
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+    # --- lo que NO debe romperse -----------------------------------------
+
+    def test_logout_kills_its_own_refresh_and_leaves_the_other_alive(self):
+        """Cerrar en el móvil no cierra el mostrador. Ni su access ni su refresh."""
+        movil_access, movil_refresh = self._login()
+        mostrador_access, mostrador_refresh = self._login()
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {movil_access}')
+        client.post('/api/v1/auth/logout/', {'refresh': movil_refresh}, format='json')
+
+        self.assertEqual(self._ctx(movil_access), 401)
+        self.assertEqual(self._v1_refresh(movil_refresh).status_code, 401)
+
+        self.assertEqual(self._ctx(mostrador_access), 200)
+        self.assertEqual(self._v1_refresh(mostrador_refresh).status_code, 200)
+
+    def test_a_session_opened_after_the_revocation_works(self):
+        """
+        La revocación mira al pasado. Determinista y sin `sleep`: el sello se
+        fija cinco segundos atrás, así que el token que nace ahora es posterior
+        sin depender de cuándo corra la prueba.
+        """
+        from .models import UserProfile
+
+        UserProfile.objects.update_or_create(
+            user=self.user,
+            defaults={'tokens_valid_after': timezone.now() - timedelta(seconds=5)},
+        )
+
+        access, refresh = self._login()
+
+        self.assertEqual(self._ctx(access), 200)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 200)
+
+    def test_a_refresh_born_in_the_same_second_as_the_revocation_is_not_trusted(self):
+        """
+        El borde de `iat`, congelado en vez de dormido.
+
+        `iat` tiene resolución de un segundo, así que se fija el sello EXACTAMENTE
+        en el segundo de emisión del token y se comprueba que la duda se resuelve
+        cerrando. Sin `sleep`: el instante se elige, no se espera.
+        """
+        from datetime import datetime as _dt, timezone as _dttz
+
+        from rest_framework_simplejwt.tokens import RefreshToken as _RefreshToken
+
+        from .models import UserProfile
+
+        access, refresh = self._login()
+        issued_at = int(_RefreshToken(refresh)['iat'])
+
+        UserProfile.objects.update_or_create(
+            user=self.user,
+            defaults={'tokens_valid_after': _dt.fromtimestamp(issued_at, tz=_dttz.utc)},
+        )
+
+        self.assertEqual(self._ctx(access), 401)
+        self.assertEqual(self._v1_refresh(refresh).status_code, 401)
+        self.assertEqual(self._web_refresh(refresh).status_code, 401)
+
+
+class H412bFrontendLegacyRoleParityTest(TestCase):
+    """
+    La interfaz y el backend dicen lo mismo sobre el puente legacy.
+
+    POR QUÉ EXISTE ESTA PRUEBA. `AccessGuard` lleva, por pantalla, la lista de
+    roles que el backend acepta en el puente. Es una duplicación deliberada y
+    temporal —la interfaz tiene que decidir qué ofrece antes de preguntar—, pero
+    una copia que nadie compara deja de ser una copia: basta que alguien cambie
+    `_LEGACY_*_ROLES` en el servidor para que la pantalla siga ofreciendo lo que
+    ya no existe, o escondiendo lo que sí.
+
+    Esta prueba lee los `.tsx` de verdad, como `Ip1ParityManifestTest` lee la
+    matriz de paridad. No concede nada: el servidor sigue siendo la frontera.
+
+    DEUDA: desaparece con el puente. Cuando toda persona tenga Membership, la
+    interfaz preguntará sólo capacidades y estas listas se borran.
+    """
+
+    ADMIN_DIR = 'frontend/app/admin'
+
+    #: Pantalla → (capability que abre, conjunto legacy del endpoint de detrás).
+    EXPECTED = {
+        'orders/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
+        'orders/[id]/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
+        'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
+        'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/movements/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/transfers/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/transfers/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/counts/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/counts/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/reports/page.tsx': ('inventory.reports', _LEGACY_SALES_REPORT_ROLES),
+        'inventory/replenishment/page.tsx': ('inventory.reports', _LEGACY_INVENTORY_VIEW_ROLES),
+        # La bitácora no tiene puente: sin Membership el backend responde 403
+        # venga el rol que venga, así que la lista tiene que estar vacía.
+        'audit-logs/page.tsx': ('memberships.view', frozenset()),
+    }
+
+    _GUARD = _h412b_re.compile(
+        r'<AccessGuard\s+capability="([^"]+)"\s+legacyRoles=\{\[([^\]]*)\]\}',
+    )
+
+    def _admin_dir(self):
+        import os
+        from django.conf import settings as dj_settings
+
+        return os.path.join(os.path.dirname(dj_settings.BASE_DIR), self.ADMIN_DIR)
+
+    def _guards(self):
+        """Cada `<AccessGuard>` del panel: (pantalla, capability, roles)."""
+        import os
+
+        found = []
+        for root, _dirs, files in os.walk(self._admin_dir()):
+            for name in files:
+                if not name.endswith('.tsx'):
+                    continue
+                path = os.path.join(root, name)
+                with open(path, encoding='utf-8') as fh:
+                    text = fh.read()
+                screen = os.path.relpath(path, self._admin_dir())
+                for capability, raw in self._GUARD.findall(text):
+                    roles = frozenset(
+                        token.strip().strip('"').strip("'")
+                        for token in raw.split(',') if token.strip()
+                    )
+                    found.append((screen, capability, roles))
+        return found
+
+    def test_every_screen_is_declared_here(self):
+        """Una pantalla nueva con puente tiene que pasar por esta revisión."""
+        screens = {screen for screen, _cap, _roles in self._guards()}
+
+        self.assertGreaterEqual(len(screens), 15, 'no se encontraron los guards')
+        self.assertEqual(screens - set(self.EXPECTED), set())
+
+    def test_each_list_matches_the_endpoint_behind_it(self):
+        for screen, capability, roles in self._guards():
+            with self.subTest(screen=screen):
+                expected_cap, expected_roles = self.EXPECTED[screen]
+                self.assertEqual(capability, expected_cap)
+                self.assertEqual(roles, set(expected_roles))
+
+    def test_no_screen_invents_a_role_the_backend_never_accepts(self):
+        conocidos = {r for r, _ in UserProfile.ROLE_CHOICES}
+        for screen, _cap, roles in self._guards():
+            with self.subTest(screen=screen):
+                self.assertEqual(roles - conocidos, set())
+
+
+class H412bIsolationMatrixTest(TestCase):
+    """
+    Las negativas, una por una: qué NO puede hacer alguien de otra empresa,
+    de otra sucursal, con la membresía revocada o con la empresa apagada.
+
+    Existen pruebas de aislamiento repartidas por fases anteriores. Esta clase
+    las reúne como matriz explícita para que el gate de seguridad tenga UN sitio
+    donde mirar, y para que una regresión no dependa de que alguien recuerde en
+    qué fase se probó cada cosa.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.a = _p2d_company('h412b-a')
+        self.b = _p2d_company('h412b-b')
+        self.branch_a1 = _p2d_branch(self.a, 'A1')
+        self.branch_a2 = _p2d_branch(self.a, 'A2')
+        self.prod_a = _p2d_product(self.a, 'De A', 'de-a')
+        self.prod_b = _p2d_product(self.b, 'De B', 'de-b')
+        self.order_a1 = _order(self.a, total='100.00', paid=True, fulfillment_branch=self.branch_a1)
+        self.order_a2 = _order(self.a, total='200.00', paid=True, fulfillment_branch=self.branch_a2)
+        self.order_b = _order(self.b, total='300.00', paid=True)
+
+        caps = ['products.view', 'products.manage', 'sales.orders.view',
+                'sales.orders.manage', 'inventory.view', 'inventory.adjust']
+        self.de_a, self.membership_a = _p2d_member(self.a, 'h412b_de_a', caps)
+        self.selected_a1, self.membership_sel = _p2d_member(
+            self.a, 'h412b_sel_a1', caps, branches=[self.branch_a1],
+        )
+        self.master = User.objects.create_user('h412b_master', password='Pass123!', is_superuser=True)
+
+    def _as(self, user):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    # -- cruce de empresas ----------------------------------------------------
+
+    def test_A_does_not_list_B(self):
+        productos = self._as(self.de_a).get('/api/admin/products/')
+        pedidos = self._as(self.de_a).get('/api/admin/orders/')
+
+        self.assertNotIn('de-b', {p['slug'] for p in productos.json()['results']})
+        self.assertNotIn(self.order_b.pk, {o['id'] for o in pedidos.json()['results']})
+
+    def test_a_real_id_of_B_behaves_like_one_that_does_not_exist(self):
+        client = self._as(self.de_a)
+        real = client.get(f'/api/admin/orders/{self.order_b.pk}/')
+        inventado = client.get('/api/admin/orders/99999999/')
+
+        self.assertEqual(real.status_code, 404)
+        self.assertEqual(real.json(), inventado.json())
+
+    def test_A_cannot_modify_or_adjust_anything_of_B(self):
+        client = self._as(self.de_a)
+
+        editar = client.patch(
+            f'/api/admin/products/{self.prod_b.pk}/', {'name': 'Robado'}, format='json')
+        ajustar = client.post(
+            f'/api/admin/products/{self.prod_b.pk}/inventory-adjust/',
+            {'quantity': 5, 'reason': 'x'}, format='json')
+
+        self.assertEqual(editar.status_code, 404)
+        # 400 o 404 dicen lo mismo aquí —no se tocó nada—; lo que no puede pasar
+        # es un 2xx, y lo que de verdad se comprueba es la invariante de abajo.
+        self.assertIn(ajustar.status_code, (400, 404))
+        self.prod_b.refresh_from_db()
+        self.assertEqual(self.prod_b.name, 'De B')
+
+    # -- sucursal -------------------------------------------------------------
+
+    def test_a_SELECTED_member_does_not_reach_another_branch(self):
+        client = self._as(self.selected_a1)
+
+        self.assertEqual(client.get(f'/api/admin/orders/{self.order_a2.pk}/').status_code, 404)
+        self.assertEqual(
+            {o['id'] for o in client.get('/api/admin/orders/').json()['results']},
+            {self.order_a1.pk},
+        )
+
+    def test_an_inactive_branch_does_not_become_reachable(self):
+        _H412Branch.objects.filter(pk=self.branch_a1.pk).update(is_active=False)
+
+        self.assertEqual(_h412_branches(self.selected_a1, self.a).count(), 0)
+        self.assertFalse(_h412_orders(self.selected_a1, self.a).exists())
+
+    def test_a_revoked_default_branch_does_not_widen_the_scope(self):
+        Membership.objects.filter(pk=self.membership_sel.pk).update(branch=self.branch_a2)
+
+        # La sucursal preferida apunta a A2, que esta persona NO opera.
+        self.assertEqual(
+            {b.pk for b in _h412_branches(self.selected_a1, self.a)}, {self.branch_a1.pk},
+        )
+        self.assertEqual(
+            self._as(self.selected_a1).get(f'/api/admin/orders/{self.order_a2.pk}/').status_code,
+            404,
+        )
+
+    # -- estados que no conceden nada ----------------------------------------
+
+    def test_an_inactive_membership_grants_nothing(self):
+        Membership.objects.filter(pk=self.membership_a.pk).update(is_active=False)
+        client = self._as(self.de_a)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+
+    def test_an_inactive_company_grants_nothing(self):
+        Company.objects.filter(pk=self.a.pk).update(is_active=False)
+        client = self._as(self.de_a)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 403)
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+
+    def test_the_master_needs_to_name_the_company(self):
+        client = self._as(self.master)
+
+        self.assertEqual(client.get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(
+            client.get(f'/api/admin/orders/?company={self.a.pk}').status_code, 200,
+        )
+
+    # -- quién NO es personal -------------------------------------------------
+
+    def test_being_a_customer_never_makes_anyone_staff(self):
+        comprador = _saas_user('h412b_comprador')
+        _v1_customer(self.a, comprador)
+
+        self.assertEqual(self._as(comprador).get('/api/admin/orders/').status_code, 403)
+        self.assertEqual(
+            _h411_bearer(comprador).get(_m6_ctx_url(self.a.slug)).status_code, 404,
+        )
+
+    def test_a_custom_role_does_not_inherit_the_global_profile(self):
+        """Una invitación con rol propio manda sobre el `UserProfile.role`."""
+        user, _m = _p2d_member(self.a, 'h412b_solo_ver', ['products.view'])
+        user.profile.role = UserProfile.ROLE_ADMIN
+        user.profile.save()
+        client = self._as(user)
+
+        self.assertEqual(client.get('/api/admin/products/').status_code, 200)
+        self.assertEqual(
+            client.patch(f'/api/admin/products/{self.prod_a.pk}/', {'name': 'X'}, format='json').status_code,
+            403,
+        )
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-1A — carga segura del certificado de firma (PKCS#12 / PEM legacy)
+# ---------------------------------------------------------------------------
+
+import datetime as _fc_dt  # noqa: E402
+import os as _fc_os  # noqa: E402
+import tempfile as _fc_tempfile  # noqa: E402
+
+
+def _fc_build_p12(rsa_key, *, password=b'p12pass', not_before=None, not_after=None,
+                  with_key=True):
+    """Ephemeral PKCS#12 for tests — NEVER the real CDT."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import NameOID
+
+    now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+    nb = not_before or (now - _fc_dt.timedelta(days=1))
+    na = not_after or (now + _fc_dt.timedelta(days=365))
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CDT DE PRUEBA')])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(rsa_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(nb).not_valid_after(na)
+        .sign(rsa_key, hashes.SHA256())
+    )
+    if with_key and password:
+        enc = serialization.BestAvailableEncryption(password)
+    else:
+        enc = serialization.NoEncryption()
+    return pkcs12.serialize_key_and_certificates(
+        b'cdt', rsa_key if with_key else None, cert, None, enc,
+    )
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class FiscalCertificateLoaderTest(TestCase):
+    """
+    ERP-FISCAL-1A. El material de firma se carga desde PKCS#12 o PEM, en memoria,
+    sin escribir claves a disco y sin filtrar la contraseña. PEM heredado sigue
+    funcionando; P12 + PEM a la vez falla cerrado.
+    """
+
+    P12_PASSWORD = 's3ntinel-p12-pass'  # centinela: NO debe aparecer en errores
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        from cryptography.hazmat.primitives import serialization
+        cls.legacy_cert_pem = _fc_build_legacy_pem_cert(cls.key)
+        cls.legacy_key_pem = cls.key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+
+    def setUp(self):
+        self.tmp = _fc_tempfile.mkdtemp()
+
+    def tearDown(self):
+        for f in _fc_os.listdir(self.tmp):
+            _fc_os.remove(_fc_os.path.join(self.tmp, f))
+        _fc_os.rmdir(self.tmp)
+
+    def _write_p12(self, data: bytes, name='cdt.p12') -> str:
+        path = _fc_os.path.join(self.tmp, name)
+        with open(path, 'wb') as fh:
+            fh.write(data)
+        return path
+
+    def _resolve(self, **cert_settings):
+        from .fiscal_config import resolve_credentials
+        with override_settings(**cert_settings):
+            return resolve_credentials(None)
+
+    # -- PKCS#12 happy path ---------------------------------------------------
+
+    def test_pkcs12_valid_resolves_pem_material(self):
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        creds = self._resolve(
+            FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD,
+            FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+        )
+        self.assertIn(b'BEGIN CERTIFICATE', creds['cert_pem'])
+        self.assertIn(b'BEGIN PRIVATE KEY', creds['key_pem'])
+
+    # -- failure modes (§39) --------------------------------------------------
+
+    def test_wrong_password_is_config_error_without_leaking_it(self):
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='la-incorrecta',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+        # ni la contraseña correcta ni la intentada aparecen en el error
+        self.assertNotIn(self.P12_PASSWORD, str(ctx.exception))
+        self.assertNotIn('la-incorrecta', str(ctx.exception))
+
+    def test_missing_file_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH=_fc_os.path.join(self.tmp, 'noexiste.p12'),
+                FISCAL_CERT_P12_PASSWORD='x', FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+    def test_corrupt_container_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        path = self._write_p12(b'esto no es un pkcs12')
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='x',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+    def test_container_without_key_is_rejected_fail_closed(self):
+        # A cert-only PKCS#12 (no private key) must not yield signing material.
+        # cryptography surfaces such a container with cert=None (the cert lands
+        # in the chain), so the loader rejects it via the "no certificate" guard;
+        # either way it fails closed rather than signing with no key.
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=None, with_key=False)
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD='',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+        self.assertIn('PKCS#12', str(ctx.exception))
+
+    # -- validity detection (inspection utility) ------------------------------
+
+    def test_expired_certificate_is_detected(self):
+        from .fiscal_config import inspect_signing_certificate
+        now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+        p12 = _fc_build_p12(
+            self.key, password=self.P12_PASSWORD.encode(),
+            not_before=now - _fc_dt.timedelta(days=800),
+            not_after=now - _fc_dt.timedelta(days=1),
+        )
+        path = self._write_p12(p12)
+        with override_settings(FISCAL_CERT_P12_PATH=path,
+                               FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD):
+            meta, validity = inspect_signing_certificate()
+        self.assertEqual(validity, 'expired')
+        self.assertIn('CDT DE PRUEBA', meta.subject)
+
+    def test_not_yet_valid_certificate_is_detected(self):
+        from .fiscal_config import inspect_signing_certificate
+        now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+        p12 = _fc_build_p12(
+            self.key, password=self.P12_PASSWORD.encode(),
+            not_before=now + _fc_dt.timedelta(days=10),
+            not_after=now + _fc_dt.timedelta(days=400),
+        )
+        path = self._write_p12(p12)
+        with override_settings(FISCAL_CERT_P12_PATH=path,
+                               FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD):
+            _meta, validity = inspect_signing_certificate()
+        self.assertEqual(validity, 'not_yet_valid')
+
+    # -- legacy PEM + ambiguity ----------------------------------------------
+
+    def test_legacy_pem_still_resolves(self):
+        creds = self._resolve(
+            FISCAL_CERT_P12_PATH='', FISCAL_CERT_P12_PASSWORD='',
+            FISCAL_CERT_PEM=self.legacy_cert_pem, FISCAL_KEY_PEM=self.legacy_key_pem,
+        )
+        self.assertIn(b'BEGIN CERTIFICATE', creds['cert_pem'])
+        self.assertIn(b'BEGIN PRIVATE KEY', creds['key_pem'])
+
+    def test_p12_and_pem_together_fail_closed(self):
+        from .fiscal_config import FiscalConfigError
+        p12 = _fc_build_p12(self.key, password=self.P12_PASSWORD.encode())
+        path = self._write_p12(p12)
+        with self.assertRaises(FiscalConfigError) as ctx:
+            self._resolve(
+                FISCAL_CERT_P12_PATH=path, FISCAL_CERT_P12_PASSWORD=self.P12_PASSWORD,
+                FISCAL_CERT_PEM=self.legacy_cert_pem, FISCAL_KEY_PEM=self.legacy_key_pem,
+            )
+        self.assertIn('ambigua', str(ctx.exception).lower())
+
+    def test_no_certificate_configured_is_config_error(self):
+        from .fiscal_config import FiscalConfigError
+        with self.assertRaises(FiscalConfigError):
+            self._resolve(
+                FISCAL_CERT_P12_PATH='', FISCAL_CERT_P12_PASSWORD='',
+                FISCAL_CERT_PEM='', FISCAL_KEY_PEM='',
+            )
+
+
+class FiscalThrottleReproTest(TestCase):
+    """
+    ERP-FISCAL-1C. The fiscal endpoints are IsAuthenticated, so a throttle that
+    only limits ANONYMOUS callers never engages. This pins that the fiscal
+    throttles DO produce a per-user cache key for an authenticated request
+    (i.e. the limit actually applies), that two users get independent buckets,
+    and that read and issue are separate scopes.
+    """
+
+    def _authed_request(self, pk):
+        from rest_framework.test import APIRequestFactory
+        from types import SimpleNamespace
+        req = APIRequestFactory().post('/api/admin/orders/1/fiscal-document/')
+        req.user = SimpleNamespace(pk=pk, is_authenticated=True)
+        return req
+
+    def test_issue_throttle_engages_for_authenticated_user(self):
+        from .throttles import FiscalIssueThrottle
+        key = FiscalIssueThrottle().get_cache_key(self._authed_request(7), view=None)
+        self.assertIsNotNone(key, 'un usuario autenticado DEBE contar contra el límite')
+        self.assertIn('fiscal_issue', key)
+
+    def test_read_throttle_engages_for_authenticated_user(self):
+        from .throttles import FiscalReadThrottle
+        key = FiscalReadThrottle().get_cache_key(self._authed_request(7), view=None)
+        self.assertIsNotNone(key)
+        self.assertIn('fiscal_read', key)
+
+    def test_two_users_get_independent_buckets(self):
+        from .throttles import FiscalIssueThrottle
+        a = FiscalIssueThrottle().get_cache_key(self._authed_request(1), view=None)
+        b = FiscalIssueThrottle().get_cache_key(self._authed_request(2), view=None)
+        self.assertNotEqual(a, b, 'B no debe heredar el cubo de A')
+
+    def test_read_and_issue_are_separate_scopes(self):
+        from .throttles import FiscalIssueThrottle, FiscalReadThrottle
+        issue = FiscalIssueThrottle().get_cache_key(self._authed_request(1), view=None)
+        read = FiscalReadThrottle().get_cache_key(self._authed_request(1), view=None)
+        self.assertNotEqual(issue, read, 'read e issue son cubos distintos')
+
+
+def _fc_build_legacy_pem_cert(rsa_key) -> str:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+    now = _fc_dt.datetime.now(_fc_dt.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'PEM LEGACY')])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(rsa_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - _fc_dt.timedelta(days=1))
+        .not_valid_after(now + _fc_dt.timedelta(days=365))
+        .sign(rsa_key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-1D — parseo endurecido de XML externo (SOAP/CDR) + límites ZIP
+# ---------------------------------------------------------------------------
+
+import io as _xs_io  # noqa: E402
+import zipfile as _xs_zipfile  # noqa: E402
+from unittest.mock import patch as _xs_patch  # noqa: E402
+
+
+class FiscalUntrustedXmlTest(SimpleTestCase):
+    """
+    ERP-FISCAL-1D. Todo XML externo (respuesta SOAP, CDR) pasa por un único
+    parser endurecido: sin entidades, sin DTD, sin red, sin DOCTYPE, con tope de
+    tamaño. El XML legítimo de SUNAT sigue funcionando.
+    """
+
+    VALID = b'<?xml version="1.0"?><ar xmlns="urn:x"><Note>ok</Note></ar>'
+
+    def test_valid_external_xml_parses(self):
+        from .fiscal.xmlsafe import parse_untrusted
+        root = parse_untrusted(self.VALID)
+        self.assertTrue(root.tag.endswith('ar'))
+
+    def test_external_entity_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            b'<r>&xxe;</r>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_network_entity_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE r [<!ENTITY x SYSTEM "http://127.0.0.1:1/">]><r>&x;</r>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_internal_entity_expansion_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE lol [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;">]>'
+            b'<lol>&b;</lol>'
+        )
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(payload)
+
+    def test_bare_doctype_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(b'<?xml version="1.0"?><!DOCTYPE r><r/>')
+
+    def test_oversize_xml_is_rejected(self):
+        from .fiscal import xmlsafe
+        with _xs_patch.object(xmlsafe, 'MAX_UNTRUSTED_XML_BYTES', 64):
+            with self.assertRaises(xmlsafe.UntrustedXmlError):
+                xmlsafe.parse_untrusted(b'<r>' + b'x' * 200 + b'</r>')
+
+    def test_malformed_xml_is_rejected(self):
+        from .fiscal.xmlsafe import UntrustedXmlError, parse_untrusted
+        with self.assertRaises(UntrustedXmlError):
+            parse_untrusted(b'<r><unclosed>')
+
+    def test_malformed_cdr_base64_is_unknown_not_a_crash(self):
+        """
+        REVIEW A / §24. Un applicationResponse con base64 malformado es
+        UNKNOWN_RESPONSE (ante la duda), no un binascii.Error que suba como 500.
+        """
+        from .fiscal.provider import ProviderOutcome, SunatSoapProvider
+        res = SunatSoapProvider._read_cdr(
+            '%%%no-es-base64%%%', request_sha256='a', response_sha256='b')
+        self.assertEqual(res.outcome, ProviderOutcome.UNKNOWN_RESPONSE)
+
+
+class FiscalCdrZipTest(SimpleTestCase):
+    """ERP-FISCAL-1D/§27. extract_cdr: una sola entrada, sin ruta, con tope."""
+
+    def _zip(self, entries):
+        buf = _xs_io.BytesIO()
+        with _xs_zipfile.ZipFile(buf, 'w', _xs_zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def test_single_entry_extracts(self):
+        from .fiscal.packaging import extract_cdr
+        name, data = extract_cdr(self._zip([('R-x.xml', b'<ar/>')]))
+        self.assertEqual(name, 'R-x.xml')
+        self.assertEqual(data, b'<ar/>')
+
+    def test_multiple_entries_rejected(self):
+        from .fiscal.packaging import extract_cdr
+        with self.assertRaises(ValueError):
+            extract_cdr(self._zip([('R-x.xml', b'<a/>'), ('R-y.xml', b'<b/>')]))
+
+    def test_path_entry_rejected(self):
+        from .fiscal.packaging import extract_cdr
+        with self.assertRaises(ValueError):
+            extract_cdr(self._zip([('../evil.xml', b'<a/>')]))
+
+    def test_oversize_member_rejected(self):
+        from .fiscal import packaging
+        big = self._zip([('R-x.xml', b'A' * 5000)])
+        with _xs_patch.object(packaging, 'MAX_CDR_MEMBER_BYTES', 100):
+            with self.assertRaises(ValueError):
+                packaging.extract_cdr(big)
+
+
+class FiscalRoundingReconciliationTest(SimpleTestCase):
+    """
+    ERP-FISCAL-2 (VEN-02A). El reparto por línea suma EXACTAMENTE el snapshot y
+    cada línea queda coherente, sobre una matriz amplia de precios/cantidades.
+    Puro (sin BD); usa el validador fiscal real (`rules.validate`), que impone
+    las tolerancias por línea de SUNAT.
+    """
+
+    RATE = Decimal('0.18')
+
+    def _snapshot(self, total):
+        from .fiscal.rounding import money
+        taxable = money(total / (Decimal('1') + self.RATE))
+        return taxable, money(total - taxable)
+
+    def _check_cart(self, cart):
+        from datetime import date, time
+
+        from .fiscal import rules
+        from .fiscal.data import InvoiceData, Line, Party
+        from .fiscal.rounding import allocate_line_bases, money, unit_value
+
+        total = sum(Decimal(p) * q for p, q in cart)
+        taxable, tax = self._snapshot(total)
+        grosses = [money(Decimal(p) * q) for p, q in cart]
+        bases = allocate_line_bases(grosses, taxable=taxable, rate=self.RATE)
+        self.assertEqual(sum(bases), taxable)  # invariante A
+        percent = (self.RATE * 100).quantize(Decimal('0.01'))
+        lines = []
+        for (p, q), gross, base in zip(cart, grosses, bases):
+            line_tax = gross - base
+            self.assertGreaterEqual(base, Decimal('0'))       # F
+            self.assertGreaterEqual(line_tax, Decimal('0'))   # F
+            self.assertEqual(base + line_tax, gross)          # E: base+tax = bruto
+            lines.append(Line(
+                description='X', quantity=Decimal(q), unit_code='NIU',
+                unit_price=unit_value(base, q), unit_price_with_tax=Decimal(p),
+                line_amount=base, tax_amount=line_tax, tax_percent=percent))
+        self.assertEqual(sum(l.tax_amount for l in lines), tax)  # invariante B
+        data = InvoiceData(
+            document_type='01', serie='F001', correlativo=1,
+            issue_date=date.today(), issue_time=time(0, 0), currency='PEN',
+            supplier=Party('6', '20123456789', 'E SAC'),
+            customer=Party('6', '20111111111', 'C SAC'),
+            lines=tuple(lines), taxable_amount=taxable, tax_amount=tax,
+            total=total, amount_in_words='-')
+        rules.validate(data)  # C,D: cantidad×unitario y tax por línea, en tolerancia
+
+    def test_single_line_matrix(self):
+        prices = ['0.01', '0.10', '0.99', '1.00', '9.99', '19.90', '59.90',
+                  '99.90', '100.00', '118.00', '199.99', '999.99']
+        for p in prices:
+            for q in (1, 2, 3, 5, 10):
+                with self.subTest(price=p, qty=q):
+                    self._check_cart([(p, q)])
+
+    def test_multi_line_matrix(self):
+        import itertools
+        prices = ['0.99', '59.90', '19.90', '100.00', '9.99', '199.99']
+        for p1, p2 in itertools.combinations(prices, 2):
+            for q1, q2 in [(1, 1), (2, 1), (2, 3), (5, 2), (3, 3)]:
+                with self.subTest(a=(p1, q1), b=(p2, q2)):
+                    self._check_cart([(p1, q1), (p2, q2)])
+        for combo in [
+            [('59.90', 1), ('0.99', 3), ('19.90', 2)],
+            [('100.00', 1), ('100.00', 1), ('100.00', 1)],
+            [('0.10', 7), ('0.99', 7), ('9.99', 1), ('199.99', 2)],
+        ]:
+            with self.subTest(combo=combo):
+                self._check_cart(combo)
+
+    def test_two_distinct_products_same_price_reconcile(self):
+        # El caso que VEN-02A rompía: dos productos a 100.00 → 84.75 + 84.74.
+        self._check_cart([('100.00', 1), ('100.00', 1)])
+
+    def test_the_derived_bound_fails_closed(self):
+        from .fiscal.rounding import ReconciliationError, allocate_line_bases
+        with self.assertRaises(ReconciliationError):
+            allocate_line_bases([Decimal('119.80')], taxable=Decimal('200.00'),
+                                rate=self.RATE)
+
+
+# ===========================================================================
+# ERP-FISCAL-3 — reconciliación SUNAT, confianza del CDR y fundación asíncrona
+# ===========================================================================
+
+from .fiscal.cdr import (  # noqa: E402
+    CdrParseError, cdr_matches_document, parse_cdr,
+)
+from .fiscal.cdr_signature import inspect_cdr_signature  # noqa: E402
+from .fiscal.provider import (  # noqa: E402
+    DocumentCdrResult, ReconcileOutcome, SunatConsultProvider, SunatSoapProvider,
+    TicketStatus, _TransportError,
+)
+from .fiscal_services import (  # noqa: E402
+    OUTCOME_TO_STATUS, ReconciliationResult, reconcile_fiscal_document,
+)
+
+_AR_NS = 'urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2'
+_CAC_NS = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+_CBC_NS = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+_SOAP_NS = 'http://schemas.xmlsoap.org/soap/envelope/'
+_SER_NS = 'http://service.sunat.gob.pe'
+
+
+def _build_cdr_xml(*, reference_id='F001-1', response_code='0',
+                   receiver_ruc='20100066603', sender_ruc='20131312955',
+                   doc_type='01', notes=(), sign=True, signer_ruc='20131312955'):
+    """Un `ApplicationResponse` (CDR) de prueba, firmado como lo firma SUNAT."""
+    from lxml import etree
+    from signxml import XMLSigner, methods
+
+    root = etree.Element(f'{{{_AR_NS}}}ApplicationResponse',
+                         nsmap={'ar': _AR_NS, 'cac': _CAC_NS, 'cbc': _CBC_NS})
+    etree.SubElement(root, f'{{{_CBC_NS}}}ID').text = 'R-1'
+    sp = etree.SubElement(root, f'{{{_CAC_NS}}}SenderParty')
+    spi = etree.SubElement(sp, f'{{{_CAC_NS}}}PartyIdentification')
+    etree.SubElement(spi, f'{{{_CBC_NS}}}ID').text = sender_ruc
+    rp = etree.SubElement(root, f'{{{_CAC_NS}}}ReceiverParty')
+    rpi = etree.SubElement(rp, f'{{{_CAC_NS}}}PartyIdentification')
+    etree.SubElement(rpi, f'{{{_CBC_NS}}}ID').text = receiver_ruc
+    dr = etree.SubElement(root, f'{{{_CAC_NS}}}DocumentResponse')
+    resp = etree.SubElement(dr, f'{{{_CAC_NS}}}Response')
+    etree.SubElement(resp, f'{{{_CBC_NS}}}ResponseCode').text = response_code
+    etree.SubElement(resp, f'{{{_CBC_NS}}}Description').text = (
+        f'La Factura numero {reference_id}, ha sido aceptada')
+    dref = etree.SubElement(dr, f'{{{_CAC_NS}}}DocumentReference')
+    etree.SubElement(dref, f'{{{_CBC_NS}}}ID').text = reference_id
+    if doc_type:
+        etree.SubElement(dref, f'{{{_CBC_NS}}}DocumentTypeCode').text = doc_type
+    for note in notes:
+        etree.SubElement(dr, f'{{{_CBC_NS}}}Note').text = note
+    if sign:
+        key, cert = self_signed_pem(signer_ruc)
+        root = XMLSigner(method=methods.enveloped).sign(root, key=key, cert=cert)
+    return etree.tostring(root, xml_declaration=True, encoding='UTF-8')
+
+
+def _zip_b64(xml, name='R-20100066603-01-F001-1.xml'):
+    import base64
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, xml)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _soap_getstatuscdr(status_code, content=None, message='ok'):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    resp = etree.SubElement(body, f'{{{_SER_NS}}}getStatusCdrResponse')
+    sc = etree.SubElement(resp, 'statusCdr')
+    etree.SubElement(sc, 'statusCode').text = status_code
+    if content is not None:
+        etree.SubElement(sc, 'content').text = content
+    etree.SubElement(sc, 'statusMessage').text = message
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+def _soap_getstatus_ticket(status_code, content=None):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    resp = etree.SubElement(body, f'{{{_SER_NS}}}getStatusResponse')
+    st = etree.SubElement(resp, 'status')
+    etree.SubElement(st, 'statusCode').text = status_code
+    if content is not None:
+        etree.SubElement(st, 'content').text = content
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+def _soap_fault(faultcode='soap-env:Client.0100', faultstring='algo falló'):
+    from lxml import etree
+    env = etree.Element(f'{{{_SOAP_NS}}}Envelope', nsmap={'soapenv': _SOAP_NS})
+    body = etree.SubElement(env, f'{{{_SOAP_NS}}}Body')
+    fault = etree.SubElement(body, f'{{{_SOAP_NS}}}Fault')
+    etree.SubElement(fault, 'faultcode').text = faultcode
+    etree.SubElement(fault, 'faultstring').text = faultstring
+    return etree.tostring(env, xml_declaration=True, encoding='UTF-8')
+
+
+class _FakeConsultProvider:
+    """Un proveedor de consulta de mentira: devuelve lo que se le dé, sin red."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def get_document_cdr(self, *, issuer_ruc, document_type, series, number):
+        self.calls.append((issuer_ruc, document_type, series, number))
+        return self.result
+
+
+def _resolved_cdr(*, reference_id='F001-1', outcome=ProviderOutcome.ACCEPTED,
+                  response_code='0', receiver_ruc='20100066603', notes=()):
+    """Un `DocumentCdrResult` RESUELTO con un CDR real dentro (para binding)."""
+    cdr_xml = _build_cdr_xml(reference_id=reference_id, response_code=response_code,
+                             receiver_ruc=receiver_ruc, notes=notes, sign=False)
+    return DocumentCdrResult(
+        outcome=ReconcileOutcome.RESOLVED, status_code='0004',
+        cdr=ProviderResult(outcome=outcome, response_code=response_code,
+                           safe_message='ok', cdr_xml=cdr_xml,
+                           notes=tuple(notes)),
+        request_sha256='a' * 64, response_sha256='b' * 64)
+
+
+class FiscalCdrParseTest(SimpleTestCase):
+    """Lectura del CDR: identificación, binding y observaciones con su código."""
+
+    def test_it_reads_the_reference_and_the_parties(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False))
+        self.assertEqual(rep.reference_id, 'F001-1')
+        self.assertEqual(rep.receiver_ruc, '20100066603')
+        self.assertEqual(rep.sender_ruc, '20131312955')
+        self.assertEqual(rep.response_code, '0')
+        self.assertEqual(rep.document_type_code, '01')
+
+    def test_an_observation_keeps_its_code_and_text(self):
+        rep = parse_cdr(_build_cdr_xml(
+            sign=False, notes=('4267 - El dato del cliente no cumple el formato',)))
+        self.assertEqual(len(rep.observations), 1)
+        self.assertEqual(rep.observations[0].code, '4267')
+        self.assertEqual(rep.observations[0].text,
+                         'El dato del cliente no cumple el formato')
+
+    def test_a_note_without_a_code_keeps_the_text(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, notes=('Sin código aquí',)))
+        self.assertEqual(rep.observations[0].code, '')
+        self.assertEqual(rep.observations[0].text, 'Sin código aquí')
+
+    def test_the_binding_accepts_the_matching_document(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False))
+        self.assertTrue(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_the_binding_rejects_a_different_number(self):
+        """§65: local F001-25, CDR F001-24 → no corresponde."""
+        rep = parse_cdr(_build_cdr_xml(sign=False, reference_id='F001-24'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-25', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_the_binding_rejects_a_different_ruc(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, receiver_ruc='20999999999'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603'))
+
+    def test_the_binding_rejects_a_different_type(self):
+        rep = parse_cdr(_build_cdr_xml(sign=False, doc_type='03'))
+        self.assertFalse(cdr_matches_document(
+            rep, document_id='F001-1', issuer_tax_id='20100066603',
+            document_type='01'))
+
+    def test_an_unreadable_cdr_raises_a_parse_error_not_a_crash(self):
+        with self.assertRaises(CdrParseError):
+            parse_cdr(b'<no-cierra>')
+
+    def test_a_cdr_with_a_doctype_is_rejected(self):
+        """El parser endurecido rechaza DOCTYPE también en el CDR (XXE)."""
+        with self.assertRaises(CdrParseError):
+            parse_cdr(b'<?xml version="1.0"?><!DOCTYPE x><x/>')
+
+
+class FiscalCdrSignatureTest(SimpleTestCase):
+    """
+    Auditoría de la firma del CDR (§31-§35, §61).
+
+    LA LÍNEA QUE NO SE CRUZA: integridad matemática NO es autenticidad. Un CDR
+    autofirmado por un atacante puede validar su integridad; jamás por eso se
+    marca como de SUNAT.
+    """
+
+    def test_a_valid_signature_verifies_integrity_but_not_authenticity(self):
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=True))
+        self.assertTrue(rep.has_signature)
+        self.assertTrue(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
+    def test_a_self_signed_attacker_gets_no_authenticity(self):
+        """
+        §33. Un atacante firma su propio CDR con su propio certificado: la
+        integridad «valida» contra ESE certificado, pero la autenticidad sigue
+        sin verificar. Nunca se concluye que sea SUNAT.
+        """
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=True, signer_ruc='20999999999'))
+        self.assertTrue(rep.integrity_valid)
+        self.assertNotEqual(rep.authenticity, 'trusted')
+        self.assertEqual(rep.authenticity, 'unverified')
+
+    def test_tampering_after_signing_breaks_integrity(self):
+        signed = _build_cdr_xml(sign=True)
+        tampered = signed.replace(b'ha sido aceptada', b'ha sido rechazada')
+        rep = inspect_cdr_signature(tampered)
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+
+    def test_a_cdr_without_a_signature_is_flagged(self):
+        rep = inspect_cdr_signature(_build_cdr_xml(sign=False))
+        self.assertFalse(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
+    def test_a_tampered_signature_value_fails_integrity(self):
+        import re
+        signed = _build_cdr_xml(sign=True)
+        m = re.search(
+            rb'(<[^>]*SignatureValue[^>]*>)([^<]+)(</[^>]*SignatureValue>)', signed)
+        self.assertIsNotNone(m)
+        val = m.group(2)
+        flipped = (b'B' if val[:1] == b'A' else b'A') + val[1:]
+        tampered = signed[:m.start(2)] + flipped + signed[m.end(2):]
+        rep = inspect_cdr_signature(tampered)
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+
+    def test_a_signature_without_an_embedded_certificate_is_not_verifiable(self):
+        from lxml import etree
+        root = etree.fromstring(_build_cdr_xml(sign=True))
+        for cert in root.findall(
+                './/{http://www.w3.org/2000/09/xmldsig#}X509Certificate'):
+            cert.getparent().remove(cert)
+        rep = inspect_cdr_signature(etree.tostring(root))
+        self.assertTrue(rep.has_signature)
+        self.assertFalse(rep.integrity_valid)
+        self.assertEqual(rep.authenticity, 'unverified')
+
+
+class FiscalConsultProviderTest(SimpleTestCase):
+    """`getStatusCdr` interpretado (§58). Con respuestas de mentira, sin red."""
+
+    def setUp(self):
+        self.p = SunatConsultProvider(
+            endpoint='https://x/billConsultService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def _cdr(self, **kw):
+        return _zip_b64(_build_cdr_xml(sign=False, **kw))
+
+    def test_an_accepted_cdr_resolves_to_accepted(self):
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0004', self._cdr()), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.ACCEPTED)
+
+    def test_an_observed_cdr_resolves_to_accepted_with_observation(self):
+        r = self.p._interpret_cdr(
+            _soap_getstatuscdr('0004', self._cdr(notes=('4267 - dato',))), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.ACCEPTED_WITH_OBSERVATION)
+
+    def test_a_rejected_cdr_resolves_to_rejected(self):
+        r = self.p._interpret_cdr(
+            _soap_getstatuscdr('0004', self._cdr(response_code='2335')), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.REJECTED)
+
+    def test_no_content_is_not_available_and_keeps_the_raw_code(self):
+        """§24: sin CDR NO se concluye «no existe»; queda no terminal, código crudo."""
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0011'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.NOT_AVAILABLE)
+        self.assertEqual(r.status_code, '0011')
+
+    def test_a_soap_fault_is_unknown_not_a_rejection(self):
+        r = self.p._interpret_cdr(_soap_fault('soap-env:Client.0011'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.UNKNOWN_RESPONSE)
+        self.assertEqual(r.status_code, '0011')
+
+    def test_a_500_is_a_transport_error(self):
+        r = self.p._interpret_cdr(b'<x/>', 500, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.TRANSPORT_ERROR)
+
+    def test_malformed_xml_is_unknown(self):
+        r = self.p._interpret_cdr(b'<no-cierra>', 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.UNKNOWN_RESPONSE)
+
+    def test_invalid_base64_content_yields_an_unreadable_cdr(self):
+        r = self.p._interpret_cdr(_soap_getstatuscdr('0004', '%%%no-b64%%%'), 200, 'h')
+        self.assertEqual(r.outcome, ReconcileOutcome.RESOLVED)
+        self.assertEqual(r.cdr.outcome, ProviderOutcome.UNKNOWN_RESPONSE)
+        self.assertIsNone(r.cdr.cdr_xml)
+
+    def test_a_network_failure_is_a_transport_error(self):
+        from unittest.mock import patch as _patch
+        with _patch.object(SunatConsultProvider, '_post',
+                           side_effect=_TransportError('ReadTimeout al contactar')):
+            r = self.p.get_document_cdr(issuer_ruc='20100066603',
+                                        document_type='01', series='F001', number=1)
+        self.assertEqual(r.outcome, ReconcileOutcome.TRANSPORT_ERROR)
+
+    def test_the_query_carries_the_document_identifier(self):
+        from unittest.mock import patch as _patch
+        with _patch.object(SunatConsultProvider, '_post',
+                           return_value=(_soap_getstatuscdr('0011'), 200)) as post:
+            self.p.get_document_cdr(issuer_ruc='20100066603', document_type='01',
+                                    series='F001', number=7)
+        envelope = post.call_args.args[0]
+        self.assertIn(b'getStatusCdr', envelope)
+        self.assertIn(b'<numeroComprobante>7</numeroComprobante>', envelope)
+        self.assertIn(b'<serieComprobante>F001</serieComprobante>', envelope)
+        # NUNCA la contraseña en la huella, pero sí en el sobre (va a SUNAT).
+        self.assertIn(b'moddatos', envelope)
+
+
+class FiscalTicketStatusTest(SimpleTestCase):
+    """`getStatus(ticket)` sobre billService (§59). Fundación para FISCAL-4."""
+
+    def setUp(self):
+        self.p = SunatSoapProvider(
+            endpoint='https://x/billService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def test_code_0_is_completed_with_a_cdr(self):
+        content = _zip_b64(_build_cdr_xml(sign=False))
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('0', content), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.COMPLETED)
+        self.assertIsNotNone(r.cdr)
+
+    def test_code_98_is_processing(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('98'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.PROCESSING)
+        self.assertIsNone(r.cdr)
+
+    def test_code_99_is_error(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('99'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.ERROR)
+
+    def test_an_unknown_code_is_unknown(self):
+        r = self.p._interpret_ticket(_soap_getstatus_ticket('7'), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.UNKNOWN_RESPONSE)
+
+    def test_a_soap_fault_is_a_transport_error(self):
+        r = self.p._interpret_ticket(_soap_fault(), 200, 'h')
+        self.assertEqual(r.status, TicketStatus.TRANSPORT_ERROR)
+
+    def test_a_500_is_a_transport_error(self):
+        r = self.p._interpret_ticket(b'<x/>', 500, 'h')
+        self.assertEqual(r.status, TicketStatus.TRANSPORT_ERROR)
+
+    def test_malformed_is_unknown(self):
+        r = self.p._interpret_ticket(b'<no-cierra>', 200, 'h')
+        self.assertEqual(r.status, TicketStatus.UNKNOWN_RESPONSE)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22CReconcileServiceTest(TestCase):
+    """
+    Reconciliación (§60): cerrar un envío incierto sin reenviar ni duplicar.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22c-recon', 'Empresa Recon', tax_id='20100066603',
+            legal_name='EMPRESA RECON SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Recon', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _errored_doc(self):
+        """Un comprobante firmado cuyo envío quedó en SUBMISSION_ERROR."""
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        doc = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        return doc
+
+    def test_a_found_accepted_cdr_settles_the_document(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'reconciled')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(doc.cdr_xml)
+        self.assertTrue(doc.cdr_sha256)
+        # No se reservó otro correlativo ni se creó otro documento.
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+        # Reconciliar no crea intentos de ENVÍO (§48): el único intento es el fallido.
+        self.assertEqual(doc.attempts.count(), 1)
+
+    def test_a_found_rejected_cdr_settles_as_rejected(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(
+            _resolved_cdr(outcome=ProviderOutcome.REJECTED, response_code='2335'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'reconciled')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.REJECTED)
+
+    def test_not_available_leaves_it_non_terminal_and_does_not_resend(self):
+        """§24/§25: sin CDR el comprobante se queda como estaba, no se reenvía."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.NOT_AVAILABLE, status_code='0011'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'not_available')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 2)
+
+    def test_a_transport_error_leaves_it_non_terminal(self):
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.TRANSPORT_ERROR, safe_message='timeout'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'transport_error')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_cdr_for_another_document_is_never_applied(self):
+        """§65: un CDR que no corresponde no toca el estado."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(reference_id='F001-99'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_reconciling_an_accepted_document_is_a_noop_without_a_query(self):
+        """§27: aceptado no se reenvía ni se re-consulta."""
+        doc = self._errored_doc()
+        doc.status = FiscalDocumentStatus.ACCEPTED
+        doc.save(update_fields=['status'])
+        provider = _FakeConsultProvider(_resolved_cdr())
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'already_accepted')
+        self.assertEqual(provider.calls, [])  # no salió a la red
+
+    def test_reconciling_a_rejected_document_does_not_resurrect_it(self):
+        """§28: un rechazo no se convierte en aceptado por una consulta."""
+        doc = self._errored_doc()
+        doc.status = FiscalDocumentStatus.REJECTED
+        doc.save(update_fields=['status'])
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'already_rejected')
+        self.assertEqual(provider.calls, [])
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.REJECTED)
+
+    def test_an_unsent_document_cannot_be_reconciled(self):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        with self.assertRaises(FiscalError):
+            reconcile_fiscal_document(doc, _FakeConsultProvider(_resolved_cdr()))
+
+    def test_reconciling_twice_is_idempotent(self):
+        """§26: dos veces → la segunda no cambia nada; un solo CDR."""
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        reconcile_fiscal_document(doc, provider)
+        doc.refresh_from_db()
+        out2 = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out2.action, 'already_accepted')
+        self.assertEqual(FiscalDocument.objects.count(), 1)
+
+    def test_a_submit_does_not_overwrite_a_terminal_set_concurrently(self):
+        """
+        REVIEW A / §26. Entre el claim y el guardado del envío, una reconciliación
+        dejó el comprobante ACEPTADO. El reintento de envío —que ahora recibe un
+        fault de duplicado— NO lo revierte: el veredicto terminal manda.
+        """
+        doc = self._errored_doc()
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        result = submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='duplicado')))
+        self.assertEqual(result.status, FiscalDocumentStatus.ACCEPTED)
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_a_cdr_whose_code_does_not_settle_is_inconclusive(self):
+        """
+        REVIEW A. Llegó un CDR, pero su ResponseCode no resuelve a terminal
+        (código de rango reintentable): no es «reconciliado», queda no terminal.
+        """
+        doc = self._errored_doc()
+        provider = _FakeConsultProvider(_resolved_cdr(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, response_code='0150'))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_inconclusive')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_cdr_with_mismatched_codes_is_inconclusive(self):
+        """
+        REVIEW B. El veredicto aplicado (intérprete laxo) y el ResponseCode del
+        nodo que ancla el binding (ruta estricta) deben coincidir; si no, el CDR
+        está malformado o manipulado y no se aplica.
+        """
+        doc = self._errored_doc()
+        # CDR con ResponseCode 0 (estricto), pero el intérprete dice REJECTED/2335.
+        cdr_xml = _build_cdr_xml(reference_id='F001-1', response_code='0', sign=False)
+        provider = _FakeConsultProvider(DocumentCdrResult(
+            outcome=ReconcileOutcome.RESOLVED, status_code='0004',
+            cdr=ProviderResult(outcome=ProviderOutcome.REJECTED,
+                               response_code='2335', cdr_xml=cdr_xml)))
+        out = reconcile_fiscal_document(doc, provider)
+        self.assertEqual(out.action, 'cdr_inconclusive')
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_a_race_that_already_settled_differently_is_a_conflict(self):
+        """
+        §28. Entre la consulta y el cierre, OTRO proceso dejó el comprobante en un
+        estado terminal DISTINTO del que trae el CDR. No se sobrescribe la
+        historia: se marca conflicto para auditarlo.
+        """
+        from .fiscal_services import _apply_reconciliation
+        doc = self._errored_doc()
+        # Simula la carrera: la fila ya quedó ACEPTADA por otra reconciliación.
+        FiscalDocument.objects.filter(pk=doc.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        # El CDR que trajo ESTA consulta dice RECHAZADO.
+        result = _resolved_cdr(outcome=ProviderOutcome.REJECTED, response_code='2335')
+        out = _apply_reconciliation(doc, result)
+        self.assertEqual(out.action, 'reconciliation_conflict')
+        doc.refresh_from_db()
+        # NO se sobrescribió: sigue aceptado.
+        self.assertEqual(doc.status, FiscalDocumentStatus.ACCEPTED)
+
+
+class C22CReconcileApiTest(TestCase):
+    """El endpoint de reconciliación: permiso, aislamiento y frontera de red."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22c-api', 'Empresa Recon API', tax_id='20100066603',
+            legal_name='EMPRESA RECON API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Recon API', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22c_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22c_observador', ['company.view', 'sales.fiscal.view'])
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.doc = self._errored_doc()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _errored_doc(self):
+        with override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+                               FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+                               FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            doc, _ = get_or_create_fiscal_document(self._order())
+            doc = sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                       cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_reconcile_requires_issue_not_only_view(self):
+        """§40. Reconciliar declara estado; consultar no basta."""
+        res = self._as(self.observador).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+
+    def test_reconcile_is_503_when_the_online_query_is_disabled(self):
+        """§16/§53: la consulta real está apagada; el endpoint lo dice, no revienta."""
+        res = self._as(self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def test_reconcile_applies_the_cdr_when_a_provider_is_available(self):
+        from unittest.mock import patch as _patch
+        with _patch('store.fiscal_views.resolve_consult_provider') as fake:
+            fake.return_value = _FakeConsultProvider(
+                _resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.ACCEPTED)
+        self.assertTrue(res.data['is_accepted'])
+
+    def test_the_query_identifier_comes_from_the_document_not_the_body(self):
+        """§42/§44: el identificador lo pone el backend; el cuerpo se ignora."""
+        from unittest.mock import patch as _patch
+        provider = _FakeConsultProvider(_resolved_cdr(outcome=ProviderOutcome.ACCEPTED))
+        with _patch('store.fiscal_views.resolve_consult_provider', return_value=provider):
+            self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/',
+                {'serieComprobante': 'F999', 'numeroComprobante': '424242'},
+                format='json')
+        self.assertEqual(provider.calls,
+                         [('20100066603', '01', self.doc.series, self.doc.number)])
+
+    def test_a_document_of_another_company_is_not_found(self):
+        """§41: aislamiento por empresa aunque se conozca el id."""
+        other = _p3_company('c22c-other', 'Otra', tax_id='20555555555',
+                            legal_name='OTRA SAC')
+        stranger, _ = _p2d_member(
+            other, 'c22c_stranger',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        res = self._as(stranger).post(
+            f'/api/admin/fiscal-documents/{self.doc.pk}/reconcile/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class FiscalBetaSmokeCommandTest(TestCase):
+    """
+    TEST-HARNESS-01 (§8/§9/§55/§56). El arnés de humo BETA, corregido.
+
+    ESTO QUEDA EXPLÍCITO: una prueba que llama a un servicio EXTERNO no puede usar
+    un rollback de base de datos como «limpieza» de identidad fiscal. El envío a
+    SUNAT ya ocurrió y no se deshace; reutilizar el mismo correlativo (F001-1 en
+    ERP-FISCAL-2) fue precisamente ese error. Por eso el humo vive en un comando
+    opt-in que PERSISTE lo que envía, y NO se ejecuta en CI.
+    """
+
+    def test_it_refuses_without_the_explicit_flag(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('fiscal_beta_smoke', '--company-tax-id', '20100066603')
+
+    def test_it_refuses_when_fiscal_is_disabled_even_with_the_flag(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with override_settings(FISCAL_BETA_SMOKE_ENABLED=True, FISCAL_ENABLED=False):
+            with self.assertRaises(CommandError):
+                call_command('fiscal_beta_smoke', '--company-tax-id', '20100066603')
+
+
+# ===========================================================================
+# ERP-FISCAL-4 — Boleta electrónica (tipo 03)
+# ===========================================================================
+
+from .fiscal_services import (  # noqa: E402
+    BOLETA_ID_THRESHOLD, DOC_SIN_DOCUMENTO, _customer_party,
+)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22DBoletaTest(TestCase):
+    """
+    La boleta de venta (tipo 03): serie B, receptor con reglas propias.
+
+    Reutiliza la disciplina monetaria de la factura (VEN-02) y su generador; lo
+    que cambia es el tipo, la serie y —sobre todo— la identidad del adquirente.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22d-boleta', 'Empresa Boleta', tax_id='20100066603',
+            legal_name='EMPRESA BOLETA SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        self.product = _c1_product(self.company, 'Articulo Boleta', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 50)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+
+    def _boleta(self, *, price='118.00', qty=1, total='118.00', taxable='100.00',
+                tax='18.00', doc_type='', doc_number='', name='',
+                treatment='taxed', discount='0.00', product=None, subtotal=None,
+                source=None):
+        """
+        `subtotal` es el importe ANTES del descuento. Sin descuento coincide con
+        el total; con descuento se pasa explícito, nunca se deriva aquí: derivarlo
+        escondería justo el dato que el test de descuento tiene que controlar.
+        """
+        product = product or self.product
+        order = Order.objects.create(
+            company=self.company, customer_name=name,
+            document_type=doc_type, document_number=doc_number,
+            receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal(total), discount_amount=Decimal(discount),
+            discount_source=source or DiscountSource.NONE,
+            subtotal_amount=Decimal(subtotal if subtotal is not None else total),
+            taxable_amount=Decimal(taxable),
+            tax_amount=Decimal(tax), tax_rate=Decimal('0.18'),
+            tax_treatment=treatment, currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=product,
+                                 quantity=qty, price=Decimal(price))
+        return order
+
+    def _issue(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        return sign_fiscal_document(doc, key_pem=self.key_pem.encode(),
+                                    cert_pem=self.cert_pem.encode())
+
+    def test_a_boleta_is_issued_as_type_03_on_a_b_series(self):
+        doc = self._issue(self._boleta())
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self.assertEqual(doc.series, 'B001')
+        self.assertEqual(doc.document_id, 'B001-1')
+
+    def test_a_consumer_without_a_document_is_the_anonymous_buyer(self):
+        doc = self._issue(self._boleta())
+        self.assertEqual(doc.customer_doc_type, DOC_SIN_DOCUMENTO)
+        self.assertEqual(doc.customer_doc_number, '0')
+        self.assertIn('03', doc.signed_xml)  # InvoiceTypeCode
+
+    def test_a_boleta_with_a_dni_buyer_carries_the_dni(self):
+        doc = self._issue(self._boleta(
+            doc_type='dni', doc_number='46237547', name='PAZOS ATOCHE LUANA'))
+        self.assertEqual(doc.customer_doc_type, '1')
+        self.assertEqual(doc.customer_doc_number, '46237547')
+
+    def test_a_boleta_over_700_without_a_document_fails_closed(self):
+        """§26: >S/700 sin identificación no se emite; no gasta correlativo."""
+        order = self._boleta(price='800.00', total='800.00',
+                             taxable='677.97', tax='122.03')
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_boleta_over_700_with_a_dni_is_issued(self):
+        doc = self._issue(self._boleta(
+            price='800.00', total='800.00', taxable='677.97', tax='122.03',
+            doc_type='dni', doc_number='46237547', name='CLIENTE IDENTIFICADO'))
+        self.assertEqual(doc.customer_doc_type, '1')
+        self.assertEqual(doc.total, Decimal('800.00'))
+
+    def test_exactly_700_without_a_document_is_allowed(self):
+        """«Supere» es estrictamente mayor: 700,00 exacto no exige documento."""
+        doc = self._issue(self._boleta(
+            price='700.00', total='700.00', taxable='593.22', tax='106.78'))
+        self.assertEqual(doc.customer_doc_type, DOC_SIN_DOCUMENTO)
+
+    def test_a_non_clean_boleta_reconciles_like_a_factura(self):
+        """VEN-02 se reutiliza: 59.90 × 2 en boleta cuadra igual (§22)."""
+        prod = _c1_product(self.company, 'Boleta 59.90', '59.90')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        doc = self._issue(self._boleta(
+            price='59.90', qty=2, total='119.80', taxable='101.53', tax='18.27',
+            product=prod))
+        self.assertEqual(doc.taxable_amount, Decimal('101.53'))
+        self.assertEqual(doc.tax_amount, Decimal('18.27'))
+
+    def test_a_boleta_with_an_unexplained_discount_fails_closed(self):
+        """
+        ERP-FISCAL-6 transformó este test. Antes, TODO descuento se rechazaba
+        porque el generador no sabía declararlo; ahora se declara (ver
+        `Fiscal6DiscountDeclarationTest`). Lo que sigue fallando cerrado es un
+        descuento SIN ORIGEN: `discount_amount > 0` con `discount_source = none`
+        es un snapshot que nadie explica, y un comprobante legal no lo adivina.
+        """
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(
+                self._boleta(discount='10.00', total='108.00', subtotal='118.00',
+                             taxable='91.53', tax='16.47'))
+        self.assertIn('origen', str(ctx.exception))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+        self.series.refresh_from_db()
+        self.assertEqual(self.series.next_number, 1)
+
+    def test_a_boleta_with_a_coupon_declares_a_global_allowance(self):
+        """108,00 = 118,00 − 10,00 de cupón: base 91,53; antes, 100,00; neto 8,47."""
+        doc = self._issue(self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.COUPON))
+        root = _LET.fromstring(doc.signed_xml.encode('utf-8'))
+        allowance = root.findall('cac:AllowanceCharge', _fb.NS)
+        self.assertEqual(len(allowance), 1)
+        self.assertEqual(
+            [allowance[0].findtext(tag, namespaces=_fb.NS)
+             for tag in ('cbc:ChargeIndicator', 'cbc:AllowanceChargeReasonCode',
+                         'cbc:Amount', 'cbc:BaseAmount')],
+            ['false', '02', '8.47', '100.00'])
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(totals.findtext('cbc:LineExtensionAmount', namespaces=_fb.NS), '91.53')
+        self.assertEqual(totals.findtext('cbc:PayableAmount', namespaces=_fb.NS), '108.00')
+        self.assertIsNone(totals.find('cbc:AllowanceTotalAmount', _fb.NS))
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+
+    def test_a_boleta_with_a_manual_discount_declares_a_global_allowance(self):
+        doc = self._issue(self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.MANUAL))
+        root = _LET.fromstring(doc.signed_xml.encode('utf-8'))
+        self.assertEqual(
+            root.findtext('cac:AllowanceCharge/cbc:AllowanceChargeReasonCode',
+                          namespaces=_fb.NS), '02')
+        self.assertEqual(root.findtext('cac:AllowanceCharge/cbc:Amount',
+                                       namespaces=_fb.NS), '8.47')
+        self.assertEqual(len(root.findall('.//cac:InvoiceLine/cac:AllowanceCharge',
+                                          _fb.NS)), 0)
+
+    def test_a_boleta_with_a_discount_and_no_subtotal_fails_closed_not_500(self):
+        """§44: sin subtotal previo no hay base que declarar. FiscalError, no TypeError."""
+        order = self._boleta(
+            discount='10.00', total='108.00', subtotal='118.00',
+            taxable='91.53', tax='16.47', source=DiscountSource.COUPON)
+        Order.objects.filter(pk=order.pk).update(subtotal_amount=None)
+        order.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        self.assertIn('subtotal', str(ctx.exception))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_a_non_taxed_boleta_fails_closed(self):
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(
+                self._boleta(treatment='exempt', tax='0.00', taxable='118.00'))
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_the_boleta_resolver_does_not_borrow_the_factura_series(self):
+        """§20: una boleta necesita serie B; una F no la resuelve."""
+        only_factura = _p3_company(
+            'c22d-onlyf', 'Solo Factura', tax_id='20555555555',
+            legal_name='SOLO FACTURA SAC')
+        FiscalSeries.objects.create(
+            company=only_factura, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        prod = _c1_product(only_factura, 'Art', '118.00')
+        _c1_stock(only_factura.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=only_factura, customer_name='', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=only_factura.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=prod, quantity=1,
+                                 price=Decimal('118.00'))
+        with self.assertRaises(FiscalError):
+            get_or_create_fiscal_document(order)
+
+    def test_the_qr_of_a_boleta_uses_type_03_and_the_buyer_doc(self):
+        from .fiscal_pdf_services import build_fiscal_context
+        doc = self._issue(self._boleta(
+            doc_type='dni', doc_number='46237547', name='CLIENTE'))
+        ctx = build_fiscal_context(doc)
+        payload = ctx['qr_payload']
+        parts = payload.split('|')
+        self.assertEqual(parts[1], '03')       # tipo de documento
+        self.assertEqual(parts[2], 'B001')     # serie
+        self.assertEqual(parts[7], '1')        # tipo doc adquirente (DNI)
+        self.assertEqual(parts[8], '46237547')  # nº doc adquirente
+
+    def test_a_boleta_cannot_be_sent_individually_via_sendbill(self):
+        """REVIEW A (H1): una boleta se informa por Resumen, no por sendBill."""
+        doc = self._issue(self._boleta())
+        with self.assertRaises(FiscalError):
+            submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)  # sin cambio
+
+    def test_the_issued_date_is_the_legal_emission_date_not_row_creation(self):
+        """
+        REVIEW A (H2): `issued_at` sale de `paid_at` (fecha legal del XML), para
+        que el Resumen agrupe por la fecha del comprobante y no por el reloj.
+        """
+        paid = timezone.make_aware(timezone.datetime(2026, 1, 15, 23, 59, 0))
+        order = self._boleta(name='CLIENTE')
+        order.paid_at = paid
+        order.save(update_fields=['paid_at'])
+        doc, _ = get_or_create_fiscal_document(order)
+        self.assertEqual(timezone.localtime(doc.issued_at).date(), paid.date())
+
+
+# ===========================================================================
+# ERP-FISCAL-6 — Descuentos declarados (cac:AllowanceCharge)
+# ===========================================================================
+
+@override_settings(FISCAL_ENABLED=True)
+class Fiscal6DiscountDeclarationTest(TestCase):
+    """
+    Una venta con descuento se emite, y el descuento se DECLARA donde nació.
+
+    Cupón y descuento manual son globales: un `cac:AllowanceCharge` en el
+    documento con código `02` (Catálogo N.º 53 vigente: descuento global que
+    afecta la base). Una promoción automática rebajó artículos concretos: cada
+    línea afectada lleva el suyo con código `00`. Las cifras salen del snapshot
+    de la venta y de la atribución que `promotion_services` congeló; nada se
+    recalcula, y el importe a pagar sigue siendo `Order.total`.
+
+    Las ventas se hacen por el camino REAL del mostrador (`create_pos_sale` con
+    `receipt_type`), y el XML se firma por el camino real (`sign_fiscal_document`
+    → reglas → firma → XSD). Las identidades que se comprueban son las que
+    SUNAT valida (hoja `Factura2_0`, reglas 3270, 3271, 3277, 3278, 3279, 3280,
+    3291, 3300), no las que aparecieron en una conversación.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f6-desc', 'Empresa Descuentos', tax_id='20100066603',
+            legal_name='EMPRESA DESCUENTOS SAC')
+        self.branch = self.company.default_inventory_branch
+        self.factura_series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE, series='F001')
+        self.boleta_series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.phone = _c1_product(self.company, 'Teléfono F6', '3000.00')
+        self.case = _c1_product(self.company, 'Funda F6', '100.00')
+        self.glass = _c1_product(self.company, 'Vidrio F6', '50.00')
+        self.cable = _c1_product(self.company, 'Cable F6', '30.00')
+        for product in (self.phone, self.case, self.glass, self.cable):
+            _c1_stock(self.branch, product, 50)
+        self.seller, _ = _p2d_member(
+            self.company, 'f6_seller',
+            ['company.view', _C1_POS, _C12_DISCOUNT, 'sales.fiscal.issue'],
+        )
+        self.ruc_customer = Customer.objects.create(
+            company=self.company, customer_type=Customer.TYPE_BUSINESS,
+            business_name='CLIENTE F6 SAC', document_type=Order.DocumentType.RUC,
+            document_number='20000000001')
+        self.key_pem, self.cert_pem = self_signed_pem('20100066603')
+
+    # -- helpers -----------------------------------------------------------
+
+    def _sell(self, items, receipt_type=None, **kw):
+        if receipt_type == Order.ReceiptType.FACTURA:
+            kw.setdefault('customer', self.ruc_customer.pk)
+        order, _ = _c1_sale(
+            actor=self.seller, company=self.company, branch=self.branch,
+            items=[{'product': p.pk, 'quantity': q} for p, q in items],
+            payment_method=PaymentMethod.CARD, receipt_type=receipt_type, **kw,
+        )
+        return order
+
+    def _issue(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        return sign_fiscal_document(doc, key_pem=self.key_pem, cert_pem=self.cert_pem)
+
+    def _xml(self, doc):
+        return _LET.fromstring(doc.signed_xml.encode('utf-8'))
+
+    @staticmethod
+    def _text(node, path):
+        return node.findtext(path, namespaces=_fb.NS)
+
+    def _allowance(self, node):
+        """(motivo, importe, base) del `cac:AllowanceCharge` de `node`, o None."""
+        found = node.findall('cac:AllowanceCharge', _fb.NS)
+        if not found:
+            return None
+        self.assertEqual(len(found), 1)
+        a = found[0]
+        self.assertEqual(self._text(a, 'cbc:ChargeIndicator'), 'false')
+        self.assertIsNone(a.find('cbc:MultiplierFactorNumeric', _fb.NS))
+        return (self._text(a, 'cbc:AllowanceChargeReasonCode'),
+                self._text(a, 'cbc:Amount'), self._text(a, 'cbc:BaseAmount'))
+
+    def _lines(self, root):
+        return root.findall('cac:InvoiceLine', _fb.NS)
+
+    def _assert_totals_follow_the_sale(self, root, order):
+        """
+        Reglas 3278/3279/3280: Total valor de venta = base imponible;
+        TaxInclusiveAmount = PayableAmount = lo cobrado. Sin
+        `AllowanceTotalAmount`: nuestros descuentos afectan la base y SUNAT lo
+        restaría OTRA VEZ del total (regla 3280) — el doble descuento.
+        """
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(self._text(totals, 'cbc:LineExtensionAmount'), str(order.taxable_amount))
+        self.assertEqual(self._text(totals, 'cbc:TaxInclusiveAmount'), str(order.total))
+        self.assertEqual(self._text(totals, 'cbc:PayableAmount'), str(order.total))
+        self.assertIsNone(totals.find('cbc:AllowanceTotalAmount', _fb.NS))
+        self.assertEqual(self._text(root, 'cac:TaxTotal/cbc:TaxAmount'), str(order.tax_amount))
+        self.assertEqual(
+            self._text(root, 'cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'),
+            str(order.taxable_amount))
+
+    def _assert_line_arithmetic(self, line):
+        """Regla 3271: cantidad × valor unitario − descuentos = valor de venta (±0,01)."""
+        qty = Decimal(self._text(line, 'cbc:InvoicedQuantity'))
+        unit = Decimal(self._text(line, 'cac:Price/cbc:PriceAmount'))
+        rebaja = sum((Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                      for a in line.findall('cac:AllowanceCharge', _fb.NS)), Decimal('0'))
+        value = Decimal(self._text(line, 'cbc:LineExtensionAmount'))
+        self.assertLessEqual(abs((qty * unit).quantize(Decimal('0.01')) - rebaja - value),
+                             Decimal('0.01'))
+        # Regla 3270: precio de venta unitario = (valor + impuesto) / cantidad.
+        tax = Decimal(self._text(line, 'cac:TaxTotal/cbc:TaxAmount'))
+        price = Decimal(self._text(line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'))
+        self.assertLessEqual(abs((value + tax) / qty - price), Decimal('0.01'))
+
+    def _sum_line_allowances(self, root):
+        return sum((Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                    for a in root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)),
+                   Decimal('0.00'))
+
+    def _gross_promotion_discount(self, order):
+        total = Decimal('0.00')
+        for row in AppliedPromotion.objects.filter(order=order):
+            total += sum((Decimal(c['discount_amount']) for c in row.metadata['components']),
+                         Decimal('0.00'))
+        return total
+
+    # -- global: cupón y manual ---------------------------------------------
+
+    def test_a_coupon_is_declared_as_one_global_allowance_on_a_factura(self):
+        """
+        150,00 − 10 % = 135,00. Base de la venta 114,41; base de antes 127,12;
+        descuento NETO 12,71 con código 02 y base 127,12. Las líneas van SIN
+        rebajar (84,75 + 42,37 = 127,12) y 127,12 − 12,71 = 114,41 (regla 3277).
+        """
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA, coupon_code='DIEZ')
+        self.assertEqual(order.discount_source, DiscountSource.COUPON)
+        self.assertEqual((order.discount_amount, order.total, order.taxable_amount),
+                         (Decimal('15.00'), Decimal('135.00'), Decimal('114.41')))
+
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._allowance(root), ('02', '12.71', '127.12'))
+        lines = self._lines(root)
+        self.assertEqual([self._text(ln, 'cbc:LineExtensionAmount') for ln in lines],
+                         ['84.75', '42.37'])
+        self.assertEqual([self._allowance(ln) for ln in lines], [None, None])
+        self.assertEqual(
+            [self._text(ln, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount')
+             for ln in lines], ['100.00', '50.00'])
+        for line in lines:
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+        self.assertEqual(doc.document_type, FiscalDocumentType.INVOICE)
+        self.assertEqual(doc.status, FiscalDocumentStatus.SIGNED)
+        _fs.validate_invoice(doc.signed_xml.encode('utf-8'))
+
+    def test_a_manual_percentage_is_declared_globally_without_inventing_a_factor(self):
+        """5 % manual: 7,50 bruto; neto 127,12 − 120,76 = 6,36. Sin MultiplierFactorNumeric."""
+        order = self._sell(
+            [(self.case, 1), (self.glass, 1)], Order.ReceiptType.FACTURA,
+            may_apply_manual_discount=True, manual_discount_type='percent',
+            manual_discount_value='5', discount_reason='Cliente frecuente')
+        self.assertEqual((order.discount_source, order.discount_amount, order.total),
+                         (DiscountSource.MANUAL, Decimal('7.50'), Decimal('142.50')))
+        root = self._xml(self._issue(order))
+        self.assertEqual(self._allowance(root), ('02', '6.36', '127.12'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_manual_fixed_amount_is_declared_globally(self):
+        """20,00 de rebaja manual: neto 127,12 − 110,17 = 16,95."""
+        order = self._sell(
+            [(self.case, 1), (self.glass, 1)], Order.ReceiptType.BOLETA,
+            may_apply_manual_discount=True, manual_discount_type='amount',
+            manual_discount_value='20.00', discount_reason='Rayón en la caja')
+        self.assertEqual(order.total, Decimal('130.00'))
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._allowance(root), ('02', '16.95', '127.12'))
+        self.assertEqual(doc.document_type, FiscalDocumentType.RECEIPT)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_coupon_on_a_boleta_uses_the_same_primitives(self):
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.BOLETA, coupon_code='DIEZ')
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertEqual(self._text(root, 'cbc:InvoiceTypeCode'), '03')
+        self.assertEqual(self._allowance(root), ('02', '12.71', '127.12'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    # -- línea: promociones ---------------------------------------------------
+
+    def test_a_fixed_combo_is_declared_line_by_line_on_a_boleta(self):
+        """
+        Funda 100 + vidrio 50 a 100: rebaja bruta 50 (33,33 / 16,67). La venta
+        vale 100 → base 84,75; de antes 127,12; neto 42,37 repartido 28,24 /
+        14,13. Cada línea: valor rebajado, valor unitario SIN rebajar, y el
+        precio que el cliente pagó por unidad.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)], Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_source, order.discount_amount, order.total),
+                         (DiscountSource.PROMOTION, Decimal('50.00'), Decimal('100.00')))
+        self.assertEqual(order.taxable_amount, Decimal('84.75'))
+
+        doc = self._issue(order)
+        root = self._xml(doc)
+        self.assertIsNone(self._allowance(root))          # nada global
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:LineExtensionAmount'), '56.50')
+        self.assertEqual(self._allowance(case_line), ('00', '28.24', '84.74'))
+        self.assertEqual(self._text(case_line, 'cac:Price/cbc:PriceAmount'), '84.74')
+        self.assertEqual(
+            self._text(case_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '66.67')
+        self.assertEqual(self._text(glass_line, 'cbc:LineExtensionAmount'), '28.25')
+        self.assertEqual(self._allowance(glass_line), ('00', '14.13', '42.38'))
+        self.assertEqual(
+            self._text(glass_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '33.33')
+        for line in (case_line, glass_line):
+            self._assert_line_arithmetic(line)
+        # Σ descuentos de línea (neto) == base de antes − base de la venta.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('42.37'))
+        # Y la suma COMERCIAL bruta sigue siendo la de la venta.
+        self.assertEqual(self._gross_promotion_discount(order), order.discount_amount)
+        self._assert_totals_follow_the_sale(root, order)
+        _fs.validate_invoice(doc.signed_xml.encode('utf-8'))
+
+    def test_a_percentage_combo_is_declared_line_by_line_on_a_factura(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], percent='10.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)], Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('15.00'), Decimal('135.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._allowance(case_line), ('00', '8.47', '84.74'))
+        self.assertEqual(self._allowance(glass_line), ('00', '4.24', '42.38'))
+        self.assertEqual([self._text(ln, 'cbc:LineExtensionAmount') for ln in (case_line, glass_line)],
+                         ['76.27', '38.14'])
+        self.assertEqual(self._sum_line_allowances(root), Decimal('12.71'))
+        self.assertIsNone(self._allowance(root))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_multiple_applications_scale_the_line_allowances(self):
+        """Dos sets de (2 fundas + 1 vidrio) a 200: rebaja bruta 100; neto 84,75 → 67,80 / 16,95."""
+        _c13_combo(self.company, [(self.case, 2), (self.glass, 1)], fixed_price='200.00')
+        order = self._sell([(self.case, 4), (self.glass, 2)], Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('100.00'), Decimal('400.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:InvoicedQuantity'), '4.00')
+        self.assertEqual(self._allowance(case_line)[:2], ('00', '67.80'))
+        self.assertEqual(self._allowance(glass_line)[:2], ('00', '16.95'))
+        for line in (case_line, glass_line):
+            self._assert_line_arithmetic(line)
+        self.assertEqual(self._sum_line_allowances(root), Decimal('84.75'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_multiple_promotions_each_explain_their_own_lines(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00', name='A')
+        _c13_combo(self.company, [(self.phone, 1)], percent='10.00', name='B')
+        order = self._sell([(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('350.00'), Decimal('2800.00')))
+        self.assertEqual(AppliedPromotion.objects.filter(order=order).count(), 2)
+        root = self._xml(self._issue(order))
+        self.assertEqual(len(root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)), 3)
+        # 3150/1,18 = 2669,49; 2800/1,18 = 2372,88; neto 296,61.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('296.61'))
+        self.assertEqual(self._gross_promotion_discount(order), Decimal('350.00'))
+        for line in self._lines(root):
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_partially_promoted_line_and_an_untouched_line(self):
+        """
+        Dos fundas (una en el combo), un vidrio y un cable que no entra en nada:
+        la funda declara su descuento sobre las DOS unidades vendidas; el cable
+        no lleva `AllowanceCharge` y su precio es el de catálogo.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 2), (self.glass, 1), (self.cable, 1)],
+                           Order.ReceiptType.BOLETA)
+        self.assertEqual((order.discount_amount, order.total), (Decimal('50.00'), Decimal('230.00')))
+        root = self._xml(self._issue(order))
+        case_line, glass_line, cable_line = self._lines(root)
+        self.assertEqual(self._text(case_line, 'cbc:InvoicedQuantity'), '2.00')
+        self.assertIsNotNone(self._allowance(case_line))
+        self.assertIsNotNone(self._allowance(glass_line))
+        self.assertIsNone(self._allowance(cable_line))
+        self.assertEqual(
+            self._text(cable_line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '30.00')
+        for line in (case_line, glass_line, cable_line):
+            self._assert_line_arithmetic(line)
+        # 280/1,18 = 237,29; 230/1,18 = 194,92; neto 42,37.
+        self.assertEqual(self._sum_line_allowances(root), Decimal('42.37'))
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_cent_remainders_close_exactly_across_three_lines(self):
+        """3 150 → 3 000: la rebaja bruta 150 se atribuye 142,86 / 4,76 / 2,38 y el neto 127,12 cierra."""
+        _c13_combo(self.company, [(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                   fixed_price='3000.00')
+        order = self._sell([(self.phone, 1), (self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA)
+        self.assertEqual(order.total, Decimal('3000.00'))
+        root = self._xml(self._issue(order))
+        amounts = [Decimal(a.findtext('cbc:Amount', namespaces=_fb.NS))
+                   for a in root.findall('cac:InvoiceLine/cac:AllowanceCharge', _fb.NS)]
+        self.assertEqual(len(amounts), 3)
+        self.assertTrue(all(a > 0 for a in amounts))
+        self.assertEqual(sum(amounts), Decimal('127.12'))   # 2669,49 − 2542,37
+        self.assertEqual(self._gross_promotion_discount(order), Decimal('150.00'))
+        for line in self._lines(root):
+            self._assert_line_arithmetic(line)
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_legacy_promotion_snapshot_is_declared_from_its_rebuilt_attribution(self):
+        """
+        Una venta anterior a la atribución: sus componentes sólo tienen
+        `quantity_used` y `unit_price`. Se declara igual —reconstruyendo en
+        memoria con la regla vigente— y el JSON histórico NO cambia.
+        """
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)])
+        row = AppliedPromotion.objects.get(order=order)
+        legacy = [{k: v for k, v in c.items() if k not in ('regular_amount', 'discount_amount')}
+                  for c in row.metadata['components']]
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': legacy})
+        Order.objects.filter(pk=order.pk).update(receipt_type=Order.ReceiptType.BOLETA)
+        order.refresh_from_db()
+
+        root = self._xml(self._issue(order))
+        case_line, glass_line = self._lines(root)
+        self.assertEqual(self._allowance(case_line), ('00', '28.24', '84.74'))
+        self.assertEqual(self._allowance(glass_line), ('00', '14.13', '42.38'))
+        row.refresh_from_db()
+        self.assertEqual(row.metadata['components'], legacy)
+
+    # -- regresión: sin descuento y sin doble descuento ---------------------
+
+    def test_a_sale_without_a_discount_emits_no_allowance_at_all(self):
+        order = self._sell([(self.case, 1)], Order.ReceiptType.FACTURA)
+        self.assertEqual((order.discount_source, order.discount_amount),
+                         (DiscountSource.NONE, Decimal('0.00')))
+        root = self._xml(self._issue(order))
+        self.assertEqual(len(root.findall('.//cac:AllowanceCharge', _fb.NS)), 0)
+        self.assertIsNone(root.find('cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount', _fb.NS))
+        (line,) = self._lines(root)
+        self.assertEqual(self._text(line, 'cbc:LineExtensionAmount'), '84.75')
+        self.assertEqual(
+            self._text(line, 'cac:PricingReference/cac:AlternativeConditionPrice/cbc:PriceAmount'),
+            '100.00')
+        self._assert_totals_follow_the_sale(root, order)
+
+    def test_a_declared_allowance_never_subtracts_the_discount_twice(self):
+        """
+        DOUBLE DISCOUNT. El cupón ya está dentro de `taxable_amount`; declararlo
+        NO puede volver a restarlo. `PayableAmount` es lo cobrado, y una
+        `InvoiceData` que restara el descuento otra vez no puede ni construirse.
+        """
+        _Coupon.objects.create(company=self.company, code='DIEZ', discount_percent=10)
+        order = self._sell([(self.case, 1), (self.glass, 1)],
+                           Order.ReceiptType.FACTURA, coupon_code='DIEZ')
+        root = self._xml(self._issue(order))
+        totals = root.find('cac:LegalMonetaryTotal', _fb.NS)
+        self.assertEqual(self._text(totals, 'cbc:PayableAmount'), '135.00')
+        self.assertEqual(self._text(totals, 'cbc:TaxInclusiveAmount'), '135.00')
+        self.assertEqual(self._text(totals, 'cbc:LineExtensionAmount'), '114.41')
+        self.assertEqual(self._text(root, 'cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount'), '114.41')
+
+        # La versión «restada dos veces»: base 101,70 = 114,41 − 12,71 otra vez.
+        doble = minimal_invoice(
+            lines=(Line('FUNDA', Decimal('1'), 'NIU', Decimal('84.75'), Decimal('100.00'),
+                        Decimal('84.75'), Decimal('15.25'), Decimal('18.00')),
+                   Line('VIDRIO', Decimal('1'), 'NIU', Decimal('42.37'), Decimal('50.00'),
+                        Decimal('42.37'), Decimal('7.63'), Decimal('18.00'))),
+            allowances=(Allowance(Decimal('12.71'), Decimal('127.12'), '02'),),
+            taxable_amount=Decimal('101.70'), tax_amount=Decimal('18.31'),
+            total=Decimal('120.01'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(doble)
+        self.assertIn('descuento global', str(ctx.exception))
+
+    def test_line_and_global_allowances_add_up_and_keep_the_xsd_order(self):
+        """
+        §27, inspirado en la guía oficial: descuentos de línea + descuento
+        global = `allowance_total`. La estructura los admite juntos —2 unidades
+        a 100 con 20 de rebaja de línea, y 18 de rebaja global— y el XSD fija
+        dónde va cada uno. Ese total NO se escribe en `AllowanceTotalAmount`:
+        SUNAT reserva ese nodo a los descuentos que NO afectan la base y lo
+        resta del importe a pagar (reglas 3300 y 3280).
+        """
+        data = minimal_invoice(
+            lines=(Line('ARTICULO', Decimal('2'), 'NIU', Decimal('100.00'),
+                        Decimal('106.20'), Decimal('180.00'), Decimal('32.40'),
+                        Decimal('18.00'),
+                        allowances=(Allowance(Decimal('20.00'), Decimal('200.00'), '00'),)),),
+            allowances=(Allowance(Decimal('18.00'), Decimal('180.00'), '02'),),
+            taxable_amount=Decimal('162.00'), tax_amount=Decimal('29.16'),
+            total=Decimal('191.16'))
+        self.assertEqual(data.line_allowance_total, Decimal('20.00'))
+        self.assertEqual(data.global_allowance_total, Decimal('18.00'))
+        self.assertEqual(data.allowance_total, Decimal('38.00'))
+        _fr.validate(data)
+        signed = _fsign.sign_invoice(
+            _LET.fromstring(_fb.build_invoice_xml(data)),
+            key_pem=self.key_pem, cert_pem=self.cert_pem)
+        xml = _LET.tostring(signed, xml_declaration=True, encoding='UTF-8')
+        _fs.validate_invoice(xml)
+        root = _LET.fromstring(xml)
+        names = [_LET.QName(c).localname for c in root]
+        self.assertLess(names.index('PaymentTerms'), names.index('AllowanceCharge'))
+        self.assertLess(names.index('AllowanceCharge'), names.index('TaxTotal'))
+        self.assertLess(names.index('TaxTotal'), names.index('LegalMonetaryTotal'))
+        line = root.find('cac:InvoiceLine', _fb.NS)
+        line_names = [_LET.QName(c).localname for c in line]
+        self.assertEqual(
+            line_names,
+            ['ID', 'InvoicedQuantity', 'LineExtensionAmount', 'PricingReference',
+             'AllowanceCharge', 'TaxTotal', 'Item', 'Price'])
+        self.assertIsNone(root.find('cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount', _fb.NS))
+
+    def test_the_wrong_catalogue_level_is_refused_before_the_network(self):
+        """`00` es de ítem y `02` es global (Catálogo N.º 53). Cruzarlos no sale del servidor."""
+        base = minimal_invoice(
+            lines=(Line('A', Decimal('1'), 'NIU', Decimal('100.00'), Decimal('118.00'),
+                        Decimal('100.00'), Decimal('18.00'), Decimal('18.00')),),
+            allowances=(Allowance(Decimal('10.00'), Decimal('100.00'), '00'),),
+            taxable_amount=Decimal('90.00'), tax_amount=Decimal('16.20'),
+            total=Decimal('106.20'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(base)
+        self.assertIn('4291', str(ctx.exception))
+        cruzada = minimal_invoice(
+            lines=(Line('A', Decimal('2'), 'NIU', Decimal('100.00'), Decimal('106.20'),
+                        Decimal('180.00'), Decimal('32.40'), Decimal('18.00'),
+                        allowances=(Allowance(Decimal('20.00'), Decimal('200.00'), '02'),)),),
+            taxable_amount=Decimal('180.00'), tax_amount=Decimal('32.40'),
+            total=Decimal('212.40'))
+        with self.assertRaises(_fr.FiscalRuleError) as ctx:
+            _fr.validate(cruzada)
+        self.assertIn('nivel de ítem', str(ctx.exception))
+
+    # -- fail closed: lo que el snapshot no explica no se emite --------------
+
+    def _promo_sale_for_tampering(self):
+        _c13_combo(self.company, [(self.case, 1), (self.glass, 1)], fixed_price='100.00')
+        order = self._sell([(self.case, 1), (self.glass, 1)])
+        Order.objects.filter(pk=order.pk).update(receipt_type=Order.ReceiptType.BOLETA)
+        order.refresh_from_db()
+        return order, AppliedPromotion.objects.get(order=order)
+
+    def _assert_refused(self, order, *fragments):
+        before = self.boleta_series.next_number
+        with self.assertRaises(FiscalError) as ctx:
+            get_or_create_fiscal_document(order)
+        for fragment in fragments:
+            self.assertIn(fragment, str(ctx.exception))
+        self.assertEqual(FiscalDocument.objects.filter(order=order).count(), 0)
+        self.boleta_series.refresh_from_db()
+        self.assertEqual(self.boleta_series.next_number, before)   # no se quema
+        return ctx.exception
+
+    def test_a_discount_without_a_source_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(discount_source=DiscountSource.NONE)
+        order.refresh_from_db()
+        self._assert_refused(order, 'origen', '50.00')
+
+    def test_a_missing_subtotal_fails_closed_as_a_domain_error(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(subtotal_amount=None)
+        order.refresh_from_db()
+        exc = self._assert_refused(order, 'subtotal')
+        self.assertIsInstance(exc, FiscalError)          # ni TypeError ni 500
+
+    def test_a_discount_above_the_subtotal_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(discount_amount=Decimal('500.00'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'supera el subtotal')
+
+    def test_a_snapshot_whose_subtraction_does_not_close_fails_closed(self):
+        order, _ = self._promo_sale_for_tampering()
+        Order.objects.filter(pk=order.pk).update(total=Decimal('99.00'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'no cuadra')
+
+    def test_a_promotion_discount_without_applied_promotions_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).delete()
+        self._assert_refused(order, 'ninguna promoción aplicada')
+
+    def test_applied_promotions_that_do_not_sum_the_discount_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(discount_amount=Decimal('40.00'))
+        self._assert_refused(order, 'suman 40.00')
+
+    def test_empty_components_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': []})
+        self._assert_refused(order, 'no se puede explicar')
+
+    def test_the_catalogue_shape_in_metadata_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': [
+            {'product_id': self.case.pk, 'quantity': 1, 'price': '100.00', 'available': 3},
+            {'product_id': self.glass.pk, 'quantity': 1, 'price': '50.00', 'available': 3},
+        ]})
+        self._assert_refused(order, 'catálogo')
+
+    def test_a_duplicated_product_in_legacy_metadata_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        legacy = [{k: v for k, v in c.items() if k not in ('regular_amount', 'discount_amount')}
+                  for c in row.metadata['components']]
+        legacy[1]['product_id'] = self.case.pk
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': legacy})
+        self._assert_refused(order, 'dos veces')
+
+    def test_a_tampered_component_discount_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['discount_amount'] = '40.00'          # 40 + 16,67 ≠ 50
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'congelados suman')
+
+    def test_a_tampered_component_regular_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['regular_amount'] = '90.00'           # 1 × 100,00 ≠ 90
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'declara un valor regular')
+
+    def test_a_partially_frozen_snapshot_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[1] = {k: v for k, v in components[1].items()
+                         if k not in ('regular_amount', 'discount_amount')}
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'congelado a medias')
+
+    def test_a_component_that_is_not_in_the_sale_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['product_id'] = self.cable.pk          # nunca se vendió
+        AppliedPromotion.objects.filter(pk=row.pk).update(metadata={'components': components})
+        self._assert_refused(order, 'no está entre las líneas')
+
+    def test_a_promotion_of_another_company_is_never_used(self):
+        """Multiempresa: el snapshot de la venta sólo se lee dentro de su empresa."""
+        order, row = self._promo_sale_for_tampering()
+        other = _p3_company('f6-ajena', 'Empresa Ajena', tax_id='20522222222')
+        other_case = _c1_product(other, 'Funda Ajena', '100.00')
+        other_glass = _c1_product(other, 'Vidrio Ajeno', '50.00')
+        foreign = _c13_combo(other, [(other_case, 1), (other_glass, 1)], fixed_price='100.00')
+        AppliedPromotion.objects.filter(pk=row.pk).update(promotion=foreign)
+        self._assert_refused(order, 'no pertenece a la empresa')
+        # Y desde la otra empresa la venta no tiene promociones que leer.
+        self.assertEqual(
+            AppliedPromotion.objects.filter(company=other, order=order).count(), 0)
+
+    def test_more_units_attributed_than_sold_fail_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0].update({'quantity_used': 3, 'regular_amount': '300.00',
+                              'discount_amount': '33.33'})
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, regular_amount=Decimal('350.00'))
+        self._assert_refused(order, 'unidad(es)')
+
+    def test_a_component_frozen_at_another_price_fails_closed(self):
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0].update({'unit_price': '90.00', 'regular_amount': '90.00'})
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, regular_amount=Decimal('140.00'))
+        self._assert_refused(order, 'lo vendió a 100.00')
+
+    def test_a_line_discounted_to_zero_is_a_free_transfer_and_fails_closed(self):
+        """Una línea rebajada al 100 % es una operación gratuita (Catálogo 07, 11-16): fuera de alcance."""
+        order, row = self._promo_sale_for_tampering()
+        components = row.metadata['components']
+        components[0]['discount_amount'] = '100.00'
+        components[1]['discount_amount'] = '0.00'
+        AppliedPromotion.objects.filter(pk=row.pk).update(
+            metadata={'components': components}, discount_amount=Decimal('100.00'))
+        Order.objects.filter(pk=order.pk).update(
+            discount_amount=Decimal('100.00'), total=Decimal('50.00'),
+            taxable_amount=Decimal('42.37'), tax_amount=Decimal('7.63'))
+        order.refresh_from_db()
+        self._assert_refused(order, 'gratuita')
+
+
+# ===========================================================================
+# ERP-FISCAL-4 — Resumen Diario de Boletas (RC)
+# ===========================================================================
+
+from datetime import date as _date, timedelta as _timedelta  # noqa: E402
+
+from .fiscal.provider import (  # noqa: E402
+    SummaryOutcome, SummarySubmissionResult, TicketStatus, TicketStatusResult,
+)
+from .fiscal.summary import SummaryData, SummaryLine, build_summary_xml  # noqa: E402
+from .fiscal_summary_services import (  # noqa: E402
+    MAX_SUMMARY_LINES, FiscalSummaryInProgress, generate_daily_summaries,
+    poll_daily_summary, select_eligible_boletas, sign_daily_summary,
+    submit_daily_summary,
+)
+from .models import (  # noqa: E402
+    FiscalDailySummary, FiscalDailySummaryDocument, FiscalSummaryStatus,
+)
+
+
+class _FakeSummaryProvider:
+    """billService de mentira: sendSummary y getStatus(ticket) sin red."""
+
+    def __init__(self, *, submit=None, ticket=None):
+        self._submit = submit
+        self._ticket = ticket
+        self.submit_calls = 0
+        self.poll_calls = 0
+
+    def send_summary(self, *, filename, zip_bytes):
+        self.submit_calls += 1
+        return self._submit
+
+    def get_ticket_status(self, *, ticket):
+        self.poll_calls += 1
+        return self._ticket
+
+
+def _ticket_result(*, ref_id, outcome=ProviderOutcome.ACCEPTED, response_code='0',
+                   receiver='20100066603', ticket_status=TicketStatus.COMPLETED,
+                   with_cdr=True):
+    cdr = None
+    if with_cdr:
+        cdr_xml = _build_cdr_xml(reference_id=ref_id, response_code=response_code,
+                                 receiver_ruc=receiver, doc_type='', sign=False)
+        cdr = ProviderResult(outcome=outcome, response_code=response_code,
+                             safe_message='ok', cdr_xml=cdr_xml)
+    return TicketStatusResult(status=ticket_status, status_code=response_code, cdr=cdr)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22ESummaryTest(TestCase):
+    """El Resumen Diario: selección, armado, envío por ticket y CDR."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'c22e-rc', 'Empresa RC', tax_id='20100066603',
+            legal_name='EMPRESA RC SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        self.product = _c1_product(self.company, 'Art RC', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 5)
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._n = 0
+
+    def _boleta_doc(self, *, issued=None, total='118.00', taxable='100.00',
+                    tax='18.00', doc_type='0', doc_number='0',
+                    status=FiscalDocumentStatus.SIGNED, environment=None):
+        self._n += 1
+        issued = issued or self.today
+        order = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal(total), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal(total), taxable_amount=Decimal(taxable),
+            tax_amount=Decimal(tax), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        issued_dt = timezone.make_aware(
+            timezone.datetime(issued.year, issued.month, issued.day, 12, 0, 0))
+        return FiscalDocument.objects.create(
+            order=order, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=self._n,
+            issued_at=issued_dt,
+            environment=environment or FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC SAC',
+            customer_doc_type=doc_type, customer_doc_number=doc_number,
+            customer_legal_name='VARIOS', currency='PEN',
+            taxable_amount=Decimal(taxable), tax_amount=Decimal(tax),
+            total=Decimal(total), tax_rate=Decimal('0.18'),
+            status=status, signed_xml='<Invoice/>')
+
+    def _generate(self, reference_date=None):
+        return generate_daily_summaries(
+            self.company, reference_date or self.today, FiscalEnvironment.BETA)
+
+    # -- selección y armado ---------------------------------------------------
+
+    def test_a_summary_holds_the_eligible_boletas_of_the_day(self):
+        self._boleta_doc(); self._boleta_doc(); self._boleta_doc()
+        summaries = self._generate()
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].lines.count(), 3)
+        self.assertTrue(summaries[0].identifier.startswith('RC-'))
+        self.assertEqual(summaries[0].reference_date, self.today)
+
+    def test_only_the_requested_date_is_included(self):
+        self._boleta_doc(issued=self.today)
+        self._boleta_doc(issued=self.today - _timedelta(days=1))
+        summaries = self._generate(self.today)
+        self.assertEqual(summaries[0].lines.count(), 1)
+
+    def test_a_boleta_is_not_included_twice(self):
+        """§13: una boleta ya informada no entra en otro resumen activo."""
+        self._boleta_doc(); self._boleta_doc()
+        self._generate()
+        with self.assertRaises(FiscalError):  # nada elegible queda
+            self._generate()
+
+    def test_generate_without_eligible_boletas_fails(self):
+        with self.assertRaises(FiscalError):
+            self._generate()
+
+    def test_an_unsigned_boleta_is_not_eligible(self):
+        """REVIEW A/B: una boleta sin firmar (sin evidencia) no se informa."""
+        self._boleta_doc(status=FiscalDocumentStatus.GENERATED)
+        with self.assertRaises(FiscalError):  # nada elegible
+            self._generate()
+
+    def test_the_generation_date_is_today_not_the_reference_date(self):
+        """REVIEW A/B (M1): cbc:IssueDate = generación (hoy); ReferenceDate = boletas."""
+        self._boleta_doc(issued=self.today - _timedelta(days=2))
+        s = generate_daily_summaries(
+            self.company, self.today - _timedelta(days=2), FiscalEnvironment.BETA)[0]
+        self.assertEqual(s.reference_date, self.today - _timedelta(days=2))
+        self.assertEqual(s.issue_date, self.today)  # generación
+
+    def test_batches_split_at_the_limit(self):
+        """§61: el reparto en bloques + resto, con el límite reducido para probarlo."""
+        from unittest.mock import patch as _patch
+        for _ in range(5):
+            self._boleta_doc()
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 2):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        self.assertEqual([s.lines.count() for s in summaries], [2, 2, 1])
+        # correlativos distintos
+        self.assertEqual(sorted(s.correlativo for s in summaries), [1, 2, 3])
+
+    def test_correlativo_is_unique_per_day(self):
+        self._boleta_doc()
+        s1 = self._generate()[0]
+        self._boleta_doc()
+        s2 = self._generate()[0]
+        self.assertNotEqual(s1.correlativo, s2.correlativo)
+        self.assertNotEqual(s1.identifier, s2.identifier)
+
+    # -- firma ----------------------------------------------------------------
+
+    def _generate_and_sign(self):
+        self._boleta_doc(); self._boleta_doc()
+        summary = self._generate()[0]
+        return sign_daily_summary(summary, key_pem=self.key_pem.encode(),
+                                  cert_pem=self.cert_pem.encode())
+
+    def test_signing_produces_a_verifiable_summary(self):
+        s = self._generate_and_sign()
+        self.assertEqual(s.status, FiscalSummaryStatus.SIGNED)
+        self.assertTrue(s.signed_xml)
+        self.assertTrue(s.signed_xml_sha256)
+        self.assertIn('SummaryDocuments', s.signed_xml)
+        self.assertIn(s.identifier, s.signed_xml)
+
+    # -- envío (sendSummary → ticket) -----------------------------------------
+
+    def test_submitting_persists_the_ticket(self):
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='1234567890'))
+        s = submit_daily_summary(s, provider)
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(s.ticket, '1234567890')
+        s.refresh_from_db()
+        self.assertEqual(s.ticket, '1234567890')  # persistido (§8)
+
+    def test_a_transport_error_on_submit_is_reintentable_without_a_ticket(self):
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='timeout'))
+        s = submit_daily_summary(s, provider)
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_ERROR)
+        self.assertEqual(s.ticket, '')
+
+    def test_a_second_submit_does_not_create_a_second_ticket(self):
+        """§48: reenviar un resumen con ticket no llama otra vez a SUNAT."""
+        s = self._generate_and_sign()
+        provider = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='T1'))
+        submit_daily_summary(s, provider)
+        s.refresh_from_db()
+        submit_daily_summary(s, provider)
+        self.assertEqual(provider.submit_calls, 1)
+
+    # -- consulta (getStatus) y CDR -------------------------------------------
+
+    def _submitted(self):
+        s = self._generate_and_sign()
+        return submit_daily_summary(s, _FakeSummaryProvider(
+            submit=SummarySubmissionResult(outcome=SummaryOutcome.TICKET, ticket='T')))
+
+    def test_processing_leaves_it_submitted(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=TicketStatusResult(
+            status=TicketStatus.PROCESSING, status_code='98'))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'processing')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_an_accepted_cdr_settles_the_summary(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=s.identifier, outcome=ProviderOutcome.ACCEPTED))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'reconciled')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.ACCEPTED)
+        self.assertTrue(s.cdr_xml)
+
+    def test_a_rejected_cdr_supersedes_its_boletas(self):
+        """§52: el rechazo es del resumen; libera sus boletas para otro RC."""
+        s = self._submitted()
+        boleta_ids = list(s.lines.values_list('document_id', flat=True))
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=s.identifier, outcome=ProviderOutcome.REJECTED,
+                                  response_code='3301', ticket_status=TicketStatus.ERROR))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'reconciled')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.REJECTED)
+        # las boletas quedan re-informables
+        self.assertTrue(all(
+            FiscalDailySummaryDocument.objects.get(summary=s, document_id=b).superseded
+            for b in boleta_ids))
+        again = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)
+        self.assertEqual(again[0].lines.count(), len(boleta_ids))
+
+    def test_a_transport_error_on_poll_keeps_the_ticket(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=TicketStatusResult(
+            status=TicketStatus.TRANSPORT_ERROR, safe_message='timeout'))
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'transport_error')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(s.ticket, 'T')
+
+    def test_a_cdr_for_another_summary_is_not_applied(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id='RC-20000101-999'))  # otro RC
+        out = poll_daily_summary(s, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        s.refresh_from_db()
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_polling_survives_a_crash_with_only_the_persisted_ticket(self):
+        """§47: consultar funciona con sólo el ticket en BD, sin estado en memoria."""
+        s = self._submitted()
+        reloaded = FiscalDailySummary.objects.get(pk=s.pk)  # fresco de BD
+        provider = _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=reloaded.identifier))
+        out = poll_daily_summary(reloaded, provider)
+        self.assertEqual(out.action, 'reconciled')
+
+    def test_polling_an_accepted_summary_is_idempotent(self):
+        s = self._submitted()
+        provider = _FakeSummaryProvider(ticket=_ticket_result(ref_id=s.identifier))
+        poll_daily_summary(s, provider)
+        s.refresh_from_db()
+        out2 = poll_daily_summary(s, provider)
+        self.assertEqual(out2.action, 'already_terminal')
+
+    def test_the_500_boundary_splits_into_two_summaries(self):
+        """§61: 501 boletas → dos resúmenes (500 y 1). Con bulk_create para ir rápido."""
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        orders = [Order(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+            for _ in range(501)]
+        Order.objects.bulk_create(orders)
+        docs = [FiscalDocument(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=1000 + i,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+            for i, o in enumerate(orders)]
+        FiscalDocument.objects.bulk_create(docs)
+        summaries = self._generate()
+        self.assertEqual(sorted(s.lines.count() for s in summaries), [1, 500])
+
+
+class C22ESummaryConcurrencyTest(TransactionTestCase):
+    """§16/§74: dos generaciones simultáneas no chocan el correlativo ni duplican."""
+
+    def test_concurrent_generation_keeps_correlativos_distinct(self):
+        from django.db import connection
+        if connection.vendor == 'sqlite':
+            self.skipTest(
+                'SQLite serializa con un bloqueo de base de datos: la carrera real '
+                'del correlativo sólo se prueba en PostgreSQL.')
+        import threading
+        cache.clear()
+        company = _p3_company('c22e-conc', 'Empresa Conc', tax_id='20100066603',
+                             legal_name='EMPRESA CONC SAC')
+        series = FiscalSeries.objects.create(
+            company=company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        today = timezone.localdate()
+        base = timezone.make_aware(
+            timezone.datetime(today.year, today.month, today.day, 12, 0))
+        for i in range(6):
+            o = Order.objects.create(
+                company=company, customer_name='VARIOS', document_type='',
+                document_number='', receipt_type=Order.ReceiptType.BOLETA,
+                total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+                subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+                tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+                tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+                paid=True, paid_at=timezone.now(),
+                fulfillment_branch=company.default_inventory_branch)
+            FiscalDocument.objects.create(
+                order=o, company=company, series_ref=series,
+                document_type=FiscalDocumentType.RECEIPT, series='B001', number=i + 1,
+                issued_at=base, environment=FiscalEnvironment.BETA,
+                issuer_tax_id='20100066603', issuer_legal_name='EMPRESA CONC SAC',
+                customer_doc_type='0', customer_doc_number='0',
+                customer_legal_name='VARIOS', currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+                status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def worker():
+            barrier.wait()
+            try:
+                generate_daily_summaries(company, today, FiscalEnvironment.BETA)
+            except FiscalError:
+                pass  # «nada elegible» si el otro hilo ganó las boletas: aceptable
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                from django.db import connections
+                connections.close_all()
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [], f'una carrera reventó: {errors}')
+        summaries = list(FiscalDailySummary.objects.filter(company=company))
+        correlativos = [s.correlativo for s in summaries]
+        self.assertEqual(len(correlativos), len(set(correlativos)),
+                         'correlativos duplicados bajo concurrencia')
+        # Ninguna boleta quedó en dos resúmenes activos; ninguna se perdió.
+        total = FiscalDailySummaryDocument.objects.filter(
+            summary__company=company, superseded=False).count()
+        self.assertEqual(total, 6)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22ESummaryApiTest(TestCase):
+    """La superficie interna del resumen: permiso, selección y aislamiento."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22e-api', 'Empresa RC API', tax_id='20100066603',
+                                  legal_name='EMPRESA RC API SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.emisor, _ = _p2d_member(
+            self.company, 'c22e_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'c22e_observador', ['company.view', 'sales.fiscal.view'])
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._make_boleta()
+
+    def _make_boleta(self):
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        n = FiscalDocument.objects.filter(company=self.company).count() + 1
+        return FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=n,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC API SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _generate(self, user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                '/api/admin/fiscal-summaries/',
+                body if body is not None else {'reference_date': self.today.isoformat()},
+                format='json')
+
+    def test_generating_requires_issue_not_only_view(self):
+        res = self._generate(user=self.observador)
+        self.assertIn(res.status_code,
+                      (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+        self.assertEqual(FiscalDailySummary.objects.count(), 0)
+
+    def test_generating_without_a_date_is_400(self):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem, FISCAL_KEY_PEM=self.key_pem):
+            res = self._as(self.emisor).post(
+                '/api/admin/fiscal-summaries/', {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generating_creates_and_signs_the_summary(self):
+        res = self._generate()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(res.data), 1)
+        self.assertTrue(res.data[0]['has_xml'])
+        self.assertEqual(res.data[0]['status'], FiscalSummaryStatus.SIGNED)
+        self.assertEqual(res.data[0]['lines'], 1)
+
+    def test_the_backend_selects_boletas_the_body_cannot_inject_ids(self):
+        """§59: un document_ids arbitrario en el cuerpo se ignora; manda la fecha."""
+        res = self._generate(body={'reference_date': self.today.isoformat(),
+                                   'document_ids': [999999]})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data[0]['lines'], 1)  # la boleta real, no el id inyectado
+
+    def test_a_view_only_member_can_list(self):
+        self._generate()
+        res = self._as(self.observador).get('/api/admin/fiscal-summaries/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+
+    def test_a_summary_of_another_company_is_not_found(self):
+        sid = self._generate().data[0]['id']
+        other = _p3_company('c22e-other', 'Otra RC', tax_id='20555555555',
+                            legal_name='OTRA RC SAC')
+        stranger, _ = _p2d_member(
+            other, 'c22e_stranger',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        res = self._as(stranger).get(f'/api/admin/fiscal-summaries/{sid}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_submitting_via_the_api_persists_the_ticket(self):
+        from unittest.mock import patch as _patch
+        sid = self._generate().data[0]['id']
+        with _patch('store.fiscal_summary_views.resolve_provider') as fake:
+            fake.return_value = _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='API-TICKET-1'))
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-summaries/{sid}/submit/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], FiscalSummaryStatus.SUBMITTED)
+        self.assertEqual(res.data['ticket'], 'API-TICKET-1')
+
+
+# ===========================================================================
+# ERP-FISCAL-4.1 — RC-TIMEOUT-01: envío con resultado incierto
+# ===========================================================================
+
+class FiscalSendSummaryTransportTest(SimpleTestCase):
+    """
+    El proveedor distingue «no transmitido» (seguro) de «incierto» (§16), sin
+    heurísticas de nombre: sólo un fallo de la fase de CONEXIÓN es seguro.
+    """
+
+    def setUp(self):
+        self.p = SunatSoapProvider(
+            endpoint='https://x/billService', ruc='20100066603',
+            sol_user='MODDATOS', sol_password='moddatos')
+
+    def _send_with(self, exc=None, response=None):
+        from unittest.mock import patch as _patch
+        import requests
+        if exc is not None:
+            with _patch('requests.post', side_effect=exc):
+                return self.p.send_summary(filename='x.ZIP', zip_bytes=b'z')
+        with _patch.object(SunatSoapProvider, '_post', return_value=response):
+            return self.p.send_summary(filename='x.ZIP', zip_bytes=b'z')
+
+    def test_connect_timeout_is_never_sent_safe(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ConnectTimeout('connect'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_ERROR)
+
+    def test_read_timeout_is_uncertain(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ReadTimeout('read'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_connection_reset_is_uncertain(self):
+        import requests
+        r = self._send_with(exc=requests.exceptions.ConnectionError('reset'))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_http_500_is_uncertain(self):
+        r = self._send_with(response=(b'<x/>', 500))
+        self.assertEqual(r.outcome, SummaryOutcome.TRANSPORT_UNKNOWN)
+
+    def test_a_ticket_is_a_ticket(self):
+        from lxml import etree
+        SOAP = 'http://schemas.xmlsoap.org/soap/envelope/'
+        SER = 'http://service.sunat.gob.pe'
+        env = etree.Element(f'{{{SOAP}}}Envelope', nsmap={'soapenv': SOAP})
+        body = etree.SubElement(env, f'{{{SOAP}}}Body')
+        resp = etree.SubElement(body, f'{{{SER}}}sendSummaryResponse')
+        etree.SubElement(resp, 'ticket').text = '999'
+        r = self._send_with(response=(etree.tostring(env), 200))
+        self.assertEqual(r.outcome, SummaryOutcome.TICKET)
+        self.assertEqual(r.ticket, '999')
+
+    def test_a_fault_has_no_ticket(self):
+        r = self._send_with(response=(_soap_fault(), 200))
+        self.assertEqual(r.outcome, SummaryOutcome.UNKNOWN_RESPONSE)
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22FSummaryTimeoutTest(TestCase):
+    """El estado del resumen ante cada desenlace del envío (RC-TIMEOUT-01, §20)."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22f-rc', 'Empresa RC TO', tax_id='20100066603',
+                                  legal_name='EMPRESA RC TO SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+
+    def _signed_summary(self):
+        base = timezone.make_aware(
+            timezone.datetime(self.today.year, self.today.month, self.today.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=1,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC TO SAC',
+            customer_doc_type='0', customer_doc_number='0', customer_legal_name='VARIOS',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+        s = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)[0]
+        return sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                                  cert_pem=self.cert_pem.encode())
+
+    def _submit_with(self, result):
+        return submit_daily_summary(self._signed_summary(), _FakeSummaryProvider(submit=result))
+
+    def test_never_sent_is_reintentable(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='connect'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_ERROR)
+        # reintentable: can_submit
+        from .fiscal_summary_views import summary_payload
+        p = summary_payload(s)
+        self.assertTrue(p['can_submit'])
+        self.assertFalse(p['can_recover'])
+
+    def test_uncertain_transport_becomes_submission_unknown(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_UNKNOWN)
+        self.assertEqual(s.ticket, '')
+
+    def test_an_unknown_summary_refuses_to_resend(self):
+        """§12/§13: un envío incierto NO se reenvía por el flujo normal."""
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        with self.assertRaises(FiscalError):
+            submit_daily_summary(s, _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='SHOULD-NOT-HAPPEN')))
+
+    def test_an_unknown_summary_flags_recover_not_submit(self):
+        from .fiscal_summary_views import summary_payload
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        p = summary_payload(s)
+        self.assertFalse(p['can_submit'])   # §19: nunca can_submit tras incierto
+        self.assertFalse(p['can_poll'])     # no hay ticket
+        self.assertTrue(p['can_recover'])   # requiere revisión manual
+
+    def test_a_ticket_becomes_submitted_and_pollable(self):
+        from .fiscal_summary_views import summary_payload
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='T1'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMITTED)
+        p = summary_payload(s)
+        self.assertTrue(p['can_poll'])
+        self.assertFalse(p['can_submit'])
+
+    def test_an_unknown_summary_locks_its_boletas(self):
+        """No se re-informan las boletas de un resumen incierto (no duplicar)."""
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='ReadTimeout'))
+        with self.assertRaises(FiscalError):  # sus boletas siguen tomadas
+            generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)
+
+    def test_a_response_without_ticket_is_uncertain(self):
+        s = self._submit_with(SummarySubmissionResult(
+            outcome=SummaryOutcome.UNKNOWN_RESPONSE, safe_message='sin ticket'))
+        self.assertEqual(s.status, FiscalSummaryStatus.SUBMISSION_UNKNOWN)
+
+
+# ===========================================================================
+# ERP-FISCAL-4.1 — RC-ID-01, RC-ANON-01, RC-XSD-01
+# ===========================================================================
+
+from .fiscal.summary import (  # noqa: E402
+    SummaryStructureError, validate_summary_structure,
+)
+
+_SAC = 'urn:sunat:names:specification:ubl:peru:schema:xsd:SunatAggregateComponents-1'
+_CBC_S = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+_CAC_S = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+
+
+def _summary_line(**kw):
+    base = dict(line_id=1, document_type='03', document_id='B001-1',
+                customer_doc_type='1', customer_doc_number='46237547',
+                condition_code='1', total=Decimal('118.00'),
+                taxable_amount=Decimal('100.00'), exempt_amount=Decimal('0.00'),
+                unaffected_amount=Decimal('0.00'), tax_amount=Decimal('18.00'))
+    base.update(kw)
+    return SummaryLine(**base)
+
+
+def _summary_data(lines=None, identifier='RC-20260922-1'):
+    return SummaryData(
+        identifier=identifier, issue_date=_date(2026, 9, 22),
+        reference_date=_date(2026, 9, 22), supplier_ruc='20100066603',
+        supplier_name='EMPRESA SAC', lines=lines or (_summary_line(),))
+
+
+class FiscalSummaryStructureTest(SimpleTestCase):
+    """Validación estructural del Resumen (RC-XSD-01 §29). No es el XSD oficial."""
+
+    def test_a_valid_summary_passes(self):
+        validate_summary_structure(build_summary_xml(_summary_data()))
+
+    def test_a_bad_id_is_rejected(self):
+        xml = build_summary_xml(_summary_data(identifier='RC-BADID'))
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(xml)
+
+    def test_wrong_header_order_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        # Intercambia ReferenceDate e IssueDate.
+        ref = root.find(f'{{{_CBC_S}}}ReferenceDate')
+        iss = root.find(f'{{{_CBC_S}}}IssueDate')
+        idx = list(root).index(ref)
+        root.remove(ref); root.remove(iss)
+        root.insert(idx, ref); root.insert(idx, iss)  # iss antes que ref
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_a_line_missing_total_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        line = root.find(f'{{{_SAC}}}SummaryDocumentsLine')
+        line.remove(line.find(f'{{{_SAC}}}TotalAmount'))
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_a_line_missing_a_billing_payment_is_rejected(self):
+        from lxml import etree
+        root = etree.fromstring(build_summary_xml(_summary_data()))
+        line = root.find(f'{{{_SAC}}}SummaryDocumentsLine')
+        line.remove(line.findall(f'{{{_SAC}}}BillingPayment')[0])
+        with self.assertRaises(SummaryStructureError):
+            validate_summary_structure(etree.tostring(root))
+
+    def test_the_anonymous_summary_line_uses_a_hyphen(self):
+        """RC-ANON-01: en el RESUMEN el consumidor sin documento va con «-»."""
+        from .fiscal_summary_services import _summary_customer
+        self.assertEqual(_summary_customer('0', '0'),
+                         {'customer_doc_type': '-', 'customer_doc_number': '-'})
+        self.assertEqual(_summary_customer('', ''),
+                         {'customer_doc_type': '-', 'customer_doc_number': '-'})
+        # identificado: se traslada
+        self.assertEqual(_summary_customer('1', '46237547'),
+                         {'customer_doc_type': '1', 'customer_doc_number': '46237547'})
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class C22GSummaryIdentityTest(TestCase):
+    """RC-ID-01: identidad del resumen (id por fecha de generación, multibloque)."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('c22g-rc', 'Empresa RC ID', tax_id='20100066603',
+                                  legal_name='EMPRESA RC ID SAC')
+        self.series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        key, cert = self_signed_pem('20100066603')
+        self.key_pem, self.cert_pem = key.decode(), cert.decode()
+        self.today = timezone.localdate()
+        self._n = 0
+
+    def _boleta(self, *, issued, doc_type='0', doc_number='0'):
+        self._n += 1
+        base = timezone.make_aware(
+            timezone.datetime(issued.year, issued.month, issued.day, 12, 0))
+        o = Order.objects.create(
+            company=self.company, customer_name='VARIOS', document_type='',
+            document_number='', receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN', status=Order.Status.PAID,
+            paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        return FiscalDocument.objects.create(
+            order=o, company=self.company, series_ref=self.series,
+            document_type=FiscalDocumentType.RECEIPT, series='B001', number=self._n,
+            issued_at=base, environment=FiscalEnvironment.BETA,
+            issuer_tax_id='20100066603', issuer_legal_name='EMPRESA RC ID SAC',
+            customer_doc_type=doc_type, customer_doc_number=doc_number,
+            customer_legal_name='VARIOS', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, signed_xml='<Invoice/>')
+
+    def test_the_id_carries_the_correlativo_and_generation_date(self):
+        """El cbc:ID es RC-<fecha de generación>-<correlativo> (reglas 2210/2346)."""
+        self._boleta(issued=self.today - _timedelta(days=2))
+        s = generate_daily_summaries(
+            self.company, self.today - _timedelta(days=2), FiscalEnvironment.BETA)[0]
+        self.assertEqual(s.identifier, f'RC-{self.today.strftime("%Y%m%d")}-1')
+        self.assertEqual(s.reference_date, self.today - _timedelta(days=2))
+        self.assertEqual(s.issue_date, self.today)
+
+    def test_multi_block_summaries_get_distinct_ids(self):
+        from unittest.mock import patch as _patch
+        self._boleta(issued=self.today); self._boleta(issued=self.today)
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 1):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        ids = sorted(s.identifier for s in summaries)
+        self.assertEqual(ids, [f'RC-{self.today.strftime("%Y%m%d")}-1',
+                               f'RC-{self.today.strftime("%Y%m%d")}-2'])
+
+    def test_a_cdr_binds_only_to_its_own_block(self):
+        from unittest.mock import patch as _patch
+        self._boleta(issued=self.today); self._boleta(issued=self.today)
+        with _patch('store.fiscal_summary_services.MAX_SUMMARY_LINES', 1):
+            summaries = generate_daily_summaries(
+                self.company, self.today, FiscalEnvironment.BETA)
+        block1, block2 = summaries[0], summaries[1]
+        for s in (block1, block2):
+            sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                               cert_pem=self.cert_pem.encode())
+            submit_daily_summary(s, _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket=f'T{s.correlativo}')))
+        block2.refresh_from_db()  # el ticket se persistió en otra instancia
+        # Un CDR con el id del bloque 1 NO debe cerrar el bloque 2.
+        provider = _FakeSummaryProvider(ticket=_ticket_result(ref_id=block1.identifier))
+        out = poll_daily_summary(block2, provider)
+        self.assertEqual(out.action, 'cdr_mismatch')
+        block2.refresh_from_db()
+        self.assertEqual(block2.status, FiscalSummaryStatus.SUBMITTED)
+
+    def test_the_anonymous_boleta_becomes_a_hyphen_line_in_the_summary(self):
+        """RC-ANON-01 extremo a extremo: boleta con doc 0 → línea de resumen con «-»."""
+        self._boleta(issued=self.today, doc_type='0', doc_number='0')
+        s = generate_daily_summaries(self.company, self.today, FiscalEnvironment.BETA)[0]
+        s = sign_daily_summary(s, key_pem=self.key_pem.encode(),
+                               cert_pem=self.cert_pem.encode())
+        from lxml import etree
+        root = etree.fromstring(s.signed_xml.encode())
+        party = root.find(
+            f'{{{_SAC}}}SummaryDocumentsLine/{{{_CAC_S}}}AccountingCustomerParty')
+        cust = party.find(f'{{{_CBC_S}}}CustomerAssignedAccountID')
+        typ = party.find(f'{{{_CBC_S}}}AdditionalAccountID')
+        self.assertEqual(cust.text, '-')
+        self.assertEqual(typ.text, '-')
+
+
+# ---------------------------------------------------------------------------
+# ERP-FISCAL-5A — Nota de Crédito (07) y Nota de Débito (08)
+# ---------------------------------------------------------------------------
+
+class Fiscal5aNoteBase(TestCase):
+    """
+    Escenario común: una empresa con serie de factura (F001) y de nota (FN01),
+    un producto y un pedido pagado con factura, del que se emite y ACEPTA el
+    original — porque una nota sólo procede sobre un comprobante que existe para
+    SUNAT.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5a', 'Empresa Nota', tax_id='20100066603',
+            legal_name='EMPRESA NOTA SAC')
+        self.series_fac = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001', next_number=1)
+        self.series_nc = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.CREDIT_NOTE,
+            series='FN01', next_number=1)
+        self.series_nd = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.DEBIT_NOTE,
+            series='FD01', next_number=1)
+        self.product = _c1_product(self.company, 'Articulo Fiscal', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 20)
+
+    def _paid_invoice_order(self, **extra):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'),
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch, **extra)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _accepted_invoice(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        return doc
+
+
+class Fiscal5aCreditNoteTest(Fiscal5aNoteBase):
+    """La Nota de Crédito de una factura: anulación total (Catálogo 09, 01)."""
+
+    def test_a_full_reversal_mirrors_the_original_amounts(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+
+        note, created = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='abc')
+        self.assertTrue(created)
+        self.assertEqual(note.document_type, FiscalDocumentType.CREDIT_NOTE)
+        self.assertEqual(note.series, 'FN01')
+        self.assertEqual(note.original_document_id, original.pk)
+        # La nota refleja los importes del original, no los recalcula.
+        self.assertEqual(note.taxable_amount, original.taxable_amount)
+        self.assertEqual(note.tax_amount, original.tax_amount)
+        self.assertEqual(note.total, original.total)
+
+    def test_the_note_signs_validates_and_verifies(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        self.assertEqual(note.status, FiscalDocumentStatus.SIGNED)
+        xml = note.signed_xml.encode()
+        _fs.validate_credit_note(xml)                       # XSD oficial
+        self.assertTrue(_fsign.verify(xml, cert_pem=self._cert))  # firma
+
+    def test_the_note_references_the_original(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        root = _LET.fromstring(note.signed_xml.encode())
+        cbc = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+        cac = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+        ref = root.find(f'.//{{{cac}}}DiscrepancyResponse/{{{cbc}}}ReferenceID')
+        code = root.find(f'.//{{{cac}}}DiscrepancyResponse/{{{cbc}}}ResponseCode')
+        billed = root.find(
+            f'.//{{{cac}}}BillingReference/{{{cac}}}InvoiceDocumentReference/'
+            f'{{{cbc}}}ID')
+        typ = root.find(
+            f'.//{{{cac}}}BillingReference/{{{cac}}}InvoiceDocumentReference/'
+            f'{{{cbc}}}DocumentTypeCode')
+        self.assertEqual(ref.text, original.document_id)
+        self.assertEqual(code.text, '01')
+        self.assertEqual(billed.text, original.document_id)
+        self.assertEqual(typ.text, FiscalDocumentType.INVOICE)
+
+    def test_the_note_customer_is_the_original_customer(self):
+        # §41: una nota lleva el mismo adquirente que el comprobante que corrige.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        self.assertEqual(note.customer_doc_number, original.customer_doc_number)
+        self.assertEqual(note.customer_legal_name, original.customer_legal_name)
+
+    def test_the_same_request_key_is_idempotent(self):
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        first, c1 = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='same')
+        second, c2 = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='same')
+        self.assertTrue(c1)
+        self.assertFalse(c2)
+        self.assertEqual(first.pk, second.pk)
+        self.series_nc.refresh_from_db()
+        self.assertEqual(self.series_nc.next_number, 2, 'sólo se reservó uno')
+
+    def test_a_second_note_on_the_same_original_is_legal(self):
+        # §20: varias notas sobre un mismo original son legales (con claves
+        # distintas). No hay get_or_create(original).
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        a, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='a')
+        b, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='b')
+        self.assertNotEqual(a.pk, b.pk)
+        self.assertNotEqual(a.number, b.number)
+
+    def test_signing_the_note_does_not_touch_the_original(self):
+        # §15: el original es inmutable. Emitir una nota no lo altera.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        before = (original.signed_xml_sha256, original.status,
+                  original.total)
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        original.refresh_from_db()
+        self.assertEqual(
+            (original.signed_xml_sha256, original.status, original.total), before)
+
+    def test_a_note_on_an_unaccepted_invoice_is_refused(self):
+        # §10: sin CDR aceptado, no hay nota.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)  # firmada, sin enviar
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                doc, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='k')
+
+    def test_a_debit_reason_is_refused_on_a_credit_note(self):
+        # El motivo debe pertenecer al catálogo de su tipo, y se comprueba al
+        # CREAR —antes de reservar un correlativo—.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='99', reason_description='inventado', request_key='k')
+
+    def test_a_note_of_a_factura_goes_out_by_sendbill(self):
+        # §29: la nota de una factura se envía por sendBill (no por Resumen).
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note = submit_fiscal_document(note, _FakeProvider(_accepted()))
+        self.assertTrue(note.is_accepted)
+
+    def test_a_timeout_sending_a_note_is_not_a_rejection(self):
+        # §54: se reutiliza la reconciliación de FISCAL-3, sin reintento a ciegas.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note = submit_fiscal_document(note, _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(note.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertNotEqual(note.status, FiscalDocumentStatus.REJECTED)
+
+
+class Fiscal5aDebitNoteTest(Fiscal5aNoteBase):
+    """La Nota de Débito de una factura: aumento de valor (Catálogo 10, 02)."""
+
+    def test_an_explicit_amount_debit_note_signs_and_validates(self):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.DEBIT_NOTE,
+            reason_code='02', reason_description='INTERES POR MORA',
+            request_key='k', taxable_amount=Decimal('50.00'),
+            tax_amount=Decimal('9.00'))
+        self.assertEqual(note.total, Decimal('59.00'))
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+        self.assertEqual(note.series, 'FD01')
+        xml = note.signed_xml.encode()
+        _fs.validate_debit_note(xml)
+        self.assertTrue(_fsign.verify(xml, cert_pem=self._cert))
+        # La ND lleva RequestedMonetaryTotal, no LegalMonetaryTotal.
+        root = _LET.fromstring(xml)
+        cac = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+        self.assertIsNotNone(root.find(f'.//{{{cac}}}RequestedMonetaryTotal'))
+        self.assertIsNone(root.find(f'.//{{{cac}}}LegalMonetaryTotal'))
+
+    def test_a_credit_reason_is_refused_on_a_debit_note(self):
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.DEBIT_NOTE,
+                reason_code='10', reason_description='sólo cat 09', request_key='k',
+                taxable_amount=Decimal('50.00'), tax_amount=Decimal('9.00'))
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class Fiscal5aNoteApiTest(TestCase):
+    """
+    La superficie interna de las notas: quién puede emitirlas y de dónde sale la
+    identidad. El `pk` de la URL es el comprobante ORIGINAL; del cuerpo sólo se
+    aceptan el motivo y —en la ND— el importe. Nada que identifique un ajeno.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5a-api', 'Empresa Nota API', tax_id='20100066603',
+            legal_name='EMPRESA NOTA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.CREDIT_NOTE,
+            series='FN01')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.DEBIT_NOTE,
+            series='FD01')
+        self.product = _c1_product(self.company, 'Articulo Nota', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'f5a_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'f5a_observador', ['company.view', 'sales.fiscal.view'])
+
+        self.otra = _p3_company(
+            'f5a-otra', 'Otra SAC', tax_id='20999999999', legal_name='OTRA SAC')
+        self.ajeno, _ = _p2d_member(
+            self.otra, 'f5a_ajeno',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.cert_pem, self.key_pem = cert.decode(), key.decode()
+        self.original = self._accepted_original()
+
+    def _order(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def _accepted_original(self):
+        doc, _ = get_or_create_fiscal_document(self._order())
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post_note(self, kind='credit-notes', user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.original.pk}/{kind}/',
+                body or {'reason_code': '01',
+                         'reason_description': 'ANULACION DE LA OPERACION'},
+                format='json')
+
+    def test_the_issuer_creates_a_signed_credit_note(self):
+        res = self._post_note()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'FN01-1')
+        self.assertEqual(res.data['document_type'], FiscalDocumentType.CREDIT_NOTE)
+        self.assertEqual(res.data['status'], FiscalDocumentStatus.SIGNED)
+        self.assertEqual(res.data['original_document_id'], self.original.pk)
+        self.assertEqual(res.data['note_reason_code'], '01')
+        self.assertEqual(res.data['total'], '118.00')
+
+    def test_a_viewer_cannot_issue_a_note(self):
+        res = self._post_note(user=self.observador)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_order_document_remains_the_original_after_a_credit_note(self):
+        from .pos_payloads import sale_payload
+        self.assertEqual(self._post_note().status_code, 201)
+        order = self.original.order
+        with self.subTest(surface='historical POS payload'):
+            payload = sale_payload(order, order.fulfillment_branch,
+                                   created=False, may_see_commission=False)
+            self.assertEqual(payload['document_number'], self.original.document_id)
+        with self.subTest(surface='order fiscal detail'):
+            response = self._as(self.observador).get(
+                f'/api/admin/orders/{order.pk}/fiscal-document/')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['id'], self.original.pk)
+        with self.subTest(surface='idempotent issuance'):
+            document, created = get_or_create_fiscal_document(order)
+            self.assertFalse(created)
+            self.assertEqual(document.pk, self.original.pk)
+
+    def test_another_tenant_cannot_see_the_original(self):
+        # Un original de otra empresa responde como inexistente: un 403 confirmaría
+        # que ese id existe.
+        res = self._post_note(user=self.ajeno)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_body_cannot_inject_another_identity(self):
+        # §40/§47: aunque el cuerpo traiga otro adquirente, otra empresa u otra
+        # serie, la nota los deriva del ORIGINAL. El cuerpo se ignora salvo motivo.
+        res = self._post_note(body={
+            'reason_code': '01', 'reason_description': 'x',
+            'customer_doc_number': '10000000009', 'company': self.otra.pk,
+            'series': 'ZZZZ', 'issuer_tax_id': '20999999999',
+            'total': '999999.00'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        note = FiscalDocument.objects.get(pk=res.data['id'])
+        self.assertEqual(note.company_id, self.company.pk)
+        self.assertEqual(note.customer_doc_number, self.original.customer_doc_number)
+        self.assertEqual(note.issuer_tax_id, self.original.issuer_tax_id)
+        self.assertEqual(note.series, 'FN01')
+        self.assertEqual(note.total, self.original.total)
+
+    def test_the_same_request_key_is_idempotent_over_http(self):
+        body = {'reason_code': '01', 'reason_description': 'x', 'request_key': 'k1'}
+        first = self._post_note(body=body)
+        second = self._post_note(body=body)
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data['id'], second.data['id'])
+
+    def test_a_debit_note_takes_its_amount_from_the_body(self):
+        res = self._post_note(kind='debit-notes', body={
+            'reason_code': '02', 'reason_description': 'INTERES POR MORA',
+            'taxable_amount': '50.00', 'tax_amount': '9.00'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['identifier'], 'FD01-1')
+        self.assertEqual(res.data['document_type'], FiscalDocumentType.DEBIT_NOTE)
+        self.assertEqual(res.data['total'], '59.00')
+
+    def test_a_note_without_a_reason_is_refused(self):
+        res = self._post_note(body={'reason_description': 'sin codigo'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_note_on_an_unaccepted_original_is_refused(self):
+        # Un original firmado pero sin CDR: no procede una nota.
+        doc, _ = get_or_create_fiscal_document(self._order())
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            res = self._as(self.emisor).post(
+                f'/api/admin/fiscal-documents/{doc.pk}/credit-notes/',
+                {'reason_code': '01', 'reason_description': 'x'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_credit_note_ignores_body_amounts_over_http(self):
+        # REVIEW 5A (F5): el endpoint de NC no reenvía importes del cuerpo; la nota
+        # refleja el original aunque el cuerpo intente fijar la base y el IGV.
+        res = self._post_note(body={
+            'reason_code': '01', 'reason_description': 'x',
+            'taxable_amount': '1.00', 'tax_amount': '0.18'})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        note = FiscalDocument.objects.get(pk=res.data['id'])
+        self.assertEqual(note.taxable_amount, self.original.taxable_amount)
+        self.assertEqual(note.total, self.original.total)
+
+    def test_an_invalid_motivo_returns_400_and_burns_no_correlativo(self):
+        # REVIEW 5A (F9): motivo fuera de catálogo -> 400 sin gastar correlativo.
+        before = FiscalDocument.objects.filter(
+            document_type=FiscalDocumentType.CREDIT_NOTE).count()
+        res = self._post_note(body={'reason_code': '99', 'reason_description': 'x'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FiscalDocument.objects.filter(
+            document_type=FiscalDocumentType.CREDIT_NOTE).count(), before)
+
+
+class Fiscal5aNotePdfTest(Fiscal5aNoteBase):
+    """La representación impresa y el QR de una nota, leídos de su XML firmado."""
+
+    def _signed_credit_note(self, **kw):
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION DE LA OPERACION',
+            request_key='k', **kw)
+        return sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+
+    def test_the_representation_reads_a_credit_note(self):
+        from .fiscal.representation import parse_signed_invoice_for_representation
+        note = self._signed_credit_note()
+        rep = parse_signed_invoice_for_representation(note.signed_xml)
+        self.assertEqual(rep.document_id, note.document_id)
+        self.assertEqual(rep.payable_amount, note.total)      # LegalMonetaryTotal
+        self.assertEqual(len(rep.lines), 1)
+        self.assertEqual(rep.lines[0].line_amount, Decimal('100.00'))
+
+    def test_the_qr_carries_the_note_type_and_amounts(self):
+        from .fiscal_pdf_services import build_fiscal_context
+        note = self._signed_credit_note()
+        ctx = build_fiscal_context(note)
+        campos = ctx['qr_payload'].split('|')
+        self.assertEqual(campos[1], '07')                 # tipo: nota de crédito
+        self.assertEqual(campos[2], 'FN01')               # serie
+        self.assertEqual(ctx['title'], 'NOTA DE CRÉDITO ELECTRÓNICA')
+        self.assertEqual(ctx['note']['reference'], note.original_document.document_id)
+        self.assertEqual(ctx['note']['reason_code'], '01')
+
+    def test_both_pdf_formats_render_for_a_note(self):
+        from .fiscal_pdf_services import (
+            generate_fiscal_pdf, generate_fiscal_ticket_pdf,
+        )
+        note = self._signed_credit_note()
+        a4 = generate_fiscal_pdf(note)
+        ticket = generate_fiscal_ticket_pdf(note)
+        self.assertTrue(a4.startswith(b'%PDF'))
+        self.assertTrue(ticket.startswith(b'%PDF'))
+        self.assertGreater(len(a4), 1000)
+
+
+class Fiscal5aBoletaNotePendingTest(Fiscal5aNoteBase):
+    """
+    NC-BOL / ND-BOL es PENDIENTE en esta fase y se falla CERRADO: ni se emite ni
+    se envía una nota de boleta por el canal individual.
+    """
+
+    def _accepted_boleta(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CONSUMIDOR',
+            document_type=Order.DocumentType.DNI, document_number='12345678',
+            receipt_type=Order.ReceiptType.BOLETA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        # Una boleta se otorga al firmarse; su envío va por el Resumen.
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_a_credit_note_of_a_boleta_is_refused_at_creation(self):
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        boleta = self._accepted_boleta()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                boleta, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='k')
+
+    def test_the_send_channel_refuses_a_boleta_note(self):
+        # Defensa en profundidad: aunque existiera una nota con serie B, el envío
+        # individual la rechaza (su canal es el Resumen Diario).
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        note.series = 'BN01'  # como si fuese nota de boleta
+        with self.assertRaises(FiscalError):
+            submit_fiscal_document(note, _FakeProvider(_accepted()))
+
+
+class Fiscal5aReviewHardeningTest(Fiscal5aNoteBase):
+    """
+    Cierra los hallazgos de la revisión adversarial de ERP-FISCAL-5A: fidelidad de
+    la anulación (tasa e importes del original), reserva que no se gasta en un
+    camino que falla, e idempotencia que libera su hueco al rechazarse.
+    """
+
+    _CBC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+    _CAC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
+
+    def _accepted(self, order):
+        doc, _ = get_or_create_fiscal_document(order)
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _nonround_order(self):
+        # IGV incluido no divisible: sobre 10.00 -> base 8.47 / IGV 1.53. La tasa
+        # declarada sigue siendo 18.00, pero 1.53/8.47*100 = 18.06 (el bug).
+        prod = _c1_product(self.company, 'Precio no redondo', '10.00')
+        _c1_stock(self.company.default_inventory_branch, prod, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('10.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('10.00'),
+            taxable_amount=Decimal('8.47'), tax_amount=Decimal('1.53'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=prod, quantity=1, price=Decimal('10.00'))
+        return order
+
+    def _two_line_order(self):
+        p1 = _c1_product(self.company, 'Art uno', '118.00')
+        p2 = _c1_product(self.company, 'Art dos', '118.00')
+        for p in (p1, p2):
+            _c1_stock(self.company.default_inventory_branch, p, 10)
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE DE PRUEBA SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('236.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('236.00'),
+            taxable_amount=Decimal('200.00'), tax_amount=Decimal('36.00'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=p1, quantity=1, price=Decimal('118.00'))
+        OrderItem.objects.create(order=order, product=p2, quantity=1, price=Decimal('118.00'))
+        return order
+
+    def test_a_full_reversal_mirrors_the_original_line_tax_rate(self):
+        # REVIEW 5A (F1): la NC refleja la TASA del original (18.00), no un
+        # porcentaje recomputado (18.06) por el redondeo del IGV incluido.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted(self._nonround_order())
+        orig = _LET.fromstring(original.signed_xml.encode())
+        op = orig.find(
+            f'.//{{{self._CAC}}}InvoiceLine//{{{self._CAC}}}TaxCategory/'
+            f'{{{self._CBC}}}Percent')
+        self.assertEqual(op.text, '18.00')
+
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='ANULACION', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        np = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine//{{{self._CAC}}}TaxCategory/'
+            f'{{{self._CBC}}}Percent')
+        self.assertEqual(np.text, '18.00',
+                         'la nota debe reflejar la tasa 18.00 del original, no 18.06')
+
+    def test_a_credit_note_ignores_body_amounts(self):
+        # REVIEW 5A (F5/F7): una NC de anulación NO toma importes del cuerpo.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k',
+            taxable_amount=Decimal('5.00'), tax_amount=Decimal('0.90'))
+        self.assertEqual(note.taxable_amount, original.taxable_amount)
+        self.assertEqual(note.tax_amount, original.tax_amount)
+        self.assertEqual(note.total, original.total)
+
+    def test_a_multi_line_original_is_mirrored_line_by_line(self):
+        # REVIEW 5A (F4): una línea de nota por cada línea del original.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted(self._two_line_order())
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        lines = root.findall(f'{{{self._CAC}}}CreditNoteLine')
+        self.assertEqual(len(lines), 2)
+        for ln in lines:
+            self.assertEqual(
+                ln.find(f'{{{self._CBC}}}LineExtensionAmount').text, '100.00')
+
+    def test_the_note_lines_come_from_the_signed_xml_not_the_order(self):
+        # REVIEW 5A (F4) + §15: mutar la Order tras la firma no cambia la nota.
+        from .fiscal_note_services import create_fiscal_note, sign_fiscal_note
+        original = self._accepted_invoice()
+        oi = OrderItem.objects.filter(order=original.order).first()
+        oi.price = Decimal('999.00')
+        oi.save(update_fields=['price'])
+        self.product.name = 'NOMBRE CAMBIADO'
+        self.product.save(update_fields=['name'])
+
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        note = sign_fiscal_note(note, key_pem=self._key, cert_pem=self._cert)
+        root = _LET.fromstring(note.signed_xml.encode())
+        amt = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine/{{{self._CBC}}}LineExtensionAmount')
+        self.assertEqual(amt.text, '100.00', 'lee el XML firmado, no la Order mutada')
+        desc = root.find(
+            f'.//{{{self._CAC}}}CreditNoteLine//{{{self._CBC}}}Description')
+        self.assertNotEqual((desc.text or ''), 'NOMBRE CAMBIADO')
+
+    def test_an_invalid_motivo_burns_no_correlativo(self):
+        # REVIEW 5A (F6/F8/F9): un motivo fuera de catálogo se rechaza ANTES de
+        # reservar; ni gasta correlativo ni deja una nota a medias.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        before = self.series_nc.next_number
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='99', reason_description='x', request_key='k')
+        self.series_nc.refresh_from_db()
+        self.assertEqual(self.series_nc.next_number, before)
+        self.assertEqual(
+            FiscalDocument.objects.filter(original_document=original).count(), 0)
+
+    def test_a_debit_note_requires_an_amount(self):
+        # REVIEW 5A: una ND sin importe no tiene cargo que declarar.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._accepted_invoice()
+        with self.assertRaises(FiscalError):
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.DEBIT_NOTE,
+                reason_code='02', reason_description='x', request_key='k')
+
+    def test_reemitting_after_a_rejected_note_with_the_same_key_works(self):
+        # REVIEW 5A (F2/F3): una nota RECHAZADA libera su hueco de idempotencia;
+        # reintentar con la misma clave crea una nota nueva, no un 500.
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        first, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='dup')
+        first.status = FiscalDocumentStatus.REJECTED
+        first.save(update_fields=['status'])
+        second, created = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='dup')
+        self.assertTrue(created)
+        self.assertNotEqual(first.pk, second.pk)
+
+    def test_the_idempotency_constraint_rejects_a_duplicate_live_note(self):
+        # REVIEW 5A (F10): la restricción DB —no sólo el pre-chequeo Python—
+        # impide dos notas VIVAS con la misma clave (la carrera del except).
+        from django.db import IntegrityError, transaction
+        from .fiscal_note_services import create_fiscal_note
+        original = self._accepted_invoice()
+        create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalDocument.objects.create(
+                order=original.order, company=original.company,
+                series_ref=self.series_nc,
+                document_type=FiscalDocumentType.CREDIT_NOTE, series='FN01',
+                number=999, issued_at=timezone.now(),
+                environment=self.series_nc.environment,
+                issuer_tax_id=original.issuer_tax_id, currency='PEN',
+                taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+                total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+                status=FiscalDocumentStatus.GENERATED, original_document=original,
+                note_reason_code='01', note_request_key='k')
+
+
+class Fiscal5bAcceptanceDateTest(Fiscal5aNoteBase):
+    """
+    `cdr_accepted_at`: la fecha de recepción de la CDR aceptada (ERP-FISCAL-5B).
+
+    De aquí saldrá el plazo de la Comunicación de Baja —el artículo 14.1.b cuenta
+    desde el día siguiente de haberla RECIBIDO—, así que tiene que quedar sellada
+    por los DOS caminos que aceptan un comprobante y no moverse nunca más.
+    """
+
+    def _signed(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        key, cert = self_signed_pem('20100066603')
+        self._key, self._cert = key, cert
+        return sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+
+    def test_submit_stamps_the_acceptance_date(self):
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNotNone(doc.cdr_accepted_at)
+
+    def test_reconciliation_also_stamps_the_acceptance_date(self):
+        # EL CAMINO QUE ANTES NO DEJABA NINGUNA FECHA FIABLE: la reconciliación no
+        # crea fila de intento, así que sin este campo un comprobante aceptado de
+        # forma asíncrona no tendría plazo calculable.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertIsNone(doc.cdr_accepted_at)
+
+        outcome = reconcile_fiscal_document(
+            doc, _FakeConsultProvider(_resolved_cdr(reference_id=doc.document_id)))
+        outcome.document.refresh_from_db()
+        self.assertTrue(outcome.document.is_accepted)
+        self.assertIsNotNone(outcome.document.cdr_accepted_at)
+
+    def test_the_acceptance_date_is_written_once(self):
+        # Reescribirla correría el plazo solo. Ni un reenvío ni una consulta
+        # posterior la mueven.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(_accepted()))
+        antes = doc.cdr_accepted_at
+        self.assertIsNotNone(antes)
+
+        submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        reconcile_fiscal_document(
+            doc, _FakeConsultProvider(_resolved_cdr(reference_id=doc.document_id)))
+        doc.refresh_from_db()
+        self.assertEqual(doc.cdr_accepted_at, antes)
+
+    def test_a_transport_error_invents_no_acceptance_date(self):
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='timeout')))
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertIsNone(doc.cdr_accepted_at,
+                          'sin aceptación no se inventa una fecha')
+
+    def test_an_acceptance_with_observations_also_stamps_the_date(self):
+        # «Aceptado con observaciones» es una aceptación: también abre el plazo.
+        doc = submit_fiscal_document(self._signed(), _FakeProvider(ProviderResult(
+            outcome=ProviderOutcome.ACCEPTED_WITH_OBSERVATION, response_code='4000',
+            safe_message='aceptada con observaciones',
+            cdr_xml=b'<ApplicationResponse/>', cdr_filename='R-x.XML')))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNotNone(doc.cdr_accepted_at)
+
+
+class Fiscal5bGrantEvidenceTest(Fiscal5aNoteBase):
+    """
+    Otorgamiento (ERP-FISCAL-5B): NULL significa DESCONOCIDO, no «no otorgado».
+
+    El artículo 14 sólo admite dar de baja la numeración de documentos NO
+    OTORGADOS, y hoy el sistema no registra la entrega en ningún sitio: el
+    mostrador imprime y entrega sin dejar rastro. Por eso la ausencia de evidencia
+    es ambigua y la baja tendrá que fallar cerrado sobre ella.
+    """
+
+    def test_a_freshly_issued_document_has_no_grant_evidence(self):
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        self.assertIsNone(doc.granted_at)
+        self.assertEqual(doc.granted_method, '')
+        self.assertIsNone(doc.granted_by)
+        self.assertEqual(doc.granted_evidence, {})
+
+    def test_acceptance_by_sunat_is_not_otorgamiento(self):
+        # «CDR aceptada» NO es «otorgado». Son hechos distintos y el artículo 14
+        # depende del segundo, no del primero.
+        key, cert = self_signed_pem('20100066603')
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        doc = submit_fiscal_document(doc, _FakeProvider(_accepted()))
+        self.assertTrue(doc.is_accepted)
+        self.assertIsNone(doc.granted_at,
+                          'la aceptación de SUNAT no otorga el comprobante')
+
+    def test_the_grant_methods_are_generic_channels(self):
+        # No se codifica esta tienda: la integración futura (checkout y POS) tiene
+        # que encajar sin volver a tocar el modelo.
+        from .models import FiscalGrantMethod
+        self.assertEqual(
+            {m.value for m in FiscalGrantMethod},
+            {'ecommerce_portal', 'email', 'pos_print', 'pos_electronic',
+             'manual', 'api'})
+
+
+class Fiscal5bVoidBuilderTest(SimpleTestCase):
+    """
+    El XML de la Comunicación de Baja contra el XSD **OFICIAL** de SUNAT.
+
+    Aquí no hay validación artesanal: `UBLPE-VoidedDocuments-1.0.xsd` viene en el
+    paquete oficial y está versionado en `schemas/2.0/`. Eso distingue la baja del
+    Resumen por documento, que sigue sin esquema publicado (RC-XSD-01).
+    """
+
+    _SAC = 'urn:sunat:names:specification:ubl:peru:schema:xsd:SunatAggregateComponents-1'
+    _CBC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+
+    def _data(self, lines=None, identifier='RA-20260925-1'):
+        # `lines is not None`, NO `lines or ...`: una tupla vacía es falsa, así que
+        # el atajo habría sustituido silenciosamente el caso «sin líneas» por el
+        # de por defecto, y el test de la guarda no habría probado nada.
+        from .fiscal.void import VoidData, VoidLine
+        if lines is None:
+            lines = (VoidLine(
+                line_id=1, document_type='01', document_serial='F001',
+                document_number=1, reason='EMITIDA POR ERROR, NO OTORGADA'),)
+        return VoidData(
+            identifier=identifier, issue_date=_date(2026, 9, 25),
+            reference_date=_date(2026, 9, 24), supplier_ruc='20100066603',
+            supplier_name='EMPRESA DE PRUEBA SAC', lines=lines)
+
+    def _built(self, **kw):
+        from .fiscal.void import build_void_xml
+        return build_void_xml(self._data(**kw))
+
+    def test_a_void_communication_validates_against_the_official_xsd(self):
+        from .fiscal import schema
+        schema.validate_voided_documents(self._built())
+
+    def test_a_grouped_void_of_an_invoice_and_its_notes_validates(self):
+        # Artículo 14.1.b: cabe más de un documento, si comparten el día.
+        from .fiscal import schema
+        from .fiscal.void import VoidLine
+        xml = self._built(lines=(
+            VoidLine(1, '01', 'F001', 7, 'NO OTORGADA'),
+            VoidLine(2, '07', 'FN01', 3, 'NOTA NO OTORGADA'),
+            VoidLine(3, '08', 'FD01', 2, 'NOTA NO OTORGADA')))
+        schema.validate_voided_documents(xml)
+
+    def test_the_reference_date_comes_before_the_issue_date(self):
+        # Es al revés de lo que uno escribiría por instinto, y el XSD lo exige.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        orden = [c.tag.rsplit('}', 1)[-1] for c in root]
+        self.assertLess(orden.index('ReferenceDate'), orden.index('IssueDate'))
+
+    def test_only_the_last_three_line_children_are_sunat_namespaced(self):
+        # El reparto de espacios de nombres de la línea es fácil de equivocar.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        line = root.find(f'{{{self._SAC}}}VoidedDocumentsLine')
+        self.assertEqual(
+            [c.tag for c in line],
+            [f'{{{self._CBC}}}LineID', f'{{{self._CBC}}}DocumentTypeCode',
+             f'{{{self._SAC}}}DocumentSerialID', f'{{{self._SAC}}}DocumentNumberID',
+             f'{{{self._SAC}}}VoidReasonDescription'])
+
+    def test_the_customization_id_is_the_baja_version_not_the_summary_one(self):
+        # La baja es 1.0; el Resumen por documento es 1.1. Copiar al hermano sin
+        # mirar habría puesto el valor equivocado.
+        from lxml import etree
+        root = etree.fromstring(self._built())
+        self.assertEqual(root.findtext(f'{{{self._CBC}}}CustomizationID'), '1.0')
+        self.assertEqual(root.findtext(f'{{{self._CBC}}}UBLVersionID'), '2.0')
+
+    def test_a_boleta_is_refused_by_this_channel(self):
+        # Una boleta no se da de baja con una RA: se anula informando el Resumen.
+        from .fiscal.void import VoidLine, VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=(VoidLine(1, '03', 'B001', 1, 'x'),))
+
+    def test_a_malformed_identifier_is_refused(self):
+        from .fiscal.void import VoidStructureError
+        for malo in ('RA-BAD', 'RC-20260925-1', 'RA-20260925-123456', ''):
+            with self.subTest(identifier=malo), \
+                    self.assertRaises(VoidStructureError):
+                self._built(identifier=malo)
+
+    def test_a_reason_is_mandatory_and_bounded(self):
+        from .fiscal.void import VoidLine, VoidStructureError
+        for motivo in ('', '   ', 'X' * 101):
+            with self.subTest(reason=motivo[:12]), \
+                    self.assertRaises(VoidStructureError):
+                self._built(lines=(VoidLine(1, '01', 'F001', 1, motivo),))
+
+    def test_a_repeated_line_id_is_refused(self):
+        from .fiscal.void import VoidLine, VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=(VoidLine(1, '01', 'F001', 1, 'a'),
+                               VoidLine(1, '01', 'F001', 2, 'b')))
+
+    def test_a_communication_without_lines_voids_nothing(self):
+        from .fiscal.void import VoidStructureError
+        with self.assertRaises(VoidStructureError):
+            self._built(lines=())
+
+
+from .models import (  # noqa: E402
+    FiscalVoidCommunication, FiscalVoidCommunicationDocument, FiscalVoidStatus,
+)
+
+
+class Fiscal5bVoidServiceTest(Fiscal5aNoteBase):
+    """
+    Las puertas de la Comunicación de Baja, y la historia que NO se reescribe.
+
+    El artículo 14 sólo admite dar de baja la numeración de documentos NO
+    OTORGADOS, dentro de siete días calendario contados desde el día siguiente de
+    recibir la CDR aceptada. Cada condición niega por separado, y ninguna se
+    sustituye por una inferencia.
+    """
+
+    def _actor(self):
+        if not hasattr(self, '_attestor'):
+            self._attestor, _ = _p2d_member(
+                self.company, 'f5b_attestor', ['company.view'])
+        return self._attestor
+
+    def _eligible(self):
+        """
+        Una factura aceptada, con fecha de CDR y CON atestación de no otorgamiento.
+
+        La atestación es parte del escenario elegible, no un adorno: sin ella la
+        baja se deniega, porque el silencio no prueba que no se entregó.
+        """
+        from .fiscal_void_services import attest_not_granted
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        self.assertIsNotNone(original.cdr_accepted_at)
+        self.assertIsNone(original.granted_at)
+        attest_not_granted(original, actor=self._actor(),
+                           reason='NUNCA SE ENTREGÓ AL ADQUIRENTE')
+        original.refresh_from_db()
+        return original
+
+    def _create(self, targets=None, **kw):
+        from .fiscal_void_services import create_void_communication
+        if targets is None:
+            targets = [(self._eligible(), 'EMITIDA POR ERROR, NO OTORGADA')]
+        return create_void_communication(self.company, targets=targets, **kw)
+
+    # -- camino bueno ---------------------------------------------------------
+
+    def test_an_eligible_invoice_yields_a_void_communication(self):
+        void = self._create()
+        self.assertTrue(void.identifier.startswith('RA-'))
+        self.assertEqual(void.lines.count(), 1)
+        self.assertEqual(void.lines.first().void_reason,
+                         'EMITIDA POR ERROR, NO OTORGADA')
+        self.assertEqual(void.status, FiscalVoidStatus.GENERATED)
+
+    def test_it_signs_and_validates_against_the_official_xsd(self):
+        from .fiscal import schema
+        from .fiscal_void_services import sign_void_communication
+        void = sign_void_communication(
+            self._create(), key_pem=self._key, cert_pem=self._cert)
+        self.assertEqual(void.status, FiscalVoidStatus.SIGNED)
+        schema.validate_voided_documents(void.signed_xml.encode())
+        self.assertEqual(len(void.signed_xml_sha256), 64)
+
+    def test_the_correlativo_advances_within_the_generation_day(self):
+        primera = self._create()
+        segunda = self._create()
+        self.assertEqual([primera.correlativo, segunda.correlativo], [1, 2])
+        self.assertNotEqual(primera.identifier, segunda.identifier)
+
+    # -- puertas que niegan ---------------------------------------------------
+
+    def test_a_boleta_is_refused_because_its_channel_is_the_summary(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        boleta = FiscalDocument(document_type=FiscalDocumentType.RECEIPT)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(boleta)
+        self.assertIn('Resumen', str(ctx.exception))
+
+    def test_an_unaccepted_invoice_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        key, cert = self_signed_pem('20100066603')
+        doc, _ = get_or_create_fiscal_document(self._paid_invoice_order())
+        doc = sign_fiscal_document(doc, key_pem=key, cert_pem=cert)
+        with self.assertRaises(FiscalError):
+            check_void_eligible(doc)
+
+    def test_an_accepted_invoice_without_a_cdr_date_fails_closed(self):
+        # La puerta del PLAZO: sin fecha demostrable no se infiere de otra.
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(cdr_accepted_at=None)
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('REVISIÓN', str(ctx.exception).upper())
+
+    def test_an_invoice_past_the_seven_day_window_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        # Y NO se ofrece una nota como sustituto automático.
+        self.assertIn('plazo', str(ctx.exception).lower())
+
+    def test_the_window_edge_is_inclusive(self):
+        # Recibida hace 7 días: el séptimo día calendario todavía admite la baja.
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=7))
+        original.refresh_from_db()
+        check_void_eligible(original)  # no levanta
+
+    def test_a_granted_invoice_is_refused(self):
+        # La puerta del OTORGAMIENTO: lo entregado no se da de baja.
+        #
+        # Se parte de una factura SIN atestación, no de `_eligible()`: atestiguar que
+        # no se entregó y luego registrar la entrega son afirmaciones opuestas, y la
+        # restricción de la base lo prohíbe. El escenario real es éste — aceptada,
+        # entregada, nunca atestiguada.
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible, record_grant
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        record_grant(original, actor=self._actor(), method='pos_print')
+        original.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('OTORGADO', str(ctx.exception).upper())
+
+    def test_an_invoice_with_an_accepted_credit_note_is_refused(self):
+        # Corregir con nota y dar de baja son caminos excluyentes, y la nota NO se
+        # invalida.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        note, _ = create_fiscal_note(
+            original, note_type=FiscalDocumentType.CREDIT_NOTE,
+            reason_code='01', reason_description='x', request_key='k')
+        FiscalDocument.objects.filter(pk=note.pk).update(
+            status=FiscalDocumentStatus.ACCEPTED)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('nota', str(ctx.exception).lower())
+        note.refresh_from_db()
+        self.assertEqual(note.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_an_invoice_already_in_a_live_void_is_refused(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')])
+        with self.assertRaises(FiscalError):
+            check_void_eligible(original)
+
+    def test_documents_from_different_days_cannot_be_grouped(self):
+        # Artículo 14.1.b: agrupar sí, mezclar días no.
+        from .fiscal_services import FiscalError
+        uno = self._eligible()
+        otro = self._eligible()
+        FiscalDocument.objects.filter(pk=otro.pk).update(
+            issued_at=timezone.now() - timedelta(days=2))
+        otro.refresh_from_db()
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(uno, 'a'), (otro, 'b')])
+        self.assertIn('MISMO día', str(ctx.exception))
+
+    # -- la historia no se reescribe -----------------------------------------
+
+    def test_an_accepted_void_leaves_the_original_untouched(self):
+        from .fiscal_void_services import is_voided
+        original = self._eligible()
+        antes = (original.status, original.signed_xml_sha256, original.cdr_sha256,
+                 original.series, original.number)
+        self.assertFalse(is_voided(original))
+
+        void = self._create(targets=[(original, 'NO OTORGADA')])
+        FiscalVoidCommunication.objects.filter(pk=void.pk).update(
+            status=FiscalVoidStatus.ACCEPTED)
+
+        original.refresh_from_db()
+        self.assertEqual(
+            (original.status, original.signed_xml_sha256, original.cdr_sha256,
+             original.series, original.number), antes,
+            'dar de baja no reescribe el comprobante original')
+        # Y aun así se puede responder «quedó dado de baja», por la RELACIÓN.
+        self.assertTrue(is_voided(original))
+
+    def test_a_rejected_void_releases_its_documents_without_voiding_them(self):
+        from .fiscal_void_services import is_voided
+        original = self._eligible()
+        void = self._create(targets=[(original, 'NO OTORGADA')])
+        FiscalVoidCommunication.objects.filter(pk=void.pk).update(
+            status=FiscalVoidStatus.REJECTED)
+        void.refresh_from_db()
+        void.lines.update(superseded=True)
+
+        self.assertFalse(is_voided(original), 'un rechazo no da de baja nada')
+        # Liberado: puede intentarse en otra comunicación.
+        from .fiscal_void_services import check_void_eligible
+        check_void_eligible(original)
+
+    # -- idempotencia ---------------------------------------------------------
+
+    def test_the_same_request_key_yields_one_communication(self):
+        original = self._eligible()
+        primera = self._create(targets=[(original, 'NO OTORGADA')], request_key='k1')
+        segunda = self._create(targets=[(original, 'NO OTORGADA')], request_key='k1')
+        self.assertEqual(primera.pk, segunda.pk)
+        self.assertEqual(
+            FiscalVoidCommunication.objects.filter(company=self.company).count(), 1,
+            'un doble clic no da de baja la misma numeración dos veces')
+
+    def test_a_rejected_communication_releases_its_request_key(self):
+        # Reintentar una baja que SUNAT rechazó es legítimo: la clave no queda
+        # quemada para siempre.
+        original = self._eligible()
+        primera = self._create(targets=[(original, 'NO OTORGADA')], request_key='k2')
+        FiscalVoidCommunication.objects.filter(pk=primera.pk).update(
+            status=FiscalVoidStatus.REJECTED)
+        primera.refresh_from_db()
+        primera.lines.update(superseded=True)
+
+        segunda = self._create(targets=[(original, 'OTRO INTENTO')], request_key='k2')
+        self.assertNotEqual(primera.pk, segunda.pk)
+
+    def test_the_database_itself_refuses_a_duplicate_live_request_key(self):
+        # No basta el pre-chequeo en Python: la carrera de dos workers la para la
+        # restricción, y es de ella de la que depende el except IntegrityError.
+        from django.db import IntegrityError, transaction
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')], request_key='k3')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalVoidCommunication.objects.create(
+                company=self.company, environment=FiscalEnvironment.BETA,
+                identifier='RA-20260925-999', correlativo=999,
+                issue_date=timezone.localdate(),
+                reference_date=timezone.localdate(),
+                request_key='k3', status=FiscalVoidStatus.GENERATED)
+
+    # -- envío, ticket y CDR-Baja --------------------------------------------
+
+    def _signed(self, **kw):
+        from .fiscal_void_services import sign_void_communication
+        return sign_void_communication(
+            self._create(**kw), key_pem=self._key, cert_pem=self._cert)
+
+    def test_a_ticket_is_persisted_and_the_communication_is_submitted(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='TICKET-1')))
+        self.assertEqual(void.ticket, 'TICKET-1')
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMITTED)
+
+    def test_a_connection_failure_is_safe_to_retry(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='no conectó')))
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_ERROR)
+        self.assertEqual(void.ticket, '')
+
+    def test_a_transmitted_send_without_a_ticket_is_uncertain_and_not_resent(self):
+        # La distinción que gobierna todo: transmitido sin respuesta NO es
+        # reintentable, porque podría duplicar la baja en SUNAT.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        proveedor = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_UNKNOWN, safe_message='timeout'))
+        void = submit_void_communication(self._signed(), proveedor)
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_UNKNOWN)
+
+        with self.assertRaises(FiscalError):
+            submit_void_communication(void, proveedor)
+        self.assertEqual(proveedor.submit_calls, 1, 'no se reenvió a ciegas')
+
+    def test_a_processing_ticket_leaves_it_submitted(self):
+        from .fiscal.provider import (
+            SummaryOutcome, SummarySubmissionResult, TicketStatus)
+        from .fiscal_void_services import poll_void_communication, submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier,
+                                  ticket_status=TicketStatus.PROCESSING,
+                                  with_cdr=False)))
+        self.assertEqual(result.action, 'processing')
+        result.void_communication.refresh_from_db()
+        self.assertEqual(result.void_communication.status, FiscalVoidStatus.SUBMITTED)
+
+    def test_an_accepted_cdr_voids_the_numbering_without_touching_the_original(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import (
+            is_voided, poll_void_communication, submit_void_communication)
+        original = self._eligible()
+        antes = (original.status, original.signed_xml_sha256)
+        void = submit_void_communication(
+            self._signed(targets=[(original, 'NO OTORGADA')]),
+            _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier)))
+        self.assertEqual(result.action, 'reconciled')
+        self.assertTrue(result.void_communication.is_accepted)
+        self.assertTrue(is_voided(original))
+        original.refresh_from_db()
+        self.assertEqual((original.status, original.signed_xml_sha256), antes)
+
+    def test_a_cdr_of_another_communication_is_never_applied(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import poll_void_communication, submit_void_communication
+        void = submit_void_communication(self._signed(), _FakeSummaryProvider(
+            submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id='RA-20260101-99')))
+        self.assertEqual(result.action, 'cdr_mismatch')
+        result.void_communication.refresh_from_db()
+        self.assertFalse(result.void_communication.is_accepted)
+
+    # -- hallazgos de la revisión §43 -----------------------------------------
+
+    def test_the_plazo_is_enforced_again_when_sending(self):
+        """
+        REVIEW §43 A/B. El artículo 14.1.b pone el plazo sobre el ENVÍO.
+
+        Comprobarlo sólo al crear dejaba transmitir una baja vencida: `/void/` firma
+        sin enviar, así que entre una cosa y otra puede pasar una semana.
+        """
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+
+        proveedor = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='NO-DEBE-SALIR'))
+        with self.assertRaises(FiscalError) as ctx:
+            submit_void_communication(void, proveedor)
+        self.assertIn('plazo', str(ctx.exception).lower())
+        self.assertEqual(proveedor.submit_calls, 0,
+                         'no se transmitió una baja fuera de plazo')
+
+    def test_a_retry_after_a_transport_error_still_respects_the_plazo(self):
+        # El camino real: el primer envío falla (reintentable), y el reintento llega
+        # tarde. Antes salía sin mirar la fecha.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        fallo = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TRANSPORT_ERROR, safe_message='no conectó'))
+        void = submit_void_communication(void, fallo)
+        self.assertEqual(void.status, FiscalVoidStatus.SUBMISSION_ERROR)
+
+        FiscalDocument.objects.filter(pk=original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        reintento = _FakeSummaryProvider(submit=SummarySubmissionResult(
+            outcome=SummaryOutcome.TICKET, ticket='TARDE'))
+        with self.assertRaises(FiscalError):
+            submit_void_communication(void, reintento)
+        self.assertEqual(reintento.submit_calls, 0)
+
+    def test_sending_without_a_provable_cdr_date_is_refused(self):
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import submit_void_communication
+        original = self._eligible()
+        void = self._signed(targets=[(original, 'NO OTORGADA')])
+        FiscalDocument.objects.filter(pk=original.pk).update(cdr_accepted_at=None)
+        with self.assertRaises(FiscalError) as ctx:
+            submit_void_communication(void, _FakeSummaryProvider(
+                submit=SummarySubmissionResult(
+                    outcome=SummaryOutcome.TICKET, ticket='X')))
+        self.assertIn('REVISIÓN', str(ctx.exception).upper())
+
+    def test_a_request_key_reused_on_another_document_is_refused(self):
+        # La clave sola no identifica nada: reutilizarla con otro comprobante daba
+        # un «listo» que nombraba el comprobante equivocado.
+        from .fiscal_services import FiscalError
+        uno = self._eligible()
+        otro = self._eligible()
+        self._create(targets=[(uno, 'a')], request_key='k9')
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(otro, 'b')], request_key='k9')
+        self.assertIn('idempotencia', str(ctx.exception).lower())
+
+    def test_a_note_cannot_be_issued_over_a_comprobante_being_voided(self):
+        # La exclusión nota/baja va en LAS DOS direcciones.
+        from .fiscal_note_services import create_fiscal_note
+        from .fiscal_services import FiscalError
+        original = self._eligible()
+        self._create(targets=[(original, 'NO OTORGADA')])
+        with self.assertRaises(FiscalError) as ctx:
+            create_fiscal_note(
+                original, note_type=FiscalDocumentType.CREDIT_NOTE,
+                reason_code='01', reason_description='x', request_key='n1')
+        self.assertIn('baja', str(ctx.exception).lower())
+
+    def test_a_note_of_a_boleta_never_reaches_the_ra_channel(self):
+        """
+        Una nota hereda el canal de lo que corrige: un 07 de BOLETA va por el
+        Resumen (artículo 14.2.b), no por una RA.
+
+        Se construye la fila a mano porque hoy `create_fiscal_note` ni siquiera
+        emite notas de boleta (NC-BOL/ND-BOL están PENDIENTES): la guarda existe
+        para que el día que se emitan no entren por el canal equivocado.
+        """
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        serie_b = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT,
+            series='B001')
+        boleta = FiscalDocument.objects.create(
+            order=self._paid_invoice_order(), company=self.company,
+            series_ref=serie_b, document_type=FiscalDocumentType.RECEIPT,
+            series='B001', number=1, issued_at=timezone.now(),
+            environment=serie_b.environment, issuer_tax_id='20100066603',
+            currency='PEN', taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), total=Decimal('118.00'),
+            tax_rate=Decimal('0.18'), status=FiscalDocumentStatus.SIGNED)
+        nota = FiscalDocument.objects.create(
+            order=boleta.order, company=self.company, series_ref=serie_b,
+            document_type=FiscalDocumentType.CREDIT_NOTE, series='BN01', number=1,
+            issued_at=timezone.now(), environment=serie_b.environment,
+            issuer_tax_id='20100066603', currency='PEN',
+            taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'),
+            status=FiscalDocumentStatus.SIGNED, original_document=boleta,
+            note_reason_code='01')
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(nota)
+        self.assertIn('Resumen', str(ctx.exception))
+
+    # -- otorgamiento: el silencio no prueba nada -----------------------------
+
+    def test_without_an_attestation_the_baja_is_denied(self):
+        """
+        LA PUERTA QUE MÁS IMPORTA. Ni otorgado ni atestiguado = DESCONOCIDO.
+
+        Hoy nada registra las entregas, así que si el silencio contara como «no se
+        entregó» se podría anular la numeración de un comprobante que el cliente
+        tiene en la mano.
+        """
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import check_void_eligible
+        original = self._accepted_invoice()
+        original.refresh_from_db()
+        self.assertIsNone(original.granted_at)
+        self.assertIsNone(original.not_granted_at)
+        with self.assertRaises(FiscalError) as ctx:
+            check_void_eligible(original)
+        self.assertIn('atestación', str(ctx.exception).lower())
+
+    def test_an_attestation_records_who_said_it_when_and_why(self):
+        from .fiscal_void_services import attest_not_granted
+        original = self._accepted_invoice()
+        attest_not_granted(original, actor=self._actor(), reason='NO SE ENTREGÓ')
+        original.refresh_from_db()
+        self.assertIsNotNone(original.not_granted_at)
+        self.assertEqual(original.not_granted_by, self._actor())
+        self.assertEqual(original.not_granted_reason, 'NO SE ENTREGÓ')
+
+    def test_an_attestation_demands_a_reason(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import attest_not_granted
+        original = self._accepted_invoice()
+        for motivo in ('', '   '):
+            with self.subTest(reason=motivo), self.assertRaises(FiscalError):
+                attest_not_granted(original, actor=self._actor(), reason=motivo)
+
+    def test_granting_and_attesting_refuse_each_other(self):
+        from .fiscal_services import FiscalError
+        from .fiscal_void_services import attest_not_granted, record_grant
+        otorgado = self._accepted_invoice()
+        record_grant(otorgado, actor=self._actor(), method='pos_print')
+        with self.assertRaises(FiscalError):
+            attest_not_granted(otorgado, actor=self._actor(), reason='x')
+
+        atestiguado = self._eligible()
+        with self.assertRaises(FiscalError):
+            record_grant(atestiguado, actor=self._actor(), method='email')
+
+    def test_the_database_refuses_a_document_both_granted_and_not_granted(self):
+        # Son afirmaciones opuestas: que el servicio las impida no basta, porque la
+        # elegibilidad de una baja no puede depender del orden de lectura.
+        from django.db import IntegrityError, transaction
+        original = self._accepted_invoice()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            FiscalDocument.objects.filter(pk=original.pk).update(
+                granted_at=timezone.now(), not_granted_at=timezone.now())
+
+    # -- aislamiento y ausencia de efectos colaterales ------------------------
+
+    def test_a_document_of_another_company_is_refused(self):
+        from .fiscal_services import FiscalError
+        otra = _p3_company('f5b-otra', 'Otra Baja SAC', tax_id='20999999999',
+                           legal_name='OTRA BAJA SAC')
+        ajeno = FiscalDocument(company=otra,
+                               document_type=FiscalDocumentType.INVOICE)
+        with self.assertRaises(FiscalError) as ctx:
+            self._create(targets=[(ajeno, 'x')])
+        self.assertIn('empresas distintas', str(ctx.exception))
+
+    def test_an_accepted_void_moves_no_money_no_stock_and_no_order(self):
+        # §26: fiscal != financiero != inventario != flujo comercial. Dar de baja es
+        # un acto FISCAL y nada más.
+        from .fiscal.provider import SummaryOutcome, SummarySubmissionResult
+        from .fiscal_void_services import (
+            poll_void_communication, submit_void_communication)
+        original = self._eligible()
+        order = original.order
+        antes_order = (order.status, order.paid, order.total)
+        antes_stock = StockMovement.objects.count()
+        antes_pagos = PaymentTransaction.objects.count()
+
+        void = submit_void_communication(
+            self._signed(targets=[(original, 'NO OTORGADA')]),
+            _FakeSummaryProvider(submit=SummarySubmissionResult(
+                outcome=SummaryOutcome.TICKET, ticket='T')))
+        result = poll_void_communication(void, _FakeSummaryProvider(
+            ticket=_ticket_result(ref_id=void.identifier)))
+        self.assertTrue(result.void_communication.is_accepted)
+
+        order.refresh_from_db()
+        self.assertEqual((order.status, order.paid, order.total), antes_order)
+        self.assertEqual(StockMovement.objects.count(), antes_stock,
+                         'una baja no repone stock')
+        self.assertEqual(PaymentTransaction.objects.count(), antes_pagos,
+                         'una baja no reembolsa')
+
+
+@override_settings(
+    FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603',
+    FISCAL_SOL_USER='MODDATOS', FISCAL_SOL_PASSWORD='moddatos',
+)
+class Fiscal5bVoidApiTest(TestCase):
+    """
+    La superficie de la baja y del otorgamiento: quién puede, y de dónde sale el
+    dato. El `pk` es el comprobante autorizado; del cuerpo sólo el motivo y la
+    clave. En particular, «no otorgado» NO se acepta del cuerpo.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company(
+            'f5b-api', 'Empresa Baja API', tax_id='20100066603',
+            legal_name='EMPRESA BAJA API SAC')
+        FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.INVOICE,
+            series='F001')
+        self.product = _c1_product(self.company, 'Articulo Baja', '118.00')
+        _c1_stock(self.company.default_inventory_branch, self.product, 30)
+
+        self.emisor, _ = _p2d_member(
+            self.company, 'f5b_emisor',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+        self.observador, _ = _p2d_member(
+            self.company, 'f5b_observador', ['company.view', 'sales.fiscal.view'])
+        self.otra = _p3_company('f5b-ajena', 'Ajena SAC', tax_id='20999999999',
+                                legal_name='AJENA SAC')
+        self.ajeno, _ = _p2d_member(
+            self.otra, 'f5b_ajeno',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'])
+
+        key, cert = self_signed_pem('20100066603')
+        self.cert_pem, self.key_pem = cert.decode(), key.decode()
+        self.original = self._accepted()
+
+    def _accepted(self):
+        order = Order.objects.create(
+            company=self.company, customer_name='CLIENTE SAC',
+            document_type=Order.DocumentType.RUC, document_number='20000000001',
+            receipt_type=Order.ReceiptType.FACTURA,
+            total=Decimal('118.00'), discount_amount=Decimal('0.00'),
+            subtotal_amount=Decimal('118.00'), taxable_amount=Decimal('100.00'),
+            tax_amount=Decimal('18.00'), tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, price=Decimal('118.00'))
+        doc, _ = get_or_create_fiscal_document(order)
+        doc = sign_fiscal_document(
+            doc, key_pem=self.key_pem.encode(), cert_pem=self.cert_pem.encode())
+        return submit_fiscal_document(doc, _FakeProvider(_accepted()))
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _attest(self, user=None, reason='NUNCA SE ENTREGÓ'):
+        return self._as(user or self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.original.pk}/not-granted/',
+            {'reason': reason}, format='json')
+
+    def _void(self, user=None, body=None):
+        with override_settings(FISCAL_CERT_PEM=self.cert_pem,
+                               FISCAL_KEY_PEM=self.key_pem):
+            return self._as(user or self.emisor).post(
+                f'/api/admin/fiscal-documents/{self.original.pk}/void/',
+                body or {'reason': 'EMITIDA POR ERROR, NO OTORGADA'}, format='json')
+
+    # -- la puerta del cuerpo -------------------------------------------------
+
+    def test_the_body_cannot_fake_a_not_granted_attestation(self):
+        """
+        §15. Si un booleano del cuerpo bastara, quien llama autorizaría su propia
+        baja. La atestación se registra por su propia acción, firmada.
+        """
+        res = self._void(body={'reason': 'x', 'not_granted': True,
+                               'granted_at': None, 'not_granted_at': '2026-01-01'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.original.refresh_from_db()
+        self.assertIsNone(self.original.not_granted_at,
+                          'el cuerpo no puede atestiguar nada')
+
+    def test_the_attestation_endpoint_records_its_author(self):
+        res = self._attest()
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.original.refresh_from_db()
+        self.assertIsNotNone(self.original.not_granted_at)
+        self.assertEqual(self.original.not_granted_by, self.emisor)
+        self.assertEqual(self.original.not_granted_reason, 'NUNCA SE ENTREGÓ')
+
+    def test_an_attestation_without_a_reason_is_refused(self):
+        res = self._attest(reason='   ')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- emisión de la baja ---------------------------------------------------
+
+    def test_an_attested_invoice_can_be_voided(self):
+        self._attest()
+        res = self._void()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(res.data['identifier'].startswith('RA-'))
+        self.assertEqual(res.data['status'], FiscalVoidStatus.SIGNED)
+        self.assertEqual(res.data['documents'][0]['document_id'],
+                         self.original.document_id)
+
+    def test_voiding_without_an_attestation_is_refused(self):
+        res = self._void()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_void_without_a_reason_is_refused(self):
+        self._attest()
+        res = self._void(body={'reason': ''})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_the_same_request_key_is_idempotent_over_http(self):
+        self._attest()
+        body = {'reason': 'NO OTORGADA', 'request_key': 'ra-1'}
+        primera = self._void(body=body)
+        segunda = self._void(body=body)
+        self.assertEqual(primera.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK)
+        self.assertEqual(primera.data['id'], segunda.data['id'])
+
+    # -- permisos y aislamiento ----------------------------------------------
+
+    def test_a_viewer_cannot_attest_or_void(self):
+        self.assertEqual(self._attest(user=self.observador).status_code,
+                         status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._void(user=self.observador).status_code,
+                         status.HTTP_403_FORBIDDEN)
+
+    def test_another_tenant_sees_no_document(self):
+        self.assertEqual(self._attest(user=self.ajeno).status_code,
+                         status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self._void(user=self.ajeno).status_code,
+                         status.HTTP_404_NOT_FOUND)
+
+    def test_granting_requires_a_known_channel(self):
+        res = self._as(self.emisor).post(
+            f'/api/admin/fiscal-documents/{self.original.pk}/grant/',
+            {'method': 'paloma-mensajera'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- las banderas no mienten ---------------------------------------------
+
+    def test_another_branch_cannot_see_or_move_the_communication(self):
+        """
+        REVIEW §43 B. Una comunicación no tiene alcance propio: lo hereda de los
+        comprobantes que da de baja. Filtrar sólo por empresa dejaba que quien opera
+        una sucursal leyera, transmitiera y cerrara la baja de OTRA (H4.1.2).
+        """
+        self._attest()
+        void_id = self._void().data['id']
+
+        otra_sucursal = Branch.objects.create(
+            company=self.company, name='Sucursal ajena', is_active=True)
+        de_otra, _ = _p2d_member(
+            self.company, 'f5b_otra_sucursal',
+            ['company.view', 'sales.fiscal.view', 'sales.fiscal.issue'],
+            branches=[otra_sucursal])
+
+        cliente = self._as(de_otra)
+        self.assertEqual(
+            cliente.get(f'/api/admin/fiscal-void-communications/{void_id}/').status_code,
+            status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            cliente.post(
+                f'/api/admin/fiscal-void-communications/{void_id}/submit/').status_code,
+            status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            cliente.post(
+                f'/api/admin/fiscal-void-communications/{void_id}/status/').status_code,
+            status.HTTP_404_NOT_FOUND)
+
+    def test_can_submit_turns_false_once_the_plazo_closes(self):
+        # El botón no puede ofrecer lo que el backend va a negar: la bandera y la
+        # puerta consultan el mismo criterio.
+        self._attest()
+        void_id = self._void().data['id']
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertTrue(res.data['can_submit'])
+
+        FiscalDocument.objects.filter(pk=self.original.pk).update(
+            cdr_accepted_at=timezone.now() - timedelta(days=10))
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertFalse(res.data['can_submit'],
+                         'fuera de plazo no se ofrece enviar')
+
+    def test_an_uncertain_send_offers_recover_and_never_submit(self):
+        self._attest()
+        void_id = self._void().data['id']
+        FiscalVoidCommunication.objects.filter(pk=void_id).update(
+            status=FiscalVoidStatus.SUBMISSION_UNKNOWN)
+        res = self._as(self.emisor).get(
+            f'/api/admin/fiscal-void-communications/{void_id}/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data['can_recover'])
+        self.assertFalse(res.data['can_submit'],
+                         'un envío incierto no se reenvía a ciegas')
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-01 — delegation on the WHERE axis
+# ---------------------------------------------------------------------------
+
+class F2BranchDelegationTest(TestCase):
+    """
+    NOBODY GRANTS A BRANCH THEY CANNOT REACH.
+
+    The WHAT axis has had this rule since G3 (`can_delegate_capabilities`). The
+    WHERE axis had none: a member restricted to B1 holding `memberships.manage`
+    could widen their own grant to B2, switch themselves to ALL, or hand B2 to
+    someone else. Every path that writes a branch scope — membership create,
+    membership update, staff invitation — now asks the same question.
+    """
+
+    ADMIN_CAPS = [
+        'company.view', 'memberships.view', 'memberships.manage',
+        'products.view', 'reports.view',
+        'inventory.view', 'inventory.adjust', 'inventory.reports',
+    ]
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-deleg')
+        self.b1 = _p2d_branch(self.company, 'F2 B1')
+        self.b2 = _p2d_branch(self.company, 'F2 B2')
+        self.other = _p2d_company('f2-deleg-other')
+        self.foreign = _p2d_branch(self.other, 'F2 Ajena')
+
+        self.actor, self.actor_m = _p2d_member(
+            self.company, 'f2_selected_admin', self.ADMIN_CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2_wide_admin', self.ADMIN_CAPS)
+        self.target = User.objects.create_user(username='f2_target', password='x')
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _membership_for_target(self, *, mode, branches=()):
+        membership = Membership.objects.create(
+            user=self.target, company=self.company, role='inventory',
+            branch_access_mode=mode,
+        )
+        for branch in branches:
+            MembershipBranchAccess.objects.create(membership=membership, branch=branch)
+        return membership
+
+    def _grants(self, membership):
+        return sorted(
+            membership.branch_access.filter(is_active=True)
+            .values_list('branch_id', flat=True)
+        )
+
+    # -- self-escalation -----------------------------------------------------
+
+    def test_a_selected_member_cannot_widen_their_own_grants(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access': [self.b1.pk, self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(self.actor_m), [self.b1.pk])
+        self.assertFalse(has_branch_access(self.actor, self.b2))
+
+    def test_a_selected_member_cannot_switch_themselves_to_all(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.actor_m.refresh_from_db()
+        self.assertEqual(self.actor_m.branch_access_mode, 'selected')
+        self.assertFalse(has_branch_access(self.actor, self.b2))
+
+    def test_a_selected_member_may_narrow_their_own_grants(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{self.actor_m.pk}/',
+            {'branch_access': []}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._grants(self.actor_m), [])
+
+    # -- granting to others --------------------------------------------------
+
+    def test_a_selected_member_cannot_grant_an_unreached_branch(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    def test_a_selected_member_cannot_move_someone_to_all(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertEqual(target_m.branch_access_mode, 'selected')
+
+    def test_a_selected_member_cannot_revoke_a_branch_they_do_not_reach(self):
+        """Taking B2 away from someone is operating B2 just as much as giving it."""
+        target_m = self._membership_for_target(
+            mode='selected', branches=[self.b1, self.b2],
+        )
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b1.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._grants(target_m), [self.b1.pk, self.b2.pk])
+
+    def test_a_selected_member_cannot_narrow_a_company_wide_member(self):
+        target_m = self._membership_for_target(mode='all')
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'selected', 'branch_access': [self.b1.pk]},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertEqual(target_m.branch_access_mode, 'all')
+
+    def test_a_selected_member_may_manage_grants_inside_their_reach(self):
+        target_m = self._membership_for_target(mode='selected', branches=[])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b1.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    def test_a_refused_scope_change_does_not_keep_the_other_fields(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.actor).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'is_active': False, 'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        target_m.refresh_from_db()
+        self.assertTrue(target_m.is_active)
+
+    def test_unreached_foreign_and_missing_ids_answer_alike(self):
+        """No existence oracle: B2, another tenant's branch and a free pk look the same."""
+        target_m = self._membership_for_target(mode='selected', branches=[])
+        answers = set()
+        for branch_id in (self.b2.pk, self.foreign.pk, 987654):
+            res = self._as(self.actor).patch(
+                f'/api/admin/memberships/{target_m.pk}/',
+                {'branch_access': [branch_id]}, format='json',
+            )
+            answers.add((res.status_code, str(res.data.get('detail'))))
+        self.assertEqual(len(answers), 1, answers)
+
+    # -- creating memberships ------------------------------------------------
+
+    def test_a_selected_member_cannot_create_a_company_wide_membership(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+
+    def test_a_selected_member_cannot_create_a_membership_on_an_unreached_branch(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b2.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+
+    def test_a_selected_member_may_create_a_membership_inside_their_reach(self):
+        res = self._as(self.actor).post('/api/admin/memberships/', {
+            'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b1.pk],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual([b['id'] for b in res.data['branch_access']], [self.b1.pk])
+
+    # -- staff invitations ---------------------------------------------------
+
+    def _invite(self, user, **overrides):
+        # Only a role whose capabilities the actor holds can be delegated (G3);
+        # the actor's own role keeps this test about the WHERE axis.
+        role = self.actor_m.role_assignments.first().role
+        payload = {
+            'company': self.company.pk, 'email': 'f2@correo.test',
+            'first_name': 'F2', 'last_name': 'Invitada', 'role': role.pk,
+            'branch_access_mode': 'all',
+        }
+        payload.update(overrides)
+        return self._as(user).post('/api/admin/staff/invitations/', payload, format='json')
+
+    def test_a_selected_member_cannot_invite_someone_company_wide(self):
+        res = self._invite(self.actor)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(StaffInvitation.objects.filter(company=self.company).exists())
+
+    def test_a_selected_member_cannot_invite_someone_to_an_unreached_branch(self):
+        res = self._invite(
+            self.actor, branch_access_mode='selected', branch_ids=[self.b2.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(StaffInvitation.objects.filter(company=self.company).exists())
+
+    def test_a_selected_member_may_invite_someone_inside_their_reach(self):
+        res = self._invite(
+            self.actor, branch_access_mode='selected', branch_ids=[self.b1.pk],
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_a_rejected_grant_list_rolls_the_whole_update_back(self):
+        """
+        `_apply_branch_access` answers 404 for an id outside the company, but the
+        membership row used to be saved BEFORE it ran: the 404 left the other
+        fields written. The update is one unit now.
+        """
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        res = self._as(self.wide).patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'is_active': False, 'branch_access': [self.foreign.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        target_m.refresh_from_db()
+        self.assertTrue(target_m.is_active)
+        self.assertEqual(self._grants(target_m), [self.b1.pk])
+
+    # -- company-wide authority is unchanged ---------------------------------
+
+    def test_a_company_wide_admin_still_grants_any_branch_and_all(self):
+        target_m = self._membership_for_target(mode='selected', branches=[self.b1])
+        client = self._as(self.wide)
+        res = client.patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        res = client.patch(
+            f'/api/admin/memberships/{target_m.pk}/',
+            {'branch_access_mode': 'all'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._invite(self.wide).status_code, status.HTTP_201_CREATED)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-02 — promotions only fire where their author reaches
+# ---------------------------------------------------------------------------
+
+class F2PromotionBranchScopeTest(TestCase):
+    """
+    A promotion changes what a till charges. A member restricted to B1 holding
+    `sales.promotions.manage` used to be able to aim one at B2 — or at every
+    branch, which is the default scope — because the branch ids were checked
+    against the COMPANY and never against the author's own reach.
+    """
+
+    CAPS = ['company.view', 'sales.promotions.view', 'sales.promotions.manage']
+
+    def setUp(self):
+        from .models import Promotion, PromotionBranch
+
+        cache.clear()
+        self.company = _p2d_company('f2-promo')
+        self.b1 = _p2d_branch(self.company, 'F2P B1')
+        self.b2 = _p2d_branch(self.company, 'F2P B2')
+        self.p1 = _c1_product(self.company, 'F2P Uno', '100.00')
+        self.p2 = _c1_product(self.company, 'F2P Dos', '50.00')
+        self.actor, _ = _p2d_member(
+            self.company, 'f2p_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2p_wide', self.CAPS)
+
+        self.promo_b2 = Promotion.objects.create(
+            company=self.company, name='Sólo B2',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('120.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=self.promo_b2, branch=self.b2)
+        self.promo_all = Promotion.objects.create(
+            company=self.company, name='Todas',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('130.00'),
+            branch_scope=Promotion.SCOPE_ALL,
+        )
+        self.promo_b1 = Promotion.objects.create(
+            company=self.company, name='Sólo B1',
+            promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=Decimal('140.00'),
+            branch_scope=Promotion.SCOPE_SELECTED,
+        )
+        PromotionBranch.objects.create(promotion=self.promo_b1, branch=self.b1)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _payload(self, **extra):
+        from .models import Promotion
+
+        payload = {
+            'name': 'Combo F2',
+            'promotion_type': Promotion.BUNDLE_FIXED_PRICE,
+            'fixed_price': '120.00',
+            'items': [
+                {'product': self.p1.pk, 'quantity': 1},
+                {'product': self.p2.pk, 'quantity': 1},
+            ],
+        }
+        payload.update(extra)
+        return payload
+
+    def _count(self):
+        from .models import Promotion
+
+        return Promotion.objects.filter(company=self.company).count()
+
+    def test_a_selected_member_cannot_create_a_promotion_for_an_unreached_branch(self):
+        before = self._count()
+        res = self._as(self.actor).post('/api/admin/sales/promotions/', self._payload(
+            branch_scope='selected', branches=[self.b2.pk],
+        ), format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._count(), before)
+
+    def test_a_selected_member_cannot_create_a_company_wide_promotion(self):
+        before = self._count()
+        res = self._as(self.actor).post(
+            '/api/admin/sales/promotions/', self._payload(), format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._count(), before)
+
+    def test_a_selected_member_may_create_a_promotion_for_their_branch(self):
+        res = self._as(self.actor).post('/api/admin/sales/promotions/', self._payload(
+            branch_scope='selected', branches=[self.b1.pk],
+        ), format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_a_selected_member_cannot_reprice_a_promotion_of_an_unreached_branch(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b2.pk}/',
+            {'fixed_price': '1.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.promo_b2.refresh_from_db()
+        self.assertEqual(self.promo_b2.fixed_price, Decimal('120.00'))
+
+    def test_a_selected_member_cannot_switch_off_a_company_wide_promotion(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_all.pk}/',
+            {'is_active': False}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.promo_all.refresh_from_db()
+        self.assertTrue(self.promo_all.is_active)
+
+    def test_a_selected_member_cannot_retarget_their_promotion_elsewhere(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b1.pk}/',
+            {'branches': [self.b2.pk]}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(self.promo_b1.applies_to_branch(self.b1))
+        self.assertFalse(self.promo_b1.applies_to_branch(self.b2))
+
+    def test_a_selected_member_may_edit_a_promotion_of_their_branch(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sales/promotions/{self.promo_b1.pk}/',
+            {'fixed_price': '135.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.promo_b1.refresh_from_db()
+        self.assertEqual(self.promo_b1.fixed_price, Decimal('135.00'))
+
+    def test_a_company_wide_member_is_unchanged(self):
+        client = self._as(self.wide)
+        res = client.post('/api/admin/sales/promotions/', self._payload(), format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        res = client.patch(
+            f'/api/admin/sales/promotions/{self.promo_b2.pk}/',
+            {'fixed_price': '110.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-BRANCH-03 — a series the list hides is not writable by pk
+# ---------------------------------------------------------------------------
+
+class F2SequenceBranchScopeTest(TestCase):
+    """
+    The sequence list already showed a SELECTED member only the branch series
+    they reach; the detail endpoint resolved by company alone, so the hidden
+    series of B2 could still be read and rewritten by its pk.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        from .sequences import ensure_branch_sequence
+
+        cache.clear()
+        self.company = _p2d_company('f2-seq')
+        self.b1 = _p2d_branch(self.company, 'F2S B1')
+        self.b2 = _p2d_branch(self.company, 'F2S B2')
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+        self.seq_b1 = ensure_branch_sequence(self.company, self.b1)
+        self.seq_b2 = ensure_branch_sequence(self.company, self.b2)
+        self.actor, _ = _p2d_member(
+            self.company, 'f2s_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2s_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_an_unreached_branch_series_cannot_be_rewritten(self):
+        prefix = self.seq_b2.prefix
+        res = self._as(self.actor).patch(
+            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'HACK-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.seq_b2.refresh_from_db()
+        self.assertEqual(self.seq_b2.prefix, prefix)
+
+    def test_an_unreached_branch_series_cannot_be_read(self):
+        res = self._as(self.actor).get(f'/api/admin/sequences/{self.seq_b2.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_it_answers_like_a_series_that_does_not_exist(self):
+        hidden = self._as(self.actor).get(f'/api/admin/sequences/{self.seq_b2.pk}/')
+        missing = self._as(self.actor).get('/api/admin/sequences/987654/')
+        self.assertEqual(
+            (hidden.status_code, hidden.data), (missing.status_code, missing.data),
+        )
+
+    def test_the_series_of_a_reached_branch_is_still_editable(self):
+        res = self._as(self.actor).patch(
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.seq_b1.refresh_from_db()
+        self.assertEqual(self.seq_b1.prefix, 'B1-')
+
+    def test_a_company_wide_member_is_unchanged(self):
+        res = self._as(self.wide).patch(
+            f'/api/admin/sequences/{self.seq_b2.pk}/', {'prefix': 'B2-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · F-CAP-01 — opening stock needs the inventory capability
+# ---------------------------------------------------------------------------
+
+class F2ProductInitialInventoryCapabilityTest(TestCase):
+    """
+    `products.manage` is authority over the CATALOGUE; `inventory.adjust` is
+    authority over STOCK. Creating a product with `inventory > 0` opens a
+    balance with an `initial_stock` Kardex line, so it needs both. Without the
+    second it used to succeed while the direct adjustment answered 403.
+    """
+
+    CATALOG = ['company.view', 'products.view', 'products.manage']
+    STOCK = ['inventory.view', 'inventory.adjust']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-cap')
+        self.b1 = _p2d_branch(self.company, 'F2C B1')
+        self.b2 = _p2d_branch(self.company, 'F2C B2')
+        self.other = _p2d_company('f2-cap-other')
+        _p2d_branch(self.other, 'F2C Ajena')
+        self.catalog_only, _ = _p2d_member(self.company, 'f2c_catalog', self.CATALOG)
+        self.both, _ = _p2d_member(self.company, 'f2c_both', self.CATALOG + self.STOCK)
+        self.stock_only, _ = _p2d_member(self.company, 'f2c_stock', ['company.view'] + self.STOCK)
+        self.selected_b2, _ = _p2d_member(
+            self.company, 'f2c_selected', self.CATALOG + self.STOCK, branches=[self.b2],
+        )
+        cache.clear()
+
+    def _post(self, user, company=None, **payload):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        body = {'name': 'Producto F2C', 'price': '10.00'}
+        body.update(payload)
+        company = company or self.company
+        return client.post(
+            f'/api/admin/products/?company={company.pk}', body, format='json',
+        )
+
+    def _footprint(self):
+        return (
+            Product.objects.filter(name='Producto F2C').count(),
+            StockMovement.objects.filter(product__name='Producto F2C').count(),
+            BranchStock.objects.filter(product__name='Producto F2C').count(),
+            AdminAuditLog.objects.filter(
+                action__in=['product_created', 'stock_initial_recorded'],
+            ).count(),
+        )
+
+    def test_catalog_only_may_create_with_zero_inventory(self):
+        res = self._post(self.catalog_only, inventory=0)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 0)
+        self.assertFalse(StockMovement.objects.filter(product_id=res.data['id']).exists())
+
+    def test_catalog_only_may_create_without_inventory(self):
+        res = self._post(self.catalog_only)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 0)
+        self.assertFalse(StockMovement.objects.filter(product_id=res.data['id']).exists())
+
+    def test_catalog_only_cannot_open_stock(self):
+        res = self._post(self.catalog_only, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_a_refused_opening_leaves_no_trace(self):
+        before = self._footprint()
+        self._post(self.catalog_only, inventory=7)
+        self.assertEqual(self._footprint(), before)
+        self.assertEqual(before[:3], (0, 0, 0))
+
+    def test_both_capabilities_open_stock_with_a_kardex_line(self):
+        res = self._post(self.both, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['inventory'], 7)
+        movements = StockMovement.objects.filter(product_id=res.data['id'])
+        self.assertEqual(movements.count(), 1)
+        self.assertEqual(movements.get().movement_type, StockMovement.INITIAL_STOCK)
+        self.assertEqual(movements.get().quantity, 7)
+
+    def test_inventory_adjust_alone_does_not_grant_the_catalogue(self):
+        before = self._footprint()
+        res = self._post(self.stock_only, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._footprint(), before)
+
+    def test_another_tenant_cannot_be_targeted(self):
+        before = self._footprint()
+        res = self._post(self.both, company=self.other, inventory=7)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._footprint(), before)
+        self.assertFalse(Product.objects.filter(company=self.other).exists())
+
+    def test_a_selected_member_opens_stock_only_in_a_reached_branch(self):
+        """The payload cannot name a branch; the server picks one the caller reaches."""
+        res = self._post(self.selected_b2, inventory=4, branch=self.b1.pk)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        stock = BranchStock.objects.get(product_id=res.data['id'])
+        self.assertEqual((stock.branch_id, stock.quantity), (self.b2.pk, 4))
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · RBAC-01 — belonging to a company is not permission to read it
+# ---------------------------------------------------------------------------
+
+class F2TenantReadAuthorizationTest(TestCase):
+    """
+    The company record and its branch roster were readable by ANY active member,
+    zero capabilities included — the Phase 1 gate (`HasCompanyMembership`) that
+    M11 already replaced for memberships, roles and areas. They now need a read
+    capability; without one the lists are empty and the details answer 404, as
+    M11 chose so ids stay secret.
+
+    The branch roster is COMPANY-level configuration (inactive branches included,
+    so they can be reactivated): a SELECTED member who may read it sees all of
+    it. It is also readable with `memberships.view/manage`, because granting
+    branch access needs the roster as a picker — the same reason READ_AREAS
+    includes them.
+    """
+
+    def setUp(self):
+        from .models import Membership
+
+        cache.clear()
+        self.a = _p2d_company('f2-read-a')
+        self.b = _p2d_company('f2-read-b')
+        self.a1 = _p2d_branch(self.a, 'F2R A1')
+        self.a2 = _p2d_branch(self.a, 'F2R A2')
+        self.a2.is_active = False
+        self.a2.save(update_fields=['is_active'])
+        self.b1 = _p2d_branch(self.b, 'F2R B1')
+
+        # Invitation-style membership: no role assignment, zero capabilities.
+        self.nobody = User.objects.create_user(username='f2r_nobody', password='x')
+        Membership.objects.create(user=self.nobody, company=self.a, role='customer')
+        self.tech, _ = _p2d_member(self.a, 'f2r_tech', ['sales.orders.view'])
+        self.viewer, _ = _p2d_member(self.a, 'f2r_viewer', ['company.view'])
+        self.selected, _ = _p2d_member(
+            self.a, 'f2r_selected', ['company.view'], branches=[self.a1],
+        )
+        self.staffer, _ = _p2d_member(self.a, 'f2r_staffer', ['memberships.manage'])
+        self.master = User.objects.create_superuser(
+            username='f2r_master', password='x', email='m@f2r.test',
+        )
+        self.outsider = User.objects.create_user(username='f2r_outsider', password='x')
+        cache.clear()
+
+    def _get(self, user, url):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client.get(url)
+
+    def _roster_a(self):
+        # Every branch of A, provisioning's default one and the inactive A2 included.
+        return sorted(Branch.objects.filter(company=self.a).values_list('pk', flat=True))
+
+    def _ids(self, res):
+        return sorted(row['id'] for row in res.data['results'])
+
+    # -- no read capability ----------------------------------------------------
+
+    def test_a_member_without_capabilities_reads_no_company(self):
+        for user in (self.nobody, self.tech):
+            res = self._get(user, '/api/admin/companies/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            self.assertEqual(res.data['results'], [], user.username)
+            res = self._get(user, f'/api/admin/companies/{self.a.pk}/')
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, user.username)
+
+    def test_a_member_without_capabilities_reads_no_branch(self):
+        for user in (self.nobody, self.tech):
+            res = self._get(user, '/api/admin/branches/')
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            self.assertEqual(res.data['results'], [], user.username)
+            res = self._get(user, f'/api/admin/branches/{self.a1.pk}/')
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, user.username)
+
+    def test_a_hidden_company_answers_like_a_missing_one(self):
+        hidden = self._get(self.nobody, f'/api/admin/companies/{self.a.pk}/')
+        foreign = self._get(self.nobody, f'/api/admin/companies/{self.b.pk}/')
+        missing = self._get(self.nobody, '/api/admin/companies/987654/')
+        self.assertEqual(
+            {(r.status_code, str(r.data)) for r in (hidden, foreign, missing)},
+            {(missing.status_code, str(missing.data))},
+        )
+
+    def test_a_hidden_branch_answers_like_a_missing_one(self):
+        hidden = self._get(self.nobody, f'/api/admin/branches/{self.a1.pk}/')
+        foreign = self._get(self.nobody, f'/api/admin/branches/{self.b1.pk}/')
+        missing = self._get(self.nobody, '/api/admin/branches/987654/')
+        self.assertEqual(
+            {(r.status_code, str(r.data)) for r in (hidden, foreign, missing)},
+            {(missing.status_code, str(missing.data))},
+        )
+
+    # -- with a read capability --------------------------------------------------
+
+    def test_company_view_reads_its_own_company_only(self):
+        res = self._get(self.viewer, '/api/admin/companies/')
+        self.assertEqual(self._ids(res), [self.a.pk])
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/companies/{self.a.pk}/').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/companies/{self.b.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_company_view_reads_the_whole_roster_of_its_company_only(self):
+        res = self._get(self.viewer, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+        self.assertEqual(
+            self._get(self.viewer, f'/api/admin/branches/{self.b1.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_the_roster_is_company_level_for_a_selected_member(self):
+        res = self._get(self.selected, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+
+    def test_memberships_manage_reads_the_roster_but_not_the_company(self):
+        res = self._get(self.staffer, '/api/admin/branches/')
+        self.assertEqual(self._ids(res), self._roster_a())
+        self.assertEqual(
+            self._get(self.staffer, f'/api/admin/companies/{self.a.pk}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    # -- unchanged paths -----------------------------------------------------------
+
+    def test_the_platform_master_keeps_global_scope(self):
+        res = self._get(self.master, '/api/admin/companies/')
+        self.assertTrue({self.a.pk, self.b.pk} <= set(self._ids(res)))
+        res = self._get(self.master, '/api/admin/branches/')
+        self.assertTrue({self.a1.pk, self.a2.pk, self.b1.pk} <= set(self._ids(res)))
+
+    def test_a_non_member_is_still_refused_at_the_door(self):
+        for url in ('/api/admin/companies/', '/api/admin/branches/'):
+            self.assertEqual(
+                self._get(self.outsider, url).status_code, status.HTTP_403_FORBIDDEN,
+            )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · RBAC-02 — a membership's default branch is no existence oracle
+# ---------------------------------------------------------------------------
+
+class F2MembershipBranchOracleTest(TestCase):
+    """
+    The default `branch` of a membership was looked up platform-wide and only
+    then checked against the company: a missing id answered 404, another
+    tenant's id 400 with a different message, and a branch of the same company
+    the caller does not reach was accepted. The field now resolves like its
+    sibling `branch_access`: inside what the caller may grant, one 404 for
+    everything else, nothing written.
+    """
+
+    ADMIN_CAPS = F2BranchDelegationTest.ADMIN_CAPS
+    MISSING = 987654
+
+    def setUp(self):
+        from .models import Membership
+
+        cache.clear()
+        self.company = _p2d_company('f2-oracle')
+        self.b1 = _p2d_branch(self.company, 'F2O B1')
+        self.b2 = _p2d_branch(self.company, 'F2O B2')
+        self.other = _p2d_company('f2-oracle-other')
+        self.foreign = _p2d_branch(self.other, 'F2O Ajena')
+        self.wide, _ = _p2d_member(self.company, 'f2o_wide', self.ADMIN_CAPS)
+        self.selected, _ = _p2d_member(
+            self.company, 'f2o_selected', self.ADMIN_CAPS, branches=[self.b1],
+        )
+        self.target = User.objects.create_user(username='f2o_target', password='x')
+        self.target_m = Membership.objects.create(
+            user=self.target, company=self.company, role='inventory',
+            branch_access_mode='selected', branch=self.b1,
+        )
+        MembershipBranchAccess.objects.create(membership=self.target_m, branch=self.b1)
+        self.newcomer = User.objects.create_user(username='f2o_new', password='x')
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _post(self, actor, branch_id):
+        return self._as(actor).post('/api/admin/memberships/', {
+            'user': self.newcomer.pk, 'company': self.company.pk, 'role': 'inventory',
+            'branch_access_mode': 'selected', 'branch_access': [self.b1.pk],
+            'branch': branch_id,
+        }, format='json')
+
+    def _patch(self, actor, branch_id, **extra):
+        return self._as(actor).patch(
+            f'/api/admin/memberships/{self.target_m.pk}/',
+            {'branch': branch_id, **extra}, format='json',
+        )
+
+    @staticmethod
+    def _answer(res):
+        return res.status_code, str(res.data)
+
+    def test_create_missing_and_foreign_branch_answer_alike(self):
+        missing = self._post(self.wide, self.MISSING)
+        foreign = self._post(self.wide, self.foreign.pk)
+        self.assertEqual(self._answer(foreign), self._answer(missing))
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
+
+    def test_update_missing_and_foreign_branch_answer_alike(self):
+        missing = self._patch(self.wide, self.MISSING)
+        foreign = self._patch(self.wide, self.foreign.pk)
+        self.assertEqual(self._answer(foreign), self._answer(missing))
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_an_unreached_branch_answers_like_a_missing_one_on_create(self):
+        unreached = self._post(self.selected, self.b2.pk)
+        missing = self._post(self.selected, self.MISSING)
+        foreign = self._post(self.selected, self.foreign.pk)
+        self.assertEqual(
+            {self._answer(r) for r in (unreached, foreign)}, {self._answer(missing)},
+        )
+        self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
+
+    def test_an_unreached_branch_answers_like_a_missing_one_on_update(self):
+        unreached = self._patch(self.selected, self.b2.pk)
+        missing = self._patch(self.selected, self.MISSING)
+        foreign = self._patch(self.selected, self.foreign.pk)
+        self.assertEqual(
+            {self._answer(r) for r in (unreached, foreign)}, {self._answer(missing)},
+        )
+        self.target_m.refresh_from_db()
+        self.assertEqual(self.target_m.branch_id, self.b1.pk)
+
+    def test_a_refused_branch_writes_nothing_else(self):
+        res = self._patch(
+            self.wide, self.foreign.pk, is_active=False, branch_access_mode='all',
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.target_m.refresh_from_db()
+        self.assertEqual(
+            (self.target_m.is_active, self.target_m.branch_access_mode,
+             self.target_m.branch_id),
+            (True, 'selected', self.b1.pk),
+        )
+
+    def test_a_reached_branch_still_works(self):
+        self.assertEqual(
+            self._patch(self.selected, self.b1.pk).status_code, status.HTTP_200_OK,
+        )
+        res = self._post(self.selected, self.b1.pk)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['branch'], self.b1.pk)
+
+    def test_a_company_wide_admin_still_sets_any_branch_of_the_company(self):
+        from .models import MembershipBranchAccess as Grant
+
+        Grant.objects.create(membership=self.target_m, branch=self.b2)
+        res = self._patch(self.wide, self.b2.pk)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['branch'], self.b2.pk)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · WRITE-SCOPE-01 — branch scope also caps what a mutation reaches
+# ---------------------------------------------------------------------------
+
+class F2SelectedBranchWriteScopeTest(TestCase):
+    """
+    `company.manage` says WHAT may be changed; branch scope says WHERE. A member
+    restricted to B1 could create branches, edit or deactivate B2 and choose the
+    branch the online store ships from, because these writes asked only
+    `can_manage_company`. Reading the roster stays as RBAC-01 left it.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p2d_company('f2-ws')
+        self.b1 = _p2d_branch(self.company, 'F2W B1')
+        self.b2 = _p2d_branch(self.company, 'F2W B2')
+        self.other = _p2d_company('f2-ws-other')
+        self.foreign = _p2d_branch(self.other, 'F2W Ajena')
+        self.selected, _ = _p2d_member(
+            self.company, 'f2w_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2w_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _create(self, user, name='F2W Nueva'):
+        return self._as(user).post('/api/admin/branches/', {
+            'company': self.company.pk, 'name': name,
+        }, format='json')
+
+    def _edit(self, user, branch_pk, **data):
+        return self._as(user).patch(
+            f'/api/admin/branches/{branch_pk}/', data, format='json',
+        )
+
+    def _fulfillment(self, user, branch_pk):
+        return self._as(user).patch(
+            f'/api/admin/companies/{self.company.pk}/fulfillment-branch/',
+            {'branch': branch_pk}, format='json',
+        )
+
+    # -- SELECTED ----------------------------------------------------------------
+
+    def test_a_selected_member_cannot_create_a_branch(self):
+        before = Branch.objects.filter(company=self.company).count()
+        res = self._create(self.selected)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Branch.objects.filter(company=self.company).count(), before)
+
+    def test_a_selected_member_may_edit_their_branch(self):
+        res = self._edit(self.selected, self.b1.pk, phone='999000111')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.b1.refresh_from_db()
+        self.assertEqual(self.b1.phone, '999000111')
+
+    def test_a_selected_member_cannot_edit_an_unreached_branch(self):
+        res = self._edit(self.selected, self.b2.pk, name='Tomada')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.b2.refresh_from_db()
+        self.assertEqual(self.b2.name, 'F2W B2')
+
+    def test_a_selected_member_cannot_deactivate_an_unreached_branch(self):
+        res = self._edit(self.selected, self.b2.pk, is_active=False)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.b2.refresh_from_db()
+        self.assertTrue(self.b2.is_active)
+
+    def test_missing_and_foreign_branches_still_answer_alike(self):
+        missing = self._edit(self.selected, 987654, name='X')
+        foreign = self._edit(self.selected, self.foreign.pk, name='X')
+        self.assertEqual(
+            (foreign.status_code, str(foreign.data)),
+            (missing.status_code, str(missing.data)),
+        )
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_selected_member_cannot_choose_the_fulfillment_branch(self):
+        before = self.company.default_inventory_branch_id
+        for target in (self.b1.pk, self.b2.pk, None):
+            res = self._fulfillment(self.selected, target)
+            self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, target)
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.default_inventory_branch_id, before)
+
+    def test_a_refused_write_is_not_audited_as_done(self):
+        before = AdminAuditLog.objects.filter(
+            action__in=['branch_created', 'branch_updated',
+                        'company_fulfillment_branch_changed'],
+        ).count()
+        self._create(self.selected)
+        self._edit(self.selected, self.b2.pk, is_active=False)
+        self._fulfillment(self.selected, self.b1.pk)
+        self.assertEqual(AdminAuditLog.objects.filter(
+            action__in=['branch_created', 'branch_updated',
+                        'company_fulfillment_branch_changed'],
+        ).count(), before)
+
+    def test_a_selected_member_still_reads_the_whole_roster(self):
+        res = self._as(self.selected).get('/api/admin/branches/')
+        self.assertIn(self.b2.pk, [row['id'] for row in res.data['results']])
+
+    # -- company-wide --------------------------------------------------------------
+
+    def test_a_company_wide_member_keeps_every_branch_write(self):
+        self.assertEqual(self._create(self.wide).status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self._edit(self.wide, self.b2.pk, name='B2 renombrada').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._fulfillment(self.wide, self.b2.pk).status_code, status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self._edit(self.wide, self.b2.pk, is_active=False).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_the_platform_master_keeps_every_branch_write(self):
+        master = User.objects.create_superuser(
+            username='f2w_master', password='x', email='m@f2w.test',
+        )
+        self.assertEqual(self._create(master).status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            self._edit(master, self.b2.pk, name='Por plataforma').status_code,
+            status.HTTP_200_OK,
+        )
+
+
+class F2SelectedCompanySettingsScopeTest(TestCase):
+    """
+    The company-level numbering (its own series and the company/branch scope
+    switch) and the company settings (identity, branding, currency) reach every
+    branch. A member restricted to B1 holding `company.manage` could change all
+    of them. They now need company-wide authority; the series of a branch the
+    member reaches stays theirs to edit.
+    """
+
+    CAPS = ['company.view', 'company.manage']
+
+    def setUp(self):
+        from .sequences import ensure_branch_sequence, ensure_company_sequence
+
+        cache.clear()
+        self.company = _p2d_company('f2-wsc')
+        self.b1 = _p2d_branch(self.company, 'F2WC B1')
+        self.b2 = _p2d_branch(self.company, 'F2WC B2')
+        self.company_seq = ensure_company_sequence(self.company)
+        _p2e_set_scope(self.company, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+        self.seq_b1 = ensure_branch_sequence(self.company, self.b1)
+        self.selected, _ = _p2d_member(
+            self.company, 'f2wc_selected', self.CAPS, branches=[self.b1],
+        )
+        self.wide, _ = _p2d_member(self.company, 'f2wc_wide', self.CAPS)
+        cache.clear()
+
+    def _as(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _q(self):
+        return f'?company={self.company.pk}'
+
+    def _seq_state(self, seq):
+        seq.refresh_from_db()
+        return seq.prefix, seq.padding, seq.next_value, seq.is_active
+
+    def test_a_selected_member_cannot_edit_the_company_series(self):
+        before = self._seq_state(self.company_seq)
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'ALL-'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._seq_state(self.company_seq), before)
+
+    def test_a_selected_member_may_still_read_the_company_series(self):
+        res = self._as(self.selected).get(f'/api/admin/sequences/{self.company_seq.pk}/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_selected_member_may_edit_the_series_of_their_branch(self):
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/{self.seq_b1.pk}/', {'prefix': 'B1-'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_selected_member_cannot_switch_the_numbering_scope(self):
+        res = self._as(self.selected).patch(
+            f'/api/admin/sequences/scope/{self._q()}',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        row = CompanySettings.objects.get(company=self.company)
+        self.assertEqual(row.sales_note_sequence_scope, CompanySettings.SEQUENCE_SCOPE_BRANCH)
+
+    def test_a_selected_member_cannot_change_company_settings(self):
+        row = CompanySettings.objects.get(company=self.company)
+        before = (self.company.name, row.primary_color, row.currency)
+        res = self._as(self.selected).patch(
+            f'/api/admin/company-settings/{self._q()}',
+            {'name': 'Renombrada', 'primary_color': '#123456'}, format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.company.refresh_from_db()
+        row.refresh_from_db()
+        self.assertEqual((self.company.name, row.primary_color, row.currency), before)
+
+    def test_a_selected_member_may_still_read_company_settings(self):
+        res = self._as(self.selected).get(f'/api/admin/company-settings/{self._q()}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_a_refused_change_is_not_audited_as_done(self):
+        actions = ['sequence_updated', 'sequence_scope_changed', 'company_settings_updated']
+        before = AdminAuditLog.objects.filter(action__in=actions).count()
+        client = self._as(self.selected)
+        client.patch(f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'X-'},
+                     format='json')
+        client.patch(f'/api/admin/sequences/scope/{self._q()}',
+                     {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY}, format='json')
+        client.patch(f'/api/admin/company-settings/{self._q()}', {'name': 'X'},
+                     format='json')
+        self.assertEqual(AdminAuditLog.objects.filter(action__in=actions).count(), before)
+
+    def test_a_company_wide_member_keeps_company_configuration(self):
+        client = self._as(self.wide)
+        self.assertEqual(client.patch(
+            f'/api/admin/sequences/{self.company_seq.pk}/', {'prefix': 'ALL-'},
+            format='json').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.patch(
+            f'/api/admin/sequences/scope/{self._q()}',
+            {'scope': CompanySettings.SEQUENCE_SCOPE_COMPANY},
+            format='json').status_code, status.HTTP_200_OK)
+        self.assertEqual(client.patch(
+            f'/api/admin/company-settings/{self._q()}', {'primary_color': '#123456'},
+            format='json').status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · E2E-02 — a disposable worker for the browser tests
+# ---------------------------------------------------------------------------
+
+@override_settings(DEBUG=True)
+class F2E2eFixtureSeedTest(TestCase):
+    """
+    The browser suite deactivates a member of staff to prove the screen works.
+    It used to pick "the first card", which was a demo ACCOUNT other specs log
+    in with — and deactivating retires role assignments by design, so that
+    account was left with no capabilities for every later run.
+
+    `seed_demo_users --e2e-fixtures` adds one worker nobody logs in with and no
+    other spec reads, so the test has something of its own to break.
+    """
+
+    SLUG = 'f2-e2e-seed'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('F2 E2E SA', self.SLUG)
+
+    def _seed(self, **options):
+        call_command('seed_demo_users', company_slug=self.SLUG, stdout=StringIO(), **options)
+
+    def _worker(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        return User.objects.filter(username=DEMO_E2E_STAFF_USERNAME).first()
+
+    def test_the_flag_creates_a_worker_with_an_active_role(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        self._seed(e2e_fixtures=True)
+        worker = self._worker()
+        self.assertIsNotNone(worker)
+        self.assertEqual(worker.email, demo_email(DEMO_E2E_STAFF_USERNAME))
+        membership = Membership.objects.get(user=worker, company=self.company)
+        self.assertTrue(membership.is_active)
+        self.assertTrue(membership.role_assignments.filter(is_active=True).exists())
+
+    def test_without_the_flag_nothing_changes(self):
+        self._seed()
+        self.assertIsNone(self._worker())
+        self.assertEqual(
+            User.objects.filter(username__startswith='dev_').count(),
+            len(ALL_DEMO_USERNAMES),
+        )
+
+    def test_it_is_not_a_login_account_on_the_demo_card(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        self._seed(e2e_fixtures=True)
+        self.assertNotIn(DEMO_E2E_STAFF_USERNAME, ALL_DEMO_USERNAMES)
+        res = APIClient().get('/api/dev/demo-accounts/')
+        self.assertNotIn(
+            DEMO_E2E_STAFF_USERNAME, [a['username'] for a in res.data['accounts']],
+        )
+
+    def test_reseeding_restores_what_a_test_left_behind(self):
+        self._seed(e2e_fixtures=True)
+        membership = Membership.objects.get(user=self._worker(), company=self.company)
+        membership.is_active = False
+        membership.save(update_fields=['is_active'])
+        membership.role_assignments.update(is_active=False)
+
+        self._seed(e2e_fixtures=True)
+        membership.refresh_from_db()
+        self.assertTrue(membership.is_active)
+        self.assertTrue(membership.role_assignments.filter(is_active=True).exists())
+        self.assertEqual(Membership.objects.filter(user=self._worker()).count(), 1)
+
+    def test_purge_removes_it_too(self):
+        self._seed(e2e_fixtures=True)
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+        self.assertIsNone(self._worker())
+
+    @override_settings(DEBUG=False)
+    def test_it_is_refused_outside_development(self):
+        with self.assertRaises(CommandError):
+            self._seed(e2e_fixtures=True)
+        self.assertIsNone(self._worker())

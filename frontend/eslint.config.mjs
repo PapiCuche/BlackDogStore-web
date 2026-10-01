@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Node.js build scripts — not subject to TS/React rules
     "scripts/**",
+    // Instrumental de auditoría: scripts de Node que conducen el navegador.
+    // No se publican (están en .gitignore) y no son código de la aplicación.
+    ".audit/**",
   ]),
   {
     // The set-state-in-effect rule produces false positives for async functions

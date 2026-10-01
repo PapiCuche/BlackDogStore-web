@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
 from django.utils import timezone
 
 
@@ -408,6 +408,45 @@ class Order(models.Model):
     customer_email = models.EmailField(blank=True)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # --- C2.1 — DESGLOSE TRIBUTARIO CONGELADO -----------------------------
+    #
+    # En COLUMNAS y no dentro de `company_snapshot`, porque estos importes se
+    # suman, se filtran y se comparan: un JSON obliga a leerlo entero en Python
+    # para responder «cuánto tributo se recaudó este mes».
+    #
+    # CONGELADOS, y no es una precaución teórica. La Ley N.º 32387 reparte el
+    # 18 % entre IGV e IPM de forma distinta cada año hasta 2029. Un documento
+    # emitido hoy tiene que seguir diciendo lo que dijo cuando ese reparto
+    # cambie, así que la venta guarda su copia y ninguna lectura la recalcula.
+    #
+    # `total` NO se toca: sigue siendo lo que se cobra. El desglose lo separa
+    # hacia atrás, porque los precios del catálogo ya incluyen el impuesto.
+    currency = models.CharField(max_length=3, blank=True, default='PEN')
+    #: Suma de las líneas ANTES del descuento. Se guarda en vez de derivarse de
+    #: `total + discount_amount` porque el descuento se redondea, y reconstruir
+    #: el bruto a partir del neto puede devolver un céntimo distinto del que se
+    #: enseñó en pantalla.
+    subtotal_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    #: Valor de venta: el total sin el tributo.
+    taxable_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    tax_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    #: La tasa TOTAL aplicada, no su reparto interno. Cuatro decimales para
+    #: admitir tasas que no sean céntimos redondos.
+    tax_rate = models.DecimalField(
+        max_digits=6, decimal_places=4, null=True, blank=True,
+    )
+    #: Gravado, exonerado o inafecto. Existe para no dar por sentado
+    #: eternamente que todo tributa.
+    tax_treatment = models.CharField(
+        max_length=16, blank=True, default='taxed',
+    )
     coupon_code = models.CharField(max_length=50, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     paid = models.BooleanField(default=False)
@@ -820,11 +859,61 @@ class UserProfile(models.Model):
         related_name='profile',
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CUSTOMER, db_index=True)
+
+    #: Instante desde el cual SÓLO valen credenciales emitidas después.
+    #:
+    #: H4.1.2B (AUTH-REVOCATION-01). Cambiar la contraseña invalidaba el refresh
+    #: y borraba las cookies, pero el access token que el cliente ya tenía seguía
+    #: abriendo la API hasta media hora. Un cambio de contraseña tiene que cerrar
+    #: TODAS las sesiones, así que se sella aquí y las dos clases de
+    #: autenticación lo comparan con el `iat` que SimpleJWT ya emite.
+    #:
+    #: Nulo significa que nunca se revocó nada para esta cuenta.
+    tokens_valid_after = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"Profile({self.user.username}, {self.role})"
+
+
+class RevokedAccessToken(models.Model):
+    """
+    Un access token concreto que ya no vale — H4.1.2B (AUTH-REVOCATION-01).
+
+    POR QUÉ EXISTE. SimpleJWT sólo sabe revocar refresh tokens. El logout metía
+    el refresh en la lista negra y borraba las cookies, y el access token que el
+    cliente ya tenía seguía abriendo la API hasta 30 minutos. Reproducido antes
+    de corregir: el MISMO Bearer respondía 200 después de cerrar sesión.
+
+    POR QUÉ POR `jti` Y NO POR USUARIO. Cerrar sesión termina ESTA sesión, no
+    todas las de la persona: quien cierra en el móvil no espera que se cierre la
+    del mostrador. Lo global —cambiar o restablecer la contraseña— se marca en
+    `UserProfile.tokens_valid_after`.
+
+    POR QUÉ EN BASE DE DATOS Y NO EN CACHÉ. Este despliegue no configura
+    `CACHES`, así que Django usa memoria local por proceso: una revocación ahí no
+    existiría para el proceso de al lado ni sobreviviría a un reinicio, que es
+    justo cuando más importa que siga existiendo.
+
+    Las filas caducan solas: `expires_at` es el `exp` del propio token, y de un
+    token vencido no queda nada que revocar.
+    """
+
+    jti = models.CharField(max_length=255, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='revoked_access_tokens',
+    )
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['expires_at'])]
+
+    def __str__(self):
+        return f"RevokedAccessToken({self.jti[:8]}…)"
 
 
 class AdminAuditLog(models.Model):
@@ -885,6 +974,28 @@ class AdminAuditLog(models.Model):
         )
 
 
+def make_raw_token() -> str:
+    """
+    Un token de un solo uso, con entropía suficiente para no adivinarse.
+
+    48 bytes en base64 seguro para URL: unos 64 caracteres. Vive aquí y no
+    duplicado en cada sitio que lo necesita para que exista UNA sola respuesta a
+    «cuánta entropía tienen nuestros tokens».
+    """
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(raw: str) -> str:
+    """
+    Lo ÚNICO que se guarda de un token.
+
+    Nunca el token en claro: quien comprometa la base de datos no debe poder
+    verificar correos, restablecer contraseñas ni aceptar invitaciones sin
+    acceso también al buzón de la persona.
+    """
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 class AccountToken(models.Model):
     """
     Single-use, time-limited token for account actions (email verification, password reset).
@@ -923,8 +1034,8 @@ class AccountToken(models.Model):
     @classmethod
     def make(cls, user, purpose, ttl_hours):
         """Generate a raw token, store its hash, and return (raw_token, AccountToken)."""
-        raw = secrets.token_urlsafe(48)
-        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        raw = make_raw_token()
+        token_hash = hash_token(raw)
         obj = cls.objects.create(
             user=user,
             token_hash=token_hash,
@@ -939,7 +1050,7 @@ class AccountToken(models.Model):
         Look up the token by hash, validate it, mark it used, and return the instance.
         Raises ValueError with a safe message on any failure.
         """
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        token_hash = hash_token(raw_token)
         try:
             obj = cls.objects.select_related('user').get(
                 token_hash=token_hash,
@@ -2083,22 +2194,23 @@ class InventoryCount(models.Model):
 
     THE CONCURRENCY PROBLEM THIS MODEL IS SHAPED AROUND.
     Counting is not instantaneous. Somebody walks the shelves for an hour while
-    the shop keeps selling. The naive implementation records "system said 10,
-    I found 8, therefore -2" and applies -2 at approval — by which time the
-    system may say 6, and the correction silently destroys two units that were
-    legitimately sold during the count.
-
-    So each item keeps THREE numbers, not two:
+    the shop keeps selling, and every sale is recorded in the Kardex as it
+    happens. So each item keeps THREE numbers, not two:
 
         theoretical_at_start    what the system said when counting began
         physical_quantity       what the person actually found
         theoretical_at_approval what the system says at the moment of approval,
-                                re-read under lock
+                                re-read under lock — evidence only
 
-    and the correction applied is `physical - theoretical_at_approval`, never
-    `physical - theoretical_at_start`. The start value is kept because it is the
-    only evidence of what the counter was looking at — an auditor needs it, the
-    arithmetic does not.
+    The correction applied is the DISCREPANCY THE COUNT DISCOVERED,
+    `physical - theoretical_at_start`, added as a delta to the current stock —
+    never `physical - theoretical_at_approval`. That second form telescopes to
+    `current + (physical - current) = physical`, overwriting the shelf to the
+    count's photograph and discarding the sales and receipts recorded during the
+    count: a sale would be un-sold and its units invented back, a receipt
+    destroyed (ERP-1 · INV-02). theoretical_at_approval is kept because an
+    auditor needs to see what the system claimed at approval; the arithmetic
+    does not use it.
     """
 
     STATUS_DRAFT = 'draft'
@@ -2235,6 +2347,40 @@ class InventoryCountItem(models.Model):
 # SaaS Phase 3 — company configuration and branding
 # ---------------------------------------------------------------------------
 
+def validate_asset_url(value):
+    """
+    Una ruta del propio sitio, o una URL absoluta http(s). Nada más.
+
+    M12E amplió `logo_url` de `URLField` a `CharField` porque estas rutas son
+    SERVIDAS POR EL FRONTEND —`/assets/branding/logo.png`— y un `URLField` las
+    rechaza: una URL absoluta convertiría un cambio de host en un logo roto.
+
+    Pero ampliar el tipo se llevó por delante toda la validación, y eso fue una
+    regresión de seguridad que la suite atrapó: el valor acaba en el `src` de una
+    imagen, así que `javascript:` y `data:` tienen que seguir siendo imposibles.
+    Un esquema que el navegador pueda interpretar como código no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+
+    Vacío se acepta: significa «no tengo esta variante».
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # Relativa del propio sitio. `//` queda fuera a propósito: `//evil.example`
+    # es una URL absoluta de protocolo relativo disfrazada de ruta.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/» o una URL http(s).'
+    )
+
+
 def validate_hex_color(value):
     """
     Accept `#RRGGBB` and nothing else.
@@ -2350,7 +2496,83 @@ class CompanySettings(models.Model):
     # Six colours, each mapping to exactly one CSS custom property the storefront
     # already consumes. A seventh with no component reading it would be a field
     # nobody fills and nobody notices is empty.
-    logo_url = models.URLField(max_length=500, blank=True)
+    # M12E — `CharField`, no `URLField`, y el cambio corrige un defecto real.
+    #
+    # Estas rutas son SERVIDAS POR EL FRONTEND: `/assets/branding/logo.png`. Una
+    # URL absoluta convertiría un cambio de host —desarrollo, staging,
+    # producción— en un logo roto, así que lo correcto es relativo. Pero un
+    # `URLField` rechaza exactamente eso: `save()` no llama a `full_clean()`, de
+    # modo que el valor persistía y era el siguiente formulario de configuración
+    # el que fallaba, sobre un campo que nadie había tocado.
+    #
+    # Ampliar a `CharField` no rompe a nadie: una URL absoluta sigue cabiendo.
+    logo_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- M12E — variantes por contraste -----------------------------------
+    #
+    # DEJÓ DE SER DEUDA TEÓRICA. Un logo negro sobre una cabecera negra es
+    # invisible, y eso no se arregla haciéndolo más grande: se arregla con la
+    # versión cromática que el manual del tenant autorice.
+    #
+    # CUATRO CAMPOS, NO UNO CON LÓGICA. El componente pregunta «horizontal,
+    # sobre oscuro» y recibe una URL o nada. No invierte, no recolorea y no
+    # adivina: no sabemos la geometría ni los colores del logo de un tenant
+    # arbitrario, y un `filter: invert(1)` sobre un logotipo ajeno produce
+    # basura con la misma confianza con la que produciría un acierto.
+    #
+    # Vacío es una respuesta válida y significa «no tengo esta variante». El
+    # consumidor cae al nombre de la empresa antes que dibujar algo ilegible.
+    logo_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_horizontal_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- M12F — isotipo ----------------------------------------------------
+    #
+    # El isotipo es RECURSO AUXILIAR AUTORIZADO, no un logotipo recortado. Existe
+    # como campo propio porque en 320 px un lockup horizontal de 220 px no cabe
+    # junto al carrito, el tema y el menú — y la salida no es aplastarlo, que es
+    # una de las alteraciones que el manual prohíbe, sino usar la pieza que el
+    # manual ya diseñó para ese tamaño.
+    #
+    # DOS CAMPOS, POR CONTRASTE, igual que los cuatro de arriba. Un isotipo
+    # blanco sobre cabecera clara es el mismo defecto que abrió M12E.
+    logo_isotype_on_light_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+    logo_isotype_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- M12E — tema claro ------------------------------------------------
+    #
+    # Los seis campos de arriba se diseñaron cuando el storefront tenía UN tema,
+    # y describen el OSCURO. Fingir que ya resuelven claro/oscuro sería quedarse
+    # con un tema claro que hereda un fondo negro.
+    #
+    # DOS CAMPOS, NO SEIS. El texto y el borde de un tema claro se derivan del
+    # fondo con contraste garantizado; `primary` y `accent` son identidad y
+    # valen en los dos temas. Añadir seis columnas de las que cuatro nadie
+    # rellenaría sería ancho de esquema por simetría.
+    #
+    # Vacíos significa «no tengo tema claro propio», y entonces se usa un claro
+    # NEUTRO de plataforma — nunca el de otra empresa.
+    light_background_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
+    light_surface_color = models.CharField(
+        max_length=7, blank=True, validators=[validate_hex_color],
+    )
     primary_color = models.CharField(
         max_length=7, blank=True, validators=[validate_hex_color],
     )
@@ -2473,6 +2695,19 @@ class CompanySettings(models.Model):
             ('border_color', validate_hex_color),
             ('timezone', validate_timezone_name),
             ('whatsapp_number', validate_whatsapp_number),
+            # M12E. Faltaban aquí, y ésa es la razón de que una ruta inválida
+            # escrita por una migración de datos llegara a la base sin que nada
+            # se quejara: un validador colgado del campo protege un serializador
+            # y un formulario de admin, no una escritura por código.
+            ('logo_url', validate_asset_url),
+            ('logo_on_light_url', validate_asset_url),
+            ('logo_on_dark_url', validate_asset_url),
+            ('logo_horizontal_on_light_url', validate_asset_url),
+            ('logo_horizontal_on_dark_url', validate_asset_url),
+            ('logo_isotype_on_light_url', validate_asset_url),
+            ('logo_isotype_on_dark_url', validate_asset_url),
+            ('light_background_color', validate_hex_color),
+            ('light_surface_color', validate_hex_color),
         ):
             try:
                 validator(getattr(self, field))
@@ -5779,3 +6014,2150 @@ class RepairPayment(models.Model):
         raise ValidationError(
             'Un pago no se puede borrar. Regístralo como reverso.'
         )
+
+
+# ---------------------------------------------------------------------------
+# M12B — Centro de notificaciones
+# ---------------------------------------------------------------------------
+#
+# FOUR THINGS THAT ARE NOT THE SAME THING, and the reason there are three
+# tables instead of one:
+#
+#   something happened          → NotificationEvent
+#   somebody should know        → Notification
+#   we tried to tell them       → NotificationDelivery
+#   they read it                → Notification.read_at
+#
+# The temptation is one table with a `sent_email` boolean. It collapses the
+# moment a second recipient appears, or a second channel, or a retry — and the
+# collapse is silent: you discover it when somebody gets five copies of the
+# same message because a webhook was replayed.
+#
+# IN-APP IS THE DURABLE RECORD. A `Notification` row IS the notification. Email
+# is a delivery attempt against it, and an SMTP outage must not make the event
+# vanish — the quote is still available whether or not the mail server was up.
+
+
+class NotificationEvent(models.Model):
+    """
+    Something happened in the business, recorded once.
+
+    NOT a message. It has no title, no recipient and no channel: those are
+    decisions made ABOUT it, downstream. Keeping them apart is what lets one
+    event fan out to a technician and a customer without either of them
+    inventing a second event.
+
+    `event_key` IS THE IDEMPOTENCY. It is derived from the ENTITY the event is
+    about, never from the request that noticed it. A payment webhook replayed
+    ten times, a quote published twice by a double-click, a delivery recorded
+    with the same idempotency key — all produce the same key, and the unique
+    constraint turns the second attempt into a no-op instead of a second inbox
+    item. Keys are built server-side; nothing a client sends reaches them.
+
+    `payload` IS DELIBERATELY THIN. Enough to render a one-line summary and
+    nothing more. It is not an audit log and not a cache of the entity: the
+    real record lives in its own module behind its own authorisation, and a
+    notification that carried the diagnosis would be a way to read the
+    diagnosis without permission.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='notification_events',
+    )
+    event_type = models.CharField(max_length=64, db_index=True)
+
+    # Server-derived, entity-shaped. See NOTIFICATION_EVENTS.
+    event_key = models.CharField(max_length=200, unique=True)
+
+    # What the event is about, so a notification can link to it without
+    # storing a URL somebody could point anywhere.
+    target_type = models.CharField(max_length=32, blank=True)
+    target_id = models.PositiveIntegerField(null=True, blank=True)
+
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['company', 'event_type', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.event_type} ({self.event_key})'
+
+
+class Notification(models.Model):
+    """
+    ONE notice for ONE recipient.
+
+    Fifteen recipients means fifteen rows, not one row holding a list. A list
+    cannot be marked read by one person, cannot be counted per user, and cannot
+    be scoped by the queries that make an inbox fast.
+
+    TWO AUDIENCES THAT NEVER MIX. `user` is staff; `customer` is the buyer. The
+    constraint below enforces exactly one, because a row with neither belongs
+    to nobody and a row with both would be read by whichever surface asked
+    first. They are served by different APIs on purpose — a single endpoint
+    that switched queryset on `is_staff` is precisely the shape this project
+    keeps refusing.
+    """
+
+    class Audience(models.TextChoices):
+        INTERNAL = 'internal', 'Interno'
+        CUSTOMER = 'customer', 'Cliente'
+
+    class Priority(models.TextChoices):
+        INFO = 'info', 'Informativa'
+        ACTION = 'action', 'Requiere acción'
+        WARNING = 'warning', 'Advertencia'
+        CRITICAL = 'critical', 'Crítica'
+
+    class Source(models.TextChoices):
+        # M12B emits only SYSTEM. ANNOUNCEMENT exists so M12C can add composed
+        # messages without a migration that rewrites every existing row — the
+        # column is one character of schema now and a data migration later.
+        SYSTEM = 'system', 'Evento del sistema'
+        ANNOUNCEMENT = 'announcement', 'Comunicado'
+
+    event = models.ForeignKey(
+        NotificationEvent, on_delete=models.CASCADE, related_name='notifications',
+        null=True, blank=True,
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='notifications',
+    )
+    audience = models.CharField(
+        max_length=16, choices=Audience.choices, db_index=True,
+    )
+    source = models.CharField(
+        max_length=16, choices=Source.choices, default=Source.SYSTEM,
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.CASCADE, related_name='notifications',
+    )
+    customer = models.ForeignKey(
+        'store.Customer', null=True, blank=True,
+        on_delete=models.CASCADE, related_name='notifications',
+    )
+
+    title = models.CharField(max_length=140)
+    body = models.CharField(max_length=400, blank=True)
+    priority = models.CharField(
+        max_length=16, choices=Priority.choices, default=Priority.INFO,
+    )
+
+    # Structured, never a URL. The frontend builds the route; the destination
+    # re-checks authority. A notification is an intention to navigate, not a
+    # grant.
+    target_type = models.CharField(max_length=32, blank=True)
+    target_id = models.PositiveIntegerField(null=True, blank=True)
+
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # Exactly one recipient. Neither means nobody is told; both means
+            # two surfaces would each think it is theirs.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(user__isnull=False, customer__isnull=True)
+                    | models.Q(user__isnull=True, customer__isnull=False)
+                ),
+                name='notification_has_exactly_one_recipient',
+            ),
+            # THE DEDUPE THAT MATTERS. One person can match a recipient rule
+            # twice — a technician who is also the branch's delivery staff —
+            # and must still get one notice. The database decides that, not a
+            # `.exists()` before a `.create()`.
+            models.UniqueConstraint(
+                fields=['event', 'user'],
+                condition=models.Q(user__isnull=False, event__isnull=False),
+                name='unique_notification_per_event_and_user',
+            ),
+            models.UniqueConstraint(
+                fields=['event', 'customer'],
+                condition=models.Q(customer__isnull=False, event__isnull=False),
+                name='unique_notification_per_event_and_customer',
+            ),
+        ]
+        indexes = [
+            # The inbox query and the badge query, in that order.
+            models.Index(fields=['company', 'user', 'read_at', '-created_at'],
+                         name='notif_internal_inbox_idx'),
+            models.Index(fields=['company', 'customer', 'read_at', '-created_at'],
+                         name='notif_customer_inbox_idx'),
+        ]
+
+    def __str__(self):
+        who = self.user_id or f'customer:{self.customer_id}'
+        return f'{self.title} → {who}'
+
+
+class NotificationDelivery(models.Model):
+    """
+    One attempt to carry one notification through one channel.
+
+    Separate from the notification because delivery FAILS and notifications do
+    not. An SMTP timeout is a fact about the mail server, not about whether the
+    customer should know their quote is ready — and recording it on the
+    notification itself would make "did this happen" and "did the email go out"
+    the same question.
+
+    NO CHANNEL ROW FOR IN-APP. The `Notification` row IS the in-app delivery;
+    a row saying "we successfully wrote the row we are attached to" would be a
+    tautology with an index on it.
+    """
+
+    class Channel(models.TextChoices):
+        EMAIL = 'email', 'Correo'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pendiente'
+        SENT = 'sent', 'Enviada'
+        FAILED = 'failed', 'Fallida'
+        # Nothing was wrong; there was simply nowhere to send it — a customer
+        # with no e-mail, a company with no notification address configured.
+        # Distinct from FAILED so a retry pass does not chase them forever.
+        SKIPPED = 'skipped', 'Omitida'
+
+    notification = models.ForeignKey(
+        Notification, on_delete=models.CASCADE, related_name='deliveries',
+    )
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True,
+    )
+
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    # A short reason, never a traceback: those quote the request, and the
+    # request can carry credentials.
+    failure_reason = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # A retry updates this row; it never inserts a second one. Two rows
+            # for one channel is how somebody gets the same e-mail twice.
+            models.UniqueConstraint(
+                fields=['notification', 'channel'],
+                name='unique_delivery_per_notification_channel',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['status', 'channel']),
+        ]
+
+    def __str__(self):
+        return f'{self.channel}:{self.status} (#{self.notification_id})'
+
+
+
+# ---------------------------------------------------------------------------
+# M12C — Comunicados internos
+# ---------------------------------------------------------------------------
+#
+# A COMMUNIQUÉ IS NOT A CHAT, and it is not a notification either.
+#
+#   Announcement    the document somebody wrote
+#   Notification    the copy that landed in one person's inbox
+#
+# M12B built a durable inbox and M12C composes into it. What M12B cannot hold
+# is the document itself: a `Notification` says "an aviso, for a recipient". It
+# does not remember who wrote the message, which audience was chosen, when it
+# went out, or what the body said beyond the 400 characters it keeps as a
+# preview. Storing those on the notification would mean storing them once per
+# recipient, and a thousand copies of a paragraph is a thousand chances for it
+# to disagree with itself.
+#
+# THE FULL TEXT LIVES HERE. `Notification.body` stays a preview and is NOT
+# widened to hold documents — that field exists so a bell can render a line.
+
+
+class Announcement(models.Model):
+    """
+    A deliberate internal message, composed by a person.
+
+    PUBLISHED IS IMMUTABLE. Before publication everything is editable; after
+    it, nothing is. A wrong communiqué is corrected by a NEW communiqué, the
+    way a correction works on paper — because the alternative is that what
+    somebody read yesterday can be made to have said something else today, and
+    an inbox that can be rewritten behind you is worse than no record at all.
+
+    `CANCELLED` means a draft was thrown away before it went out. It does NOT
+    mean recall, unsend or delete: those do not exist here, and naming a state
+    after them would promise something the platform cannot do.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Borrador'
+        PUBLISHED = 'published', 'Publicado'
+        CANCELLED = 'cancelled', 'Descartado'
+
+    #: The company on whose behalf this was written, or NULL when the platform
+    #: master wrote it. NULL here means "authored by the platform" and NEVER
+    #: "addressed to everybody" — the audience lives in the rules below, and a
+    #: missing tenant is not a broadcast.
+    source_company = models.ForeignKey(
+        'Company', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='authored_announcements',
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='authored_announcements',
+    )
+
+    title = models.CharField(max_length=140)
+    #: The whole text. Longer than `Notification.body` on purpose: that one is
+    #: a preview, this one is the document.
+    body = models.TextField(max_length=4000)
+    priority = models.CharField(
+        max_length=16, choices=Notification.Priority.choices,
+        default=Notification.Priority.INFO,
+    )
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.DRAFT,
+        db_index=True,
+    )
+
+    published_at = models.DateTimeField(null=True, blank=True)
+    #: Frozen at publication. Counting rows later would answer a different
+    #: question every day, because memberships change and the denominator of
+    #: "how many have read it" must not move under the numerator.
+    recipient_count = models.PositiveIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['source_company', 'status', '-created_at']),
+            models.Index(fields=['status', '-published_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                # A published row must carry its timestamp and a draft must not:
+                # `published_at` is what every later read treats as the moment
+                # the audience froze, so it may not be absent or invented.
+                condition=(
+                    models.Q(status='published', published_at__isnull=False)
+                    | ~models.Q(status='published') & models.Q(published_at__isnull=True)
+                ),
+                name='announcement_published_has_a_timestamp',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.title} ({self.status})'
+
+    @property
+    def is_editable(self) -> bool:
+        return self.status == self.Status.DRAFT
+
+
+class AnnouncementAudienceRule(models.Model):
+    """
+    One line of "who should get this", and it always names a company.
+
+    NOT A JSON BLOB. The audience decides who reads an internal message, so it
+    is queried, validated and audited; a dict in a text column can hold a
+    branch id belonging to another tenant and nothing would notice until it
+    did. Every rule is a row, every row has a tenant, and every foreign key is
+    checked against it.
+    """
+
+    class Kind(models.TextChoices):
+        ALL_COMPANY = 'all_company', 'Toda la empresa'
+        BRANCH = 'branch', 'Sucursal'
+        ROLE = 'role', 'Rol'
+        CAPABILITY = 'capability', 'Capacidad'
+        USER = 'user', 'Personas'
+
+    announcement = models.ForeignKey(
+        Announcement, on_delete=models.CASCADE, related_name='audience_rules',
+    )
+    #: NOT NULL, always. Even a platform-wide communiqué is stored as one rule
+    #: per company: there is no such thing here as a rule whose tenant has to
+    #: be guessed at read time.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='announcement_rules',
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+
+    branch = models.ForeignKey(
+        'Branch', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+    role = models.ForeignKey(
+        'CompanyRole', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+    capability_code = models.CharField(max_length=64, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='announcement_rules',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['announcement', 'company']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                # Each kind carries exactly its own target and nothing else. A
+                # BRANCH rule with a role attached is not a rule anybody wrote
+                # on purpose; it is a bug that would resolve to a silently
+                # different audience.
+                condition=(
+                    models.Q(kind='all_company', branch__isnull=True,
+                             role__isnull=True, capability_code='',
+                             user__isnull=True)
+                    | models.Q(kind='branch', branch__isnull=False,
+                               role__isnull=True, capability_code='',
+                               user__isnull=True)
+                    | models.Q(kind='role', role__isnull=False,
+                               branch__isnull=True, capability_code='',
+                               user__isnull=True)
+                    | (models.Q(kind='capability', capability_code__gt='')
+                       & models.Q(branch__isnull=True, role__isnull=True,
+                                  user__isnull=True))
+                    | models.Q(kind='user', user__isnull=False,
+                               branch__isnull=True, role__isnull=True,
+                               capability_code='')
+                ),
+                name='audience_rule_matches_its_kind',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.kind}@{self.company_id} (#{self.announcement_id})'
+
+
+# ---------------------------------------------------------------------------
+# M12D — Evidencias fotográficas
+# ---------------------------------------------------------------------------
+
+
+class RepairEvidence(models.Model):
+    """
+    Una fotografía del estado de un equipo, en un momento del ciclo.
+
+    LA FILA NO ES LA FOTO. Aquí viven los metadatos, la clave del objeto y el
+    hash; los píxeles viven en un bucket privado. No hay `FileField`, no hay
+    `ImageField` y no hay `BinaryField`: seis tests estructurales de este
+    proyecto fallan si alguno aparece, y la razón está escrita desde M9 — una
+    columna base64 sería una decisión de almacenamiento tomada por accidente.
+
+    APPEND-ONLY. Nada se reemplaza. Corregir una evidencia es anularla y subir
+    otra, porque una foto que puede cambiar por debajo deja de ser prueba de
+    nada. Tampoco hay borrado físico desde la API: `voided_at` retira la
+    evidencia de circulación y conserva el hecho de que existió.
+
+    LA ETAPA NO ES UN ESTADO. Subir una foto no mueve `RepairOrder.status` ni
+    lo mira: una evidencia DESCRIBE algo que pasó, no lo hace avanzar. Y se
+    declara explícitamente en vez de deducirse de la hora, porque «antes» y
+    «después» de una reparación no son dos momentos del reloj sino dos cosas
+    distintas que alguien decidió fotografiar.
+    """
+
+    class Stage(models.TextChoices):
+        INTAKE = 'intake', 'Ingreso'
+        DIAGNOSIS = 'diagnosis', 'Diagnóstico'
+        REPAIR_BEFORE = 'repair_before', 'Antes de reparar'
+        REPAIR_DURING = 'repair_during', 'Durante la reparación'
+        REPAIR_AFTER = 'repair_after', 'Después de reparar'
+        QUALITY = 'quality', 'Control de calidad'
+        DELIVERY = 'delivery', 'Entrega'
+        OTHER = 'other', 'Otra'
+
+    class Visibility(models.TextChoices):
+        INTERNAL = 'internal', 'Interna'
+        CUSTOMER = 'customer', 'Visible para el cliente'
+
+    #: Explícita, y comprobada contra la orden al escribir. Derivarla siempre de
+    #: `repair_order.company` sería correcto y haría imposible filtrar por
+    #: empresa sin un JOIN en cada consulta de un módulo que lista fotos.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='repair_evidence',
+    )
+    repair_order = models.ForeignKey(
+        'RepairOrder', on_delete=models.CASCADE, related_name='evidence',
+    )
+
+    stage = models.CharField(max_length=20, choices=Stage.choices, db_index=True)
+    #: SIEMPRE interna al nacer. Que una foto llegue al cliente es una decisión
+    #: que alguien toma, no un efecto secundario de subirla.
+    visibility = models.CharField(
+        max_length=16, choices=Visibility.choices, default=Visibility.INTERNAL,
+        db_index=True,
+    )
+
+    #: La dirección del objeto. NO es una autorización: conocerla no permite
+    #: descargarlo, porque el bucket es privado y cada acceso se comprueba.
+    storage_key = models.CharField(max_length=300, unique=True)
+    mime_type = models.CharField(max_length=40)
+    byte_size = models.PositiveIntegerField()
+    #: De los bytes FINALES, los que están en el bucket. Un hash del archivo que
+    #: subió el técnico describiría algo que este sistema descarta.
+    sha256 = models.CharField(max_length=64, db_index=True)
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+
+    #: Del upload original, y sólo para reconocer un reintento. NUNCA para
+    #: deduplicar entre empresas: que dos talleres suban la misma foto no es
+    #: asunto de ninguno de los dos, y responder «ya existe» lo delataría.
+    source_sha256 = models.CharField(max_length=64, blank=True)
+    source_byte_size = models.PositiveIntegerField(default=0)
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name='uploaded_evidence',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='voided_evidence',
+    )
+    void_reason = models.CharField(max_length=300, blank=True)
+
+    idempotency_key = models.CharField(max_length=120, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ['stage', 'created_at']
+        indexes = [
+            models.Index(fields=['company', 'repair_order', 'stage']),
+            models.Index(fields=['repair_order', 'visibility', 'voided_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='unique_evidence_idempotency_per_company',
+            ),
+            models.CheckConstraint(
+                # Anular es un acto con autor y motivo. Una fila con fecha de
+                # anulación y sin explicación es un borrado disfrazado.
+                condition=(
+                    models.Q(voided_at__isnull=True)
+                    | models.Q(voided_at__isnull=False, void_reason__gt='')
+                ),
+                name='evidence_void_has_a_reason',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.stage} #{self.pk} (orden {self.repair_order_id})'
+
+    @property
+    def is_voided(self) -> bool:
+        return self.voided_at is not None
+
+
+# ---------------------------------------------------------------------------
+# M12F — contenido comercial del escaparate
+# ---------------------------------------------------------------------------
+
+def validate_cta_url(value):
+    """
+    El destino de un botón: ruta del propio sitio, http(s), `tel:` o `mailto:`.
+
+    Misma filosofía que `validate_asset_url` y un motivo más fuerte: esto acaba
+    en el `href` de un enlace que una persona va a PULSAR. `javascript:` ahí no
+    es una URL rota, es ejecución de código elegida por quien edita la campaña.
+
+    `tel:` y `mailto:` se aceptan porque una promoción que dice «llámanos» es
+    normal — pero por permiso EXPLÍCITO, no porque el filtro se distraiga. Todo
+    lo demás se rechaza sin excepción: no hay lista de esquemas prohibidos que
+    envejezca, hay una lista de permitidos que no envejece.
+
+    Vacío se acepta: un bloque puede no tener botón.
+    """
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # `//evil.example` es una URL absoluta de protocolo relativo disfrazada de
+    # ruta interna. Empieza por «/» y no es del sitio.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    if re.match(r'^tel:[+0-9()\s.-]{3,}$', text, re.IGNORECASE):
+        return
+    if re.match(r'^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/», una URL http(s), '
+        '«tel:» o «mailto:».'
+    )
+
+
+class StorefrontCampaignQuerySet(models.QuerySet):
+    """
+    Dónde vive la regla de visibilidad — en UN solo sitio.
+
+    Que una campaña «esté activa» es una pregunta con cuatro partes y la
+    respuesta tiene que ser idéntica en el escaparate público, en la vista
+    previa del admin y en cualquier informe futuro. Repetir el filtro en tres
+    sitios es garantizar que un día divergen y que el borrador de alguien acaba
+    publicado.
+    """
+
+    def for_company(self, company):
+        """Sin empresa no hay campañas. NUNCA todas."""
+        if company is None:
+            return self.none()
+        return self.filter(company=company)
+
+    def published(self):
+        return self.filter(status=StorefrontCampaign.Status.PUBLISHED)
+
+    def within_window(self, now=None):
+        """
+        Dentro de su ventana temporal.
+
+        Fechas ausentes significan «sin límite por ese lado», que es distinto de
+        «siempre visible»: el estado sigue mandando. `ends_at` es exclusivo, así
+        que una campaña que termina a las 23:59 deja de verse a las 23:59:00 —
+        el instante que el editor escribió es el primero en el que ya no está.
+        """
+        now = now or timezone.now()
+        return self.filter(
+            models.Q(starts_at__isnull=True) | models.Q(starts_at__lte=now),
+        ).filter(
+            models.Q(ends_at__isnull=True) | models.Q(ends_at__gt=now),
+        )
+
+    def active(self, company, now=None):
+        """
+        Lo que el público puede ver, y nada más.
+
+        Es deliberadamente una sola llamada: quien la use no puede olvidarse de
+        una de las cuatro condiciones, porque no las escribe.
+        """
+        return (
+            self.for_company(company)
+            .published()
+            .within_window(now)
+            .order_by('slot', '-priority', '-published_at', '-id')
+        )
+
+
+class StorefrontCampaign(models.Model):
+    """
+    Contenido comercial temporal del escaparate, editable sin desplegar.
+
+    EL DEFECTO QUE CIERRA
+    ---------------------
+    La preventa del Home vivía compilada: un `<h2>` con un modelo de teléfono
+    dentro. Cambiar de campaña exigía tocar código, y no cambiarla dejaba una
+    promoción caducada en portada — que es peor, porque nadie despliega para
+    borrar algo que ya no existe.
+
+    NO ES UN CMS
+    ------------
+    No hay HTML, ni Markdown, ni CSS, ni componentes. Hay CAMPOS. Quien edita
+    escribe un título y un texto; no elige cómo se pinta. Un editor que acepta
+    marcado es un editor que acepta `<script>`, y el contenido lo escribe
+    personal del tenant, no el equipo que audita el código.
+
+    LA CADUCIDAD ES EL PUNTO
+    ------------------------
+    `ends_at` no es una comodidad: es la defensa contra «Preventa iPhone 17» un
+    año después. Una campaña que termina desaparece sola.
+    """
+
+    class Slot(models.TextChoices):
+        """
+        DÓNDE, no CÓMO.
+
+        Un slot nombra un sitio de la página, no una clase CSS ni una posición.
+        Guardar `"mt-10 rounded-3xl"` aquí convertiría la base de datos en una
+        hoja de estilos que nadie revisa.
+
+        Sólo los cuatro que el escaparate consume hoy. Inventar cuarenta slots
+        para un futuro imaginado es crear treinta y seis contratos que nadie
+        cumple.
+        """
+        HOME_HERO = 'home_hero', 'Portada — bloque principal'
+        HOME_FEATURED = 'home_featured', 'Portada — destacado'
+        HOME_PROMO = 'home_promo', 'Portada — promoción'
+        HOME_BOTTOM_PROMO = 'home_bottom_promo', 'Portada — promoción inferior'
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Borrador'
+        PUBLISHED = 'published', 'Publicada'
+        ARCHIVED = 'archived', 'Archivada'
+
+    #: NOT NULL a propósito. Una campaña siempre pertenece a una empresa; no
+    #: existe la campaña «de la plataforma». Un `company` nulo interpretado como
+    #: «todas» es exactamente el default peligroso que M12C prohibió.
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_campaigns',
+    )
+
+    slot = models.CharField(max_length=32, choices=Slot.choices, db_index=True)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.DRAFT,
+        db_index=True,
+    )
+
+    # -- contenido ---------------------------------------------------------
+    # Los límites no son burocracia: sin ellos, veinte mil caracteres en un
+    # título rompen el layout de la portada desde el panel de administración.
+    badge = models.CharField(max_length=40, blank=True)
+    title = models.CharField(max_length=120)
+    subtitle = models.CharField(max_length=200, blank=True)
+    #: `MaxLengthValidator` EXPLÍCITO. En un `TextField`, `max_length` sólo lo
+    #: usa el widget del formulario: `full_clean()` no lo comprueba. Declararlo
+    #: y no validarlo es peor que no declararlo — parece un límite, y quien lee
+    #: el modelo cree que el layout está protegido.
+    body = models.TextField(
+        max_length=600, blank=True,
+        validators=[MaxLengthValidator(600)],
+    )
+
+    image_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    cta_label = models.CharField(max_length=40, blank=True)
+    cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+    secondary_cta_label = models.CharField(max_length=40, blank=True)
+    secondary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+
+    #: Opcional. Enlazarla evita que el banner diga un precio y la ficha otro.
+    #: `PROTECT`: borrar un producto no puede vaciar en silencio la campaña que
+    #: lo anuncia.
+    product = models.ForeignKey(
+        'Product', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='storefront_campaigns',
+    )
+
+    # -- ventana temporal --------------------------------------------------
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+
+    #: Desempate determinista cuando dos campañas publicadas comparten slot.
+    #: Sin esto la portada mostraría la fila que la base devolviera primero, que
+    #: es una respuesta distinta según el plan de consulta.
+    priority = models.IntegerField(default=0)
+
+    published_at = models.DateTimeField(null=True, blank=True)
+
+    #: NULL significa «sembrada por el sistema», no «autor desconocido». Una
+    #: campaña que crea una migración no la escribió nadie, y atribuírsela a un
+    #: usuario real sería inventar un registro de auditoría. Las acciones de
+    #: personas SÍ llevan actor, y además quedan en el log.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='created_storefront_campaigns',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_campaigns',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontCampaignQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['slot', '-priority', '-published_at', '-id']
+        indexes = [
+            models.Index(fields=['company', 'slot', 'status']),
+            models.Index(fields=['company', 'status', 'starts_at', 'ends_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='published', published_at__isnull=False)
+                    | ~models.Q(status='published')
+                ),
+                name='storefront_campaign_published_has_a_timestamp',
+            ),
+            models.CheckConstraint(
+                # Una ventana que termina antes de empezar no se ve nunca, y el
+                # editor creería haber programado algo. Es un error, no un
+                # estado.
+                condition=(
+                    models.Q(starts_at__isnull=True)
+                    | models.Q(ends_at__isnull=True)
+                    | models.Q(ends_at__gt=models.F('starts_at'))
+                ),
+                name='storefront_campaign_window_is_ordered',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.title} [{self.slot}/{self.status}]'
+
+    def clean(self):
+        """
+        Lo que un validador de campo no puede ver: las relaciones entre campos.
+
+        `save()` no llama a `full_clean()`, así que esto protege al serializador
+        y al formulario de admin. La defensa de verdad contra datos cruzados de
+        empresa vive además en la constraint y en el servicio.
+        """
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+
+        if self.product_id and self.company_id:
+            # UNA EMPRESA NO PUEDE ANUNCIAR EL PRODUCTO DE OTRA. Sin esto, un
+            # admin podría enlazar por id un producto ajeno y el escaparate
+            # publicaría su nombre, su imagen y su precio.
+            if self.product.company_id != self.company_id:
+                errors['product'] = 'El producto no pertenece a esta empresa.'
+
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            errors['ends_at'] = 'El fin debe ser posterior al inicio.'
+
+        if self.cta_url and not self.cta_label:
+            errors['cta_label'] = 'Un botón con destino necesita texto.'
+        if self.cta_label and not self.cta_url:
+            errors['cta_url'] = 'Un botón con texto necesita destino.'
+
+        if errors:
+            raise ValidationError(errors)
+
+    def is_active(self, now=None):
+        """La misma pregunta que `QuerySet.active`, para una fila ya cargada."""
+        if self.status != self.Status.PUBLISHED:
+            return False
+        now = now or timezone.now()
+        if self.starts_at and self.starts_at > now:
+            return False
+        if self.ends_at and self.ends_at <= now:
+            return False
+        return True
+
+
+class StorefrontPageSettings(models.Model):
+    """
+    Contenido ESTABLE del escaparate: lo que no caduca pero cambia por empresa.
+
+    TRES SITIOS, TRES VIDAS DISTINTAS
+    ---------------------------------
+        CompanySettings          identidad y políticas — quién eres
+        StorefrontPageSettings   contenido permanente  — qué ofreces
+        StorefrontCampaign       contenido temporal    — qué anuncias hoy
+
+    Meterlo todo en `CompanySettings` habría mezclado el RUC con un titular de
+    portada: dos cosas que cambian con frecuencias distintas, las edita gente
+    distinta y fallan de formas distintas.
+
+    TODO VACÍO POR DEFECTO
+    ----------------------
+    Un campo en blanco significa «usa el texto genérico de la plataforma», no
+    «usa el del piloto». El copy aprobado del manual de Black Dog vive en la
+    fila de Black Dog, escrito por una migración — igual que su identidad
+    comercial desde la Fase 3. Una empresa nueva no hereda el titular de otra.
+
+    SIN MARCADO
+    -----------
+    Texto plano. Los saltos de línea del titular son saltos de línea, no `<br>`:
+    el componente los interpreta. Aceptar HTML aquí sería aceptar `<script>`
+    escrito desde un panel de administración.
+    """
+
+    company = models.OneToOneField(
+        'Company', on_delete=models.CASCADE, related_name='storefront_page',
+    )
+
+    #: La línea pequeña sobre el titular. Vacía cae a empresa · ciudad, que el
+    #: tenant ya tiene configuradas y no hay que volver a escribir.
+    hero_eyebrow = models.CharField(max_length=80, blank=True)
+    #: Los saltos de línea se respetan: son composición del titular, y quien
+    #: escribe «Tu Apple, / con respaldo / especializado» está decidiendo el
+    #: ritmo de lectura, no insertando marcado.
+    hero_title = models.CharField(max_length=160, blank=True)
+    hero_subtitle = models.TextField(
+        max_length=400, blank=True,
+        validators=[MaxLengthValidator(400)],
+    )
+
+    hero_primary_cta_label = models.CharField(max_length=40, blank=True)
+    hero_primary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+    hero_secondary_cta_label = models.CharField(max_length=40, blank=True)
+    hero_secondary_cta_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_cta_url],
+    )
+
+    # --- M12F.1 — la página de servicios ----------------------------------
+    #
+    # Se amplía ESTE modelo en vez de crear un segundo singleton: sigue siendo
+    # «el contenido estable del escaparate de una empresa», y una tabla más con
+    # una fila por tenant sólo añadiría fontanería. Lo que sí tiene vida propia
+    # —servicios, preguntas, métricas— son entidades con sus filas.
+    services_hero_title = models.CharField(max_length=160, blank=True)
+    services_hero_subtitle = models.TextField(
+        max_length=400, blank=True, validators=[MaxLengthValidator(400)],
+    )
+
+    #: LA NOTA DE GARANTÍA DEL SERVICIO TÉCNICO.
+    #:
+    #: Existe porque la página afirmaba «todos nuestros servicios incluyen 6
+    #: meses de garantía» y eso contradice al manual del propio piloto, que dice
+    #: que la cobertura de servicios técnicos DEPENDE del producto o reparación.
+    #: Los seis meses son de los equipos seminuevos; alguien los trasladó a las
+    #: reparaciones.
+    #:
+    #: Vacío no pinta nada. Una garantía que nadie ha escrito no se inventa.
+    services_warranty_note = models.TextField(
+        max_length=600, blank=True, validators=[MaxLengthValidator(600)],
+    )
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_pages',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'configuración de portada'
+        verbose_name_plural = 'configuraciones de portada'
+
+    def __str__(self):
+        return f'Portada de {self.company.name}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        for label_field, url_field, name in (
+            ('hero_primary_cta_label', 'hero_primary_cta_url', 'principal'),
+            ('hero_secondary_cta_label', 'hero_secondary_cta_url', 'secundario'),
+        ):
+            label = (getattr(self, label_field) or '').strip()
+            url = (getattr(self, url_field) or '').strip()
+            if url and not label:
+                errors[label_field] = f'El botón {name} necesita texto.'
+            if label and not url:
+                errors[url_field] = f'El botón {name} necesita destino.'
+        if errors:
+            raise ValidationError(errors)
+
+
+class StorefrontContentQuerySet(models.QuerySet):
+    """
+    La misma regla de visibilidad que las campañas, para el contenido de lista.
+
+    Menos condiciones —esto no caduca— pero la parte que importa es idéntica:
+    sin empresa no hay filas, NUNCA todas.
+    """
+
+    def for_company(self, company):
+        if company is None:
+            return self.none()
+        return self.filter(company=company)
+
+    def published(self, company):
+        return self.for_company(company).filter(is_active=True).order_by('sort_order', 'id')
+
+
+class StorefrontServiceOffering(models.Model):
+    """
+    Un servicio que este taller ofrece. Dato del tenant, no del código.
+
+    POR QUÉ ES UNA ENTIDAD Y NO TEXTO
+    ---------------------------------
+    La lista vivía DOS veces compilada: una en `/services` y otra, distinta y
+    más corta, en el pie. Dos listas de lo mismo divergen — ya divergían — y
+    quien las lee no sabe cuál es la buena. Una entidad da una sola fuente.
+
+    Y hace falta poder activar, desactivar y reordenar sin desplegar: un taller
+    que deja de cambiar tapas traseras no debería necesitar un despliegue para
+    dejar de anunciarlo.
+
+    EL TIEMPO ES UNA ESTIMACIÓN, Y SE LLAMA ASÍ
+    -------------------------------------------
+    El manual dice que «el tiempo y costo pueden variar según equipo, falla y
+    disponibilidad de repuestos». Un «2–3 horas» presentado como dato es una
+    promesa; presentado como estimación es información. El campo se llama
+    `estimated_time_text` por eso, y la interfaz lo etiqueta.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_services',
+    )
+    title = models.CharField(max_length=80)
+    description = models.TextField(max_length=400, blank=True,
+                                   validators=[MaxLengthValidator(400)])
+    #: Texto libre corto: «iPhone · iPad». No es una relación con el catálogo
+    #: porque nombra familias de equipo, no productos que el taller venda.
+    devices_text = models.CharField(max_length=120, blank=True)
+    #: ESTIMACIÓN. Nunca un compromiso. Vacío se acepta y no se pinta.
+    estimated_time_text = models.CharField(max_length=40, blank=True)
+    #: Una etiqueta corta al lado del título. Vacía no se pinta.
+    highlight = models.CharField(max_length=40, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_services',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.title} ({self.company_id})'
+
+
+class StorefrontFaq(models.Model):
+    """
+    Una pregunta frecuente de este taller.
+
+    Las FAQ cambian con el negocio y son EXACTAMENTE donde se colaron las
+    afirmaciones que M12F.1 tuvo que retirar: la que decía que todos los
+    servicios llevan seis meses de garantía vivía aquí, compilada, contradiciendo
+    la política que el propio tenant tiene configurada.
+
+    Como dato, quien la escribe es quien responde por ella.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_faqs',
+    )
+    question = models.CharField(max_length=200)
+    answer = models.TextField(max_length=1200, validators=[MaxLengthValidator(1200)])
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_faqs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return self.question[:60]
+
+
+class StorefrontTrustMetric(models.Model):
+    """
+    Una cifra que el taller publica sobre sí mismo.
+
+    NACE VACÍO Y ASÍ SE QUEDA HASTA QUE ALGUIEN RESPONDA POR ELLA. Ninguna
+    migración siembra métricas: la anterior versión de la página anunciaba
+    «5.000+ dispositivos reparados» sin ninguna fuente dentro del proyecto, y
+    trasladar esa cifra a la base de datos sería darle una credibilidad que no
+    tiene por haber cambiado de sitio.
+
+    Un tenant sin métricas no muestra el bloque. Un bloque vacío es peor que
+    ninguno, y una cifra inventada es peor que las dos cosas.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_metrics',
+    )
+    #: Lo grande: «+1.200», «24 h», «Nasan».
+    value = models.CharField(max_length=24)
+    #: Lo pequeño: qué significa.
+    label = models.CharField(max_length=60)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='updated_storefront_metrics',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = StorefrontContentQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'is_active', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.value} {self.label}'
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — comprobantes de pago electrónicos (CPE)
+#
+# ESTO NO ES `SalesNote` Y NO PUEDE SERLO.
+#
+# `SalesNote` es un documento INTERNO: se numera con `InternalSequence`, lleva
+# impreso que no vale como comprobante SUNAT, y su correlativo no tiene efecto
+# tributario. Un comprobante electrónico es lo contrario en las tres cosas.
+#
+# Reutilizar `SalesNote` habría dado validez fiscal a un papel que no la tiene, y
+# reutilizar `InternalSequence` habría mezclado en un mismo contador números que
+# se pueden regalar con números que la ley obliga a conservar. Son dominios
+# distintos y se mantienen distintos.
+# ---------------------------------------------------------------------------
+
+def validate_fiscal_series(value: str) -> None:
+    """
+    Cuatro caracteres, el primero la letra que corresponda al documento.
+
+    Anexo N.º 1 campo 8 para la factura, Anexo N.º 2 para la boleta, y
+    reconfirmado por el Anexo N.º 6 vigente desde el 1.8.2026: «se espera que el
+    primer carácter sea la constante F, B, C, L o G según corresponda, seguido
+    por tres caracteres alfanuméricos».
+    """
+    from django.core.exceptions import ValidationError
+
+    if not re.fullmatch(r'[A-Z0-9]{4}', value or ''):
+        raise ValidationError(
+            'La serie fiscal debe tener exactamente 4 caracteres alfanuméricos '
+            'en mayúscula.'
+        )
+
+
+class FiscalEnvironment(models.TextChoices):
+    """
+    Contra qué SUNAT se trabaja.
+
+    PRODUCCIÓN NO ES UNA OPCIÓN QUE SE ELIJA DESDE UNA PETICIÓN. Vive aquí como
+    valor posible porque el modelo tiene que poder representar un documento
+    emitido en producción el día que exista; habilitarla es una decisión de
+    configuración del servidor y de otra fase.
+    """
+
+    BETA = 'beta', 'Pruebas (SUNAT beta)'
+    PRODUCTION = 'production', 'Producción'
+
+
+class FiscalDocumentType(models.TextChoices):
+    """Catálogo N.º 01 de SUNAT, con lo que este dominio sabe emitir."""
+
+    INVOICE = '01', 'Factura electrónica'
+    RECEIPT = '03', 'Boleta de venta electrónica'
+    CREDIT_NOTE = '07', 'Nota de crédito electrónica'
+    DEBIT_NOTE = '08', 'Nota de débito electrónica'
+
+
+#: Los tipos ORIGINALES (comprobantes de venta). Una nota (07/08) NO es original:
+#: modifica a uno de éstos y no ocupa su lugar en la venta.
+FISCAL_ORIGINAL_TYPES = (FiscalDocumentType.INVOICE, FiscalDocumentType.RECEIPT)
+
+#: Las notas del Catálogo N.º 01.
+FISCAL_NOTE_TYPES = (FiscalDocumentType.CREDIT_NOTE, FiscalDocumentType.DEBIT_NOTE)
+
+
+class FiscalSeries(models.Model):
+    """
+    La serie fiscal de una empresa. Una autoridad de numeración SEPARADA.
+
+    POR QUÉ NO `InternalSequence`
+    -----------------------------
+    Aquel módulo declara en su propia documentación que pertenece a documentos
+    internos, y esa afirmación es lo que permite que una nota de venta se pueda
+    anular sin consecuencias. Un correlativo fiscal asignado entra en el
+    historial: no se recicla ni aunque el documento acabe rechazado.
+
+    Mezclarlos en un contador significaría que un hueco en la numeración fiscal
+    podría venir de un documento interno, y ante SUNAT un hueco hay que poder
+    explicarlo.
+
+    EL CONTADOR ES UN NÚMERO. Como en `InternalSequence`, y por el mismo motivo:
+    recuperar «el siguiente» parseando una cadena formateada hace que cambiar el
+    formato cambie el significado del dato.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_series',
+    )
+    #: Nulo cuando la serie es de la empresa. Con valor, la sucursal la tiene
+    #: propia — SUNAT admite series distintas por establecimiento.
+    branch = models.ForeignKey(
+        Branch, null=True, blank=True, on_delete=models.PROTECT,
+        related_name='fiscal_series',
+    )
+    document_type = models.CharField(
+        max_length=2, choices=FiscalDocumentType.choices, db_index=True,
+    )
+    series = models.CharField(max_length=4, validators=[validate_fiscal_series])
+
+    #: MONOTÓNICO Y NUNCA RECICLADO. Un número entregado está gastado, aunque el
+    #: documento que iba a identificar no llegase a existir. Los huecos salen
+    #: más baratos que dos documentos que alguna vez compartieron identificador.
+    next_number = models.PositiveBigIntegerField(default=1)
+
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+        default=FiscalEnvironment.BETA,
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Serie fiscal'
+        verbose_name_plural = 'Series fiscales'
+        constraints = [
+            # La serie es única DENTRO DE LA EMPRESA Y DEL ENTORNO. No global:
+            # dos empresas pueden usar F001 legítimamente, y una misma empresa
+            # puede tener la F001 de pruebas y la de producción sin que sean la
+            # misma fila.
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'series', 'environment'],
+                name='fiscal_series_unique_per_company_env',
+            ),
+        ]
+        indexes = [models.Index(fields=['company', 'document_type', 'is_active'])]
+
+    def __str__(self) -> str:
+        return f'{self.series} ({self.get_document_type_display()})'
+
+    def clean(self):
+        """La letra inicial depende del tipo de documento, y no es negociable."""
+        super().clean()
+        expected = {FiscalDocumentType.INVOICE: 'F', FiscalDocumentType.RECEIPT: 'B'}
+        letter = expected.get(self.document_type)
+        if letter and self.series and not self.series.startswith(letter):
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError({
+                'series': f'Una serie de tipo {self.document_type} debe empezar '
+                          f'por «{letter}».',
+            })
+
+
+class FiscalDocumentStatus(models.TextChoices):
+    """
+    El recorrido de un comprobante.
+
+    LA DISTINCIÓN QUE GOBIERNA TODO: un fallo de transporte NO es un rechazo.
+    `SUBMISSION_ERROR` existe precisamente para no confundirlos. De un rechazo se
+    sale corrigiendo y emitiendo otro documento; de un error de transporte se
+    sale reintentando EL MISMO, con su misma serie y su mismo correlativo.
+
+    Tratar un timeout como rechazo llevaría a emitir un segundo comprobante por
+    una venta que quizá SUNAT ya registró.
+    """
+
+    PENDING = 'pending', 'Pendiente de generar'
+    GENERATED = 'generated', 'XML generado'
+    SIGNED = 'signed', 'Firmado'
+    SUBMITTED = 'submitted', 'Enviado'
+    ACCEPTED = 'accepted', 'Aceptado por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
+    REJECTED = 'rejected', 'Rechazado por SUNAT'
+    #: Se intentó enviar y no se sabe qué pasó. Reintentable.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío'
+
+
+class FiscalGrantMethod(models.TextChoices):
+    """
+    CÓMO se otorgó el comprobante al adquirente (artículo 15, OTORGAMIENTO).
+
+    «Otorgar» no es «emitir»: es entregarlo o ponerlo a disposición del adquirente,
+    por medios electrónicos o como representación impresa. La distinción es
+    load-bearing, no académica — el artículo 14 sólo admite dar de baja la
+    numeración de documentos **NO OTORGADOS**.
+
+    Los canales se nombran de forma genérica a propósito: no se codifica esta
+    tienda ni este flujo, para que la integración futura (checkout y punto de
+    venta) tenga dónde encajar sin volver a tocar el modelo.
+    """
+
+    ECOMMERCE_PORTAL = 'ecommerce_portal', 'Puesto a disposición en el portal'
+    EMAIL = 'email', 'Enviado por correo electrónico'
+    POS_PRINT = 'pos_print', 'Impreso y entregado en mostrador'
+    POS_ELECTRONIC = 'pos_electronic', 'Entregado electrónicamente en mostrador'
+    MANUAL = 'manual', 'Registrado manualmente por un operador'
+    API = 'api', 'Entregado por una integración'
+
+
+class FiscalDocument(models.Model):
+    """
+    Un comprobante de pago electrónico. INMUTABLE una vez numerado.
+
+    QUÉ SE CONGELA Y POR QUÉ
+    ------------------------
+    Todo lo que el documento afirma. El nombre del emisor, su RUC, el del
+    adquirente, los importes y la tasa. No se leen de `Company` ni de `Order` al
+    reimprimir, porque un comprobante emitido hace dos años tiene que seguir
+    diciendo lo que dijo aunque la empresa se haya cambiado el nombre.
+
+    Es la misma disciplina que C2.1 impuso al desglose, aplicada al documento
+    entero.
+
+    EL DINERO VIENE DE C2.1, NO SE RECALCULA
+    ----------------------------------------
+    `taxable_amount`, `tax_amount` y `total` se copian del snapshot que la venta
+    congeló. Aquí no se vuelve a dividir entre 1,18: esa cuenta se hizo una vez,
+    en el momento de la venta, con la tasa de ese momento.
+
+    RELACIÓN CON `Order`: FK, NO OneToOne
+    -------------------------------------
+    Una venta tendrá con el tiempo más de un documento fiscal: la factura y, más
+    adelante, sus notas de crédito o débito. Un `OneToOneField` haría imposible
+    ese futuro sin una migración de esquema. La unicidad que sí hace falta —un
+    solo comprobante ORIGINAL vigente por venta— se expresa con una restricción
+    condicional, que es más precisa y no cierra la puerta.
+    """
+
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, related_name='fiscal_documents',
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_documents',
+    )
+    series_ref = models.ForeignKey(
+        FiscalSeries, on_delete=models.PROTECT, related_name='documents',
+    )
+
+    document_type = models.CharField(max_length=2, choices=FiscalDocumentType.choices)
+    series = models.CharField(max_length=4)
+    number = models.PositiveBigIntegerField()
+    issued_at = models.DateTimeField()
+    environment = models.CharField(max_length=16, choices=FiscalEnvironment.choices)
+
+    # --- NOTA (07/08): su relación con el comprobante que modifica (ERP-FISCAL-5A) ---
+    #
+    # Una nota apunta al comprobante ORIGINAL. El original es INMUTABLE: emitir una
+    # nota no lo toca; la nota es un documento nuevo que expresa la modificación.
+    # `PROTECT` para que no se pueda borrar un original que una nota referencia.
+    original_document = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='notes',
+    )
+    #: Catálogo N.º 09 (NC) o N.º 10 (ND). El motivo de la nota.
+    note_reason_code = models.CharField(max_length=2, blank=True)
+    note_reason_description = models.CharField(max_length=250, blank=True)
+    #: Clave de idempotencia del INTENTO de corrección. Una venta admite VARIAS
+    #: notas legítimas, así que la idempotencia es por (original, clave), no por
+    #: original: dos peticiones con la misma clave dan UNA nota; sin clave, cada
+    #: petición crea una. Vacía en los comprobantes originales.
+    note_request_key = models.CharField(max_length=64, blank=True)
+
+    # --- emisor, congelado ---
+    issuer_tax_id = models.CharField(max_length=15)
+    issuer_legal_name = models.CharField(max_length=255)
+    issuer_trade_name = models.CharField(max_length=255, blank=True)
+    issuer_address = models.CharField(max_length=255, blank=True)
+
+    # --- adquirente, congelado ---
+    customer_doc_type = models.CharField(max_length=2)
+    customer_doc_number = models.CharField(max_length=20)
+    customer_legal_name = models.CharField(max_length=255)
+
+    # --- dinero, copiado del snapshot de C2.1 ---
+    currency = models.CharField(max_length=3, default='PEN')
+    taxable_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_rate = models.DecimalField(max_digits=6, decimal_places=4)
+
+    status = models.CharField(
+        max_length=24, choices=FiscalDocumentStatus.choices,
+        default=FiscalDocumentStatus.PENDING, db_index=True,
+    )
+
+    # --- artefactos ---
+    #
+    # El XML se guarda ENTERO porque es el documento: sin él no se puede
+    # reimprimir ni demostrar qué se declaró. El CDR también, porque es la
+    # prueba de la aceptación. Ambos son texto de unos pocos kilobytes.
+    #
+    # Los hashes existen para correlacionar y para detectar alteración sin tener
+    # que comparar cuerpos.
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El «Valor Resumen» que exige el QR. Se lee del XML firmado, no se calcula.
+    digest_value = models.CharField(max_length=128, blank=True)
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    # -- Recepción de la CDR aceptada (ERP-FISCAL-5B) --------------------------
+    #
+    #: CUÁNDO se recibió la CDR con estado ACEPTADA. Es la AUTORIDAD DEL PLAZO de
+    #: la Comunicación de Baja: el artículo 14.1.b (RS 097-2012, sustituido en
+    #: bloque por la RS 114-2019, vigente desde el 1.7.2019) manda enviarla «a más
+    #: tardar hasta el sétimo día calendario contado a partir del día calendario
+    #: siguiente de haber recibido la respectiva CDR con estado de aceptada» — NO
+    #: desde la fecha de emisión. (Otros regímenes SÍ cuentan desde la emisión;
+    #: confundirlos daría un plazo equivocado.)
+    #:
+    #: SE ESCRIBE UNA SOLA VEZ. Lo estampan los DOS caminos que pueden aceptar un
+    #: comprobante —el envío y la reconciliación por `getStatusCdr`— y ninguna
+    #: reconciliación posterior lo mueve: sobrescribirlo correría el plazo solo.
+    #:
+    #: `updated_at` NO sirve para esto: es `auto_now`, significa «última
+    #: modificación» y cualquier guardado lo desplaza. La reconciliación, además,
+    #: no deja fila de intento, así que sin este campo los comprobantes aceptados
+    #: de forma asíncrona no tendrían ninguna fecha fiable.
+    #:
+    #: NULL en un comprobante aceptado antes de existir este campo: NO se inventa
+    #: una fecha. Sin fecha demostrable, la baja FALLA CERRADO y exige revisión.
+    cdr_accepted_at = models.DateTimeField(null=True, blank=True)
+
+    # -- Otorgamiento al adquirente (ERP-FISCAL-5B) ----------------------------
+    #
+    #: CUÁNDO se otorgó el comprobante: entregado o puesto a disposición del
+    #: adquirente (artículo 15, OTORGAMIENTO). Es un hecho DISTINTO de «emitido» y
+    #: de «CDR aceptada», y es condición de la baja: el encabezado del artículo 14
+    #: sólo permite dar de baja la numeración de los documentos **NO OTORGADOS**.
+    #:
+    #: NULL significa DESCONOCIDO, nunca «no otorgado». Un comprobante sin
+    #: evidencia de otorgamiento NO se puede dar de baja: se falla cerrado. Tratar
+    #: la ausencia como prueba permitiría anular la numeración de un comprobante
+    #: que el cliente ya tiene en la mano — y el mostrador imprime y entrega sin
+    #: que hoy quede rastro, así que la ausencia es justamente lo ambiguo.
+    granted_at = models.DateTimeField(null=True, blank=True)
+    granted_method = models.CharField(
+        max_length=20, blank=True, choices=FiscalGrantMethod.choices)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fiscal_documents_granted',
+    )
+    #: Evidencia del otorgamiento, SIN secretos: el canal, el destino enmascarado,
+    #: el identificador de la entrega. Nunca una credencial ni el XML entero.
+    granted_evidence = models.JSONField(default=dict, blank=True)
+
+    # -- Atestación de NO otorgamiento (ERP-FISCAL-5B) -------------------------
+    #
+    #: CUÁNDO alguien declaró, y se registró, que este comprobante NO se otorgó.
+    #:
+    #: Hace falta porque la AUSENCIA de evidencia no prueba nada: `granted_at` nulo
+    #: significa DESCONOCIDO, y el artículo 14 exige que el documento no haya sido
+    #: otorgado. Sin un hecho POSITIVO que lo afirme, ninguna baja sería elegible
+    #: nunca —y aceptar un «no otorgado» en el cuerpo de una petición dejaría que el
+    #: cliente autorizara su propia baja—. Así que la negativa también se REGISTRA:
+    #: con su autor, su momento y su motivo, por una acción administrativa auditada.
+    #:
+    #: Es una declaración de una persona, no una deducción del sistema: quien la
+    #: firma responde por ella, y queda en la bitácora para poder responder «quién
+    #: dijo que no se entregó, cuándo y por qué».
+    not_granted_at = models.DateTimeField(null=True, blank=True)
+    not_granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fiscal_documents_attested_not_granted',
+    )
+    #: Por qué no se otorgó. Obligatorio cuando hay atestación: una baja sin motivo
+    #: registrado no se puede auditar después.
+    not_granted_reason = models.CharField(max_length=200, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Comprobante electrónico'
+        verbose_name_plural = 'Comprobantes electrónicos'
+        constraints = [
+            # Un correlativo es único dentro de su serie. Es LA restricción del
+            # dominio: dos documentos con el mismo identificador fiscal serían
+            # indistinguibles ante SUNAT.
+            models.UniqueConstraint(
+                fields=['company', 'document_type', 'series', 'number', 'environment'],
+                name='fiscal_document_unique_number',
+            ),
+            # Un solo comprobante ORIGINAL por venta que no esté rechazado. Un
+            # rechazo sí permite volver a emitir: el documento rechazado no tiene
+            # validez tributaria, así que no ocupa el sitio. Las NOTAS (07/08)
+            # quedan FUERA de esta restricción: una venta admite varias notas
+            # además de su comprobante original (ERP-FISCAL-5A).
+            models.UniqueConstraint(
+                fields=['order'],
+                condition=(~models.Q(status=FiscalDocumentStatus.REJECTED)
+                           & models.Q(document_type__in=['01', '03'])),
+                name='fiscal_document_one_live_per_order',
+            ),
+            # Idempotencia de la nota: dos peticiones con la MISMA clave sobre el
+            # MISMO original dan una sola nota. No impide varias notas legítimas
+            # (distinta clave, o sin clave) sobre el mismo original.
+            #
+            # Una nota RECHAZADA libera su hueco de idempotencia, igual que un
+            # comprobante rechazado libera el «único vivo por pedido»: reintentar
+            # una corrección que SUNAT rechazó, con la misma clave, debe poder
+            # emitir una nota nueva. Sin `~REJECTED` aquí, la restricción y el
+            # servicio (que ya excluye las rechazadas al buscar la idempotente)
+            # discrepaban, y ese reintento chocaba con un IntegrityError sin
+            # recuperación (500). (REVIEW ERP-FISCAL-5A.)
+            models.UniqueConstraint(
+                fields=['original_document', 'note_request_key'],
+                condition=(~models.Q(note_request_key='')
+                           & ~models.Q(status=FiscalDocumentStatus.REJECTED)),
+                name='fiscal_note_idempotent_per_original',
+            ),
+            # OTORGADO y ATESTIGUADO COMO NO OTORGADO son afirmaciones opuestas, y
+            # nada impediría escribir las dos: se prohíbe en la base. Que las dos
+            # coexistieran dejaría la elegibilidad de una baja a merced del orden en
+            # que se leyeran los campos — y eso decide si se anula la numeración de
+            # un comprobante que el cliente ya tiene.
+            models.CheckConstraint(
+                condition=~(models.Q(granted_at__isnull=False)
+                            & models.Q(not_granted_at__isnull=False)),
+                name='fiscal_document_grant_is_exclusive',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'issued_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.series}-{self.number}'
+
+    @property
+    def document_id(self) -> str:
+        """`F001-123`, tal como va en el XML y en el nombre del archivo."""
+        return f'{self.series}-{self.number}'
+
+    @property
+    def is_accepted(self) -> bool:
+        """
+        ¿Puede decirse que SUNAT lo aceptó?
+
+        Existe para que ninguna pantalla tenga que decidirlo por su cuenta. Una
+        interfaz que dedujera «aceptado» de que no hubo error acabaría diciendo
+        ACEPTADA sobre un documento que nunca llegó a enviarse.
+        """
+        return self.status in (
+            FiscalDocumentStatus.ACCEPTED,
+            FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalSubmissionAttempt(models.Model):
+    """
+    Un intento de envío. HISTORIAL, no «último error».
+
+    Sobrescribir un campo `last_error` pierde justo lo que hace falta cuando algo
+    va mal: cuántas veces se intentó, cuándo, y si el error de hoy es el mismo de
+    ayer. Cada llamada a SUNAT deja una fila.
+
+    UN REINTENTO NO GENERA UN DOCUMENTO NUEVO. Mismo `FiscalDocument`, misma
+    serie, mismo correlativo, mismo XML firmado. Lo único nuevo es esta fila.
+
+    QUÉ NO SE GUARDA: ni la Clave SOL, ni la contraseña del certificado, ni la
+    cabecera WS-Security, ni el sobre SOAP. `safe_message` viene saneado.
+    """
+
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.CASCADE, related_name='attempts',
+    )
+    attempt_number = models.PositiveIntegerField()
+    environment = models.CharField(max_length=16, choices=FiscalEnvironment.choices)
+
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    #: El veredicto ya interpretado por el adaptador.
+    result = models.CharField(max_length=32)
+    response_code = models.CharField(max_length=8, blank=True)
+    safe_message = models.CharField(max_length=500, blank=True)
+
+    #: Huellas para correlacionar sin conservar los cuerpos. La del envío se
+    #: calcula sobre el ZIP y NUNCA sobre el sobre SOAP, que lleva la clave.
+    request_sha256 = models.CharField(max_length=64, blank=True)
+    response_sha256 = models.CharField(max_length=64, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Intento de envío fiscal'
+        verbose_name_plural = 'Intentos de envío fiscal'
+        ordering = ['document', 'attempt_number']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['document', 'attempt_number'],
+                name='fiscal_attempt_unique_number',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.document.document_id} · intento {self.attempt_number}'
+
+
+class FiscalSummaryStatus(models.TextChoices):
+    """
+    El recorrido de un Resumen Diario de Boletas (RC).
+
+    ES DISTINTO DEL DE UNA BOLETA (ERP-FISCAL-4 §41). Una boleta se otorga y firma
+    localmente y queda válida al entregarse; el resumen es el proceso ASÍNCRONO
+    que la informa a SUNAT. Que un resumen esté «en proceso» no cambia el estado
+    de la boleta que ya se entregó.
+
+    `SUBMITTED` aquí SÍ tiene un significado concreto: SUNAT devolvió un TICKET y
+    el resumen está en su cola de procesamiento. No es «aceptado»: el ticket sólo
+    prueba recepción para procesar. Se resuelve con `getStatus(ticket)`.
+
+    Un rechazo de resumen es de TODO el resumen, no de una boleta suelta: SUNAT no
+    hace procesamiento parcial de un RC.
+    """
+
+    GENERATED = 'generated', 'Generado'
+    SIGNED = 'signed', 'Firmado'
+    #: SUNAT devolvió un ticket; el proceso asíncrono está en marcha.
+    SUBMITTED = 'submitted', 'Enviado (ticket recibido)'
+    ACCEPTED = 'accepted', 'Aceptado por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
+    REJECTED = 'rejected', 'Rechazado por SUNAT'
+    #: Fallo ANTES de transmitir (no se estableció conexión): SUNAT no lo recibió.
+    #: Es SEGURO reintentar el envío.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío (no transmitido)'
+    #: Se transmitió la petición pero NO llegó respuesta ni ticket: el resultado
+    #: remoto es INCIERTO. Puede existir un ticket que nunca recibimos. NO se
+    #: reenvía por el flujo normal: exige revisión manual (RC-TIMEOUT-01, §14/§17).
+    SUBMISSION_UNKNOWN = 'submission_unknown', 'Envío con resultado incierto'
+
+
+class FiscalDailySummary(models.Model):
+    """
+    Un Resumen Diario de Boletas (RC). La UNIDAD que se envía a SUNAT.
+
+    POR QUÉ ES UN MODELO PROPIO Y NO UN JSON EN OTRO SITIO
+    -----------------------------------------------------
+    Su identidad (`RC-yyyyMMdd-NNN`), su ticket, su estado y —sobre todo— QUÉ
+    boletas informó tienen que poder restringirse, consultarse, bloquearse y ser
+    idempotentes. Un `metadata={}` no da restricción única de correlativo, ni
+    impide incluir una boleta dos veces, ni bloquea una fila para reservar un
+    número bajo concurrencia. Todo eso es esquema, no un diccionario.
+
+    ALCANCE: EMPRESA + AMBIENTE + FECHA DE REFERENCIA
+    ------------------------------------------------
+    Un RC es un reporte del RUC: SUNAT admite varias series/establecimientos en un
+    mismo resumen. Por eso se agrupa por empresa (no por sucursal); el aislamiento
+    operativo por sucursal se hace en la capa de permisos, no fragmentando el RC.
+    Decisión registrada en el ADR.
+
+    INMUTABLE UNA VEZ FIRMADO. El `signed_xml` es la evidencia: al reconciliar o
+    consultar NO se recalculan sus líneas buscando las boletas de hoy.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, related_name='fiscal_daily_summaries',
+    )
+
+    #: `RC-yyyyMMdd-NNN`, tal cual va en `cbc:ID` y en el nombre del archivo.
+    identifier = models.CharField(max_length=32)
+    #: El correlativo `NNN`. Único por RUC y día; monótono, no se recicla.
+    correlativo = models.PositiveBigIntegerField()
+    #: `cbc:ReferenceDate`: la fecha de emisión de las boletas informadas.
+    reference_date = models.DateField(db_index=True)
+    #: `cbc:IssueDate`: la fecha de GENERACIÓN del resumen. No es la anterior.
+    issue_date = models.DateField()
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+    )
+    status = models.CharField(
+        max_length=24, choices=FiscalSummaryStatus.choices,
+        default=FiscalSummaryStatus.GENERATED, db_index=True,
+    )
+
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El ticket que devuelve `sendSummary`. Se PERSISTE antes de consultar: es la
+    #: única referencia al proceso remoto y perderlo lo deja irrastreable.
+    ticket = models.CharField(max_length=100, blank=True)
+    #: Marca de «hay un envío en curso», puesta bajo bloqueo ANTES de la red y
+    #: retirada al terminar. Impide que dos envíos simultáneos del mismo resumen
+    #: creen dos tickets (§48). Nula cuando no hay envío en curso.
+    submitting_since = models.DateTimeField(null=True, blank=True)
+
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Resumen diario de boletas'
+        verbose_name_plural = 'Resúmenes diarios de boletas'
+        constraints = [
+            # El correlativo es único por RUC, ambiente y día de GENERACIÓN
+            # (RC-ID-01: el id/nombre llevan la fecha de generación —reglas
+            # 2346/2220—, así que dos resúmenes generados el mismo día no pueden
+            # compartir correlativo aunque informen fechas de emisión distintas).
+            # Es la red de seguridad de la reserva concurrente.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'issue_date', 'correlativo'],
+                name='fiscal_summary_unique_correlativo',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'identifier'],
+                name='fiscal_summary_unique_identifier',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'reference_date']),
+        ]
+
+    def __str__(self) -> str:
+        return self.identifier
+
+    @property
+    def document_id(self) -> str:
+        return self.identifier
+
+    @property
+    def is_accepted(self) -> bool:
+        return self.status in (
+            FiscalSummaryStatus.ACCEPTED,
+            FiscalSummaryStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalDailySummaryDocument(models.Model):
+    """
+    Una boleta DENTRO de un resumen. Congela la pertenencia (ERP-FISCAL-4 §12).
+
+    POR QUÉ CONGELAR Y NO RECONSTRUIR
+    ---------------------------------
+    «Qué boletas fueron en qué resumen» no puede deducirse meses después por
+    `issue_date = X`: puede haber más de un resumen del mismo día, bloques de 500,
+    documentos anulados. La pertenencia se guarda cuando se arma el resumen y no
+    se recalcula.
+
+    UNA BOLETA NO ENTRA VIVA EN DOS RESÚMENES (§13). La restricción única parcial
+    sobre `document` (mientras no esté `superseded`) lo impide en la base. Cuando
+    un resumen se rechaza, sus filas se marcan `superseded` y sus boletas pueden
+    volver a incluirse en un resumen nuevo.
+    """
+
+    summary = models.ForeignKey(
+        FiscalDailySummary, on_delete=models.CASCADE, related_name='lines',
+    )
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.PROTECT, related_name='summary_inclusions',
+    )
+    #: El `cbc:LineID` de esta boleta dentro del resumen.
+    line_id = models.PositiveIntegerField()
+    #: Catálogo N.º 19. `1` = Adicionar (una boleta que se informa por primera
+    #: vez). `2` Modificar y `3` Anular son flujos propios, fuera de esta fase.
+    condition_code = models.CharField(max_length=1, default='1')
+    #: Verdadero cuando su resumen quedó rechazado: libera a la boleta para poder
+    #: incluirse en otro resumen sin violar la unicidad activa.
+    superseded = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Boleta en resumen diario'
+        verbose_name_plural = 'Boletas en resumen diario'
+        ordering = ['summary', 'line_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['summary', 'document'],
+                name='fiscal_summary_line_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['summary', 'line_id'],
+                name='fiscal_summary_line_id_unique',
+            ),
+            # Una boleta en, como mucho, un resumen NO superado. Es la garantía de
+            # base contra la doble inclusión activa.
+            models.UniqueConstraint(
+                fields=['document'],
+                condition=models.Q(superseded=False),
+                name='fiscal_summary_one_active_per_document',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.summary.identifier} · L{self.line_id}'
+
+
+class FiscalVoidStatus(models.TextChoices):
+    """
+    El recorrido de una Comunicación de Baja (RA).
+
+    Coincide hoy, estado por estado, con el del Resumen Diario, y aun así es un
+    enum PROPIO: una baja no es un resumen. Son documentos distintos, con raíz,
+    nomenclatura y CDR distintos (CDR-Baja), y compartir el enum ataría su
+    evolución a la del resumen por parecido accidental. La misma razón por la que
+    `FiscalSummaryStatus` no reutiliza `FiscalDocumentStatus`.
+    """
+
+    GENERATED = 'generated', 'XML generado'
+    SIGNED = 'signed', 'Firmado'
+    #: SUNAT devolvió un ticket; el proceso asíncrono está en marcha.
+    SUBMITTED = 'submitted', 'Enviado (ticket recibido)'
+    ACCEPTED = 'accepted', 'Aceptada por SUNAT'
+    ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptada con observaciones'
+    REJECTED = 'rejected', 'Rechazada por SUNAT'
+    #: Fallo ANTES de transmitir: SUNAT no la recibió. Es SEGURO reintentar.
+    SUBMISSION_ERROR = 'submission_error', 'Error de envío (no transmitido)'
+    #: Se transmitió pero NO llegó ticket: el resultado remoto es INCIERTO. No se
+    #: reenvía por el flujo normal; exige revisión manual (RC-TIMEOUT-01).
+    SUBMISSION_UNKNOWN = 'submission_unknown', 'Envío con resultado incierto'
+
+
+class FiscalVoidCommunication(models.Model):
+    """
+    Una Comunicación de Baja (RA). La UNIDAD que se envía a SUNAT.
+
+    QUÉ ES, Y QUÉ NO
+    ----------------
+    Da de baja la NUMERACIÓN de comprobantes NO OTORGADOS (artículo 14 de la RS
+    097-2012, sustituido en bloque por la RS 114-2019). NO es una nota: una nota
+    corrige un comprobante que sigue vigente; la baja comunica que esa numeración
+    no se usó. Y NO borra nada nuestro: el comprobante original conserva su
+    `signed_xml`, su CDR, su serie, su número y su historia. Lo que cambia es que,
+    cuando el CDR-Baja se acepta, ese comprobante queda dado de baja — un hecho
+    NUEVO que se suma, no que reescribe.
+
+    POR QUÉ ES UN MODELO PROPIO (y no un estado en `FiscalDocument`)
+    ---------------------------------------------------------------
+    Tiene identidad (`RA-yyyyMMdd-N`), correlativo con su propio ámbito, ticket,
+    estado asíncrono y CDR propios, y agrupa UNO O MÁS comprobantes. Nada de eso
+    cabe en una bandera sobre el comprobante afectado.
+
+    AGRUPACIÓN Y `reference_date`
+    ----------------------------
+    El artículo 14.1.b admite incluir «uno o más documentos, siempre que todos
+    hayan sido generados o emitidos en un mismo día». De ahí que `reference_date`
+    sea UNA sola fecha para toda la comunicación: es ese día común. Por eso no se
+    impone «una RA por comprobante», pero tampoco se mezclan días distintos.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT,
+        related_name='fiscal_void_communications',
+    )
+
+    #: `RA-yyyyMMdd-N`, tal cual va en `cbc:ID`. OJO: el identificador NO lleva el
+    #: RUC; el RUC aparece sólo en el nombre del archivo (`RUC-RA-yyyyMMdd-N`).
+    identifier = models.CharField(max_length=32)
+    #: El correlativo. Hasta 5 posiciones, único por RUC/ambiente y día de
+    #: GENERACIÓN. Monótono: un número gastado no se recicla.
+    correlativo = models.PositiveBigIntegerField()
+    #: `cbc:ReferenceDate`: el día común en que se generaron o emitieron los
+    #: comprobantes que se dan de baja (véase AGRUPACIÓN).
+    reference_date = models.DateField(db_index=True)
+    #: `cbc:IssueDate`: la fecha de GENERACIÓN de la comunicación. No es la
+    #: anterior, y es la que va en el identificador y en el nombre del archivo.
+    issue_date = models.DateField()
+    environment = models.CharField(
+        max_length=16, choices=FiscalEnvironment.choices,
+    )
+    status = models.CharField(
+        max_length=24, choices=FiscalVoidStatus.choices,
+        default=FiscalVoidStatus.GENERATED, db_index=True,
+    )
+
+    signed_xml = models.TextField(blank=True)
+    signed_xml_sha256 = models.CharField(max_length=64, blank=True)
+    #: El ticket de `sendSummary`. Se PERSISTE antes de consultar: es la única
+    #: referencia al proceso remoto y perderlo lo deja irrastreable.
+    ticket = models.CharField(max_length=100, blank=True)
+    #: «Hay un envío en curso», puesta bajo bloqueo ANTES de la red y retirada al
+    #: terminar, para que dos envíos simultáneos no creen dos tickets.
+    submitting_since = models.DateTimeField(null=True, blank=True)
+
+    #: Clave de idempotencia de la PETICIÓN. Dos clics —o dos workers— con la misma
+    #: clave producen UNA sola comunicación, no dos bajas de la misma numeración.
+    #: Una comunicación RECHAZADA libera su hueco, igual que una nota rechazada:
+    #: reintentar una baja que SUNAT rechazó es legítimo, y bloquear la clave para
+    #: siempre convertiría un rechazo en un callejón sin salida.
+    request_key = models.CharField(max_length=64, blank=True)
+
+    #: El CDR-Baja. Es un CDR distinto del de factura/nota y del de resumen.
+    cdr_xml = models.TextField(blank=True)
+    cdr_sha256 = models.CharField(max_length=64, blank=True)
+    sunat_response_code = models.CharField(max_length=8, blank=True)
+    sunat_response_message = models.CharField(max_length=500, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Comunicación de baja'
+        verbose_name_plural = 'Comunicaciones de baja'
+        constraints = [
+            # Mismo criterio que el resumen: el correlativo es único por RUC,
+            # ambiente y día de GENERACIÓN, porque es esa fecha la que viaja en el
+            # identificador y en el nombre del archivo.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'issue_date', 'correlativo'],
+                name='fiscal_void_unique_correlativo',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'identifier'],
+                name='fiscal_void_unique_identifier',
+            ),
+            # Idempotencia de la petición: una clave, una comunicación. Se excluye
+            # la clave vacía (quien no la manda no compite con nadie) y se excluye
+            # la RECHAZADA, para que un rechazo de SUNAT no deje la clave quemada.
+            models.UniqueConstraint(
+                fields=['company', 'environment', 'request_key'],
+                condition=(~models.Q(request_key='')
+                           & ~models.Q(status=FiscalVoidStatus.REJECTED)),
+                name='fiscal_void_idempotent_request',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'reference_date']),
+        ]
+
+    def __str__(self) -> str:
+        return self.identifier
+
+    @property
+    def document_id(self) -> str:
+        return self.identifier
+
+    @property
+    def is_accepted(self) -> bool:
+        return self.status in (
+            FiscalVoidStatus.ACCEPTED,
+            FiscalVoidStatus.ACCEPTED_WITH_OBSERVATION,
+        )
+
+
+class FiscalVoidCommunicationDocument(models.Model):
+    """
+    Un comprobante DENTRO de una Comunicación de Baja: congela la pertenencia.
+
+    «Qué comprobantes fueron en qué baja» no se deduce después por fecha: puede
+    haber varias bajas del mismo día. La pertenencia se guarda al armarla y no se
+    recalcula, igual que en el resumen.
+
+    UN COMPROBANTE NO ENTRA VIVO EN DOS BAJAS. La restricción única parcial sobre
+    `document` (mientras no esté `superseded`) lo impide en la base. Si la baja
+    queda RECHAZADA, sus filas se marcan `superseded` y esos comprobantes pueden
+    volver a intentarse en una baja nueva — pero eso debe ser una decisión
+    registrada, no un borrado silencioso de la intención.
+    """
+
+    void_communication = models.ForeignKey(
+        FiscalVoidCommunication, on_delete=models.CASCADE, related_name='lines',
+    )
+    document = models.ForeignKey(
+        FiscalDocument, on_delete=models.PROTECT, related_name='void_inclusions',
+    )
+    #: El `cbc:LineID` de este comprobante dentro de la comunicación.
+    line_id = models.PositiveIntegerField()
+    #: `sac:VoidReasonDescription`: el motivo, obligatorio y an..100 según el
+    #: Anexo N.º 9. Es texto libre: no hay catálogo de motivos de baja.
+    void_reason = models.CharField(max_length=100)
+    #: Verdadero cuando su comunicación quedó rechazada: libera al comprobante
+    #: para poder intentarse en otra sin violar la unicidad activa.
+    superseded = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = 'Comprobante en comunicación de baja'
+        verbose_name_plural = 'Comprobantes en comunicación de baja'
+        ordering = ['void_communication', 'line_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['void_communication', 'document'],
+                name='fiscal_void_line_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['void_communication', 'line_id'],
+                name='fiscal_void_line_id_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['document'],
+                condition=models.Q(superseded=False),
+                name='fiscal_void_one_active_per_document',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.void_communication.identifier} · L{self.line_id}'
+
+
+# ---------------------------------------------------------------------------
+# H4.1 — alta de personal por invitación
+# ---------------------------------------------------------------------------
+
+class StaffInvitation(models.Model):
+    """
+    Una invitación para que una persona se incorpore al personal de una empresa.
+
+    POR QUÉ EXISTE ESTE MODELO Y NO SE REUTILIZA `AccountToken`
+    -----------------------------------------------------------
+    `AccountToken` es la primitiva correcta —un solo uso, caduca, sólo guarda el
+    hash— y este modelo usa EXACTAMENTE su mecanismo: `make_raw_token()` y
+    `hash_token()`, las mismas funciones. Lo que no encaja es su forma: exige un
+    `user`, y una invitación se dirige a un CORREO que todavía puede no tener
+    cuenta. Hacer nulo aquel campo tocaría el modelo del que dependen la
+    verificación de correo y el restablecimiento de contraseña.
+
+    Así que la invitación es su propio portador del token, con el mismo
+    mecanismo y una sola implementación del hash.
+
+    INVITAR NO ES DAR ACCESO
+    ------------------------
+    Crear una invitación NO crea `Membership`. Mientras nadie acepte, la persona
+    no puede entrar a la empresa. Esa separación es lo que permite revocar una
+    invitación sin dejar rastro de acceso, y lo que impide que un correo escrito
+    con un dedo torcido conceda entrada a un desconocido.
+
+    QUÉ SE CONGELA Y QUÉ NO
+    -----------------------
+    La invitación guarda el rol, el área y las sucursales PREVISTOS. No son el
+    acceso: son la propuesta. Al aceptar se crean las filas reales, y si para
+    entonces el rol fue desactivado, la aceptación falla en vez de conceder algo
+    que la empresa ya retiró.
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REVOKED = 'revoked'
+    #: No hay estado `expired` almacenado: la caducidad la decide `expires_at`
+    #: comparado con la hora actual. Un estado guardado exigiría alguien que lo
+    #: escribiera, y una invitación caducada sin ese proceso seguiría figurando
+    #: como pendiente — mintiendo.
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pendiente'),
+        (STATUS_ACCEPTED, 'Aceptada'),
+        (STATUS_REVOKED, 'Revocada'),
+    ]
+
+    DEFAULT_TTL_DAYS = 7
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='staff_invitations',
+    )
+    #: Normalizado en minúsculas al guardar. Es la identidad de acceso; el
+    #: nombre visible NO lo es, porque dos personas pueden llamarse igual.
+    email = models.EmailField()
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+
+    #: El rol y el área PREVISTOS. `PROTECT` en el rol: borrar un rol que una
+    #: invitación pendiente promete dejaría una propuesta imposible de cumplir.
+    role = models.ForeignKey(
+        CompanyRole, on_delete=models.PROTECT, related_name='staff_invitations',
+    )
+    area = models.ForeignKey(
+        CompanyArea, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='staff_invitations',
+    )
+    branch_access_mode = models.CharField(
+        max_length=16, choices=Membership.ACCESS_MODE_CHOICES,
+        default=Membership.ACCESS_MODE_ALL,
+    )
+    #: Las sucursales previstas cuando el modo es `selected`. Se guardan como
+    #: identificadores y se vuelven a validar contra la empresa al aceptar: una
+    #: sucursal puede desaparecer entre la invitación y la aceptación.
+    branch_ids = models.JSONField(default=list, blank=True)
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='staff_invitations_sent',
+    )
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING,
+        db_index=True,
+    )
+
+    #: SÓLO EL HASH. El token en claro se envía por correo y no se persiste
+    #: nunca: quien comprometa la base de datos no debe poder aceptar
+    #: invitaciones sin acceso también al buzón.
+    token_hash = models.CharField(max_length=64, db_index=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    #: La membresía que resultó. Nula mientras nadie acepte.
+    membership = models.ForeignKey(
+        Membership, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='from_invitations',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Invitación de personal'
+        verbose_name_plural = 'Invitaciones de personal'
+        ordering = ['-created_at']
+        constraints = [
+            # UNA SOLA INVITACIÓN PENDIENTE por empresa y correo. Sin esto, un
+            # doble clic dejaría dos tokens vivos para la misma persona y
+            # aceptar uno no invalidaría el otro.
+            models.UniqueConstraint(
+                fields=['company', 'email'],
+                condition=models.Q(status='pending'),
+                name='staff_invitation_one_pending_per_email',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['token_hash']),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.email} → {self.company}'
+
+    def save(self, *args, **kwargs):
+        # El correo es identidad de acceso: `Ana@X.com` y `ana@x.com` son la
+        # misma persona, y guardarlos distinto crearía dos invitaciones para una.
+        self.email = (self.email or '').strip().lower()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_usable(self) -> bool:
+        """Pendiente y dentro de plazo. Lo único que permite aceptar."""
+        return self.status == self.STATUS_PENDING and not self.is_expired
+
+    @property
+    def display_status(self) -> str:
+        """
+        El estado tal como debe leerse, con la caducidad calculada.
+
+        Existe para que ninguna pantalla tenga que deducirlo: una interfaz que
+        comparase fechas por su cuenta acabaría mostrando «pendiente» sobre una
+        invitación muerta.
+        """
+        if self.status == self.STATUS_PENDING and self.is_expired:
+            return 'expired'
+        return self.status
+
+    @property
+    def full_name(self) -> str:
+        return f'{self.first_name} {self.last_name}'.strip()

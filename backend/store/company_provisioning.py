@@ -137,6 +137,12 @@ _SALES_CAPS = (
     # Comercial y caja
     'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
     'sales.pos.use',
+    # C2.2A.1. Ventas ES el mostrador, y quien atiende necesita saber si la
+    # factura de un cliente ya salió. VER, no emitir: declarar algo ante SUNAT es
+    # un acto con consecuencias tributarias, y darlo por defecto a todo el
+    # personal de caja sería concederlo sin que nadie lo haya decidido. El
+    # preset de administrador sí lo lleva.
+    'sales.fiscal.view',
     # Recepción técnica
     'service.customers.view', 'service.customers.manage',
     'service.devices.view', 'service.devices.manage',
@@ -148,6 +154,8 @@ _SALES_CAPS = (
     # deliberately does NOT get this: authorised technicians manage the STATES
     # of a repair, and it does not follow that every technician handles cash.
     'service.payments.manage',
+    # Reception may hand back a device after the existing quality/payment gates.
+    'service.delivery.manage',
 )
 _INVENTORY_CAPS = (
     'company.view', 'products.view', 'reports.view',
@@ -224,10 +232,18 @@ _TECHNICIAN_CAPS = (
 #
 # `inventory.adjust` is also withheld. A supervisor approves the repair that
 # spends a part; correcting the shelf is the inventory role's job.
+# M12B.1 — `service.orders.manage` is NOT re-listed here, and that is the fix
+# rather than an omission. `_TECHNICIAN_CAPS` has held it since M8; adding it
+# again produced a tuple of 15 elements describing 14 capabilities, and the
+# migration path stored the duplicate verbatim while provisioning deduplicated
+# it. The two paths granted identical AUTHORITY and reported different numbers,
+# which is the worst way to be wrong: nothing misbehaves, so nothing gets found
+# until somebody compares counts.
+#
+# A duplicated capability is not more authority. It is a representation bug.
 _SERVICE_SUPERVISOR_CAPS = _TECHNICIAN_CAPS + (
     'reports.view',
     'service.customers.manage',
-    'service.orders.manage',
 )
 
 # (name, slug, description, capabilities)

@@ -1,8 +1,31 @@
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework.throttling import (
+    AnonRateThrottle,
+    SimpleRateThrottle,
+    UserRateThrottle,
+)
 
 
-class LoginThrottle(AnonRateThrottle):
+class LoginThrottle(SimpleRateThrottle):
+    """
+    Rate-limit login per IP whether or not the request already carries a session.
+
+    ERP-1 · AUTH-THROTTLE-01. This was an AnonRateThrottle, and DRF's
+    AnonRateThrottle returns no cache key — i.e. does not throttle — once the
+    request is authenticated. So a user signed into their own account could
+    POST other accounts' passwords to the login endpoint with no limit at all;
+    the brute-force defence only covered anonymous callers. Both the web
+    LoginView and V1LoginView use this class, so keying purely by IP closes the
+    hole on both channels. A login attempt is a login attempt regardless of who
+    is currently signed in.
+    """
+
     scope = 'login'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': self.get_ident(request),
+        }
 
 
 class RegisterThrottle(AnonRateThrottle):
@@ -20,6 +43,25 @@ class ReviewCreateThrottle(AnonRateThrottle):
 
 class CheckoutThrottle(AnonRateThrottle):
     scope = 'checkout'
+
+
+class CheckoutQuoteThrottle(AnonRateThrottle):
+    """
+    Cotizar el carrito NO puede gastar el presupuesto de pagar.
+
+    La cotización nació compartiendo `CheckoutThrottle` con la creación de la
+    sesión de pago, y eso convertía mirar el checkout en un motivo para no poder
+    comprar: se reproduce con doce cotizaciones seguidas, tras las cuales
+    `payments/create-checkout-session/` responde 429 sin llegar siquiera a
+    ejecutarse. Y la pantalla vuelve a cotizar en CADA cambio del carrito o del
+    cupón, así que alguien ajustando cantidades se cerraba la compra a sí mismo.
+
+    Cubo propio y más holgado: es una lectura que no crea nada, no cobra y no
+    reserva stock. Sigue limitada porque recalcula precios y stock en cada
+    llamada, que es trabajo real contra la base de datos.
+    """
+
+    scope = 'checkout_quote'
 
 
 class CartThrottle(AnonRateThrottle):
@@ -127,3 +169,54 @@ class AdminPosSaleThrottle(UserRateThrottle):
 class AdminSalesAnalyticsThrottle(UserRateThrottle):
     """Commercial dashboard and replenishment report."""
     scope = 'admin_sales_analytics'
+
+
+class FiscalIssueThrottle(UserRateThrottle):
+    """
+    Emitir y enviar tocan un servicio externo. Cubo propio, no el del checkout.
+
+    ERP-FISCAL-1C. Era `AnonRateThrottle`, que NO limita a peticiones
+    autenticadas (devuelve cache key None en cuanto hay usuario) — el mismo
+    defecto que corrigió AUTH-THROTTLE-01 en login. Como TODO endpoint fiscal
+    es `IsAuthenticated`, el ritmo `fiscal_issue` nunca se aplicaba. Con
+    `UserRateThrottle` el cubo es por usuario y el límite sí rige.
+
+    NO ES LA DEFENSA CONTRA EL DOBLE ENVÍO. Eso vive en el dominio: la reserva
+    de intento y las restricciones de base de datos. Un limitador sólo espacia
+    peticiones; dos clics separados por un segundo pasarían igual.
+    """
+
+    scope = 'fiscal_issue'
+
+
+class FiscalReadThrottle(UserRateThrottle):
+    """
+    Consultar estado y descargar artefactos. Más holgado: no sale a la red.
+
+    ERP-FISCAL-1C. Igual que arriba: `UserRateThrottle`, no `AnonRateThrottle`,
+    para que el límite aplique a los usuarios autenticados que son los únicos
+    que llegan aquí.
+    """
+
+    scope = 'fiscal_read'
+
+
+class StaffInviteThrottle(UserRateThrottle):
+    """
+    Invitar, reenviar y revocar. Cubo propio: envía correo a terceros.
+
+    No se reutiliza el de checkout ni el del punto de venta — comparten cubo
+    significa que una operación agota el presupuesto de otra sin relación, que
+    es el defecto que ya apareció una vez con la cotización fiscal.
+    """
+
+    scope = 'staff_invite'
+
+
+class StaffAcceptThrottle(AnonRateThrottle):
+    """
+    Leer y aceptar una invitación. ANÓNIMO: es la única defensa contra alguien
+    probando tokens al azar, porque quien lo hace no está autenticado.
+    """
+
+    scope = 'staff_accept'

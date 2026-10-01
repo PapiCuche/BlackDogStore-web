@@ -39,6 +39,9 @@ from .company_settings import (
     get_company_settings,
 )
 from .models import AdminAuditLog, Company, CompanySettings
+from .storefront_content_services import (
+    public_campaigns, public_list_content, public_page_settings,
+)
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .serializers import (
@@ -99,8 +102,15 @@ def build_storefront_config_payload(company) -> dict:
             'tax_id': identity.tax_id,
         },
         'branding': {
+            # Legado, y se queda: hay tenants que sólo tienen éste.
             'logo_url': branding.logo_url,
+            # M12E — aditivo. Las claves son PREGUNTAS que hace un componente
+            # («horizontal, sobre oscuro»), no nombres de columna. Vacío
+            # significa «no tengo esa variante», y quien lo consume cae al
+            # nombre de la empresa antes que dibujar un logo ilegible.
+            'logos': branding.logos,
             'colors': branding.colors,
+            'light_colors': branding.light_colors,
             'css_variables': branding.css_variables(),
         },
         'contact': {
@@ -120,6 +130,22 @@ def build_storefront_config_payload(company) -> dict:
             'terms_url': settings_row.terms_url if settings_row else '',
             'privacy_url': settings_row.privacy_url if settings_row else '',
         },
+        # M12F — contenido comercial, como dato del tenant y no compilado.
+        #
+        # `page` es lo estable; `campaigns` lo temporal. Ambos viajan en ESTA
+        # respuesta y no en un endpoint aparte porque la portada los necesita a
+        # la vez que la marca: dos peticiones serían dos momentos distintos y un
+        # instante con el titular nuevo y el logotipo viejo.
+        #
+        # `campaigns` sólo contiene lo PUBLICADO Y VIGENTE de esta empresa. Un
+        # borrador no llega aquí, y una campaña caducada tampoco: la caducidad
+        # es precisamente la defensa contra la preventa del año pasado.
+        'page': public_page_settings(company),
+        'campaigns': public_campaigns(company),
+        # M12F.1 — servicios, preguntas y métricas del tenant. Listas vacías son
+        # la respuesta normal: quien no ha escrito métricas no tiene métricas, y
+        # el escaparate no dibuja ese bloque.
+        **public_list_content(company),
     }
 
 
@@ -158,6 +184,22 @@ class StorefrontConfigView(APIView):
 # ---------------------------------------------------------------------------
 # Internal configuration
 # ---------------------------------------------------------------------------
+
+def _require_company_wide_scope(request, company):
+    """
+    WRITE-SCOPE-01. A 403 Response when the caller's branch scope does not cover
+    the whole company, else None. For writes whose effect reaches every branch:
+    `company.manage` says WHAT may change, not that a member restricted to some
+    branches may change it for all of them. Reads are not gated by this.
+    """
+    from .tenancy import COMPANY_WIDE_SCOPE_REQUIRED, has_company_wide_scope
+
+    if has_company_wide_scope(request.user, company):
+        return None
+    return Response(
+        {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+    )
+
 
 def _settings_context(request, capability):
     """
@@ -252,6 +294,9 @@ class AdminCompanySettingsView(APIView):
 
     def patch(self, request):
         company, settings_row, error = _settings_context(request, CAP_COMPANY_MANAGE)
+        if error:
+            return error
+        error = _require_company_wide_scope(request, company)
         if error:
             return error
 
@@ -412,6 +457,16 @@ class AdminSequenceDetailView(APIView):
             .filter(pk=pk)
             .first()
         )
+        # F2 · F-BRANCH-03. The same rule as the list: a branch series the caller
+        # cannot operate is not theirs to read or rewrite, and it answers exactly
+        # like one that does not exist.
+        if sequence is not None and sequence.branch_id is not None:
+            from .tenancy import visible_branches
+
+            if not visible_branches(request.user, sequence.company).filter(
+                pk=sequence.branch_id,
+            ).exists():
+                sequence = None
         if sequence is None:
             return None, Response(
                 {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
@@ -435,6 +490,12 @@ class AdminSequenceDetailView(APIView):
         sequence, error = self._scoped(request, pk)
         if error:
             return error
+        # The company-level series numbers documents of every branch; a branch
+        # series reached by the caller stays theirs (F-BRANCH-03 hides the rest).
+        if sequence.branch_id is None:
+            error = _require_company_wide_scope(request, sequence.company)
+            if error:
+                return error
 
         ser = InternalSequenceWriteSerializer(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -522,6 +583,9 @@ class AdminSequenceScopeView(APIView):
 
     def patch(self, request):
         company, settings_row, error = _settings_context(request, CAP_COMPANY_MANAGE)
+        if error:
+            return error
+        error = _require_company_wide_scope(request, company)
         if error:
             return error
 

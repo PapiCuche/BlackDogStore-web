@@ -72,6 +72,13 @@ automáticamente, y eso es lo que hace el guard.
 | Anulación / devolución POS | **no existe** | — | — | — | — | **E** |
 | Arqueo / sesión de caja | **no existe** | — | — | — | — | **E** |
 
+> **Alcance de sucursal — H4.1.2.** La capability de la tabla dice *si* alguien
+> puede operar pedidos, despacho y notas de venta, no *cuáles*. Las superficies de
+> pedidos parten de `tenancy.visible_orders`: una membresía `SELECTED` sólo alcanza
+> los pedidos de sus sucursales, y lo que queda fuera responde 404, igual por web,
+> por cookie y por Bearer. En despacho, dentro de una empresa decide
+> `sales.orders.manage`, y el rol global sólo cuenta en el puente legacy.
+
 ## INVENTARIO
 
 | Función | Backend | Web | V1 | Mobile | Capability | TIPO |
@@ -129,6 +136,14 @@ El día que haga falta una de verdad, se construye; hoy es **E**, no C.
 Toda la cadena está en **TIPO A**: recepción, diagnóstico, cotización,
 aprobación del cliente, ejecución, repuestos, control de calidad, entrega y
 cobro. 34 rutas v1, 32 consumidas por Mobile.
+
+> **La recepción, en la WEB, no existe — H4.1.2A.** El backend recibe equipos
+> (`service/orders/` con `service.orders.create`, `service/devices/` y la
+> búsqueda de clientes), y Mobile los consume; el panel web no tiene pantalla de
+> «Nueva orden de servicio». Los seis módulos de servicio del menú apuntan hoy al
+> mismo listado, y `internal-modules` marca `service.intake` como `implemented`:
+> la clasificación honesta es PARCIAL. Registrado como SVC-INTAKE-WEB y
+> SVC-MENU-01; se corrige en SVC-OPS-01, con el menú y la pantalla a la vez.
 
 ---
 

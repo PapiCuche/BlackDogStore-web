@@ -332,12 +332,24 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "admin.people",
     group: "administration",
     label: "Personal",
-    description: "Usuarios de la plataforma y sus roles.",
-    href: "/admin/users",
+    // El lenguaje cambió con la pantalla: ya no son «usuarios de la
+    // plataforma», son las personas que trabajan en esta empresa.
+    description: "Trabajadores, responsabilidades y acceso por sucursal.",
+    href: "/admin/staff",
     requiredCapabilities: ["memberships.view"],
     legacyRoles: ADMIN_ROLES,
     status: "implemented",
     quickAction: true,
+  },
+  {
+    id: "admin.areas",
+    group: "administration",
+    label: "Áreas",
+    description: "Cómo se organiza el equipo. Los permisos los da el rol.",
+    href: "/admin/areas",
+    requiredCapabilities: ["areas.manage"],
+    legacyRoles: ADMIN_ROLES,
+    status: "implemented",
   },
   {
     id: "admin.audit",
@@ -385,6 +397,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "admin.communications",
+    group: "administration",
+    label: "Comunicados",
+    description: "Mensajes internos para el personal de la empresa.",
+    // CON `href`, y ese es el punto. En M12B se envió una consola sin él y
+    // quedó inalcanzable: registrada, descrita y sin forma de llegar.
+    href: "/admin/communications",
+    requiredCapabilities: ["communications.manage"],
+    status: "implemented",
+  },
+  {
     id: "admin.settings",
     group: "administration",
     label: "Configuración",
@@ -395,6 +418,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["company.view"],
     status: "implemented",
     quickAction: true,
+  },
+  {
+    id: "admin.storefront",
+    group: "administration",
+    label: "Escaparate",
+    description: "Portada y campañas de la tienda pública.",
+    // CON `href`, y por el mismo motivo que la consola de comunicados: un
+    // módulo registrado sin forma de llegar es un módulo que no existe.
+    href: "/admin/settings/storefront",
+    // Misma autoridad que la configuración: `company.view` para llegar, y el
+    // backend exige `company.manage` para escribir, con independencia de lo
+    // que esta pantalla decida enseñar.
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
   },
 ];
 

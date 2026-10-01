@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from .inventory_services import (
     InsufficientStockError, InventoryError,
     apply_initial_stock, apply_manual_stock_movement,
+    order_ids_with_stock_shortfall, order_stock_shortfall,
+    reprocess_order_stock_exit,
 )
 from .models import (
     AdminAuditLog, Category, Order, OrderItem, Product, StockMovement, UserProfile,
@@ -22,6 +24,7 @@ from .tenancy import (
     BranchAccessError, CATALOG_SOURCE_LEGACY, NoBranchError,
     active_memberships, has_capability, is_platform_admin,
     resolve_branch_for_user, resolve_catalog_company, visible_companies,
+    visible_orders,
 )
 from .permissions import (
     CanManageInventory, CanManageOrderFulfillment, CanManageProducts,
@@ -237,16 +240,24 @@ class AdminUserListView(APIView):
             )
             if not companies:
                 return Response({'count': 0, 'page': 1, 'page_size': 0, 'results': []})
-            if not any(
-                has_capability(request.user, company_id, 'memberships.view')
-                for company_id in companies
-            ):
+            # ISO-01: the capability must hold IN the company whose people you
+            # read, not in ANY company you happen to belong to. The old check
+            # was `any(...)` over all your companies, then a filter across all of
+            # them — so an admin of A who was also a plain member of B read B's
+            # user list (emails, roles) with A's capability. Keep only the
+            # companies where you actually hold memberships.view and read across
+            # exactly those.
+            readable = [
+                company_id for company_id in companies
+                if has_capability(request.user, company_id, 'memberships.view')
+            ]
+            if not readable:
                 return Response(
                     {'detail': 'No tienes permisos para esta operación.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
             users = users.filter(
-                Q(memberships__company_id__in=companies, memberships__is_active=True)
+                Q(memberships__company_id__in=readable, memberships__is_active=True)
                 | Q(pk=request.user.pk)
             ).distinct()
 
@@ -375,16 +386,21 @@ class AdminAuditLogListView(APIView):
         logs = AdminAuditLog.objects.select_related('actor').order_by('-created_at')
 
         if not is_platform_admin(request.user):
-            companies = list(visible_companies(request.user).values_list('pk', flat=True))
-            if not companies or not any(
-                has_capability(request.user, company_id, 'memberships.view')
-                for company_id in companies
-            ):
+            # ISO-02: same flaw as the user list. `any(...)` over every company
+            # followed by a filter across all of them let an admin of A read B's
+            # audit trail — IPs and the PII copied into metadata — with A's
+            # capability. Read only the companies where you hold memberships.view.
+            readable = [
+                company_id
+                for company_id in visible_companies(request.user).values_list('pk', flat=True)
+                if has_capability(request.user, company_id, 'memberships.view')
+            ]
+            if not readable:
                 return Response(
                     {'detail': 'No tienes permisos para esta operación.'},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            logs = logs.filter(company_id__in=companies)
+            logs = logs.filter(company_id__in=readable)
 
         action_filter = request.query_params.get('action', '').strip()
         if action_filter:
@@ -514,6 +530,15 @@ class AdminProductListView(APIView):
         opening_stock = ser.validated_data.pop('inventory', 0) or 0
         branch = None
         if opening_stock > 0:
+            # F2 · F-CAP-01. products.manage governs the catalogue; opening a
+            # balance moves stock, so it needs the same authority as the direct
+            # adjustment — decided the same way, legacy bridge included, and
+            # BEFORE anything is written.
+            _company, stock_error = _company_context(
+                request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES,
+            )
+            if stock_error:
+                return stock_error
             try:
                 branch = resolve_branch_for_user(request.user, company, None)
             except (NoBranchError, BranchAccessError):
@@ -786,13 +811,34 @@ class AdminCategoryListView(APIView):
 # Phase 3.3 — Admin order views
 # ---------------------------------------------------------------------------
 
-# inventory role can only set these operational statuses
-_INVENTORY_ALLOWED_FULFILLMENT = frozenset([
-    Order.FulfillmentStatus.PREPARING,
-    Order.FulfillmentStatus.READY_FOR_PICKUP,
-    Order.FulfillmentStatus.SHIPPED,
-    Order.FulfillmentStatus.DELIVERED,
-])
+# H4.1.2 — every view below starts from tenancy.visible_orders(): tenant AND
+# branch, applied before any lookup, count or page. An order outside it answers
+# 404 exactly like one that does not exist. The role-keyed copy of the inventory
+# fulfilment rule that used to sit here was dead code; the one rule lives in
+# order_fulfillment_services.allowed_fulfillment_statuses().
+
+_ORDER_NOT_FOUND = 'Orden no encontrada.'
+
+
+def _order_detail_payload(request, order, company):
+    """
+    The order as the web panel shows it, plus the fulfilment states THIS caller
+    may set — computed by the server, exactly as the native surface already
+    does, so the panel no longer keeps its own role-keyed copy of the rule.
+    """
+    shortfall = order_stock_shortfall(order)
+    return {
+        **AdminOrderDetailSerializer(order).data,
+        'available_fulfillment_transitions':
+            list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
+        # INV-04: the oversell/shortfall, derived — see order_stock_shortfall.
+        'stock_shortfall': shortfall,
+        # Whether THIS caller may reprocess the pending exit: a shortfall to
+        # resolve plus the inventory-move authority. Server-decided, like the
+        # fulfillment transitions above — the panel never reads a role.
+        'can_reprocess_stock_exit': bool(shortfall) and has_capability(
+            request.user, company, CAP_INVENTORY_ADJUST),
+    }
 
 
 class AdminOrderListView(APIView):
@@ -812,10 +858,9 @@ class AdminOrderListView(APIView):
         if error:
             return error
 
-        # Born scoped: every filter below narrows within the tenant.
+        # Born scoped: tenant and branch first; every filter below narrows within.
         orders = (
-            Order.objects
-            .filter(company=company)
+            visible_orders(request.user, company)
             .select_related('user')
             .prefetch_related('items')
             .order_by('-created_at')
@@ -858,8 +903,23 @@ class AdminOrderListView(APIView):
             except ValueError:
                 pass
 
+        # INV-04: a shortfall is only meaningful once the sale's exit was
+        # attempted (at payment), so it is computed over PAID orders. `?shortfall
+        # =true` narrows to orders still short of stock; every row carries the
+        # flag either way so the panel can mark them without a second request.
+        shortfall_only = request.query_params.get('shortfall', '').strip().lower() == 'true'
+        if shortfall_only:
+            paid_ids = orders.filter(status=Order.Status.PAID).values_list('pk', flat=True)
+            orders = orders.filter(pk__in=order_ids_with_stock_shortfall(paid_ids))
+
         page_qs, meta = _paginate(orders, request)
-        return Response({**meta, 'results': AdminOrderListSerializer(page_qs, many=True).data})
+        rows = AdminOrderListSerializer(page_qs, many=True).data
+        page_short_ids = order_ids_with_stock_shortfall(
+            [o.pk for o in page_qs if o.status == Order.Status.PAID]
+        )
+        for row in rows:
+            row['has_stock_shortfall'] = row['id'] in page_short_ids
+        return Response({**meta, 'results': rows})
 
 
 class AdminOrderDetailView(APIView):
@@ -875,13 +935,86 @@ class AdminOrderDetailView(APIView):
         company, error = _company_context(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
         if error:
             return error
-        # An order of another tenant answers exactly like one that does not exist.
-        order = get_object_or_404(
-            Order.objects.filter(company=company)
-            .select_related('user').prefetch_related('items__product'),
-            pk=pk,
+        # An order of another tenant — or of a branch this caller does not
+        # operate — answers exactly like one that does not exist.
+        order = (
+            visible_orders(request.user, company)
+            .select_related('user').prefetch_related('items__product')
+            .filter(pk=pk).first()
         )
-        return Response(AdminOrderDetailSerializer(order).data)
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderReprocessStockExitView(APIView):
+    """
+    POST /api/admin/orders/{pk}/reprocess-stock-exit/ — INV-04 resolution.
+
+    Re-runs only the still-missing SALE_EXITs of a PAID order, once the branch
+    has been replenished, so the shortfall left at payment time can be cleared.
+
+    TWO authorities, because this endpoint both READS and WRITES:
+
+      - it answers with the order DETAIL payload (customer data included), so it
+        requires `sales.orders.view` exactly like AdminOrderDetailView — an
+        `inventory.adjust`-only caller who is denied GET on this order must not
+        harvest the same payload through the POST;
+      - it WRITES stock exits, so it also requires the `inventory.adjust`
+        capability — the same authority the `can_reprocess_stock_exit` flag is
+        computed from. `sales.orders.view` without it can see the shortfall but
+        not resolve it.
+
+    It touches no payment field and never pulls stock from another branch — see
+    reprocess_order_stock_exit. Answers with the order detail payload (its
+    `stock_shortfall` recomputed) plus the movements this call created.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrdersThrottle]
+
+    def post(self, request, pk):
+        # Entry authority = the same one that guards the detail payload it
+        # returns. This is what closes the PII side-channel: no orders.view, no
+        # payload, whatever inventory authority the caller holds.
+        company, error = _company_context(
+            request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
+        if error:
+            return error
+
+        # Write authority: registering the stock exit needs inventory.adjust,
+        # decided exactly as can_reprocess_stock_exit is (capability, not role).
+        if not has_capability(request.user, company, CAP_INVENTORY_ADJUST):
+            return Response(
+                {'detail': 'No tienes permiso para mover inventario en esta empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Out of scope is 404, like every other order view.
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related('items__product').filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        # A pending/failed/refunded order has no pending SALE_EXIT to resolve;
+        # that is a state conflict, not a bad request. The service re-checks this
+        # on the LOCKED row, so a status flip racing the lock also lands here.
+        if order.status != Order.Status.PAID:
+            return Response(
+                {'detail': 'Solo un pedido pagado puede reprocesar su salida de stock.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            result = reprocess_order_stock_exit(order, actor=request.user, request=request)
+        except InventoryError as exc:
+            # The order stopped being PAID between this check and the lock.
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        order.refresh_from_db()
+        payload = _order_detail_payload(request, order, company)
+        payload['created_movements'] = len(result['created_movements'])
+        return Response(payload)
 
 
 class AdminOrderResendEmailView(APIView):
@@ -900,11 +1033,14 @@ class AdminOrderResendEmailView(APIView):
         if error:
             return error
 
-        try:
-            order = Order.objects.filter(company=company).prefetch_related(
-                "items__product").get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        # Out of scope is 404 BEFORE anything is sent: an e-mail is not a lookup
+        # that can be undone once it reaches a customer's inbox.
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related("items__product").filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.paid or order.status != Order.Status.PAID:
             return Response(
@@ -962,11 +1098,12 @@ class AdminOrderReceiptPdfView(APIView):
         if error:
             return error
 
-        try:
-            order = Order.objects.filter(company=company).prefetch_related(
-                "items__product").get(pk=pk)
-        except Order.DoesNotExist:
-            return Response({"detail": "Orden no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+        order = (
+            visible_orders(request.user, company)
+            .prefetch_related("items__product").filter(pk=pk).first()
+        )
+        if order is None:
+            return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         if not order.paid or order.status != Order.Status.PAID:
             return Response(
@@ -1004,8 +1141,9 @@ class AdminOrderFulfillmentView(APIView):
     """
     PATCH /api/admin/orders/{pk}/fulfillment-status/
     Changes fulfillment_status only. Creates audit log.
-    inventory role: limited to preparing/ready_for_pickup/shipped/delivered.
-    sales/admin/superadmin: any value.
+    SaaS: `sales.orders.manage` in the company decides, whatever the global role.
+    Legacy bridge: inventory limited to preparing/ready_for_pickup/shipped/delivered;
+    sales/admin/superadmin any value. See order_fulfillment_services.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderStatusChangeThrottle]
@@ -1021,11 +1159,14 @@ class AdminOrderFulfillmentView(APIView):
         new_fs = ser.validated_data['fulfillment_status']
         note = ser.validated_data.get('note', '').strip()
 
-        # Scoped: an admin of company A can never move company B's order.
-        order = get_object_or_404(Order.objects.filter(company=company), pk=pk)
+        # Scoped: an admin of company A can never move company B's order, and a
+        # member granted branch A can never move branch B's.
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         # M6 — the rule and the audit entry moved to a shared service, so the
-        # native surface cannot drift from this one. Behaviour is unchanged.
+        # native surface cannot drift from this one.
         try:
             fulfillment.change_fulfillment_status(
                 order=order, new_status=new_fs, actor=request.user,
@@ -1035,4 +1176,4 @@ class AdminOrderFulfillmentView(APIView):
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
-        return Response(AdminOrderDetailSerializer(order).data)
+        return Response(_order_detail_payload(request, order, company))

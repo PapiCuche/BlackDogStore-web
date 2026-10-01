@@ -27,10 +27,10 @@ import {
 } from "../lib/internal-api";
 
 const FIELD =
-  "w-full rounded-lg border bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-const BORDER = "border-white/[0.08]";
+  "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const BORDER = "border-bd-border";
 const LABEL =
-  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
 const DOCUMENT_TYPES = [
   { value: "", label: "Sin documento" },
@@ -130,7 +130,7 @@ export function CustomerForm({
               ["business", "Empresa"],
             ] as [CustomerType, string][]
           ).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2 text-sm text-zinc-300">
+            <label key={value} className="flex items-center gap-2 text-sm text-foreground/85">
               <input
                 type="radio"
                 name="customer-type"
@@ -151,14 +151,14 @@ export function CustomerForm({
           </label>
           <input
             id="cf-business"
-            className={`${FIELD} ${errors.business_name ? "border-red-500/50" : BORDER}`}
+            className={`${FIELD} ${errors.business_name ? "border-danger-border" : BORDER}`}
             value={draft.business_name}
             maxLength={200}
             disabled={saving}
             onChange={(e) => set("business_name", e.target.value)}
           />
           {errors.business_name ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.business_name}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.business_name}</p>
           ) : null}
         </div>
       ) : (
@@ -169,14 +169,14 @@ export function CustomerForm({
             </label>
             <input
               id="cf-first"
-              className={`${FIELD} ${errors.first_name ? "border-red-500/50" : BORDER}`}
+              className={`${FIELD} ${errors.first_name ? "border-danger-border" : BORDER}`}
               value={draft.first_name}
               maxLength={120}
               disabled={saving}
               onChange={(e) => set("first_name", e.target.value)}
             />
             {errors.first_name ? (
-              <p className="mt-1.5 text-xs text-red-400">{errors.first_name}</p>
+              <p className="mt-1.5 text-xs text-danger">{errors.first_name}</p>
             ) : null}
           </div>
           <div>
@@ -202,7 +202,7 @@ export function CustomerForm({
           </label>
           <select
             id="cf-doctype"
-            className={`${FIELD} ${errors.document_type ? "border-red-500/50" : BORDER}`}
+            className={`${FIELD} ${errors.document_type ? "border-danger-border" : BORDER}`}
             value={draft.document_type}
             disabled={saving}
             onChange={(e) => set("document_type", e.target.value)}
@@ -214,9 +214,9 @@ export function CustomerForm({
             ))}
           </select>
           {errors.document_type ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.document_type}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.document_type}</p>
           ) : (
-            <p className="mt-1.5 text-[11px] text-zinc-600">
+            <p className="mt-1.5 text-[11px] text-muted">
               Opcional. Un cliente puede atenderse sin documento.
             </p>
           )}
@@ -227,14 +227,14 @@ export function CustomerForm({
           </label>
           <input
             id="cf-docnumber"
-            className={`${FIELD} ${errors.document_number ? "border-red-500/50" : BORDER} font-mono`}
+            className={`${FIELD} ${errors.document_number ? "border-danger-border" : BORDER} font-mono`}
             value={draft.document_number}
             maxLength={20}
             disabled={saving}
             onChange={(e) => set("document_number", e.target.value)}
           />
           {errors.document_number ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.document_number}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.document_number}</p>
           ) : null}
         </div>
       </div>
@@ -246,14 +246,14 @@ export function CustomerForm({
           </label>
           <input
             id="cf-phone"
-            className={`${FIELD} ${errors.phone ? "border-red-500/50" : BORDER}`}
+            className={`${FIELD} ${errors.phone ? "border-danger-border" : BORDER}`}
             value={draft.phone}
             maxLength={30}
             disabled={saving}
             onChange={(e) => set("phone", e.target.value)}
           />
           {errors.phone ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.phone}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.phone}</p>
           ) : null}
         </div>
         <div>
@@ -263,13 +263,13 @@ export function CustomerForm({
           <input
             id="cf-email"
             type="email"
-            className={`${FIELD} ${errors.email ? "border-red-500/50" : BORDER}`}
+            className={`${FIELD} ${errors.email ? "border-danger-border" : BORDER}`}
             value={draft.email}
             disabled={saving}
             onChange={(e) => set("email", e.target.value)}
           />
           {errors.email ? (
-            <p className="mt-1.5 text-xs text-red-400">{errors.email}</p>
+            <p className="mt-1.5 text-xs text-danger">{errors.email}</p>
           ) : null}
         </div>
       </div>
@@ -324,29 +324,29 @@ export function CustomerForm({
         <textarea
           id="cf-notes"
           rows={3}
-          className={`${FIELD} ${errors.notes ? "border-red-500/50" : BORDER}`}
+          className={`${FIELD} ${errors.notes ? "border-danger-border" : BORDER}`}
           value={draft.notes}
           maxLength={2000}
           disabled={saving}
           onChange={(e) => set("notes", e.target.value)}
         />
-        <p className="mt-1.5 text-[11px] text-zinc-600">
+        <p className="mt-1.5 text-[11px] text-muted">
           Sólo para el equipo. El cliente nunca las ve.
         </p>
       </div>
 
       {conflict ? (
-        <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm">
-          <p className="text-amber-300">{error}</p>
+        <div className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm">
+          <p className="text-warning">{error}</p>
           <Link
             href={`/admin/customers/${conflict.id}`}
-            className="mt-1.5 inline-block text-xs text-amber-200 underline underline-offset-2"
+            className="mt-1.5 inline-block text-xs text-warning underline underline-offset-2"
           >
             Abrir la ficha de {conflict.display_name}
           </Link>
         </div>
       ) : error ? (
-        <p className="text-sm text-red-400">{error}</p>
+        <p className="text-sm text-danger">{error}</p>
       ) : null}
 
       <div className="flex items-center gap-3">
@@ -354,7 +354,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded-lg border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         >
           {saving ? "Guardando…" : customer ? "Guardar cambios" : "Crear cliente"}
         </button>
@@ -362,7 +362,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={onCancel}
-          className="text-sm text-zinc-500 transition hover:text-zinc-300"
+          className="text-sm text-muted transition hover:text-foreground/85"
         >
           Cancelar
         </button>

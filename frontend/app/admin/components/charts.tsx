@@ -71,8 +71,8 @@ function DataTable({
 
 export function ChartEmpty({ message }: { message: string }) {
   return (
-    <div className="flex min-h-[9rem] items-center justify-center rounded-lg border border-dashed border-white/10 px-4 py-8">
-      <p className="text-center text-sm text-zinc-500">{message}</p>
+    <div className="flex min-h-[9rem] items-center justify-center rounded-lg border border-dashed border-bd-border px-4 py-8">
+      <p className="text-center text-sm text-muted">{message}</p>
     </div>
   );
 }
@@ -112,16 +112,16 @@ export function HorizontalBarChart({
           return (
             <li key={point.label}>
               <div className="mb-1 flex items-baseline justify-between gap-3">
-                <span className="truncate text-xs text-zinc-400" title={point.label}>
+                <span className="truncate text-xs text-muted" title={point.label}>
                   {point.label}
                 </span>
-                <span className="shrink-0 text-xs font-medium tabular-nums text-zinc-200">
+                <span className="shrink-0 text-xs font-medium tabular-nums text-foreground">
                   {point.value}
                 </span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.04]">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
                 <div
-                  className="h-full rounded-full bg-white transition-[width] duration-500"
+                  className="h-full rounded-full bg-foreground transition-[width] duration-500"
                   style={{ width: `${pct}%`, opacity: rampAt(index) }}
                 />
               </div>
@@ -173,7 +173,7 @@ export function VerticalBarChart({
             <div key={point.label + index} className="flex min-w-0 flex-1 flex-col items-center gap-2">
               <div className="flex w-full flex-1 items-end">
                 <div
-                  className="w-full rounded-t-sm bg-white transition-[height] duration-500"
+                  className="w-full rounded-t-sm bg-foreground transition-[height] duration-500"
                   style={{
                     height: `${height}%`,
                     opacity: isPeak ? 0.92 : 0.45,
@@ -181,7 +181,7 @@ export function VerticalBarChart({
                   title={`${point.label}: ${format(point.value)}`}
                 />
               </div>
-              <span className="w-full truncate text-center text-[10px] tabular-nums text-zinc-600">
+              <span className="w-full truncate text-center text-[10px] tabular-nums text-muted">
                 {point.label}
               </span>
             </div>
@@ -189,9 +189,9 @@ export function VerticalBarChart({
         })}
       </div>
       {total > 0 ? (
-        <p className="mt-4 border-t border-white/[0.06] pt-3 text-xs text-zinc-500">
+        <p className="mt-4 border-t border-bd-border pt-3 text-xs text-muted">
           Total del período:{" "}
-          <span className="font-medium text-zinc-200">{format(total)}</span>
+          <span className="font-medium text-foreground">{format(total)}</span>
         </p>
       ) : null}
       <DataTable caption={`Serie por día (${unit})`} series={series} unit={unit} />
@@ -298,16 +298,16 @@ export function DonutChart({
           <li key={point.label} className="flex items-center gap-2.5">
             <span
               aria-hidden="true"
-              className="h-2.5 w-2.5 shrink-0 rounded-sm bg-white"
+              className="h-2.5 w-2.5 shrink-0 rounded-sm bg-foreground"
               style={{ opacity: rampAt(index) }}
             />
-            <span className="min-w-0 flex-1 truncate text-xs text-zinc-400">
+            <span className="min-w-0 flex-1 truncate text-xs text-muted">
               {point.label}
             </span>
-            <span className="shrink-0 text-xs font-medium tabular-nums text-zinc-200">
+            <span className="shrink-0 text-xs font-medium tabular-nums text-foreground">
               {point.value}
             </span>
-            <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-zinc-600">
+            <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted">
               {Math.round((point.value / total) * 100)}%
             </span>
           </li>
@@ -340,13 +340,13 @@ export function StackedBar({
         .map((p) => `${p.label}, ${p.value} ${unit}`)
         .join("; ")}`}
     >
-      <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/[0.04]">
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-surface">
         {series
           .filter((p) => p.value > 0)
           .map((point, index) => (
             <div
               key={point.label}
-              className="h-full bg-white"
+              className="h-full bg-foreground"
               style={{
                 width: `${(point.value / total) * 100}%`,
                 opacity: rampAt(index),
@@ -360,11 +360,11 @@ export function StackedBar({
           <li key={point.label} className="flex items-center gap-2">
             <span
               aria-hidden="true"
-              className="h-2.5 w-2.5 rounded-sm bg-white"
+              className="h-2.5 w-2.5 rounded-sm bg-foreground"
               style={{ opacity: rampAt(index) }}
             />
-            <span className="text-xs text-zinc-400">{point.label}</span>
-            <span className="text-xs font-medium tabular-nums text-zinc-200">
+            <span className="text-xs text-muted">{point.label}</span>
+            <span className="text-xs font-medium tabular-nums text-foreground">
               {point.value}
             </span>
           </li>

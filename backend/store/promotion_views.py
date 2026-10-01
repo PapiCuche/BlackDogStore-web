@@ -39,11 +39,15 @@ from .models import (
     PromotionItem,
 )
 from .pos_views import _NOT_FOUND, _context
-from .tenancy import has_capability
+from .tenancy import can_delegate_branch_scope, has_capability
 from .throttles import AdminSalesAnalyticsThrottle
 
 CAP_VIEW = 'sales.promotions.view'
 CAP_MANAGE = 'sales.promotions.manage'
+
+_PROMOTION_BRANCH_NOT_REACHED = (
+    'No puedes crear ni modificar promociones en sucursales que tú mismo no alcanzas.'
+)
 
 
 def _promotion_payload(promotion, *, stats=None):
@@ -285,6 +289,24 @@ def _write_promotion(request, company, *, promotion):
 
     if errors:
         return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # F2 · F-BRANCH-02. A promotion changes what a till charges: its author must
+    # reach every branch it fires in — before AND after the edit.
+    current = None
+    if not creating:
+        current = (
+            promotion.branch_scope,
+            list(promotion.branches.values_list('branch_id', flat=True)),
+        )
+    if not can_delegate_branch_scope(
+        request.user, company,
+        mode=branch_scope,
+        branch_ids=branch_ids if branch_ids is not None else (current[1] if current else []),
+        current=current,
+    ):
+        return Response(
+            {'detail': _PROMOTION_BRANCH_NOT_REACHED}, status=status.HTTP_403_FORBIDDEN,
+        )
 
     try:
         with transaction.atomic():

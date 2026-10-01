@@ -33,6 +33,23 @@ export type MembershipSummary = {
   branch: BranchSummary | null;
 };
 
+/**
+ * Dónde puede trabajar quien mira — H4.1.2A.
+ *
+ * Viene del contexto de ACCESO, no del resumen de inventario. Antes la barra
+ * leía las sucursales de `inventory`, que el backend sólo construye para quien
+ * tiene capacidad de inventario: un técnico con sucursal veía «Sin sucursal».
+ *
+ * Ids y nombres, nada más. No es autoridad: el servidor vuelve a decidir en cada
+ * petición. `null` cuando todavía no hay empresa resuelta.
+ */
+export type BranchScope = {
+  mode: "platform" | "legacy" | "all" | "selected" | "none";
+  /** Dónde abre el panel. Ausente no significa «sin alcance». */
+  default_branch: BranchSummary | null;
+  branches: BranchSummary[];
+};
+
 export type CompanyRoleSummary = {
   id: number;
   name: string;
@@ -125,6 +142,8 @@ export type DashboardAlert = {
 export type InternalDashboard = {
   company: CompanySummary | null;
   membership: MembershipSummary | null;
+  /** H4.1.2A: las sucursales que alcanza, independientes de inventario. */
+  branch_scope: BranchScope | null;
   access: CompanyAccess;
   organization: OrganizationCounts | null;
   /** Phase 2B: per-tenant catalogue counters. Null without `products.view`. */
@@ -140,9 +159,22 @@ export type InternalDashboard = {
 
 /** Distinguishes "you have no internal access" from a transport failure. */
 export class NoInternalAccessError extends Error {
-  constructor(message = "No tienes acceso al control interno.") {
+  /**
+   * Si el SERVIDOR dice que esta cuenta cruza el puente legacy — H4.1.2B.
+   *
+   * Un 403 no prueba que alguien sea legacy: lo reciben igual el operador
+   * pre-SaaS que todavía cruza el puente y la persona a la que acaban de
+   * revocar su membresía. Quien puede distinguirlos es el backend, así que lo
+   * dice en el cuerpo y aquí no se deduce nada.
+   *
+   * Por defecto `false`: ante la duda, sin puente.
+   */
+  readonly legacyBridge: boolean;
+
+  constructor(message = "No tienes acceso al control interno.", legacyBridge = false) {
     super(message);
     this.name = "NoInternalAccessError";
+    this.legacyBridge = legacyBridge;
   }
 }
 
@@ -162,8 +194,13 @@ export async function fetchInternalDashboard(
   const res = await fetchWithAuth(`${API_BASE}/me/internal-dashboard/${qs}`);
 
   if (res.status === 403) {
+    // El cuerpo se lee entero: además del mensaje trae si el puente legacy
+    // aplica, y esa respuesta es del servidor, no una deducción del 403.
+    const body = await res.json().catch(() => null);
     throw new NoInternalAccessError(
-      await readDetail(res, "No tienes acceso al control interno."),
+      body?.detail ? String(body.detail) : "No tienes acceso al control interno.",
+      // Estrictamente `true`: cualquier otra cosa —ausente, "1", null— es «no».
+      body?.legacy_bridge === true,
     );
   }
   if (res.status === 404) {
@@ -712,7 +749,26 @@ export function updateCustomer(
 export type PosBranch = { id: number; name: string };
 export type PosPaymentMethod = { value: string; label: string };
 
+/**
+ * Un documento que la caja puede preparar, o por qué no puede.
+ *
+ * `branches` son las sucursales donde SÍ hay una serie resoluble; `enabled`
+ * dice si la opción sirve en alguna. Una opción deshabilitada llega explicada
+ * (`disabled_reason`) sólo a quien tiene la capacidad fiscal: a quien no la
+ * tiene, el backend no le manda las opciones fiscales en absoluto.
+ */
+export type PosReceiptOption = {
+  value: string;
+  label: string;
+  branches: number[];
+  enabled: boolean;
+  /** `FISCAL_DISABLED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
+  disabled_code: string;
+  disabled_reason: string;
+};
+
 export type PosContext = {
+  receipt_options: PosReceiptOption[];
   company: { id: number; name: string };
   branches: PosBranch[];
   /** null when the till must ask: several branches and no authorised default. */
@@ -739,7 +795,30 @@ export type PosProduct = {
 
 export type PosSaleLine = { product: number; quantity: number };
 
+/**
+ * El desglose tributario de una venta. TODO son cadenas: estas cifras tienen
+ * que coincidir al céntimo con el documento impreso, y un importe que pasa por
+ * `number` en JavaScript deja de ser exacto.
+ *
+ * Lo calcula el servidor. Esta capa lo transporta y lo pinta; no lo deriva.
+ */
+export type TaxBreakdown = {
+  currency: string;
+  subtotal: string;
+  discount_amount: string;
+  taxable_amount: string;
+  tax_amount: string;
+  tax_rate: string;
+  tax_treatment: "taxed" | "exempt" | "unaffected";
+  total: string;
+  base_label: string;
+  tax_label: string;
+};
+
 export type PosSaleResult = {
+  receipt_type: string;
+  document_number: string;
+  document_status: string;
   order_id: number;
   created: boolean;
   subtotal: string;
@@ -747,6 +826,11 @@ export type PosSaleResult = {
   discount_source: string;
   discount_reason: string;
   total: string;
+  /**
+   * Opcional en el tipo aunque el servidor lo mande siempre: una venta ya
+   * cobrada no puede quedarse sin resumen en pantalla porque falte una clave.
+   */
+  tax?: TaxBreakdown;
   paid_at: string | null;
   payment_method: string;
   amount_received: string | null;
@@ -968,6 +1052,8 @@ export type PosPreview = {
   promotions: AppliedPromotionPreview[];
   coupon_code: string;
   total: string;
+  /** Lo que el operador lee en voz alta. Sale del mismo cálculo que hará la venta. */
+  tax: TaxBreakdown;
   seller: { id: number | null; name: string };
   customer: { id: number; name: string } | null;
   /** null unless the caller may see earnings. */
@@ -976,6 +1062,7 @@ export type PosPreview = {
 };
 
 export type PosSaleInput = {
+  receipt_type?: string;
   branch: number;
   items: PosSaleLine[];
   customer?: number | null;
@@ -1434,4 +1521,208 @@ export function inventoryExportUrl(
   if (companyId) qs.set("company", String(companyId));
   if (branchIds.length) qs.set("branches", branchIds.join(","));
   return `${API_BASE}/admin/inventory/export/?${qs}`;
+}
+
+// ---------------------------------------------------------------------------
+// M12F — contenido comercial del escaparate
+// ---------------------------------------------------------------------------
+
+export type StorefrontCampaignRow = {
+  id: number;
+  slot: string;
+  status: "draft" | "published" | "archived";
+  badge: string;
+  title: string;
+  subtitle: string;
+  body: string;
+  image_url: string;
+  cta_label: string;
+  cta_url: string;
+  secondary_cta_label: string;
+  secondary_cta_url: string;
+  priority: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  published_at: string | null;
+  is_active: boolean;
+  product_id: number | null;
+  product: { slug: string; name: string } | null;
+  updated_at: string;
+};
+
+export type StorefrontSlot = { value: string; label: string };
+
+export type StorefrontCampaignList = {
+  company: { id: number; slug: string; name: string };
+  slots: StorefrontSlot[];
+  results: StorefrontCampaignRow[];
+};
+
+export type StorefrontPageContent = {
+  hero_eyebrow: string;
+  hero_title: string;
+  hero_subtitle: string;
+  hero_primary_cta_label: string;
+  hero_primary_cta_url: string;
+  hero_secondary_cta_label: string;
+  hero_secondary_cta_url: string;
+  services_hero_title: string;
+  services_hero_subtitle: string;
+  services_warranty_note: string;
+};
+
+/** Errores por campo, tal como los devuelve el backend. */
+export class ContentValidationError extends Error {
+  constructor(message: string, readonly errors: Record<string, string[]>) {
+    super(message);
+    this.name = "ContentValidationError";
+  }
+}
+
+function companyQuery(companyId?: number | null): string {
+  return companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+}
+
+async function handle<T>(res: Response, what: string): Promise<T> {
+  if (res.status === 403) {
+    throw new NoInternalAccessError(
+      await readDetail(res, `No tienes permisos sobre ${what}.`),
+    );
+  }
+  if (res.status === 404) throw new Error("Empresa no encontrada o sin acceso.");
+  if (res.status === 400) {
+    // Los mensajes por campo vienen del backend y se pintan bajo el campo al
+    // que pertenecen. Tragárselos dejaría a alguien mirando un formulario que
+    // no guarda sin decir por qué.
+    const data = await res.json().catch(() => ({}));
+    throw new ContentValidationError(
+      data.detail || "Datos inválidos.", data.errors || {},
+    );
+  }
+  if (!res.ok) throw new Error(await readDetail(res, `No se pudo cargar ${what}.`));
+  return (await res.json()) as T;
+}
+
+export async function fetchStorefrontCampaigns(
+  companyId?: number | null,
+): Promise<StorefrontCampaignList> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${companyQuery(companyId)}`,
+  );
+  return handle<StorefrontCampaignList>(res, "el escaparate");
+}
+
+export async function createStorefrontCampaign(
+  payload: Partial<StorefrontCampaignRow>, companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${companyQuery(companyId)}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+export async function updateStorefrontCampaign(
+  id: number, payload: Partial<StorefrontCampaignRow>, companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${id}/${companyQuery(companyId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+/**
+ * Publicar y archivar son acciones CON NOMBRE, no efectos de guardar.
+ *
+ * Por eso son un endpoint aparte y no un `status` que se pueda colar en un
+ * PATCH: guardar un borrador tiene que dejarlo en borrador.
+ */
+export async function actOnStorefrontCampaign(
+  id: number, action: "publish" | "archive", companyId?: number | null,
+): Promise<StorefrontCampaignRow> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/campaigns/${id}/${action}/${companyQuery(companyId)}`,
+    { method: "POST" },
+  );
+  return handle<StorefrontCampaignRow>(res, "el escaparate");
+}
+
+export async function fetchStorefrontPage(
+  companyId?: number | null,
+): Promise<{ page: StorefrontPageContent }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/page/${companyQuery(companyId)}`,
+  );
+  return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+export async function updateStorefrontPage(
+  payload: Partial<StorefrontPageContent>, companyId?: number | null,
+): Promise<{ page: StorefrontPageContent }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/page/${companyQuery(companyId)}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+// ---------------------------------------------------------------------------
+// M12F.1 — servicios, preguntas y métricas del escaparate
+// ---------------------------------------------------------------------------
+
+export type StorefrontListKind = "services" | "faqs" | "metrics";
+
+export type StorefrontListRow = {
+  id: number;
+  is_active: boolean;
+  sort_order: number;
+  // servicios
+  title?: string;
+  description?: string;
+  devices_text?: string;
+  estimated_time_text?: string;
+  highlight?: string;
+  // preguntas
+  question?: string;
+  answer?: string;
+  // métricas
+  value?: string;
+  label?: string;
+};
+
+export async function fetchStorefrontList(
+  kind: StorefrontListKind, companyId?: number | null,
+): Promise<{ results: StorefrontListRow[] }> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/${kind}/${companyQuery(companyId)}`,
+  );
+  return handle<{ results: StorefrontListRow[] }>(res, "el escaparate");
+}
+
+export async function saveStorefrontListRow(
+  kind: StorefrontListKind,
+  payload: Partial<StorefrontListRow>,
+  companyId?: number | null,
+): Promise<StorefrontListRow> {
+  const id = payload.id;
+  const url = id
+    ? `${API_BASE}/admin/storefront/${kind}/${id}/${companyQuery(companyId)}`
+    : `${API_BASE}/admin/storefront/${kind}/${companyQuery(companyId)}`;
+  const res = await fetchWithAuth(url, {
+    method: id ? "PATCH" : "POST",
+    body: JSON.stringify(payload),
+  });
+  return handle<StorefrontListRow>(res, "el escaparate");
+}
+
+export async function deleteStorefrontListRow(
+  kind: StorefrontListKind, id: number, companyId?: number | null,
+): Promise<void> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/${kind}/${id}/${companyQuery(companyId)}`,
+    { method: "DELETE" },
+  );
+  if (res.status === 204) return;
+  await handle<unknown>(res, "el escaparate");
 }

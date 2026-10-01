@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { StaffGuard } from "../components/StaffGuard";
+import { AccessGuard } from "../components/AccessGuard";
 import { AdminShell } from "../components/AdminShell";
 import { OrdersTable } from "../components/OrdersTable";
 import {
@@ -18,6 +18,7 @@ type Filters = {
   status: string;
   fulfillment_status: string;
   paid: string;
+  shortfall: string;
   date_from: string;
   date_to: string;
 };
@@ -29,6 +30,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     status: "",
     fulfillment_status: "",
     paid: "",
+    shortfall: "",
     date_from: "",
     date_to: "",
   });
@@ -45,6 +47,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         status: filters.status || undefined,
         fulfillment_status: filters.fulfillment_status || undefined,
         paid: (filters.paid || undefined) as "true" | "false" | undefined,
+        shortfall: (filters.shortfall || undefined) as "true" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -73,8 +76,8 @@ function OrdersContent({ user }: { user: AuthUser }) {
     <AdminShell user={user}>
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-semibold text-white">Órdenes</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-xl font-semibold text-foreground">Órdenes</h1>
+          <p className="mt-1 text-sm text-muted">
             {data ? `${data.count} órdenes en total` : "Cargando…"}
           </p>
         </div>
@@ -85,12 +88,12 @@ function OrdersContent({ user }: { user: AuthUser }) {
             placeholder="Buscar por cliente, email o #ID…"
             value={filters.search}
             onChange={(e) => setFilter("search", e.target.value)}
-            className="flex-1 min-w-52 bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30"
+            className="flex-1 min-w-52 bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border"
           />
           <select
             value={filters.status}
             onChange={(e) => setFilter("status", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Todos los pagos</option>
             {Object.entries(PAYMENT_STATUS_LABELS).map(([v, l]) => (
@@ -100,7 +103,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
           <select
             value={filters.fulfillment_status}
             onChange={(e) => setFilter("fulfillment_status", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Todos los despachos</option>
             {Object.entries(FULFILLMENT_STATUS_LABELS).map(([v, l]) => (
@@ -110,7 +113,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
           <select
             value={filters.paid}
             onChange={(e) => setFilter("paid", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Pagado / No pagado</option>
             <option value="true">Pagado</option>
@@ -120,31 +123,40 @@ function OrdersContent({ user }: { user: AuthUser }) {
             type="date"
             value={filters.date_from}
             onChange={(e) => setFilter("date_from", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           />
           <input
             type="date"
             value={filters.date_to}
             onChange={(e) => setFilter("date_to", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           />
+          <label className="inline-flex items-center gap-2 px-3 py-2 text-sm text-foreground/85 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={filters.shortfall === "true"}
+              onChange={(e) => setFilter("shortfall", e.target.checked ? "true" : "")}
+              className="accent-warning"
+            />
+            Solo con faltante de stock
+          </label>
         </div>
 
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-          {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
+        <div className="rounded-xl border border-bd-border bg-surface p-6">
+          {error && <p className="text-sm text-danger mb-4">{error}</p>}
           {loading ? (
-            <p className="text-zinc-500 text-sm py-6 text-center">Cargando…</p>
+            <p className="text-muted text-sm py-6 text-center">Cargando…</p>
           ) : (
             <OrdersTable orders={data?.results ?? []} />
           )}
         </div>
 
         {totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-zinc-500">
+          <div className="flex items-center justify-between text-sm text-muted">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1}
-              className="px-3 py-1.5 rounded border border-white/[0.08] hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               ← Anterior
             </button>
@@ -152,7 +164,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
-              className="px-3 py-1.5 rounded border border-white/[0.08] hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               Siguiente →
             </button>
@@ -165,6 +177,8 @@ function OrdersContent({ user }: { user: AuthUser }) {
 
 export default function AdminOrdersPage() {
   return (
-    <StaffGuard>{(user) => <OrdersContent user={user} />}</StaffGuard>
+    <AccessGuard capability="sales.orders.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <OrdersContent user={access.user} />}
+    </AccessGuard>
   );
 }

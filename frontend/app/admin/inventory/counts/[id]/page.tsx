@@ -12,8 +12,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
-import { StaffGuard } from "../../../components/StaffGuard";
+import { AccessGuard } from "../../../components/AccessGuard";
+import type { InternalAccess } from "../../../lib/internal-access";
 import {
+  CountStatusBadge,
   EmptyBox,
   ErrorBox,
   Panel,
@@ -24,7 +26,6 @@ import {
   Th,
   formatDateTime,
 } from "../../../components/InventoryUi";
-import { CountStatusBadge } from "../page";
 import {
   approveCount,
   cancelCount,
@@ -33,11 +34,11 @@ import {
   type InventoryCount,
 } from "../../../../lib/inventory";
 import { fetchAdminProducts, type AdminProduct } from "../../../../lib/admin";
-import { canManageInventory, type AuthUser } from "../../../../lib/auth";
+import type { AuthUser } from "../../../../lib/auth";
 
 type Draft = Record<number, string>;
 
-function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
+function CountDetail({ user, access, countId }: { user: AuthUser; access: InternalAccess; countId: number }) {
   const [count, setCount] = useState<InventoryCount | null>(null);
   const [products, setProducts] = useState<AdminProduct[]>([]);
   const [draft, setDraft] = useState<Draft>({});
@@ -46,7 +47,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const mayCount = canManageInventory(user);
+  const mayCount = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
 
   const load = useCallback(async () => {
     const data = await fetchCount(countId);
@@ -130,18 +131,18 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">
+            <h1 className="text-xl font-semibold text-foreground">
               Recuento {count ? `#${count.id}` : ""}
             </h1>
             {count ? (
-              <p className="mt-1 flex items-center gap-2 text-sm text-zinc-500">
+              <p className="mt-1 flex items-center gap-2 text-sm text-muted">
                 {count.branch_name} <CountStatusBadge count={count} />
               </p>
             ) : null}
           </div>
           <Link
             href="/admin/inventory/counts"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             ← Recuentos
           </Link>
@@ -185,7 +186,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                       void run(() => approveCount(count.id));
                     }
                   }}
-                  className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Aprobar y ajustar
                 </button>
@@ -197,7 +198,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                       void run(() => cancelCount(count.id));
                     }
                   }}
-                  className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-400 transition hover:border-white/20 hover:text-white disabled:opacity-40"
+                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:opacity-40"
                 >
                   Anular
                 </button>
@@ -205,8 +206,8 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
             ) : null}
 
             {count.status === "approved" ? (
-              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-                <p className="text-sm text-zinc-400">
+              <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+                <p className="text-sm text-muted">
                   Este recuento ya generó movimientos de corrección y no puede
                   anularse. Para corregirlo, abre un recuento nuevo.
                 </p>
@@ -222,7 +223,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                   {products.map((p) => (
                     <div key={p.id} className="flex items-center gap-2">
                       <label
-                        className="min-w-0 flex-1 truncate text-sm text-zinc-400"
+                        className="min-w-0 flex-1 truncate text-sm text-muted"
                         htmlFor={`ci-${p.id}`}
                       >
                         {p.name}
@@ -232,7 +233,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                         type="number"
                         min={0}
                         placeholder="—"
-                        className="w-20 rounded-lg border border-white/[0.08] bg-black/40 px-2 py-1.5 text-sm text-zinc-200 outline-none transition focus:border-white/25"
+                        className="w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1.5 text-sm text-foreground outline-none transition focus:border-bd-border"
                         value={draft[p.id] ?? ""}
                         onChange={(e) => setDraft((d) => ({ ...d, [p.id]: e.target.value }))}
                       />
@@ -243,7 +244,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                   type="button"
                   disabled={busy}
                   onClick={() => void saveQuantities()}
-                  className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
                 >
                   Guardar cantidades
                 </button>
@@ -256,7 +257,7 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Producto</Th>
                       <Th right>Teórico inicial</Th>
                       <Th right>Físico</Th>
@@ -266,12 +267,12 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                   </thead>
                   <tbody>
                     {count.items.map((item) => (
-                      <tr key={item.id} className="border-b border-white/[0.03]">
+                      <tr key={item.id} className="border-b border-bd-border">
                         <Td>{item.product_name}</Td>
                         <Td right muted>{item.theoretical_at_start}</Td>
                         <Td right>
                           {item.physical_quantity === null ? (
-                            <span className="text-zinc-600">Sin contar</span>
+                            <span className="text-muted">Sin contar</span>
                           ) : (
                             item.physical_quantity
                           )}
@@ -279,13 +280,13 @@ function CountDetail({ user, countId }: { user: AuthUser; countId: number }) {
                         <Td right muted>{item.theoretical_at_approval ?? "—"}</Td>
                         <Td right>
                           {item.difference === null ? (
-                            <span className="text-zinc-600">—</span>
+                            <span className="text-muted">—</span>
                           ) : (
                             <span
                               className={
                                 item.difference === 0
-                                  ? "text-zinc-500"
-                                  : "font-medium text-white"
+                                  ? "text-muted"
+                                  : "font-medium text-foreground"
                               }
                             >
                               {item.difference > 0 ? `+${item.difference}` : item.difference}
@@ -311,15 +312,19 @@ export default function CountDetailPage() {
 
   if (!Number.isFinite(countId)) {
     return (
-      <StaffGuard>
-        {(user) => (
-          <AdminShell user={user}>
+      <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+        {(access) => (
+          <AdminShell user={access.user}>
             <ErrorBox message="Identificador de recuento inválido." />
           </AdminShell>
         )}
-      </StaffGuard>
+      </AccessGuard>
     );
   }
 
-  return <StaffGuard>{(user) => <CountDetail user={user} countId={countId} />}</StaffGuard>;
+  return (
+    <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
+      {(access) => <CountDetail user={access.user} access={access} countId={countId} />}
+    </AccessGuard>
+  );
 }

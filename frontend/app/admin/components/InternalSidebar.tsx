@@ -12,6 +12,7 @@
  */
 
 import Link from "next/link";
+import { BrandLogo } from "../../components/BrandLogo";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
@@ -45,27 +46,43 @@ export function InternalSidebarContent({
   const linkClass = (active: boolean) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
       active
-        ? "bg-white/[0.08] font-medium text-white"
-        : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+        ? "bg-surface-2 font-medium text-foreground"
+        : "text-muted hover:bg-surface hover:text-foreground"
     }`;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-zinc-500">
-            Control interno
-          </p>
-          {companyName ? (
-            <p className="mt-0.5 text-sm font-semibold text-white">{companyName}</p>
-          ) : null}
+      {/*
+        LA MARCA VUELVE, EN SU SITIO.
+
+        El panel llevaba la cabecera del escaparate encima, y al retirarla se
+        quedó sin ninguna identidad: una consola gris que podría ser de
+        cualquiera. El isotipo aquí ocupa 28 px, no compite con nada y sale del
+        branding del TENANT — así que en otra empresa aparece la suya, no ésta.
+      */}
+      <div className="flex items-center justify-between border-b border-bd-border px-5 py-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <BrandLogo
+            placement="compact"
+            surface="theme"
+            className="h-7 w-7 shrink-0 object-contain"
+            wordmarkClassName="sr-only"
+          />
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-muted">
+              Control interno
+            </p>
+            {companyName ? (
+              <p className="mt-0.5 truncate text-sm font-semibold text-foreground">{companyName}</p>
+            ) : null}
+          </div>
         </div>
         {onClose && (
           <button
             type="button"
             onClick={onClose}
             aria-label="Cerrar menú"
-            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-white lg:hidden"
+            className="rounded-lg p-1.5 text-muted transition hover:bg-surface hover:text-foreground lg:hidden"
           >
             <IconClose />
           </button>
@@ -90,7 +107,7 @@ export function InternalSidebarContent({
           const GroupIcon = group.icon;
           return (
             <div key={group.id} className="mt-6">
-              <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600">
+              <p className="mb-1.5 flex items-center gap-2 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
                 <GroupIcon className="h-3.5 w-3.5" />
                 {group.label}
               </p>
@@ -115,15 +132,9 @@ export function InternalSidebarContent({
         })}
       </nav>
 
-      <div className="border-t border-white/[0.06] px-3 py-3">
-        <Link
-          href="/"
-          onClick={onNavigate}
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-500 transition hover:bg-white/[0.04] hover:text-white"
-        >
-          ← Volver a la tienda
-        </Link>
-      </div>
+      {/* El enlace de vuelta a la tienda vive en la barra superior. Estaba
+          también aquí abajo: dos caminos al mismo sitio, y el de abajo quedaba
+          fuera de vista cuando la lista de módulos crece. */}
     </div>
   );
 }
@@ -137,7 +148,7 @@ export function InternalSidebar({
   companyName?: string | null;
 }) {
   return (
-    <aside className="hidden w-[260px] shrink-0 border-r border-white/[0.06] bg-[#080808] lg:block">
+    <aside className="hidden w-[260px] shrink-0 border-r border-bd-border bg-background lg:block">
       <div className="sticky top-0 h-screen">
         <InternalSidebarContent access={access} companyName={companyName} />
       </div>
@@ -164,9 +175,9 @@ export function MobileSidebar({
         type="button"
         aria-label="Cerrar menú"
         onClick={onClose}
-        className="absolute inset-0 h-full w-full bg-black/70"
+        className="absolute inset-0 h-full w-full bg-background/70"
       />
-      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-white/10 bg-[#080808]">
+      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background">
         <InternalSidebarContent
           access={access}
           companyName={companyName}

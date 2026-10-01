@@ -695,19 +695,141 @@ export async function createSalesNote(orderId: number): Promise<SalesNote> {
   return res.json();
 }
 
-/** Downloads the internal note PDF as a blob and triggers a browser save. */
-export async function downloadSalesNotePdf(orderId: number, number: string): Promise<void> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/sales-note/pdf/`);
+/**
+ * Formato del documento. `a4` es hoja; `ticket80` es rollo de 80 mm.
+ *
+ * NO SE LLAMA `format` EN LA URL: `format` es el parámetro con el que Django
+ * REST negocia el renderizador, y responde 404 a un valor que no conoce antes
+ * de que la vista llegue a mirarlo.
+ */
+export type SalesNoteFormat = "a4" | "ticket80";
+
+async function fetchSalesNotePdf(orderId: number, format: SalesNoteFormat) {
+  const query = format === "a4" ? "" : `?formato=${format}`;
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/orders/${orderId}/sales-note/pdf/${query}`,
+  );
   if (res.status === 403) throw new Error("No tienes permisos para descargar notas de venta.");
-  if (!res.ok) throw new Error(await readError(res, "No se pudo descargar el PDF."));
+  if (!res.ok) throw new Error(await readError(res, "No se pudo generar el documento."));
+  return res;
+}
+
+/**
+ * La nota interna de este pedido, creándola si todavía no existe.
+ *
+ * IDEMPOTENTE, y no por casualidad: el backend guarda una nota por pedido en
+ * una relación uno-a-uno, así que llamar dos veces devuelve LA MISMA nota con
+ * el mismo correlativo. Imprimir dos veces no gasta dos números.
+ */
+export async function ensureSalesNote(orderId: number): Promise<SalesNote> {
+  const existing = await fetchSalesNote(orderId);
+  return existing ?? createSalesNote(orderId);
+}
+
+/** Downloads the internal note PDF as a blob and triggers a browser save. */
+export async function downloadSalesNotePdf(
+  orderId: number,
+  number: string,
+  format: SalesNoteFormat = "a4",
+): Promise<void> {
+  const res = await fetchSalesNotePdf(orderId, format);
+
+  // EL NOMBRE LO PONE EL SERVIDOR. Lo componía aquí como
+  // `blackdog-nota-venta-…`, que en una plataforma multiempresa es el nombre de
+  // UN inquilino escrito en código compartido: cualquier otra empresa se
+  // descargaba sus ventas con la marca ajena en el archivo. El backend ya
+  // manda un nombre construido con el slug de la empresa dueña del pedido.
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const served = /filename="([^"]+)"/.exec(disposition)?.[1];
 
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `blackdog-nota-venta-${number}.pdf`;
+  link.download = served ?? `nota-venta-${number}.pdf`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Qué acabó pasando con el ticket. La pantalla necesita poder decirlo. */
+export type TicketOutcome = "printed" | "downloaded";
+
+/**
+ * Pone el ticket delante del operador.
+ *
+ * EL DIÁLOGO DE IMPRESIÓN NO SIEMPRE LLEGA, Y ESO NO PUEDE BLOQUEAR EL
+ * MOSTRADOR.
+ *
+ * La primera versión esperaba el `onload` del marco oculto para llamar a
+ * imprimir. Medido en navegador: con un PDF servido como blob ese evento NO
+ * dispara, así que la promesa no se resolvía nunca y los dos botones se
+ * quedaban en «Preparando…» PARA SIEMPRE — con el cliente delante y sin más
+ * salida que recargar a media venta. Veinticinco segundos después seguían
+ * bloqueados.
+ *
+ * Ahora la espera está ACOTADA. Si el marco carga a tiempo se abre el diálogo
+ * de impresión, que es lo que se quiere. Si no, el documento se descarga: el
+ * operador lo tiene igualmente y puede imprimirlo desde el visor. Lo que no
+ * ocurre en ningún caso es quedarse esperando un evento que quizá no llegue.
+ *
+ * Devuelve qué pasó, para que la pantalla lo diga en vez de fingir que imprimió.
+ */
+export async function printSalesNoteTicket(
+  orderId: number,
+  filenameHint = "ticket",
+): Promise<TicketOutcome> {
+  const res = await fetchSalesNotePdf(orderId, "ticket80");
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const served = /filename="([^"]+)"/.exec(disposition)?.[1];
+  const url = URL.createObjectURL(await res.blob());
+
+  const frame = document.createElement("iframe");
+  frame.style.position = "fixed";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  frame.style.visibility = "hidden";
+
+  // Carrera acotada: gana el `onload`, un fallo, o el reloj. Siempre resuelve.
+  const loaded = await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    frame.onload = () => finish(true);
+    frame.onerror = () => finish(false);
+    window.setTimeout(() => finish(false), 3000);
+    frame.src = url;
+    document.body.appendChild(frame);
+  });
+
+  if (loaded) {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+      // El objeto se libera cuando el diálogo ya no lo necesita. Revocarlo
+      // mientras sigue abierto deja al navegador imprimiendo una hoja en blanco.
+      window.setTimeout(() => {
+        frame.remove();
+        URL.revokeObjectURL(url);
+      }, 60_000);
+      return "printed";
+    } catch {
+      // El navegador no deja imprimir el marco: cae a la descarga de abajo.
+    }
+  }
+
+  frame.remove();
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = served ?? `nota-venta-${filenameHint}-ticket80.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return "downloaded";
 }

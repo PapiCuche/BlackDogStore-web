@@ -12,8 +12,8 @@ export default function LogoutPage() {
   }, [router]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 p-6">
-      <main className="max-w-3xl mx-auto bg-white rounded-3xl p-6 shadow-sm">
+    <div className="min-h-screen bg-foreground/95 p-6">
+      <main className="max-w-3xl mx-auto bg-foreground rounded-3xl p-6 shadow-sm">
         <h1 className="text-3xl font-bold mb-4">Cerrando sesión...</h1>
       </main>
     </div>

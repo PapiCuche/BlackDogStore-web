@@ -1,4 +1,24 @@
 from rest_framework.routers import DefaultRouter
+from .checkout_quote_views import CheckoutQuoteView
+from .staff_views import (
+    AdminStaffInvitationDetailView, AdminStaffInvitationListView,
+    AdminStaffListView, AdminStaffMembershipView, StaffInvitationAcceptView,
+)
+from .fiscal_views import (
+    AdminFiscalDocumentCdrView, AdminFiscalDocumentCreditNoteView,
+    AdminFiscalDocumentDebitNoteView, AdminFiscalDocumentPdfView,
+    AdminFiscalDocumentReconcileView, AdminFiscalDocumentSubmitView,
+    AdminFiscalDocumentXmlView, AdminOrderFiscalDocumentView,
+)
+from .fiscal_summary_views import (
+    AdminFiscalSummaryDetailView, AdminFiscalSummaryListView,
+    AdminFiscalSummaryStatusView, AdminFiscalSummarySubmitView,
+)
+from .fiscal_void_views import (
+    AdminFiscalDocumentGrantView, AdminFiscalDocumentNotGrantedView,
+    AdminFiscalDocumentVoidView, AdminFiscalVoidDetailView,
+    AdminFiscalVoidStatusView, AdminFiscalVoidSubmitView,
+)
 from .views import (
     CategoryViewSet,
     ProductViewSet,
@@ -22,6 +42,7 @@ from .admin_views import (
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
+    AdminOrderReprocessStockExitView,
 )
 from .inventory_views import (
     AdminBestSellingView, AdminHighStockView, AdminInventorySummaryView,
@@ -73,6 +94,16 @@ from .customer_views import (
     AdminCustomerDetailView,
     AdminCustomerListView,
 )
+from .dev_accounts_views import DevDemoAccountsView
+from .storefront_content_views import (
+    AdminStorefrontListContentDetailView,
+    AdminStorefrontListContentView,
+    AdminStorefrontCampaignActionView,
+    AdminStorefrontCampaignDetailView,
+    AdminStorefrontCampaignListView,
+    AdminStorefrontCampaignPreviewView,
+    AdminStorefrontPageView,
+)
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -104,6 +135,11 @@ urlpatterns = [
     path('auth/refresh/', RefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
     path('auth/csrf/', CsrfView.as_view(), name='auth-csrf'),
+    # Sólo con DEBUG=True; con DEBUG=False responde 404. Ver el módulo.
+    path(
+        'dev/demo-accounts/',
+        DevDemoAccountsView.as_view(), name='dev-demo-accounts',
+    ),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
@@ -120,6 +156,8 @@ urlpatterns = [
     ),
     path('payments/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('coupons/validate/', CouponValidateView.as_view(), name='coupon-validate'),
+    # C2.1: el desglose tributario ANTES de pagar. No crea ni cobra nada.
+    path('checkout/quote/', CheckoutQuoteView.as_view(), name='checkout-quote'),
     path('admin/users/', AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<int:pk>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
@@ -130,6 +168,7 @@ urlpatterns = [
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
+    path('admin/orders/<int:pk>/reprocess-stock-exit/', AdminOrderReprocessStockExitView.as_view(), name='admin-order-reprocess-stock-exit'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
 
@@ -142,6 +181,25 @@ urlpatterns = [
     path('admin/inventory/no-movement/', AdminStaleStockView.as_view(), name='admin-inventory-no-movement'),
     path('admin/products/<int:pk>/stock-card/', AdminProductStockCardView.as_view(), name='admin-product-stock-card'),
     path('admin/orders/<int:pk>/sales-note/', AdminOrderSalesNoteView.as_view(), name='admin-order-sales-note'),
+    # --- C2.2A.1: comprobantes electrónicos. NO es la nota de venta interna ---
+    path('admin/orders/<int:pk>/fiscal-document/', AdminOrderFiscalDocumentView.as_view(), name='admin-order-fiscal-document'),
+    path('admin/fiscal-documents/<int:pk>/credit-notes/', AdminFiscalDocumentCreditNoteView.as_view(), name='admin-fiscal-document-credit-note'),
+    path('admin/fiscal-documents/<int:pk>/debit-notes/', AdminFiscalDocumentDebitNoteView.as_view(), name='admin-fiscal-document-debit-note'),
+    path('admin/fiscal-documents/<int:pk>/grant/', AdminFiscalDocumentGrantView.as_view(), name='admin-fiscal-document-grant'),
+    path('admin/fiscal-documents/<int:pk>/not-granted/', AdminFiscalDocumentNotGrantedView.as_view(), name='admin-fiscal-document-not-granted'),
+    path('admin/fiscal-documents/<int:pk>/void/', AdminFiscalDocumentVoidView.as_view(), name='admin-fiscal-document-void'),
+    path('admin/fiscal-void-communications/<int:pk>/', AdminFiscalVoidDetailView.as_view(), name='admin-fiscal-void-detail'),
+    path('admin/fiscal-void-communications/<int:pk>/submit/', AdminFiscalVoidSubmitView.as_view(), name='admin-fiscal-void-submit'),
+    path('admin/fiscal-void-communications/<int:pk>/status/', AdminFiscalVoidStatusView.as_view(), name='admin-fiscal-void-status'),
+    path('admin/fiscal-documents/<int:pk>/submit/', AdminFiscalDocumentSubmitView.as_view(), name='admin-fiscal-document-submit'),
+    path('admin/fiscal-documents/<int:pk>/reconcile/', AdminFiscalDocumentReconcileView.as_view(), name='admin-fiscal-document-reconcile'),
+    path('admin/fiscal-summaries/', AdminFiscalSummaryListView.as_view(), name='admin-fiscal-summaries'),
+    path('admin/fiscal-summaries/<int:pk>/', AdminFiscalSummaryDetailView.as_view(), name='admin-fiscal-summary-detail'),
+    path('admin/fiscal-summaries/<int:pk>/submit/', AdminFiscalSummarySubmitView.as_view(), name='admin-fiscal-summary-submit'),
+    path('admin/fiscal-summaries/<int:pk>/status/', AdminFiscalSummaryStatusView.as_view(), name='admin-fiscal-summary-status'),
+    path('admin/fiscal-documents/<int:pk>/xml/', AdminFiscalDocumentXmlView.as_view(), name='admin-fiscal-document-xml'),
+    path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
+    path('admin/fiscal-documents/<int:pk>/pdf/', AdminFiscalDocumentPdfView.as_view(), name='admin-fiscal-document-pdf'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
 
     # --- Phase 2D: multi-branch inventory ---
@@ -180,6 +238,14 @@ urlpatterns = [
     path('admin/areas/<int:pk>/', AdminAreaDetailView.as_view(), name='admin-area-detail'),
     path('admin/roles/', AdminRoleListView.as_view(), name='admin-roles'),
     path('admin/roles/<int:pk>/', AdminRoleDetailView.as_view(), name='admin-role-detail'),
+    # --- H4.1: alta de personal por invitación ---
+    path('admin/staff/', AdminStaffListView.as_view(), name='admin-staff'),
+    path('admin/staff/<int:pk>/', AdminStaffMembershipView.as_view(), name='admin-staff-detail'),
+    path('admin/staff/invitations/', AdminStaffInvitationListView.as_view(), name='admin-staff-invitations'),
+    path('admin/staff/invitations/<int:pk>/<str:action>/', AdminStaffInvitationDetailView.as_view(), name='admin-staff-invitation-action'),
+    # Pública para leer, autenticada para aceptar. Fuera de `admin/` a propósito:
+    # quien acepta todavía no pertenece a la empresa.
+    path('staff/invitations/accept/', StaffInvitationAcceptView.as_view(), name='staff-invitation-accept'),
     path('admin/membership-role-assignments/', AdminRoleAssignmentListView.as_view(), name='admin-role-assignments'),
     path('admin/membership-role-assignments/<int:pk>/', AdminRoleAssignmentDetailView.as_view(), name='admin-role-assignment-detail'),
     path('me/company-access/', MyCompanyAccessView.as_view(), name='me-company-access'),
@@ -188,6 +254,40 @@ urlpatterns = [
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+    # M12F — contenido comercial del escaparate.
+    path(
+        'admin/storefront/page/',
+        AdminStorefrontPageView.as_view(), name='admin-storefront-page',
+    ),
+    path(
+        'admin/storefront/campaigns/',
+        AdminStorefrontCampaignListView.as_view(), name='admin-storefront-campaigns',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/',
+        AdminStorefrontCampaignDetailView.as_view(),
+        name='admin-storefront-campaign',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/preview/',
+        AdminStorefrontCampaignPreviewView.as_view(),
+        name='admin-storefront-campaign-preview',
+    ),
+    path(
+        'admin/storefront/<str:kind>/',
+        AdminStorefrontListContentView.as_view(),
+        name='admin-storefront-list-content',
+    ),
+    path(
+        'admin/storefront/<str:kind>/<int:pk>/',
+        AdminStorefrontListContentDetailView.as_view(),
+        name='admin-storefront-list-content-detail',
+    ),
+    path(
+        'admin/storefront/campaigns/<int:pk>/<str:action>/',
+        AdminStorefrontCampaignActionView.as_view(),
+        name='admin-storefront-campaign-action',
+    ),
 
     # --- Commercial Phase C1: point of sale + analytics ---
     # All internal control. `sales.pos.use` for the till, `sales.analytics.view`

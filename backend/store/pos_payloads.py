@@ -56,7 +56,7 @@ def product_payload(product, branch, *, barcode=None) -> dict:
 def context_payload(
     company, branches, *, default_branch, actor,
     can_manage_customers: bool, can_assign_seller: bool,
-    can_apply_discount: bool, can_view_commissions: bool, sellers,
+    can_apply_discount: bool, can_view_commissions: bool, sellers, receipt_options=None,
 ) -> dict:
     """
     What this till may do, before it opens.
@@ -74,6 +74,7 @@ def context_payload(
         'company': {'id': company.pk, 'name': company.name},
         'branches': [{'id': b.pk, 'name': b.name} for b in branches],
         'default_branch': default_branch,
+        'receipt_options': receipt_options or [],
         'payment_methods': [
             {'value': v, 'label': l}
             for v, l in PaymentMethod.choices
@@ -140,6 +141,19 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
             for a in priced['promotions']['applied']
         ],
         'total': str(priced['total']),
+        # LO QUE EL OPERADOR LEE EN VOZ ALTA. Sale del mismo cálculo que hará la
+        # venta, así que el ticket no puede imprimir otra cifra.
+        'tax': {
+            **priced['tax'].as_dict(),
+            'base_label': {
+                'taxed': 'Op. gravada',
+                'exempt': 'Op. exonerada',
+                'unaffected': 'Op. inafecta',
+            }.get(priced['tax'].tax_treatment, 'Op. gravada'),
+            'tax_label': (
+                f"IGV ({(priced['tax'].tax_rate * 100).normalize():f}%)"
+            ),
+        },
         'seller': {
             'id': seller.pk if seller else None,
             'name': pos_services.seller_display_name(seller),
@@ -166,6 +180,23 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
     }
 
 
+def _sale_tax(order) -> dict:
+    """El desglose de una venta ya cerrada, con sus rótulos."""
+    from .tax_services import breakdown_for_order
+
+    result = breakdown_for_order(order)
+    percent = (result.tax_rate * 100).normalize()
+    return {
+        **result.as_dict(),
+        'base_label': {
+            'taxed': 'Op. gravada',
+            'exempt': 'Op. exonerada',
+            'unaffected': 'Op. inafecta',
+        }.get(result.tax_treatment, 'Op. gravada'),
+        'tax_label': f'IGV ({percent:f}%)',
+    }
+
+
 def sale_payload(
     order, branch, *, created: bool, may_see_commission: bool,
     available_elsewhere=None,
@@ -181,14 +212,24 @@ def sale_payload(
     not need to know what the sale paid a colleague.
     """
     commission = getattr(order, 'sales_commission', None)
+    note = getattr(order, 'sales_note', None)
+    from .fiscal_services import original_fiscal_documents
+    fiscal = original_fiscal_documents(order).order_by('-pk').first() if order.receipt_type else None
     payload = {
         'order_id': order.pk,
+        'receipt_type': order.receipt_type or ('sales_note' if note else ''),
+        'document_number': fiscal.document_id if fiscal else note.number if note else '',
+        'document_status': fiscal.status if fiscal else note.status if note else '',
         'created': created,
         'subtotal': str(order.total + order.discount_amount),
         'discount': str(order.discount_amount),
         'discount_source': order.discount_source,
         'discount_reason': order.discount_reason,
         'total': str(order.total),
+        # EL DESGLOSE CONGELADO DE ESTA VENTA, leído de la orden y no
+        # recalculado: es el mismo que imprimirá el ticket, y una reimpresión
+        # dentro de un año seguirá diciendo lo mismo aunque la tasa cambie.
+        'tax': _sale_tax(order),
         'paid_at': order.paid_at,
         'payment_method': order.payment_method,
         'amount_received': (

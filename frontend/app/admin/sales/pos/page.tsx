@@ -36,8 +36,10 @@
  */
 
 import Link from "next/link";
+import { PosReceiptSelector } from "./PosReceiptSelector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -59,6 +61,11 @@ import {
   type PosProduct,
   type PosSaleResult,
 } from "../../lib/internal-api";
+import {
+  downloadSalesNotePdf,
+  ensureSalesNote,
+  printSalesNoteTicket,
+} from "../../../lib/inventory";
 
 type Line = {
   product: number;
@@ -102,7 +109,7 @@ function cashSuggestions(total: number): number[] {
 }
 
 const FIELD =
-  "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
+  "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
 
 function PosContent({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
@@ -114,9 +121,14 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [branch, setBranch] = useState<number | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
   const [payment, setPayment] = useState("cash");
+  const [receiptType, setReceiptType] = useState("");
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [charging, setCharging] = useState(false);
   const [done, setDone] = useState<PosSaleResult | null>(null);
+  // Qué documento se está preparando, para que el botón lo diga y no se puedan
+  // lanzar los dos a la vez.
+  const [printing, setPrinting] = useState<"ticket" | "a4" | null>(null);
+  const [printError, setPrintError] = useState<string | null>(null);
   // Unticked on every new basket. The record this produces says a person
   // confirmed they explained the terms, so it has to be a person's act.
   const [terms, setTerms] = useState(false);
@@ -362,6 +374,15 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   async function charge() {
     if (charging || !lines.length || branch === null || !terms) return;
+    if (!context?.receipt_options.some((option) =>
+      option.value === receiptType && option.enabled !== false && option.branches.includes(branch))) {
+      setFeedback({ kind: "error", text: "Selecciona un comprobante habilitado para esta sucursal." });
+      return;
+    }
+    if (receiptType === "factura" && customer?.document_type !== "ruc") {
+      setFeedback({ kind: "error", text: "Selecciona un cliente con RUC para la factura." });
+      return;
+    }
     if (isCash && (received === "" || Number(received) < total)) return;
     setCharging(true);
     setFeedback(null);
@@ -373,6 +394,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         seller,
         payment_method: payment,
         idempotency_key: keyRef.current,
+        receipt_type: receiptType,
         terms_confirmed: terms,
         coupon_code: couponCode.trim(),
         manual_discount_type: manualType,
@@ -426,30 +448,87 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   if (loading) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <p className="py-8 text-sm text-zinc-600">Abriendo caja…</p>
+        <p className="py-8 text-sm text-muted">Abriendo caja…</p>
       </AdminShell>
     );
   }
   if (fatal || !context) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
           {fatal ?? "No se pudo abrir el punto de venta."}
         </div>
       </AdminShell>
     );
   }
 
+  /**
+   * Prepara el documento y lo entrega.
+   *
+   * LA NOTA SE CREA AL IMPRIMIR, NO AL COBRAR.
+   *
+   * Es deliberado. Generarla dentro de la venta metería la reserva de un
+   * correlativo interno dentro de la transacción que ya mueve stock y cobra: un
+   * fallo al numerar tumbaría un cobro que sí ocurrió. Y gastaría un número por
+   * cada venta que nadie llega a imprimir.
+   *
+   * No abre la puerta a duplicados: `ensureSalesNote` mira primero y sólo crea
+   * si no hay, y el backend guarda una nota por pedido en una relación
+   * uno-a-uno. Imprimir cinco veces devuelve cinco veces LA MISMA nota con el
+   * mismo correlativo.
+   */
+  async function handlePrint(kind: "ticket" | "a4") {
+    if (!done || printing) return;
+    setPrinting(kind);
+    setPrintError(null);
+    try {
+      const note = await ensureSalesNote(done.order_id);
+      if (kind === "ticket") {
+        const outcome = await printSalesNoteTicket(done.order_id, note.number);
+        // Un botón que promete imprimir y sólo descarga deja al operador
+        // mirando una impresora que no ha recibido nada.
+        if (outcome === "downloaded") {
+          setPrintError(
+            "El navegador no abrió el diálogo de impresión; el ticket se " +
+            "descargó. Ábrelo e imprímelo desde el visor.",
+          );
+        }
+      } else {
+        await downloadSalesNotePdf(done.order_id, note.number, "a4");
+      }
+    } catch (err) {
+      setPrintError(
+        err instanceof Error ? err.message : "No se pudo preparar el documento.",
+      );
+    } finally {
+      setPrinting(null);
+    }
+  }
+
   if (done) {
+    const isFiscalReceipt = done.receipt_type === "factura" || done.receipt_type === "boleta";
+    // El backend sólo manda opciones fiscales a quien tiene `sales.fiscal.issue`;
+    // si la opción está en el contexto, esta persona puede firmar. El servidor
+    // lo vuelve a comprobar en cada acción del panel.
+    const canIssueFiscal = (context?.receipt_options ?? []).some(
+      (option) => option.value === done.receipt_type,
+    );
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <div className="mx-auto max-w-lg space-y-5 py-10 text-center">
-          <p className="text-sm uppercase tracking-widest text-emerald-400/80">
+          <p className="text-sm uppercase tracking-widest text-success">
             Venta registrada
           </p>
-          <p className="font-display text-3xl text-white">{money(done.total)}</p>
-          <div className="space-y-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 text-left text-sm text-zinc-400">
+          <p className="font-display text-3xl text-foreground">{money(done.total)}</p>
+          <div className="space-y-1 rounded-xl border border-bd-border bg-surface p-5 text-left text-sm text-muted">
             <p>Pedido #{done.order_id}</p>
+            <p>
+              {done.receipt_type === "sales_note"
+                ? `Nota interna: ${done.document_number}`
+                : isFiscalReceipt
+                  ? `Comprobante electrónico: ${done.document_number || "—"}`
+                  : "Sin documento"}
+            </p>
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
             <p>Sucursal: {done.branch.name}</p>
@@ -460,7 +539,26 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {done.discount_reason ? ` (${done.discount_reason})` : ""}
               </p>
             ) : null}
-            <p className="text-zinc-200">Total: {money(done.total)}</p>
+            {/*
+              EL DESGLOSE QUE IMPRIMIRÁ EL TICKET, no uno recalculado aquí. Si
+              esta pantalla dividiera el total por su cuenta, el operador podría
+              leer en voz alta una cifra distinta de la del papel que entrega.
+            */}
+            {/*
+              Con guarda, igual que la previsualización. El servidor manda `tax`
+              en toda venta nueva, pero una pantalla que revienta con
+              `undefined` deja al operador sin el resumen de una venta que YA se
+              cobró — y eso es peor que no enseñar el desglose.
+            */}
+            {done.tax ? (
+              <>
+                <p>{done.tax.base_label}: {money(done.tax.taxable_amount)}</p>
+                {done.tax.tax_treatment === "taxed" ? (
+                  <p>{done.tax.tax_label}: {money(done.tax.tax_amount)}</p>
+                ) : null}
+              </>
+            ) : null}
+            <p className="text-foreground">Total: {money(done.total)}</p>
             <p className="pt-2">
               Medio de pago:{" "}
               {context.payment_methods.find((m) => m.value === done.payment_method)?.label ??
@@ -471,31 +569,85 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             {done.amount_received !== null ? (
               <>
                 <p>Efectivo recibido: {money(done.amount_received)}</p>
-                <p className="text-zinc-200">Vuelto: {money(done.change_amount ?? "0")}</p>
+                <p className="text-foreground">Vuelto: {money(done.change_amount ?? "0")}</p>
               </>
             ) : null}
             {done.payment_reference ? <p>Referencia: {done.payment_reference}</p> : null}
             {/* Null unless this operator may see earnings. */}
             {done.commission ? (
-              <p className="pt-2 text-zinc-500">Comisión: {money(done.commission)}</p>
+              <p className="pt-2 text-muted">Comisión: {money(done.commission)}</p>
             ) : null}
           </div>
+          {printError ? (
+            <p className="rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+              {printError}
+            </p>
+          ) : null}
+
+          {/*
+            EL COMPROBANTE REAL, no una nota interna disfrazada. Para factura y
+            boleta se muestra el FiscalDocument tal como está —tipo, serie y
+            correlativo, ambiente, estado— con el mismo panel que usa la ficha
+            del pedido: firmar, descargar XML/PDF y, para la factura, enviar.
+            La boleta se informa por el Resumen Diario, nunca sola. Nada aquí
+            afirma aceptación sin CDR: el estado lo pone el backend.
+          */}
+          {isFiscalReceipt ? (
+            <div className="text-left">
+              <FiscalDocumentPanel
+                orderId={done.order_id}
+                isPaid
+                receiptType={done.receipt_type}
+                canIssue={canIssueFiscal}
+              />
+            </div>
+          ) : null}
+
+          {/*
+            Imprimir va primero y destacado: en mostrador, con el cliente
+            delante, es lo siguiente que ocurre siempre. Sólo para la nota
+            interna: un comprobante electrónico se imprime desde su panel, y
+            crear una nota interna para «imprimir» una factura sería crear un
+            segundo documento que nadie pidió.
+          */}
+          {done.receipt_type === "sales_note" ? (
+            <div className="flex flex-wrap justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handlePrint("ticket")}
+                disabled={printing !== null}
+                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {printing === "ticket" ? "Preparando…" : "Imprimir ticket"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePrint("a4")}
+                disabled={printing !== null}
+                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {printing === "a4" ? "Generando…" : "PDF A4"}
+              </button>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap justify-center gap-3">
             <button
               type="button"
               onClick={() => {
                 setDone(null);
+                setPrintError(null);
                 setTimeout(focusScan, 0);
               }}
-              className="rounded-lg border border-white/15 px-4 py-2 text-sm text-zinc-200 transition hover:border-white/30 hover:text-white"
+              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
             >
               Nueva venta
             </button>
             <Link
               href={`/admin/orders/${done.order_id}`}
-              className="rounded-lg border border-white/[0.08] px-4 py-2 text-sm text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground"
             >
-              Ver pedido y nota interna
+              Ver pedido y documentos
             </Link>
           </div>
         </div>
@@ -508,13 +660,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-[11px] uppercase tracking-widest text-zinc-500">
+            <label htmlFor="admin-sales-pos-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
               Sucursal
             </label>
-            <select
+            <select id="admin-sales-pos-page-sucursal"
               value={branch ?? ""}
               onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-              className="rounded-lg border border-white/[0.08] bg-black/40 px-3 py-1.5 text-sm text-zinc-200 outline-none"
+              className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
             >
               <option value="">Selecciona…</option>
               {context.branches.map((b) => (
@@ -524,11 +676,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ))}
             </select>
           </div>
-          <p className="text-xs text-zinc-600">Vendedor: {context.seller.username}</p>
+          <p className="text-xs text-muted">Vendedor: {context.seller.username}</p>
         </div>
 
         {branch === null ? (
-          <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-4 text-sm text-amber-300">
+          <p className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
             Selecciona la sucursal desde la que vas a vender. El stock se descuenta de
             esa sucursal y de ninguna otra.
           </p>
@@ -539,7 +691,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           <div className="space-y-4">
             <div>
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-scan"
               >
                 Escanear código
@@ -568,10 +720,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               <p
                 className={`rounded-lg px-4 py-2.5 text-sm ${
                   feedback.kind === "ok"
-                    ? "border border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
+                    ? "border border-success-border bg-success-surface text-success"
                     : feedback.kind === "warn"
-                      ? "border border-amber-500/20 bg-amber-500/5 text-amber-300"
-                      : "border border-red-500/20 bg-red-500/5 text-red-400"
+                      ? "border border-warning-border bg-warning-surface text-warning"
+                      : "border border-danger-border bg-danger-surface text-danger"
                 }`}
                 role="status"
                 aria-live="polite"
@@ -582,7 +734,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             <div>
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-search"
               >
                 Buscar producto
@@ -606,7 +758,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             {combos.length && lines.length === 0 ? (
               <div className="space-y-2">
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Combos disponibles
                 </p>
                 {combos.map((combo) => (
@@ -628,25 +780,25 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       );
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between rounded-lg border border-white/[0.08] px-4 py-3 text-left text-sm transition hover:border-white/25 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full items-center justify-between rounded-lg border border-bd-border px-4 py-3 text-left text-sm transition hover:border-bd-border disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span>
-                      <span className="text-zinc-200">{combo.name}</span>
-                      <span className="block text-[11px] text-zinc-600">
+                      <span className="text-foreground">{combo.name}</span>
+                      <span className="block text-[11px] text-muted">
                         {combo.components
                           .map((c) => `${c.quantity}× ${c.product_name}`)
                           .join(" + ")}
                       </span>
                     </span>
                     <span className="text-right">
-                      <span className="block font-mono text-zinc-300">
+                      <span className="block font-mono text-foreground/85">
                         {money(combo.combo_amount)}
                       </span>
-                      <span className="block text-[11px] text-emerald-400/80">
+                      <span className="block text-[11px] text-success">
                         ahorro {money(combo.discount_amount)}
                       </span>
                       {combo.available_sets < 1 ? (
-                        <span className="block text-[11px] text-red-400/80">
+                        <span className="block text-[11px] text-danger">
                           sin stock para completarlo
                         </span>
                       ) : null}
@@ -657,7 +809,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             ) : null}
 
             {found.length ? (
-              <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+              <div className="overflow-hidden rounded-xl border border-bd-border">
                 {found.map((p) => (
                   <button
                     key={p.id}
@@ -671,16 +823,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       setTerm("");
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between border-b border-white/[0.04] px-4 py-3 text-left text-sm transition last:border-0 hover:bg-white/[0.03]"
+                    className="flex w-full items-center justify-between border-b border-bd-border px-4 py-3 text-left text-sm transition last:border-0 hover:bg-surface"
                   >
-                    <span className="text-zinc-200">{p.name}</span>
+                    <span className="text-foreground">{p.name}</span>
                     <span className="flex items-center gap-4 text-xs">
                       <span
-                        className={p.available > 0 ? "text-zinc-500" : "text-red-400/80"}
+                        className={p.available > 0 ? "text-muted" : "text-danger"}
                       >
                         {p.available} disp.
                       </span>
-                      <span className="font-mono text-zinc-300">{money(p.price)}</span>
+                      <span className="font-mono text-foreground/85">{money(p.price)}</span>
                     </span>
                   </button>
                 ))}
@@ -689,9 +841,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {/* --- carrito --------------------------------------------- */}
-          <div className="space-y-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
             <div className="flex items-baseline justify-between">
-              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Carrito
               </p>
               {lines.length ? (
@@ -703,7 +855,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       focusScan();
                     }
                   }}
-                  className="text-[11px] text-zinc-600 transition hover:text-zinc-400"
+                  className="text-[11px] text-muted transition hover:text-muted"
                 >
                   Vaciar
                 </button>
@@ -711,20 +863,20 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </div>
 
             {lines.length === 0 ? (
-              <p className="py-8 text-center text-sm text-zinc-600">
+              <p className="py-8 text-center text-sm text-muted">
                 Escanea un producto para empezar.
               </p>
             ) : (
               <div className="space-y-2">
                 {lines.map((l) => (
-                  <div key={l.product} className="rounded-lg bg-black/30 p-3">
+                  <div key={l.product} className="rounded-lg bg-background/30 p-3">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm text-zinc-200">{l.name}</p>
+                      <p className="text-sm text-foreground">{l.name}</p>
                       <button
                         type="button"
                         onClick={() => setQuantity(l.product, 0)}
                         aria-label={`Quitar ${l.name}`}
-                        className="text-xs text-zinc-600 transition hover:text-red-400"
+                        className="text-xs text-muted transition hover:text-danger"
                       >
                         ✕
                       </button>
@@ -735,14 +887,14 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         min={1}
                         value={l.quantity}
                         onChange={(e) => setQuantity(l.product, Number(e.target.value))}
-                        className="w-20 rounded border border-white/[0.08] bg-black/40 px-2 py-1 text-sm text-zinc-200 outline-none"
+                        className="w-20 rounded border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none"
                       />
-                      <span className="font-mono text-sm text-zinc-300">
+                      <span className="font-mono text-sm text-foreground/85">
                         {money(Number(l.price) * l.quantity)}
                       </span>
                     </div>
                     {l.quantity > l.available ? (
-                      <p className="mt-1.5 text-[11px] text-amber-400/90">
+                      <p className="mt-1.5 text-[11px] text-warning">
                         Sólo hay {l.available} en esta sucursal.
                       </p>
                     ) : null}
@@ -752,17 +904,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             )}
 
             {/* --- cliente --------------------------------------------- */}
-            <div className="border-t border-white/[0.06] pt-3">
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="border-t border-bd-border pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Cliente
               </p>
               {customer ? (
-                <div className="flex items-center justify-between rounded-lg bg-black/30 px-3 py-2 text-sm">
-                  <span className="text-zinc-200">{customer.display_name}</span>
+                <div className="flex items-center justify-between rounded-lg bg-background/30 px-3 py-2 text-sm">
+                  <span className="text-foreground">{customer.display_name}</span>
                   <button
                     type="button"
                     onClick={() => setCustomer(null)}
-                    className="text-xs text-zinc-600 transition hover:text-red-400"
+                    className="text-xs text-muted transition hover:text-danger"
                   >
                     Quitar
                   </button>
@@ -793,11 +945,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         setCustomerTerm("");
                         focusScan();
                       }}
-                      className="block w-full rounded bg-black/30 px-3 py-2 text-left text-sm text-zinc-300 transition hover:bg-white/[0.05]"
+                      className="block w-full rounded bg-background/30 px-3 py-2 text-left text-sm text-foreground/85 transition hover:bg-surface"
                     >
                       {c.display_name}
                       {c.document_number ? (
-                        <span className="ml-2 font-mono text-[11px] text-zinc-600">
+                        <span className="ml-2 font-mono text-[11px] text-muted">
                           {c.document_number}
                         </span>
                       ) : null}
@@ -811,14 +963,14 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         setCustomerTerm("");
                         focusScan();
                       }}
-                      className="text-zinc-600 transition hover:text-zinc-400"
+                      className="text-muted transition hover:text-muted"
                     >
                       Cancelar
                     </button>
                     {context.can_manage_customers ? (
                       <Link
                         href="/admin/customers"
-                        className="text-zinc-500 underline underline-offset-2 transition hover:text-zinc-300"
+                        className="text-muted underline underline-offset-2 transition hover:text-foreground/85"
                       >
                         Nuevo cliente
                       </Link>
@@ -829,7 +981,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setPickingCustomer(true)}
-                  className="w-full rounded-lg border border-dashed border-white/[0.12] px-3 py-2 text-sm text-zinc-500 transition hover:border-white/25 hover:text-zinc-300"
+                  className="w-full rounded-lg border border-dashed border-bd-border px-3 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground/85"
                 >
                   Buscar cliente (opcional)
                 </button>
@@ -837,8 +989,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             </div>
 
             {/* --- vendedor -------------------------------------------- */}
-            <div className="border-t border-white/[0.06] pt-3">
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="border-t border-bd-border pt-3">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Vendedor
               </p>
               {context.can_assign_seller && context.sellers.length ? (
@@ -856,17 +1008,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ) : (
                 // Read-only when the operator may not reassign: offering a
                 // control the backend would refuse is worse than not offering it.
-                <p className="text-sm text-zinc-300">{context.seller.name}</p>
+                <p className="text-sm text-foreground/85">{context.seller.name}</p>
               )}
             </div>
 
             {/* --- descuento ------------------------------------------- */}
-            <div className="space-y-2 border-t border-white/[0.06] pt-3">
-              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            <div className="space-y-2 border-t border-bd-border pt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Descuento
               </p>
               {preview?.promotions?.length ? (
-                <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-300">
+                <p className="rounded-lg border border-success-border bg-success-surface px-3 py-2 text-xs text-success">
                   Una promoción automática ya está aplicada. No se combina con
                   códigos ni descuentos manuales.
                 </p>
@@ -920,13 +1072,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 </>
               ) : null}
               {previewError ? (
-                <p className="text-xs text-red-400">{previewError}</p>
+                <p className="text-xs text-danger">{previewError}</p>
               ) : null}
             </div>
 
-            <div className="border-t border-white/[0.06] pt-3">
+            <PosReceiptSelector options={context.receipt_options ?? []} branch={branch}
+              value={receiptType} onChange={setReceiptType} disabled={charging} />
+
+            <div className="border-t border-bd-border pt-3">
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-payment"
               >
                 Medio de pago
@@ -947,9 +1102,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
             {/* --- efectivo -------------------------------------------- */}
             {isCash ? (
-              <div className="border-t border-white/[0.06] pt-3">
+              <div className="border-t border-bd-border pt-3">
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="pos-received"
                 >
                   Efectivo recibido
@@ -971,26 +1126,26 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       key={amount}
                       type="button"
                       onClick={() => setReceived(String(amount))}
-                      className="rounded border border-white/[0.08] px-2.5 py-1 text-xs text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+                      className="rounded border border-bd-border px-2.5 py-1 text-xs text-muted transition hover:border-bd-border hover:text-foreground"
                     >
                       {money(amount)}
                     </button>
                   ))}
                 </div>
                 {change !== null && change >= 0 ? (
-                  <p className="mt-2 text-sm text-zinc-400">
-                    Vuelto: <span className="text-white">{money(change)}</span>
+                  <p className="mt-2 text-sm text-muted">
+                    Vuelto: <span className="text-foreground">{money(change)}</span>
                   </p>
                 ) : received !== "" ? (
-                  <p className="mt-2 text-sm text-amber-400/90">
+                  <p className="mt-2 text-sm text-warning">
                     El efectivo no alcanza para el total.
                   </p>
                 ) : null}
               </div>
             ) : (
-              <div className="border-t border-white/[0.06] pt-3">
+              <div className="border-t border-bd-border pt-3">
                 <label
-                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                  className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                   htmlFor="pos-ref"
                 >
                   Referencia del pago (opcional)
@@ -1006,8 +1161,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               </div>
             )}
 
-            <div className="space-y-1 border-t border-white/[0.06] pt-3 text-sm">
-              <div className="flex justify-between text-zinc-500">
+            <div className="space-y-1 border-t border-bd-border pt-3 text-sm">
+              <div className="flex justify-between text-muted">
                 <span>Subtotal</span>
                 <span className="font-mono">{money(subtotal)}</span>
               </div>
@@ -1015,7 +1170,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   till display is something an operator cannot answer for. */}
               {preview?.promotions?.length
                 ? preview.promotions.map((p) => (
-                    <div key={p.id} className="flex justify-between text-emerald-400/80">
+                    <div key={p.id} className="flex justify-between text-success">
                       <span>
                         ✓ {p.name}
                         {p.applications > 1 ? ` ×${p.applications}` : ""}
@@ -1024,7 +1179,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     </div>
                   ))
                 : discount > 0 ? (
-                    <div className="flex justify-between text-emerald-400/80">
+                    <div className="flex justify-between text-success">
                       <span>
                         Descuento
                         {preview?.discount_source === "coupon" ? " (cupón)" : ""}
@@ -1032,22 +1187,42 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       <span className="font-mono">−{money(discount)}</span>
                     </div>
                   ) : null}
+              {/*
+                El desglose lo manda el servidor con la previsualización, del
+                MISMO cálculo que hará la venta. Si el cliente pregunta cuánto
+                es de IGV antes de pagar, la respuesta ya está en pantalla y es
+                la que va a salir impresa.
+              */}
+              {preview?.tax ? (
+                <>
+                  <div className="flex justify-between text-muted">
+                    <span>{preview.tax.base_label}</span>
+                    <span className="font-mono">{money(preview.tax.taxable_amount)}</span>
+                  </div>
+                  {preview.tax.tax_treatment === "taxed" ? (
+                    <div className="flex justify-between text-muted">
+                      <span>{preview.tax.tax_label}</span>
+                      <span className="font-mono">{money(preview.tax.tax_amount)}</span>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
               <div className="flex items-baseline justify-between pt-1">
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-muted">
                   {units} unidad{units === 1 ? "" : "es"}
                 </span>
-                <span className="font-display text-2xl text-white">{money(total)}</span>
+                <span className="font-display text-2xl text-foreground">{money(total)}</span>
               </div>
               {preview?.commission ? (
-                <p className="pt-1 text-right text-[11px] text-zinc-600">
+                <p className="pt-1 text-right text-[11px] text-muted">
                   Comisión estimada: {money(preview.commission.amount)}
                 </p>
               ) : null}
             </div>
 
-            <div className="border-t border-white/[0.06] pt-3">
+            <div className="border-t border-bd-border pt-3">
               <label
-                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-notes"
               >
                 Observaciones (opcional)
@@ -1061,12 +1236,12 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 value={saleNotes}
                 onChange={(e) => setSaleNotes(e.target.value)}
               />
-              <p className="mt-1 text-[11px] text-zinc-600">
+              <p className="mt-1 text-[11px] text-muted">
                 Sobre esta venta, no sobre el cliente. Sólo control interno.
               </p>
             </div>
 
-            <label className="flex items-start gap-2 border-t border-white/[0.06] pt-3 text-xs text-zinc-400">
+            <label className="flex items-start gap-2 border-t border-bd-border pt-3 text-xs text-muted">
               <input
                 type="checkbox"
                 className="mt-0.5"
@@ -1091,11 +1266,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}
-              className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-500/50 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-transparent disabled:text-zinc-600"
+              className="w-full rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm font-medium text-success transition hover:border-success-border disabled:cursor-not-allowed disabled:border-bd-border disabled:bg-transparent disabled:text-muted"
             >
               {charging ? "Cobrando…" : "Cobrar"}
             </button>
-            <p className="text-center text-[11px] text-zinc-600">
+            <p className="text-center text-[11px] text-muted">
               El precio, el descuento y el total los calcula el servidor.
             </p>
           </div>

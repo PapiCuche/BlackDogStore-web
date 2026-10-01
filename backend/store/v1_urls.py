@@ -17,6 +17,31 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .evidence_views import (
+    CustomerEvidenceContentView, CustomerEvidenceListView,
+    InternalEvidenceContentView, InternalEvidenceDetailView,
+    InternalEvidenceHideView, InternalEvidenceListView,
+    InternalEvidencePublishView, InternalEvidenceVoidView,
+)
+from .announcement_views import (
+    InternalAnnouncementReadView,
+    PlatformAnnouncementDetailView, PlatformAnnouncementListView,
+    PlatformAnnouncementPreviewView, PlatformAnnouncementPublishView,
+    PlatformAnnouncementStatsView,
+    TenantAnnouncementCancelView, TenantAnnouncementDetailView,
+    TenantAnnouncementListView, TenantAnnouncementPreviewView,
+    TenantAnnouncementPublishView, TenantAnnouncementStatsView,
+)
+from .notification_views import (
+    CustomerNotificationListView,
+    CustomerNotificationReadAllView,
+    CustomerNotificationReadView,
+    CustomerUnreadCountView,
+    InternalNotificationListView,
+    InternalNotificationReadAllView,
+    InternalNotificationReadView,
+    InternalUnreadCountView,
+)
 from .v1_service_views import (
     V1ServiceContextView,
     V1ServiceDiagnosticDetailView,
@@ -401,6 +426,154 @@ urlpatterns = [
         V1ServicePaymentReverseView.as_view(),
         name='v1-internal-service-payment-reverse',
     ),
+
+    # --- M12B — centro de notificaciones ---
+    #
+    # Dos superficies separadas a propósito: el personal lee su bandeja
+    # interna, el cliente la suya, y ninguna ruta decide el queryset mirando
+    # si quien pregunta es staff.
+    path(
+        'internal/<slug:company_slug>/notifications/',
+        InternalNotificationListView.as_view(), name='v1-internal-notifications',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/unread-count/',
+        InternalUnreadCountView.as_view(), name='v1-internal-notifications-unread',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/read-all/',
+        InternalNotificationReadAllView.as_view(),
+        name='v1-internal-notifications-read-all',
+    ),
+    path(
+        'internal/<slug:company_slug>/notifications/<int:pk>/read/',
+        InternalNotificationReadView.as_view(), name='v1-internal-notifications-read',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/',
+        CustomerNotificationListView.as_view(), name='v1-customer-notifications',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/unread-count/',
+        CustomerUnreadCountView.as_view(), name='v1-customer-notifications-unread',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/read-all/',
+        CustomerNotificationReadAllView.as_view(),
+        name='v1-customer-notifications-read-all',
+    ),
+    path(
+        'customer/<slug:company_slug>/notifications/<int:pk>/read/',
+        CustomerNotificationReadView.as_view(), name='v1-customer-notifications-read',
+    ),
+
+    # --- M12D — evidencias fotográficas ---
+    #
+    # Cuelgan de la orden porque una evidencia SIN su reparación no significa
+    # nada, y porque así la autorización de la orden se aplica antes de llegar
+    # a la foto en lugar de repetirse en cada ruta.
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/',
+        InternalEvidenceListView.as_view(), name='v1-internal-service-evidence',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/',
+        InternalEvidenceDetailView.as_view(),
+        name='v1-internal-service-evidence-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/content/',
+        InternalEvidenceContentView.as_view(),
+        name='v1-internal-service-evidence-content',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/publish-to-customer/',
+        InternalEvidencePublishView.as_view(),
+        name='v1-internal-service-evidence-publish',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/hide-from-customer/',
+        InternalEvidenceHideView.as_view(),
+        name='v1-internal-service-evidence-hide',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/evidence/'
+        '<int:evidence_id>/void/',
+        InternalEvidenceVoidView.as_view(),
+        name='v1-internal-service-evidence-void',
+    ),
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/evidence/',
+        CustomerEvidenceListView.as_view(), name='v1-customer-repair-evidence',
+    ),
+    path(
+        'customer/<slug:company_slug>/repairs/<int:pk>/evidence/'
+        '<int:evidence_id>/content/',
+        CustomerEvidenceContentView.as_view(),
+        name='v1-customer-repair-evidence-content',
+    ),
+
+    # --- M12C — comunicados internos ---
+    #
+    # DOS SUPERFICIES, y la URL dice cuál es cuál. `/internal/<slug>/` opera
+    # dentro de una empresa; `/platform/` existe precisamente porque el master
+    # apunta a varias, y esconder eso bajo una ruta que promete un solo slug
+    # sería mentir en el propio path.
+    path(
+        'internal/<slug:company_slug>/communications/',
+        TenantAnnouncementListView.as_view(), name='v1-internal-communications',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/',
+        TenantAnnouncementDetailView.as_view(),
+        name='v1-internal-communications-detail',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/preview/',
+        TenantAnnouncementPreviewView.as_view(),
+        name='v1-internal-communications-preview',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/publish/',
+        TenantAnnouncementPublishView.as_view(),
+        name='v1-internal-communications-publish',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/cancel/',
+        TenantAnnouncementCancelView.as_view(),
+        name='v1-internal-communications-cancel',
+    ),
+    path(
+        'internal/<slug:company_slug>/communications/<int:pk>/stats/',
+        TenantAnnouncementStatsView.as_view(),
+        name='v1-internal-communications-stats',
+    ),
+    # Lo que abre un DESTINATARIO desde su bandeja. Sin capability: leer un
+    # mensaje dirigido a ti no es una autoridad.
+    path(
+        'internal/<slug:company_slug>/announcements/<int:pk>/',
+        InternalAnnouncementReadView.as_view(), name='v1-internal-announcement',
+    ),
+
+    path('platform/announcements/', PlatformAnnouncementListView.as_view(),
+         name='v1-platform-announcements'),
+    path('platform/announcements/<int:pk>/',
+         PlatformAnnouncementDetailView.as_view(),
+         name='v1-platform-announcement-detail'),
+    path('platform/announcements/<int:pk>/preview/',
+         PlatformAnnouncementPreviewView.as_view(),
+         name='v1-platform-announcement-preview'),
+    path('platform/announcements/<int:pk>/publish/',
+         PlatformAnnouncementPublishView.as_view(),
+         name='v1-platform-announcement-publish'),
+    path('platform/announcements/<int:pk>/stats/',
+         PlatformAnnouncementStatsView.as_view(),
+         name='v1-platform-announcement-stats'),
+
     path('auth/login/', V1LoginView.as_view(), name='v1-auth-login'),
     path('auth/refresh/', V1RefreshView.as_view(), name='v1-auth-refresh'),
     path('auth/logout/', V1LogoutView.as_view(), name='v1-auth-logout'),

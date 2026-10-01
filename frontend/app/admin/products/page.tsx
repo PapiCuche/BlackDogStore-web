@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { StaffGuard } from "../components/StaffGuard";
+import { AccessGuard } from "../components/AccessGuard";
+import type { InternalAccess } from "../lib/internal-access";
 import { AdminShell } from "../components/AdminShell";
 import { ProductsTable } from "../components/ProductsTable";
 import {
@@ -21,7 +22,7 @@ type Filters = {
   stock: string;
 };
 
-function ProductsContent({ user }: { user: AuthUser }) {
+function ProductsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const [data, setData] = useState<PaginatedResponse<AdminProduct> | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [filters, setFilters] = useState<Filters>({
@@ -34,7 +35,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const canManage = user.role === "admin" || user.role === "superadmin";
+  const canManage = access.can("products.manage", ["admin", "superadmin"]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,15 +80,15 @@ function ProductsContent({ user }: { user: AuthUser }) {
       <div className="space-y-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Productos</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Productos</h1>
+            <p className="mt-1 text-sm text-muted">
               {data ? `${data.count} productos en total` : "Cargando…"}
             </p>
           </div>
           {canManage && (
             <Link
               href="/admin/products/new"
-              className="shrink-0 px-4 py-2 bg-white text-black text-sm font-medium rounded hover:bg-zinc-200 transition-colors"
+              className="shrink-0 px-4 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 transition-colors"
             >
               + Nuevo producto
             </Link>
@@ -100,12 +101,12 @@ function ProductsContent({ user }: { user: AuthUser }) {
             placeholder="Buscar por nombre o slug…"
             value={filters.search}
             onChange={(e) => setFilter("search", e.target.value)}
-            className="flex-1 min-w-48 bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30"
+            className="flex-1 min-w-48 bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border"
           />
           <select
             value={filters.category}
             onChange={(e) => setFilter("category", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Todas las categorías</option>
             {categories.map((c) => (
@@ -117,7 +118,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
           <select
             value={filters.is_active}
             onChange={(e) => setFilter("is_active", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Todos los estados</option>
             <option value="true">Activos</option>
@@ -126,7 +127,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
           <select
             value={filters.stock}
             onChange={(e) => setFilter("stock", e.target.value)}
-            className="bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-white/30"
+            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
           >
             <option value="">Cualquier stock</option>
             <option value="in_stock">En stock</option>
@@ -135,25 +136,25 @@ function ProductsContent({ user }: { user: AuthUser }) {
           </select>
         </div>
 
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6">
-          {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
+        <div className="rounded-xl border border-bd-border bg-surface p-6">
+          {error && <p className="text-sm text-danger mb-4">{error}</p>}
           {loading ? (
-            <p className="text-zinc-500 text-sm py-6 text-center">Cargando…</p>
+            <p className="text-muted text-sm py-6 text-center">Cargando…</p>
           ) : (
             <ProductsTable
               products={data?.results ?? []}
-              currentUser={user}
+              canManage={canManage}
               onChanged={load}
             />
           )}
         </div>
 
         {totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-zinc-500">
+          <div className="flex items-center justify-between text-sm text-muted">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1}
-              className="px-3 py-1.5 rounded border border-white/[0.08] hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               ← Anterior
             </button>
@@ -163,7 +164,7 @@ function ProductsContent({ user }: { user: AuthUser }) {
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
-              className="px-3 py-1.5 rounded border border-white/[0.08] hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               Siguiente →
             </button>
@@ -176,6 +177,8 @@ function ProductsContent({ user }: { user: AuthUser }) {
 
 export default function AdminProductsPage() {
   return (
-    <StaffGuard>{(user) => <ProductsContent user={user} />}</StaffGuard>
+    <AccessGuard capability="products.view" legacyRoles={["inventory", "sales", "admin", "superadmin"]}>
+      {(access) => <ProductsContent user={access.user} access={access} />}
+    </AccessGuard>
   );
 }

@@ -1,0 +1,401 @@
+"""
+Prueba de humo controlada contra SUNAT BETA — OPT-IN, NUNCA en CI.
+
+POR QUÉ EXISTE, Y POR QUÉ ES UN COMANDO Y NO UN TEST (ERP-FISCAL-3 §8-§10, §55)
+------------------------------------------------------------------------------
+La prueba de humo de ERP-FISCAL-2 envió DOS documentos a SUNAT BETA dentro de una
+transacción que luego se DESHIZO, y ambos salieron como `F001-1`. Esa fue una
+deuda del mecanismo de prueba (TEST-HARNESS-01), no un fallo de emisión:
+
+    UNA TRANSACCIÓN DE BASE DE DATOS NO PUEDE DESHACER UN EFECTO YA OCURRIDO EN
+    SUNAT. El `rollback` revierte NUESTRAS filas; el documento que SUNAT recibió
+    sigue recibido. Usar `rollback` como «limpieza» de identidad fiscal es fingir
+    que la llamada externa no pasó — y reutilizar el mismo `F001-1` una y otra vez.
+
+Por eso esto:
+
+- Es un COMANDO, no un `TestCase`: `manage.py test` no lo ejecuta. CI no habla con
+  SUNAT jamás.
+- PERSISTE todo localmente y NO revierte nada: el correlativo lo entrega la serie
+  BETA real, es monótono y NO se recicla, así que CADA ejecución usa un
+  identificador ÚNICO. No hay más `F001-1` perpetuo.
+- Está APAGADO por defecto: exige `FISCAL_BETA_SMOKE_ENABLED=true`. Encenderlo es
+  una decisión explícita del operador, no un descuido.
+- Sólo BETA: `resolve_environment()` está fijado en pruebas; si algún día apunta a
+  otro sitio, este comando se niega.
+- No imprime secretos: ni Clave SOL, ni la clave del certificado, ni el sobre SOAP.
+
+NO es la prueba de que «todo funciona»: es la única forma honesta de tocar SUNAT
+de verdad sin ensuciar la base con identidades irreales ni mentir sobre lo que se
+puede deshacer.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
+
+from ...fiscal_config import fiscal_enabled, resolve_credentials, resolve_provider
+from ...fiscal_services import (
+    get_or_create_fiscal_document, sign_fiscal_document, submit_fiscal_document,
+)
+from ...models import (
+    Company, FiscalDocumentType, FiscalEnvironment, FiscalSeries, Order,
+    OrderItem, Product,
+)
+
+
+class Command(BaseCommand):
+    help = ('Prueba de humo contra SUNAT BETA. --mode factura (por defecto), '
+            'boleta-summary (boleta + resumen diario), credit-note o debit-note '
+            '(una factura aceptada y su nota, §51/§52). Opt-in '
+            '(FISCAL_BETA_SMOKE_ENABLED=true), sólo BETA, nunca en CI.')
+
+    def add_arguments(self, parser):
+        parser.add_argument('--company-tax-id', required=True,
+                            help='RUC de una empresa YA existente con serie BETA.')
+        parser.add_argument(
+            '--mode',
+            choices=['factura', 'boleta-summary', 'credit-note', 'debit-note',
+                     'void'],
+            default='factura')
+        parser.add_argument(
+            '--void-reason', default='EMITIDA POR ERROR, NO OTORGADA AL ADQUIRENTE',
+            help='Motivo de la baja (sac:VoidReasonDescription, hasta 100).')
+        parser.add_argument('--price', default='118.00')
+        parser.add_argument('--qty', type=int, default=1)
+        # Motivo e importe de la nota (§51/§52). La NC es anulación total; la ND
+        # lleva un cargo explícito.
+        parser.add_argument('--nc-reason', default='01',
+                            help='Motivo de la NC (Catálogo 09); 01 = anulación.')
+        parser.add_argument('--nd-reason', default='02',
+                            help='Motivo de la ND (Catálogo 10); 02 = aumento de valor.')
+        parser.add_argument('--nd-taxable', default='50.00',
+                            help='Base gravada del cargo de la ND.')
+        parser.add_argument('--nd-tax', default='9.00',
+                            help='IGV del cargo de la ND.')
+        parser.add_argument('--customer-ruc', default='20100066603')
+        parser.add_argument('--customer-dni', default='12345678',
+                            help='DNI del adquirente para la boleta (§66).')
+        parser.add_argument('--anonymous', action='store_true',
+                            help='Boleta a consumidor final SIN documento (<= S/700). '
+                                 'La línea del resumen va con «-» (RC-ANON-01).')
+        parser.add_argument('--poll-attempts', type=int, default=6)
+        parser.add_argument('--poll-seconds', type=int, default=10)
+
+    def handle(self, *args, **options):
+        # 1) Puerta explícita. Apagado por defecto (§10).
+        if not bool(getattr(settings, 'FISCAL_BETA_SMOKE_ENABLED', False)):
+            raise CommandError(
+                'FISCAL_BETA_SMOKE_ENABLED no está activo. Esta prueba habla con '
+                'SUNAT de verdad y persiste lo que envía; se enciende a propósito.')
+        if not fiscal_enabled():
+            raise CommandError('La emisión fiscal está deshabilitada (FISCAL_ENABLED).')
+
+        # 2) Sólo BETA. resolve_environment falla cerrado ante cualquier otra cosa.
+        from ...fiscal_config import resolve_environment
+        self.environment = resolve_environment()  # levanta si no es BETA
+
+        try:
+            self.company = Company.objects.get(tax_id=options['company_tax_id'])
+        except Company.DoesNotExist:
+            raise CommandError(
+                f'No existe una empresa con RUC {options["company_tax_id"]}.')
+
+        if options['mode'] == 'boleta-summary':
+            self._run_boleta_summary(options)
+        elif options['mode'] in ('credit-note', 'debit-note'):
+            self._run_note(options, options['mode'])
+        elif options['mode'] == 'void':
+            self._run_void(options)
+        else:
+            self._run_factura(options)
+
+    def _paid_order(self, *, receipt_type, price, qty, doc_type, doc_number, name):
+        gross = (Decimal(price) * qty).quantize(Decimal('0.01'))
+        taxable = (gross / Decimal('1.18')).quantize(Decimal('0.01'))
+        tax = gross - taxable
+        product = Product.objects.create(
+            company=self.company, name='ARTICULO DE PRUEBA BETA',
+            slug=f'beta-smoke-{timezone.now().timestamp()}',
+            price=Decimal(price), inventory=qty)
+        order = Order.objects.create(
+            company=self.company, customer_name=name,
+            document_type=doc_type, document_number=doc_number,
+            receipt_type=receipt_type,
+            total=gross, discount_amount=Decimal('0.00'), subtotal_amount=gross,
+            taxable_amount=taxable, tax_amount=tax, tax_rate=Decimal('0.18'),
+            tax_treatment='taxed', currency='PEN',
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_branch=self.company.default_inventory_branch)
+        OrderItem.objects.create(order=order, product=product,
+                                 quantity=qty, price=Decimal(price))
+        return order
+
+    def _run_factura(self, options):
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=FiscalDocumentType.INVOICE,
+                environment=FiscalEnvironment.BETA, is_active=True).exists():
+            raise CommandError('La empresa no tiene una serie de factura BETA activa.')
+
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.FACTURA, price=options['price'],
+            qty=options['qty'], doc_type=Order.DocumentType.RUC,
+            doc_number=options['customer_ruc'], name='CLIENTE DE PRUEBA SAC')
+
+        # 4) Emitir → firmar → enviar. TODO se PERSISTE; NADA se revierte. El
+        #    correlativo lo entrega la serie y es único: no hay F001-1 perpetuo.
+        from ...fiscal_services import (
+            get_or_create_fiscal_document, sign_fiscal_document, submit_fiscal_document,
+        )
+        document = self._issue_and_send(order)
+        self._report_document(document)
+        self.stdout.write(
+            'Nota: este documento y su intento QUEDAN en la base. Un envío a SUNAT '
+            'no se deshace con un rollback; el correlativo está gastado.')
+
+    def _issue_and_send(self, order):
+        document, _ = get_or_create_fiscal_document(order)
+        creds = resolve_credentials(self.company)
+        document = sign_fiscal_document(
+            document, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'FIRMADO {document.document_id} (ambiente {self.environment}) '
+            f'base={document.taxable_amount} IGV={document.tax_amount} '
+            f'total={document.total}')
+        return submit_fiscal_document(document, resolve_provider(self.company))
+
+    def _report_document(self, document):
+        self.stdout.write(self.style.SUCCESS(
+            f'ENVIADO {document.document_id}\n'
+            f'  estado    = {document.status}\n'
+            f'  codigo    = {document.sunat_response_code!r}\n'
+            f'  mensaje   = {document.sunat_response_message!r}\n'
+            f'  cdr       = {"sí" if document.cdr_xml else "no"}'
+            f' (sha256 {document.cdr_sha256 or "-"})'))
+
+    def _run_note(self, options, mode):
+        """
+        §51/§52. Emite una factura BETA, espera su aceptación, y sobre ella emite
+        una nota — de crédito (anulación total) o de débito (cargo explícito)— por
+        `sendBill`, y reporta su CDR. Sólo una factura ACEPTADA admite una nota:
+        SUNAT no acepta una nota sobre un comprobante que no existe para ellos.
+        """
+        from ...fiscal_note_services import create_fiscal_note, sign_fiscal_note
+
+        note_type = (FiscalDocumentType.CREDIT_NOTE if mode == 'credit-note'
+                     else FiscalDocumentType.DEBIT_NOTE)
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=note_type,
+                environment=FiscalEnvironment.BETA, is_active=True,
+                series__startswith='F').exists():
+            raise CommandError(
+                f'La empresa no tiene una serie BETA de nota {note_type} con '
+                f'prefijo F activa (una nota de factura).')
+
+        # 1) La factura original: emitir, firmar, enviar. Debe quedar ACEPTADA.
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.FACTURA, price=options['price'],
+            qty=options['qty'], doc_type=Order.DocumentType.RUC,
+            doc_number=options['customer_ruc'], name='CLIENTE DE PRUEBA SAC')
+        original = self._issue_and_send(order)
+        self._report_document(original)
+        if not original.is_accepted:
+            raise CommandError(
+                f'La factura {original.document_id} no quedó ACEPTADA '
+                f'(estado {original.status}); sin CDR no procede una nota.')
+
+        # 2) La nota sobre esa factura aceptada.
+        creds = resolve_credentials(self.company)
+        if note_type == FiscalDocumentType.CREDIT_NOTE:
+            note, _ = create_fiscal_note(
+                original, note_type=note_type, reason_code=options['nc_reason'],
+                reason_description='ANULACION DE LA OPERACION',
+                request_key='beta-smoke-nc')
+        else:
+            note, _ = create_fiscal_note(
+                original, note_type=note_type, reason_code=options['nd_reason'],
+                reason_description='CARGO ADICIONAL',
+                request_key='beta-smoke-nd',
+                taxable_amount=Decimal(options['nd_taxable']),
+                tax_amount=Decimal(options['nd_tax']))
+        note = sign_fiscal_note(
+            note, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'NOTA FIRMADA {note.document_id} sobre {original.document_id} '
+            f'(motivo {note.note_reason_code}) total={note.total}')
+
+        # 3) Enviar la nota por sendBill (mismo canal que la factura) y reportar.
+        note = submit_fiscal_document(note, resolve_provider(self.company))
+        self._report_document(note)
+        self.stdout.write(
+            'Nota: la factura y su nota QUEDAN en la base. Un envío a SUNAT no se '
+            'deshace; ambos correlativos están gastados.')
+
+    def _run_void(self, options):
+        """
+        §38. Emite una factura BETA, la acepta, ATESTIGUA que no se otorgó y la da de
+        baja: `VoidedDocuments` → `sendSummary` → ticket → `getStatus` → CDR-Baja.
+
+        La atestación queda SIN AUTOR. Un comando no tiene usuario de petición, y
+        antes que inventar uno se registra sin él: por la superficie interna la firma
+        una persona (`/not-granted/`), y ahí sí queda atribuida. Se dice aquí para
+        que nadie lea esta evidencia como si alguien la hubiera firmado.
+
+        Todo PERSISTE y nada se revierte: los correlativos —de la factura y de la
+        comunicación— quedan gastados.
+        """
+        import time
+
+        from ...fiscal_void_services import (
+            attest_not_granted, create_void_communication,
+            poll_void_communication, sign_void_communication,
+            submit_void_communication,
+        )
+        from ...models import FiscalVoidStatus
+
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=FiscalDocumentType.INVOICE,
+                environment=FiscalEnvironment.BETA, is_active=True).exists():
+            raise CommandError('La empresa no tiene una serie de factura BETA activa.')
+
+        # 1) La factura original, aceptada por SUNAT. Sin CDR aceptada no hay baja.
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.FACTURA, price=options['price'],
+            qty=options['qty'], doc_type=Order.DocumentType.RUC,
+            doc_number=options['customer_ruc'], name='CLIENTE DE PRUEBA SAC')
+        original = self._issue_and_send(order)
+        self._report_document(original)
+        if not original.is_accepted:
+            raise CommandError(
+                f'La factura {original.document_id} no quedó ACEPTADA '
+                f'(estado {original.status}); sin CDR aceptada no procede la baja.')
+
+        original.refresh_from_db()
+        if original.cdr_accepted_at is None:
+            raise CommandError(
+                'La factura quedó aceptada pero sin fecha de recepción de la CDR: '
+                'el plazo no sería demostrable.')
+
+        # 2) La atestación de NO otorgamiento. Es lo que abre la puerta, y es un
+        #    hecho registrado, no una deducción.
+        attest_not_granted(original, actor=None, reason=options['void_reason'])
+        original.refresh_from_db()
+        self.stdout.write(
+            f'ATESTIGUADO NO OTORGADO {original.document_id} '
+            f'(sin autor: lo registra un comando, no una persona)')
+
+        # 3) La comunicación de baja: crear, firmar (XSD OFICIAL) y enviar.
+        creds = resolve_credentials(self.company)
+        void = create_void_communication(
+            self.company, targets=[(original, options['void_reason'])],
+            request_key='beta-smoke-ra')
+        void = sign_void_communication(
+            void, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'BAJA FIRMADA {void.identifier} sobre {original.document_id} '
+            f'(ref {void.reference_date})')
+
+        provider = resolve_provider(self.company)
+        void = submit_void_communication(void, provider)
+        self.stdout.write(
+            f'  enviada: estado={void.status} ticket={void.ticket!r}')
+
+        # 4) Polling ACOTADO del ticket. Ninguna transacción se sostiene esperando.
+        attempts = options['poll_attempts']
+        for i in range(attempts):
+            if void.status != FiscalVoidStatus.SUBMITTED:
+                break
+            time.sleep(options['poll_seconds'])
+            result = poll_void_communication(void, provider)
+            void = result.void_communication
+            self.stdout.write(
+                f'  consulta {i + 1}/{attempts}: {result.action} '
+                f'estado={void.status} codigo={void.sunat_response_code!r}')
+
+        self.stdout.write(self.style.SUCCESS(
+            f'COMUNICACIÓN DE BAJA {void.identifier}\n'
+            f'  estado  = {void.status}\n'
+            f'  codigo  = {void.sunat_response_code!r}\n'
+            f'  mensaje = {void.sunat_response_message!r}\n'
+            f'  cdr     = {"sí" if void.cdr_xml else "no"}'
+            f' (sha256 {void.cdr_sha256 or "-"})'))
+        self.stdout.write(
+            'Nota: la factura y su comunicación de baja QUEDAN en la base. Un envío '
+            'a SUNAT no se deshace; ambos correlativos están gastados. El original '
+            'conserva su XML, su CDR y su estado: la baja NO lo reescribe.')
+
+    def _run_boleta_summary(self, options):
+        import time
+
+        from ...fiscal_summary_services import (
+            generate_daily_summaries, poll_daily_summary, sign_daily_summary,
+            submit_daily_summary,
+        )
+        from ...models import FiscalSummaryStatus
+
+        if not FiscalSeries.objects.filter(
+                company=self.company, document_type=FiscalDocumentType.RECEIPT,
+                environment=FiscalEnvironment.BETA, is_active=True).exists():
+            raise CommandError('La empresa no tiene una serie de boleta BETA activa.')
+
+        # 1) Boleta: identificada (§66) o a consumidor final sin documento
+        #    (RC-ANON-01). Se emite, firma y envía por resumen; NO se considera
+        #    «aceptada» individualmente (§68).
+        if options['anonymous']:
+            doc_type, doc_number, name = '', '', 'VARIOS'
+        else:
+            doc_type = Order.DocumentType.DNI
+            doc_number, name = options['customer_dni'], 'CLIENTE DE PRUEBA'
+        order = self._paid_order(
+            receipt_type=Order.ReceiptType.BOLETA, price=options['price'],
+            qty=options['qty'], doc_type=doc_type, doc_number=doc_number, name=name)
+        boleta, _ = get_or_create_fiscal_document(order)
+        creds = resolve_credentials(self.company)
+        boleta = sign_fiscal_document(
+            boleta, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+        self.stdout.write(
+            f'BOLETA FIRMADA {boleta.document_id} total={boleta.total}')
+
+        # 2) Resumen diario para hoy, firmado.
+        reference_date = timezone.localdate()
+        summaries = generate_daily_summaries(
+            self.company, reference_date, self.environment)
+        provider = resolve_provider(self.company)
+        for summary in summaries:
+            summary = sign_daily_summary(
+                summary, key_pem=creds['key_pem'], cert_pem=creds['cert_pem'])
+            self.stdout.write(f'RESUMEN FIRMADO {summary.identifier} '
+                              f'({summary.lines.count()} línea/s)')
+
+            # 3) sendSummary → ticket (persistido antes de consultar).
+            summary = submit_daily_summary(summary, provider)
+            self.stdout.write(
+                f'  enviado: estado={summary.status} ticket={summary.ticket!r}')
+
+            # 4) Polling ACOTADO del ticket (§45/§67): backoff simple, tope de
+            #    intentos. No se sostiene ninguna transacción durante la espera.
+            attempts = options['poll_attempts']
+            for i in range(attempts):
+                if summary.status != FiscalSummaryStatus.SUBMITTED:
+                    break
+                time.sleep(options['poll_seconds'])
+                result = poll_daily_summary(summary, provider)
+                summary = result.summary
+                self.stdout.write(
+                    f'  consulta {i + 1}/{attempts}: {result.action} '
+                    f'estado={summary.status} codigo={summary.sunat_response_code!r}')
+
+            self.stdout.write(self.style.SUCCESS(
+                f'RESUMEN {summary.identifier}\n'
+                f'  estado  = {summary.status}\n'
+                f'  codigo  = {summary.sunat_response_code!r}\n'
+                f'  mensaje = {summary.sunat_response_message!r}\n'
+                f'  cdr     = {"sí" if summary.cdr_xml else "no"}'
+                f' (sha256 {summary.cdr_sha256 or "-"})'))
+        self.stdout.write(
+            'Nota: boleta, resumen, ticket y CDR QUEDAN en la base. La aceptación '
+            'es del RESUMEN, no de la boleta individual (§68).')

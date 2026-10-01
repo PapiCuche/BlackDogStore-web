@@ -25,18 +25,155 @@
   --brand-text: #fafafa;
   --brand-border: #262626;
 
+  /* M12E — claro NEUTRO de plataforma. No pertenece a ningún negocio: un
+     tenant sin tema claro propio usa esto, nunca el de otra empresa. */
+  --brand-light-background: #ffffff;
+  --brand-light-surface: #f4f4f5;
+
+  /* ------------------------------------------------------------------ */
+  /* TEMA CLARO — el estado por defecto de `:root`.                       */
+  /*                                                                     */
+  /* `data-theme` lo escribe un script en el <head> ANTES del primer      */
+  /* paint, así que en la práctica nunca se ve este bloque sin decidir.   */
+  /* Está aquí como base para que un navegador sin JavaScript reciba algo */
+  /* legible en vez de texto claro sobre fondo claro.                     */
+  /* ------------------------------------------------------------------ */
+  --background: var(--brand-light-background, #ffffff);
+  --surface: var(--brand-light-surface, #f4f4f5);
+  /* El texto y el borde se DERIVAN del fondo con contraste garantizado, en
+     vez de ser dos columnas más que alguien tiene que rellenar bien. Un
+     tenant que eligiera mal su texto claro produciría una página ilegible
+     que ningún validador de hex detectaría. */
+  --foreground: #0a0a0a;
+  --surface-2: color-mix(in srgb, var(--surface) 92%, #0a0a0a);
+  --border: color-mix(in srgb, var(--surface) 78%, #0a0a0a);
+  /* 64%, no 55%: al 55% este gris rinde 4.27:1 sobre el fondo del piloto y
+     3.94:1 sobre su superficie — por debajo del 4.5:1 que pide AA para texto
+     normal. Medido, no estimado. */
+  --muted: color-mix(in srgb, #0a0a0a 64%, var(--background));
+  /* IDENTIDAD, PERO LEGIBLE.
+     El acento de una marca se elige contra SU fondo. El dorado del piloto rinde
+     8.41:1 sobre negro y 2.12:1 sobre su crema: el mismo color, legible en un
+     tema e ilegible en el otro. `--primary` es lo que pinta enlaces, anillos de
+     foco y marcas de selección, así que aquí se OSCURECE conservando el tono —
+     igual que `--foreground` se deriva en vez de configurarse. Al 50% da 4.90:1
+     en el peor de los tres fondos del piloto y 5.59:1 en el neutro.
+     El acento PURO sigue disponible en `--accent` para rellenos decorativos,
+     donde el umbral de texto no aplica. */
+  --primary: color-mix(in srgb, var(--brand-accent, #18181b) 50%, #0a0a0a);
+
+  /* ------------------------------------------------------------------ */
+  /* LA LOSA DE MARCA                                                    */
+  /*                                                                     */
+  /* Los seis campos que el tenant configura se diseñaron cuando el       */
+  /* escaparate tenía UN tema, y ese tema era oscuro. Siguen siendo eso:  */
+  /* la paleta oscura de esta tienda. Aquí se usan tal cual, IGUAL en los */
+  /* dos temas, para las superficies que llevan la identidad — el hero,   */
+  /* una banda de campaña, el pie.                                        */
+  /*                                                                     */
+  /* No es «el tema invertido»: es la marca, que no se invierte.          */
+  /* ------------------------------------------------------------------ */
+  --slab: var(--brand-background, #0a0a0a);
+  --slab-surface: var(--brand-surface, #141414);
+  --slab-foreground: var(--brand-text, #fafafa);
+  --slab-muted: color-mix(in srgb, var(--slab-foreground) 70%, var(--slab));
+  --slab-border: color-mix(in srgb, var(--slab-foreground) 14%, var(--slab));
+
+  /* ------------------------------------------------------------------ */
+  /* SUPERFICIE INVERSA                                                  */
+  /*                                                                     */
+  /* Una banda pintada CON el color del texto —para destacar— tiene el    */
+  /* contraste al revés que la página: en tema oscuro sale clara y en     */
+  /* claro, oscura. Su texto no puede usar `muted`, que está calculado    */
+  /* para la superficie normal: la llamada del pie rendía 2.02:1.         */
+  /*                                                                     */
+  /* No es lo mismo que la losa de marca: la losa es SIEMPRE oscura, y    */
+  /* esto es siempre lo contrario del tema.                               */
+  /* ------------------------------------------------------------------ */
+  --inverse: var(--foreground);
+  --inverse-foreground: var(--background);
+  --inverse-muted: color-mix(in srgb, var(--background) 72%, var(--foreground));
+  --inverse-border: color-mix(in srgb, var(--background) 20%, var(--foreground));
+
+  /* ------------------------------------------------------------------ */
+  /* COLORES DE ESTADO                                                   */
+  /*                                                                     */
+  /* La aplicación se escribió con un solo tema y ese tema era oscuro,    */
+  /* así que sus estados usan el extremo CLARO de cada escala:            */
+  /* `text-amber-300`, `text-red-300`, `text-emerald-300`. Sobre el crema */
+  /* del tema claro eso rinde 1.02:1 — el aviso de configuración          */
+  /* incompleta del panel era literalmente invisible.                    */
+  /*                                                                     */
+  /* Un estado no es una decoración: es información que además NO puede   */
+  /* transmitirse sólo por color. Estos tokens dan el mismo significado   */
+  /* con el contraste que cada tema necesita.                             */
+  /* ------------------------------------------------------------------ */
+  --danger: #b42318;
+  --danger-surface: color-mix(in srgb, var(--danger) 8%, var(--background));
+  --danger-border: color-mix(in srgb, var(--danger) 28%, var(--background));
+  --warning: #a15c07;
+  --warning-surface: color-mix(in srgb, var(--warning) 9%, var(--background));
+  --warning-border: color-mix(in srgb, var(--warning) 28%, var(--background));
+  --success: #067647;
+  --success-surface: color-mix(in srgb, var(--success) 8%, var(--background));
+  --success-border: color-mix(in srgb, var(--success) 28%, var(--background));
+  --info: #175cd3;
+  --info-surface: color-mix(in srgb, var(--info) 8%, var(--background));
+  --info-border: color-mix(in srgb, var(--info) 28%, var(--background));
+
+  /* RELLENOS SÓLIDOS DE ESTADO — NO cambian con el tema.
+     Un badge rojo es rojo en los dos: su fondo no lo pinta el tema, así que su
+     texto tampoco puede cambiar. Los tonos de arriba SÍ giran (son texto sobre
+     la página); éstos no (son fondo con texto encima). Confundir las dos cosas
+     dejó un botón a 1.77:1 en oscuro. */
+  --danger-solid: #b42318;
+  --warning-solid: #a15c07;
+  --success-solid: #067647;
+  --info-solid: #175cd3;
+  --accent: var(--brand-accent, #a1a1aa);
+}
+
+/* ------------------------------------------------------------------- */
+/* TEMA OSCURO — los seis campos que el tenant ya configuraba.           */
+/*                                                                      */
+/* Estos campos se diseñaron cuando el storefront tenía UN tema, y ese   */
+/* tema era oscuro. Reutilizarlos aquí es lo que hace que M12E no rompa  */
+/* la configuración de nadie: lo que un taller ya eligió sigue siendo su */
+/* tema oscuro, exactamente igual que antes.                            */
+/* ------------------------------------------------------------------- */
+:root[data-theme="dark"] {
   --background: var(--brand-background, #0a0a0a);
   --foreground: var(--brand-text, #fafafa);
   --surface: var(--brand-surface, #141414);
-  /* Derived from the surface rather than configurable: a seventh colour picker
-     for "the slightly lighter panel" is a field nobody fills correctly. */
   --surface-2: color-mix(in srgb, var(--surface) 88%, var(--foreground));
   --border: var(--brand-border, #262626);
-  --muted: var(--brand-accent, #a1a1aa);
+  /* EL DORADO NO ES EL GRIS.
+     Aquí `--muted` era `--brand-accent`, así que el acento de la marca pintaba
+     TODO el texto secundario. El manual del piloto lo quiere en torno al 3–5 %
+     de la superficie; ser el color del texto secundario es el extremo opuesto,
+     y empeora conforme más componentes migran a tokens. Se deriva del texto,
+     que es lo que un gris secundario es: 70% da 4.92:1 en el peor fondo del
+     piloto. */
+  --muted: color-mix(in srgb, var(--foreground) 70%, var(--background));
   --primary: var(--brand-primary, #ffffff);
+
+  /* Los mismos roles, con la luminosidad que un fondo oscuro necesita. */
+  --danger: #fda29b;
+  --warning: #fec84b;
+  --success: #75e0a7;
+  --info: #84caff;
+  /* El acento recupera su papel: un token propio, para usarlo a propósito y
+     poco, en vez de llegar a la página por ser el gris de todo. */
+  --accent: var(--brand-accent, #a1a1aa);
 }
 
 @theme inline {
+  /* M12F.1 — un escalón por debajo de `sm`. Existe porque hay rejillas de dos
+     columnas que funcionan desde 400 px y desbordan en 320: sin este punto
+     había que elegir entre una columna hasta 640 px —desaprovechando el móvil
+     grande— o desbordar el pequeño. */
+  --breakpoint-xs: 26rem;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
@@ -44,6 +181,56 @@
   --color-bd-border: var(--border);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
+  --color-accent: var(--accent);
+
+  /* ------------------------------------------------------------------ */
+  /* SUPERFICIES DE MARCA — no siguen al tema, y ése es el punto          */
+  /*                                                                     */
+  /* M12F cometió aquí un error de arquitectura: redefinió `--color-white`*/
+  /* y toda la escala `zinc` para que cambiaran de significado según el   */
+  /* tema. Traducía 2.779 utilidades de una vez, sí, pero al precio de    */
+  /* que `white` dejara de ser blanco — y con él se llevó por delante el  */
+  /* hero, que era una losa negra DELIBERADA y pasó a ser crema en modo   */
+  /* claro. La marca desapareció de su propia portada.                    */
+  /*                                                                     */
+  /* Los nombres de color estándar vuelven a significar su color. Lo que  */
+  /* cambia con el tema usa tokens semánticos, y lo que NO debe cambiar   */
+  /* usa estos: la paleta oscura que el tenant ya tenía configurada,      */
+  /* aplicada igual en los dos temas.                                     */
+  /*                                                                     */
+  /* Una página clara con un hero negro no es una inconsistencia: es una  */
+  /* decisión de marca. Lo que sería un fallo es que el sistema no sepa   */
+  /* qué contraste usar encima.                                           */
+  /* ------------------------------------------------------------------ */
+  --color-slab: var(--slab);
+  --color-slab-surface: var(--slab-surface);
+  --color-slab-foreground: var(--slab-foreground);
+  --color-slab-muted: var(--slab-muted);
+  --color-slab-border: var(--slab-border);
+  --color-inverse: var(--inverse);
+  --color-inverse-foreground: var(--inverse-foreground);
+  --color-inverse-muted: var(--inverse-muted);
+  --color-inverse-border: var(--inverse-border);
+  --color-danger: var(--danger);
+  --color-danger-surface: var(--danger-surface);
+  --color-danger-border: var(--danger-border);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+  --color-warning-border: var(--warning-border);
+  --color-success: var(--success);
+  --color-success-surface: var(--success-surface);
+  --color-success-border: var(--success-border);
+  --color-info: var(--info);
+  --color-info-surface: var(--info-surface);
+  --color-info-border: var(--info-border);
+  --color-danger-solid: var(--danger-solid);
+  --color-warning-solid: var(--warning-solid);
+  --color-success-solid: var(--success-solid);
+  --color-info-solid: var(--info-solid);
+
+  /* Sobre un relleno saturado —un badge rojo, un botón verde— el texto es
+     blanco en los dos temas, porque el fondo no cambia con el tema. */
+  --color-on-status: #ffffff;
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
 }
@@ -61,7 +248,9 @@ body {
 
 /* Dot grid pattern — used as decorative corner elements */
 .dot-grid {
-  background-image: radial-gradient(circle, rgba(255,255,255,0.22) 1.5px, transparent 1.5px);
+  /* La textura se apoya en el color del texto del contexto, así que funciona
+     igual sobre una losa oscura que sobre una página clara. */
+  background-image: radial-gradient(circle, color-mix(in srgb, currentColor 22%, transparent) 1.5px, transparent 1.5px);
   background-size: 18px 18px;
 }
 
@@ -89,17 +278,42 @@ body {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: var(--muted);
 }
 
 /* Black section label (like "REPARACIONES" labels in the flyers) */
-.section-label {
-  display: inline-block;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.25em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
+/*
+  LA ETIQUETA DE SECCIÓN. Estaba escrita como blanco al 45 % —de cuando el
+  escaparate sólo tenía tema oscuro— y en tema claro rendía 1.11:1: invisible.
+  Lo encontró la auditoría de contraste con navegador, no una aserción sobre el
+  código: la clase vive en el CSS y ninguna utilidad de Tailwind la nombra.
+
+  `currentColor` heredado no sirve aquí porque la etiqueta debe ser MÁS tenue
+  que el texto que acompaña. Se deriva del token, que sí sabe en qué tema está.
+*/
+@layer components {
+  /*
+    EN `@layer components` Y NO SUELTA, y eso importa: una clase suelta tiene la
+    misma especificidad que una utilidad de Tailwind y gana por orden de hoja.
+    Al ponerle `text-accent` a la etiqueta de una campaña, el color dorado
+    perdía contra este `color` y la etiqueta salía gris sobre la losa negra —
+    1.26:1. Dentro de la capa, cualquier utilidad la sobrescribe, que es como
+    debe comportarse un valor por defecto.
+  */
+  .section-label {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* NO hay regla `.bg-slab .section-label`. La hubo, y era un selector
+     descendiente: especificidad 0,2,0 contra el 0,1,0 de una utilidad. Ganaba
+     a `text-accent` y pintaba de gris la etiqueta dorada de la campaña —
+     1.26:1 sobre la losa negra. Cuando una superficie necesita otro color,
+     lo dice en el elemento, no desde un ancestro. */
 }
 
 img { display: block; max-width: 100%; }
@@ -113,4 +327,32 @@ img { display: block; max-width: 100%; }
 /* Smooth transitions globally */
 *, *::before, *::after {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* -------------------------------------------------------------------- */
+/* MOVIMIENTO REDUCIDO                                                    */
+/*                                                                       */
+/* La tira de productos se desplaza 25 s en bucle y no para nunca. Para   */
+/* quien tiene un trastorno vestibular, un movimiento periférico continuo */
+/* que no puede detener no es una molestia estética: provoca mareo y      */
+/* náusea. El sistema operativo ya recoge esa preferencia — sólo hay que  */
+/* respetarla.                                                            */
+/*                                                                       */
+/* No se ESCONDE el contenido: la tira sigue ahí y sigue leyéndose, sólo  */
+/* deja de moverse sola. Ocultarla castigaría a quien pidió calma.        */
+/* -------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* La marquesina queda quieta en su posición inicial en vez de saltar al
+     final del recorrido, que es donde la dejaría una animación de 0.01 ms. */
+  .animate-\[marquee_25s_linear_infinite\] {
+    animation: none !important;
+    transform: translateX(0);
+  }
 }

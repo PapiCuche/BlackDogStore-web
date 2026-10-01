@@ -9,6 +9,7 @@ from .models import (
     MembershipBranchAccess, StockTransfer, StockTransferItem,
     CompanySettings, InternalSequence,
     Customer,
+    FiscalDocument, FiscalSeries, FiscalSubmissionAttempt,
 )
 
 
@@ -67,7 +68,14 @@ class ProductAdmin(admin.ModelAdmin):
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ('price',)
+    # ERP-1 · DB-01. A sale's lines are not editable from the admin: adding,
+    # removing or re-quantifying one changes what was sold without touching the
+    # Kardex or the frozen tax breakdown. The whole row is read-only here.
+    can_delete = False
+    readonly_fields = ('product', 'quantity', 'price')
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Order)
@@ -80,8 +88,33 @@ class OrderAdmin(admin.ModelAdmin):
     list_filter = ('status', 'fulfillment_status', 'delivery_method', 'receipt_type', 'paid', 'created_at')
     search_fields = ('customer_name', 'customer_email', 'coupon_code',
                      'document_number', 'customer_phone')
-    readonly_fields = ('paid_at', 'payment_error',
+    # EL DINERO DE UNA VENTA CERRADA NO SE EDITA DESDE AQUÍ.
+    #
+    # `total` dejó de ser un número suelto en C2.1: es el ancla de un desglose
+    # CONGELADO (`taxable_amount`, `tax_amount`, `tax_rate`) que ya se imprimió
+    # en un papel que el cliente tiene en la mano. Cambiarlo aquí no recalcula
+    # nada —este formulario no pasa por `tax_services`—, así que dejaba la venta
+    # diciendo `base + impuesto != total` y el siguiente PDF salía contradictorio
+    # consigo mismo.
+    #
+    # Recalcular al guardar tampoco vale: reescribiría en silencio un documento
+    # ya entregado, que es justo lo que el congelado existe para impedir. Una
+    # corrección de importe es una operación comercial —nota de crédito—, no una
+    # edición de fila.
+    #
+    # ERP-1 · DB-01. El CICLO DE VIDA tampoco se edita aquí. `paid`+`status` son
+    # la única llave que habilita emitir comprobante fiscal a SUNAT
+    # (`fiscal_services`) y la nota de venta (`sales_note_services`); marcarlos a
+    # mano abría una venta jamás cobrada, sin `PaymentTransaction` ni salida de
+    # Kardex y sin traza de negocio. `views._confirm` sigue siendo lo único que
+    # puede marcar una orden pagada. `user` y `fulfillment_status` se muestran,
+    # no se reescriben.
+    readonly_fields = ('user', 'status', 'paid', 'fulfillment_status',
+                       'paid_at', 'payment_error',
                        'accepted_terms', 'accepted_warranty_policy',
+                       'total', 'discount_amount',
+                       'currency', 'subtotal_amount', 'taxable_amount',
+                       'tax_amount', 'tax_rate', 'tax_treatment',
                        'confirmation_email_sent_at', 'internal_notification_sent_at', 'email_send_error')
     fieldsets = (
         ('Identificación', {
@@ -92,7 +125,11 @@ class OrderAdmin(admin.ModelAdmin):
                        'document_type', 'document_number'),
         }),
         ('Económico', {
-            'fields': ('total', 'discount_amount', 'coupon_code'),
+            # El desglose se MUESTRA, para que una venta descuadrada se vea en
+            # vez de descubrirse al imprimir.
+            'fields': ('total', 'discount_amount', 'coupon_code',
+                       'subtotal_amount', 'taxable_amount', 'tax_amount',
+                       'tax_rate', 'tax_treatment', 'currency'),
         }),
         ('Entrega', {
             'fields': ('delivery_method', 'address_line', 'city', 'district', 'reference'),
@@ -151,7 +188,22 @@ class AdminAuditLogAdmin(admin.ModelAdmin):
     list_display = ('id', 'actor', 'action', 'target_type', 'target_id', 'ip_address', 'created_at')
     list_filter = ('action', 'target_type', 'created_at')
     search_fields = ('actor__username', 'target_id', 'action')
-    readonly_fields = ('actor', 'action', 'target_type', 'target_id', 'metadata', 'ip_address', 'user_agent', 'created_at')
+    # ERP-1 · DB-02. The audit trail is append-only, and the admin must not be a
+    # back door around that. `company` joins the read-only set (reassigning it
+    # changed who could see the row, admin_views:378-388), and the log can be
+    # neither added, edited nor deleted here — only viewed. Rows are still
+    # written by AdminAuditLog.log in code; that path is unaffected.
+    readonly_fields = ('actor', 'company', 'action', 'target_type', 'target_id',
+                       'metadata', 'ip_address', 'user_agent', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -705,4 +757,69 @@ class PaymentTransactionAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# C2.2A.1 — un comprobante emitido no es una hoja de cálculo
+# ---------------------------------------------------------------------------
+
+@admin.register(FiscalSeries)
+class FiscalSeriesAdmin(admin.ModelAdmin):
+    list_display = ('series', 'company', 'document_type', 'next_number',
+                    'environment', 'is_active')
+    list_filter = ('document_type', 'environment', 'is_active')
+    search_fields = ('series', 'company__name')
+    # EL CONTADOR NO SE EDITA A MANO. Retrocederlo haría que la siguiente
+    # emisión reutilizara un número ya entregado, y dos documentos con el mismo
+    # identificador fiscal son indistinguibles ante SUNAT.
+    readonly_fields = ('next_number', 'created_at', 'updated_at')
+
+
+class FiscalSubmissionAttemptInline(admin.TabularInline):
+    """El historial de envíos, sólo para leer. Un intento ocurrió o no ocurrió."""
+
+    model = FiscalSubmissionAttempt
+    extra = 0
+    can_delete = False
+    readonly_fields = ('attempt_number', 'environment', 'started_at', 'finished_at',
+                       'result', 'response_code', 'safe_message',
+                       'request_sha256', 'response_sha256')
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(FiscalDocument)
+class FiscalDocumentAdmin(admin.ModelAdmin):
+    """
+    SÓLO LECTURA, ENTERO.
+
+    Un comprobante electrónico declara algo ante SUNAT y puede estar ya aceptado.
+    Cambiar aquí un importe, un RUC o el estado no cambia lo que SUNAT tiene: sólo
+    haría que nuestra copia mintiera sobre el documento que existe. Y el XML
+    firmado es el documento: editarlo invalidaría la firma sin avisar.
+
+    Los estados se mueven por servicios —`fiscal_services`— que registran el
+    intento y la respuesta. Una corrección de importe es una nota de crédito, no
+    un UPDATE.
+    """
+
+    list_display = ('document_id', 'company', 'status', 'total', 'currency',
+                    'environment', 'issued_at')
+    list_filter = ('status', 'document_type', 'environment')
+    search_fields = ('series', 'number', 'customer_doc_number',
+                     'issuer_tax_id', 'company__name')
+    inlines = [FiscalSubmissionAttemptInline]
+
+    def get_readonly_fields(self, request, obj=None):
+        return [f.name for f in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        # Un comprobante nace de una venta, no de un formulario.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Borrar un comprobante emitido deja un hueco en la numeración que ante
+        # SUNAT no se puede explicar.
         return False

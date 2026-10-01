@@ -63,6 +63,7 @@ from .models import (
     InventoryCount,
     InventoryCountItem,
     Order,
+    OrderItem,
     Product,
     StockMovement,
     StockTransfer,
@@ -549,6 +550,171 @@ def _flag_stock_shortfall(order: Order, item, message: str) -> None:
     # Caller persists payment_error together with the payment fields.
 
 
+# ---------------------------------------------------------------------------
+# INV-04 — the oversell/shortfall a paid order leaves, DERIVED not stored
+# ---------------------------------------------------------------------------
+#
+# When a payment is captured and the shelf cannot cover a line, the sale exit
+# is not written (create_stock_movement refuses to go below zero) and the only
+# trace is a free-text note on order.payment_error — no quantity, not queryable.
+# The shortfall is fully derivable from facts the system already keeps:
+#
+#     ordered   = Σ OrderItem.quantity for the product in the order
+#     fulfilled = Σ SALE_EXIT quantity LINKED TO THE ORDER for the product
+#     shortfall = max(ordered − fulfilled, 0)
+#
+# It is NOT persisted: recomputing it from the Kardex means it HEALS on its own
+# once stock is replenished and the exit re-runs, and it can never drift from
+# the movements it is derived from. No new field, no migration.
+#
+# Exists(SALE_EXIT) is deliberately NOT used: a line can be partly covered (some
+# units out, some not — e.g. two order lines of one product, where the second
+# hits the idempotency guard), and an order can have one product covered and
+# another short. Coverage is a QUANTITY comparison, never a boolean.
+#
+# Only meaningful once the exit was ATTEMPTED, which is at payment: for any
+# status other than PAID this is empty (an unpaid order has simply not
+# decremented stock yet; a refunded/cancelled one is no longer owed).
+
+
+def order_stock_shortfall(order: Order) -> list[dict]:
+    """
+    Per-product shortfall for one order, derived. Empty unless the order is PAID.
+
+    Each row is {product_id, product_name, ordered, fulfilled, shortfall} for a
+    product whose ordered quantity exceeds what actually left the shelf for this
+    order; rows are ordered by product_id. See the module note above for why
+    this is a quantity comparison and why nothing is stored.
+    """
+    if order.status != Order.Status.PAID:
+        return []
+
+    ordered: dict[int, int] = {}
+    names: dict[int, str] = {}
+    for item in order.items.select_related('product'):
+        ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
+        names[item.product_id] = item.product.name
+
+    fulfilled = {
+        row['product_id']: row['q']
+        for row in (
+            StockMovement.objects
+            .filter(order=order, movement_type=StockMovement.SALE_EXIT)
+            .values('product_id')
+            .annotate(q=Sum('quantity'))
+        )
+    }
+
+    rows = []
+    for product_id, needed in ordered.items():
+        got = fulfilled.get(product_id, 0)
+        short = needed - got
+        if short > 0:
+            rows.append({
+                'product_id': product_id,
+                'product_name': names[product_id],
+                'ordered': needed,
+                'fulfilled': got,
+                'shortfall': short,
+            })
+    rows.sort(key=lambda r: r['product_id'])
+    return rows
+
+
+def order_ids_with_stock_shortfall(order_ids) -> set[int]:
+    """
+    The subset of `order_ids` with a positive derived shortfall on at least one
+    product — two aggregate queries, independent of page size.
+
+    The caller is responsible for scoping `order_ids` to what the user may see
+    AND to status=PAID (shortfall is meaningless before payment). This function
+    does not re-check status, so pass only paid orders.
+    """
+    order_ids = list(order_ids)
+    if not order_ids:
+        return set()
+
+    ordered: dict[tuple[int, int], int] = {}
+    for row in (
+        OrderItem.objects.filter(order_id__in=order_ids)
+        .values('order_id', 'product_id')
+        .annotate(q=Sum('quantity'))
+    ):
+        ordered[(row['order_id'], row['product_id'])] = row['q']
+
+    fulfilled: dict[tuple[int, int], int] = {}
+    for row in (
+        StockMovement.objects
+        .filter(order_id__in=order_ids, movement_type=StockMovement.SALE_EXIT)
+        .values('order_id', 'product_id')
+        .annotate(q=Sum('quantity'))
+    ):
+        fulfilled[(row['order_id'], row['product_id'])] = row['q']
+
+    short_ids: set[int] = set()
+    for (order_id, product_id), needed in ordered.items():
+        if needed - fulfilled.get((order_id, product_id), 0) > 0:
+            short_ids.add(order_id)
+    return short_ids
+
+
+def reprocess_order_stock_exit(order: Order, *, actor=None, request=None) -> dict:
+    """
+    Re-run ONLY the still-missing SALE_EXITs of an already-paid order.
+
+    The operator's half of INV-04: once the branch is replenished, this creates
+    the exits that could not be made at payment time and clears the shortfall.
+
+    It does NOT touch payment — no re-capture, no gateway call, no change to the
+    amount, to `paid`, or to `status`; no new order; no manual movement; no
+    stock from another branch; no edit to the order lines. It REUSES
+    record_sale_stock_movements (idempotent per (order, product), taking stock
+    only from the order's own fulfillment branch), so a product already
+    dispatched is left untouched and nothing is ever double-subtracted.
+
+    Concurrency-safe by the same lock the payment webhook uses: the order row is
+    held for the whole operation, so two simultaneous retries serialise and the
+    second sees the first's exits and creates none. If stock is still short the
+    missing lines stay unfulfilled — flagged, not raised, exactly as at payment
+    — and the caller reads what remains from order_stock_shortfall().
+
+    Returns {'created_movements': [...], 'shortfall': [...]}.
+    """
+    if order.status != Order.Status.PAID:
+        raise InventoryError(
+            'Solo un pedido pagado puede reprocesar su salida de stock.'
+        )
+
+    with transaction.atomic():
+        locked = Order.objects.select_for_update().get(pk=order.pk)
+        # Re-check on the LOCKED row: the status is the authority for whether a
+        # sale is still owed, and reading it before the lock is a TOCTOU. If a
+        # (future) refund/cancel flow flipped it while we waited for the lock, we
+        # must not create exits for an order no longer owed.
+        if locked.status != Order.Status.PAID:
+            raise InventoryError(
+                'Solo un pedido pagado puede reprocesar su salida de stock.'
+            )
+        created = record_sale_stock_movements(locked, actor=actor)
+
+    shortfall = order_stock_shortfall(locked)
+    AdminAuditLog.log(
+        actor=actor,
+        action='order_stock_exit_reprocessed',
+        target_type='order',
+        target_id=locked.pk,
+        company=locked.company,
+        request=request,
+        metadata={
+            'order_id': locked.pk,
+            'branch_id': locked.fulfillment_branch_id,
+            'created_movements': len(created),
+            'remaining_shortfall_products': len(shortfall),
+        },
+    )
+    return {'created_movements': created, 'shortfall': shortfall}
+
+
 def apply_initial_stock(
     *, branch, product, quantity: int, actor=None, reason: str = '', request=None,
 ) -> StockMovement | None:
@@ -948,17 +1114,27 @@ def approve_inventory_count(
     count: InventoryCount, *, actor=None, request=None,
 ) -> list[StockMovement]:
     """
-    Apply the counted differences as correction movements, under lock.
+    Apply the discrepancy each count DISCOVERED as a correction movement, under
+    lock.
 
-    THE RE-READ IS THE WHOLE POINT. The correction is
+    THE CORRECTION IS A DELTA, NOT A REPLACEMENT (ERP-1 · INV-02). It is
 
-        physical_quantity − theoretical_at_approval
+        physical_quantity − theoretical_at_start
 
-    where `theoretical_at_approval` is read from BranchStock inside this
-    transaction, with the row already locked. Using `theoretical_at_start`
-    instead would apply a delta computed from an hour-old photograph: every sale
-    made while somebody walked the shelves would be silently un-sold, destroying
-    real stock and real revenue in the same stroke.
+    applied on top of the current, locked stock. `theoretical_at_start` is what
+    the system believed WHEN COUNTING BEGAN, so this difference is exactly the
+    unrecorded discrepancy the counter found — theft, breakage, an earlier
+    miscount. Applying it as a delta corrects that discrepancy while LEAVING
+    every legitimate movement recorded between counting and approving — a sale,
+    a receipt — standing.
+
+    Using `physical_quantity − theoretical_at_approval` instead (the value
+    re-read here under lock) telescopes to `current + (physical − current) =
+    physical`: it overwrites the shelf to the count's photograph. A sale made
+    while somebody walked the aisles would be silently un-sold and its units
+    invented back; a receipt would be destroyed. `theoretical_at_approval` is
+    still recorded as evidence of what the system said at approval, but the
+    arithmetic must not use it.
 
     A product whose physical quantity was never entered is SKIPPED. Treating
     "nobody counted this" as "there are none" would write off inventory nobody
@@ -990,7 +1166,19 @@ def approve_inventory_count(
         movements: list[StockMovement] = []
         for item in items:
             theoretical = stocks[item.product_id].quantity
-            difference = item.physical_quantity - theoretical
+
+            # ERP-1 · INV-02. The correction is the discrepancy the COUNT
+            # discovered — physical minus what the system believed WHEN COUNTING
+            # BEGAN — applied as a delta on the current (locked) stock. It is not
+            # `physical − theoretical_at_approval`: that delta telescopes to
+            #     current + (physical − current) = physical,
+            # overwriting the shelf to the count's photograph and discarding
+            # every legitimate movement recorded between counting and approving.
+            # A sale during an open count would be silently un-sold (stock
+            # invented); a receipt would be destroyed. `theoretical_at_approval`
+            # is still recorded as evidence of what the system said at approval,
+            # but it must not drive the arithmetic.
+            difference = item.physical_quantity - item.theoretical_at_start
 
             item.theoretical_at_approval = theoretical
             item.difference = difference

@@ -42,6 +42,8 @@ from .tenancy import (
     NoTenantError,
     active_memberships,
     can_delegate_capabilities,
+    describe_branch_scope,
+    legacy_catalog_company,
     has_capability,
     is_platform_admin,
     resolve_capabilities,
@@ -774,8 +776,22 @@ class InternalDashboardView(APIView):
         # Business access is never implied by authentication alone, and never by
         # the legacy UserProfile.role.
         if not platform_admin and not memberships:
+            # QUIÉN ES LEGACY LO DICE EL SERVIDOR — H4.1.2B, ACCESSGUARD-403-LEGACY-01.
+            #
+            # Este 403 lo reciben dos personas muy distintas: el operador
+            # pre-SaaS que todavía cruza el puente, y alguien a quien le
+            # revocaron la membresía. El panel no puede distinguirlos por su
+            # cuenta, y antes deducía «legacy» del propio 403: un rechazo se
+            # convertía en autoridad, y el rol global volvía a mandar sobre una
+            # cuenta revocada.
+            #
+            # Así que se dice explícitamente, y lo calcula quien puede saberlo.
+            # No concede nada: cada endpoint sigue decidiendo por su cuenta.
             return Response(
-                {'detail': 'No tienes acceso al control interno de ninguna empresa.'},
+                {
+                    'detail': 'No tienes acceso al control interno de ninguna empresa.',
+                    'legacy_bridge': legacy_catalog_company(user) is not None,
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -806,6 +822,10 @@ class InternalDashboardView(APIView):
             return Response({
                 'company': None,
                 'membership': None,
+                # Sin empresa resuelta no hay sucursales que describir. Null dice
+                # «todavía no se sabe»; una lista vacía diría «ninguna», que es
+                # otra cosa.
+                'branch_scope': None,
                 'access': {
                     'is_platform_admin': platform_admin,
                     'legacy_role': None,
@@ -887,9 +907,13 @@ class InternalDashboardView(APIView):
         # Commercial KPIs — real from Phase 2C, because Order now belongs to a
         # company. Gated by the sales capability: revenue is not something every
         # member of a company should see.
+        #
+        # BRANCH-SCOPED since H4.1.2 (decision D3), through the same boundary as
+        # the order list: someone granted two of five shops sees the revenue of
+        # two shops, never a company total they could not open order by order.
         sales = None
         if 'sales.orders.view' in capabilities:
-            sales = self._sales_snapshot(company)
+            sales = self._sales_snapshot(user, company)
 
         # Inventory KPIs — real from Phase 2D, and BRANCH-SCOPED.
         #
@@ -924,6 +948,12 @@ class InternalDashboardView(APIView):
                     'name': membership.branch.name,
                 },
             },
+            # WHERE THIS PERSON MAY WORK — H4.1.2A, and deliberately NOT inside
+            # `inventory`. That snapshot only exists for a caller holding an
+            # inventory capability, so reading the branch line from it told a
+            # technician with a branch that they had none. Branch scope is access
+            # context: ids and names, no stock and no figures.
+            'branch_scope': describe_branch_scope(user, company),
             'access': {
                 'is_platform_admin': platform_admin,
                 'legacy_role': membership.role if membership else None,
@@ -1018,20 +1048,23 @@ class InternalDashboardView(APIView):
 
     SALES_TREND_DAYS = 7
 
-    def _sales_snapshot(self, company):
+    def _sales_snapshot(self, user, company):
         from django.db.models import Avg, Count, Sum
         from django.utils import timezone as dj_timezone
 
         from .models import Order
+        from .tenancy import visible_orders
 
-        paid = Order.objects.filter(company=company, status=Order.Status.PAID, paid=True)
+        # ONE base queryset, scoped once. Every figure below — today, totals,
+        # ticket, pipeline, trend and distribution — derives from it, so no
+        # metric can be computed over a wider set than the rest.
+        pipeline = visible_orders(user, company)
+        paid = pipeline.filter(status=Order.Status.PAID, paid=True)
         today = dj_timezone.localdate()
 
         today_paid = paid.filter(paid_at__date=today)
         today_agg = today_paid.aggregate(revenue=Sum('total'), orders=Count('id'))
         all_agg = paid.aggregate(revenue=Sum('total'), orders=Count('id'), ticket=Avg('total'))
-
-        pipeline = Order.objects.filter(company=company)
 
         return {
             'today_revenue': str(_money(today_agg['revenue'])),
@@ -1049,26 +1082,27 @@ class InternalDashboardView(APIView):
                     Order.FulfillmentStatus.PREPARING,
                 ],
             ).count(),
-            'revenue_trend': self._revenue_trend(company),
-            'orders_by_status': self._orders_by_status(company),
+            'revenue_trend': self._revenue_trend(paid),
+            'orders_by_status': self._orders_by_status(pipeline),
         }
 
-    def _revenue_trend(self, company):
-        """Paid revenue per day for the last week, oldest first. Empty days show 0."""
+    def _revenue_trend(self, paid):
+        """
+        Paid revenue per day for the last week, oldest first. Empty days show 0.
+
+        `paid` is the caller's already-scoped paid orders; this never widens it.
+        """
         from datetime import timedelta
 
         from django.db.models import Sum
         from django.utils import timezone as dj_timezone
 
-        from .models import Order
-
         today = dj_timezone.localdate()
         start = today - timedelta(days=self.SALES_TREND_DAYS - 1)
 
         rows = (
-            Order.objects
-            .filter(company=company, status=Order.Status.PAID, paid=True,
-                    paid_at__date__gte=start, paid_at__date__lte=today)
+            paid
+            .filter(paid_at__date__gte=start, paid_at__date__lte=today)
             .values('paid_at__date')
             .annotate(revenue=Sum('total'))
         )
@@ -1085,13 +1119,14 @@ class InternalDashboardView(APIView):
             })
         return series
 
-    def _orders_by_status(self, company):
+    def _orders_by_status(self, orders):
+        """Order count per payment status over the caller's already-scoped `orders`."""
         from django.db.models import Count
 
         from .models import Order
 
         counts = dict(
-            Order.objects.filter(company=company)
+            orders
             .values_list('status')
             .annotate(n=Count('id'))
         )

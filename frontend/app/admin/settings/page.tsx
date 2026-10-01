@@ -30,6 +30,7 @@ import {
   updateCompanyConfiguration,
   type CompanyConfiguration,
 } from "../lib/internal-api";
+import { hasCompanyWideScope } from "../lib/branch-authority";
 
 type Draft = Record<string, string>;
 
@@ -128,13 +129,13 @@ function Field({
   onChange: (name: string, value: string) => void;
 }) {
   const base =
-    "w-full rounded-lg border bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-  const borderClass = error ? "border-red-500/50" : "border-white/[0.08]";
+    "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const borderClass = error ? "border-danger-border" : "border-bd-border";
 
   return (
     <div>
       <label
-        className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500"
+        className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
         htmlFor={`cfg-${field.name}`}
       >
         {field.label}
@@ -155,7 +156,7 @@ function Field({
           <input
             type="color"
             aria-label={field.label}
-            className="h-9 w-12 shrink-0 cursor-pointer rounded border border-white/[0.08] bg-black/40"
+            className="h-9 w-12 shrink-0 cursor-pointer rounded border border-bd-border bg-background/40"
             value={/^#[0-9A-Fa-f]{6}$/.test(value) ? value : "#000000"}
             disabled={disabled}
             onChange={(e) => onChange(field.name, e.target.value.toUpperCase())}
@@ -182,9 +183,9 @@ function Field({
       )}
 
       {error ? (
-        <p className="mt-1.5 text-xs text-red-400">{error}</p>
+        <p className="mt-1.5 text-xs text-danger">{error}</p>
       ) : field.hint ? (
-        <p className="mt-1.5 text-[11px] text-zinc-600">{field.hint}</p>
+        <p className="mt-1.5 text-[11px] text-muted">{field.hint}</p>
       ) : null}
     </div>
   );
@@ -301,7 +302,11 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
   }
 
   const canManage = config?.can_manage ?? false;
-  const disabled = saving || !canManage;
+  // WHAT is `can_manage`; WHERE is the branch scope. These settings reach every
+  // branch, so editing them needs both (WRITE-SCOPE-01). Reading does not.
+  const companyWide = hasCompanyWideScope(ctx.dashboard?.branch_scope);
+  const canEdit = canManage && companyWide;
+  const disabled = saving || !canEdit;
 
   const sections: [string, string, FieldProps[]][] = [
     ["General", "Identidad de la empresa.", GENERAL],
@@ -316,43 +321,52 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
       <div className="space-y-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-white">Configuración</h1>
-            <p className="mt-1 text-sm text-zinc-500">
+            <h1 className="text-xl font-semibold text-foreground">Configuración</h1>
+            <p className="mt-1 text-sm text-muted">
               Identidad, branding y políticas de {config?.company.name ?? "tu empresa"}.
               Estos datos aparecen en tu tienda, tus emails y tus documentos.
             </p>
           </div>
           <Link
             href="/admin/branches"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
           >
             Sucursales →
           </Link>
         </div>
 
-        {loading ? <p className="py-10 text-center text-zinc-600">Cargando…</p> : null}
+        {loading ? <p className="py-10 text-center text-muted">Cargando…</p> : null}
 
         {error && !Object.keys(errors).length ? (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+          <div className="rounded-xl border border-danger-border bg-danger-surface px-5 py-4 text-sm text-danger">
             {error}
           </div>
         ) : null}
 
         {config && !canManage ? (
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-            <p className="text-sm text-zinc-500">
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
               Puedes ver esta configuración pero no editarla. Se requiere la
-              capacidad <code className="text-zinc-300">company.manage</code>.
+              capacidad <code className="text-foreground/85">company.manage</code>.
+            </p>
+          </div>
+        ) : null}
+        {config && canManage && !companyWide ? (
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
+              Puedes ver esta configuración pero no editarla: afecta a toda la
+              empresa y tu acceso está limitado a algunas sucursales. Sí puedes
+              editar la numeración de tus sucursales.
             </p>
           </div>
         ) : null}
 
         {config && config.status.missing_count > 0 ? (
-          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-5 py-4">
-            <p className="text-sm font-medium text-amber-100/90">
+          <div className="rounded-xl border border-warning-border bg-amber-400/[0.06] px-5 py-4">
+            <p className="text-sm font-medium text-warning">
               Falta configurar {config.status.missing_count} dato(s)
             </p>
-            <p className="mt-1 text-xs text-amber-100/70">
+            <p className="mt-1 text-xs text-warning">
               {config.status.missing.map((m) => m.label).join(" · ")}
             </p>
           </div>
@@ -390,32 +404,32 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   title="Numeración interna"
                   description="Cómo se numeran tus notas de venta internas."
                 >
-                  <SequenceSettings companyId={companyId} />
+                  <SequenceSettings companyId={companyId} companyWide={companyWide} />
                 </DashboardSection>
               </div>
 
               <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Vista previa
                 </p>
                 <BrandPreview draft={draft} name={draft.name ?? ""} />
-                <p className="text-[11px] text-zinc-600">
+                <p className="text-[11px] text-muted">
                   Aproximación de la tienda pública. Se guarda solo al confirmar.
                 </p>
 
-                <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                <div className="rounded-xl border border-bd-border bg-surface p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                     Sucursal de despacho
                   </p>
-                  <p className="mt-2 text-sm text-zinc-300">
+                  <p className="mt-2 text-sm text-foreground/85">
                     {config.fulfillment_branch?.name ?? "Sin configurar"}
                   </p>
-                  <p className="mt-1 text-[11px] text-zinc-600">
+                  <p className="mt-1 text-[11px] text-muted">
                     De aquí sale el stock de las ventas online.
                   </p>
                   <Link
                     href="/admin/branches"
-                    className="mt-3 inline-block text-xs text-zinc-400 underline underline-offset-4 transition hover:text-white"
+                    className="mt-3 inline-block text-xs text-muted underline underline-offset-4 transition hover:text-foreground"
                   >
                     Cambiar en Sucursales
                   </Link>
@@ -423,21 +437,21 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
               </div>
             </div>
 
-            {canManage ? (
-              <div className="flex flex-wrap items-center gap-3 border-t border-white/[0.06] pt-6">
+            {canEdit ? (
+              <div className="flex flex-wrap items-center gap-3 border-t border-bd-border pt-6">
                 <button
                   type="button"
                   onClick={() => void save()}
                   disabled={saving}
-                  className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                  className="rounded-lg bg-foreground px-5 py-2.5 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
                 >
                   {saving ? "Guardando…" : "Guardar configuración"}
                 </button>
                 {saved ? (
-                  <span className="text-sm text-zinc-400">Cambios guardados.</span>
+                  <span className="text-sm text-muted">Cambios guardados.</span>
                 ) : null}
                 {Object.keys(errors).length > 0 ? (
-                  <span className="text-sm text-red-400">
+                  <span className="text-sm text-danger">
                     Revisa los campos marcados.
                   </span>
                 ) : null}

@@ -39,18 +39,22 @@ from .serializers import (
     MembershipWriteSerializer,
 )
 from .tenancy import (
-    CrossTenantError,
+    BRANCH_SCOPE_NOT_GRANTABLE,
+    COMPANY_WIDE_SCOPE_REQUIRED,
     active_memberships,
-    assert_branch_in_company,
+    can_delegate_branch_scope,
     can_grant_company_role,
     can_manage_company,
     can_manage_company_memberships,
+    has_company_wide_scope,
     is_platform_admin,
     resolve_capabilities,
     scope_queryset,
+    visible_branches,
     visible_companies,
 )
 from .throttles import AdminUsersThrottle
+from .access_views import _scope_readable
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -87,6 +91,29 @@ _ROLE_NOT_GRANTABLE = (
 # tenant is not rejected by a check that could be forgotten — it is simply not
 # in the set being searched.
 
+# One answer for a branch id that does not exist, belongs to another tenant or
+# lies outside what the caller may grant (RBAC-02): none of them is theirs.
+_BRANCH_NOT_FOUND = 'Sucursal no encontrada o sin acceso.'
+_BRANCH_NOT_REACHED = 'No puedes modificar una sucursal que no alcanzas.'
+
+
+def _grantable_branch(actor, company, branch_id):
+    """
+    The branch of `company` named by `branch_id`, if the caller may point a
+    membership at it; otherwise None.
+
+    Looked up INSIDE the company rather than checked afterwards, so a foreign id
+    is simply not in the set being searched; and filtered by the WHERE-axis rule
+    of F-BRANCH-01, so a branch-restricted admin cannot name one they do not
+    reach. Every refusal is the same None, and the caller answers one 404.
+    """
+    if not can_delegate_branch_scope(
+        actor, company, mode=Membership.ACCESS_MODE_SELECTED, branch_ids=[branch_id],
+    ):
+        return None
+    return Branch.objects.filter(company=company, pk=branch_id).first()
+
+
 def _apply_branch_access(membership, branch_ids, actor):
     """
     Replace a membership's branch grants with `branch_ids`.
@@ -105,7 +132,7 @@ def _apply_branch_access(membership, branch_ids, actor):
     missing = [i for i in branch_ids if i not in found]
     if missing:
         return None, Response(
-            {'detail': 'Sucursal no encontrada o sin acceso.'},
+            {'detail': _BRANCH_NOT_FOUND},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -139,6 +166,16 @@ def _validate_default_branch(membership):
         membership.save(update_fields=['branch', 'updated_at'])
 
 
+# F2 · RBAC-01. Belonging to a company is not permission to read it: the
+# company record and its branch roster need a read capability, exactly as M11
+# decided for memberships, roles and areas. Without one, lists come back empty
+# and details answer 404, so ids stay secret. The roster is also readable with
+# the membership capabilities because granting branch access needs it as a
+# picker — the same reason READ_AREAS includes them.
+READ_COMPANY = ('company.view', 'company.manage')
+READ_BRANCHES = (*READ_COMPANY, 'memberships.view', 'memberships.manage')
+
+
 class AdminCompanyListView(APIView):
     """
     GET  /api/admin/companies/  — companies the caller may see.
@@ -154,7 +191,10 @@ class AdminCompanyListView(APIView):
 
     def get(self, request):
         qs = (
-            visible_companies(request.user)
+            _scope_readable(
+                visible_companies(request.user), request.user, READ_COMPANY,
+                company_field='pk',
+            )
             .annotate(
                 branch_count=Count('branches', distinct=True),
                 membership_count=Count('memberships', distinct=True),
@@ -220,7 +260,10 @@ class AdminCompanyDetailView(APIView):
         return [permissions.IsAuthenticated(), HasCompanyMembership()]
 
     def _visible_or_none(self, request, pk):
-        return visible_companies(request.user).filter(pk=pk).first()
+        return _scope_readable(
+            visible_companies(request.user), request.user, READ_COMPANY,
+            company_field='pk',
+        ).filter(pk=pk).first()
 
     def get(self, request, pk):
         company = self._visible_or_none(request, pk)
@@ -287,6 +330,11 @@ class AdminCompanyFulfillmentBranchView(APIView):
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        # WRITE-SCOPE-01: where the online store ships from is company-wide.
+        if not has_company_wide_scope(request.user, company):
+            return Response(
+                {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+            )
 
         raw = request.data.get('branch', None)
         branch = None
@@ -337,8 +385,9 @@ class AdminBranchListView(APIView):
     throttle_classes = [AdminUsersThrottle]
 
     def get(self, request):
-        qs = scope_queryset(
-            Branch.objects.select_related('company'), request.user,
+        qs = _scope_readable(
+            scope_queryset(Branch.objects.select_related('company'), request.user),
+            request.user, READ_BRANCHES,
         ).order_by('company__name', 'name')
 
         company_id = request.query_params.get('company')
@@ -362,6 +411,12 @@ class AdminBranchListView(APIView):
         # can_manage_company() already short-circuits for platform admins.
         if not can_manage_company(request.user, company):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        # WRITE-SCOPE-01: a new branch changes the company's topology and is born
+        # outside a SELECTED member's grants. Not added to them as a workaround.
+        if not has_company_wide_scope(request.user, company):
+            return Response(
+                {'detail': COMPANY_WIDE_SCOPE_REQUIRED}, status=status.HTTP_403_FORBIDDEN,
+            )
 
         branch = ser.save()
         AdminAuditLog.log(
@@ -400,8 +455,9 @@ class AdminBranchDetailView(APIView):
     _WRITABLE = ('name', 'address', 'phone', 'email', 'is_active')
 
     def _scoped(self, request, pk):
-        return scope_queryset(
-            Branch.objects.select_related('company'), request.user,
+        return _scope_readable(
+            scope_queryset(Branch.objects.select_related('company'), request.user),
+            request.user, READ_BRANCHES,
         ).filter(pk=pk).first()
 
     def get(self, request, pk):
@@ -418,6 +474,15 @@ class AdminBranchDetailView(APIView):
             return Response(
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+        # WRITE-SCOPE-01: a SELECTED member edits only a branch they reach. 403,
+        # not 404: the roster already shows them this branch (RBAC-01), so the
+        # answer reveals nothing they could not read.
+        if not has_company_wide_scope(request.user, branch.company) and not (
+            visible_branches(request.user, branch.company).filter(pk=branch.pk).exists()
+        ):
+            return Response(
+                {'detail': _BRANCH_NOT_REACHED}, status=status.HTTP_403_FORBIDDEN,
             )
 
         payload = request.data if isinstance(request.data, dict) else {}
@@ -541,17 +606,28 @@ class AdminMembershipListView(APIView):
                 {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
             )
 
+        # Phase 2D. Default ALL, matching what a membership meant before this
+        # phase: nothing restricted these people by branch, and creating them
+        # restricted by surprise would be a silent narrowing.
+        access_mode = data.get('branch_access_mode', Membership.ACCESS_MODE_ALL)
+
+        # F2 · F-BRANCH-01. Nobody grants a branch they cannot reach — and the
+        # ALL default is itself a grant a branch-restricted admin cannot make.
+        if not can_delegate_branch_scope(
+            request.user, company,
+            mode=access_mode, branch_ids=data.get('branch_access', []),
+        ):
+            return Response(
+                {'detail': BRANCH_SCOPE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
+            )
+
         branch = None
         if data.get('branch'):
-            branch = Branch.objects.filter(pk=data['branch']).first()
-            if not branch:
+            branch = _grantable_branch(request.user, company, data['branch'])
+            if branch is None:
                 return Response(
-                    {'detail': 'Sucursal no encontrada.'}, status=status.HTTP_404_NOT_FOUND
+                    {'detail': _BRANCH_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND
                 )
-            try:
-                assert_branch_in_company(branch, company)
-            except CrossTenantError as exc:
-                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         # One response for every reason the target cannot be used, so the
         # endpoint is not a platform-wide user-id oracle.
@@ -562,11 +638,6 @@ class AdminMembershipListView(APIView):
             return Response(
                 {'detail': _TARGET_USER_UNAVAILABLE}, status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Phase 2D. Default ALL, matching what a membership meant before this
-        # phase: nothing restricted these people by branch, and creating them
-        # restricted by surprise would be a silent narrowing.
-        access_mode = data.get('branch_access_mode', Membership.ACCESS_MODE_ALL)
 
         membership = Membership.objects.create(
             user=target_user,
@@ -669,20 +740,35 @@ class AdminMembershipDetailView(APIView):
                 {'detail': _ROLE_NOT_GRANTABLE}, status=status.HTTP_403_FORBIDDEN
             )
 
+        # F2 · F-BRANCH-01. Checked before anything is written: a refused
+        # scope change must not leave the rest of the request applied.
+        if 'branch_access_mode' in data or 'branch_access' in data:
+            current_ids = list(membership.branch_access.filter(
+                is_active=True, branch__is_active=True,
+            ).values_list('branch_id', flat=True))
+            wanted_ids = data.get('branch_access', current_ids)
+            if not can_delegate_branch_scope(
+                request.user, membership.company,
+                mode=data.get('branch_access_mode', membership.branch_access_mode),
+                branch_ids=wanted_ids,
+                current=(membership.branch_access_mode, current_ids),
+            ):
+                return Response(
+                    {'detail': BRANCH_SCOPE_NOT_GRANTABLE},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if 'branch' in data:
             if data['branch'] is None:
                 membership.branch = None
             else:
-                branch = Branch.objects.filter(pk=data['branch']).first()
-                if not branch:
+                branch = _grantable_branch(
+                    request.user, membership.company, data['branch'],
+                )
+                if branch is None:
                     return Response(
-                        {'detail': 'Sucursal no encontrada.'},
-                        status=status.HTTP_404_NOT_FOUND,
+                        {'detail': _BRANCH_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
                     )
-                try:
-                    assert_branch_in_company(branch, membership.company)
-                except CrossTenantError as exc:
-                    return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
                 membership.branch = branch
 
         if 'role' in data:
@@ -692,19 +778,29 @@ class AdminMembershipDetailView(APIView):
         if 'branch_access_mode' in data:
             membership.branch_access_mode = data['branch_access_mode']
 
-        membership.save()
+        # One unit: a grant list refused by _apply_branch_access must not leave
+        # the fields saved above it written (F2).
+        with transaction.atomic():
+            membership.save()
 
-        # Grants are applied AFTER the mode, so a single request can switch
-        # somebody to SELECTED and name their branches at the same time.
-        granted = None
-        if 'branch_access' in data:
-            granted, access_error = _apply_branch_access(
-                membership, data['branch_access'], request.user,
-            )
-            if access_error:
-                return access_error
+            if data.get('is_active') is False:
+                # ERP-1 · STAFF-01. Same rule as the staff toggle: deactivating a
+                # membership retires its role assignments, so reactivating it later
+                # does not silently restore authority no one re-granted.
+                membership.role_assignments.filter(is_active=True).update(is_active=False)
 
-        _validate_default_branch(membership)
+            # Grants are applied AFTER the mode, so a single request can switch
+            # somebody to SELECTED and name their branches at the same time.
+            granted = None
+            if 'branch_access' in data:
+                granted, access_error = _apply_branch_access(
+                    membership, data['branch_access'], request.user,
+                )
+                if access_error:
+                    transaction.set_rollback(True)
+                    return access_error
+
+            _validate_default_branch(membership)
 
         AdminAuditLog.log(
             actor=request.user,
