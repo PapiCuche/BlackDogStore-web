@@ -113,7 +113,7 @@ function CapabilityMatrix({
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{capability.name}</span>
-                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-foreground/[0.06] text-muted" : capability.status === "available" ? "bg-amber-500/10 text-amber-300/70" : "bg-zinc-800 text-muted"}`}>
+                      <span className={`rounded px-1.5 py-0.5 text-[9px] ${capability.status === "active" ? "bg-foreground/[0.06] text-muted" : capability.status === "available" ? "bg-amber-500/10 text-amber-300/70" : "bg-foreground/[0.04] text-muted"}`}>
                         {capability.status === "active" ? "Activo" : capability.status === "available" ? "Transición" : "Reservado"}
                       </span>
                     </span>
