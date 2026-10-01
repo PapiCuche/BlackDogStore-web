@@ -211,7 +211,7 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
               No hay comisiones devengadas en este periodo.
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+            <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
               <table className="w-full min-w-[40rem] text-left text-sm">
                 <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
@@ -258,7 +258,7 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
                 : "Sólo lectura: no tienes permiso para configurar comisiones."
             }
           >
-            <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+            <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
               <table className="w-full min-w-[32rem] text-left text-sm">
                 <thead className="border-b border-bd-border text-[11px] uppercase tracking-widest text-muted">
                   <tr>
