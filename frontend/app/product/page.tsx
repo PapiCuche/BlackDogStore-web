@@ -134,7 +134,7 @@ function CatalogContent() {
         </div>
       </section>
 
-      <main className="mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-12">
+      <div className="mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-12">
         <div className="mb-10 space-y-4 border-b border-bd-border pb-8">
           <div className="flex flex-wrap gap-2" aria-label="Filtrar por categoría">
             <button
@@ -292,7 +292,7 @@ function CatalogContent() {
             ) : null}
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
