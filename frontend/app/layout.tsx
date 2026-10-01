@@ -28,8 +28,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   const description =
-    config.policies.warranty_text ||
-    `Compra en ${name}${config.contact.city ? ` · ${config.contact.city}` : ""}.`;
+    `Catálogo y canales de atención de ${name}${config.contact.city ? ` en ${config.contact.city}` : ""}.`;
 
   return {
     title: { default: name, template: `%s | ${name}` },
