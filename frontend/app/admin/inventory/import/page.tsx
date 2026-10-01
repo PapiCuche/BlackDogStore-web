@@ -269,7 +269,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                     else next[String(column.index)] = Number(event.target.value);
                     setBranchMap(next);
                   }}
-                  className="w-full rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-zinc-200"
+                  className="w-full rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
                 >
                   <option value="">— no importar esta columna —</option>
                   {branches.map((branch) => (
