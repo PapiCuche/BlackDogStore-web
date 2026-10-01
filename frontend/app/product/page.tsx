@@ -123,7 +123,6 @@ function CatalogContent() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <section className="relative overflow-hidden border-b border-bd-border">
-        <div className="topo-bg pointer-events-none absolute inset-0 opacity-75" />
         <div className="relative mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
           <span className="section-label">Catálogo</span>
           <h1 className="mt-3 max-w-3xl font-display text-5xl font-black italic uppercase leading-[0.88] tracking-[-0.05em] text-foreground sm:text-7xl">
