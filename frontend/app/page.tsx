@@ -21,26 +21,19 @@ type Product = {
 };
 
 const CATALOG_SECTIONS = [
-  { label: "iPhone", slug: "iphone", icon: "📱" },
-  { label: "Apple Watch", slug: "apple-watch", icon: "⌚" },
-  { label: "iPad", slug: "ipad", icon: "🖥" },
-  { label: "Mac", slug: "mac", icon: "💻" },
-  { label: "Accesorios", slug: "accesorios", icon: "🎧" },
-  { label: "Audífonos", slug: "audifonos", icon: "🎵" },
-];
-
-const STATS = [
-  { stat: "5,000+", label: "Dispositivos reparados" },
-  { stat: "6 meses", label: "Garantía garantizada" },
-  { stat: "100%", label: "Repuestos originales" },
-  { stat: "0 soles", label: "Diagnóstico" },
+  { label: "iPhone", slug: "iphone", code: "01" },
+  { label: "Apple Watch", slug: "apple-watch", code: "02" },
+  { label: "iPad", slug: "ipad", code: "03" },
+  { label: "Mac", slug: "mac", code: "04" },
+  { label: "Accesorios", slug: "accesorios", code: "05" },
+  { label: "Audífonos", slug: "audifonos", code: "06" },
 ];
 
 const REPAIR_SERVICES = [
   {
     title: "Cambio de Pantalla",
-    desc: "OLED/LCD con calibración de True Tone. No aparece mensaje de pieza reparada.",
-    badge: "Más solicitado",
+    desc: "Evaluación, reemplazo de pantalla y pruebas funcionales antes de la entrega.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -49,8 +42,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Cambio de Batería",
-    desc: "Baterías originales Nasan certificadas. Recupera la autonomía de tu iPhone.",
-    badge: "Cert. Nasan",
+    desc: "Revisión del estado de batería, reemplazo cuando corresponde y pruebas posteriores.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h2a2 2 0 002-2V8a2 2 0 00-2-2h-2M3 8h14v12H3V8zM9 4h6v4H9V4z" />
@@ -59,8 +52,8 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Tapa Trasera",
-    desc: "Tecnología láser para cambio preciso y seguro. Sin rastro de reparación.",
-    badge: "Tecnología láser",
+    desc: "Evaluación de carcasa y tapa trasera con intervención según el estado del equipo.",
+    badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
@@ -69,7 +62,7 @@ const REPAIR_SERVICES = [
   },
   {
     title: "Cambio de Glass",
-    desc: "Protector de vidrio templado premium. Instalación sin burbujas ni polvo.",
+    desc: "Revisión del cristal y alternativas de intervención según el modelo y el daño.",
     badge: null,
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -79,17 +72,7 @@ const REPAIR_SERVICES = [
   },
 ];
 
-const BRANDS_STRIP = [
-  "iPhone 17 Pro Max",
-  "iPhone 16 Pro",
-  "iPhone 16",
-  "iPhone 15 Pro",
-  "iPhone 15",
-  "iPhone 14 Pro",
-  "iPhone 14",
-  "iPhone 13",
-  "iPhone 12",
-];
+
 
 export default function Home() {
   // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
@@ -113,58 +96,41 @@ export default function Home() {
     <div className="min-h-screen bg-[#080808] text-white">
       <Hero />
 
-      {/* Stats bar */}
-      <section className="border-y border-white/[0.06] bg-[#111]">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
-          {STATS.map((item) => (
-            <div key={item.label} className="px-8 py-8 text-center">
-              <p className="font-display text-4xl font-black tracking-tight text-white lg:text-5xl">
-                {item.stat}
-              </p>
-              <p className="mt-1.5 text-xs uppercase tracking-widest text-zinc-500">{item.label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Scrolling marquee strip */}
-      <div className="overflow-hidden border-b border-white/[0.06] bg-[#0d0d0d] py-3">
-        <div className="flex animate-[marquee_25s_linear_infinite] gap-8 whitespace-nowrap">
-          {[...BRANDS_STRIP, ...BRANDS_STRIP, ...BRANDS_STRIP].map((brand, i) => (
-            <span key={i} className="flex items-center gap-8 text-[10px] font-bold uppercase tracking-[0.3em] text-zinc-700">
-              {brand}
-              <span className="h-1 w-1 rounded-full bg-zinc-700" />
-            </span>
-          ))}
-        </div>
-      </div>
-
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
 
-        {/* Category sections grid */}
-        <section className="py-16">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        {/* Catalog entry point */}
+        <section className="py-16 sm:py-20">
+          <div className="grid gap-8 border-b border-bd-border pb-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-end">
             <div>
               <span className="section-label">Catálogo</span>
-              <h2 className="font-display mt-2 text-5xl font-black uppercase leading-none tracking-tight text-white sm:text-6xl">
-                Categorías
+              <h2 className="mt-3 max-w-xl font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground sm:text-6xl">
+                Encuentra tu próximo equipo.
               </h2>
             </div>
-            <Link href="/product" className="text-sm font-bold uppercase tracking-widest text-zinc-400 transition hover:text-white">
-              Ver todos →
-            </Link>
+            <div className="max-w-xl lg:justify-self-end">
+              <p className="text-sm leading-6 text-muted sm:text-base sm:leading-7">
+                Navega por categorías, revisa disponibilidad y entra al detalle antes de decidir.
+              </p>
+              <Link href="/product" className="mt-4 inline-flex text-sm font-bold text-foreground transition hover:text-muted">
+                Ver catálogo completo →
+              </Link>
+            </div>
           </div>
-          <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3">
             {CATALOG_SECTIONS.map((section) => (
               <Link
                 key={section.slug}
                 href={`/product?category=${section.slug}`}
-                className="group flex flex-col items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#111] p-5 text-center transition hover:border-white/20 hover:bg-[#161616]"
+                className="group flex min-h-28 items-end justify-between gap-4 border-b border-bd-border py-5 transition hover:bg-surface sm:px-5 lg:min-h-36 lg:border-r lg:px-6"
               >
-                <span className="text-2xl">{section.icon}</span>
-                <span className="font-display text-xs font-black uppercase tracking-widest text-zinc-400 transition group-hover:text-white">
-                  {section.label}
+                <span>
+                  <span className="block text-[10px] font-bold tracking-[0.18em] text-muted">{section.code}</span>
+                  <span className="mt-2 block font-display text-xl font-extrabold uppercase tracking-[-0.02em] text-foreground sm:text-2xl">
+                    {section.label}
+                  </span>
                 </span>
+                <span className="text-xl text-muted transition-transform group-hover:translate-x-1 group-hover:text-foreground" aria-hidden="true">→</span>
               </Link>
             ))}
           </div>
