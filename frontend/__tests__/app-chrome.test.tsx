@@ -28,6 +28,7 @@ describe('AppChrome', () => {
     expect(screen.getByTestId('storefront-header')).toBeInTheDocument();
     expect(screen.getByTestId('storefront-footer')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Contactar por WhatsApp' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Saltar al contenido' })).toHaveAttribute('href', '#main-content');
     expect(screen.getByText('contenido').parentElement).not.toHaveClass('internal-ui-fonts');
   });
 
@@ -42,6 +43,7 @@ describe('AppChrome', () => {
     expect(screen.queryByTestId('storefront-header')).not.toBeInTheDocument();
     expect(screen.queryByTestId('storefront-footer')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Contactar por WhatsApp' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Saltar al contenido' })).toHaveAttribute('href', '#admin-main-content');
     expect(screen.getByText('contenido interno').parentElement).toHaveClass('internal-ui-fonts');
   });
 });
