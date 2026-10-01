@@ -215,6 +215,12 @@ async function serveDocument(page: Page, document: object | null) {
   });
 }
 
+/** El bloque «Comprobante electrónico», y sólo él. */
+const fiscalPanel = (page: Page) =>
+  page.locator("section").filter({
+    has: page.getByRole("heading", { name: /comprobante electrónico/i }),
+  });
+
 async function openOrder(page: Page, orderId: number) {
   await page.goto(`/admin/orders/${orderId}`, { waitUntil: "networkidle" });
   await expect(
@@ -244,7 +250,7 @@ test.beforeEach(async ({ context }) => {
 test.describe("el comprobante electrónico en el detalle del pedido", () => {
   test.describe.configure({ mode: "serial" });
 
-  test("sin comprobante ofrece emitirlo", async ({ page }) => {
+  test("sin comprobante ofrece prepararlo, no enviarlo", async ({ page }) => {
     test.setTimeout(120_000);
     const id = invoiceOrder();
 
@@ -252,7 +258,14 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
     await openOrder(page, id);
 
     await expect(page.getByText(/todavía no tiene comprobante/i)).toBeVisible();
-    await expect(page.getByRole("button", { name: /emitir factura/i })).toBeVisible();
+    // DOS PASOS, DOS NOMBRES (E2E-01). El primero numera y firma el documento y
+    // NO habla con SUNAT; por eso el panel dice «Preparar» desde b3b1cfc y ya no
+    // «Emitir». El envío, que es el acto con consecuencia fiscal, es otro botón
+    // y sólo aparece cuando ya hay un comprobante firmado (prueba siguiente).
+    await expect(
+      page.getByRole("button", { name: "Preparar factura", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /enviar a sunat/i })).toHaveCount(0);
   });
 
   test("firmado ofrece enviar, y no dice que esté aceptado", async ({ page }) => {
@@ -264,6 +277,8 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
     await expect(page.getByText("F001-1")).toBeVisible();
     await expect(page.getByRole("button", { name: /enviar a sunat/i })).toBeVisible();
+    // Ya está preparado: el primer paso no se vuelve a ofrecer.
+    await expect(page.getByRole("button", { name: /preparar factura/i })).toHaveCount(0);
     // LO QUE NO PUEDE DECIR. Sin constancia no hay aceptación.
     const texto = await page.locator("body").innerText();
     expect(/aceptad[ao] por sunat/i.test(texto), texto.slice(0, 300)).toBe(false);
@@ -308,8 +323,13 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
 
     await expect(page.getByText(/rechazado por sunat/i).first()).toBeVisible();
     // NINGÚN botón que cree silenciosamente otro correlativo.
-    await expect(page.getByRole("button", { name: /emitir factura/i })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /reintentar/i })).toHaveCount(0);
+    // Dentro del bloque fiscal, no en toda la página: el detalle del pedido
+    // tiene otros «Reintentar» (la salida de stock) que no son de este panel.
+    const panel = fiscalPanel(page);
+    await expect(panel.getByRole("button", { name: /preparar factura/i })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /firmar comprobante/i })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /reintentar/i })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /enviar a sunat/i })).toHaveCount(0);
     await expect(page.getByText(/considera usado este correlativo/i)).toBeVisible();
   });
 });

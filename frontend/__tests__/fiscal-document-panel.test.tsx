@@ -42,3 +42,16 @@ it('does not offer individual submission for a signed boleta', async () => {
   expect(screen.queryByRole('button', { name: 'Reintentar el mismo comprobante' })).not.toBeInTheDocument();
   expect(screen.getByText(/Resumen Diario/)).toBeInTheDocument();
 });
+
+// E2E-01: the first step numbers and signs the document and does not talk to
+// SUNAT, so it is «Preparar», never «Emitir»; sending is a separate action that
+// needs a signed document.
+it.each(['factura', 'boleta'] as const)('offers preparing a %s when there is none yet', async (receiptType) => {
+  jest.mocked(fetchWithAuth).mockResolvedValue({
+    ok: false, status: 404, json: async () => ({ detail: 'Sin comprobante.' }),
+  } as Response);
+  render(<FiscalDocumentPanel orderId={1} isPaid receiptType={receiptType} canIssue />);
+  expect(await screen.findByRole('button', { name: `Preparar ${receiptType}` })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /emitir/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Enviar a SUNAT' })).not.toBeInTheDocument();
+});
