@@ -135,7 +135,7 @@ function BranchEditor({
                 type="button"
                 disabled={busy}
                 onClick={() => void run(draft)}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 Guardar
               </button>
