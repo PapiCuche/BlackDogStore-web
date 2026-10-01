@@ -62,8 +62,14 @@ export default async function RootLayout({
     >
       <body className="min-h-full bg-background font-sans text-foreground">
         <StorefrontProvider config={config}>
+          <a
+            href="#main-content"
+            className="sr-only fixed left-4 top-4 z-[100] rounded-lg bg-primary px-4 py-2 text-sm font-bold text-background focus:not-sr-only"
+          >
+            Saltar al contenido
+          </a>
           <Header />
-          <div>{children}</div>
+          <div id="main-content" tabIndex={-1}>{children}</div>
           <Footer />
 
           {config.contact.whatsapp_link ? (
