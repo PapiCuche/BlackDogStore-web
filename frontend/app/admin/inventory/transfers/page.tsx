@@ -15,6 +15,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { StaffGuard } from "../../components/StaffGuard";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
@@ -52,10 +53,10 @@ export function TransferStatusBadge({ transfer }: { transfer: StockTransfer }) {
     <span
       className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-medium ${
         emphasised
-          ? "border-white/25 bg-white/[0.08] text-white"
+          ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
           : muted
-            ? "border-white/[0.06] text-zinc-600"
-            : "border-white/10 text-zinc-400"
+            ? "border-bd-border text-muted"
+            : "border-bd-border text-muted"
       }`}
     >
       {transfer.status_label}
@@ -132,28 +133,18 @@ function TransfersContent({ user }: { user: AuthUser }) {
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25 disabled:opacity-50";
-  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  const fieldClass = internalInputClass;
+  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Transferencias</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Traslados de stock entre sucursales. El stock sale al despachar y
-              entra al recibir.
-            </p>
-          </div>
-          <Link
-            href="/admin/inventory"
-            className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-          >
-            ← Inventario
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Transferencias"
+          description="Traslados de stock entre sucursales. El stock sale al despachar y entra al recibir."
+          actions={<Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>}
+        />
 
         {scope.error ? <ErrorBox message={scope.error} /> : null}
 
@@ -216,7 +207,7 @@ function TransfersContent({ user }: { user: AuthUser }) {
               <button
                 type="submit"
                 disabled={creating || !source || !destination || source === destination}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 {creating ? "Creando…" : "Crear borrador"}
               </button>
@@ -225,8 +216,8 @@ function TransfersContent({ user }: { user: AuthUser }) {
         ) : null}
 
         {mayTransfer && branches.length < 2 ? (
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-            <p className="text-sm text-zinc-500">
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
               Necesitas acceso a al menos dos sucursales para transferir stock.
             </p>
           </div>
@@ -244,8 +235,8 @@ function TransfersContent({ user }: { user: AuthUser }) {
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   statusFilter === option.value
-                    ? "border-white/25 bg-white/[0.06] text-white"
-                    : "border-white/10 text-zinc-400 hover:border-white/20 hover:text-white"
+                    ? "border-foreground/25 bg-foreground/[0.06] text-foreground"
+                    : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
                 }`}
               >
                 {option.label}
@@ -263,7 +254,7 @@ function TransfersContent({ user }: { user: AuthUser }) {
           {!loading && !error && transfers.length > 0 ? (
             <TableWrap>
               <thead>
-                <tr className="border-b border-white/[0.06]">
+                <tr className="border-b border-bd-border">
                   <Th>#</Th>
                   <Th>Fecha</Th>
                   <Th>Origen</Th>
@@ -276,11 +267,11 @@ function TransfersContent({ user }: { user: AuthUser }) {
               </thead>
               <tbody>
                 {transfers.map((t) => (
-                  <tr key={t.id} className="border-b border-white/[0.03]">
+                  <tr key={t.id} className="border-b border-bd-border/60">
                     <Td>
                       <Link
                         href={`/admin/inventory/transfers/${t.id}`}
-                        className="transition hover:text-white"
+                        className="transition hover:text-foreground"
                       >
                         #{t.id}
                       </Link>
