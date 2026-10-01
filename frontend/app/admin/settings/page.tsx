@@ -425,7 +425,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   type="button"
                   onClick={() => void save()}
                   disabled={saving}
-                  className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+                  className={internalPrimaryButtonClass}
                 >
                   {saving ? "Guardando…" : "Guardar configuración"}
                 </button>
