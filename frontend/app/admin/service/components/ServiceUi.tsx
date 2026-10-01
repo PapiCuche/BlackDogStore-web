@@ -13,7 +13,7 @@ export function Panel({
   actions?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-bd-border bg-surface p-6">
+    <section className="rounded-xl border border-bd-border bg-surface p-6">
       {title ? (
         <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
