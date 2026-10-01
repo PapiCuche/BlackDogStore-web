@@ -45,9 +45,9 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
   // One company: a dropdown with a single option is noise, not a choice.
   if (available.length <= 1 && current) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2">
-        <IconStore className="h-4 w-4 text-zinc-500" />
-        <span className="truncate text-sm font-medium text-zinc-200">
+      <div className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2">
+        <IconStore className="h-4 w-4 text-muted" />
+        <span className="truncate text-sm font-medium text-foreground">
           {current.name}
         </span>
       </div>
@@ -61,52 +61,56 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-sm transition hover:border-white/20"
+        aria-controls="company-switcher-options"
+        className="flex items-center gap-2 rounded-lg border border-bd-border bg-surface px-3 py-2 text-sm transition hover:border-foreground/20"
       >
-        <IconStore className="h-4 w-4 text-zinc-500" />
-        <span className="max-w-[10rem] truncate font-medium text-zinc-200">
+        <IconStore className="h-4 w-4 text-muted" />
+        <span className="max-w-[10rem] truncate font-medium text-foreground">
           {current ? current.name : "Selecciona una empresa"}
         </span>
-        <IconChevronDown className="h-4 w-4 text-zinc-500" />
+        <IconChevronDown className="h-4 w-4 text-muted" />
       </button>
 
       {open && (
-        <ul
+        <div
+          id="company-switcher-options"
           role="listbox"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-white/10 bg-[#0b0b0b] p-1.5 shadow-2xl"
+          aria-label="Seleccionar empresa"
+          className="absolute right-0 z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;
             return (
-              <li key={company.id} role="option" aria-selected={isCurrent}>
-                <button
-                  type="button"
+              <button
+                key={company.id}
+                type="button"
+                role="option"
+                aria-selected={isCurrent}
                   onClick={() => {
                     setOpen(false);
                     onSelect(company.id);
                   }}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${
                     isCurrent
-                      ? "bg-white/[0.08] text-white"
-                      : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+                      ? "bg-foreground/[0.08] text-foreground"
+                      : "text-muted hover:bg-foreground/[0.04] hover:text-foreground"
                   }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate">{company.name}</span>
-                    <span className="block truncate font-mono text-[11px] text-zinc-600">
+                    <span className="block truncate font-mono text-[11px] text-muted">
                       {company.slug}
                     </span>
                   </span>
                   {!company.is_active && (
-                    <span className="shrink-0 rounded border border-white/15 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                    <span className="shrink-0 rounded border border-bd-border px-1.5 py-0.5 text-[10px] text-muted">
                       inactiva
                     </span>
                   )}
                 </button>
-              </li>
             );
           })}
-        </ul>
+        </div>
       )}
     </div>
   );
