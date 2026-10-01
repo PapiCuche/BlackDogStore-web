@@ -290,7 +290,7 @@ function NewRole({ companyId, catalog, onCreated }: { companyId: number; catalog
   if (!open) return <button type="button" onClick={() => setOpen(true)} className={internalPrimaryButtonClass}>Nuevo rol</button>;
 
   return (
-    <section className="rounded-2xl border border-bd-border bg-foreground/[0.03] p-5">
+    <section className="rounded-xl border border-bd-border bg-foreground/[0.03] p-5">
       <div className="mb-5 flex items-start justify-between gap-3">
         <div><h2 className="font-semibold text-foreground">Nuevo rol empresarial</h2><p className="mt-1 text-xs text-muted">Empieza con el mínimo privilegio y agrega solo lo necesario.</p></div>
         <button type="button" onClick={() => setOpen(false)} className="text-sm text-muted hover:text-foreground">Cerrar</button>
