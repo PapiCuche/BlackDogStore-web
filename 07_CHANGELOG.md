@@ -15,9 +15,11 @@ operación, sin crear venta, stock, comprobante ni comisión (`6caa88c`). Prueba
 navegador del flujo caja → técnico → cobro y reparación de prueba sembrada por
 `seed_demo_users --e2e-fixtures` (`1d35b7d`). Dejar una orden sin técnico exige
 `service.orders.manage`; con `service.orders.assign` sólo se asigna y se reasigna
-(`4796db0`). Migraciones `0094` y `0095` (sólo roles estándar sin modificar).
-Backend 4634 pruebas, 0 fallos, en PostgreSQL; frontend 428 pruebas, typecheck,
-lint 0/33 y build OK (50 páginas); Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,1 min.
+(`4796db0`). Nombrar a un técnico exige en todos los caminos
+`service.orders.manage`, o `service.orders.assign` con `service.orders.view`
+(`9b59a31`). Migraciones `0094` y `0095` (sólo roles estándar sin modificar).
+Backend 4643 pruebas, 0 fallos, en PostgreSQL; frontend 428 pruebas, typecheck,
+lint 0/33 y build OK (50 páginas); Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
 
 ## 2026-09-30 — F2 completada
 

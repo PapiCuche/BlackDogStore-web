@@ -198,13 +198,16 @@ Estado: VERIFICADO @ `4a9dd5c`. Resúmenes diarios son por empresa (por diseño,
 Autoridad: `service_services.py::eligible_technicians(company, branch, user_id=None)`
 (usuario activo, membresía activa, `service.orders.view`, sucursal dentro de
 `tenancy.visible_branches`); `assign_technician` lo vuelve a exigir bajo el bloqueo de
-la orden. Asignar: `service.orders.assign` (con `service.orders.view`) o
-`service.orders.manage` (`V1ServiceOrderAssignmentView.require_assignment_authority`).
+la orden. Nombrar a un técnico: `service.orders.manage` O (`service.orders.assign` Y
+`service.orders.view`), una sola regla en
+`V1ServiceSurfaceMixin.require_assignment_authority`, usada por la asignación (GET y
+POST), los candidatos de una sucursal y la recepción con `technician_id`. Recibir
+sin técnico no la exige.
 El id del técnico se resuelve dentro del conjunto elegible: fuera de él, 404.
 Desasignar (`technician_id: null`) exige `service.orders.manage`; `assign` sólo asigna
 y reasigna, y la negativa se decide antes de buscar la orden (sin efectos).
-Tests: `SvcAssignCapabilityTest`, `SvcUnassignAuthorityTest`, `SvcTechnicianEligibilityTest`, `SvcIntakeWithAssignmentTest`.
-Estado: VERIFICADO @ `4796db0`.
+Tests: `SvcAssignCapabilityTest`, `SvcAssignVisibilityTest`, `SvcUnassignAuthorityTest`, `SvcTechnicianEligibilityTest`, `SvcIntakeWithAssignmentTest`.
+Estado: VERIFICADO @ `9b59a31`.
 
 **SVC-ATOMIC-01** — Recibir un equipo con técnico es una sola transacción.
 Autoridad: `service_services.py::create_repair_order_with_assignment`; `assign_technician`
@@ -249,7 +252,7 @@ Estado: VERIFICADO @ `4a9dd5c`.
 - Frontend: `app/admin/components/BranchAccessPanel.tsx`, `app/admin/staff/page.tsx`, `app/admin/users/page.tsx`, `app/lib/staff.ts`, `app/admin/lib/internal-api.ts` (sequences, promotions).
 
 ### Servicio técnico
-- `service_services.py` (`eligible_technicians`, `assign_technician`, `create_repair_order_with_assignment`, `record_service_payment`), `v1_service_views.py` (`V1ServiceSurfaceMixin.get_order`, asignación devuelve `{current, candidates}`, `V1ServiceTechnicianCandidatesView`, `ASSIGN_AUTHORITY`, `COLLECT_AUTHORITY`; la lista de órdenes acepta `status=a,b,c`).
+- `service_services.py` (`eligible_technicians`, `assign_technician`, `create_repair_order_with_assignment`, `record_service_payment`), `v1_service_views.py` (`V1ServiceSurfaceMixin.get_order`, asignación devuelve `{current, candidates}`, `V1ServiceTechnicianCandidatesView`, `require_assignment_authority`, `COLLECT_AUTHORITY`; la lista de órdenes acepta `status=a,b,c`).
 - Capacidades separadas en SVC-FUNC-01: `service.orders.assign` (de `service.orders.manage`), `service.payments.collect` (de `service.payments.manage`). La amplia sigue implicando la estrecha.
 - Frontend: `app/lib/service-console.ts` (`mayAssignTechnician`, `mayCollectPayment`), `app/admin/service/` (`queues.ts`, `components/ServiceQueue.tsx`, `components/ServiceIntake.tsx`, una página por cola), `app/admin/sales/pos/PosModeSwitch.tsx`, `PosServiceIntake.tsx`.
 - Tests: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `StabilizationServiceAccessTest`, `P0CServiceTransitionIsolationTest`, `Svc*`.
@@ -353,6 +356,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SVC-NAV-01 | MEDIUM | `937cf82` | `internal-modules.ts`, `app/admin/service/queues.ts`, `ServiceQueue.tsx`; `V1ServiceOrderListView` (`status` múltiple) | `service-navigation.test.tsx`, `SvcQueueStatusFilterTest` | CORREGIDO |
 | SVC-ASSIGN-01 | MEDIUM | `1928b05` | `eligible_technicians`, `V1ServiceOrderAssignmentView`, `V1ServiceTechnicianCandidatesView`, migración 0094 | `SvcAssignCapabilityTest`, `SvcTechnicianEligibilityTest`, `SvcAssignPresetTest` | IMPLEMENTADO |
 | SVC-ASSIGN-UNASSIGN | MEDIUM | `4796db0` | `V1ServiceOrderAssignmentView.post` (null exige `service.orders.manage`); «Quitar» en `orders/[id]/page.tsx` | `SvcUnassignAuthorityTest`, `service-authority-console.test.tsx` | CORREGIDO |
+| SVC-ASSIGN-VIEW-01 | MEDIUM | `9b59a31` | `V1ServiceSurfaceMixin.require_assignment_authority` en candidatos y en recepción con técnico (antes bastaba `assign` sin `view`) | `SvcAssignVisibilityTest` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -389,7 +393,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - POS: `C1Pos*`, `HardeningPosPaymentAuthorityTest`, `Ip1Pos*`.
 - PROMOTIONS: `C13Promotion*`, `C14PromotionTenantInvariantTest`.
 - FISCAL: `C22B*`, `Fiscal5a*`, `Fiscal5b*`, `Fiscal6*`.
-- SERVICE: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `P0CServiceTransitionIsolationTest`, `SvcQueueStatusFilterTest`, `SvcAssignCapabilityTest`, `SvcUnassignAuthorityTest`, `SvcTechnicianEligibilityTest`, `SvcIntakeWithAssignmentTest`, `SvcAssignOutsideATransactionTest`, `SvcAssignPresetTest`, `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `SvcCustomServiceLineTest`, `SvcE2eServiceFixtureSeedTest`.
+- SERVICE: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `P0CServiceTransitionIsolationTest`, `SvcQueueStatusFilterTest`, `SvcAssignCapabilityTest`, `SvcAssignVisibilityTest`, `SvcUnassignAuthorityTest`, `SvcTechnicianEligibilityTest`, `SvcIntakeWithAssignmentTest`, `SvcAssignOutsideATransactionTest`, `SvcAssignPresetTest`, `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `SvcCustomServiceLineTest`, `SvcE2eServiceFixtureSeedTest`.
 - STAFF: `H41Staff*`.
 - FRONTEND: `api-proxy-scope.test.ts`, `service-assignment-contract.test.tsx`, `admin-write-scope.test.tsx`, `branch-authority.test.ts`, `service-navigation.test.tsx`, `service-authority-console.test.tsx`, `pos-service-intake.test.tsx`.
 - E2E: `h411-auth-interop`, `pos-ticket`, `pos-receipt-options`, `staff-personnel`, `fiscal-invoice`, `service-pos` (requieren `seed_demo_users --company-slug <slug> --e2e-fixtures --fiscal-beta` y los dev servers :3000/:8000).
@@ -439,7 +443,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
 - **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
 - **Integración**: ERP + F1/F2 en `master` por el PR #42 (merge `ef9890f`).
-- **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `4796db0` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`). Backend 4634 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,1 min.
+- **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `9b59a31` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`), SVC-ASSIGN-VIEW-01 (`9b59a31`). Draft PR #44 contra `master`, sin mergear. Backend 4643 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
 
 ---
 
@@ -452,7 +456,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - «¿Quién puede leer la ficha de la empresa o sus sucursales?» → `tenant_views.READ_COMPANY` / `READ_BRANCHES` + `access_views._scope_readable`; `F2TenantReadAuthorizationTest`.
 - «¿Quién puede cambiar algo que afecta a toda la empresa?» → capacidad + `tenancy.has_company_wide_scope`; `F2SelectedBranchWriteScopeTest`, `F2SelectedCompanySettingsScopeTest`.
 - «¿A quién se le puede asignar una orden de servicio?» → `service_services.py::eligible_technicians`; `SvcTechnicianEligibilityTest`.
-- «¿Quién puede asignar técnico?» → `V1ServiceOrderAssignmentView.require_assignment_authority`, `ASSIGN_AUTHORITY`; `SvcAssignCapabilityTest`.
+- «¿Quién puede asignar técnico?» → `V1ServiceSurfaceMixin.require_assignment_authority` (`manage`, o `assign` con `view`); `SvcAssignCapabilityTest`, `SvcAssignVisibilityTest`.
 - «¿Quién puede dejar una orden sin técnico?» → sólo `service.orders.manage` (`V1ServiceOrderAssignmentView.post`); `SvcUnassignAuthorityTest`.
 - «¿Quién puede cobrar un servicio y quién reversar?» → `v1_service_views.py::COLLECT_AUTHORITY` y `V1ServicePaymentReverseView`; `SvcPaymentCollectTest`.
 - «¿Cómo se recibe un equipo desde la caja?» → `app/admin/sales/pos/PosServiceIntake.tsx` → `POST service/orders/` con `technician_id` → `create_repair_order_with_assignment`.

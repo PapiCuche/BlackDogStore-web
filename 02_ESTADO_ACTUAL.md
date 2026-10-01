@@ -6,7 +6,7 @@ documentación real, sin reemplazar su historial.
 ## 2026-10-01 — SVC-FUNC-01: servicio técnico operativo e integrado con la caja
 
 Rama `feature/service-pos-functional-integration`, sobre `master` `ef9890f`. Código
-en `4796db0`.
+en `9b59a31`.
 
 Qué cambia para quien usa el sistema:
 
@@ -24,6 +24,11 @@ Qué cambia para quien usa el sistema:
   Con `assign` se asigna y se reasigna; dejar una orden sin técnico exige
   `service.orders.manage` (SVC-ASSIGN-UNASSIGN, `4796db0`): con sólo `assign` el
   servidor responde 403 y no cambia nada.
+  La regla de quién puede nombrar a un técnico es una sola (SVC-ASSIGN-VIEW-01,
+  `9b59a31`): `service.orders.manage`, o `service.orders.assign` junto con
+  `service.orders.view`. Vale igual para asignar una orden existente, para pedir
+  los candidatos de una sucursal y para recibir un equipo indicando el técnico.
+  Recibir un equipo sin técnico exige lo mismo que antes.
 - **Cobrar el servicio (SVC-PAY-01, `d62fa30`).** Nueva capacidad
   `service.payments.collect`. Registra un pago quien tiene `collect` o
   `service.payments.manage`; reversar sigue exigiendo `manage`. Los roles estándar
@@ -63,19 +68,21 @@ Cambios de comportamiento a tener presentes:
   estándar.
 - La lista de candidatos de una orden se limita a quienes alcanzan su sucursal.
 - Con sólo `service.orders.assign` hace falta además `service.orders.view` para
-  usar el panel de asignación de una orden, porque su respuesta contiene la orden.
+  asignar, ver candidatos o recibir un equipo con técnico. Ningún rol estándar
+  tiene `assign` sin `view`; un rol creado por la empresa sí puede tenerlo.
 
 Defecto corregido de paso: el `@transaction.atomic` de `assign_technician` había
 quedado sobre `_notify` desde `108a904`. `assign_technician` bloquea la fila de la
 orden y, fuera de una transacción, PostgreSQL lo rechaza. Lo cubre
 `SvcAssignOutsideATransactionTest`.
 
-Validación sobre `4796db0`: backend PostgreSQL 4634 pruebas (4631 OK, 3 omitidas,
-0 fallos), 1632,0 s; `check` sin problemas; `makemigrations --check` sin cambios;
-base nueva migrada hasta 0095. Frontend 428 pruebas en 40 suites, OK; typecheck
-OK; lint 0 errores y 33 advertencias (las del baseline); build OK (50 páginas).
-Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,1 min. Los commits de código anteriores se comprobaron además por
-separado (pruebas del área, typecheck y migraciones).
+Validación sobre `9b59a31`: backend PostgreSQL 4643 pruebas (4640 OK, 3 omitidas,
+0 fallos), 1600,8 s; `check` sin problemas; `makemigrations --check` sin cambios.
+Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min. El frontend no cambió desde `4796db0` (árbol `frontend/`
+idéntico, `7ea6870`), donde se midió: 428 pruebas en 40 suites, OK; typecheck OK;
+lint 0 errores y 33 advertencias (las del baseline); build OK (50 páginas). Los
+commits de código anteriores se comprobaron además por separado (pruebas del
+área, typecheck y migraciones).
 
 Deuda y límites conocidos: al volver de «Servicio técnico» a «Productos» se pierde
 una recepción a medio llenar (la cesta sí se conserva); si el contexto de la caja
