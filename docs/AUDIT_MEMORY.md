@@ -23,11 +23,11 @@ Comprobar con `git diff <SHA>..HEAD -- <archivos>` y revalidar sólo ese subárb
 | Branch | `audit/full-system-2026-09` (local; `origin/master` es el master autoritativo) |
 | Baseline medido | `65aa8c1` (merge de `origin/master` `2dca0a3` sobre `9525b08`) |
 | HEAD al sembrar | `4a9dd5c` — delta vs baseline: sólo `02_`, `07_`, `frontend/app/api/[...path]/route.ts`, `frontend/__tests__/api-proxy-scope.test.ts` |
-| Último SHA verificado | `c042fea` (F2: F-BRANCH-01/02/03, F-CAP-01). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
+| Último SHA verificado | `d18e983` (F2: F-BRANCH-01/02/03, F-CAP-01, RBAC-01/02). Backend cambia en `tenancy.py`, `tenant_views.py`, `staff_views.py`, `promotion_views.py`, `settings_views.py`, `tests.py` |
 | Fecha | 2026-09-30 |
 | Working tree | limpio |
 | Migraciones | 105 aplicadas / 0 pendientes / 0 por generar (`store` llega a `0093_sales_service_delivery`) |
-| Backend tests | 4528 OK (3 skipped), PostgreSQL 14, 1511,2 s @ `c042fea` (baseline: 4489 @ `65aa8c1`) |
+| Backend tests | 4545 ejecutadas, 4542 OK, 3 skipped, 0 fallos, PostgreSQL 14, 1517,6 s @ `d18e983` (baseline: 4489 @ `65aa8c1`) |
 | Frontend tests | 368/368 OK, 34 suites, @ `4a9dd5c` |
 | TypeScript | `tsc --noEmit` OK @ `4a9dd5c` |
 | Lint | 0 errores / 33 advertencias @ `4a9dd5c` |
@@ -87,10 +87,23 @@ Autoridad: `tenancy.py::visible_branches`, `_branch_authority`, `_granted_branch
 Tests: `Phase2dBranchScopedReadsTest`, `H412SelectedBranchWebTest`, `H412SelectedBranchV1Test`, `M8BranchScopeTest`, `M7InventoryBranchScopeTest`.
 Estado: VERIFICADO @ `4a9dd5c` para lectura; escritura: BRANCH-03 @ `70286d1`.
 
-**BRANCH-02** — Un grant de sucursal sólo puede apuntar a sucursales de la misma
-empresa (queryset limitado a `membership.company`).
-Autoridad: `tenant_views.py::_apply_branch_access`.
-Estado: VERIFICADO @ `70286d1`.
+**BRANCH-02** — Un grant de sucursal y la sucursal por defecto de una membresía sólo
+apuntan a sucursales de la misma empresa que el actor puede conceder; inexistente, de
+otro tenant y fuera de alcance responden igual: `404 {'detail': 'Sucursal no encontrada o sin acceso.'}` (`tenant_views._BRANCH_NOT_FOUND`).
+Autoridad: `tenant_views.py::_apply_branch_access` (`branch_access`), `tenant_views.py::_grantable_branch` (`branch`, RBAC-02).
+Tests: `F2MembershipBranchOracleTest` (7), `Phase2dBranchAccessApiTest`, `SaasIsolationApiTest.test_branch_from_another_company_is_rejected_by_api` (404).
+Estado: VERIFICADO @ `d18e983`.
+
+**READ-01** — Pertenecer a una empresa no autoriza a leerla. `GET /admin/companies/`,
+`/admin/companies/{pk}/`, `/admin/branches/`, `/admin/branches/{pk}/` exigen capacidad de
+lectura; sin ella la lista sale vacía y el detalle responde 404 (igual que un id
+inexistente o ajeno). Empresa: `tenant_views.READ_COMPANY` (`company.view`, `company.manage`).
+Plantilla de sucursales: `tenant_views.READ_BRANCHES` (+ `memberships.view`, `memberships.manage`, por el selector de acceso).
+La plantilla es de nivel empresa (incluye inactivas); un SELECTED con lectura la ve completa.
+Maestro de plataforma: alcance global. Sin membresía: 403 (`HasCompanyMembership`); el puente legacy no llega a estos endpoints.
+Autoridad: `access_views.py::_scope_readable` (mismo helper que M11 usa para áreas y roles).
+Tests: `F2TenantReadAuthorizationTest` (10).
+Estado: VERIFICADO @ `5afdb81`.
 
 **BRANCH-03** — Nadie concede, retira ni opera por escritura una sucursal que no alcanza.
 Autoridad: `tenancy.py::can_delegate_branch_scope(user, company, *, mode, branch_ids, current)`. Company-wide (plataforma, modo ALL, puente legacy) concede todo; SELECTED sólo subconjuntos de `visible_branch_ids`, nunca ALL, y no toca un objeto cuyo alcance `current` ya excede el suyo. Mensaje: `tenancy.BRANCH_SCOPE_NOT_GRANTABLE`.
@@ -207,8 +220,6 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
 | DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
-| RBAC-01 | LOW | RBAC | `tenant_views.py` company/branch list/detail, catálogo de capacidades | legible con 0 capacidades |
-| RBAC-02 | LOW | RBAC | `AdminMembershipListView.post`, `AdminMembershipDetailView.patch` (`branch`) | 404 vs 400: oráculo de existencia de sucursal; test fija conducta actual (`tests.py` ~7407) |
 | RBAC-F6/F7/F4/F5/F11 | LOW | FRONTEND | transfers `[id]`, `users/page.tsx`, `staff/page.tsx`, `internal-modules.ts`, `orders/[id]` | UI ofrece acciones que el backend niega |
 | INV-LEGACY-V1-F1/F3 | LOW | INVENTORY | `serializers.py` movimientos legacy; v1 transfers `page_size<0` → 500 | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
@@ -230,7 +241,14 @@ contrato `V1StockAdjustmentSerializer`.
 NO AUDITADO (surgido en F2): una admin SELECTED con `company.manage` puede editar la
 serie de nivel empresa y cambiar el alcance de numeración (`AdminSequenceScopeView`),
 que afectan a todas las sucursales; y lista promociones de todas las sucursales
-(lectura). Requiere decisión de negocio antes de clasificarlo.
+(lectura). Además, por lectura de código (sin test): `AdminBranchListView.post` y
+`AdminBranchDetailView.patch` sólo exigen `can_manage_company`, así que ese mismo
+actor puede crear sucursales y editar o desactivar una que no alcanza. Requiere
+decisión de negocio (¿`company.manage` es autoridad de empresa aunque el alcance sea
+SELECTED?) antes de clasificarlo.
+`GET /admin/capabilities/` (`access_views.CapabilityCatalogView`) sigue abierto a
+cualquier miembro: devuelve el catálogo de la plataforma y las capacidades del propio
+llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 
 ---
 
@@ -242,6 +260,8 @@ que afectan a todas las sucursales; y lista promociones de todas las sucursales
 | F-BRANCH-01 | MEDIUM | `20d110c` | `tenancy.can_delegate_branch_scope`; `tenant_views` membership create/patch; `staff_views` invitaciones (mismo hueco, hallado en F2) | `F2BranchDelegationTest` | CORREGIDO |
 | F-BRANCH-01 · escritura parcial | LOW | `20d110c` | `AdminMembershipDetailView.patch` en `transaction.atomic` | `F2BranchDelegationTest.test_a_rejected_grant_list_rolls_the_whole_update_back` | CORREGIDO |
 | F-BRANCH-02 | MEDIUM | `cccb4d2` | `promotion_views._write_promotion` | `F2PromotionBranchScopeTest` | CORREGIDO |
+| RBAC-01 | LOW | `5afdb81` | `tenant_views` company/branch list+detail vía `access_views._scope_readable` | `F2TenantReadAuthorizationTest` | CORREGIDO |
+| RBAC-02 | LOW | `d18e983` | `tenant_views._grantable_branch` (POST y PATCH de membresías) | `F2MembershipBranchOracleTest` | CORREGIDO |
 | F-CAP-01 | MEDIUM | `c042fea` | `admin_views.AdminProductListView.post` (única ruta pública que abre saldo) | `F2ProductInitialInventoryCapabilityTest` | CORREGIDO |
 | F-BRANCH-03 | MEDIUM | `70286d1` | `settings_views.AdminSequenceDetailView._scoped` | `F2SequenceBranchScopeTest` | CORREGIDO |
 | IDOR-01 | — | — | `admin_views.py::AdminOrderResendEmailView.post` | — | REFUTADO (deuda de limpieza: `order.save(update_fields=…)`) |
@@ -265,7 +285,7 @@ que afectan a todas las sucursales; y lista promociones de todas las sucursales
 
 Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `frontend/__tests__/`. E2E: `frontend/e2e/`.
 
-- TENANCY: `SaasTenancyResolutionTest`, `SaasIsolationApiTest`, `Phase2dCrossTenantIsolationTest`, `Erp1CrossCompanyReadIsolationTest`, `V1TenantSelectorAuthorityTest`, `H412bIsolationMatrixTest`.
+- TENANCY: `F2TenantReadAuthorizationTest`, `F2MembershipBranchOracleTest`, `SaasTenancyResolutionTest`, `SaasIsolationApiTest`, `Phase2dCrossTenantIsolationTest`, `Erp1CrossCompanyReadIsolationTest`, `V1TenantSelectorAuthorityTest`, `H412bIsolationMatrixTest`.
 - RBAC: `Phase2aCapabilityMatrixTest`, `M11AntiEscalationTest`, `G3*`, `M6CapabilityRevocationTest`, `H412SaasCapabilityAuthorityTest`.
 - BRANCH: `F2BranchDelegationTest`, `F2PromotionBranchScopeTest`, `F2SequenceBranchScopeTest`, `Phase2dBranchAccessApiTest`, `Phase2dBranchScopedReadsTest`, `C15BranchAccessRevocationTest`, `Phase2eBranchScopeTest`, `Phase2eSequenceApiTest`, `Phase4BranchScopeTest`, `H412SelectedBranch*`.
 - INVENTORY: `F2ProductInitialInventoryCapabilityTest`, `Phase60*`, `M7Inventory*`, `C11TransferReserveTest`, `C14StockWriterDisciplineTest`.
@@ -312,7 +332,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **F0 — Baseline**: medido @ `65aa8c1`; docs @ `d383806`.
 - **F1 — Security / tenancy / authorization**: COMPLETED @ `4a9dd5c`. Un fix (FE-AUTH-01). Backend sin cambios. Checkpoint completo en la transcripción de la sesión `acdf85aa`; artefactos en su scratchpad (`audit_f1_investigation.json`, `audit_security_sweep.json`, `demo_branch_scope.py`).
-- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). Pendiente: RBAC-01/02 → DRIFT-01 → DRIFT-07 → E2E-02 → E2E-01.
+- **F2 — Eje DÓNDE: delegación y alcance por sucursal**: EN CURSO. Cerrados F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`). F-CAP-01 (`c042fea`). RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`). Pendiente: DRIFT-01 → DRIFT-07 → E2E-02 → E2E-01.
 
 ---
 
@@ -322,6 +342,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - «¿Quién puede conceder sucursales?» → `can_manage_company_memberships` (QUÉ) + `tenancy.py::can_delegate_branch_scope` (DÓNDE); escritor `tenant_views.py::_apply_branch_access`; `F2BranchDelegationTest`.
 - «¿Quién puede modificar una promoción por sucursal?» → `promotion_views.py::_write_promotion` + `can_delegate_branch_scope`; `F2PromotionBranchScopeTest`, `C13PromotionApiTest`.
 - «¿Quién cambia la numeración de una sucursal?» → `settings_views.py::AdminSequenceListView` / `AdminSequenceDetailView` / `AdminSequenceScopeView`; `Phase2eSequenceApiTest`.
+- «¿Quién puede leer la ficha de la empresa o sus sucursales?» → `tenant_views.READ_COMPANY` / `READ_BRANCHES` + `access_views._scope_readable`; `F2TenantReadAuthorizationTest`.
 - «¿Cómo se decide un tenant?» → `resolve_company_for_user`, `resolve_public_storefront_company`, `resolve_storefront_company`, `V1InternalSurfaceMixin`.
 - «¿Quién puede delegar capacidades?» → `tenancy.py::can_delegate_capabilities`, `can_grant_company_role`; `M11AntiEscalationTest`.
 - «¿El proxy puede tocar el admin de Django?» → no, PROXY-01.

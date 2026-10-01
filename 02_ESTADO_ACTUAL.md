@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — F2 · RBAC-01 y RBAC-02: lecturas de empresa y sucursal por defecto
+
+Pertenecer a una empresa ya no autoriza a leerla. La ficha de la empresa (lista y
+detalle) exige `company.view` o `company.manage`; la plantilla de sucursales, además,
+acepta `memberships.view/manage`, porque conceder acceso por sucursal la usa como
+selector. Sin esas capacidades las listas salen vacías y los detalles responden 404,
+igual que un id inexistente o de otra empresa. La plantilla sigue siendo de nivel
+empresa (incluye las inactivas, que se reactivan desde ahí); el maestro de plataforma
+conserva su alcance global. Se reutiliza el helper con el que M11 ya protegía áreas y
+roles (`5afdb81`).
+
+La sucursal por defecto de una membresía ya no revela si un id existe: inexistente, de
+otra empresa o fuera del alcance de quien la asigna responden igual, 404 «Sucursal no
+encontrada o sin acceso.», antes de escribir nada. Antes respondía 404, 400 con otro
+mensaje o, para una sucursal no alcanzada, la aceptaba (`d18e983`).
+
+Validación: backend PostgreSQL 4545 pruebas (4542 OK, 3 omitidas, 0 fallos), 1517,6 s;
+`check` sin problemas; 0 migraciones por generar. Frontend sin cambios. Queda abierta,
+pendiente de decisión, la autoridad de `company.manage` con alcance por sucursales
+sobre la configuración de nivel empresa (alta y edición de sucursales, serie de empresa).
+
 ## 2026-09-30 — F2 · F-CAP-01: el stock inicial exige autoridad de inventario
 
 `products.manage` es autoridad sobre el catálogo; `inventory.adjust`, sobre las

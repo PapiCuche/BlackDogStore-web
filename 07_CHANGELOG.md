@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 · RBAC-01 y RBAC-02
+
+Empresa y sucursales sólo se leen con capacidad de lectura (`5afdb81`); sin ella,
+lista vacía y 404. La sucursal por defecto de una membresía responde un único 404
+para ids inexistentes, ajenos o fuera de alcance (`d18e983`). Backend 4545 pruebas,
+0 fallos, en PostgreSQL. Sin migraciones.
+
 ## 2026-09-30 — F2 · F-CAP-01
 
 Crear un producto con stock inicial exige `inventory.adjust` además de
