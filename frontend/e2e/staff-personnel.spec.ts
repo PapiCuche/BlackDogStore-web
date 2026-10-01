@@ -89,6 +89,12 @@ async function pickFirst(page: Page, selector: string) {
   }
 }
 
+/**
+ * El trabajador desechable de `seed_demo_users --e2e-fixtures` (E2E-02). Es el
+ * ÚNICO al que esta suite puede desactivar.
+ */
+const E2E_WORKER_EMAIL = "dev_e2e_staff@example.invalid";
+
 /** Un correo distinto por ejecución: las invitaciones son únicas por correo. */
 const RUN = Date.now().toString(36);
 const inviteEmail = (etiqueta: string) => `h41.${etiqueta}.${RUN}@correo.test`;
@@ -243,28 +249,44 @@ test.describe("Personal", () => {
     test.setTimeout(120_000);
     await openStaff(page);
 
-    // Alguien que NO sea la propia cuenta. La propia ficha no trae botón —
-    // nadie puede quitarse el acceso a sí mismo— y eso es justo lo que la
-    // distingue aquí, sin tener que adivinar el nombre de la cuenta conectada.
-    const otra = personCards(page)
-      .filter({ has: page.getByRole("button", { name: "Desactivar acceso" }) })
-      .first();
-    await expect(
-      otra,
-      "no hay nadie más que la propia cuenta en esta empresa",
-    ).toBeVisible({ timeout: 20_000 });
-    const correo = (await otra.innerText()).match(/[\w.+-]+@[\w.-]+/)?.[0] ?? "";
-    expect(correo, "la ficha no muestra el correo").toBeTruthy();
+    // UN TRABAJADOR PROPIO DE ESTA PRUEBA (E2E-02).
+    //
+    // Desactivar a alguien retira sus roles, y reactivarlo no se los devuelve:
+    // así debe ser. Esta prueba elegía «la primera ficha con botón», que era
+    // una CUENTA DEMO con la que entran otras suites, y la dejaba sin
+    // capacidades para todas las corridas siguientes. Ahora sólo toca a
+    // `dev_e2e_staff`, que nadie usa para entrar y ninguna otra prueba lee.
+    // Lo crea `seed_demo_users --e2e-fixtures`; volver a sembrar lo restaura.
+    await page.locator("#staff-status").selectOption("");
+    await page.waitForTimeout(1500);
+    const ficha = personCards(page).filter({ hasText: E2E_WORKER_EMAIL });
+    if ((await ficha.count()) === 0) {
+      test.skip(
+        true,
+        "falta el trabajador de pruebas: siembra con seed_demo_users --e2e-fixtures",
+      );
+    }
+    await expect(ficha, "hay más de una ficha con ese correo").toHaveCount(1);
 
-    // Y la propia ficha dice por qué no se puede.
+    // Una corrida que se cortó a medias pudo dejarlo inactivo. Se parte de
+    // activo sin depender de cómo terminó la anterior.
+    const reactivar = ficha.getByRole("button", { name: "Reactivar acceso" });
+    if ((await reactivar.count()) > 0) {
+      await reactivar.click();
+      await expect(
+        ficha.getByRole("button", { name: "Desactivar acceso" }),
+      ).toBeVisible({ timeout: 20_000 });
+    }
+
+    // La propia ficha dice por qué no se puede desactivar a uno mismo.
     await expect(page.getByText(/Esta es tu cuenta/i)).toBeVisible();
 
-    await otra.getByRole("button", { name: "Desactivar acceso" }).click();
+    await ficha.getByRole("button", { name: "Desactivar acceso" }).click();
     await page.waitForTimeout(2000);
 
     await page.locator("#staff-status").selectOption("inactive");
     await page.waitForTimeout(1500);
-    const inactiva = personCards(page).filter({ hasText: correo });
+    const inactiva = personCards(page).filter({ hasText: E2E_WORKER_EMAIL });
     await expect(inactiva, "no aparece entre los inactivos").toHaveCount(1);
     await expect(inactiva).toContainText("Inactivo");
 
@@ -272,7 +294,9 @@ test.describe("Personal", () => {
     await page.waitForTimeout(2000);
     await page.locator("#staff-status").selectOption("active");
     await page.waitForTimeout(1500);
-    await expect(personCards(page).filter({ hasText: correo })).toHaveCount(1);
+    await expect(
+      personCards(page).filter({ hasText: E2E_WORKER_EMAIL }),
+    ).toHaveCount(1);
   });
 });
 

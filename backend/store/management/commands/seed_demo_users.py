@@ -84,6 +84,17 @@ ALL_DEMO_USERNAMES = (
 )
 
 
+# E2E-02 — a worker the browser tests may break.
+#
+# The staff screen is tested by deactivating somebody, and deactivating retires
+# role assignments on purpose. Doing that to one of the accounts above left it
+# without capabilities for every spec that logs in with it. This one is created
+# only with `--e2e-fixtures`, nobody logs in with it, it is NOT offered on the
+# demo card (it is not in ALL_DEMO_USERNAMES) and re-seeding restores it.
+DEMO_E2E_STAFF_USERNAME = 'dev_e2e_staff'
+DEMO_E2E_STAFF_ROLE = ('ventas', 'ventas')  # rol, área
+
+
 def demo_email(username: str) -> str:
     return f'{username}@{DEMO_EMAIL_DOMAIN}'
 
@@ -110,6 +121,14 @@ class Command(BaseCommand):
                 'ambiente SUNAT BETA para la empresa. Exige DEBUG=True y '
                 'FISCAL_ENVIRONMENT=beta; reutiliza series existentes y nunca '
                 'toca un correlativo.'
+            ),
+        )
+        parser.add_argument(
+            '--e2e-fixtures', action='store_true',
+            help=(
+                'Crea además un trabajador desechable (dev_e2e_staff) para las '
+                'pruebas de navegador que desactivan personal. No es una cuenta '
+                'de acceso ni aparece en la tarjeta de desarrollo.'
             ),
         )
 
@@ -157,6 +176,8 @@ class Command(BaseCommand):
         self._seed(company_slug)
         if options.get('fiscal_beta'):
             self._seed_fiscal_beta(company_slug)
+        if options.get('e2e_fixtures'):
+            self._seed_e2e_fixtures(company_slug)
 
     # -- purge ----------------------------------------------------------------
 
@@ -167,7 +188,7 @@ class Command(BaseCommand):
         User = self._get_user_model()
         removed, skipped = [], []
 
-        for username in ALL_DEMO_USERNAMES:
+        for username in (*ALL_DEMO_USERNAMES, DEMO_E2E_STAFF_USERNAME):
             user = User.objects.filter(username=username).first()
             if user is None:
                 continue
@@ -317,6 +338,46 @@ class Command(BaseCommand):
     # -- fiscal beta ----------------------------------------------------------
 
     #: Las series DEMO, por tipo de comprobante. Sólo existen en este comando.
+    @transaction.atomic
+    def _seed_e2e_fixtures(self, company_slug):
+        """
+        The disposable worker of E2E-02. Idempotent: running it again puts the
+        membership and its role back the way a test may have left them.
+        """
+        from store.models import (
+            Company, CompanyArea, CompanyRole, Membership, MembershipRoleAssignment,
+        )
+
+        User = self._get_user_model()
+        company = Company.objects.get(slug=company_slug)
+        worker = self._upsert_user(User, DEMO_E2E_STAFF_USERNAME, legacy_role='customer')
+
+        membership, _ = Membership.objects.get_or_create(
+            user=worker, company=company, defaults={'role': 'sales', 'is_active': True},
+        )
+        if not membership.is_active:
+            membership.is_active = True
+            membership.save(update_fields=['is_active'])
+
+        role_slug, area_slug = DEMO_E2E_STAFF_ROLE
+        role = CompanyRole.objects.filter(company=company, slug=role_slug).first()
+        area = CompanyArea.objects.filter(company=company, slug=area_slug).first()
+        if role is None:
+            raise CommandError(
+                f'La empresa "{company_slug}" no tiene el rol preset "{role_slug}".'
+            )
+        assignment, created = MembershipRoleAssignment.objects.get_or_create(
+            membership=membership, role=role, area=area, defaults={'is_active': True},
+        )
+        if not created and not assignment.is_active:
+            assignment.is_active = True
+            assignment.save()
+
+        self.stdout.write(self.style.SUCCESS(
+            f'  fixture E2E  {DEMO_E2E_STAFF_USERNAME} — trabajador desechable, '
+            f'no es una cuenta de acceso'
+        ))
+
     DEMO_FISCAL_SERIES = (('01', 'F001', 'factura'), ('03', 'B001', 'boleta'))
 
     @transaction.atomic

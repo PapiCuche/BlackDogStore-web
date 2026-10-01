@@ -9529,7 +9529,10 @@ class DemoUsersCommandTest(TestCase):
             declared,
             {'-h', '--help', '--version', '-v', '--verbosity', '--settings',
              '--pythonpath', '--traceback', '--no-color', '--force-color',
-             '--skip-checks', '--company-slug', '--purge', '--fiscal-beta'},
+             '--skip-checks', '--company-slug', '--purge', '--fiscal-beta',
+             # E2E-02: a disposable worker for the browser tests. Still behind
+             # DEBUG like everything else here (F2E2eFixtureSeedTest).
+             '--e2e-fixtures'},
         )
         for opt in declared:
             self.assertNotIn('force-production', opt)
@@ -61229,3 +61232,87 @@ class F2SelectedCompanySettingsScopeTest(TestCase):
         self.assertEqual(client.patch(
             f'/api/admin/company-settings/{self._q()}', {'primary_color': '#123456'},
             format='json').status_code, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# AUDIT F2 · E2E-02 — a disposable worker for the browser tests
+# ---------------------------------------------------------------------------
+
+@override_settings(DEBUG=True)
+class F2E2eFixtureSeedTest(TestCase):
+    """
+    The browser suite deactivates a member of staff to prove the screen works.
+    It used to pick "the first card", which was a demo ACCOUNT other specs log
+    in with — and deactivating retires role assignments by design, so that
+    account was left with no capabilities for every later run.
+
+    `seed_demo_users --e2e-fixtures` adds one worker nobody logs in with and no
+    other spec reads, so the test has something of its own to break.
+    """
+
+    SLUG = 'f2-e2e-seed'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('F2 E2E SA', self.SLUG)
+
+    def _seed(self, **options):
+        call_command('seed_demo_users', company_slug=self.SLUG, stdout=StringIO(), **options)
+
+    def _worker(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        return User.objects.filter(username=DEMO_E2E_STAFF_USERNAME).first()
+
+    def test_the_flag_creates_a_worker_with_an_active_role(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        self._seed(e2e_fixtures=True)
+        worker = self._worker()
+        self.assertIsNotNone(worker)
+        self.assertEqual(worker.email, demo_email(DEMO_E2E_STAFF_USERNAME))
+        membership = Membership.objects.get(user=worker, company=self.company)
+        self.assertTrue(membership.is_active)
+        self.assertTrue(membership.role_assignments.filter(is_active=True).exists())
+
+    def test_without_the_flag_nothing_changes(self):
+        self._seed()
+        self.assertIsNone(self._worker())
+        self.assertEqual(
+            User.objects.filter(username__startswith='dev_').count(),
+            len(ALL_DEMO_USERNAMES),
+        )
+
+    def test_it_is_not_a_login_account_on_the_demo_card(self):
+        from .management.commands.seed_demo_users import DEMO_E2E_STAFF_USERNAME
+
+        self._seed(e2e_fixtures=True)
+        self.assertNotIn(DEMO_E2E_STAFF_USERNAME, ALL_DEMO_USERNAMES)
+        res = APIClient().get('/api/dev/demo-accounts/')
+        self.assertNotIn(
+            DEMO_E2E_STAFF_USERNAME, [a['username'] for a in res.data['accounts']],
+        )
+
+    def test_reseeding_restores_what_a_test_left_behind(self):
+        self._seed(e2e_fixtures=True)
+        membership = Membership.objects.get(user=self._worker(), company=self.company)
+        membership.is_active = False
+        membership.save(update_fields=['is_active'])
+        membership.role_assignments.update(is_active=False)
+
+        self._seed(e2e_fixtures=True)
+        membership.refresh_from_db()
+        self.assertTrue(membership.is_active)
+        self.assertTrue(membership.role_assignments.filter(is_active=True).exists())
+        self.assertEqual(Membership.objects.filter(user=self._worker()).count(), 1)
+
+    def test_purge_removes_it_too(self):
+        self._seed(e2e_fixtures=True)
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+        self.assertIsNone(self._worker())
+
+    @override_settings(DEBUG=False)
+    def test_it_is_refused_outside_development(self):
+        with self.assertRaises(CommandError):
+            self._seed(e2e_fixtures=True)
+        self.assertIsNone(self._worker())
