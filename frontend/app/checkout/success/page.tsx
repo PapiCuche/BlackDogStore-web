@@ -5,7 +5,13 @@ import { useStorefront } from "../../components/StorefrontProvider";
 import Link from "next/link";
 import { API_BASE } from "../../lib/api";
 
-type PaymentStatus = "pending_payment" | "paid" | "failed" | "cancelled" | "expired" | "refunded";
+type PaymentStatus =
+  | "pending_payment"
+  | "paid"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "refunded";
 
 type StatusData = {
   order_id: number;
@@ -15,23 +21,49 @@ type StatusData = {
   message: string;
 };
 
+function StatusShell({
+  eyebrow,
+  title,
+  description,
+  tone = "neutral",
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: React.ReactNode;
+  tone?: "neutral" | "success" | "warning" | "danger";
+  children?: React.ReactNode;
+}) {
+  const indicator = {
+    neutral: "border-bd-border bg-surface text-muted",
+    success: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
+    warning: "border-amber-400/25 bg-amber-400/10 text-amber-100",
+    danger: "border-red-500/25 bg-red-500/10 text-red-200",
+  }[tone];
+
+  return (
+    <div className="flex min-h-[70vh] items-center justify-center bg-background px-6 py-12">
+      <div className="w-full max-w-xl">
+        <div className="rounded-[1.75rem] border border-bd-border bg-surface p-7 sm:p-10">
+          <div className={`mb-7 inline-flex rounded-xl border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] ${indicator}`}>
+            {eyebrow}
+          </div>
+          <h1 className="font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground sm:text-5xl">
+            {title}
+          </h1>
+          <div className="mt-5 text-sm leading-7 text-muted">{description}</div>
+          {children ? <div className="mt-8">{children}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
- * "Gracias por tu compra" is a claim about money, and this page is not entitled
- * to make it on its own.
- *
- * The buyer arrives here straight from the gateway's form, carrying a
- * reference in the URL — nothing more. The reference proves which attempt was
- * made; it proves nothing about whether it was paid. So the page opens saying
- * "Verificando pago", asks our backend, and only repeats what the backend says.
- * The backend, in turn, will not say `paid` until a notification signed with a
- * key the browser has never seen has been verified server-side.
- *
- * The polling exists because the two events race: the buyer's redirect and the
- * gateway's server-to-server notification are independent, and the redirect
- * usually wins.
+ * The browser never decides whether money was paid.
+ * The reference identifies an attempt; the backend is the authority for status.
  */
 export default function CheckoutSuccessPage() {
-  // Phase 3: the tenant's own WhatsApp, not a compiled-in number.
   const whatsappLink = useStorefront().contact.whatsapp_link;
   const [reference] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
@@ -39,10 +71,11 @@ export default function CheckoutSuccessPage() {
   });
   const [statusData, setStatusData] = useState<StatusData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(
-    () => (typeof window !== "undefined" && !new URLSearchParams(window.location.search).get("reference")
+  const [error, setError] = useState<string | null>(() =>
+    typeof window !== "undefined" &&
+    !new URLSearchParams(window.location.search).get("reference")
       ? "No se recibió la referencia del pago."
-      : null),
+      : null,
   );
   const [retryCount, setRetryCount] = useState(0);
 
@@ -52,6 +85,9 @@ export default function CheckoutSuccessPage() {
       return;
     }
 
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     async function checkStatus() {
       try {
         const res = await fetch(
@@ -60,193 +96,141 @@ export default function CheckoutSuccessPage() {
         );
         if (!res.ok) {
           const body = await res.json().catch(() => null);
-          setError(body?.detail || "No se pudo verificar el estado del pago.");
-          setLoading(false);
+          if (!cancelled) {
+            setError(body?.detail || "No se pudo verificar el estado del pago.");
+            setLoading(false);
+          }
           return;
         }
+
         const data: StatusData = await res.json();
+        if (cancelled) return;
         setStatusData(data);
 
-        // Still pending: the gateway's notification may simply not have
-        // arrived yet. Poll a few times before showing the pending screen.
         if (data.status === "pending_payment" && retryCount < 5) {
-          setTimeout(() => setRetryCount((n) => n + 1), 2000);
+          timer = setTimeout(() => setRetryCount((count) => count + 1), 2000);
         } else {
           setLoading(false);
         }
       } catch {
-        setError("Error de red al verificar el pago.");
-        setLoading(false);
+        if (!cancelled) {
+          setError("Error de red al verificar el pago.");
+          setLoading(false);
+        }
       }
     }
 
-    checkStatus();
+    void checkStatus();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [reference, retryCount]);
 
-  // Loading / polling state
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5">
-            <svg
-              className="h-6 w-6 animate-spin text-zinc-400"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
-          </div>
-          <p className="text-sm text-zinc-400">Verificando pago...</p>
+      <StatusShell
+        eyebrow="Verificación"
+        title="Confirmando el estado del pago"
+        description="Estamos consultando al backend antes de mostrar un resultado. Esta pantalla no asume que el pago fue aprobado por el hecho de volver desde la pasarela."
+      >
+        <div className="flex items-center gap-3 rounded-xl border border-bd-border bg-background px-4 py-3 text-sm text-muted" role="status">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
+          Verificando…
         </div>
-      </div>
+      </StatusShell>
     );
   }
 
-  // Generic error or missing reference
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-            <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Error</h1>
-          <p className="mb-8 text-zinc-400">{error}</p>
-          <Link
-            href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-          >
-            Volver al checkout
-          </Link>
-        </div>
-      </div>
+      <StatusShell eyebrow="No verificado" title="No pudimos confirmar el pago" description={error} tone="danger">
+        <Link href="/checkout" className="inline-flex rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+          Volver al checkout
+        </Link>
+      </StatusShell>
     );
   }
 
-  // Payment confirmed
   if (statusData?.status === "paid") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border border-white/20 bg-white/5">
-            <svg className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-
-          <h1 className="mb-2 text-4xl font-bold text-white">¡Pago confirmado!</h1>
-          <p className="mb-1 text-zinc-400">Tu orden #{statusData.order_id} ha sido registrada.</p>
-          <p className="mb-8 text-zinc-400">
-            Total pagado:{" "}
-            <span className="font-semibold text-white">
-              S/ {Number(statusData.total).toFixed(2)}
-            </span>
-          </p>
-
-          <div className="mb-8 rounded-2xl border border-white/10 bg-white/5 p-6 text-left text-sm text-zinc-400">
-            <p className="mb-2 font-medium text-white">¿Qué sigue?</p>
-            <ul className="space-y-1 list-disc list-inside">
-              <li>Recibirás la confirmación de tu pedido al correo registrado.</li>
-              <li>Nuestro equipo se comunicará contigo para coordinar la entrega.</li>
-              <li>Para consultas inmediatas escríbenos por WhatsApp.</li>
-            </ul>
-          </div>
-
-          <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-            <Link
-              href="/product"
-              className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-            >
-              Seguir comprando
-            </Link>
-            <a
-              href={whatsappLink || "#"}
-              className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
-            >
-              Contactar por WhatsApp
+      <StatusShell
+        eyebrow="Pago confirmado"
+        title="Tu pago figura como aprobado"
+        description={
+          <>
+            <p>La orden <strong className="text-foreground">#{statusData.order_id}</strong> está registrada como pagada en el backend.</p>
+            <p className="mt-2">Total confirmado: <strong className="tabular-nums text-foreground">S/ {Number(statusData.total).toFixed(2)}</strong></p>
+          </>
+        }
+        tone="success"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Link href="/orders" className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+            Ver mis pedidos
+          </Link>
+          <Link href="/product" className="inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+            Seguir comprando
+          </Link>
+          {whatsappLink ? (
+            <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-12 items-center justify-center rounded-xl px-4 py-3 text-xs font-semibold text-muted transition hover:text-foreground">
+              Consultar por WhatsApp ↗
             </a>
-          </div>
+          ) : null}
         </div>
-      </div>
+      </StatusShell>
     );
   }
 
-  // Pending after max retries (webhook delayed)
   if (statusData?.status === "pending_payment") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-        <div className="mx-auto max-w-lg text-center">
-          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-yellow-500/30 bg-yellow-500/10">
-            <svg className="h-8 w-8 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h1 className="mb-2 text-3xl font-bold text-white">Verificando pago</h1>
-          <p className="mb-8 text-zinc-400">
-            Tu pago está siendo procesado. Si ya completaste el pago,
-            espera unos segundos y recarga la página.
-          </p>
-          <button
-            onClick={() => { setLoading(true); setRetryCount(0); }}
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-          >
-            Verificar de nuevo
-          </button>
-        </div>
-      </div>
+      <StatusShell
+        eyebrow="Pendiente"
+        title="El pago todavía no está confirmado"
+        description="La referencia existe, pero el backend aún no registra el pago como aprobado. Puedes volver a verificar sin crear otra afirmación de pago."
+        tone="warning"
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setLoading(true);
+            setRetryCount(0);
+          }}
+          className="rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+        >
+          Verificar de nuevo
+        </button>
+      </StatusShell>
     );
   }
 
-  // Failed, expired, cancelled, refunded
   const failureMessages: Record<string, string> = {
     failed: "El pago no pudo procesarse.",
     expired: "La sesión de pago expiró.",
     cancelled: "La orden fue cancelada.",
-    refunded: "El pago fue reembolsado.",
+    refunded: "El pago figura como reembolsado.",
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-6">
-      <div className="mx-auto max-w-lg text-center">
-        <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10">
-          <svg className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </div>
-        <h1 className="mb-2 text-3xl font-bold text-white">Pago no completado</h1>
-        <p className="mb-8 text-zinc-400">
-          {statusData ? failureMessages[statusData.status] ?? statusData.message : "Estado desconocido."}
-        </p>
-        <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-          <Link
-            href="/checkout"
-            className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-100"
-          >
-            Intentar de nuevo
-          </Link>
-          <Link
-            href="/cart"
-            className="rounded-full border border-white/20 px-8 py-3 text-sm font-semibold text-white transition hover:border-white/40"
-          >
-            Ver carrito
-          </Link>
-        </div>
+    <StatusShell
+      eyebrow="Pago no completado"
+      title="La operación no figura como pagada"
+      description={
+        statusData
+          ? failureMessages[statusData.status] ?? statusData.message
+          : "No pudimos determinar el estado de la operación."
+      }
+      tone="danger"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <Link href="/checkout" className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+          Intentar de nuevo
+        </Link>
+        <Link href="/cart" className="inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+          Ver carrito
+        </Link>
       </div>
-    </div>
+    </StatusShell>
   );
 }
