@@ -11,6 +11,7 @@
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { AdminShell } from "../../../components/AdminShell";
+import { PageHeader, internalButtonClass } from "../../../components/internal-ui";
 import { StaffGuard } from "../../../components/StaffGuard";
 import {
   EmptyBox,
@@ -91,38 +92,18 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">
-              Kardex {data ? `— ${data.product.name}` : ""}
-            </h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Historial completo de entradas y salidas del producto.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href={`/admin/products/${productId}`}
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Ver producto
-            </Link>
-            <Link
-              href="/admin/inventory/movements"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Movimientos
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title={data ? `Kardex — ${data.product.name}` : "Kardex"}
+          description="Historial completo de entradas y salidas del producto."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href={`/admin/products/${productId}`} className={internalButtonClass}>Ver producto</Link>
+              <Link href="/admin/inventory/movements" className={internalButtonClass}>Movimientos</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={data?.scope} />
 
@@ -160,7 +141,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               <Panel title="Stock por sucursal" description="Dónde están las unidades">
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Sucursal</Th>
                       <Th right>Stock</Th>
                       <Th right>Mínimo</Th>
@@ -169,7 +150,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.stock_by_branch.map((row) => (
-                      <tr key={row.id} className="border-b border-white/[0.03]">
+                      <tr key={row.id} className="border-b border-bd-border/60">
                         <Td>{row.branch_name}</Td>
                         <Td right>{row.quantity}</Td>
                         <Td right muted>{row.minimum_stock || "—"}</Td>
@@ -190,7 +171,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Fecha</Th>
                       <Th>Sucursal</Th>
                       <Th>Tipo</Th>
@@ -204,7 +185,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.movements.map((m) => (
-                      <tr key={m.id} className="border-b border-white/[0.03]">
+                      <tr key={m.id} className="border-b border-bd-border/60">
                         <Td muted>{formatDateTime(m.created_at)}</Td>
                         <Td muted>{m.branch_name}</Td>
                         <Td><MovementBadge movement={m} /></Td>
