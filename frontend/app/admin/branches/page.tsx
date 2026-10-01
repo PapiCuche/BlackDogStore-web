@@ -342,7 +342,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <button
               type="submit"
               disabled={busy || !newName.trim()}
-              className="mt-4 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-40"
+              className={`mt-4 ${internalPrimaryButtonClass}`}
             >
               Crear sucursal
             </button>
