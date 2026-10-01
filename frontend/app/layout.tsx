@@ -64,7 +64,7 @@ export default async function RootLayout({
         <StorefrontProvider config={config}>
           <a
             href="#main-content"
-            className="sr-only fixed left-4 top-4 z-[100] rounded-lg bg-primary px-4 py-2 text-sm font-bold text-background focus:not-sr-only"
+            className="fixed left-4 top-4 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-background transition-transform focus:translate-y-0"
           >
             Saltar al contenido
           </a>
