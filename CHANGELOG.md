@@ -9,6 +9,37 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-06 — Validación técnica del frontend
+
+**Estado: IMPLEMENTADO EN RAMA.** Código validado en `794e8cc` mediante GitHub Actions.
+
+### Baseline verificado
+
+- Workflow reproducible: `.github/workflows/frontend-uxui-validation.yml`.
+- Node.js 22 + `npm ci` desde `frontend/package-lock.json`.
+- Jest: **6 suites / 45 tests — PASS**.
+- ESLint: **PASS, 0 errores / 14 warnings**.
+- Next.js build: **PASS**.
+- Generación de rutas: **38/38**.
+- Rama: **0 commits por detrás de `master`** al iniciar este checkpoint.
+
+### Correcciones encontradas por CI
+
+- El primer build detectó un import faltante de `internalPrimaryButtonClass` en Inventario/Movimientos; corregido y revalidado.
+- La prueba nueva del drawer móvil confirmó que el foco sí entra al panel; se corrigió el selector del test para apuntar al elemento correcto.
+- Drawer móvil interno: foco inicial, cierre con Escape y bloqueo/restauración de scroll del documento cubiertos por test.
+- Home deja de depender de categorías Apple hardcodeadas y consume `/categories` del tenant.
+- Tipografía separada por superficie: storefront usa el rol de marca; el SaaS interno usa Inter como rol neutral sin cambiar el modelo de datos.
+
+### Deuda no bloqueante
+
+- Los 14 warnings restantes son `react-hooks/set-state-in-effect`; no se silencian ni se reescriben de forma masiva porque varios protegen sincronización de filtros/estado y requieren revisión individual.
+- QA visual real por navegador en desktop/tablet/mobile y lector de pantalla continúa **PENDIENTE**.
+- Figma Foundations continúa **PENDIENTE** por cuota MCP del plan Starter.
+- Contenido de servicios del storefront sigue parcialmente hardcodeado; no se añadió un modelo de contenido sin analizar primero el impacto de esquema/API.
+
+---
+
 ## UXUI-05 — Accesibilidad y QA estructural
 
 **Estado: PARCIAL.**
