@@ -222,7 +222,7 @@ export function EmptyState({ message }: { message: string }) {
 export function DashboardSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true" aria-label="Cargando dashboard">
-      <div className="h-32 animate-pulse rounded-2xl bg-foreground/[0.03]" />
+      <div className="h-32 animate-pulse rounded-xl bg-foreground/[0.03]" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {[0, 1, 2, 3, 4, 5].map((i) => (
           <div key={i} className="h-28 animate-pulse rounded-xl bg-foreground/[0.03]" />
