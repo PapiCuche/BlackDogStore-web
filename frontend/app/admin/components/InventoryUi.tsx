@@ -20,9 +20,9 @@ export function StatCard({
 }) {
   return (
     <div
-      className={`rounded-2xl border p-5 ${
+      className={`rounded-xl border p-5 ${
         emphasis
-          ? "border-foreground/20 bg-foreground/[0.06]"
+          ? "border-amber-400/25 bg-amber-400/[0.06]"
           : "border-bd-border bg-surface"
       }`}
     >
@@ -47,7 +47,7 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-bd-border bg-surface">
+    <section className="rounded-xl border border-bd-border bg-surface">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -90,9 +90,9 @@ export function EmptyBox({ message }: { message: string }) {
 export function StockBadge({ value, threshold = 5 }: { value: number; threshold?: number }) {
   const tone =
     value <= 0
-      ? "border-foreground/25 bg-foreground/[0.10] text-foreground"
+      ? "border-red-500/25 bg-red-500/10 text-red-200"
       : value <= threshold
-        ? "border-white/15 bg-foreground/[0.05] text-foreground"
+        ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
         : "border-bd-border bg-transparent text-muted";
   const label = value <= 0 ? "Agotado" : `${value} u.`;
   return (
@@ -234,7 +234,7 @@ export function BranchStockTable({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="border-b border-white/[0.03]">
+          <tr key={row.id} className="border-b border-bd-border/60">
             <Td>
               <Link
                 href={`/admin/products/${row.product}/stock-card`}
