@@ -9,6 +9,24 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-05 — Accesibilidad y QA estructural
+
+**Estado: PARCIAL.**
+
+- Navegación móvil interna: drawer declarado como diálogo modal y cierre por tecla Escape.
+- Foundations globales mantienen foco visible y respetan `prefers-reduced-motion`.
+- Branding: la vista previa de Configuración calcula contraste WCAG para texto/fondo y botón primario/fondo; ratios inferiores a 4.5:1 generan advertencia sin bloquear el guardado.
+- Detalle de producto, pedidos, checkout success y recuperación/verificación de cuenta fueron revisados y ya usan los foundations actuales en esta rama.
+
+### Pendiente
+
+- QA visual real en navegador para desktop/tablet/mobile.
+- Navegación completa sólo con teclado y revisión con lector de pantalla.
+- Tests/lint/build en un entorno con dependencias disponibles.
+- La advertencia de contraste es informativa; el backend sigue validando formato hexadecimal, no cumplimiento WCAG.
+
+---
+
 ## UXUI-04C — Superficies administrativas secundarias
 
 **Estado: PARCIAL.**
