@@ -14,6 +14,7 @@
 - **PARCIAL:** branding multiempresa. Los seis colores del tenant siguen siendo la fuente de datos, pero aún existen superficies no migradas y contenido comercial hardcodeado fuera del bloque intervenido.
 - **IMPLEMENTADO EN RAMA / PENDIENTE DE QA:** design system unificado del panel SaaS interno. Shell, navegación, componentes compartidos, superficies principales, administración secundaria, inventario, ventas, RBAC y detalles operativos ya consumen foundations comunes. Falta validación visual/runtime completa antes de merge.
 - **PENDIENTE DE VERIFICACIÓN:** tests, lint y build de esta rama; no pudieron ejecutarse desde este entorno porque el contenedor no resolvió `github.com` para obtener el repositorio/dependencias.
+- **PARCIAL accesibilidad:** foco visible, reduced-motion, drawer interno con Escape/semántica de diálogo y advertencia de contraste WCAG en Branding. Falta QA real de teclado, lector de pantalla y breakpoints.
 - **Sin cambios** en autenticación, roles, endpoints, base de datos, migraciones o flujo de pago.
 
 ---
