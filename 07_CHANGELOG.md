@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-09-30 — F2 · WRITE-SCOPE-01
+
+Las modificaciones de nivel empresa (crear sucursal, sucursal de despacho, serie de
+empresa, alcance de numeración, ajustes de empresa) exigen alcance sobre toda la
+empresa además de `company.manage`; quien tiene sucursales seleccionadas sólo edita
+las suyas (`fa85d41`, `c076120`). Backend 4563 pruebas, 0 fallos, en PostgreSQL.
+Sin migraciones.
+
 ## 2026-09-30 — F2 · RBAC-01 y RBAC-02
 
 Empresa y sucursales sólo se leen con capacidad de lectura (`5afdb81`); sin ella,

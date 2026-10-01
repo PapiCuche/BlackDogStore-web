@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-09-30 — F2 · WRITE-SCOPE-01: el alcance por sucursal limita también lo que se modifica
+
+`company.manage` dice qué se puede cambiar; el alcance por sucursales dice dónde. Una
+persona limitada a sucursales seleccionadas podía, con esa capacidad, crear
+sucursales, editar o desactivar una que no alcanza, elegir la sucursal de despacho de
+la tienda online, editar la serie de empresa, cambiar el alcance de la numeración y
+modificar los ajustes de la empresa (identidad, marca, moneda). Ahora esas
+operaciones de nivel empresa exigen, además de la capacidad, alcance sobre toda la
+empresa (plataforma, modo «todas» o puente legacy: `tenancy.has_company_wide_scope`).
+Editar una sucursal propia y la serie de una sucursal propia siguen permitidos; las
+lecturas no cambian. Una sucursal inexistente o ajena sigue respondiendo 404; una de
+la propia empresa fuera de alcance, 403 (ya figura en su plantilla). Commits
+`fa85d41` (sucursales y despacho) y `c076120` (numeración y ajustes).
+
+Validación: backend PostgreSQL 4563 pruebas (4560 OK, 3 omitidas, 0 fallos),
+1519,8 s; `check` sin problemas; 0 migraciones por generar. Frontend sin cambios.
+
 ## 2026-09-30 — F2 · RBAC-01 y RBAC-02: lecturas de empresa y sucursal por defecto
 
 Pertenecer a una empresa ya no autoriza a leerla. La ficha de la empresa (lista y
