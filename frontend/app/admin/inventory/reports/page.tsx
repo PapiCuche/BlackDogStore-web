@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { StaffGuard } from "../../components/StaffGuard";
 import {
   BranchStockTable,
@@ -99,42 +100,28 @@ function ReportsContent({ user }: { user: AuthUser }) {
     };
   }, [load, reloadKey, scope.ready]);
 
-  const fieldClass =
-    "w-24 rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25";
+  const fieldClass = `${internalInputClass} w-24`;
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Reportes de inventario</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Stock crítico, rotación y ventas por producto.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Reportes"
+          description="Stock crítico, rotación y ventas por producto."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={data?.scope} />
 
-        <div className="flex flex-wrap items-end gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <div className="flex flex-wrap items-end gap-4 rounded-xl border border-bd-border bg-surface p-5">
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500" htmlFor="r-threshold">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted" htmlFor="r-threshold">
               Umbral por defecto
             </label>
             <input
@@ -147,7 +134,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500" htmlFor="r-days">
+            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted" htmlFor="r-days">
               Días sin movimiento
             </label>
             <input
@@ -165,7 +152,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
               setLoading(true);
               setReloadKey((k) => k + 1);
             }}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200"
+            className={internalPrimaryButtonClass}
           >
             Actualizar
           </button>
@@ -221,7 +208,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
               ) : (
                 <TableWrap>
                   <thead>
-                    <tr className="border-b border-white/[0.06]">
+                    <tr className="border-b border-bd-border">
                       <Th>Producto</Th>
                       <Th right>Unidades vendidas</Th>
                       <Th right>Ingresos</Th>
@@ -229,7 +216,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
                   </thead>
                   <tbody>
                     {data.best.map((row) => (
-                      <tr key={row.product_id} className="border-b border-white/[0.03]">
+                      <tr key={row.product_id} className="border-b border-bd-border/60">
                         <Td>{row.product_name}</Td>
                         <Td right>{row.units_sold}</Td>
                         <Td right muted>{formatSoles(row.revenue)}</Td>
