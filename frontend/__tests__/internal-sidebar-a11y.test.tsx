@@ -26,7 +26,7 @@ describe('MobileSidebar accessibility', () => {
     const dialog = screen.getByRole('dialog', {
       name: 'Navegación del control interno',
     });
-    const panel = dialog.querySelector('[tabindex="-1"]') as HTMLElement | null;
+    const panel = dialog.querySelector('div[tabindex="-1"]') as HTMLElement | null;
 
     expect(panel).not.toBeNull();
     expect(panel).toHaveFocus();
