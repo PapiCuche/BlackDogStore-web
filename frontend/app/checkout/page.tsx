@@ -263,17 +263,17 @@ export default function CheckoutPage() {
         </div>
 
         {cancelled && (
-          <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
+          <div role="status" className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
             Pago cancelado. Tu carrito sigue disponible.
           </div>
         )}
         {message && (
-          <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 text-sm text-red-300">
+          <div role="alert" className="mb-5 rounded-xl border border-red-500/20 bg-red-500/[0.06] p-4 text-sm text-red-300">
             {message}
           </div>
         )}
         {coupon && (
-          <div className="mb-5 flex items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3">
+          <div role="status" className="mb-5 flex items-center justify-between rounded-xl border border-bd-border bg-surface px-4 py-3">
             <div>
               <span className="text-xs text-muted">Cupón aplicado</span>
               <div className="text-sm font-semibold text-foreground">
@@ -396,9 +396,14 @@ export default function CheckoutPage() {
 
           {/* 2. Método de entrega */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Método de entrega</h2>
+            <h2 id="checkout-delivery-label" className="text-sm font-semibold text-foreground">Método de entrega</h2>
 
-            <div className="space-y-2">
+            <div
+              className="space-y-2"
+              role="radiogroup"
+              aria-labelledby="checkout-delivery-label"
+              aria-describedby={fe.delivery_method ? "checkout-delivery-error" : undefined}
+            >
               {(
                 [
                   ["pickup_store", "Recojo en tienda"],
@@ -431,7 +436,7 @@ export default function CheckoutPage() {
                 </label>
               ))}
             </div>
-            <FieldError msg={fe.delivery_method} />
+            <FieldError id="checkout-delivery-error" msg={fe.delivery_method} />
 
             {needsAddress && (
               <div className="space-y-4 pt-1">
@@ -512,9 +517,14 @@ export default function CheckoutPage() {
 
           {/* 3. Tipo de comprobante */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Comprobante</h2>
+            <h2 id="checkout-receipt-label" className="text-sm font-semibold text-foreground">Comprobante</h2>
 
-            <div className="flex gap-3">
+            <div
+              className="flex gap-3"
+              role="radiogroup"
+              aria-labelledby="checkout-receipt-label"
+              aria-describedby={fe.receipt_type ? "checkout-receipt-error" : undefined}
+            >
               {(["boleta", "factura"] as const).map((type) => (
                 <label
                   key={type}
@@ -541,7 +551,7 @@ export default function CheckoutPage() {
                 La factura requiere RUC. El tipo de documento se ha fijado automáticamente.
               </p>
             )}
-            <FieldError msg={fe.receipt_type} />
+            <FieldError id="checkout-receipt-error" msg={fe.receipt_type} />
           </div>
 
           {/* 4. Notas */}
