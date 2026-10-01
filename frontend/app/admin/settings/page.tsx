@@ -359,35 +359,39 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
               <div className="space-y-8">
                 {sections.map(([title, description, fields]) => (
-                  <DashboardSection key={title} title={title} description={description}>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {fields.map((field) => (
-                        <div
-                          key={field.name}
-                          className={field.type === "textarea" ? "sm:col-span-2" : ""}
-                        >
-                          <Field
-                            field={field}
-                            value={draft[field.name] ?? ""}
-                            error={errors[field.name]}
-                            disabled={disabled}
-                            onChange={set}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </DashboardSection>
+                  <div key={title} className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                    <DashboardSection title={title} description={description}>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        {fields.map((field) => (
+                          <div
+                            key={field.name}
+                            className={field.type === "textarea" ? "sm:col-span-2" : ""}
+                          >
+                            <Field
+                              field={field}
+                              value={draft[field.name] ?? ""}
+                              error={errors[field.name]}
+                              disabled={disabled}
+                              onChange={set}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </DashboardSection>
+                  </div>
                 ))}
                 {/* Phase 2E — the counter lives behind its own endpoint, so
                     it saves separately from the fields above. That is the point:
                     an unrelated settings save must not be able to move a
                     document counter. */}
-                <DashboardSection
-                  title="Numeración interna"
-                  description="Cómo se numeran tus notas de venta internas."
-                >
-                  <SequenceSettings companyId={companyId} />
-                </DashboardSection>
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Numeración interna"
+                    description="Cómo se numeran tus notas de venta internas."
+                  >
+                    <SequenceSettings companyId={companyId} />
+                  </DashboardSection>
+                </div>
               </div>
 
               <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
@@ -399,7 +403,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   Aproximación de la tienda pública. Se guarda solo al confirmar.
                 </p>
 
-                <div className="rounded-2xl border border-bd-border bg-surface p-5">
+                <div className="rounded-xl border border-bd-border bg-surface p-5">
                   <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                     Sucursal de despacho
                   </p>
