@@ -59,12 +59,32 @@ información que no esté respaldada por código o commits.
 - No se añadieron checks de rol ni cambios a capabilities.
 - Tests/lint/build continúan **PENDIENTES DE CI/LOCAL** por la limitación de red documentada en este entorno.
 
+### UXUI-04C — Administración secundaria, detalles y flujos operativos
+
+**Estado: IMPLEMENTADO EN RAMA.** Sin migraciones ni cambios de contrato.
+
+- Productos, pedidos, auditoría, sucursales, roles y personal usan encabezados, tablas, filtros y controles compartidos.
+- Detalle de cliente, producto, pedido y orden técnica migrados al mismo sistema visual sin alterar acciones sensibles.
+- Ventas, promociones y comisiones normalizadas conservando la separación entre históricos, configuración y estimaciones.
+- Inventario secundario migrado: movimientos, transferencias, recuentos, reportes, reposición, Kardex, importación y detalles.
+- Formularios compartidos (`ProductForm`, `CustomerForm`, `StockMovementForm`) e `ImportWizard` ya consumen foundations comunes.
+- Búsquedas de productos, pedidos y servicio técnico incorporan debounce donde antes consultaban por cada pulsación.
+- Errores de categorías que antes se ignoraban silenciosamente ahora son visibles en alta/listado de productos.
+
+### Verificación adicional UXUI-04C
+
+- 44 archivos `.tsx` administrativos modificados fueron barridos por lotes contra patrones legacy.
+- Residuos encontrados durante la revisión (bordes blancos estructurales, `bg-black/*`, primarios blancos locales) fueron corregidos antes de cerrar el bloque.
+- Confirmaciones físicas permanecen: movimiento manual (1), recuento (2) y transferencia (3).
+- RBAC legacy/configurable, capabilities, tenant scope, idempotencia POS y reglas de inventario no fueron modificados.
+- Tests/lint/build siguen **PENDIENTES DE CI/LOCAL** por la limitación de red ya documentada.
+
 ### Deuda pendiente
 
 - El contenido del storefront continúa parcialmente hardcodeado por categorías/servicios; falta un modelo de contenido por tenant.
 - El color dorado del manual no se activa todavía porque el tenant piloto conserva su `accent_color` histórico; no se cambió el modelo ni la migración de branding.
 - Figma Foundations sigue pendiente de poblar por límite MCP del plan Starter.
-- Falta consolidar el design system del SaaS interno.
+- Quedan rutas/componentes administrativos no intervenidos que deberán auditarse en el QA final; las superficies principales y secundarias ya comparten foundations.
 
 ---
 
