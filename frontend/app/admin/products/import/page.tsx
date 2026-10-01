@@ -286,7 +286,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               ))}
             </div>
 
-            <div className="space-y-2 rounded-xl border border-bd-border bg-black/20 px-4 py-3 text-xs text-muted">
+            <div className="space-y-2 rounded-xl border border-bd-border bg-surface px-4 py-3 text-xs text-muted">
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
