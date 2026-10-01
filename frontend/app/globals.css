@@ -1,21 +1,11 @@
 @import "tailwindcss";
 
 /*
- * TENANT BRANDING — Phase 3.
+ * TENANT BRANDING — Phase 3 + UX/UI foundations.
  *
- * The `--brand-*` variables are written onto <html> by the root layout, from
- * the company that owns the request host. The `--background` / `--surface` /
- * ... tokens below — which every component and the Tailwind theme already read —
- * now resolve THROUGH them, so a tenant's palette reaches the whole storefront
- * without a single component changing.
- *
- * The literal after each `var(...)` is the NEUTRAL platform fallback, used when
- * no config resolved. It belongs to no business on purpose: an unbranded page is
- * a visible problem, one wearing the wrong company's colours is not.
- *
- * Only `#RRGGBB` values ever reach these variables — validated in the model, in
- * the serializer, and once more in brandingStyle() before they touch the style
- * attribute.
+ * The backend still owns the six configurable --brand-* values. This layer
+ * translates them into semantic UI roles so brand accent is never reused as
+ * muted copy or a structural border.
  */
 :root {
   --brand-primary: #ffffff;
@@ -28,12 +18,11 @@
   --background: var(--brand-background, #0a0a0a);
   --foreground: var(--brand-text, #fafafa);
   --surface: var(--brand-surface, #141414);
-  /* Derived from the surface rather than configurable: a seventh colour picker
-     for "the slightly lighter panel" is a field nobody fills correctly. */
   --surface-2: color-mix(in srgb, var(--surface) 88%, var(--foreground));
   --border: var(--brand-border, #262626);
-  --muted: var(--brand-accent, #a1a1aa);
   --primary: var(--brand-primary, #ffffff);
+  --accent: var(--brand-accent, #a1a1aa);
+  --muted: color-mix(in srgb, var(--foreground) 52%, var(--background));
 }
 
 @theme inline {
@@ -44,73 +33,95 @@
   --color-bd-border: var(--border);
   --color-muted: var(--muted);
   --color-primary: var(--primary);
+  --color-accent: var(--accent);
   --font-sans: var(--font-body);
-  --font-display: var(--font-display);
+  --font-display: var(--font-body);
+}
+
+html {
+  background: var(--background);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-body), Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
-/* Display headings use the condensed bold font */
 .font-display {
-  font-family: var(--font-display), 'Barlow Condensed', 'Oswald', Impact, sans-serif;
+  font-family: var(--font-body), "Montserrat", Arial, ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Dot grid pattern — used as decorative corner elements */
-.dot-grid {
-  background-image: radial-gradient(circle, rgba(255,255,255,0.22) 1.5px, transparent 1.5px);
-  background-size: 18px 18px;
-}
-
-.dot-grid-dark {
-  background-image: radial-gradient(circle, rgba(0,0,0,0.18) 1.5px, transparent 1.5px);
-  background-size: 18px 18px;
-}
-
-/* Topographic contour line texture (very subtle background) */
+/* Black Dog's secondary texture. Keep it quiet enough that content wins. */
 .topo-bg {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='0.7' opacity='0.045'%3E%3Cpath d='M0 300 Q150 200 300 300 Q450 400 600 300'/%3E%3Cpath d='M0 260 Q150 160 300 260 Q450 360 600 260'/%3E%3Cpath d='M0 340 Q150 240 300 340 Q450 440 600 340'/%3E%3Cpath d='M0 220 Q150 120 300 220 Q450 320 600 220'/%3E%3Cpath d='M0 380 Q150 280 300 380 Q450 480 600 380'/%3E%3Cpath d='M0 180 Q150 80 300 180 Q450 280 600 180'/%3E%3Cpath d='M0 420 Q150 320 300 420 Q450 520 600 420'/%3E%3Cpath d='M0 140 Q150 40 300 140 Q450 240 600 140'/%3E%3Cpath d='M0 460 Q150 360 300 460 Q450 560 600 460'/%3E%3Cpath d='M0 500 Q150 400 300 500 Q450 600 600 500'/%3E%3Cpath d='M0 100 Q150 0 300 100 Q450 200 600 100'/%3E%3C/g%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 600px 600px;
 }
 
-/* Badge / pill labels */
+/* Legacy decoration: retained temporarily for untouched screens only. */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.dot-grid-dark {
+  background-image: radial-gradient(circle, rgba(0,0,0,0.14) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
 .bd-badge {
   display: inline-flex;
   align-items: center;
   padding: 0.25rem 0.75rem;
   border-radius: 9999px;
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
+  background: var(--surface);
+  border: 1px solid var(--border);
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: var(--muted);
 }
 
-/* Black section label (like "REPARACIONES" labels in the flyers) */
 .section-label {
   display: inline-block;
   font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.25em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(255,255,255,0.45);
+  color: var(--muted);
 }
 
-img { display: block; max-width: 100%; }
+img {
+  display: block;
+  max-width: 100%;
+}
 
-/* Marquee animation for the products strip */
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent);
+  outline-offset: 3px;
+}
+
 @keyframes marquee {
   from { transform: translateX(0); }
-  to   { transform: translateX(-33.333%); }
+  to { transform: translateX(-33.333%); }
 }
 
-/* Smooth transitions globally */
 *, *::before, *::after {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
