@@ -8,14 +8,15 @@ type Props = {
 
 function MetadataSummary({ metadata }: { metadata: Record<string, unknown> }) {
   const entries = Object.entries(metadata).slice(0, 4);
-  if (entries.length === 0) return <span className="text-zinc-600">—</span>;
+  if (entries.length === 0) return <span className="text-muted">—</span>;
+
   return (
     <dl className="space-y-0.5 text-[10px]">
-      {entries.map(([k, v]) => (
-        <div key={k} className="flex gap-1">
-          <dt className="text-zinc-500">{k}:</dt>
-          <dd className="truncate max-w-[120px] text-zinc-400">
-            {String(v).slice(0, 60)}
+      {entries.map(([key, value]) => (
+        <div key={key} className="flex gap-1">
+          <dt className="text-muted">{key}:</dt>
+          <dd className="max-w-[140px] truncate text-foreground/70">
+            {String(value).slice(0, 60)}
           </dd>
         </div>
       ))}
@@ -26,17 +27,17 @@ function MetadataSummary({ metadata }: { metadata: Record<string, unknown> }) {
 export function AuditLogTable({ logs }: Props) {
   if (logs.length === 0) {
     return (
-      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-12 text-center text-zinc-500">
+      <div className="rounded-2xl border border-dashed border-bd-border py-12 text-center text-sm text-muted">
         No hay registros de auditoría.
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+      <table className="w-full min-w-[58rem] text-sm">
         <thead>
-          <tr className="border-b border-white/[0.06] bg-white/[0.02] text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <tr className="border-b border-bd-border text-left text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
             <th className="px-4 py-3">Fecha</th>
             <th className="px-4 py-3">Actor</th>
             <th className="px-4 py-3">Acción</th>
@@ -46,36 +47,21 @@ export function AuditLogTable({ logs }: Props) {
           </tr>
         </thead>
         <tbody>
-          {logs.map((log, i) => (
-            <tr
-              key={log.id}
-              className={`border-b border-white/[0.04] transition hover:bg-white/[0.02] ${
-                i % 2 === 0 ? "" : "bg-white/[0.01]"
-              }`}
-            >
-              <td className="px-4 py-3 text-xs text-zinc-500 whitespace-nowrap">
-                {formatAdminDate(log.created_at)}
-              </td>
-              <td className="px-4 py-3 font-medium text-zinc-300">
-                {log.actor ?? <span className="text-zinc-600">—</span>}
-              </td>
+          {logs.map((log) => (
+            <tr key={log.id} className="border-b border-bd-border/70 transition last:border-0 hover:bg-foreground/[0.025]">
+              <td className="whitespace-nowrap px-4 py-3 text-xs text-muted">{formatAdminDate(log.created_at)}</td>
+              <td className="px-4 py-3 font-medium text-foreground">{log.actor ?? <span className="text-muted">—</span>}</td>
               <td className="px-4 py-3">
-                <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300">
+                <span className="rounded-full border border-bd-border px-2.5 py-1 text-[10px] font-semibold text-foreground">
                   {actionLabel(log.action)}
                 </span>
               </td>
-              <td className="px-4 py-3 text-xs text-zinc-400">
+              <td className="px-4 py-3 text-xs text-muted">
                 {log.target_type}
-                {log.target_id && (
-                  <span className="ml-1 text-zinc-600">#{log.target_id}</span>
-                )}
+                {log.target_id ? <span className="ml-1">#{log.target_id}</span> : null}
               </td>
-              <td className="px-4 py-3">
-                <MetadataSummary metadata={log.metadata} />
-              </td>
-              <td className="px-4 py-3 text-xs text-zinc-600">
-                {log.ip_address ?? "—"}
-              </td>
+              <td className="px-4 py-3"><MetadataSummary metadata={log.metadata} /></td>
+              <td className="px-4 py-3 text-xs text-muted">{log.ip_address ?? "—"}</td>
             </tr>
           ))}
         </tbody>
