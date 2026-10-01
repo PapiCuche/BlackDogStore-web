@@ -37,6 +37,8 @@
 
 import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
+import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
+import { PosServiceIntake } from "./PosServiceIntake";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
@@ -113,6 +115,10 @@ const FIELD =
 
 function PosContent({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
+  const serviceSlug = ctx.dashboard?.company?.slug ?? null;
+  const capabilities = ctx.dashboard?.access.capabilities ?? [];
+  // POS-SVC-01. Switching leaves the basket as it was: a service is not a sale.
+  const [mode, setMode] = useState<PosMode>("products");
 
   const [context, setContext] = useState<PosContext | null>(null);
   const [loading, setLoading] = useState(true);
@@ -505,6 +511,17 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     }
   }
 
+  if (mode === "service" && serviceSlug) {
+    return (
+      <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
+        <div className="space-y-4">
+          <PosModeSwitch mode={mode} onChange={setMode} capabilities={capabilities} />
+          <PosServiceIntake slug={serviceSlug} may={(cap) => capabilities.includes(cap)} />
+        </div>
+      </AdminShell>
+    );
+  }
+
   if (done) {
     const isFiscalReceipt = done.receipt_type === "factura" || done.receipt_type === "boleta";
     // El backend sólo manda opciones fiscales a quien tiene `sales.fiscal.issue`;
@@ -658,6 +675,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-4">
+        {serviceSlug ? <PosModeSwitch mode={mode} onChange={setMode} capabilities={capabilities} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <label htmlFor="admin-sales-pos-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">

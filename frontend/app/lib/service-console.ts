@@ -333,10 +333,23 @@ export const createServiceDevice = (slug: string, body: {
   customer_id: number; device_type: string; brand: string; model: string;
 }) => post<{ id: number; display_name: string }>(`${base(slug)}/devices/`, body);
 
+/**
+ * With `technician_id` the order is created AND assigned in one transaction on
+ * the server: there is no moment in which it exists without its technician.
+ */
 export const createServiceOrder = (slug: string, body: {
   customer_id: number; device_id: number; branch_id: number; reported_issue: string;
-  physical_condition: string; received_accessories: string;
+  physical_condition: string; received_accessories: string; technician_id?: number;
 }) => post<ServiceOrderDetail>(`${base(slug)}/orders/`, body);
+
+/**
+ * Who may be given an order of this branch. The server answers with names and
+ * ids only, and only to a caller who may assign.
+ */
+export const fetchServiceTechnicians = (slug: string, branchId: number) =>
+  get<{ candidates: ServiceAssignmentCandidate[] }>(
+    `${base(slug)}/technicians/?branch_id=${branchId}`,
+  );
 
 export function fetchServiceOrders(
   slug: string,
@@ -590,11 +603,21 @@ export const recordDelivery = (
 export const CAP_ORDERS_VIEW = "service.orders.view";
 export const CAP_ORDERS_CREATE = "service.orders.create";
 export const CAP_ORDERS_MANAGE = "service.orders.manage";
+export const CAP_ORDERS_ASSIGN = "service.orders.assign";
 export const CAP_DIAGNOSTIC_MANAGE = "service.diagnostic.manage";
 export const CAP_REPAIR_MANAGE = "service.repair.manage";
 export const CAP_QUALITY_MANAGE = "service.quality.manage";
 export const CAP_DELIVERY_MANAGE = "service.delivery.manage";
 export const CAP_PAYMENTS_MANAGE = "service.payments.manage";
+export const CAP_PAYMENTS_COLLECT = "service.payments.collect";
+
+type May = (capability: string) => boolean;
+
+/** Choosing the technician: its own capability, or the wider one that implies it. */
+export const mayAssignTechnician = (may: May) => may(CAP_ORDERS_ASSIGN) || may(CAP_ORDERS_MANAGE);
+
+/** Recording money received. Reversing a payment stays with `service.payments.manage`. */
+export const mayCollectPayment = (may: May) => may(CAP_PAYMENTS_COLLECT) || may(CAP_PAYMENTS_MANAGE);
 
 /** A key that is stable for one intention and different for the next. */
 export function makeIdempotencyKey(shape: string): string {

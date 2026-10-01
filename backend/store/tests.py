@@ -9067,6 +9067,9 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              # M12B. The counter takes the money for a repair; a legacy `sales`
              # membership that never adopted RBAC does not.
              'service.payments.manage',
+             # SVC-ASSIGN-01. The counter says which technician gets the device
+             # it has just received. Not `service.orders.manage`.
+             'service.orders.assign',
              # C2.2A.1. El mostrador CONSULTA el estado de la factura de un
              # cliente. Sólo consultar: emitir es `sales.fiscal.issue` y no está
              # en el preset, porque declarar algo ante SUNAT no se concede a
@@ -28308,6 +28311,23 @@ def _m7_user(username, password='Pass123!'):
     )
 
 
+def _m8_sees_orders(membership):
+    """
+    Make `membership` assignable (SVC-ASSIGN-01).
+
+    A legacy `technician` membership holds `service.manage` and nothing the
+    console reads, so an order given to it would be invisible to its owner.
+    Only somebody who may see service orders can be given one.
+    """
+    role, _ = CompanyRole.objects.get_or_create(
+        company=membership.company, slug='ve-ordenes',
+        defaults={'name': 'Ve órdenes', 'capabilities': ['company.view', 'service.orders.view']},
+    )
+    MembershipRoleAssignment.objects.create(membership=membership, role=role)
+    cache.clear()
+    return membership
+
+
 def _m7_login(username, password='Pass123!'):
     client = APIClient()
     token = client.post(
@@ -29365,12 +29385,14 @@ class M8CapabilityCatalogueTest(TestCase):
         ):
             self.assertIn(code, CAPABILITIES, code)
 
-    def test_there_is_no_separate_assign_capability(self):
-        # Deliberate: whoever may move an order to "en diagnóstico" is whoever
-        # decides which technician does the diagnosing.
+    def test_assigning_is_its_own_capability(self):
+        # SVC-ASSIGN-01 reversed the M8 decision ("whoever may move an order
+        # decides who diagnoses it"): the counter names the technician without
+        # being able to move the order. `service.orders.manage` still implies
+        # it — see `SvcAssignCapabilityTest`.
         from .capabilities import CAPABILITIES
 
-        self.assertNotIn('service.orders.assign', CAPABILITIES)
+        self.assertIn('service.orders.assign', CAPABILITIES)
 
 
 class M8DeviceModelTest(M8ServiceBase):
@@ -29682,9 +29704,13 @@ class M8AssignmentTest(M8ServiceBase):
     def setUp(self):
         super().setUp()
         self.tech = _m7_user('tecnico')
-        Membership.objects.create(user=self.tech, company=self.company, role='technician')
+        _m8_sees_orders(
+            Membership.objects.create(user=self.tech, company=self.company, role='technician'),
+        )
         self.foreign_tech = _m7_user('tecnico_ajeno')
         Membership.objects.create(user=self.foreign_tech, company=self.other, role='technician')
+        # Reception is reassigned to in two tests: it has to be assignable too.
+        _m8_sees_orders(self.membership)
 
     def test_a_technician_of_this_company_can_be_assigned(self):
         order = self.make_order()
@@ -30172,7 +30198,9 @@ class M8AssignmentApiTest(M8ServiceBase):
     def setUp(self):
         super().setUp()
         self.tech = _m7_user('tecnico_api')
-        Membership.objects.create(user=self.tech, company=self.company, role='technician')
+        _m8_sees_orders(
+            Membership.objects.create(user=self.tech, company=self.company, role='technician'),
+        )
         self.foreign_tech = _m7_user('tecnico_api_ajeno')
         Membership.objects.create(
             user=self.foreign_tech, company=self.other, role='technician',
@@ -30369,7 +30397,9 @@ class M8CustomerRepairsTest(M8ServiceBase):
 
     def test_no_technician_identity_reaches_the_client(self):
         tech = _m7_user('tecnico_privado')
-        Membership.objects.create(user=tech, company=self.company, role='technician')
+        _m8_sees_orders(
+            Membership.objects.create(user=tech, company=self.company, role='technician'),
+        )
         _m8_service.assign_technician(
             repair_order=self.mine, technician=tech, actor=self.staff,
         )
@@ -36354,6 +36384,7 @@ class H1BTechnicianPresetParityTest(TestCase):
         for migration in (
             '0050_quality_capability_for_untouched_presets',
             '0053_delivery_capability_for_untouched_presets',
+            '0095_service_payments_collect',
         ):
             importlib.import_module(
                 f'store.migrations.{migration}',
@@ -39556,6 +39587,26 @@ class G3DeactivationEscalationTest(TestCase):
         self.assertFalse(has_capability(other, self.company, 'inventory.adjust'))
 
 
+def _rewind_technician_preset_to_0057(preset):
+    """
+    Put a freshly provisioned technician preset back to the moment 0057 ran.
+
+    0057 compares against a FROZEN set, on purpose, and later migrations extend
+    that same untouched preset (0095 adds `service.payments.collect`). Running
+    0057 against today's preset would be asking it to see the future; a tenant
+    upgrading meets these two nodes in this order.
+    """
+    import importlib
+
+    frozen = importlib.import_module(
+        'store.migrations.0057_migrate_legacy_technicians_to_rbac',
+    ).UNTOUCHED_TECHNICIAN_PRESET
+    preset.capabilities = sorted(frozen)
+    preset.save(update_fields=['capabilities'])
+    cache.clear()
+    return preset
+
+
 class M12ALegacyTechnicianAccessTest(TestCase):
     """The gap itself, and the shape of the fix."""
 
@@ -39570,6 +39621,7 @@ class M12ALegacyTechnicianAccessTest(TestCase):
         self.company = _saas_company('Taller M12', 'm12a-taller', tax_id='20780030001')
         provision_company_access_defaults(self.company)
         self.preset = self.company.roles.get(slug='servicio-tecnico')
+        _rewind_technician_preset_to_0057(self.preset)
 
     def _legacy_technician(self, username='m12a_legacy_tech'):
         user = _saas_user(username)
@@ -39585,6 +39637,10 @@ class M12ALegacyTechnicianAccessTest(TestCase):
             'store.migrations.0057_migrate_legacy_technicians_to_rbac',
         )
         module.migrate_legacy_technicians(django_apps, None)
+        # …and what the chain grants to that same untouched preset afterwards.
+        importlib.import_module(
+            'store.migrations.0095_service_payments_collect',
+        ).grant(django_apps, None)
 
     # -- el hueco ----------------------------------------------------------
 
@@ -39734,6 +39790,7 @@ class M12ALegacyTechnicianAccessTest(TestCase):
     def test_it_never_crosses_into_another_company(self):
         other = _saas_company('Ajena M12', 'm12a-ajena', tax_id='20780030002')
         provision_company_access_defaults(other)
+        _rewind_technician_preset_to_0057(other.roles.get(slug='servicio-tecnico'))
         user = _saas_user('m12a_cross')
         m_other = Membership.objects.create(
             user=user, company=other, role='technician', is_active=True,
@@ -39896,6 +39953,7 @@ class G3TechnicianMigrationFreezeTest(TestCase):
         cache.clear()
         self.company = _saas_company('Congelado SA', 'g3-freeze', tax_id='20780031000')
         provision_company_access_defaults(self.company)
+        _rewind_technician_preset_to_0057(self.company.roles.get(slug='servicio-tecnico'))
 
     def _module(self):
         import importlib
@@ -39924,10 +39982,18 @@ class G3TechnicianMigrationFreezeTest(TestCase):
         # capability, this fails and points at the migration that has to decide
         # what to do about it — instead of the migration quietly skipping every
         # tenant and blaming them for it.
+        #
+        # It fired for SVC-PAY-01, and the decision was: 0057 keeps its moment,
+        # and 0095 extends the same untouched preset afterwards. So today's
+        # preset is the frozen set PLUS what later nodes grant — and each of
+        # those nodes starts exactly where the previous one left off.
+        import importlib
         from .company_provisioning import _TECHNICIAN_CAPS
-        self.assertEqual(
-            self._module().UNTOUCHED_TECHNICIAN_PRESET, frozenset(_TECHNICIAN_CAPS),
-        )
+
+        later = importlib.import_module('store.migrations.0095_service_payments_collect')
+        before_0095, granted_by_0095 = later.PRESETS['servicio-tecnico']
+        self.assertEqual(self._module().UNTOUCHED_TECHNICIAN_PRESET, before_0095)
+        self.assertEqual(before_0095 | granted_by_0095, frozenset(_TECHNICIAN_CAPS))
 
     def test_it_includes_the_capability_delivery_added(self):
         self.assertIn(
@@ -53568,6 +53634,7 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
         self.QUERY = {
             'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
             'v1-internal-pos-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE',
+            'v1-internal-service-technicians': f'?branch_id={self.branch_a.pk}',
         }
         self.pk_by_name = {
             'v1-internal-order-detail': self.commerce.pk,
@@ -53894,7 +53961,7 @@ class H411CredentialChannelTest(M8ServiceBase):
                 self.assertEqual(classes, [V1InternalAuthentication], route)
             elif V1InternalAuthentication in classes:
                 elsewhere.append(route)
-        self.assertEqual(internal, 70)
+        self.assertEqual(internal, 71)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------
@@ -53993,6 +54060,7 @@ class H411PurgeE2EDataTest(M8ServiceBase):
             company=self.company, branch=self.branch_a, customer=self.e2e_customer,
             device=self.e2e_device, reported_issue='[E2E] no enciende', actor=self.staff,
         )
+        _m8_sees_orders(self.membership)
         _m8_service.assign_technician(
             repair_order=self.e2e_order, technician=self.staff, actor=self.staff,
         )
@@ -61316,3 +61384,1177 @@ class F2E2eFixtureSeedTest(TestCase):
         with self.assertRaises(CommandError):
             self._seed(e2e_fixtures=True)
         self.assertIsNone(self._worker())
+
+
+# ---------------------------------------------------------------------------
+# SVC-FUNC-01 — technical service: scoped assignment, collection, POS intake
+# ---------------------------------------------------------------------------
+
+# -- SVC-FUNC-01 · SVC-NAV-01 --------------------------------------------------
+
+class SvcFuncBase(M8ServiceBase):
+    """M8's fixture plus staff built by capability and branch scope."""
+
+    VIEW = ('company.view', 'service.orders.view')
+
+    def member(self, username, capabilities, *, branches=None, active=True):
+        user = _m7_user(username)
+        membership = Membership.objects.create(
+            user=user, company=self.company, role='customer',
+            branch_access_mode=(
+                Membership.ACCESS_MODE_SELECTED if branches is not None
+                else Membership.ACCESS_MODE_ALL
+            ),
+        )
+        _assign(membership, _role(
+            self.company, f'Rol {username}', capabilities=list(capabilities),
+            slug=f'rol-{username}',
+        ))
+        for branch in branches or []:
+            _M7BranchAccess.objects.create(membership=membership, branch=branch)
+        if not active:
+            user.is_active = False
+            user.save(update_fields=['is_active'])
+        cache.clear()
+        return user
+
+    def acting_with(self, *capabilities, slug='svc-actor'):
+        """`recepcion` holding EXACTLY these capabilities."""
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        _assign(self.membership, _role(
+            self.company, f'Rol {slug}', capabilities=list(capabilities), slug=slug,
+        ))
+        cache.clear()
+        self.client = _m7_login('recepcion')
+        return self.client
+
+    def assignment_url(self, order):
+        return _m8_url('m8-taller', f'orders/{order.pk}/assignment/')
+
+
+class SvcQueueStatusFilterTest(SvcFuncBase):
+    """SVC-NAV-01. A queue lists several lifecycle codes; one code still works."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.acting_with('company.view', 'service.orders.view')
+        self.received = self.make_order()
+        self.diagnosing = self.make_order()
+        _M8RepairOrder.objects.filter(pk=self.diagnosing.pk).update(status='diagnosing')
+        self.waiting = self.make_order()
+        _M8RepairOrder.objects.filter(pk=self.waiting.pk).update(status='waiting_approval')
+
+    def ids(self, query):
+        res = self.client.get(_m8_url('m8-taller', 'orders/') + query)
+        self.assertEqual(res.status_code, 200, res.data)
+        return sorted(row['id'] for row in res.data['results'])
+
+    def test_several_codes(self):
+        self.assertEqual(
+            self.ids('?status=diagnosing,waiting_approval'),
+            sorted([self.diagnosing.pk, self.waiting.pk]),
+        )
+
+    def test_one_code_is_unchanged(self):
+        self.assertEqual(self.ids('?status=received'), [self.received.pk])
+
+    def test_an_unknown_code_matches_nothing(self):
+        self.assertEqual(self.ids('?status=diagnosing,nope'), [self.diagnosing.pk])
+        self.assertEqual(self.ids('?status=nope'), [])
+
+# -- SVC-FUNC-01 · SVC-ASSIGN-01 -----------------------------------------------
+
+class SvcAssignCapabilityTest(SvcFuncBase):
+    """
+    SVC-ASSIGN-01. Choosing the technician is its own authority: reception and
+    the till may do it without being able to move an order through the
+    workshop. `service.orders.manage` keeps implying it, so no existing role
+    loses anything.
+    """
+
+    RECEPTION = ('company.view', 'service.orders.view', 'service.orders.create',
+                 'service.customers.view', 'service.devices.view')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_tech', self.VIEW)
+        self.order = self.make_order()
+
+    def test_the_capability_exists_and_is_assignable(self):
+        from .capabilities import ASSIGNABLE_CAPABILITY_CODES
+
+        self.assertIn('service.orders.assign', ASSIGNABLE_CAPABILITY_CODES)
+
+    def test_assign_alone_may_assign(self):
+        self.acting_with(*self.RECEPTION, 'service.orders.assign')
+        res = self.client.post(
+            self.assignment_url(self.order), {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(_M8Assignment.objects.filter(
+            repair_order=self.order, technician=self.tech, unassigned_at__isnull=True,
+        ).exists())
+
+    def test_assign_alone_may_not_move_the_order(self):
+        self.acting_with(*self.RECEPTION, 'service.orders.assign')
+        res = self.client.post(
+            _m8_url('m8-taller', f'orders/{self.order.pk}/transition/'),
+            {'status': 'diagnosing'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_without_assign_or_manage_it_is_refused(self):
+        self.acting_with(*self.RECEPTION)
+        self.assertEqual(self.client.get(self.assignment_url(self.order)).status_code, 403)
+        res = self.client.post(
+            self.assignment_url(self.order), {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order=self.order).exists())
+
+    def test_manage_still_assigns(self):
+        self.acting_with(*self.RECEPTION, 'service.orders.manage')
+        res = self.client.post(
+            self.assignment_url(self.order), {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_reassigning_closes_the_previous_assignment(self):
+        other = self.member('svc_tech_2', self.VIEW)
+        self.acting_with(*self.RECEPTION, 'service.orders.assign')
+        for technician in (self.tech, other):
+            self.client.post(
+                self.assignment_url(self.order), {'technician_id': technician.pk}, format='json',
+            )
+        rows = _M8Assignment.objects.filter(repair_order=self.order).order_by('pk')
+        self.assertEqual(rows.count(), 2)
+        self.assertIsNotNone(rows[0].unassigned_at)
+        self.assertIsNone(rows[1].unassigned_at)
+        self.assertEqual(rows[1].technician, other)
+
+    def test_the_assigned_order_appears_in_the_technicians_own_queue(self):
+        self.acting_with(*self.RECEPTION, 'service.orders.assign')
+        self.client.post(
+            self.assignment_url(self.order), {'technician_id': self.tech.pk}, format='json',
+        )
+        res = _m7_login('svc_tech').get(_m8_url('m8-taller', 'orders/') + '?mine=true')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([row['id'] for row in res.data['results']], [self.order.pk])
+
+    def test_assigning_does_not_open_an_order_to_someone_who_cannot_see_orders(self):
+        """
+        The assignment answers carry the order — its notes, its customer. The
+        authority to name a technician is not the authority to read that.
+        """
+        order = self.make_order()
+        tech = self.member('svc_unseen', self.VIEW)
+        self.acting_with('company.view', 'service.orders.assign', slug='svc-assign-blind')
+
+        self.assertEqual(self.client.get(self.assignment_url(order)).status_code, 403)
+        res = self.client.post(
+            self.assignment_url(order), {'technician_id': tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(order.assignments.exists())
+
+
+
+class SvcUnassignAuthorityTest(SvcFuncBase):
+    """
+    SVC-ASSIGN-UNASSIGN. `service.orders.assign` chooses the technician and may
+    correct the choice; it may NOT leave an order with nobody responsible.
+    Releasing an order stays with `service.orders.manage`.
+
+    The refusal is the server's, and it happens before anything is written.
+    """
+
+    ASSIGNER = ('company.view', 'service.orders.view', 'service.orders.assign')
+    MANAGER = ('company.view', 'service.orders.view', 'service.orders.manage')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_resp', self.VIEW)
+        self.other_tech = self.member('svc_resp_2', self.VIEW)
+        self.order = self.make_order(branch=self.branch_a)
+        _m8_service.assign_technician(
+            repair_order=self.order, technician=self.tech, actor=self.staff,
+        )
+
+    def post(self, technician_id):
+        return self.client.post(
+            self.assignment_url(self.order), {'technician_id': technician_id}, format='json',
+        )
+
+    def footprint(self):
+        from .models import Notification
+
+        self.order.refresh_from_db()
+        return {
+            'assignments': list(
+                _M8Assignment.objects.filter(repair_order=self.order)
+                .order_by('pk').values_list('pk', 'technician_id', 'unassigned_at'),
+            ),
+            'history': _M8History.objects.filter(repair_order=self.order).count(),
+            'audit': AdminAuditLog.objects.count(),
+            'notifications': Notification.objects.count(),
+            'order': (self.order.status, self.order.updated_at),
+        }
+
+    def current(self):
+        return _M8Assignment.objects.get(repair_order=self.order, unassigned_at__isnull=True)
+
+    # -- what `assign` may do ---------------------------------------------------
+
+    def test_assign_may_assign_an_order_nobody_has(self):
+        fresh = self.make_order(branch=self.branch_a)
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.post(
+            self.assignment_url(fresh), {'technician_id': self.tech.pk}, format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(
+            _M8Assignment.objects.get(repair_order=fresh, unassigned_at__isnull=True).technician,
+            self.tech,
+        )
+
+    def test_assign_may_reassign_and_the_history_is_kept(self):
+        self.acting_with(*self.ASSIGNER)
+        res = self.post(self.other_tech.pk)
+        self.assertEqual(res.status_code, 200, res.data)
+
+        rows = list(_M8Assignment.objects.filter(repair_order=self.order).order_by('pk'))
+        self.assertEqual([row.technician for row in rows], [self.tech, self.other_tech])
+        self.assertIsNotNone(rows[0].unassigned_at)
+        self.assertIsNone(rows[1].unassigned_at)
+
+    # -- what it may not --------------------------------------------------------
+
+    def test_assign_may_not_leave_the_order_without_a_technician(self):
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+
+        res = self.post(None)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.footprint(), before)
+        self.assertEqual(self.current().technician, self.tech)
+
+    def test_the_refusal_does_not_depend_on_there_being_somebody_to_release(self):
+        fresh = self.make_order(branch=self.branch_a)
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.post(
+            self.assignment_url(fresh), {'technician_id': None}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order=fresh).exists())
+
+    def test_manage_still_releases_the_order(self):
+        self.acting_with(*self.MANAGER)
+        res = self.post(None)
+        self.assertEqual(res.status_code, 200, res.data)
+        row = _M8Assignment.objects.get(repair_order=self.order)
+        self.assertIsNotNone(row.unassigned_at)
+        self.assertEqual(res.data['technician_name'], '')
+
+    def test_assign_together_with_manage_releases_too(self):
+        self.acting_with(*self.MANAGER, 'service.orders.assign')
+        self.assertEqual(self.post(None).status_code, 200)
+
+    def test_without_assign_or_manage_nothing_is_allowed(self):
+        self.acting_with('company.view', 'service.orders.view')
+        before = self.footprint()
+        for technician_id in (None, self.other_tech.pk):
+            self.assertEqual(self.post(technician_id).status_code, 403, technician_id)
+        self.assertEqual(self.footprint(), before)
+
+    # -- the rest of the contract did not move ------------------------------------
+
+    def test_a_technician_of_another_company_is_still_not_found(self):
+        foreigner = _m7_user('svc_resp_foreign')
+        _assign(
+            Membership.objects.create(user=foreigner, company=self.other, role='customer'),
+            _role(self.other, 'Rol ajeno resp', capabilities=list(self.VIEW), slug='rol-ajeno-resp'),
+        )
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+        self.assertEqual(self.post(foreigner.pk).status_code, 404)
+        self.assertEqual(self.footprint(), before)
+
+    def test_a_technician_outside_the_branch_is_still_not_eligible(self):
+        elsewhere = self.member('svc_resp_b', self.VIEW, branches=[self.branch_b])
+        self.acting_with(*self.ASSIGNER)
+        before = self.footprint()
+        self.assertEqual(self.post(elsewhere.pk).status_code, 404)
+        self.assertEqual(self.footprint(), before)
+
+    def test_the_candidates_answer_keeps_its_shape(self):
+        self.acting_with(*self.ASSIGNER)
+        res = self.client.get(self.assignment_url(self.order))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(sorted(res.data), ['candidates', 'current'])
+        self.assertEqual(res.data['current']['technician'], self.tech.pk)
+        self.assertTrue(res.data['candidates'])
+        for row in res.data['candidates']:
+            self.assertEqual(sorted(row), ['id', 'name'])
+
+
+class SvcAssignVisibilityTest(SvcFuncBase):
+    """
+    SVC-ASSIGN-VIEW-01. ONE rule says who may name a technician, wherever the
+    naming happens:
+
+        service.orders.manage  OR  (service.orders.assign AND service.orders.view)
+
+    It applied to the assignment of an existing order. It did not apply to the
+    list of candidates of a branch, nor to an intake that names its technician —
+    so a CUSTOM role holding `assign` without `view` could read who works at a
+    branch and hand out orders it may not see. The standard presets never had
+    that combination; a role a tenant builds can.
+    """
+
+    CREATE = ('company.view', 'service.orders.create',
+              'service.customers.view', 'service.devices.view')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_vis_tech', self.VIEW)
+        self.other_tech = self.member('svc_vis_tech_2', self.VIEW)
+        self.order = self.make_order(branch=self.branch_a)
+
+    def candidates(self):
+        return self.client.get(
+            _m8_url('m8-taller', 'technicians/') + f'?branch_id={self.branch_a.pk}',
+        )
+
+    def assign(self, technician_id, order=None):
+        return self.client.post(
+            self.assignment_url(order or self.order), {'technician_id': technician_id},
+            format='json',
+        )
+
+    def create(self, **extra):
+        body = {
+            'customer_id': self.customer.pk, 'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk, 'reported_issue': 'Pantalla rota.',
+        }
+        body.update(extra)
+        return self.client.post(_m8_url('m8-taller', 'orders/'), body, format='json')
+
+    def footprint(self):
+        return {
+            'orders': _M8RepairOrder.objects.count(),
+            'assignments': _M8Assignment.objects.count(),
+            'history': _M8History.objects.count(),
+            'audit': AdminAuditLog.objects.count(),
+        }
+
+    # A — assign + view ---------------------------------------------------------
+
+    def test_assign_with_view_reads_candidates_and_assigns(self):
+        self.acting_with('company.view', 'service.orders.view', 'service.orders.assign',
+                         slug='vis-a')
+        res = self.candidates()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(sorted(res.data), ['candidates'])
+        self.assertIn(self.tech.pk, {row['id'] for row in res.data['candidates']})
+        for row in res.data['candidates']:
+            self.assertEqual(sorted(row), ['id', 'name'])
+        self.assertNotIn('@', json.dumps(res.data))
+
+        self.assertEqual(self.assign(self.tech.pk).status_code, 200)
+
+    # B — assign WITHOUT view ----------------------------------------------------
+
+    def test_assign_without_view_reads_no_candidates(self):
+        self.acting_with('company.view', 'service.orders.assign', slug='vis-b')
+        res = self.candidates()
+        self.assertEqual(res.status_code, 403)
+        self.assertNotIn('candidates', res.data)
+
+    def test_assign_without_view_assigns_nothing(self):
+        self.acting_with('company.view', 'service.orders.assign', slug='vis-b2')
+        before = self.footprint()
+        self.assertEqual(self.client.get(self.assignment_url(self.order)).status_code, 403)
+        self.assertEqual(self.assign(self.tech.pk).status_code, 403)
+        self.assertEqual(self.footprint(), before)
+
+    # C — create + assign WITHOUT view, naming a technician ------------------------
+
+    def test_an_intake_that_names_a_technician_needs_view_too(self):
+        self.acting_with(*self.CREATE, 'service.orders.assign', slug='vis-c')
+        before = self.footprint()
+
+        res = self.create(technician_id=self.tech.pk)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.footprint(), before)
+
+    def test_the_refusal_comes_before_any_lookup(self):
+        # Same answer for a technician that exists and for one that does not:
+        # without the authority, the id is never looked at.
+        self.acting_with(*self.CREATE, 'service.orders.assign', slug='vis-c2')
+        self.assertEqual(self.create(technician_id=self.tech.pk).status_code, 403)
+        self.assertEqual(self.create(technician_id=987654).status_code, 403)
+
+    # D — create + assign + view ---------------------------------------------------
+
+    def test_an_intake_with_assign_and_view_creates_and_assigns(self):
+        self.acting_with(*self.CREATE, 'service.orders.view', 'service.orders.assign',
+                         slug='vis-d')
+        res = self.create(technician_id=self.tech.pk)
+        self.assertEqual(res.status_code, 201, res.data)
+        row = _M8Assignment.objects.get(repair_order_id=res.data['id'])
+        self.assertEqual(row.technician, self.tech)
+        self.assertIsNone(row.unassigned_at)
+
+    # E — manage, without an explicit assign ----------------------------------------
+
+    def test_manage_alone_keeps_the_whole_authority(self):
+        self.acting_with(*self.CREATE, 'service.orders.manage', slug='vis-e')
+        self.assertEqual(self.candidates().status_code, 200)
+        self.assertEqual(self.assign(self.tech.pk).status_code, 200)
+        self.assertEqual(self.assign(self.other_tech.pk).status_code, 200)
+        self.assertEqual(self.assign(None).status_code, 200)
+        self.assertFalse(_M8Assignment.objects.filter(
+            repair_order=self.order, unassigned_at__isnull=True,
+        ).exists())
+        res = self.create(technician_id=self.tech.pk)
+        self.assertEqual(res.status_code, 201, res.data)
+
+    # F — reception without a technician is not touched -------------------------------
+
+    def test_an_intake_without_a_technician_needs_nothing_new(self):
+        self.acting_with(*self.CREATE, slug='vis-f')
+        res = self.create()
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order_id=res.data['id']).exists())
+
+        res = self.create(technician_id=None)
+        self.assertEqual(res.status_code, 201, res.data)
+
+    # The anti-oracle did not move ------------------------------------------------------
+
+    def test_everybody_outside_the_set_is_the_same_not_found(self):
+        foreigner = _m7_user('svc_vis_foreign')
+        _assign(
+            Membership.objects.create(user=foreigner, company=self.other, role='customer'),
+            _role(self.other, 'Rol ajeno vis', capabilities=list(self.VIEW), slug='rol-ajeno-vis'),
+        )
+        outsiders = {
+            'otro tenant': foreigner.pk,
+            'inactivo': self.member('svc_vis_inactive', self.VIEW, active=False).pk,
+            'fuera de sucursal': self.member('svc_vis_b', self.VIEW, branches=[self.branch_b]).pk,
+            'sin ver órdenes': self.member('svc_vis_blind', ('company.view',)).pk,
+            'inexistente': 987654,
+        }
+        self.acting_with(*self.CREATE, 'service.orders.view', 'service.orders.assign',
+                         slug='vis-oracle')
+        before = self.footprint()
+        answers = set()
+        for label, pk in outsiders.items():
+            for res in (self.assign(pk), self.create(technician_id=pk)):
+                self.assertEqual(res.status_code, 404, label)
+                answers.add(json.dumps(res.data, sort_keys=True))
+        self.assertEqual(len(answers), 1, answers)
+        self.assertEqual(self.footprint(), before)
+
+
+class SvcTechnicianEligibilityTest(SvcFuncBase):
+    """
+    If the order can be assigned to someone, it can appear in their queue: the
+    candidate is active staff of THIS company, may see service orders, and
+    reaches the order's branch. Anyone else is simply not in the set.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.order = self.make_order(branch=self.branch_a)
+        self.reachable = self.member('svc_ok', self.VIEW)
+        self.selected_a = self.member('svc_sel_a', self.VIEW, branches=[self.branch_a])
+        self.selected_b = self.member('svc_sel_b', self.VIEW, branches=[self.branch_b])
+        self.no_view = self.member('svc_noview', ('company.view',))
+        self.inactive = self.member('svc_inactive', self.VIEW, active=False)
+        self.foreigner = _m7_user('svc_foreign')
+        foreign_membership = Membership.objects.create(
+            user=self.foreigner, company=self.other, role='customer',
+        )
+        _assign(foreign_membership, _role(
+            self.other, 'Rol ajeno', capabilities=list(self.VIEW), slug='rol-ajeno',
+        ))
+        self.acting_with('company.view', 'service.orders.view', 'service.orders.assign')
+
+    def candidate_ids(self):
+        res = self.client.get(self.assignment_url(self.order))
+        self.assertEqual(res.status_code, 200, res.data)
+        return {row['id'] for row in res.data['candidates']}
+
+    def test_candidates_reach_the_branch_and_may_see_orders(self):
+        ids = self.candidate_ids()
+        self.assertIn(self.reachable.pk, ids)
+        self.assertIn(self.selected_a.pk, ids)
+        for excluded in (self.selected_b, self.no_view, self.inactive, self.foreigner):
+            self.assertNotIn(excluded.pk, ids, excluded.username)
+
+    def test_the_shop_customers_are_not_walked_to_find_the_staff(self):
+        """
+        A company's customers are memberships too, and there are thousands of
+        them. Working out the candidates must not cost a capability lookup per
+        customer: only memberships that could hold a capability are examined.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def cost():
+            cache.clear()
+            with CaptureQueriesContext(connection) as queries:
+                list(_m8_service.eligible_technicians(self.company, self.branch_a))
+            return len(queries)
+
+        before = cost()
+        for n in range(6):
+            Membership.objects.create(
+                user=_m7_user(f'svc_shopper_{n}'), company=self.company, role='customer',
+            )
+        self.assertEqual(cost(), before)
+
+    def test_checking_one_person_does_not_walk_the_staff(self):
+        """
+        Assigning asks about ONE person, while the order row is locked. That
+        must not cost a capability lookup per member of staff.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def cost():
+            cache.clear()
+            with CaptureQueriesContext(connection) as queries:
+                found = list(_m8_service.eligible_technicians(
+                    self.company, self.branch_a, user_id=self.reachable.pk,
+                ))
+            self.assertEqual(found, [self.reachable])
+            return len(queries)
+
+        before = cost()
+        for n in range(5):
+            self.member(f'svc_colleague_{n}', self.VIEW)
+        self.assertEqual(cost(), before)
+
+    def test_one_person_outside_the_set_is_still_not_found(self):
+        for outsider in (self.selected_b, self.no_view, self.inactive, self.foreigner):
+            self.assertFalse(_m8_service.eligible_technicians(
+                self.company, self.branch_a, user_id=outsider.pk,
+            ).exists(), outsider.username)
+
+    def test_the_shape_is_current_and_candidates_with_names_only(self):
+        res = self.client.get(self.assignment_url(self.order))
+        self.assertEqual(sorted(res.data), ['candidates', 'current'])
+        for row in res.data['candidates']:
+            self.assertEqual(sorted(row), ['id', 'name'])
+
+    def test_everyone_outside_the_set_answers_alike(self):
+        answers = set()
+        for technician_id in (self.selected_b.pk, self.no_view.pk, self.inactive.pk,
+                              self.foreigner.pk, 987654):
+            res = self.client.post(
+                self.assignment_url(self.order), {'technician_id': technician_id},
+                format='json',
+            )
+            answers.add((res.status_code, str(res.data)))
+        self.assertEqual(len(answers), 1, answers)
+        self.assertEqual(next(iter(answers))[0], 404)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order=self.order).exists())
+
+    def test_the_service_refuses_an_ineligible_technician_too(self):
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.assign_technician(
+                repair_order=self.order, technician=self.selected_b, actor=self.staff,
+            )
+
+    def test_candidates_by_branch_before_the_order_exists(self):
+        url = _m8_url('m8-taller', 'technicians/')
+        res = self.client.get(url + f'?branch_id={self.branch_b.pk}')
+        self.assertEqual(res.status_code, 200, res.data)
+        ids = {row['id'] for row in res.data['candidates']}
+        self.assertIn(self.selected_b.pk, ids)
+        self.assertNotIn(self.selected_a.pk, ids)
+        self.assertEqual(sorted(res.data['candidates'][0]), ['id', 'name'])
+
+    def test_candidates_by_branch_need_the_authority_and_the_branch(self):
+        url = _m8_url('m8-taller', 'technicians/')
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(
+            self.client.get(url + f'?branch_id={self.foreign_branch.pk}').status_code, 404,
+        )
+        self.acting_with('company.view', 'service.orders.view', slug='svc-sin-assign')
+        self.assertEqual(
+            self.client.get(url + f'?branch_id={self.branch_a.pk}').status_code, 403,
+        )
+
+
+class SvcIntakeWithAssignmentTest(SvcFuncBase):
+    """
+    POS-SVC-01. The till creates the order AND names the technician in one
+    operation: either both happen or neither does.
+    """
+
+    INTAKE = ('company.view', 'service.orders.view', 'service.orders.create',
+              'service.customers.view', 'service.devices.view', 'service.orders.assign')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_pos_tech', self.VIEW)
+        self.acting_with(*self.INTAKE)
+
+    def payload(self, **extra):
+        body = {
+            'customer_id': self.customer.pk, 'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk, 'reported_issue': 'Pantalla rota.',
+        }
+        body.update(extra)
+        return body
+
+    def footprint(self):
+        return (
+            _M8RepairOrder.objects.count(),
+            _M8Assignment.objects.count(),
+            _M8History.objects.count(),
+            AdminAuditLog.objects.filter(action__in=[
+                'service_order_created', 'service_order_technician_assigned',
+            ]).count(),
+        )
+
+    def test_order_and_assignment_are_created_together(self):
+        res = self.client.post(
+            _m8_url('m8-taller', 'orders/'), self.payload(technician_id=self.tech.pk),
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        order = _M8RepairOrder.objects.get(pk=res.data['id'])
+        self.assertEqual(order.status, 'received')
+        self.assertEqual(order.status_history.count(), 1)
+        self.assertEqual(
+            order.assignments.get(unassigned_at__isnull=True).technician, self.tech,
+        )
+        self.assertEqual(res.data['technician_name'], 'svc_pos_tech')
+        mine = _m7_login('svc_pos_tech').get(_m8_url('m8-taller', 'orders/') + '?mine=true')
+        self.assertEqual([row['id'] for row in mine.data['results']], [order.pk])
+
+    def test_an_invalid_technician_creates_nothing(self):
+        outsider = self.member('svc_pos_out', self.VIEW, branches=[self.branch_b])
+        for technician_id in (987654, outsider.pk):
+            before = self.footprint()
+            res = self.client.post(
+                _m8_url('m8-taller', 'orders/'), self.payload(technician_id=technician_id),
+                format='json',
+            )
+            self.assertEqual(res.status_code, 404, res.data)
+            self.assertEqual(self.footprint(), before)
+
+    def test_naming_a_technician_needs_the_assign_authority(self):
+        self.acting_with(*[c for c in self.INTAKE if c != 'service.orders.assign'],
+                         slug='svc-sin-assign')
+        before = self.footprint()
+        res = self.client.post(
+            _m8_url('m8-taller', 'orders/'), self.payload(technician_id=self.tech.pk),
+            format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.footprint(), before)
+
+    def test_intake_without_a_technician_is_unchanged(self):
+        res = self.client.post(_m8_url('m8-taller', 'orders/'), self.payload(), format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order_id=res.data['id']).exists())
+
+    def test_the_domain_operation_rolls_back_as_one(self):
+        outsider = self.member('svc_pos_out2', self.VIEW, branches=[self.branch_b])
+        before = self.footprint()
+        with self.assertRaises(_m8_service.TechnicianNotEligibleError):
+            _m8_service.create_repair_order_with_assignment(
+                company=self.company, branch=self.branch_a, customer=self.customer,
+                device=self.device, reported_issue='x', technician=outsider,
+                actor=self.staff,
+            )
+        self.assertEqual(self.footprint(), before)
+
+    def test_it_touches_nothing_of_the_shop(self):
+        """A service order is not a sale: no Order, stock, fiscal document or commission."""
+        from .models import FiscalDocument, Order as _Order, OrderItem as _OrderItem, SalesCommission
+
+        def shop():
+            return (_Order.objects.count(), _OrderItem.objects.count(),
+                    StockMovement.objects.count(), FiscalDocument.objects.count(),
+                    SalesCommission.objects.count())
+
+        before = shop()
+        res = self.client.post(
+            _m8_url('m8-taller', 'orders/'), self.payload(technician_id=self.tech.pk),
+            format='json',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(shop(), before)
+
+
+class SvcAssignOutsideATransactionTest(TransactionTestCase):
+    """
+    `assign_technician` locks the order row, so it must open its own
+    transaction. Its decorator had drifted onto `_notify` when a block was
+    inserted between them; inside a TestCase that is invisible, and on
+    PostgreSQL a lock outside a transaction is an error — a 500 on assignment.
+    """
+
+    def test_it_runs_from_autocommit(self):
+        cache.clear()
+        company = _saas_company('Taller TX', 'svc-tx', tax_id='20900000901')
+        provision_company_access_defaults(company)
+        branch = company.branches.order_by('pk').first()
+        customer = _v1_customer(company, None, first_name='Ana', last_name='TX')
+        device = _M8Device.objects.create(
+            company=company, customer=customer, device_type=_M8Device.TYPE_PHONE,
+            brand='G', model='X',
+        )
+        order = _m8_service.create_repair_order(
+            company=company, branch=branch, customer=customer, device=device,
+            reported_issue='x',
+        )
+        technician = _m7_user('svc_tx_tech')
+        membership = Membership.objects.create(user=technician, company=company, role='customer')
+        _assign(membership, company.roles.get(slug='servicio-tecnico'))
+
+        assignment = _m8_service.assign_technician(repair_order=order, technician=technician)
+        self.assertEqual(assignment.technician, technician)
+
+
+class SvcAssignPresetTest(TestCase):
+    """Who holds `service.orders.assign`, on a new company and on a migrated one."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Presets SVC', 'svc-presets', tax_id='20900000902')
+        provision_company_access_defaults(self.company)
+
+    def caps(self, slug):
+        return set(self.company.roles.get(slug=slug).capabilities)
+
+    def migration(self):
+        from importlib import import_module
+
+        return import_module('store.migrations.0094_service_orders_assign')
+
+    def run_migration(self):
+        from django.apps import apps
+
+        self.migration().grant(apps, None)
+
+    def test_fresh_presets(self):
+        sales = self.caps('ventas')
+        self.assertIn('service.orders.assign', sales)
+        for absent in ('service.orders.manage', 'service.repair.manage', 'service.quality.manage'):
+            self.assertNotIn(absent, sales)
+        self.assertIn('service.orders.assign', self.caps('administrador'))
+
+    def test_untouched_presets_are_extended(self):
+        module = self.migration()
+        self.company.roles.filter(slug='ventas').update(
+            capabilities=sorted(module.SALES_PREVIOUS),
+        )
+        self.company.roles.filter(slug='administrador').update(
+            capabilities=sorted(module.ADMIN_PREVIOUS),
+        )
+        technician = self.caps('servicio-tecnico')
+
+        self.run_migration()
+
+        self.assertEqual(self.caps('ventas'), module.SALES_PREVIOUS | {'service.orders.assign'})
+        self.assertEqual(
+            self.caps('administrador'), module.ADMIN_PREVIOUS | {'service.orders.assign'},
+        )
+        # The workshop already assigns through `service.orders.manage`.
+        self.assertEqual(self.caps('servicio-tecnico'), technician)
+
+    def test_the_expected_sets_are_frozen_and_not_imported(self):
+        """
+        The migration compares against a MOMENT. Reading the catalogue live
+        would make it skip `Administrador` the day a later phase adds a
+        capability and a tenant crosses both nodes in one `migrate`.
+        """
+        import inspect
+
+        source = inspect.getsource(self.migration())
+        self.assertNotIn('from store.capabilities import', source)
+        self.assertNotIn('from store.company_provisioning import', source)
+
+    def test_customised_roles_are_left_alone(self):
+        module = self.migration()
+        edited = sorted(module.SALES_PREVIOUS - {'sales.orders.manage'})
+        self.company.roles.filter(slug='ventas').update(capabilities=edited)
+        own = _role(self.company, 'Mostrador propio', capabilities=sorted(module.SALES_PREVIOUS),
+                    slug='mostrador-propio')
+
+        self.run_migration()
+
+        self.assertEqual(sorted(self.caps('ventas')), edited)
+        own.refresh_from_db()
+        self.assertEqual(sorted(own.capabilities), sorted(module.SALES_PREVIOUS))
+
+    def test_it_is_idempotent(self):
+        self.run_migration()
+        first = {slug: sorted(self.caps(slug)) for slug in ('ventas', 'administrador')}
+        self.run_migration()
+        self.assertEqual(first, {slug: sorted(self.caps(slug)) for slug in first})
+
+# -- SVC-FUNC-01 · SVC-PAY-01 --------------------------------------------------
+
+class SvcPaymentCollectTest(M12BPaymentBase):
+    """
+    SVC-PAY-01. Taking money and correcting the ledger are different acts: a
+    technician may record what the customer paid; reversing stays with
+    `service.payments.manage`.
+    """
+
+    BASE = ('company.view', 'service.orders.view')
+
+    def _url(self, tail='payments/'):
+        return _m12b_url('m8-taller', self.order.pk, tail)
+
+    def pay_over_http(self, client, key):
+        return client.post(self._url(), {
+            'amount': '100.00', 'method': 'cash', 'idempotency_key': key,
+        }, format='json')
+
+    def test_collect_records_a_payment(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        res = self.pay_over_http(client, 'svc-collect-1')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['amount'], '100.00')
+
+    def test_collect_is_idempotent_like_manage(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        first = self.pay_over_http(client, 'svc-collect-key')
+        second = self.pay_over_http(client, 'svc-collect-key')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.data['id'], first.data['id'])
+        self.assertEqual(_M12BPayment.objects.filter(repair_order=self.order).count(), 1)
+
+    def test_collect_cannot_reverse(self):
+        self.quoted()
+        payment = self.pay('100.00')
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        res = client.post(
+            self._url(f'payments/{payment.pk}/reverse/'), {'reason': 'Error'}, format='json',
+        )
+        self.assertEqual(res.status_code, 403)
+        payment.refresh_from_db()
+        self.assertFalse(payment.is_reversed)
+
+    def test_manage_records_and_reverses(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.manage', slug='svc-manage')
+        paid = self.pay_over_http(client, 'svc-manage-1')
+        self.assertEqual(paid.status_code, 201, paid.data)
+        res = client.post(
+            self._url(f"payments/{paid.data['id']}/reverse/"), {'reason': 'Error de caja'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_neither_is_refused(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, slug='svc-nada')
+        self.assertEqual(self.pay_over_http(client, 'svc-nada-1').status_code, 403)
+        self.assertFalse(_M12BPayment.objects.filter(repair_order=self.order).exists())
+
+    def test_collect_still_needs_an_approved_quote(self):
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        self.assertEqual(self.pay_over_http(client, 'svc-sin-cotizacion').status_code, 400)
+
+    def test_collect_does_not_cross_tenants_or_branches(self):
+        self.quoted()
+        client = self.only_capabilities(*self.BASE, 'service.payments.collect', slug='svc-collect')
+        foreign = _m8_service.create_repair_order(
+            company=self.other, branch=self.foreign_branch, customer=self.foreign_customer,
+            device=self.foreign_device, reported_issue='Ajeno',
+        )
+        res = client.post(_m12b_url('m8-taller', foreign.pk, 'payments/'), {
+            'amount': '1.00', 'method': 'cash',
+        }, format='json')
+        self.assertEqual(res.status_code, 404)
+
+        self.membership.branch_access_mode = Membership.ACCESS_MODE_SELECTED
+        self.membership.save(update_fields=['branch_access_mode'])
+        _M7BranchAccess.objects.create(membership=self.membership, branch=self.branch_b)
+        cache.clear()
+        self.assertEqual(self.pay_over_http(_m7_login('recepcion'), 'svc-otra-sucursal').status_code, 404)
+
+
+class SvcCollectPresetTest(TestCase):
+    """Who holds `service.payments.collect`, on a new company and on a migrated one."""
+
+    PRESETS = ('servicio-tecnico', 'supervisor-tecnico')
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Presets cobro', 'svc-presets-cobro', tax_id='20900000903')
+        provision_company_access_defaults(self.company)
+
+    def caps(self, slug):
+        return set(self.company.roles.get(slug=slug).capabilities)
+
+    def migration(self, name='0095_service_payments_collect'):
+        from importlib import import_module
+
+        return import_module(f'store.migrations.{name}')
+
+    def run_migration(self):
+        from django.apps import apps
+
+        self.migration().grant(apps, None)
+
+    def test_fresh_presets(self):
+        for slug in self.PRESETS:
+            self.assertIn('service.payments.collect', self.caps(slug))
+            # Reversing a payment is not something the workshop receives.
+            self.assertNotIn('service.payments.manage', self.caps(slug))
+        self.assertIn('service.payments.collect', self.caps('administrador'))
+
+    def test_untouched_presets_are_extended(self):
+        module = self.migration()
+        for slug, previous in (('servicio-tecnico', module.TECHNICIAN_PREVIOUS),
+                               ('supervisor-tecnico', module.SUPERVISOR_PREVIOUS),
+                               ('administrador', module.ADMIN_PREVIOUS)):
+            self.company.roles.filter(slug=slug).update(capabilities=sorted(previous))
+        sales = self.caps('ventas')
+
+        self.run_migration()
+
+        self.assertEqual(
+            self.caps('servicio-tecnico'),
+            module.TECHNICIAN_PREVIOUS | {'service.payments.collect'},
+        )
+        self.assertEqual(
+            self.caps('supervisor-tecnico'),
+            module.SUPERVISOR_PREVIOUS | {'service.payments.collect'},
+        )
+        self.assertEqual(
+            self.caps('administrador'), module.ADMIN_PREVIOUS | {'service.payments.collect'},
+        )
+        # The counter already collects through `service.payments.manage`.
+        self.assertEqual(self.caps('ventas'), sales)
+
+    def test_the_expected_sets_are_frozen_and_chained(self):
+        import inspect
+
+        module = self.migration()
+        source = inspect.getsource(module)
+        self.assertNotIn('from store.capabilities import', source)
+        self.assertNotIn('from store.company_provisioning import', source)
+
+        # Each node starts exactly where the previous one left `Administrador`…
+        before = self.migration('0094_service_orders_assign')
+        self.assertEqual(
+            before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), module.ADMIN_PREVIOUS,
+        )
+        # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
+        # when the catalogue grows, and the node that grows it is the one that
+        # has to say what happens to this preset.
+        self.assertEqual(
+            module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES),
+            frozenset(ASSIGNABLE_CAPABILITY_CODES),
+        )
+
+    def test_customised_roles_are_left_alone(self):
+        module = self.migration()
+        custom = {
+            'servicio-tecnico': sorted(module.TECHNICIAN_PREVIOUS | {'reports.view'}),
+            'supervisor-tecnico': sorted(module.SUPERVISOR_PREVIOUS - {'reports.view'}),
+        }
+        for slug, capabilities in custom.items():
+            self.company.roles.filter(slug=slug).update(capabilities=capabilities)
+        own = _role(self.company, 'Técnico propio', capabilities=sorted(module.TECHNICIAN_PREVIOUS),
+                    slug='tecnico-propio')
+
+        self.run_migration()
+
+        for slug, capabilities in custom.items():
+            self.assertEqual(sorted(self.caps(slug)), capabilities, slug)
+        own.refresh_from_db()
+        self.assertEqual(sorted(own.capabilities), sorted(module.TECHNICIAN_PREVIOUS))
+
+    def test_it_is_idempotent(self):
+        self.run_migration()
+        first = {slug: sorted(self.caps(slug)) for slug in (*self.PRESETS, 'administrador')}
+        self.run_migration()
+        self.assertEqual(first, {slug: sorted(self.caps(slug)) for slug in first})
+
+# -- SVC-FUNC-01 · fixtures E2E y línea de servicio ----------------------------
+
+@override_settings(DEBUG=True)
+class SvcE2eServiceFixtureSeedTest(TestCase):
+    """
+    The browser suite needs a repair with an APPROVED quote to prove a
+    technician can record a payment. A test cannot build one and clean it up:
+    `purge_e2e_data` refuses, rightly, to delete an order somebody worked on.
+
+    So `seed_demo_users --e2e-fixtures` keeps one of its own: assigned to
+    `dev_technician`, approved, with money still owed. It is not marked «[E2E]»,
+    so the browser purge neither deletes it nor stops because of it.
+    """
+
+    SLUG = 'svc-e2e-seed'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('SVC E2E SA', self.SLUG)
+        Branch.objects.create(company=self.company, name='Principal')
+
+    def _seed(self, **options):
+        call_command('seed_demo_users', company_slug=self.SLUG, stdout=StringIO(), **options)
+
+    def _technician(self):
+        return User.objects.get(username='dev_technician')
+
+    def _fixtures(self):
+        from .management.commands.seed_demo_users import E2E_SERVICE_FIXTURE_ISSUE
+
+        return _M8RepairOrder.objects.filter(
+            company=self.company, reported_issue=E2E_SERVICE_FIXTURE_ISSUE,
+        ).order_by('pk')
+
+    def test_it_is_an_approved_repair_assigned_to_the_demo_technician(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        self.assertEqual(order.status, _M8Status.APPROVED)
+        self.assertEqual(
+            order.assignments.get(unassigned_at__isnull=True).technician, self._technician(),
+        )
+        summary = _m8_service.service_payment_summary(order)
+        self.assertEqual(summary['outstanding'], Decimal('120.00'))
+        # What is owed is a described service, not a product of the catalogue.
+        line = _m8_service.financial_quote(order).items.get()
+        self.assertEqual(line.item_type, 'service')
+        self.assertIsNone(line.product_id)
+
+    def test_without_the_flag_there_is_none(self):
+        self._seed()
+        self.assertFalse(self._fixtures().exists())
+
+    def test_reseeding_keeps_the_one_that_still_owes_money(self):
+        self._seed(e2e_fixtures=True)
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 1)
+
+    def test_a_fully_paid_one_is_replaced_by_a_fresh_one(self):
+        self._seed(e2e_fixtures=True)
+        paid = self._fixtures().get()
+        _m8_service.record_service_payment(
+            repair_order=paid, amount=Decimal('120.00'), method='cash',
+            actor=self._technician(), idempotency_key='svc-e2e-seed-full',
+        )
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 2)
+        fresh = self._fixtures().last()
+        self.assertEqual(
+            _m8_service.service_payment_summary(fresh)['outstanding'], Decimal('120.00'),
+        )
+
+    def test_it_touches_nothing_of_the_shop(self):
+        from .models import FiscalDocument, Order as _Order
+
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(_Order.objects.filter(company=self.company).count(), 0)
+        self.assertEqual(StockMovement.objects.count(), 0)
+        self.assertEqual(FiscalDocument.objects.count(), 0)
+
+    def test_the_browser_purge_leaves_it_alone(self):
+        self._seed(e2e_fixtures=True)
+        call_command('purge_e2e_data', company_slug=self.SLUG, stdout=StringIO())
+        self.assertEqual(self._fixtures().count(), 1)
+
+    def test_purging_the_demo_accounts_removes_it(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        _m8_service.record_service_payment(
+            repair_order=order, amount=Decimal('1.00'), method='cash',
+            actor=self._technician(), idempotency_key='svc-e2e-seed-one',
+        )
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+        self.assertFalse(self._fixtures().exists())
+        self.assertFalse(User.objects.filter(username='dev_technician').exists())
+
+    def test_purging_removes_a_fixture_somebody_kept_working_on(self):
+        self._seed(e2e_fixtures=True)
+        order = self._fixtures().get()
+        _m8_service.start_repair(repair_order=order, actor=self._technician())
+
+        call_command('seed_demo_users', purge=True, stdout=StringIO())
+
+        self.assertFalse(self._fixtures().exists())
+        self.assertFalse(User.objects.filter(username='dev_technician').exists())
+
+    def test_a_second_marked_customer_does_not_break_the_seed(self):
+        from .management.commands.seed_demo_users import E2E_SERVICE_FIXTURE_NOTE
+        from .models import Customer as _Customer
+
+        for _ in range(2):
+            _Customer.objects.create(
+                company=self.company, customer_type=_Customer.TYPE_PERSON,
+                first_name='Fixture', last_name='Cobro E2E', notes=E2E_SERVICE_FIXTURE_NOTE,
+            )
+        self._seed(e2e_fixtures=True)
+        self.assertEqual(self._fixtures().count(), 1)
+
+
+
+class SvcCustomServiceLineTest(M9ServiceBase):
+    """
+    A service the shop sells is a LINE OF A QUOTE, not a product.
+
+    The till has no "custom product": the work a technician charges for is
+    described, priced and quantified on the repair's quote, where it is
+    approved by the customer before anybody pays. This pins that the existing
+    model does it — no catalogue entry, no stock, no sale.
+    """
+
+    def add_line(self, quote, **overrides):
+        payload = {
+            'item_type': 'service', 'description': 'Limpieza interna y cambio de pasta térmica',
+            'quantity': '2', 'unit_price': '35.50',
+        }
+        payload.update(overrides)
+        return self.client.post(
+            _m9_quote_url('m8-taller', self.order.pk, f'{quote.pk}/items/'), payload, format='json',
+        )
+
+    def test_a_described_service_is_priced_without_a_product(self):
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        products_before = Product.objects.count()
+
+        res = self.add_line(quote)
+
+        self.assertEqual(res.status_code, 201, res.data)
+        line = quote.items.get()
+        self.assertEqual(line.item_type, 'service')
+        self.assertEqual(line.description, 'Limpieza interna y cambio de pasta térmica')
+        self.assertEqual(line.quantity, Decimal('2.00'))
+        self.assertEqual(line.unit_price, Decimal('35.50'))
+        self.assertEqual(line.line_total, Decimal('71.00'))
+        self.assertIsNone(line.product_id)
+        self.assertEqual(Product.objects.count(), products_before)
+        quote.refresh_from_db()
+        self.assertEqual(quote.total, Decimal('71.00'))
+
+    def test_it_is_not_a_sale(self):
+        from .models import FiscalDocument, Order as _Order, OrderItem as _OrderItem, SalesCommission
+
+        def shop():
+            return (_Order.objects.count(), _OrderItem.objects.count(),
+                    StockMovement.objects.count(), FiscalDocument.objects.count(),
+                    SalesCommission.objects.count())
+
+        before = shop()
+        quote = _m8_service.create_quote(repair_order=self.order, actor=self.staff)
+        self.assertEqual(self.add_line(quote).status_code, 201)
+        _m8_service.publish_quote(quote=quote, actor=self.staff)
+        self.assertEqual(shop(), before)

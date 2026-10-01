@@ -3,6 +3,95 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-01 — SVC-FUNC-01: servicio técnico operativo e integrado con la caja
+
+Rama `feature/service-pos-functional-integration`, sobre `master` `ef9890f`. Código
+en `9b59a31`.
+
+Qué cambia para quien usa el sistema:
+
+- **Navegación del servicio técnico (SVC-NAV-01, `937cf82`).** Recepción, Órdenes,
+  Diagnóstico, Reparación, Control de calidad y Entrega tienen cada una su ruta
+  (`/admin/service/intake`, `orders`, `diagnostics`, `repairs`, `quality`,
+  `delivery`) y su cola de trabajo. Antes las seis abrían la misma pantalla y la
+  barra lateral las marcaba todas a la vez. `/admin/service` redirige a Órdenes.
+  Una cola agrupa estados reales del servidor y sólo filtra.
+- **Asignar técnico (SVC-ASSIGN-01, `1928b05`).** Nueva capacidad
+  `service.orders.assign`. Asigna quien tiene `assign` o `service.orders.manage`.
+  El rol estándar Ventas recibe `assign`, y no `manage`. Sólo se puede asignar a
+  una persona activa de la empresa, que puede ver órdenes de servicio y alcanza
+  la sucursal de la orden; cualquier otro identificador responde «no encontrado».
+  Con `assign` se asigna y se reasigna; dejar una orden sin técnico exige
+  `service.orders.manage` (SVC-ASSIGN-UNASSIGN, `4796db0`): con sólo `assign` el
+  servidor responde 403 y no cambia nada.
+  La regla de quién puede nombrar a un técnico es una sola (SVC-ASSIGN-VIEW-01,
+  `9b59a31`): `service.orders.manage`, o `service.orders.assign` junto con
+  `service.orders.view`. Vale igual para asignar una orden existente, para pedir
+  los candidatos de una sucursal y para recibir un equipo indicando el técnico.
+  Recibir un equipo sin técnico exige lo mismo que antes.
+- **Cobrar el servicio (SVC-PAY-01, `d62fa30`).** Nueva capacidad
+  `service.payments.collect`. Registra un pago quien tiene `collect` o
+  `service.payments.manage`; reversar sigue exigiendo `manage`. Los roles estándar
+  Servicio Técnico y Supervisor Técnico reciben `collect`. Sigue haciendo falta
+  una cotización aprobada para cobrar.
+- **Servicio técnico desde la caja (POS-SVC-01, `6caa88c`).** `/admin/sales/pos`
+  tiene un conmutador «Productos / Servicio técnico». En servicio se recibe un
+  equipo eligiendo cliente, equipo, sucursal, falla y técnico por nombre
+  (obligatorio). Una sola petición crea la orden y la asigna; se muestra el número
+  y «Abrir orden», y el técnico la ve en «Mis reparaciones».
+
+Lo que este flujo **no** hace: no crea pedido, línea de pedido, movimiento de
+stock, comprobante ni comisión, y no cobra nada. Una orden de servicio no es una
+venta. El importe de un servicio es una línea de la cotización de la reparación
+(tipo «Servicio», con descripción, cantidad y precio, sin producto).
+
+Clasificación funcional, con prueba:
+
+| Función | Estado | Prueba |
+|---|---|---|
+| Servicio desde la caja | IMPLEMENTADO | `SvcIntakeWithAssignmentTest`, `pos-service-intake.test.tsx`, E2E `service-pos` |
+| Línea de servicio personalizada | IMPLEMENTADO (ya existía) | `SvcCustomServiceLineTest` |
+| Cobro por el técnico | IMPLEMENTADO | `SvcPaymentCollectTest`, E2E `service-pos` |
+| Producto personalizado en la caja (POS-CUSTOM-PRODUCT) | PROPUESTA | — |
+| Comprobante fiscal de un pago de servicio (FISCAL-SERVICE) | PENDIENTE | — |
+| Aprobar la cotización en tienda (SVC-QUOTE-INSHOP) | PENDIENTE | — |
+
+Migraciones: `0094_service_orders_assign` y `0095_service_payments_collect`. Sólo
+amplían roles estándar que la empresa no modificó, comparando contra conjuntos
+congelados. No cambian el esquema y no se revierten.
+
+Cambios de comportamiento a tener presentes:
+
+- Una membresía con el rol antiguo `technician` que nunca pasó a roles de empresa
+  ya no es asignable: no puede ver órdenes de servicio, así que la orden sería suya
+  e invisible para ella. La migración 0057 ya trasladó a esas personas al rol
+  estándar.
+- La lista de candidatos de una orden se limita a quienes alcanzan su sucursal.
+- Con sólo `service.orders.assign` hace falta además `service.orders.view` para
+  asignar, ver candidatos o recibir un equipo con técnico. Ningún rol estándar
+  tiene `assign` sin `view`; un rol creado por la empresa sí puede tenerlo.
+
+Defecto corregido de paso: el `@transaction.atomic` de `assign_technician` había
+quedado sobre `_notify` desde `108a904`. `assign_technician` bloquea la fila de la
+orden y, fuera de una transacción, PostgreSQL lo rechaza. Lo cubre
+`SvcAssignOutsideATransactionTest`.
+
+Validación sobre `9b59a31`: backend PostgreSQL 4643 pruebas (4640 OK, 3 omitidas,
+0 fallos), 1600,8 s; `check` sin problemas; `makemigrations --check` sin cambios.
+Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min. El frontend no cambió desde `4796db0` (árbol `frontend/`
+idéntico, `7ea6870`), donde se midió: 428 pruebas en 40 suites, OK; typecheck OK;
+lint 0 errores y 33 advertencias (las del baseline); build OK (50 páginas). Los
+commits de código anteriores se comprobaron además por separado (pruebas del
+área, typecheck y migraciones).
+
+Deuda y límites conocidos: al volver de «Servicio técnico» a «Productos» se pierde
+una recepción a medio llenar (la cesta sí se conserva); si el contexto de la caja
+no carga, tampoco se llega al modo servicio; una orden recién recibida aparece en
+Órdenes › «Mis reparaciones», y en la cola Reparación sólo cuando su cotización
+está aprobada; un
+superusuario de plataforma con membresía de personal figura como candidato. Detalle:
+[docs/AUDIT_MEMORY.md](docs/AUDIT_MEMORY.md).
+
 ## 2026-09-30 — F2 completada: delegación y alcance por sucursal
 
 La fase F2 de la auditoría queda cerrada sobre `c191a84`. Qué puede hacer una persona

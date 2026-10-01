@@ -45,7 +45,6 @@ from .models import (
     CompanySettings,
     Customer,
     Device,
-    Membership,
     PartUsage,
     Product,
     QualityCheck,
@@ -480,6 +479,29 @@ def create_repair_order(
 
 
 @transaction.atomic
+def create_repair_order_with_assignment(*, technician, **order_fields) -> RepairOrder:
+    """
+    Receive a device AND hand it to `technician`, as one fact (POS-SVC-01).
+
+    The till creates the order and names who will work on it in a single act.
+    Two requests would leave an order nobody was assigned to whenever the
+    second failed, so both happen in one transaction: if the technician turns
+    out not to be eligible, the order, its first history event and its audit
+    row are rolled back with it.
+
+    Nothing is reimplemented: numbering, history and audit are
+    `create_repair_order()`'s, and the assignment, its audit row and its
+    notification are `assign_technician()`'s.
+    """
+    order = create_repair_order(**order_fields)
+    assign_technician(
+        repair_order=order, technician=technician,
+        actor=order_fields.get('actor'), request=order_fields.get('request'),
+    )
+    return order
+
+
+@transaction.atomic
 def transition_repair_order(
     *,
     repair_order,
@@ -621,24 +643,68 @@ def customer_visible_history(repair_order):
 # Technicians
 # ---------------------------------------------------------------------------
 
-def eligible_technicians(company):
-    """
-    Who may be assigned work in `company`.
+#: What a person needs to be handed a repair: to be able to open it.
+CAP_TECHNICIAN_SEES_ORDERS = 'service.orders.view'
 
-    ACTIVE STAFF OF THIS COMPANY, and nothing weaker. Not "users the app
-    knows", not "people with a technician-sounding role" — `UserProfile.role`
-    is a legacy label and has never been authority. Membership is the fact that
-    somebody works here; this queryset is the only definition the module uses,
-    and the assignment endpoint offers exactly these people.
+
+def eligible_technicians(company, branch=None, *, user_id=None):
+    """
+    Who may be assigned work in `company` — and, given `branch`, at that branch.
+
+    THE GUARANTEE (SVC-ASSIGN-01): if an order can be assigned to someone, it
+    can appear in their own queue. So a candidate is
+
+      * an active user with an ACTIVE membership of this company — not "users
+        the app knows", not "people with a technician-sounding role";
+        `UserProfile.role` is a legacy label and has never been authority;
+      * someone who may see service orders (`service.orders.view`) — otherwise
+        the order would be theirs and invisible to them;
+      * someone whose branch scope reaches `branch`, when one is given — a
+        repair received in one shop is not handed to a person who cannot
+        operate there. The scope is tenancy's `visible_branches()`, the same
+        answer every other screen gets; nothing is recomputed here.
+
+    Returns a queryset, so anything outside the set is simply not found.
+
+    `user_id` asks about ONE person: "is this id in the set?". Assigning asks
+    exactly that, while it holds the order's row lock — so it must not cost a
+    capability lookup per member of staff. Same rule, same answer; only the
+    people examined are narrowed.
     """
     from django.contrib.auth import get_user_model
 
+    from django.db.models import Q
+
+    from .models import Membership, UserProfile
+    from .tenancy import resolve_capabilities, visible_branches
+
     User = get_user_model()
-    return User.objects.filter(
-        memberships__company=company,
-        memberships__is_active=True,
-        is_active=True,
-    ).distinct().order_by('first_name', 'last_name', 'username')
+    # A shop's customers are memberships too, and there are far more of them
+    # than staff. Only a membership that COULD hold a capability is examined: a
+    # legacy role other than `customer`, or an active role assignment. Whether
+    # it actually does is still `resolve_capabilities`' answer, below.
+    staff = User.objects.filter(pk__in=Membership.objects.filter(
+        company=company, is_active=True, user__is_active=True,
+    ).filter(
+        ~Q(role=UserProfile.ROLE_CUSTOMER)
+        | Q(role_assignments__is_active=True, role_assignments__role__is_active=True)
+    ).values('user_id'))
+    if user_id is not None:
+        staff = staff.filter(pk=user_id)
+
+    eligible_ids = []
+    for user in staff:
+        if CAP_TECHNICIAN_SEES_ORDERS not in resolve_capabilities(user, company):
+            continue
+        if branch is not None and not visible_branches(user, company).filter(
+            pk=branch.pk,
+        ).exists():
+            continue
+        eligible_ids.append(user.pk)
+
+    return User.objects.filter(pk__in=eligible_ids).order_by(
+        'first_name', 'last_name', 'username',
+    )
 
 
 @transaction.atomic
@@ -675,9 +741,16 @@ def _order_label(order) -> str:
     return f'Orden {order.number}'
 
 
+@transaction.atomic
 def assign_technician(*, repair_order, technician, actor=None, request=None) -> TechnicianAssignment:
     """
     Make `technician` responsible for the order, closing whoever had it.
+
+    ITS OWN TRANSACTION. The row is locked below, and a lock outside a
+    transaction is an error on PostgreSQL. This decorator had drifted onto
+    `_notify` when the notification block was inserted above; it stays there
+    too, because a savepoint around a notification is what keeps a failed one
+    from poisoning the caller's transaction.
 
     REASSIGNMENT IS TWO ROWS, never an edit. The previous assignment is stamped
     `unassigned_at` and stays; the new one is inserted. Editing the old row in
@@ -690,12 +763,14 @@ def assign_technician(*, repair_order, technician, actor=None, request=None) -> 
     """
     locked = RepairOrder.objects.select_for_update().get(pk=repair_order.pk)
 
-    is_staff_here = Membership.objects.filter(
-        user=technician, company=locked.company, is_active=True,
-    ).exists()
-    if not is_staff_here or not technician.is_active:
+    # Decided HERE and not only at the view, because it is a data-integrity
+    # rule: an order carrying a technician who is not staff of the company, or
+    # who cannot see it or reach its branch, is wrong whoever asked for it.
+    if not eligible_technicians(
+        locked.company, locked.branch, user_id=technician.pk,
+    ).exists():
         raise TechnicianNotEligibleError(
-            'Esa persona no forma parte del personal activo de esta empresa.'
+            'Esa persona no puede recibir órdenes de esta sucursal.'
         )
 
     current = locked.assignments.filter(unassigned_at__isnull=True).first()

@@ -41,7 +41,7 @@ from .models import (
     RepairStatusSetting,
     TechnicianAssignment,
 )
-from .tenancy import visible_branches
+from .tenancy import has_capability, visible_branches
 from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
 from .v1_internal_views import V1InternalSurfaceMixin
 from .v1_service_serializers import (
@@ -85,6 +85,10 @@ CAP_DEVICES_MANAGE = 'service.devices.manage'
 CAP_ORDERS_VIEW = 'service.orders.view'
 CAP_ORDERS_CREATE = 'service.orders.create'
 CAP_ORDERS_MANAGE = 'service.orders.manage'
+#: SVC-ASSIGN-01. Assigning has its own capability so reception and the till can
+#: name the technician; `service.orders.manage` keeps implying it. Who may use
+#: it is ONE rule: `V1ServiceSurfaceMixin.require_assignment_authority`.
+CAP_ORDERS_ASSIGN = 'service.orders.assign'
 CAP_CUSTOMERS_VIEW = 'service.customers.view'
 
 _DEFAULT_PAGE_SIZE = 25
@@ -158,6 +162,30 @@ class V1ServiceSurfaceMixin(V1InternalSurfaceMixin):
         if device is None:
             raise NotFound('No encontrado.')
         return device
+
+    def require_assignment_authority(self, company):
+        """
+        Who may name the technician of an order — the ONLY statement of it.
+
+            service.orders.manage
+            OR (service.orders.assign AND service.orders.view)
+
+        Used by every place a technician is named or offered: the assignment of
+        an existing order, the candidates of a branch, and an intake that
+        arrives with its technician (SVC-ASSIGN-VIEW-01).
+
+        WHY `view` RIDES WITH `assign`. These answers carry what an order
+        viewer sees — the order itself, or who works at a branch — and an order
+        handed out by somebody who cannot see orders is one nobody at the
+        counter can follow up. `manage` is the wider authority and stays whole.
+
+        Releasing an order (a null technician) is narrower still: see
+        `V1ServiceOrderAssignmentView.post`.
+        """
+        if has_capability(self.request.user, company, CAP_ORDERS_MANAGE):
+            return
+        self.require_capability(company, CAP_ORDERS_ASSIGN)
+        self.require_capability(company, CAP_ORDERS_VIEW)
 
     def get_order(self, company, pk) -> RepairOrder:
         """
@@ -359,9 +387,16 @@ class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
             ))
         )
 
-        wanted_status = request.query_params.get('status', '').strip()
-        if wanted_status:
-            rows = rows.filter(status=wanted_status)
+        # One code, or several separated by commas: a work queue lists a few
+        # consecutive stages (SVC-NAV-01). A single code behaves as it always
+        # did, and a code that does not exist simply matches nothing.
+        wanted_statuses = [
+            code.strip()
+            for code in request.query_params.get('status', '').split(',')
+            if code.strip()
+        ]
+        if wanted_statuses:
+            rows = rows.filter(status__in=wanted_statuses)
 
         search = request.query_params.get('search', '').strip()
         if search:
@@ -423,23 +458,47 @@ class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
         # The branch is REQUIRED and validated against this member's set: an
         # order has to be somewhere, and "any of my shops" is not a place a
         # device can be left.
+        # POS-SVC-01. Naming the technician at intake is assigning, so it needs
+        # that authority as well — checked before anything is looked up or
+        # written, like every other gate here.
+        technician_id = data.get('technician_id')
+        if technician_id is not None:
+            self.require_assignment_authority(company)
+
         branch, _ = self.resolve_branch(company, data['branch_id'], required=True)
         customer = self.get_customer(company, data['customer_id'])
         device = self.get_device(company, data['device_id'])
 
+        fields = dict(
+            company=company,
+            branch=branch,
+            customer=customer,
+            device=device,
+            reported_issue=data['reported_issue'],
+            physical_condition=data.get('physical_condition', ''),
+            received_accessories=data.get('received_accessories', ''),
+            internal_notes=data.get('internal_notes', ''),
+            actor=request.user,
+            request=request,
+        )
+
         try:
-            order = service.create_repair_order(
-                company=company,
-                branch=branch,
-                customer=customer,
-                device=device,
-                reported_issue=data['reported_issue'],
-                physical_condition=data.get('physical_condition', ''),
-                received_accessories=data.get('received_accessories', ''),
-                internal_notes=data.get('internal_notes', ''),
-                actor=request.user,
-                request=request,
-            )
+            if technician_id is None:
+                order = service.create_repair_order(**fields)
+            else:
+                # Resolved INSIDE the set that may take work at this branch, so
+                # another tenant's user, an inactive one, one who cannot reach
+                # the branch and an id that does not exist all answer the same.
+                technician = service.eligible_technicians(
+                    company, branch, user_id=technician_id,
+                ).first()
+                if technician is None:
+                    raise NotFound('No encontrado.')
+                # One transaction: no order is left behind without its
+                # technician if the assignment fails.
+                order = service.create_repair_order_with_assignment(
+                    technician=technician, **fields,
+                )
         except service.ServiceError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -522,6 +581,36 @@ class V1ServiceOrderTransitionView(V1ServiceSurfaceMixin, APIView):
         ).data)
 
 
+def _candidate_rows(technicians) -> list[dict]:
+    """A display name and an id — a technician's e-mail and phone are personnel data."""
+    return [{'id': u.pk, 'name': _user_display(u)} for u in technicians]
+
+
+class V1ServiceTechnicianCandidatesView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET ?branch_id= — who may be handed a repair received at that branch.
+
+    The same list the assignment endpoint returns for an existing order, for
+    the moment BEFORE the order exists: the till picks the technician while it
+    is still taking the device in (POS-SVC-01).
+
+    The branch is required and resolved against the caller's own set, so one
+    they do not reach — or another tenant's — is not found.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None):
+        company = self.get_internal_company()
+        self.require_assignment_authority(company)
+        branch, _ = self.resolve_branch(
+            company, request.query_params.get('branch_id'), required=True,
+        )
+        return Response({
+            'candidates': _candidate_rows(service.eligible_technicians(company, branch)),
+        })
+
+
 class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
     """
     GET — who may be assigned. POST — assign, or release with a null id.
@@ -537,7 +626,7 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
 
     def get(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
-        self.require_capability(company, CAP_ORDERS_MANAGE)
+        self.require_assignment_authority(company)
         order = self.get_order(company, pk)
 
         current = order.assignments.filter(unassigned_at__isnull=True).select_related(
@@ -545,20 +634,27 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
         ).first()
         return Response({
             'current': V1ServiceAssignmentSerializer(current).data if current else None,
-            'candidates': [
-                {'id': u.pk, 'name': _user_display(u)}
-                for u in service.eligible_technicians(company)
-            ],
+            'candidates': _candidate_rows(
+                service.eligible_technicians(company, order.branch),
+            ),
         })
 
     def post(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
-        self.require_capability(company, CAP_ORDERS_MANAGE)
-        order = self.get_order(company, pk)
+        self.require_assignment_authority(company)
 
         serializer = V1ServiceAssignmentWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         technician_id = serializer.validated_data.get('technician_id')
+
+        # SVC-ASSIGN-UNASSIGN. `service.orders.assign` chooses the technician
+        # and may correct the choice. Leaving an order with NOBODY responsible
+        # is a different act, and it stays with whoever manages orders. Decided
+        # before the order is looked up, so a refusal writes and reveals nothing.
+        if technician_id is None:
+            self.require_capability(company, CAP_ORDERS_MANAGE)
+
+        order = self.get_order(company, pk)
 
         if technician_id is None:
             service.unassign_technician(
@@ -567,8 +663,8 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
         else:
             # Resolved from the company's OWN eligible set, so a user id from
             # another tenant is not found rather than found-then-refused.
-            technician = service.eligible_technicians(company).filter(
-                pk=technician_id,
+            technician = service.eligible_technicians(
+                company, order.branch, user_id=technician_id,
             ).first()
             if technician is None:
                 raise NotFound('No encontrado.')
@@ -1510,6 +1606,11 @@ class V1ServiceDeliveryView(V1ServiceSurfaceMixin, APIView):
 # ---------------------------------------------------------------------------
 
 CAP_PAYMENTS_MANAGE = 'service.payments.manage'
+CAP_PAYMENTS_COLLECT = 'service.payments.collect'
+#: SVC-PAY-01. Recording money has its own capability so a technician can take
+#: a payment; `service.payments.manage` keeps implying it. REVERSING is not in
+#: this tuple: it stays with `service.payments.manage` alone.
+COLLECT_AUTHORITY = (CAP_PAYMENTS_COLLECT, CAP_PAYMENTS_MANAGE)
 
 
 class V1ServicePaymentView(V1ServiceSurfaceMixin, APIView):
@@ -1548,7 +1649,7 @@ class V1ServicePaymentView(V1ServiceSurfaceMixin, APIView):
 
     def post(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
-        self.require_capability(company, CAP_PAYMENTS_MANAGE)
+        self.require_any_capability(company, *COLLECT_AUTHORITY)
         order = self.get_order(company, pk)
 
         serializer = V1ServicePaymentWriteSerializer(data=request.data)

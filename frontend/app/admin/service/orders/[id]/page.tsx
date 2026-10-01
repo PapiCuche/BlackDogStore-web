@@ -58,6 +58,8 @@ import {
   fetchServiceQualityHistory,
   fetchServiceQuotes,
   makeIdempotencyKey,
+  mayAssignTechnician,
+  mayCollectPayment,
   passQualityCheck,
   pauseForParts,
   publishQuote,
@@ -149,7 +151,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
           fetchServiceQualityHistory(slug, orderId),
           fetchDelivery(slug, orderId),
           fetchServicePayments(slug, orderId),
-          may(CAP_ORDERS_MANAGE)
+          mayAssignTechnician(may)
             ? fetchServiceAssignmentOptions(slug, orderId)
             : Promise.resolve({ current: null, candidates: [] }),
         ]);
@@ -372,7 +374,7 @@ function LifecycleSection({
 
 function AssignmentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
   const [technicianId, setTechnicianId] = useState("");
-  if (!may(CAP_ORDERS_MANAGE)) return null;
+  if (!mayAssignTechnician(may)) return null;
 
   return (
     <Panel
@@ -406,7 +408,9 @@ function AssignmentSection({ data, may, busy, run, slug, orderId }: SectionProps
         >
           Asignar
         </Button>
-        {data.order.technician_name ? (
+        {/* Dejar la orden sin responsable es de quien la gestiona: con sólo
+            `service.orders.assign` el servidor lo rechaza. */}
+        {data.order.technician_name && may(CAP_ORDERS_MANAGE) ? (
           <Confirm
             label="Quitar"
             question="¿Dejar la orden sin técnico?"
@@ -1083,7 +1087,9 @@ const PAYMENT_STATUS_LABEL: Record<string, { label: string; tone: "neutral" | "g
  * the customer, and this platform cannot return any.
  */
 function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
-  const canManage = may(CAP_PAYMENTS_MANAGE);
+  // Two authorities, not one: taking money in, and declaring a payment a mistake.
+  const canCollect = mayCollectPayment(may);
+  const canReverse = may(CAP_PAYMENTS_MANAGE);
   const summary = data.paymentSummary;
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string>(PAYMENT_METHODS[0].value);
@@ -1145,7 +1151,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
         </p>
       ) : null}
 
-      {canManage && canPayMore ? (
+      {canCollect && canPayMore ? (
         <div className="mt-4 space-y-3 border-t border-bd-border pt-4">
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label={`Importe (${summary.currency})`} value={amount} onChange={setAmount} />
@@ -1200,7 +1206,7 @@ function PaymentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 {payment.received_by_name ? ` · ${payment.received_by_name}` : ""}
                 {payment.is_reversed ? (
                   <Pill label="Reversado" tone="bad" />
-                ) : canManage ? (
+                ) : canReverse ? (
                   <Confirm
                     label="Reversar"
                     question="¿Marcar este pago como registrado por error? No devuelve dinero."
