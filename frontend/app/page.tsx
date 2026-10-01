@@ -95,7 +95,7 @@ export default function Home() {
     <div className="min-h-screen bg-background text-foreground">
       <Hero />
 
-      <main className="mx-auto max-w-7xl px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-6 lg:px-8">
 
         {/* Catalog entry point */}
         <section className="py-16 sm:py-20">
@@ -278,7 +278,7 @@ export default function Home() {
           )}
         </section>
 
-      </main>
+      </div>
     </div>
   );
 }
