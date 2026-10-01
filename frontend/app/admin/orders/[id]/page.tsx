@@ -164,12 +164,12 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm">
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Total</p>
             <p className="text-base font-semibold text-foreground">S/ {parseFloat(order.total).toFixed(2)}</p>
           </div>
           {parseFloat(order.discount_amount) > 0 && (
-            <div className="rounded-2xl border border-bd-border bg-surface p-4">
+            <div className="rounded-xl border border-bd-border bg-surface p-4">
               <p className="text-xs text-muted mb-1">Descuento</p>
               <p className="text-base font-semibold text-foreground">
                 −S/ {parseFloat(order.discount_amount).toFixed(2)}
@@ -179,18 +179,18 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
               </p>
             </div>
           )}
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Subtotal</p>
             <p className="text-base font-semibold text-muted">S/ {subtotal.toFixed(2)}</p>
           </div>
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Ítems</p>
             <p className="text-base font-semibold text-foreground">{order.items.length}</p>
           </div>
         </div>
 
         {/* Customer info */}
-        <section className="rounded-2xl border border-bd-border bg-surface p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-6">
           <h2 className="text-sm font-semibold text-foreground mb-4">Cliente</h2>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div>
@@ -217,7 +217,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         </section>
 
         {/* Delivery and receipt data */}
-        <section className="rounded-2xl border border-bd-border bg-surface p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-6">
           <h2 className="text-sm font-semibold text-foreground mb-4">Entrega y comprobante</h2>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             {order.customer_phone && (
@@ -297,7 +297,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         </section>
 
         {/* Items */}
-        <section className="rounded-2xl border border-bd-border bg-surface p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-6">
           <h2 className="text-sm font-semibold text-foreground mb-4">Productos</h2>
           <table className="w-full text-sm">
             <thead>
@@ -326,7 +326,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
         </section>
 
         {/* Email status */}
-        <section className="rounded-2xl border border-bd-border bg-surface p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-6">
           <h2 className="text-sm font-semibold text-foreground mb-4">Emails transaccionales</h2>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div>
@@ -361,7 +361,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
 
         {/* Fulfillment management */}
         {canManageFulfillment && (
-          <section className="rounded-2xl border border-bd-border bg-surface p-6">
+          <section className="rounded-xl border border-bd-border bg-surface p-6">
             <h2 className="text-sm font-semibold text-foreground mb-1">Estado de despacho</h2>
             <p className="text-xs text-muted mb-4">
               Cambia el estado operativo de la orden. El estado de pago no se puede modificar desde aquí.
