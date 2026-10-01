@@ -22,7 +22,7 @@ export function AppChrome({ children, whatsappLink }: Props) {
   return (
     <>
       <a
-        href="#main-content"
+        href={internal ? "#admin-main-content" : "#main-content"}
         className="fixed left-4 top-4 z-[100] -translate-y-24 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-background transition-transform focus:translate-y-0"
       >
         Saltar al contenido
@@ -31,8 +31,8 @@ export function AppChrome({ children, whatsappLink }: Props) {
       {!internal ? <Header /> : null}
 
       <div
-        id="main-content"
-        tabIndex={-1}
+        id={internal ? undefined : "main-content"}
+        tabIndex={internal ? undefined : -1}
         className={internal ? "internal-ui-fonts" : undefined}
       >
         {children}
