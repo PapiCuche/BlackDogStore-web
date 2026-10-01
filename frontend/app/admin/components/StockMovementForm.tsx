@@ -19,6 +19,7 @@ import {
   type StockMovement,
 } from "../../lib/inventory";
 import { ErrorBox } from "./InventoryUi";
+import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type ProductOption = { id: number; name: string; inventory: number };
 type BranchOption = { id: number; name: string };
@@ -108,10 +109,8 @@ export function StockMovementForm({
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 " +
-    "outline-none transition focus:border-white/25 disabled:opacity-50";
-  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  const fieldClass = internalInputClass;
+  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -186,7 +185,7 @@ export function StockMovementForm({
             disabled={submitting}
           />
           {selected ? (
-            <p className="mt-1 text-xs text-zinc-500">
+            <p className="mt-1 text-xs text-muted">
               Stock de la empresa: {selected.inventory} u. El stock de la sucursal
               se valida en el servidor.
             </p>
@@ -213,19 +212,19 @@ export function StockMovementForm({
       ) : null}
       {error ? <ErrorBox message={error} /> : null}
       {success ? (
-        <div className="rounded-lg border border-white/15 bg-white/[0.05] px-4 py-3">
-          <p className="text-sm text-zinc-200">{success}</p>
+        <div className="rounded-lg border border-foreground/20 bg-foreground/[0.05] px-4 py-3">
+          <p className="text-sm text-foreground">{success}</p>
         </div>
       ) : null}
 
       {branchRequired && branchId === "" ? (
-        <p className="text-xs text-zinc-500">Selecciona la sucursal donde ocurre el movimiento.</p>
+        <p className="text-xs text-muted">Selecciona la sucursal donde ocurre el movimiento.</p>
       ) : null}
 
       <button
         type="submit"
         disabled={!canSubmit}
-        className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+        className={internalPrimaryButtonClass}
       >
         {submitting ? "Registrando…" : "Registrar movimiento"}
       </button>
