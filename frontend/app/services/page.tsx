@@ -127,7 +127,7 @@ export default function ServicesPage() {
         </div>
       </section>
 
-      <main className="mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
+      <div className="mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
         <section>
           <div className="grid gap-6 border-b border-bd-border pb-8 lg:grid-cols-[0.75fr_1.25fr] lg:items-end">
             <div>
@@ -210,7 +210,7 @@ export default function ServicesPage() {
             />
           </div>
         </section>
-      </main>
+      </div>
     </div>
   );
 }
