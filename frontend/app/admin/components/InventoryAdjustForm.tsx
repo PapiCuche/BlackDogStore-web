@@ -59,10 +59,11 @@ export function InventoryAdjustForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-[1fr_2fr]">
         <div className="flex-1">
-          <label className="mb-1.5 block text-xs text-muted">
+          <label htmlFor="inventory-adjust-delta" className="mb-1.5 block text-xs text-muted">
             Delta (positivo = ingreso, negativo = salida)
           </label>
           <input
+            id="inventory-adjust-delta"
             type="number"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
@@ -88,21 +89,22 @@ export function InventoryAdjustForm({
           )}
         </div>
         <div className="flex-[2]">
-          <label className="block text-xs text-muted mb-1.5">Motivo</label>
+          <label htmlFor="inventory-adjust-reason" className="mb-1.5 block text-xs text-muted">Motivo</label>
           <input
+            id="inventory-adjust-reason"
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="ej. Restock de proveedor"
             maxLength={500}
             disabled={saving}
-            className="w-full bg-zinc-900 border border-white/[0.1] rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-white/30 disabled:opacity-50"
+            className={internalInputClass}
           />
         </div>
       </div>
 
       {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-      {success && <p className="text-sm text-zinc-300">{success}</p>}
+      {success && <p role="status" className="text-sm text-muted">{success}</p>}
 
       <button
         type="submit"
