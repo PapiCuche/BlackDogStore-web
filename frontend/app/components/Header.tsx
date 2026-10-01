@@ -8,27 +8,21 @@ import { apiUrl } from "../lib/api";
 import { useStorefront } from "./StorefrontProvider";
 
 const CART_ICON = (
-  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13l-1.4 7h12.8M17 21a1 1 0 100-2 1 1 0 000 2zM9 21a1 1 0 100-2 1 1 0 000 2z" />
   </svg>
 );
 
-const CATEGORY_LINKS = [
-  { href: "/product?category=iphone", label: "iPhone" },
-  { href: "/product?category=apple-watch", label: "Watch" },
-  { href: "/product?category=ipad", label: "iPad" },
-  { href: "/product?category=mac", label: "Mac" },
-  { href: "/product?category=accesorios", label: "Accesorios" },
-  { href: "/product?category=audifonos", label: "Audífonos" },
+const MOBILE_LINKS = [
+  { href: "/product", label: "Catálogo" },
+  { href: "/services", label: "Servicios" },
 ];
 
 export function Header() {
-  // Phase 3: the shop's own name and logo, from the tenant that owns this host.
   const { company, branding, contact } = useStorefront();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [catalogOpen, setCatalogOpen] = useState(false);
   const userLoggedIn = Boolean(user);
 
   async function fetchCartCount() {
@@ -37,13 +31,19 @@ export function Header() {
       const res = await fetch(apiUrl(`/cart?session_key=${sessionKey}`));
       if (!res.ok) return;
       const data = await res.json();
-      setCartCount(Array.isArray(data) ? data.length : 0);
-    } catch {}
+      if (!Array.isArray(data)) return;
+      const count = data.reduce((sum: number, item: { quantity?: number }) => {
+        const quantity = Number(item?.quantity ?? 1);
+        return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 1);
+      }, 0);
+      setCartCount(count);
+    } catch {
+      // The navigation stays usable when cart count cannot be refreshed.
+    }
   }
 
   useEffect(() => {
     getCurrentUser().then((u) => setUser(u));
-
     const handleAuthChange = () => getCurrentUser().then((u) => setUser(u));
     fetchCartCount();
     window.addEventListener("authChange", handleAuthChange);
@@ -54,6 +54,15 @@ export function Header() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [menuOpen]);
+
   function handleLogout() {
     logout().finally(() => {
       setUser(null);
@@ -62,226 +71,138 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#080808]/95 backdrop-blur-md">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
-
-        {/* Logo — the tenant's, or its name in type when it has no logo yet.
-            Never a placeholder image belonging to another business. */}
-        <Link href="/" className="group flex items-center gap-3 shrink-0">
+    <header className="sticky top-0 z-50 border-b border-bd-border/80 bg-background/95 backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-5 lg:px-8">
+        <Link
+          href="/"
+          className="group flex min-w-0 shrink-0 items-center gap-3 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+          aria-label={company.name ? `Ir al inicio de ${company.name}` : "Ir al inicio"}
+        >
           {branding.logo_url ? (
-            <div className="relative h-10 shrink-0">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={branding.logo_url}
-                alt={company.name}
-                className="h-full w-auto object-contain transition-opacity group-hover:opacity-75"
-              />
-            </div>
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={branding.logo_url}
+              alt=""
+              className="h-8 w-auto max-w-36 object-contain transition-opacity group-hover:opacity-80 sm:max-w-44"
+            />
           ) : null}
-          <div className="leading-none">
-            <span className="block font-display text-base font-black uppercase tracking-tight text-white">
-              {company.name}
+          <span className="min-w-0 leading-none">
+            <span className="block truncate font-display text-sm font-extrabold uppercase tracking-[-0.02em] text-foreground sm:text-base">
+              {company.name || "Tienda"}
             </span>
             {contact.city ? (
-              <span className="block text-[9px] font-semibold uppercase tracking-[0.3em] text-zinc-500">
+              <span className="mt-1 block truncate text-[9px] font-semibold uppercase tracking-[0.22em] text-muted">
                 {contact.city}
               </span>
             ) : null}
-          </div>
+          </span>
         </Link>
 
-        {/* Desktop nav */}
-        <nav className="hidden items-center gap-0.5 text-sm font-medium text-zinc-400 sm:flex">
-
-          {/* Catalog with dropdown */}
-          <div
-            className="relative"
-            onMouseEnter={() => setCatalogOpen(true)}
-            onMouseLeave={() => setCatalogOpen(false)}
-          >
-            <Link
-              href="/product"
-              className="flex items-center gap-1 rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white"
-            >
-              Catálogo
-              <svg className="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-              </svg>
-            </Link>
-
-            {catalogOpen && (
-              <div className="absolute left-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] py-2 shadow-2xl">
-                <div className="px-3 pb-2 pt-1">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
-                </div>
-                {CATEGORY_LINKS.map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setCatalogOpen(false)}
-                    className="block px-4 py-2 text-sm text-zinc-400 transition hover:bg-white/[0.04] hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-                <div className="mt-1 border-t border-white/[0.06] px-4 pt-2 pb-1">
-                  <Link
-                    href="/product"
-                    onClick={() => setCatalogOpen(false)}
-                    className="text-xs font-bold uppercase tracking-widest text-zinc-600 transition hover:text-white"
-                  >
-                    Ver todo →
-                  </Link>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <Link href="/services" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
+        <nav className="hidden items-center gap-1 md:flex" aria-label="Navegación principal">
+          <Link href="/product" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+            Catálogo
+          </Link>
+          <Link href="/services" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
             Servicios
           </Link>
+          {userLoggedIn ? (
+            <Link href="/orders" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+              Pedidos
+            </Link>
+          ) : null}
+          {user && isAdminRole(user) ? (
+            <Link href="/admin" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+              Admin
+            </Link>
+          ) : null}
+        </nav>
 
-          {/* Cart */}
-          <Link href="/cart" className="relative rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
-            <span className="flex items-center gap-1.5">
-              {CART_ICON}
-              <span>Carrito</span>
-            </span>
-            {cartCount > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[9px] font-black text-[#080808]">
-                {cartCount > 9 ? "9+" : cartCount}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Link
+            href="/cart"
+            aria-label={cartCount ? `Carrito, ${cartCount} unidades` : "Carrito"}
+            className="relative flex h-10 w-10 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground"
+          >
+            {CART_ICON}
+            {cartCount > 0 ? (
+              <span className="absolute right-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-extrabold text-background">
+                {cartCount > 99 ? "99+" : cartCount}
               </span>
-            )}
+            ) : null}
           </Link>
 
-          {/* Auth */}
           {userLoggedIn ? (
-            <>
-              <Link href="/orders" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
-                Pedidos
-              </Link>
-              {isAdminRole(user) && (
-                <Link href="/admin" className="rounded-lg px-3.5 py-2 transition hover:bg-white/5 hover:text-white">
-                  Admin
-                </Link>
-              )}
-              <button
-                onClick={handleLogout}
-                className="ml-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-400 transition hover:border-white/25 hover:text-white"
-              >
-                Salir
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="hidden rounded-lg border border-bd-border px-3.5 py-2 text-xs font-semibold text-muted transition hover:border-foreground/25 hover:text-foreground md:inline-flex"
+            >
+              Salir
+            </button>
           ) : (
             <Link
               href="/auth"
-              className="ml-3 rounded-full bg-white px-5 py-2 text-xs font-bold uppercase tracking-wider text-[#080808] transition hover:bg-zinc-200"
+              className="hidden rounded-lg bg-primary px-4 py-2.5 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90 md:inline-flex"
             >
               Ingresar
             </Link>
           )}
-        </nav>
 
-        {/* Mobile: cart + hamburger */}
-        <div className="flex items-center gap-2 sm:hidden">
-          <Link href="/cart" className="relative rounded-lg p-2 text-zinc-400 transition hover:text-white">
-            {CART_ICON}
-            {cartCount > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[9px] font-black text-[#080808]">
-                {cartCount > 9 ? "9+" : cartCount}
-              </span>
-            )}
-          </Link>
           <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="rounded-lg p-2 text-zinc-400 transition hover:bg-white/5 hover:text-white"
-            aria-label="Abrir menú"
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-muted transition hover:bg-foreground/[0.05] hover:text-foreground md:hidden"
+            aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
+            aria-expanded={menuOpen}
+            aria-controls="mobile-navigation"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              {menuOpen
-                ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              }
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              {menuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h16M4 12h16M4 17h16" />
+              )}
             </svg>
           </button>
         </div>
       </div>
 
-      {/* Mobile menu */}
-      {menuOpen && (
-        <div className="border-t border-white/[0.06] bg-[#080808] px-5 pb-5 pt-3 sm:hidden">
-          <nav className="flex flex-col gap-1 text-sm font-medium">
-            <p className="px-3 pt-1 pb-1 text-[9px] font-bold uppercase tracking-[0.25em] text-zinc-700">Categorías</p>
-            {CATEGORY_LINKS.map((item) => (
+      {menuOpen ? (
+        <div id="mobile-navigation" className="border-t border-bd-border bg-background px-5 py-4 md:hidden">
+          <nav className="mx-auto flex max-w-7xl flex-col gap-1" aria-label="Navegación móvil">
+            {MOBILE_LINKS.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
                 onClick={() => setMenuOpen(false)}
-                className="rounded-lg px-3 py-2 text-zinc-500 transition hover:bg-white/5 hover:text-white"
-              >
-                {item.label}
-              </Link>
-            ))}
-            <Link
-              href="/product"
-              onClick={() => setMenuOpen(false)}
-              className="rounded-lg px-3 py-2 text-zinc-400 transition hover:bg-white/5 hover:text-white"
-            >
-              Todo el catálogo →
-            </Link>
-
-            <div className="my-2 border-t border-white/[0.06]" />
-
-            {[
-              { href: "/services", label: "Servicios" },
-              { href: "/cart", label: `Carrito${cartCount > 0 ? ` (${cartCount})` : ""}` },
-            ].map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMenuOpen(false)}
-                className="rounded-lg px-3 py-2.5 text-zinc-400 transition hover:bg-white/5 hover:text-white"
+                className="rounded-lg px-3 py-3 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground"
               >
                 {item.label}
               </Link>
             ))}
             {userLoggedIn ? (
-              <>
-                <Link
-                  href="/orders"
-                  onClick={() => setMenuOpen(false)}
-                  className="rounded-lg px-3 py-2.5 text-zinc-400 hover:bg-white/5 hover:text-white"
-                >
-                  Mis pedidos
-                </Link>
-                {isAdminRole(user) && (
-                  <Link
-                    href="/admin"
-                    onClick={() => setMenuOpen(false)}
-                    className="rounded-lg px-3 py-2.5 text-zinc-400 hover:bg-white/5 hover:text-white"
-                  >
-                    Admin
-                  </Link>
-                )}
-                <button
-                  onClick={handleLogout}
-                  className="mt-2 w-full rounded-full border border-white/10 py-2.5 text-xs font-semibold text-zinc-400"
-                >
-                  Cerrar sesión
-                </button>
-              </>
+              <Link href="/orders" onClick={() => setMenuOpen(false)} className="rounded-lg px-3 py-3 text-sm font-medium text-muted hover:bg-foreground/[0.05] hover:text-foreground">
+                Mis pedidos
+              </Link>
+            ) : null}
+            {user && isAdminRole(user) ? (
+              <Link href="/admin" onClick={() => setMenuOpen(false)} className="rounded-lg px-3 py-3 text-sm font-medium text-muted hover:bg-foreground/[0.05] hover:text-foreground">
+                Admin
+              </Link>
+            ) : null}
+            <div className="my-2 border-t border-bd-border" />
+            {userLoggedIn ? (
+              <button type="button" onClick={handleLogout} className="rounded-lg border border-bd-border px-4 py-3 text-left text-sm font-medium text-muted">
+                Cerrar sesión
+              </button>
             ) : (
-              <Link
-                href="/auth"
-                onClick={() => setMenuOpen(false)}
-                className="mt-3 block rounded-full bg-white px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-[#080808]"
-              >
+              <Link href="/auth" onClick={() => setMenuOpen(false)} className="rounded-lg bg-primary px-4 py-3 text-center text-xs font-bold uppercase tracking-[0.08em] text-background">
                 Ingresar
               </Link>
             )}
           </nav>
         </div>
-      )}
+      ) : null}
     </header>
   );
 }
