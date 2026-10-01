@@ -93,8 +93,13 @@ img {
 }
 
 :where(a, button, input, select, textarea):focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent);
-  outline-offset: 3px;
+  /*
+   * Tailwind utilities such as focus:outline-none have higher specificity than
+   * this zero-specificity selector. The outline is therefore explicitly
+   * authoritative for keyboard focus; local border/ring styling still applies.
+   */
+  outline: 2px solid color-mix(in srgb, var(--primary) 72%, transparent) !important;
+  outline-offset: 3px !important;
 }
 
 @keyframes marquee {
