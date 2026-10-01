@@ -78,9 +78,9 @@ const initialForm: FormState = {
   accepted_warranty_policy: false,
 };
 
-function FieldError({ msg }: { msg?: string }) {
+function FieldError({ msg, id }: { msg?: string; id?: string }) {
   if (!msg) return null;
-  return <p className="mt-1 text-xs text-red-400">{msg}</p>;
+  return <p id={id} role="alert" className="mt-1 text-xs text-red-400">{msg}</p>;
 }
 
 export default function CheckoutPage() {
@@ -215,6 +215,9 @@ export default function CheckoutPage() {
     form.delivery_method === "delivery_arequipa" ||
     form.delivery_method === "national_shipping";
   const needsCity = form.delivery_method === "national_shipping";
+  const localDeliveryLabel = storefront.contact.city
+    ? `Delivery ${storefront.contact.city}`
+    : "Delivery local";
 
   const inputClass =
     "mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3.5 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none";
@@ -290,8 +293,13 @@ export default function CheckoutPage() {
             <h2 className="text-sm font-semibold text-foreground">Datos personales</h2>
 
             <div>
-              <label className={labelClass}>Nombre completo *</label>
+              <label htmlFor="checkout-customer-name" className={labelClass}>Nombre completo *</label>
               <input
+                id="checkout-customer-name"
+                name="customer_name"
+                autoComplete="name"
+                aria-invalid={Boolean(fe.customer_name)}
+                aria-describedby={fe.customer_name ? "checkout-customer-name-error" : undefined}
                 value={form.customer_name}
                 onChange={(e) => dispatch({ type: "set_str", field: "customer_name", value: e.target.value })}
                 className={inputClass}
@@ -299,14 +307,19 @@ export default function CheckoutPage() {
                 required
                 maxLength={255}
               />
-              <FieldError msg={fe.customer_name} />
+              <FieldError id="checkout-customer-name-error" msg={fe.customer_name} />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Correo electrónico *</label>
+                <label htmlFor="checkout-customer-email" className={labelClass}>Correo electrónico *</label>
                 <input
+                  id="checkout-customer-email"
+                  name="customer_email"
                   type="email"
+                  autoComplete="email"
+                  aria-invalid={Boolean(fe.customer_email)}
+                  aria-describedby={fe.customer_email ? "checkout-customer-email-error" : undefined}
                   value={form.customer_email}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_email", value: e.target.value })}
                   className={inputClass}
@@ -314,12 +327,17 @@ export default function CheckoutPage() {
                   required
                   maxLength={254}
                 />
-                <FieldError msg={fe.customer_email} />
+                <FieldError id="checkout-customer-email-error" msg={fe.customer_email} />
               </div>
               <div>
-                <label className={labelClass}>Teléfono *</label>
+                <label htmlFor="checkout-customer-phone" className={labelClass}>Teléfono *</label>
                 <input
+                  id="checkout-customer-phone"
+                  name="customer_phone"
                   type="tel"
+                  autoComplete="tel"
+                  aria-invalid={Boolean(fe.customer_phone)}
+                  aria-describedby={fe.customer_phone ? "checkout-customer-phone-error" : undefined}
                   value={form.customer_phone}
                   onChange={(e) => dispatch({ type: "set_str", field: "customer_phone", value: e.target.value })}
                   className={inputClass}
@@ -327,14 +345,18 @@ export default function CheckoutPage() {
                   required
                   maxLength={30}
                 />
-                <FieldError msg={fe.customer_phone} />
+                <FieldError id="checkout-customer-phone-error" msg={fe.customer_phone} />
               </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Tipo de documento *</label>
+                <label htmlFor="checkout-document-type" className={labelClass}>Tipo de documento *</label>
                 <select
+                  id="checkout-document-type"
+                  name="document_type"
+                  aria-invalid={Boolean(fe.document_type)}
+                  aria-describedby={fe.document_type ? "checkout-document-type-error" : undefined}
                   value={form.document_type}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_type", value: e.target.value })}
                   className={inputClass}
@@ -344,11 +366,16 @@ export default function CheckoutPage() {
                   <option value="ce">Carnet de Extranjería</option>
                   <option value="ruc">RUC</option>
                 </select>
-                <FieldError msg={fe.document_type} />
+                <FieldError id="checkout-document-type-error" msg={fe.document_type} />
               </div>
               <div>
-                <label className={labelClass}>Número de documento *</label>
+                <label htmlFor="checkout-document-number" className={labelClass}>Número de documento *</label>
                 <input
+                  id="checkout-document-number"
+                  name="document_number"
+                  autoComplete="off"
+                  aria-invalid={Boolean(fe.document_number)}
+                  aria-describedby={fe.document_number ? "checkout-document-number-error" : undefined}
                   value={form.document_number}
                   onChange={(e) => dispatch({ type: "set_str", field: "document_number", value: e.target.value })}
                   className={inputClass}
@@ -362,7 +389,7 @@ export default function CheckoutPage() {
                   required
                   maxLength={20}
                 />
-                <FieldError msg={fe.document_number} />
+                <FieldError id="checkout-document-number-error" msg={fe.document_number} />
               </div>
             </div>
           </div>
@@ -375,7 +402,7 @@ export default function CheckoutPage() {
               {(
                 [
                   ["pickup_store", "Recojo en tienda"],
-                  ["delivery_arequipa", "Delivery Arequipa"],
+                  ["delivery_arequipa", localDeliveryLabel],
                   ["national_shipping", "Envío nacional"],
                 ] as const
               ).map(([value, label]) => (
@@ -409,55 +436,75 @@ export default function CheckoutPage() {
             {needsAddress && (
               <div className="space-y-4 pt-1">
                 <div>
-                  <label className={labelClass}>Dirección *</label>
+                  <label htmlFor="checkout-address" className={labelClass}>Dirección *</label>
                   <input
+                    id="checkout-address"
+                    name="address_line"
+                    autoComplete="street-address"
+                    aria-invalid={Boolean(fe.address_line)}
+                    aria-describedby={fe.address_line ? "checkout-address-error" : undefined}
                     value={form.address_line}
                     onChange={(e) => dispatch({ type: "set_str", field: "address_line", value: e.target.value })}
                     className={inputClass}
                     placeholder="Av. Ejemplo 123, Dpto 4B"
                     maxLength={300}
                   />
-                  <FieldError msg={fe.address_line} />
+                  <FieldError id="checkout-address-error" msg={fe.address_line} />
                 </div>
 
                 {needsCity && (
                   <div>
-                    <label className={labelClass}>Ciudad *</label>
+                    <label htmlFor="checkout-city" className={labelClass}>Ciudad *</label>
                     <input
+                      id="checkout-city"
+                      name="city"
+                      autoComplete="address-level2"
+                      aria-invalid={Boolean(fe.city)}
+                      aria-describedby={fe.city ? "checkout-city-error" : undefined}
                       value={form.city}
                       onChange={(e) => dispatch({ type: "set_str", field: "city", value: e.target.value })}
                       className={inputClass}
                       placeholder="Lima"
                       maxLength={100}
                     />
-                    <FieldError msg={fe.city} />
+                    <FieldError id="checkout-city-error" msg={fe.city} />
                   </div>
                 )}
 
                 <div>
-                  <label className={labelClass}>
+                  <label htmlFor="checkout-district" className={labelClass}>
                     {needsCity ? "Distrito / Departamento *" : "Distrito *"}
                   </label>
                   <input
+                    id="checkout-district"
+                    name="district"
+                    autoComplete="address-level3"
+                    aria-invalid={Boolean(fe.district)}
+                    aria-describedby={fe.district ? "checkout-district-error" : undefined}
                     value={form.district}
                     onChange={(e) => dispatch({ type: "set_str", field: "district", value: e.target.value })}
                     className={inputClass}
                     placeholder={needsCity ? "Miraflores / Lima" : "Miraflores"}
                     maxLength={100}
                   />
-                  <FieldError msg={fe.district} />
+                  <FieldError id="checkout-district-error" msg={fe.district} />
                 </div>
 
                 <div>
-                  <label className={labelClass}>Referencia (opcional)</label>
+                  <label htmlFor="checkout-reference" className={labelClass}>Referencia (opcional)</label>
                   <input
+                    id="checkout-reference"
+                    name="reference"
+                    autoComplete="off"
+                    aria-invalid={Boolean(fe.reference)}
+                    aria-describedby={fe.reference ? "checkout-reference-error" : undefined}
                     value={form.reference}
                     onChange={(e) => dispatch({ type: "set_str", field: "reference", value: e.target.value })}
                     className={inputClass}
                     placeholder="Frente al parque, edificio blanco"
                     maxLength={250}
                   />
-                  <FieldError msg={fe.reference} />
+                  <FieldError id="checkout-reference-error" msg={fe.reference} />
                 </div>
               </div>
             )}
@@ -499,8 +546,13 @@ export default function CheckoutPage() {
 
           {/* 4. Notas */}
           <div className={sectionClass}>
-            <h2 className="text-sm font-semibold text-foreground">Notas del pedido (opcional)</h2>
+            <h2 id="checkout-notes-label" className="text-sm font-semibold text-foreground">Notas del pedido (opcional)</h2>
             <textarea
+              id="checkout-notes"
+              name="notes"
+              aria-labelledby="checkout-notes-label"
+              aria-invalid={Boolean(fe.notes)}
+              aria-describedby={fe.notes ? "checkout-notes-error" : undefined}
               value={form.notes}
               onChange={(e) => dispatch({ type: "set_str", field: "notes", value: e.target.value })}
               className={`${inputClass} resize-none`}
@@ -509,7 +561,7 @@ export default function CheckoutPage() {
               maxLength={500}
             />
             <p className="text-xs text-muted text-right">{form.notes.length}/500</p>
-            <FieldError msg={fe.notes} />
+            <FieldError id="checkout-notes-error" msg={fe.notes} />
           </div>
 
           {/* 5. Aceptaciones */}
@@ -518,7 +570,11 @@ export default function CheckoutPage() {
 
             <label className="flex cursor-pointer items-start gap-3">
               <input
+                id="checkout-accepted-terms"
+                name="accepted_terms"
                 type="checkbox"
+                aria-invalid={Boolean(fe.accepted_terms)}
+                aria-describedby={fe.accepted_terms ? "checkout-accepted-terms-error" : undefined}
                 checked={form.accepted_terms}
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_terms", value: e.target.checked })
@@ -529,11 +585,15 @@ export default function CheckoutPage() {
                 {terms}
               </span>
             </label>
-            <FieldError msg={fe.accepted_terms} />
+            <FieldError id="checkout-accepted-terms-error" msg={fe.accepted_terms} />
 
             <label className="flex cursor-pointer items-start gap-3">
               <input
+                id="checkout-accepted-warranty"
+                name="accepted_warranty_policy"
                 type="checkbox"
+                aria-invalid={Boolean(fe.accepted_warranty_policy)}
+                aria-describedby={fe.accepted_warranty_policy ? "checkout-accepted-warranty-error" : undefined}
                 checked={form.accepted_warranty_policy}
                 onChange={(e) =>
                   dispatch({ type: "set_bool", field: "accepted_warranty_policy", value: e.target.checked })
@@ -544,7 +604,7 @@ export default function CheckoutPage() {
                 {warranty}
               </span>
             </label>
-            <FieldError msg={fe.accepted_warranty_policy} />
+            <FieldError id="checkout-accepted-warranty-error" msg={fe.accepted_warranty_policy} />
           </div>
 
           {/* Punto de retiro */}
