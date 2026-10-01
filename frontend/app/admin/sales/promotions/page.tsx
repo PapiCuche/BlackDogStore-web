@@ -28,7 +28,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
-import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
+import { PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
 import { fetchAdminProducts, type AdminProduct } from "../../../lib/admin";
 import {
   createCoupon,
