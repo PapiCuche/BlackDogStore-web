@@ -48,7 +48,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
   if (loading) {
     return (
       <AdminShell user={user}>
-        <div className="rounded-2xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
+        <div className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
           Cargando producto…
         </div>
       </AdminShell>
@@ -84,13 +84,13 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted">Precio</p>
             <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">
               S/ {parseFloat(product.price).toFixed(2)}
             </p>
           </div>
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted">Inventario</p>
             <p
               className={`mt-1 text-lg font-semibold tabular-nums ${
@@ -104,7 +104,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
               {product.inventory}
             </p>
           </div>
-          <div className="rounded-2xl border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted">Categoría</p>
             <p className="mt-1 text-sm font-medium text-foreground">
               {product.category_name ?? "Sin categoría"}
@@ -113,7 +113,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         </div>
 
         {canAdjustInventory ? (
-          <section className="rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
+          <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
             <h2 className="text-sm font-semibold text-foreground">Ajuste de inventario</h2>
             <p className="mt-1 mb-4 text-xs text-muted">Modifica el stock usando el flujo de inventario existente.</p>
             <InventoryAdjustForm
@@ -127,7 +127,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         ) : null}
 
         {canManage ? (
-          <section className="rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
+          <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
             <h2 className="text-sm font-semibold text-foreground">Editar producto</h2>
             <p className="mt-1 mb-4 text-xs text-muted">Nombre, categoría, precio, contenido y publicación.</p>
             <ProductForm
@@ -139,7 +139,7 @@ function ProductDetailContent({ user }: { user: AuthUser }) {
         ) : null}
 
         {!canManage && !canAdjustInventory ? (
-          <div className="rounded-2xl border border-bd-border bg-surface p-6">
+          <div className="rounded-xl border border-bd-border bg-surface p-6">
             <p className="text-sm text-muted">
               No tienes permisos para editar este producto o ajustar su inventario.
             </p>
