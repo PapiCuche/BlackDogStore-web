@@ -565,7 +565,6 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   if (e.key === "Escape") setScan("");
                 }}
               />
-            </div>
 
             {feedback ? (
               <p
