@@ -517,7 +517,7 @@ export default function CheckoutPage() {
             <h2 id="checkout-receipt-label" className="text-sm font-semibold text-foreground">Comprobante</h2>
 
             <div
-              className="flex gap-3"
+              className="grid gap-3 sm:grid-cols-2"
               role="radiogroup"
               aria-labelledby="checkout-receipt-label"
               aria-describedby={fe.receipt_type ? "checkout-receipt-error" : undefined}
