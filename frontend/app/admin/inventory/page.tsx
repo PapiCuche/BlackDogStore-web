@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
-import { PageHeader, internalButtonClass } from "../components/internal-ui";
+import { PageHeader } from "../components/internal-ui";
 import { StaffGuard } from "../components/StaffGuard";
 import { BranchSelector, ScopeNote } from "../components/BranchSelector";
 import { useBranchScope } from "../lib/use-branch-scope";
