@@ -9,6 +9,25 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-04B — Densidad operativa SaaS
+
+**Estado: PARCIAL.** Sin migraciones ni cambios de permisos.
+
+- `PageHeader`, `FilterBar`, `TableShell`, inputs y botones internos usan ahora una geometría más compacta y consistente.
+- Dashboard: encabezado menos promocional, métricas más densas y jerarquía basada en tipografía/espaciado en lugar de decoración.
+- Inventario: el selector de sucursal queda como contexto principal; Movimientos, Transferencias, Recuentos, Reposición y Reportes pasan a una navegación secundaria horizontal. Estados de stock usan rojo/ámbar sólo cuando significan riesgo operativo.
+- Taller: densidad de filtros ajustada y el encabezado ya no muestra un conteo engañoso mientras la carga está pendiente.
+- POS: sucursal más clara y escáner convertido en superficie prioritaria; lógica de foco, precios, idempotencia y cobro no cambió.
+- Configuración: grupos de identidad/contacto/branding/políticas/notificaciones se presentan como paneles operativos independientes sin cambiar el guardado atómico.
+
+### Verificación adicional
+
+- El HEAD de la rama quedó verificado en `1cae1fb`; no hubo escritura externa concurrente.
+- GitHub no reporta status checks ni workflow runs asociados a ese commit.
+- La validación automática local completa continúa **PENDIENTE**; no se declara tests/lint/build como PASS.
+
+---
+
 ## UXUI-01 / UXUI-03 — Foundations y storefront público
 
 **Estado: PARCIAL.** Rama `uxui/header-hero-foundations`. Sin migraciones.
