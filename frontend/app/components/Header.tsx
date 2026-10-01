@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { logout, getCurrentUser, isAdminRole, type AuthUser } from "../lib/auth";
 import { getSessionKey } from "../lib/cart";
@@ -21,11 +21,26 @@ const MOBILE_LINKS = [
 
 export function Header() {
   const { company, branding, contact } = useStorefront();
+  const pathname = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const userLoggedIn = Boolean(user);
+
+  function isActive(href: string) {
+    if (href === "/admin") return pathname.startsWith("/admin");
+    if (href === "/product") return pathname.startsWith("/product");
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
+
+  function navLinkClass(href: string) {
+    return `rounded-lg px-3 py-2 text-sm font-medium transition ${
+      isActive(href)
+        ? "bg-foreground/[0.08] text-foreground"
+        : "text-muted hover:bg-foreground/[0.05] hover:text-foreground"
+    }`;
+  }
 
   async function fetchCartCount() {
     try {
@@ -103,19 +118,35 @@ export function Header() {
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Navegación principal">
-          <Link href="/product" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+          <Link
+            href="/product"
+            aria-current={isActive("/product") ? "page" : undefined}
+            className={navLinkClass("/product")}
+          >
             Catálogo
           </Link>
-          <Link href="/services" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+          <Link
+            href="/services"
+            aria-current={isActive("/services") ? "page" : undefined}
+            className={navLinkClass("/services")}
+          >
             Servicios
           </Link>
           {userLoggedIn ? (
-            <Link href="/orders" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+            <Link
+              href="/orders"
+              aria-current={isActive("/orders") ? "page" : undefined}
+              className={navLinkClass("/orders")}
+            >
               Pedidos
             </Link>
           ) : null}
           {user && isAdminRole(user) ? (
-            <Link href="/admin" className="rounded-lg px-3 py-2 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground">
+            <Link
+              href="/admin"
+              aria-current={isActive("/admin") ? "page" : undefined}
+              className={navLinkClass("/admin")}
+            >
               Admin
             </Link>
           ) : null}
@@ -179,18 +210,29 @@ export function Header() {
                 key={item.href}
                 href={item.href}
                 onClick={() => setMenuOpen(false)}
-                className="rounded-lg px-3 py-3 text-sm font-medium text-muted transition hover:bg-foreground/[0.05] hover:text-foreground"
+                aria-current={isActive(item.href) ? "page" : undefined}
+                className={`${navLinkClass(item.href)} py-3`}
               >
                 {item.label}
               </Link>
             ))}
             {userLoggedIn ? (
-              <Link href="/orders" onClick={() => setMenuOpen(false)} className="rounded-lg px-3 py-3 text-sm font-medium text-muted hover:bg-foreground/[0.05] hover:text-foreground">
+              <Link
+                href="/orders"
+                onClick={() => setMenuOpen(false)}
+                aria-current={isActive("/orders") ? "page" : undefined}
+                className={`${navLinkClass("/orders")} py-3`}
+              >
                 Mis pedidos
               </Link>
             ) : null}
             {user && isAdminRole(user) ? (
-              <Link href="/admin" onClick={() => setMenuOpen(false)} className="rounded-lg px-3 py-3 text-sm font-medium text-muted hover:bg-foreground/[0.05] hover:text-foreground">
+              <Link
+                href="/admin"
+                onClick={() => setMenuOpen(false)}
+                aria-current={isActive("/admin") ? "page" : undefined}
+                className={`${navLinkClass("/admin")} py-3`}
+              >
                 Admin
               </Link>
             ) : null}
