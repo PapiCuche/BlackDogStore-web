@@ -11,18 +11,18 @@ type Props = {
 };
 
 const ROLE_BADGE: Record<string, string> = {
-  customer: "border-zinc-700 text-zinc-400",
-  sales: "border-zinc-600 text-zinc-300",
-  inventory: "border-zinc-600 text-zinc-300",
-  technician: "border-zinc-600 text-zinc-300",
-  admin: "border-white/30 text-white",
-  superadmin: "border-white/50 text-white",
+  customer: "border-bd-border bg-background text-muted-foreground",
+  sales: "border-bd-border bg-background text-foreground",
+  inventory: "border-bd-border bg-background text-foreground",
+  technician: "border-bd-border bg-background text-foreground",
+  admin: "border-foreground/20 bg-foreground/[0.05] text-foreground",
+  superadmin: "border-foreground/30 bg-foreground/[0.08] text-foreground",
 };
 
 export function UsersTable({ users, currentUser, onRoleChange }: Props) {
   if (users.length === 0) {
     return (
-      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] py-12 text-center text-zinc-500">
+      <div className="rounded-xl border border-dashed border-bd-border py-12 text-center text-muted-foreground">
         No se encontraron usuarios.
       </div>
     );
@@ -31,10 +31,10 @@ export function UsersTable({ users, currentUser, onRoleChange }: Props) {
   const canChangeRoles = isSuperAdmin(currentUser);
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+    <div className="overflow-x-auto rounded-xl border border-bd-border">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-white/[0.06] bg-white/[0.02] text-left text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          <tr className="border-b border-bd-border bg-background/50 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <th className="px-4 py-3">ID</th>
             <th className="px-4 py-3">Usuario</th>
             <th className="px-4 py-3">Email</th>
@@ -48,23 +48,23 @@ export function UsersTable({ users, currentUser, onRoleChange }: Props) {
           {users.map((user, i) => (
             <tr
               key={user.id}
-              className={`border-b border-white/[0.04] transition hover:bg-white/[0.02] ${
-                i % 2 === 0 ? "" : "bg-white/[0.01]"
+              className={`border-b border-bd-border transition hover:bg-foreground/[0.02] ${
+                i % 2 === 0 ? "" : "bg-background/30"
               }`}
             >
-              <td className="px-4 py-3 text-zinc-500">{user.id}</td>
-              <td className="px-4 py-3 font-medium text-zinc-200">
+              <td className="px-4 py-3 text-muted-foreground">{user.id}</td>
+              <td className="px-4 py-3 font-medium text-foreground">
                 {user.username}
                 {user.id === currentUser.id && (
-                  <span className="ml-2 text-[10px] text-zinc-600">(tú)</span>
+                  <span className="ml-2 text-[10px] text-muted-foreground">(tú)</span>
                 )}
               </td>
-              <td className="px-4 py-3 text-zinc-400">{user.email || "—"}</td>
+              <td className="px-4 py-3 text-muted-foreground">{user.email || "—"}</td>
               <td className="px-4 py-3">
                 <span
                   className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                     user.is_active
-                      ? "bg-white/5 text-zinc-300"
+                      ? "border border-bd-border bg-background text-foreground"
                       : "bg-red-500/10 text-red-400"
                   }`}
                 >
@@ -74,13 +74,13 @@ export function UsersTable({ users, currentUser, onRoleChange }: Props) {
               <td className="px-4 py-3">
                 <span
                   className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
-                    ROLE_BADGE[user.role] ?? "border-zinc-700 text-zinc-400"
+                    ROLE_BADGE[user.role] ?? "border-zinc-700 text-muted-foreground"
                   }`}
                 >
                   {roleLabel(user.role)}
                 </span>
               </td>
-              <td className="px-4 py-3 text-xs text-zinc-500">
+              <td className="px-4 py-3 text-xs text-muted-foreground">
                 {formatAdminDate(user.date_joined)}
               </td>
               {canChangeRoles && (
