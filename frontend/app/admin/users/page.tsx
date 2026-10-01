@@ -218,7 +218,7 @@ function MemberCard({
   }
 
   return (
-    <article className="rounded-2xl border border-bd-border bg-surface">
+    <article className="rounded-xl border border-bd-border bg-surface">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -485,9 +485,9 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Miembros</p><p className="mt-1 text-2xl font-semibold text-foreground">{memberships.length}</p></div>
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Roles activos</p><p className="mt-1 text-2xl font-semibold text-foreground">{roles.filter((role) => role.is_active).length}</p></div>
-              <div className="rounded-2xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi autoridad</p><p className="mt-1 text-sm font-medium text-foreground">{access?.is_platform_admin ? "Master de plataforma" : canManage ? "Administra accesos" : "Solo lectura"}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Miembros</p><p className="mt-1 text-2xl font-semibold text-foreground">{memberships.length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Roles activos</p><p className="mt-1 text-2xl font-semibold text-foreground">{roles.filter((role) => role.is_active).length}</p></div>
+              <div className="rounded-xl border border-bd-border bg-surface p-4"><p className="text-xs text-muted">Mi autoridad</p><p className="mt-1 text-sm font-medium text-foreground">{access?.is_platform_admin ? "Master de plataforma" : canManage ? "Administra accesos" : "Solo lectura"}</p></div>
             </div>
 
             <div className="flex items-center justify-between gap-3">
@@ -515,7 +515,7 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
               </div>
             ) : null}
 
-            <div className="rounded-2xl border border-bd-border bg-surface p-5">
+            <div className="rounded-xl border border-bd-border bg-surface p-5">
               <h2 className="text-sm font-semibold text-foreground">Jerarquía correcta</h2>
               <div className="mt-3 grid gap-3 text-xs leading-5 text-muted md:grid-cols-3">
                 <p><strong className="text-foreground">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
