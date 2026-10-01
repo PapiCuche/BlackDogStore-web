@@ -172,26 +172,26 @@ export default function AuthPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className={labelClass}>Usuario</label>
-                <input value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} required autoComplete="username" placeholder="Tu nombre de usuario" />
+                <label htmlFor="auth-username" className={labelClass}>Usuario</label>
+                <input id="auth-username" name="username" value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} required autoComplete="username" placeholder="Tu nombre de usuario" />
               </div>
 
               {!isLogin ? (
                 <div>
-                  <label className={labelClass}>Correo electrónico</label>
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} required autoComplete="email" placeholder="correo@ejemplo.com" />
+                  <label htmlFor="auth-email" className={labelClass}>Correo electrónico</label>
+                  <input id="auth-email" name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} required autoComplete="email" placeholder="correo@ejemplo.com" />
                 </div>
               ) : null}
 
               <div>
-                <label className={labelClass}>Contraseña</label>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} required autoComplete={isLogin ? "current-password" : "new-password"} placeholder="••••••••" />
+                <label htmlFor="auth-password" className={labelClass}>Contraseña</label>
+                <input id="auth-password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} required autoComplete={isLogin ? "current-password" : "new-password"} placeholder="••••••••" />
               </div>
 
               {!isLogin ? (
                 <div>
-                  <label className={labelClass}>Confirmar contraseña</label>
-                  <input type="password" value={passwordConfirm} onChange={(e) => setPasswordConfirm(e.target.value)} className={inputClass} required autoComplete="new-password" placeholder="••••••••" />
+                  <label htmlFor="auth-password-confirm" className={labelClass}>Confirmar contraseña</label>
+                  <input id="auth-password-confirm" name="password_confirm" type="password" value={passwordConfirm} onChange={(e) => setPasswordConfirm(e.target.value)} className={inputClass} required autoComplete="new-password" placeholder="••••••••" />
                 </div>
               ) : null}
 
