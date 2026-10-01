@@ -13,11 +13,11 @@ export function Panel({
   actions?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-bd-border bg-surface p-6">
+    <section className="rounded-xl border border-bd-border bg-surface p-6">
       {title ? (
         <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">
               {title}
             </h2>
             {subtitle ? (
@@ -43,7 +43,7 @@ export function Field({
   type?: string;
 }) {
   const cls =
-    "mt-1 w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground placeholder:text-muted";
+    "mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none";
   return (
     <label className="block text-xs text-muted">
       {label}
@@ -77,16 +77,16 @@ export function Button({
   tone?: "default" | "primary" | "danger";
 }) {
   const tones = {
-    default: "border-bd-border text-foreground/85 hover:border-bd-border",
-    primary: "border-success-border bg-success-surface text-success hover:border-success-border",
-    danger: "border-danger-border text-danger hover:border-danger-border",
+    default: "border-bd-border text-muted hover:border-foreground/25 hover:text-foreground",
+    primary: "border-primary bg-primary text-background hover:opacity-90",
+    danger: "border-danger-border bg-danger-surface text-danger hover:border-danger-border",
   } as const;
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-lg border px-3 py-1.5 text-xs transition disabled:opacity-30 ${tones[tone]}`}
+      className={`rounded-xl border px-3 py-2 text-xs font-semibold transition disabled:opacity-30 ${tones[tone]}`}
     >
       {children}
     </button>
@@ -95,7 +95,7 @@ export function Button({
 
 export function Pill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "good" | "warn" | "bad" }) {
   const tones = {
-    neutral: "border-bd-border text-muted",
+    neutral: "border-bd-border text-foreground",
     good: "border-success-border text-success",
     warn: "border-warning-border text-warning",
     bad: "border-danger-border text-danger",

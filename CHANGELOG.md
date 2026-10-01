@@ -1787,6 +1787,196 @@ WebSocket, sin push, sin WhatsApp, sin comunicados manuales, sin wallet.
 
 ---
 
+
+## UXUI-06B — Validación técnica actualizada
+
+**Estado: IMPLEMENTADO EN RAMA.** Frontend validado por GitHub Actions sobre `358aa74a373f9bb314b49251655e303f65d839e2`.
+
+### Baseline actual
+
+- `npm ci`: **PASS**.
+- Jest: **9 suites / 55 tests — PASS**.
+- ESLint: **PASS, 0 errores / 14 warnings**.
+- Next.js production build: **PASS**.
+- Generación estática: **38/38 rutas — PASS**.
+- Workflow: `Frontend UX/UI Validation`, run `36813568087`.
+
+### Cobertura añadida en esta pasada
+
+- Migración compatible de storage `blackdog_*` → `storefront_*` para sesión invitada y cupón.
+- Tests de migración de storage, datos corruptos y limpieza.
+- Tests de `BranchSelector`: alcance único, agregado, selección y Escape.
+- `CompanySwitcher` usa la propia opción como elemento interactivo accesible; test actualizado al contrato semántico real.
+- Warnings `act(...)` de `InternalControlGuard` corregidos en la suite.
+- Un solo landmark `<main>` en el storefront; rutas internas ya no anidan landmarks.
+- Nombres de PDF descargados neutralizados: ya no incluyen `blackdog`.
+
+### Deuda no bloqueante
+
+- Los **14 warnings** de ESLint son `react-hooks/set-state-in-effect`; requieren revisión individual y no se silencian de forma masiva.
+- QA visual real desktop/tablet/mobile y lector de pantalla sigue **PENDIENTE**.
+- Figma Foundations sigue **PENDIENTE** por cuota MCP Starter.
+
+---
+
+## UXUI-06 — Validación técnica del frontend
+
+**Estado: IMPLEMENTADO EN RAMA.** Código validado en `794e8cc` mediante GitHub Actions.
+
+### Baseline verificado
+
+- Workflow reproducible: `.github/workflows/frontend-uxui-validation.yml`.
+- Node.js 22 + `npm ci` desde `frontend/package-lock.json`.
+- Jest: **6 suites / 45 tests — PASS**.
+- ESLint: **PASS, 0 errores / 14 warnings**.
+- Next.js build: **PASS**.
+- Generación de rutas: **38/38**.
+- Rama: **0 commits por detrás de `master`** al iniciar este checkpoint.
+
+### Correcciones encontradas por CI
+
+- El primer build detectó un import faltante de `internalPrimaryButtonClass` en Inventario/Movimientos; corregido y revalidado.
+- La prueba nueva del drawer móvil confirmó que el foco sí entra al panel; se corrigió el selector del test para apuntar al elemento correcto.
+- Drawer móvil interno: foco inicial, cierre con Escape y bloqueo/restauración de scroll del documento cubiertos por test.
+- Home deja de depender de categorías Apple hardcodeadas y consume `/categories` del tenant.
+- Tipografía separada por superficie: storefront usa el rol de marca; el SaaS interno usa Inter como rol neutral sin cambiar el modelo de datos.
+
+### Deuda no bloqueante
+
+- Los 14 warnings restantes son `react-hooks/set-state-in-effect`; no se silencian ni se reescriben de forma masiva porque varios protegen sincronización de filtros/estado y requieren revisión individual.
+- QA visual real por navegador en desktop/tablet/mobile y lector de pantalla continúa **PENDIENTE**.
+- Figma Foundations continúa **PENDIENTE** por cuota MCP del plan Starter.
+- Contenido de servicios del storefront sigue parcialmente hardcodeado; no se añadió un modelo de contenido sin analizar primero el impacto de esquema/API.
+
+---
+
+## UXUI-05 — Accesibilidad y QA estructural
+
+**Estado: PARCIAL.**
+
+- Navegación móvil interna: drawer declarado como diálogo modal y cierre por tecla Escape.
+- Foundations globales mantienen foco visible y respetan `prefers-reduced-motion`.
+- Branding: la vista previa de Configuración calcula contraste WCAG para texto/fondo y botón primario/fondo; ratios inferiores a 4.5:1 generan advertencia sin bloquear el guardado.
+- Detalle de producto, pedidos, checkout success y recuperación/verificación de cuenta fueron revisados y ya usan los foundations actuales en esta rama.
+
+### Pendiente
+
+- QA visual real en navegador para desktop/tablet/mobile.
+- Navegación completa sólo con teclado y revisión con lector de pantalla.
+- Tests/lint/build en un entorno con dependencias disponibles.
+- La advertencia de contraste es informativa; el backend sigue validando formato hexadecimal, no cumplimiento WCAG.
+
+---
+
+## UXUI-04C — Superficies administrativas secundarias
+
+**Estado: PARCIAL.**
+
+- Pedidos, Productos, Roles, Usuarios y Auditoría normalizan paneles y radios contra el UI Kit interno.
+- Sucursales ya estaba alineado con el patrón actual y no requirió una modificación adicional en esta pasada.
+- No se modificaron guards, lógica de rol, capabilities, endpoints ni contratos de datos.
+- Verificación adicional: sin fondos legacy `#080808/#111111`, sin `dot-grid`, PageHeader/internalInput conservados y guards presentes.
+
+---
+
+## UXUI-04B — Densidad operativa SaaS
+
+**Estado: PARCIAL.** Sin migraciones ni cambios de permisos.
+
+- `PageHeader`, `FilterBar`, `TableShell`, inputs y botones internos usan ahora una geometría más compacta y consistente.
+- Dashboard: encabezado menos promocional, métricas más densas y jerarquía basada en tipografía/espaciado en lugar de decoración.
+- Inventario: el selector de sucursal queda como contexto principal; Movimientos, Transferencias, Recuentos, Reposición y Reportes pasan a una navegación secundaria horizontal. Estados de stock usan rojo/ámbar sólo cuando significan riesgo operativo.
+- Taller: densidad de filtros ajustada y el encabezado ya no muestra un conteo engañoso mientras la carga está pendiente.
+- POS: sucursal más clara y escáner convertido en superficie prioritaria; lógica de foco, precios, idempotencia y cobro no cambió.
+- Configuración: grupos de identidad/contacto/branding/políticas/notificaciones se presentan como paneles operativos independientes sin cambiar el guardado atómico.
+
+### Verificación adicional
+
+- El HEAD de la rama quedó verificado en `1cae1fb`; no hubo escritura externa concurrente.
+- GitHub no reporta status checks ni workflow runs asociados a ese commit.
+- La validación automática local completa continúa **PENDIENTE**; no se declara tests/lint/build como PASS.
+
+---
+
+## UXUI-01 / UXUI-03 — Foundations y storefront público
+
+**Estado: PARCIAL.** Rama `uxui/header-hero-foundations`. Sin migraciones.
+
+### Implementado
+
+- Foundations visuales: Montserrat, roles semánticos de color, foco visible y `prefers-reduced-motion`.
+- Header simplificado y accesible; el carrito muestra unidades reales y el menú móvil responde a Escape.
+- Hero recompuesto sin claims absolutos ni logo usado como ilustración con sombra.
+- Home simplificada: sin barra de claims, marquee ni preventa hardcodeada; catálogo y servicio técnico pasan a una jerarquía editorial más limpia.
+- ProductCard y catálogo tenant-safe: sin isotipo Black Dog como fallback, búsqueda con debounce, error de categorías visible y estados vacíos neutrales.
+- Página de servicios reescrita sin afirmaciones no verificadas; el foco es proceso, evaluación y alcance acordado.
+- Footer tenant-aware simplificado y corregido de `?cat=` a `?category=`.
+- Auth, carrito y checkout alineados con el mismo sistema visual. El checkout conserva intacta su lógica de pago y validaciones.
+
+### Verificación
+
+- Revisión adicional de diff contra `master`: rama por delante y sin divergencia al cerrar esta subfase.
+- Búsqueda explícita en los archivos modificados: sin `5,000+`, `True Tone`, `Tecnología Láser`, `pieza reparada`, preventa fija ni fallback `/assets/branding/logo-icon.png` en las superficies intervenidas.
+- El entorno de ejecución no pudo clonar GitHub por falta de DNS, por lo que `npm ci`, tests, lint y build quedan **PENDIENTES DE CI/LOCAL**; no se marcan como PASS.
+
+### UXUI-04A — UI Kit del SaaS interno
+
+**Estado: PARCIAL.**
+
+- `dashboard-ui.tsx`, `internal-ui.tsx` y `ServiceUi.tsx` comparten ahora los mismos roles semánticos de superficie, borde, foreground y muted.
+- El botón primario de la consola técnica deja de usar verde como acción general; verde/ámbar/rojo quedan reservados a significado de estado.
+- `AdminShell`, sidebar y topbar consumen los foundations comunes sin alterar guards, módulos, roles ni capabilities.
+- Verificación adicional: sin `dot-grid`, sin fondos `#080808/#111111` activos y sin nuevas comprobaciones de rol/capability en los archivos intervenidos.
+
+### UXUI-04B — Superficies operativas SaaS
+
+**Estado: PARCIAL.** Sin cambios de API, base de datos, roles ni capabilities.
+
+- Nuevos primitives internos: `PageHeader`, `FilterBar`, `TableShell`, clases de input y botones compartidas.
+- Dashboard: eliminados hardcodes visuales locales sin alterar KPIs ni condiciones de visibilidad.
+- Clientes: encabezado, filtros, tabla, paginación, formulario nuevo y estados migrados al patrón común.
+- Servicio técnico: tabla y filtros normalizados; búsqueda con debounce de 300 ms; se reutilizan `Panel` y `Pill` compartidos.
+- Inventario: `InventoryUi` y dashboard de inventario migrados, por lo que subpantallas que consumen esos componentes heredan la misma base visual.
+- Configuración: campos, preview, mensajes y guardado alineados al sistema común conservando la escritura atómica existente.
+- POS: superficie de caja normalizada sin tocar scanner focus, idempotencia, cálculo servidor, descuentos, términos ni flujo de cobro.
+
+### Verificación adicional UXUI-04B
+
+- Rama sin divergencia respecto de su base al finalizar el bloque.
+- Sin `bg-[#080808]`, `bg-[#111111]`, `bg-black/40` ni `dot-grid` en los archivos intervenidos.
+- Sin botón primario emerald en POS/Servicio; verde permanece únicamente como significado de éxito/estado/ahorro.
+- No se añadieron checks de rol ni cambios a capabilities.
+- Tests/lint/build continúan **PENDIENTES DE CI/LOCAL** por la limitación de red documentada en este entorno.
+
+### UXUI-04C — Administración secundaria, detalles y flujos operativos
+
+**Estado: IMPLEMENTADO EN RAMA.** Sin migraciones ni cambios de contrato.
+
+- Productos, pedidos, auditoría, sucursales, roles y personal usan encabezados, tablas, filtros y controles compartidos.
+- Detalle de cliente, producto, pedido y orden técnica migrados al mismo sistema visual sin alterar acciones sensibles.
+- Ventas, promociones y comisiones normalizadas conservando la separación entre históricos, configuración y estimaciones.
+- Inventario secundario migrado: movimientos, transferencias, recuentos, reportes, reposición, Kardex, importación y detalles.
+- Formularios compartidos (`ProductForm`, `CustomerForm`, `StockMovementForm`) e `ImportWizard` ya consumen foundations comunes.
+- Búsquedas de productos, pedidos y servicio técnico incorporan debounce donde antes consultaban por cada pulsación.
+- Errores de categorías que antes se ignoraban silenciosamente ahora son visibles en alta/listado de productos.
+
+### Verificación adicional UXUI-04C
+
+- 44 archivos `.tsx` administrativos modificados fueron barridos por lotes contra patrones legacy.
+- Residuos encontrados durante la revisión (bordes blancos estructurales, `bg-black/*`, primarios blancos locales) fueron corregidos antes de cerrar el bloque.
+- Confirmaciones físicas permanecen: movimiento manual (1), recuento (2) y transferencia (3).
+- RBAC legacy/configurable, capabilities, tenant scope, idempotencia POS y reglas de inventario no fueron modificados.
+- Tests/lint/build siguen **PENDIENTES DE CI/LOCAL** por la limitación de red ya documentada.
+
+### Deuda pendiente
+
+- El contenido del storefront continúa parcialmente hardcodeado por categorías/servicios; falta un modelo de contenido por tenant.
+- El color dorado del manual no se activa todavía porque el tenant piloto conserva su `accent_color` histórico; no se cambió el modelo ni la migración de branding.
+- Figma Foundations sigue pendiente de poblar por límite MCP del plan Starter.
+- Quedan rutas/componentes administrativos no intervenidos que deberán auditarse en el QA final; las superficies principales y secundarias ya comparten foundations.
+
+---
+
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
 **Estado: IMPLEMENTADO.** Migración **0057**.

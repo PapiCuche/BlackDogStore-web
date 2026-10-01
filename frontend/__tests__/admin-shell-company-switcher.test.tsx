@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { AdminShell, buildAccessContext } from '@/app/admin/components/AdminShell';
@@ -36,11 +36,10 @@ describe('AdminShell company switcher', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { expanded: false }));
-    // The `role="option"` is the <li>; the handler lives on the button inside
-    // it. Clicking the wrapper looks right and does nothing — the same shape of
-    // mistake as the bug this test exists for.
+    // The interactive element itself owns role="option", so keyboard focus,
+    // selection semantics and the click target are the same element.
     const option = screen.getByRole('option', { name: /Otra/ });
-    await userEvent.click(within(option).getByRole('button'));
+    await userEvent.click(option);
 
     expect(onSelectCompany).toHaveBeenCalledWith(8);
   });

@@ -12,6 +12,7 @@ import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
+import { PageHeader, internalButtonClass } from "../../../components/internal-ui";
 import {
   EmptyBox,
   ErrorBox,
@@ -91,38 +92,18 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">
-              Kardex {data ? `— ${data.product.name}` : ""}
-            </h1>
-            <p className="mt-1 text-sm text-muted">
-              Historial completo de entradas y salidas del producto.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href={`/admin/products/${productId}`}
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              Ver producto
-            </Link>
-            <Link
-              href="/admin/inventory/movements"
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              Movimientos
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title={data ? `Kardex — ${data.product.name}` : "Kardex"}
+          description="Historial completo de entradas y salidas del producto."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href={`/admin/products/${productId}`} className={internalButtonClass}>Ver producto</Link>
+              <Link href="/admin/inventory/movements" className={internalButtonClass}>Movimientos</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={data?.scope} />
 
@@ -169,7 +150,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.stock_by_branch.map((row) => (
-                      <tr key={row.id} className="border-b border-bd-border">
+                      <tr key={row.id} className="border-b border-bd-border/60">
                         <Td>{row.branch_name}</Td>
                         <Td right>{row.quantity}</Td>
                         <Td right muted>{row.minimum_stock || "—"}</Td>
@@ -204,7 +185,7 @@ function StockCardContent({ user, productId }: { user: AuthUser; productId: numb
                   </thead>
                   <tbody>
                     {data.movements.map((m) => (
-                      <tr key={m.id} className="border-b border-bd-border">
+                      <tr key={m.id} className="border-b border-bd-border/60">
                         <Td muted>{formatDateTime(m.created_at)}</Td>
                         <Td muted>{m.branch_name}</Td>
                         <Td><MovementBadge movement={m} /></Td>

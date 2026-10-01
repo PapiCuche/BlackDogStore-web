@@ -15,6 +15,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
+import { PageHeader, internalButtonClass } from "../../components/internal-ui";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
@@ -76,31 +77,17 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Reposición sugerida</h1>
-            <p className="mt-1 text-sm text-muted">
-              Productos en o por debajo de su mínimo, con la cantidad que faltaría
-              para alcanzar el objetivo de esa sucursal.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Reposición sugerida"
+          description="Productos en o por debajo de su mínimo y cantidad necesaria para alcanzar el objetivo de la sucursal."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={resultScope} />
         {scope.error ? <ErrorBox message={scope.error} /> : null}
@@ -142,7 +129,7 @@ function ReplenishmentContent({ user }: { user: AuthUser }) {
                     {rows.map((row) => (
                       <tr
                         key={`${row.branch_id}-${row.product_id}`}
-                        className="border-b border-bd-border"
+                        className="border-b border-bd-border/60"
                       >
                         <Td>
                           <Link

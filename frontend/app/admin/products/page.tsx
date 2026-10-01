@@ -7,6 +7,13 @@ import type { InternalAccess } from "../lib/internal-access";
 import { AdminShell } from "../components/AdminShell";
 import { ProductsTable } from "../components/ProductsTable";
 import {
+  FilterBar,
+  PageHeader,
+  internalButtonClass,
+  internalInputClass,
+  internalPrimaryButtonClass,
+} from "../components/internal-ui";
+import {
   AdminProduct,
   AdminCategory,
   fetchAdminProducts,
@@ -31,6 +38,8 @@ function ProductsContent({ user, access }: { user: AuthUser; access: InternalAcc
     is_active: "",
     stock: "",
   });
+  const [searchInput, setSearchInput] = useState("");
+  const [categoryError, setCategoryError] = useState(false);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,8 +58,7 @@ function ProductsContent({ user, access }: { user: AuthUser; access: InternalAcc
         page,
         page_size: 20,
       };
-      const result = await fetchAdminProducts(params);
-      setData(result);
+      setData(await fetchAdminProducts(params));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al cargar productos.");
     } finally {
@@ -59,13 +67,27 @@ function ProductsContent({ user, access }: { user: AuthUser; access: InternalAcc
   }, [filters, page]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFilters((current) => ({ ...current, search: searchInput }));
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
     fetchAdminCategories()
-      .then(setCategories)
-      .catch(() => {});
+      .then((result) => {
+        setCategories(result);
+        setCategoryError(false);
+      })
+      .catch(() => {
+        setCategories([]);
+        setCategoryError(true);
+      });
   }, []);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   function setFilter(key: keyof Filters, value: string) {
@@ -73,73 +95,86 @@ function ProductsContent({ user, access }: { user: AuthUser; access: InternalAcc
     setPage(1);
   }
 
-  const totalPages = data ? Math.ceil(data.count / data.page_size) : 1;
+  const totalPages = data ? Math.max(1, Math.ceil(data.count / data.page_size)) : 1;
 
   return (
     <AdminShell user={user}>
       <div className="space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Productos</h1>
-            <p className="mt-1 text-sm text-muted">
-              {data ? `${data.count} productos en total` : "Cargando…"}
-            </p>
+        <PageHeader
+          eyebrow="Catálogo"
+          title="Productos"
+          description={data ? `${data.count} productos en total. Filtra por categoría, publicación y disponibilidad.` : "Gestiona el catálogo de esta empresa."}
+          actions={
+            canManage ? (
+              <Link href="/admin/products/new" className={internalPrimaryButtonClass}>
+                Nuevo producto
+              </Link>
+            ) : null
+          }
+        />
+
+        <FilterBar>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_repeat(3,auto)]">
+            <label>
+              <span className="sr-only">Buscar productos</span>
+              <input
+                type="search"
+                placeholder="Buscar por nombre o slug…"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className={internalInputClass}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Categoría</span>
+              <select
+                value={filters.category}
+                onChange={(e) => setFilter("category", e.target.value)}
+                className={internalInputClass}
+              >
+                <option value="">Todas las categorías</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>{category.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Estado del producto</span>
+              <select
+                value={filters.is_active}
+                onChange={(e) => setFilter("is_active", e.target.value)}
+                className={internalInputClass}
+              >
+                <option value="">Todos los estados</option>
+                <option value="true">Activos</option>
+                <option value="false">Inactivos</option>
+              </select>
+            </label>
+            <label>
+              <span className="sr-only">Estado de stock</span>
+              <select
+                value={filters.stock}
+                onChange={(e) => setFilter("stock", e.target.value)}
+                className={internalInputClass}
+              >
+                <option value="">Cualquier stock</option>
+                <option value="in_stock">En stock</option>
+                <option value="out_of_stock">Sin stock</option>
+                <option value="low_stock">Stock bajo (≤5)</option>
+              </select>
+            </label>
           </div>
-          {canManage && (
-            <Link
-              href="/admin/products/new"
-              className="shrink-0 px-4 py-2 bg-foreground text-background text-sm font-medium rounded hover:bg-foreground/90 transition-colors"
-            >
-              + Nuevo producto
-            </Link>
-          )}
-        </div>
+          {categoryError ? (
+            <p className="mt-3 text-xs text-warning">
+              No se pudieron cargar las categorías. Los demás filtros siguen disponibles.
+            </p>
+          ) : null}
+        </FilterBar>
 
-        <div className="flex flex-wrap gap-3">
-          <input
-            type="text"
-            placeholder="Buscar por nombre o slug…"
-            value={filters.search}
-            onChange={(e) => setFilter("search", e.target.value)}
-            className="flex-1 min-w-48 bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground placeholder-muted focus:outline-none focus:border-bd-border"
-          />
-          <select
-            value={filters.category}
-            onChange={(e) => setFilter("category", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Todas las categorías</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={filters.is_active}
-            onChange={(e) => setFilter("is_active", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Todos los estados</option>
-            <option value="true">Activos</option>
-            <option value="false">Inactivos</option>
-          </select>
-          <select
-            value={filters.stock}
-            onChange={(e) => setFilter("stock", e.target.value)}
-            className="bg-surface border border-bd-border rounded px-3 py-2 text-sm text-foreground/85 focus:outline-none focus:border-bd-border"
-          >
-            <option value="">Cualquier stock</option>
-            <option value="in_stock">En stock</option>
-            <option value="out_of_stock">Sin stock</option>
-            <option value="low_stock">Stock bajo (≤5)</option>
-          </select>
-        </div>
-
-        <div className="rounded-xl border border-bd-border bg-surface p-6">
-          {error && <p className="text-sm text-danger mb-4">{error}</p>}
+        <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+          {error ? <p className="mb-4 text-sm text-danger" role="alert">{error}</p> : null}
           {loading ? (
-            <p className="text-muted text-sm py-6 text-center">Cargando…</p>
+            <p className="py-8 text-center text-sm text-muted">Cargando productos…</p>
           ) : (
             <ProductsTable
               products={data?.results ?? []}
@@ -147,29 +182,29 @@ function ProductsContent({ user, access }: { user: AuthUser; access: InternalAcc
               onChanged={load}
             />
           )}
-        </div>
+        </section>
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-muted">
+        {totalPages > 1 ? (
+          <div className="flex flex-col gap-3 border-t border-bd-border pt-4 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
             <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              type="button"
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={page <= 1}
-              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className={internalButtonClass}
             >
-              ← Anterior
+              Anterior
             </button>
-            <span>
-              Página {page} de {totalPages}
-            </span>
+            <span>Página {page} de {totalPages}</span>
             <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              type="button"
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
               disabled={page >= totalPages}
-              className="px-3 py-1.5 rounded border border-bd-border hover:border-bd-border disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className={internalButtonClass}
             >
-              Siguiente →
+              Siguiente
             </button>
           </div>
-        )}
+        ) : null}
       </div>
     </AdminShell>
   );

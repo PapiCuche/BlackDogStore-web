@@ -6,6 +6,7 @@ import Link from "next/link";
 import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
+import { PageHeader, internalButtonClass } from "../../components/internal-ui";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
 import { FulfillmentStatusSelect } from "../../components/FulfillmentStatusSelect";
@@ -114,26 +115,28 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
 
   return (
     <AdminShell user={user}>
-      <div className="space-y-8 max-w-3xl">
+      <div className="max-w-5xl space-y-8">
         <div>
-          <Link
-            href="/admin/orders"
-            className="text-xs text-muted hover:text-foreground/85 mb-2 block"
-          >
+          <Link href="/admin/orders" className="mb-3 inline-flex text-xs font-semibold text-muted transition hover:text-foreground">
             ← Volver a órdenes
           </Link>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-xl font-semibold text-foreground">Orden #{order.id}</h1>
-            <OrderStatusBadge status={order.status} />
-            <FulfillmentStatusBadge status={order.fulfillment_status} />
-          </div>
-          <p className="mt-1 text-xs text-muted">{formatAdminDate(order.created_at)}</p>
+          <PageHeader
+            eyebrow="Pedido"
+            title={`Orden #${order.id}`}
+            description={formatAdminDate(order.created_at)}
+            actions={
+              <>
+                <OrderStatusBadge status={order.status} />
+                <FulfillmentStatusBadge status={order.fulfillment_status} />
+              </>
+            }
+          />
           {order.paid && (
-            <div className="mt-3 flex flex-wrap items-center gap-3">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 onClick={handleDownloadPdf}
                 disabled={pdfDownloading}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-bd-border bg-surface px-3 py-1.5 text-xs font-medium text-foreground hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className={internalButtonClass}
               >
                 {pdfDownloading ? "Generando…" : "Descargar PDF"}
               </button>
@@ -145,7 +148,7 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
                   <button
                     onClick={handleResendEmail}
                     disabled={resendLoading}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-bd-border bg-surface px-3 py-1.5 text-xs font-medium text-foreground hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className={internalButtonClass}
                   >
                     {resendLoading ? "Enviando…" : "Reenviar email de confirmación"}
                   </button>
@@ -163,14 +166,14 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm">
-          <div className="rounded-lg border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Total</p>
             <p className="text-base font-semibold text-foreground">S/ {parseFloat(order.total).toFixed(2)}</p>
           </div>
           {parseFloat(order.discount_amount) > 0 && (
-            <div className="rounded-lg border border-bd-border bg-surface p-4">
+            <div className="rounded-xl border border-bd-border bg-surface p-4">
               <p className="text-xs text-muted mb-1">Descuento</p>
-              <p className="text-base font-semibold text-foreground/85">
+              <p className="text-base font-semibold text-foreground">
                 −S/ {parseFloat(order.discount_amount).toFixed(2)}
                 {order.coupon_code && (
                   <span className="ml-1.5 text-[10px] text-muted">({order.coupon_code})</span>
@@ -178,11 +181,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
               </p>
             </div>
           )}
-          <div className="rounded-lg border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Subtotal</p>
             <p className="text-base font-semibold text-muted">S/ {subtotal.toFixed(2)}</p>
           </div>
-          <div className="rounded-lg border border-bd-border bg-surface p-4">
+          <div className="rounded-xl border border-bd-border bg-surface p-4">
             <p className="text-xs text-muted mb-1">Ítems</p>
             <p className="text-base font-semibold text-foreground">{order.items.length}</p>
           </div>
@@ -319,7 +322,7 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             </thead>
             <tbody>
               {order.items.map((item) => (
-                <tr key={item.id} className="border-b border-bd-border">
+                <tr key={item.id} className="border-b border-bd-border/70">
                   <td className="py-2.5 pr-4 text-foreground">{item.product_name}</td>
                   <td className="py-2.5 pr-4 text-right text-muted">
                     S/ {parseFloat(item.price).toFixed(2)}

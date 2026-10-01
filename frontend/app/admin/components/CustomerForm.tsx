@@ -17,6 +17,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import {
   createCustomer,
   updateCustomer,
@@ -26,11 +27,9 @@ import {
   type CustomerWrite,
 } from "../lib/internal-api";
 
-const FIELD =
-  "w-full rounded-lg border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const FIELD = internalInputClass;
 const BORDER = "border-bd-border";
-const LABEL =
-  "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
+const LABEL = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
 const DOCUMENT_TYPES = [
   { value: "", label: "Sin documento" },
@@ -130,7 +129,7 @@ export function CustomerForm({
               ["business", "Empresa"],
             ] as [CustomerType, string][]
           ).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2 text-sm text-foreground/85">
+            <label key={value} className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="radio"
                 name="customer-type"
@@ -354,7 +353,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={() => void save()}
-          className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          className={internalPrimaryButtonClass}
         >
           {saving ? "Guardando…" : customer ? "Guardar cambios" : "Crear cliente"}
         </button>
@@ -362,7 +361,7 @@ export function CustomerForm({
           type="button"
           disabled={saving}
           onClick={onCancel}
-          className="text-sm text-muted transition hover:text-foreground/85"
+          className={internalButtonClass}
         >
           Cancelar
         </button>

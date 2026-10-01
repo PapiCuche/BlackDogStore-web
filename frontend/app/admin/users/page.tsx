@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -251,7 +252,7 @@ function MemberCard({
         <div>
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">{membership.username}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-surface-2 text-foreground/85" : "bg-danger-surface text-danger"}`}>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] ${membership.is_active ? "bg-foreground/[0.06] text-foreground" : "bg-danger-surface text-danger"}`}>
               {membership.is_active ? "Activo" : "Inactivo"}
             </span>
           </div>
@@ -262,7 +263,7 @@ function MemberCard({
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Rol empresarial</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {accessState === "custom" ? activeAssignments.map((assignment) => (
-              <span key={assignment.id} className="rounded-md border border-bd-border px-2 py-1 text-xs text-foreground/85">
+              <span key={assignment.id} className="rounded-md border border-bd-border px-2 py-1 text-xs text-foreground">
                 {assignment.role_name}{assignment.area_name ? ` · ${assignment.area_name}` : ""}
               </span>
             )) : accessState === "legacy" ? (
@@ -297,7 +298,7 @@ function MemberCard({
       {open ? (
         <div className="border-t border-bd-border px-5 py-5">
           {accessState === "custom-empty" ? (
-            <div className="mb-5 rounded-lg border border-warning-border bg-amber-500/[0.05] px-4 py-3 text-xs leading-5 text-warning">
+            <div className="mb-5 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-xs leading-5 text-warning">
               <strong>Sin roles activos.</strong> Esta persona no tiene ninguna capacidad en la empresa. No vuelve al rol heredado «{membership.role_label}»: ya usa RBAC configurable, y quitarle el último rol significa exactamente eso.
             </div>
           ) : null}
@@ -323,7 +324,7 @@ function MemberCard({
                             disabled={busy}
                             className={`rounded-md border px-2 py-1 text-[10px] disabled:opacity-40 ${assignment.is_active
                               ? "border-bd-border text-muted hover:border-danger-border hover:text-danger"
-                              : "border-success-border text-success hover:border-success-border hover:text-success"}`}
+                              : "border-bd-border text-foreground hover:border-foreground/25"}`}
                           >
                             {assignment.is_active ? "Quitar" : "Reactivar"}
                           </button>
@@ -333,7 +334,7 @@ function MemberCard({
                     <p className="mt-1 text-[11px] text-muted">{assignment.area_name || "Sin área"} · {assignment.capabilities.length} permisos</p>
                   </div>
                 )) : (
-                  <div className="rounded-lg border border-warning-border bg-amber-500/[0.03] px-3 py-3 text-xs leading-5 text-warning">
+                  <div className="rounded-lg border border-warning-border bg-warning-surface px-3 py-3 text-xs leading-5 text-warning">
                     Nunca se le asignó un rol empresarial, así que sigue rigiéndose por «{membership.role_label}» del modelo heredado. Asignarle uno lo migra al RBAC configurable — y a partir de ahí el rol heredado deja de contar para siempre.
                   </div>
                 )}
@@ -341,7 +342,7 @@ function MemberCard({
 
               {canManage ? (
                 <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                  <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className="rounded-lg border border-bd-border bg-background/50 px-3 py-2 text-sm text-foreground/85">
+                  <select value={roleId} onChange={(event) => setRoleId(event.target.value)} disabled={busy} className={internalInputClass}>
                     <option value="">Elegir rol…</option>
                     {roles
                       .filter((role) => role.is_active)
@@ -363,11 +364,11 @@ function MemberCard({
                         );
                       })}
                   </select>
-                  <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className="rounded-lg border border-bd-border bg-background/50 px-3 py-2 text-sm text-foreground/85">
+                  <select value={areaId} onChange={(event) => setAreaId(event.target.value)} disabled={busy} className={internalInputClass}>
                     <option value="">Sin área</option>
                     {areas.filter((area) => area.is_active).map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
                   </select>
-                  <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
+                  <button type="button" onClick={() => void assignRole()} disabled={busy || !roleId} className={internalPrimaryButtonClass}>
                     {roleId && existingAssignment(Number(roleId), areaId ? Number(areaId) : null) ? "Reactivar" : "Asignar"}
                   </button>
                 </div>
@@ -385,7 +386,7 @@ function MemberCard({
                     type="button"
                     disabled={!canEditScope || busy}
                     onClick={() => setMode(value)}
-                    className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-bd-border bg-surface-2 text-foreground" : "border-bd-border text-muted"}`}
+                    className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-foreground/30 bg-foreground/[0.07] text-foreground" : "border-bd-border text-muted"}`}
                   >
                     {value === "all" ? "Todas" : "Seleccionadas"}
                   </button>
@@ -503,17 +504,15 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
       onSelectCompany={ctx.selectCompany}
     >
       <div className="space-y-7">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted">Administración</p>
-            <h1 className="mt-1 text-2xl font-semibold text-foreground">Personal y accesos</h1>
-            <p className="mt-2 max-w-3xl text-sm text-muted">Administra el acceso real por empresa: rol = qué puede hacer; sucursal = dónde puede hacerlo.</p>
-          </div>
-          {canManageRoles ? <Link href="/admin/roles" className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background hover:bg-foreground/90">Roles y permisos</Link> : null}
-        </header>
+        <PageHeader
+          eyebrow="Administración"
+          title="Personal y accesos"
+          description="Administra el acceso real por empresa: rol = qué puede hacer; sucursal = dónde puede hacerlo."
+          actions={canManageRoles ? <Link href="/admin/roles" className={internalPrimaryButtonClass}>Roles y permisos</Link> : null}
+        />
 
         {!companyId ? (
-          <div className="rounded-xl border border-warning-border bg-amber-500/[0.05] p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene acceso global, pero debe elegir explícitamente sobre qué tenant actúa.</div>
+          <div className="rounded-xl border border-warning-border bg-warning-surface p-5 text-sm text-warning">Selecciona una empresa. El master de plataforma tiene acceso global, pero debe elegir explícitamente sobre qué tenant actúa.</div>
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
@@ -523,12 +522,12 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar usuario…" className="w-full max-w-sm rounded-lg border border-bd-border bg-background/40 px-3 py-2.5 text-sm text-foreground outline-none focus:border-bd-border" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar usuario…" className={`${internalInputClass} max-w-sm`} />
               <span className="hidden text-xs text-muted sm:block">{ctx.dashboard?.company?.name}</span>
             </div>
 
             {loading ? <p className="py-12 text-center text-sm text-muted">Cargando accesos…</p> : null}
-            {error ? <div className="rounded-xl border border-danger-border bg-red-500/[0.05] p-4 text-sm text-danger">{error}</div> : null}
+            {error ? <div className="rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">{error}</div> : null}
             {!loading && !error ? (
               <div className="space-y-3">
                 {filtered.map((membership) => (
@@ -551,9 +550,9 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
             <div className="rounded-xl border border-bd-border bg-surface p-5">
               <h2 className="text-sm font-semibold text-foreground">Jerarquía correcta</h2>
               <div className="mt-3 grid gap-3 text-xs leading-5 text-muted md:grid-cols-3">
-                <p><strong className="text-foreground/85">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
-                <p><strong className="text-foreground/85">Administrador de empresa:</strong> recibe capacidades dentro de su tenant y no puede escalar por encima de su propia autoridad.</p>
-                <p><strong className="text-foreground/85">Roles operativos:</strong> ventas, inventario y técnico se limitan por capacidades y, cuando aplica, por sucursal.</p>
+                <p><strong className="text-foreground">Master de plataforma:</strong> <code>User.is_superuser</code>. Puede operar todas las empresas; no es un rol de tenant.</p>
+                <p><strong className="text-foreground">Administrador de empresa:</strong> recibe capacidades dentro de su tenant y no puede escalar por encima de su propia autoridad.</p>
+                <p><strong className="text-foreground">Roles operativos:</strong> ventas, inventario y técnico se limitan por capacidades y, cuando aplica, por sucursal.</p>
               </div>
             </div>
           </>

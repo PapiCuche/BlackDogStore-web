@@ -40,6 +40,7 @@ import { PosReceiptSelector } from "./PosReceiptSelector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -108,8 +109,7 @@ function cashSuggestions(total: number): number[] {
   return [...out].sort((a, b) => a - b).slice(0, 4);
 }
 
-const FIELD =
-  "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+const FIELD = internalInputClass;
 
 function PosContent({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
@@ -639,13 +639,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 setPrintError(null);
                 setTimeout(focusScan, 0);
               }}
-              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-bd-border hover:text-foreground"
+              className={internalPrimaryButtonClass}
             >
               Nueva venta
             </button>
             <Link
               href={`/admin/orders/${done.order_id}`}
-              className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground"
+              className={internalButtonClass}
             >
               Ver pedido y documentos
             </Link>
@@ -657,27 +657,30 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
 
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <label htmlFor="admin-sales-pos-page-sucursal" className="text-[11px] uppercase tracking-widest text-muted">
-              Sucursal
-            </label>
-            <select id="admin-sales-pos-page-sucursal"
-              value={branch ?? ""}
-              onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-              className="rounded-lg border border-bd-border bg-background/40 px-3 py-1.5 text-sm text-foreground outline-none"
-            >
-              <option value="">Selecciona…</option>
-              {context.branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <p className="text-xs text-muted">Vendedor: {context.seller.username}</p>
-        </div>
+      <div className="space-y-5">
+        <PageHeader
+          eyebrow="Ventas"
+          title="Punto de venta"
+          description="Escanea productos, confirma cliente y medio de pago, y cobra con el total calculado por el servidor."
+          actions={
+            <>
+              <label className="flex items-center gap-2 text-xs font-semibold text-muted">
+                <span>Sucursal</span>
+                <select
+                  value={branch ?? ""}
+                  onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
+                  className="rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-foreground/30"
+                >
+                  <option value="">Selecciona…</option>
+                  {context.branches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </label>
+              <span className="text-xs text-muted">Vendedor: {context.seller.username}</span>
+            </>
+          }
+        />
 
         {branch === null ? (
           <p className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
@@ -689,7 +692,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
           {/* --- entrada --------------------------------------------- */}
           <div className="space-y-4">
-            <div>
+            <section className="rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
               <label
                 className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-scan"
@@ -714,7 +717,6 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                   if (e.key === "Escape") setScan("");
                 }}
               />
-            </div>
 
             {feedback ? (
               <p
@@ -731,6 +733,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {feedback.text}
               </p>
             ) : null}
+            </section>
 
             <div>
               <label
@@ -780,18 +783,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       );
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between rounded-lg border border-bd-border px-4 py-3 text-left text-sm transition hover:border-bd-border disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full min-w-0 items-start justify-between gap-3 rounded-xl border border-bd-border bg-surface px-4 py-3 text-left text-sm transition hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <span>
-                      <span className="text-foreground">{combo.name}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words text-foreground">{combo.name}</span>
                       <span className="block text-[11px] text-muted">
                         {combo.components
                           .map((c) => `${c.quantity}× ${c.product_name}`)
                           .join(" + ")}
                       </span>
                     </span>
-                    <span className="text-right">
-                      <span className="block font-mono text-foreground/85">
+                    <span className="shrink-0 text-right">
+                      <span className="block whitespace-nowrap font-mono text-foreground">
                         {money(combo.combo_amount)}
                       </span>
                       <span className="block text-[11px] text-success">
@@ -809,7 +812,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             ) : null}
 
             {found.length ? (
-              <div className="overflow-hidden rounded-xl border border-bd-border">
+              <div className="overflow-hidden rounded-xl border border-bd-border bg-surface">
                 {found.map((p) => (
                   <button
                     key={p.id}
@@ -823,16 +826,16 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       setTerm("");
                       focusScan();
                     }}
-                    className="flex w-full items-center justify-between border-b border-bd-border px-4 py-3 text-left text-sm transition last:border-0 hover:bg-surface"
+                    className="flex w-full min-w-0 items-center justify-between gap-3 border-b border-bd-border/70 px-4 py-3 text-left text-sm transition last:border-0 hover:bg-foreground/[0.03]"
                   >
-                    <span className="text-foreground">{p.name}</span>
-                    <span className="flex items-center gap-4 text-xs">
+                    <span className="min-w-0 flex-1 break-words text-foreground">{p.name}</span>
+                    <span className="flex shrink-0 items-center gap-3 text-xs">
                       <span
                         className={p.available > 0 ? "text-muted" : "text-danger"}
                       >
                         {p.available} disp.
                       </span>
-                      <span className="font-mono text-foreground/85">{money(p.price)}</span>
+                      <span className="font-mono text-foreground">{money(p.price)}</span>
                     </span>
                   </button>
                 ))}
@@ -841,7 +844,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           </div>
 
           {/* --- carrito --------------------------------------------- */}
-          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
+          <div className="space-y-3 rounded-xl border border-bd-border bg-surface p-5 lg:sticky lg:top-24 lg:self-start">
             <div className="flex items-baseline justify-between">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                 Carrito
@@ -869,7 +872,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             ) : (
               <div className="space-y-2">
                 {lines.map((l) => (
-                  <div key={l.product} className="rounded-lg bg-background/30 p-3">
+                  <div key={l.product} className="rounded-lg bg-background p-3">
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm text-foreground">{l.name}</p>
                       <button
@@ -887,9 +890,9 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         min={1}
                         value={l.quantity}
                         onChange={(e) => setQuantity(l.product, Number(e.target.value))}
-                        className="w-20 rounded border border-bd-border bg-background/40 px-2 py-1 text-sm text-foreground outline-none"
+                        className="w-20 rounded border border-bd-border bg-background px-2 py-1 text-sm text-foreground outline-none"
                       />
-                      <span className="font-mono text-sm text-foreground/85">
+                      <span className="font-mono text-sm text-foreground">
                         {money(Number(l.price) * l.quantity)}
                       </span>
                     </div>
@@ -909,7 +912,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 Cliente
               </p>
               {customer ? (
-                <div className="flex items-center justify-between rounded-lg bg-background/30 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between rounded-lg bg-background px-3 py-2 text-sm">
                   <span className="text-foreground">{customer.display_name}</span>
                   <button
                     type="button"
@@ -945,7 +948,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         setCustomerTerm("");
                         focusScan();
                       }}
-                      className="block w-full rounded bg-background/30 px-3 py-2 text-left text-sm text-foreground/85 transition hover:bg-surface"
+                      className="block w-full rounded bg-background px-3 py-2 text-left text-sm text-foreground transition hover:bg-foreground/[0.05]"
                     >
                       {c.display_name}
                       {c.document_number ? (
@@ -970,7 +973,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                     {context.can_manage_customers ? (
                       <Link
                         href="/admin/customers"
-                        className="text-muted underline underline-offset-2 transition hover:text-foreground/85"
+                        className="text-muted underline underline-offset-2 transition hover:text-foreground"
                       >
                         Nuevo cliente
                       </Link>
@@ -981,7 +984,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 <button
                   type="button"
                   onClick={() => setPickingCustomer(true)}
-                  className="w-full rounded-lg border border-dashed border-bd-border px-3 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground/85"
+                  className="w-full rounded-xl border border-dashed border-bd-border px-3 py-2.5 text-sm text-muted transition hover:border-foreground/25 hover:text-foreground"
                 >
                   Buscar cliente (opcional)
                 </button>
@@ -1008,7 +1011,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               ) : (
                 // Read-only when the operator may not reassign: offering a
                 // control the backend would refuse is worse than not offering it.
-                <p className="text-sm text-foreground/85">{context.seller.name}</p>
+                <p className="text-sm text-foreground">{context.seller.name}</p>
               )}
             </div>
 
@@ -1126,7 +1129,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                       key={amount}
                       type="button"
                       onClick={() => setReceived(String(amount))}
-                      className="rounded border border-bd-border px-2.5 py-1 text-xs text-muted transition hover:border-bd-border hover:text-foreground"
+                      className="rounded border border-bd-border px-2.5 py-1 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
                     >
                       {money(amount)}
                     </button>
@@ -1266,7 +1269,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 (isCash && (received === "" || Number(received) < total))
               }
               onClick={() => void charge()}
-              className="w-full rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm font-medium text-success transition hover:border-success-border disabled:cursor-not-allowed disabled:border-bd-border disabled:bg-transparent disabled:text-muted"
+              className={`w-full ${internalPrimaryButtonClass} py-3.5 disabled:bg-transparent disabled:text-muted`}
             >
               {charging ? "Cobrando…" : "Cobrar"}
             </button>

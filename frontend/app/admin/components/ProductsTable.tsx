@@ -22,93 +22,71 @@ export function ProductsTable({ products, canManage, onChanged }: Props) {
       onChanged();
     } catch (err) {
       setToggleError(
-        err instanceof Error
-          ? err.message
-          : "No se pudo cambiar el estado del producto.",
+        err instanceof Error ? err.message : "No se pudo cambiar el estado del producto.",
       );
     }
   }
 
   if (products.length === 0) {
-    return (
-      <p className="text-muted text-sm py-6 text-center">
-        No hay productos que coincidan.
-      </p>
-    );
+    return <p className="py-8 text-center text-sm text-muted">No hay productos que coincidan.</p>;
   }
 
   return (
     <div>
-      {toggleError && (
-        <p className="text-sm text-danger mb-3">{toggleError}</p>
-      )}
+      {toggleError ? <p className="mb-3 text-sm text-danger" role="alert">{toggleError}</p> : null}
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[44rem] text-sm">
           <thead>
-            <tr className="border-b border-bd-border text-muted">
-              <th className="text-left pb-3 pr-4 font-medium">Nombre</th>
-              <th className="text-left pb-3 pr-4 font-medium hidden md:table-cell">
-                Categoría
-              </th>
-              <th className="text-right pb-3 pr-4 font-medium">Precio</th>
-              <th className="text-right pb-3 pr-4 font-medium">Stock</th>
-              <th className="text-left pb-3 pr-4 font-medium">Estado</th>
-              {canManage && (
-                <th className="text-right pb-3 font-medium">Acciones</th>
-              )}
+            <tr className="border-b border-bd-border text-left text-[11px] uppercase tracking-[0.1em] text-muted">
+              <th className="px-4 py-3 font-semibold">Nombre</th>
+              <th className="hidden px-4 py-3 font-semibold md:table-cell">Categoría</th>
+              <th className="px-4 py-3 text-right font-semibold">Precio</th>
+              <th className="px-4 py-3 text-right font-semibold">Stock</th>
+              <th className="px-4 py-3 font-semibold">Estado</th>
+              {canManage ? <th className="px-4 py-3 text-right font-semibold">Acciones</th> : null}
             </tr>
           </thead>
           <tbody>
-            {products.map((p) => (
+            {products.map((product) => (
               <tr
-                key={p.id}
-                className="border-b border-bd-border hover:bg-surface transition-colors"
+                key={product.id}
+                className="border-b border-bd-border/70 transition last:border-0 hover:bg-foreground/[0.025]"
               >
-                <td className="py-3 pr-4">
+                <td className="px-4 py-3">
                   <Link
-                    href={`/admin/products/${p.id}`}
-                    className="text-foreground hover:text-foreground hover:underline font-medium"
+                    href={`/admin/products/${product.id}`}
+                    className="font-medium text-foreground transition hover:underline"
                   >
-                    {p.name}
+                    {product.name}
                   </Link>
-                  <div className="text-muted text-xs mt-0.5">{p.slug}</div>
+                  <div className="mt-1 text-xs text-muted">{product.slug}</div>
                 </td>
-                <td className="py-3 pr-4 text-muted hidden md:table-cell">
-                  {p.category_name ?? "—"}
-                </td>
-                <td className="py-3 pr-4 text-right text-foreground">
-                  S/ {parseFloat(p.price).toFixed(2)}
+                <td className="hidden px-4 py-3 text-muted md:table-cell">{product.category_name ?? "—"}</td>
+                <td className="px-4 py-3 text-right font-medium tabular-nums text-foreground">
+                  S/ {parseFloat(product.price).toFixed(2)}
                 </td>
                 <td
-                  className={`py-3 pr-4 text-right font-medium ${
-                    p.inventory === 0
+                  className={`px-4 py-3 text-right font-semibold tabular-nums ${
+                    product.inventory === 0
                       ? "text-danger"
-                      : p.inventory <= 5
+                      : product.inventory <= 5
                         ? "text-warning"
                         : "text-foreground"
                   }`}
                 >
-                  {p.inventory}
+                  {product.inventory}
                 </td>
-                <td className="py-3 pr-4">
-                  <ProductStatusBadge isActive={p.is_active} />
-                </td>
-                {canManage && (
-                  <td className="py-3 text-right">
-                    <Link
-                      href={`/admin/products/${p.id}`}
-                      className="text-muted hover:text-foreground text-xs mr-4 hover:underline"
-                    >
+                <td className="px-4 py-3"><ProductStatusBadge isActive={product.is_active} /></td>
+                {canManage ? (
+                  <td className="px-4 py-3 text-right">
+                    <Link href={`/admin/products/${product.id}`} className="mr-4 text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
                       Editar
                     </Link>
-                    <button
-                      onClick={() => toggleActive(p)}
-                      className="text-muted hover:text-foreground text-xs hover:underline"
-                    >
-                      {p.is_active ? "Desactivar" : "Activar"}
+                    <button type="button" onClick={() => toggleActive(product)} className="text-xs font-semibold text-muted transition hover:text-foreground hover:underline">
+                      {product.is_active ? "Desactivar" : "Activar"}
                     </button>
                   </td>
-                )}
+                ) : null}
               </tr>
             ))}
           </tbody>

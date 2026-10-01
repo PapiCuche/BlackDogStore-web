@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { requestPasswordReset } from "../../lib/auth";
 
@@ -9,8 +10,8 @@ export default function ForgotPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
     setError(null);
     setLoading(true);
     try {
@@ -24,70 +25,65 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background px-6 py-12">
+    <div className="min-h-[70vh] bg-background px-6 py-12">
       <div className="mx-auto max-w-md">
-        <div className="mb-8 text-center">
-          <p className="text-sm uppercase tracking-[0.3em] font-semibold text-muted">Cuenta</p>
-          <h1 className="mt-2 text-3xl font-bold text-foreground">Olvidé mi contraseña</h1>
-        </div>
+        <header className="mb-8">
+          <span className="section-label">Cuenta</span>
+          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground">
+            Recuperar acceso
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-muted">
+            Ingresa el correo asociado a tu cuenta para solicitar un enlace de recuperación.
+          </p>
+        </header>
 
-        <div className="rounded-2xl border border-bd-border bg-surface p-8">
+        <section className="rounded-2xl border border-bd-border bg-surface p-6 sm:p-8">
           {submitted ? (
-            <div className="text-center">
-              <p className="text-foreground font-semibold">Correo enviado</p>
-              <p className="mt-3 text-sm text-muted">
-                Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña.
-                Revisa también la carpeta de spam.
+            <div>
+              <p className="font-semibold text-foreground">Solicitud recibida</p>
+              <p className="mt-3 text-sm leading-6 text-muted">
+                Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña. Revisa también la carpeta de spam.
               </p>
-              <a
-                href="/auth"
-                className="mt-6 inline-block text-sm text-muted hover:text-foreground transition"
-              >
+              <Link href="/auth" className="mt-6 inline-flex rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
                 Volver al inicio de sesión
-              </a>
+              </Link>
             </div>
           ) : (
             <>
-              {error && (
-                <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
+              {error ? (
+                <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger" role="alert">
                   {error}
                 </div>
-              )}
-              <p className="mb-6 text-sm text-muted">
-                Ingresa el correo asociado a tu cuenta. Si existe, recibirás un enlace para restablecer
-                tu contraseña.
-              </p>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label htmlFor="auth-forgot-password-page-correo-electronico" className="block text-sm font-medium text-foreground/85">
-                    Correo electrónico
-                  </label>
-                  <input id="auth-forgot-password-page-correo-electronico"
+              ) : null}
+
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                  Correo electrónico
+                  <input
                     type="email"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(event) => setEmail(event.target.value)}
                     required
                     autoComplete="email"
-                    className="mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-foreground placeholder-muted focus:border-bd-border focus:outline-none"
+                    className="mt-2 w-full rounded-xl border border-bd-border bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none"
                     placeholder="tu@correo.com"
                   />
-                </div>
+                </label>
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
+                  className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:opacity-50"
                 >
                   {loading ? "Enviando…" : "Enviar instrucciones"}
                 </button>
               </form>
-              <div className="mt-6 text-center text-sm">
-                <a href="/auth" className="text-muted hover:text-foreground transition">
-                  Volver al inicio de sesión
-                </a>
-              </div>
+
+              <Link href="/auth" className="mt-6 inline-flex text-sm font-semibold text-muted transition hover:text-foreground">
+                ← Volver al inicio de sesión
+              </Link>
             </>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

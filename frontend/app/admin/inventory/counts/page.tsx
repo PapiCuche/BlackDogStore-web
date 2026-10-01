@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { BranchSelector, ScopeNote } from "../../components/BranchSelector";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
@@ -111,38 +112,23 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const fieldClass = internalInputClass;
   const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Recuentos físicos</h1>
-            <p className="mt-1 text-sm text-muted">
-              Conteo de una sucursal. Las diferencias se aplican como corrección
-              al aprobar, contra el stock del momento de la aprobación.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Recuentos físicos"
+          description="Conteo de una sucursal. Las diferencias se aplican al aprobar contra el stock vigente."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={resultScope} />
         {scope.error ? <ErrorBox message={scope.error} /> : null}
@@ -191,7 +177,7 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
               <button
                 type="submit"
                 disabled={creating}
-                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 {creating ? "Creando…" : "Abrir recuento"}
               </button>
@@ -211,8 +197,8 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   statusFilter === option.value
-                    ? "border-bd-border bg-surface-2 text-foreground"
-                    : "border-bd-border text-muted hover:border-bd-border hover:text-foreground"
+                    ? "border-foreground/25 bg-foreground/[0.06] text-foreground"
+                    : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
                 }`}
               >
                 {option.label}
@@ -242,7 +228,7 @@ function CountsContent({ user, access }: { user: AuthUser; access: InternalAcces
               </thead>
               <tbody>
                 {counts.map((c) => (
-                  <tr key={c.id} className="border-b border-bd-border">
+                  <tr key={c.id} className="border-b border-bd-border/60">
                     <Td>
                       <Link
                         href={`/admin/inventory/counts/${c.id}`}

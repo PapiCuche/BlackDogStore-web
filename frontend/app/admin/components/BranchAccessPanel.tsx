@@ -28,6 +28,11 @@ import {
   type BranchRow,
   type MembershipRow,
 } from "../lib/internal-api";
+import {
+  internalButtonClass,
+  internalInputClass,
+  internalPrimaryButtonClass,
+} from "./internal-ui";
 
 type Props = {
   companyId: number | null;
@@ -37,7 +42,7 @@ type Props = {
 
 function ScopeSummary({ membership }: { membership: MembershipRow }) {
   if (membership.branch_access_mode === "all") {
-    return <span className="text-foreground/85">Todas las sucursales</span>;
+    return <span className="text-foreground">Todas las sucursales</span>;
   }
   const granted = membership.branch_access.filter((b) => b.is_active);
   if (granted.length === 0) {
@@ -47,7 +52,7 @@ function ScopeSummary({ membership }: { membership: MembershipRow }) {
       </span>
     );
   }
-  return <span className="text-foreground/85">{granted.map((b) => b.name).join(" · ")}</span>;
+  return <span className="text-foreground">{granted.map((b) => b.name).join(" · ")}</span>;
 }
 
 function MembershipRowEditor({
@@ -103,7 +108,7 @@ function MembershipRowEditor({
 
   return (
     <>
-      <tr className="border-b border-bd-border">
+      <tr className="border-b border-bd-border/60">
         <td className="px-4 py-3 text-foreground">{membership.username}</td>
         <td className="px-4 py-3 text-muted">{membership.role_label}</td>
         <td className="px-4 py-3 text-sm">
@@ -114,7 +119,7 @@ function MembershipRowEditor({
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-foreground/85 transition hover:border-bd-border hover:text-foreground"
+            className={internalButtonClass}
           >
             {open ? "Cerrar" : "Editar"}
           </button>
@@ -129,7 +134,7 @@ function MembershipRowEditor({
                 Alcance de sucursales
               </legend>
 
-              <label className="flex items-start gap-2 text-sm text-foreground/85">
+              <label className="flex items-start gap-2 text-sm text-foreground">
                 <input
                   type="radio"
                   name={`mode-${membership.id}`}
@@ -145,7 +150,7 @@ function MembershipRowEditor({
                 </span>
               </label>
 
-              <label className="flex items-start gap-2 text-sm text-foreground/85">
+              <label className="flex items-start gap-2 text-sm text-foreground">
                 <input
                   type="radio"
                   name={`mode-${membership.id}`}
@@ -167,7 +172,7 @@ function MembershipRowEditor({
                 {branches.map((branch) => (
                   <label
                     key={branch.id}
-                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-sm text-foreground/85"
+                    className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-sm text-foreground"
                   >
                     <input
                       type="checkbox"
@@ -198,7 +203,7 @@ function MembershipRowEditor({
                 id={`default-${membership.id}`}
                 value={defaultBranch}
                 onChange={(e) => setDefaultBranch(e.target.value)}
-                className="w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border"
+                className={internalInputClass}
               >
                 <option value="">Sin preferencia</option>
                 {defaultOptions.map((b) => (
@@ -222,7 +227,7 @@ function MembershipRowEditor({
               type="button"
               onClick={() => void save()}
               disabled={saving}
-              className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+              className={`mt-4 ${internalPrimaryButtonClass}`}
             >
               {saving ? "Guardando…" : "Guardar acceso"}
             </button>
@@ -290,7 +295,7 @@ export function BranchAccessPanel({ companyId, canManage }: Props) {
       )}
 
       {!loading && !error && memberships.length === 0 && (
-        <div className="rounded-xl border border-bd-border bg-surface py-10 text-center text-muted">
+        <div className="rounded-xl border border-dashed border-bd-border py-10 text-center text-muted">
           Esta empresa todavía no tiene personal interno.
         </div>
       )}

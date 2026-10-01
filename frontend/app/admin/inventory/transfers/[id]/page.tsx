@@ -17,6 +17,7 @@ import { useParams } from "next/navigation";
 import { AdminShell } from "../../../components/AdminShell";
 import { AccessGuard } from "../../../components/AccessGuard";
 import type { InternalAccess } from "../../../lib/internal-access";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../../components/internal-ui";
 import {
   TransferStatusBadge,
   EmptyBox,
@@ -126,24 +127,12 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">
-              Transferencia {transfer ? `#${transfer.id}` : ""}
-            </h1>
-            {transfer ? (
-              <p className="mt-1 text-sm text-muted">
-                {transfer.source_branch_name} → {transfer.destination_branch_name}
-              </p>
-            ) : null}
-          </div>
-          <Link
-            href="/admin/inventory/transfers"
-            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-          >
-            ← Transferencias
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title={transfer ? `Transferencia #${transfer.id}` : "Transferencia"}
+          description={transfer ? `${transfer.source_branch_name} → ${transfer.destination_branch_name}` : "Movimiento entre sucursales"}
+          actions={<Link href="/admin/inventory/transfers" className={internalButtonClass}>Transferencias</Link>}
+        />
 
         {loading ? <Spinner label="Cargando transferencia…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
@@ -188,7 +177,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                       void run(() => dispatchTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className={internalPrimaryButtonClass}
                 >
                   Despachar
                 </button>
@@ -205,7 +194,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                       void run(() => receiveTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg border border-bd-border px-4 py-2 text-sm font-medium text-foreground transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  className={internalButtonClass}
                 >
                   Recibir
                 </button>
@@ -217,7 +206,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                       void run(() => cancelTransfer(transfer.id));
                     }
                   }}
-                  className="rounded-lg border border-bd-border px-4 py-2 text-sm text-muted transition hover:border-bd-border hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                  className={internalButtonClass}
                 >
                   Anular
                 </button>
@@ -257,7 +246,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                           id={`ti-${p.id}`}
                           type="number"
                           min={0}
-                          className="w-20 rounded-lg border border-bd-border bg-background/40 px-2 py-1.5 text-sm text-foreground outline-none transition focus:border-bd-border"
+                          className={`${internalInputClass} w-20`}
                           value={draft[p.id] ?? ""}
                           onChange={(e) =>
                             setDraft((d) => ({ ...d, [p.id]: e.target.value }))
@@ -270,7 +259,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                     type="button"
                     disabled={busy}
                     onClick={() => void saveLines()}
-                    className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-40"
+                    className={internalPrimaryButtonClass}
                   >
                     Guardar líneas
                   </button>
@@ -287,7 +276,7 @@ function TransferDetail({ user, access, transferId }: { user: AuthUser; access: 
                   </thead>
                   <tbody>
                     {transfer.items.map((item) => (
-                      <tr key={item.id} className="border-b border-bd-border">
+                      <tr key={item.id} className="border-b border-bd-border/60">
                         <Td>{item.product_name}</Td>
                         <Td right>{item.quantity}</Td>
                       </tr>

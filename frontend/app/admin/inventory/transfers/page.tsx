@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
 import type { InternalAccess } from "../../lib/internal-access";
+import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import {
   TransferStatusBadge,
@@ -114,28 +115,18 @@ function TransfersContent({ user, access }: { user: AuthUser; access: InternalAc
     }
   }
 
-  const fieldClass =
-    "w-full rounded-lg border border-bd-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none transition focus:border-bd-border disabled:opacity-50";
+  const fieldClass = internalInputClass;
   const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Transferencias</h1>
-            <p className="mt-1 text-sm text-muted">
-              Traslados de stock entre sucursales. El stock sale al despachar y
-              entra al recibir.
-            </p>
-          </div>
-          <Link
-            href="/admin/inventory"
-            className="rounded-lg border border-bd-border px-3.5 py-2 text-sm text-foreground/85 transition hover:border-bd-border hover:text-foreground"
-          >
-            ← Inventario
-          </Link>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Transferencias"
+          description="Traslados de stock entre sucursales. El stock sale al despachar y entra al recibir."
+          actions={<Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>}
+        />
 
         {scope.error ? <ErrorBox message={scope.error} /> : null}
 
@@ -198,7 +189,7 @@ function TransfersContent({ user, access }: { user: AuthUser; access: InternalAc
               <button
                 type="submit"
                 disabled={creating || !source || !destination || source === destination}
-                className="rounded-lg bg-foreground px-4 py-2 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                className={internalPrimaryButtonClass}
               >
                 {creating ? "Creando…" : "Crear borrador"}
               </button>
@@ -226,8 +217,8 @@ function TransfersContent({ user, access }: { user: AuthUser; access: InternalAc
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   statusFilter === option.value
-                    ? "border-bd-border bg-surface-2 text-foreground"
-                    : "border-bd-border text-muted hover:border-bd-border hover:text-foreground"
+                    ? "border-foreground/25 bg-foreground/[0.06] text-foreground"
+                    : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
                 }`}
               >
                 {option.label}
@@ -258,7 +249,7 @@ function TransfersContent({ user, access }: { user: AuthUser; access: InternalAc
               </thead>
               <tbody>
                 {transfers.map((t) => (
-                  <tr key={t.id} className="border-b border-bd-border">
+                  <tr key={t.id} className="border-b border-bd-border/60">
                     <Td>
                       <Link
                         href={`/admin/inventory/transfers/${t.id}`}
