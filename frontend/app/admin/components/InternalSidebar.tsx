@@ -12,7 +12,7 @@
  */
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
@@ -158,13 +158,22 @@ export function MobileSidebar({
   open: boolean;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panelRef.current?.focus();
+
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleEscape);
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -177,7 +186,11 @@ export function MobileSidebar({
         tabIndex={-1}
         className="absolute inset-0 h-full w-full bg-black/70"
       />
-      <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background outline-none"
+      >
         <InternalSidebarContent
           access={access}
           companyName={companyName}
