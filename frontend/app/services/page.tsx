@@ -2,148 +2,133 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { ServicesCta } from "./ServicesCta";
 
-// The shop's name comes from the root layout's title template, which knows
-// which tenant owns this host. The description is still the pilot's service copy
-// — per-tenant landing content is tracked in docs/saas-multiempresa.md.
 export const metadata: Metadata = {
-  title: "Servicio Técnico Apple",
-  description:
-    "Reparación de iPhone: cambio de pantalla, batería, tapa trasera y glass. Diagnóstico gratuito.",
+  title: "Servicio técnico",
+  description: "Información sobre evaluación, reparación y soporte técnico.",
 };
 
 const services = [
   {
     num: "01",
-    title: "Cambio de Pantalla",
+    title: "Pantalla",
     description:
-      "Pantallas OLED/LCD originales con calibración de color, brillo y True Tone. No aparece el mensaje de pieza reparada. Instalación sin burbujas ni marcos desalineados.",
-    devices: ["iPhone", "iPad"],
-    time: "2–3 horas",
-    highlight: "No pierde True Tone",
+      "Evaluación del daño, reemplazo cuando corresponde y pruebas funcionales antes de la entrega.",
+    devices: ["Smartphone", "Tablet"],
   },
   {
     num: "02",
-    title: "Cambio de Batería",
+    title: "Batería",
     description:
-      "Baterías originales Nasan certificadas. Restaura la autonomía de tu iPhone al 100%. Certificado de autenticidad incluido.",
-    devices: ["iPhone", "iPad", "MacBook"],
-    time: "1–2 horas",
-    highlight: "Baterías Nasan ✓",
+      "Revisión del estado de batería, diagnóstico del consumo y reemplazo cuando el caso lo requiere.",
+    devices: ["Smartphone", "Tablet", "Laptop"],
   },
   {
     num: "03",
-    title: "Cambio de Tapa Trasera",
+    title: "Carcasa y tapa",
     description:
-      "Tecnología láser para un cambio preciso y seguro. Los cambios no muestran el mensaje de pieza reparada. Tu iPhone lucirá impecable nuevamente.",
-    devices: ["iPhone"],
-    time: "2–3 horas",
-    highlight: "Tecnología láser",
+      "Evaluación de daños externos y alternativas de intervención según el modelo y la condición del equipo.",
+    devices: ["Smartphone"],
   },
   {
     num: "04",
-    title: "Cambio de Glass",
+    title: "Cristal",
     description:
-      "Cristal frontal de protección premium. Instalación limpia sin polvo ni burbujas. Compatible con todos los modelos de iPhone.",
-    devices: ["iPhone", "iPad"],
-    time: "1 hora",
-    highlight: null,
+      "Revisión del cristal y del conjunto de pantalla para definir la intervención adecuada.",
+    devices: ["Smartphone", "Tablet"],
   },
   {
     num: "05",
-    title: "Daño por Líquidos",
+    title: "Daño por líquidos",
     description:
-      "Diagnóstico gratuito y limpieza ultrasónica de la placa para recuperar tu dispositivo tras contacto con agua u otros líquidos.",
-    devices: ["iPhone", "MacBook", "iPad"],
-    time: "24–48 horas",
-    highlight: "Diagnóstico gratis",
+      "Inspección técnica del equipo para identificar componentes afectados y el alcance posible de recuperación.",
+    devices: ["Smartphone", "Tablet", "Laptop"],
   },
   {
     num: "06",
-    title: "Diagnóstico Técnico",
+    title: "Diagnóstico técnico",
     description:
-      "Evaluación completa del estado de tu dispositivo Apple: hardware, batería, conectores y sistema operativo. Sin costo.",
-    devices: ["iPhone", "iPad", "MacBook", "Apple Watch"],
-    time: "30 min",
-    highlight: "Gratis",
+      "Evaluación del equipo, síntomas reportados y componentes relacionados antes de proponer una intervención.",
+    devices: ["Smartphone", "Tablet", "Laptop", "Wearable"],
   },
   {
     num: "07",
-    title: "Recuperación de Datos",
+    title: "Datos y respaldo",
     description:
-      "Recuperamos fotos, contactos, notas y archivos de dispositivos dañados, con pantalla rota o que no encienden.",
-    devices: ["iPhone", "MacBook", "iPad"],
-    time: "1–5 días",
-    highlight: null,
+      "Evaluación de alternativas de acceso o recuperación de información según el estado del dispositivo.",
+    devices: ["Smartphone", "Tablet", "Laptop"],
   },
   {
     num: "08",
-    title: "Software y Sistema",
+    title: "Software y sistema",
     description:
-      "Actualizaciones de iOS/macOS, configuración de iCloud, recuperación de Apple ID, restauración DFU y resolución de errores.",
-    devices: ["iPhone", "iPad", "MacBook"],
-    time: "1 hora",
-    highlight: null,
+      "Soporte para configuración, actualizaciones, restauración y problemas de funcionamiento del sistema.",
+    devices: ["Smartphone", "Tablet", "Laptop"],
   },
 ];
 
-const stats = [
-  { stat: "5,000+", label: "Dispositivos reparados" },
-  { stat: "6 meses", label: "Garantía en reparaciones" },
-  { stat: "100%", label: "Repuestos originales" },
-  { stat: "S/ 0", label: "Diagnóstico" },
+const process = [
+  {
+    num: "01",
+    title: "Recepción",
+    text: "Registramos el equipo y el motivo de la visita.",
+  },
+  {
+    num: "02",
+    title: "Evaluación",
+    text: "Revisamos el caso y comunicamos qué necesita atención.",
+  },
+  {
+    num: "03",
+    title: "Acuerdo",
+    text: "El alcance y las condiciones se confirman antes de continuar.",
+  },
+  {
+    num: "04",
+    title: "Entrega",
+    text: "Se revisa el resultado y se comunica el cierre del servicio.",
+  },
 ];
 
 const faqs = [
   {
-    q: "¿Cuánto demora una reparación?",
-    a: "Los cambios de batería y pantalla se realizan el mismo día, en 1–3 horas. Reparaciones más complejas como daño por líquidos pueden tomar 24–72 horas.",
+    q: "¿Cómo sé qué reparación necesita mi equipo?",
+    a: "La intervención se define después de revisar el equipo y relacionar el síntoma reportado con el diagnóstico técnico.",
   },
   {
-    q: "¿Los repuestos son originales?",
-    a: "Sí. Trabajamos con repuestos originales Apple y baterías Nasan certificadas. Contamos con certificado de autenticidad Nasan Technology.",
+    q: "¿Puedo consultar antes de llevar el equipo?",
+    a: "Sí. Puedes comunicarte con la tienda para explicar el problema y confirmar el canal de atención disponible.",
   },
   {
-    q: "¿Aparece el mensaje de 'pieza reparada'?",
-    a: "No. Nuestros cambios de pantalla, tapa trasera y batería no muestran el mensaje de pieza reparada en el iPhone.",
+    q: "¿Las condiciones son iguales para todos los servicios?",
+    a: "No necesariamente. El alcance, disponibilidad y condiciones dependen del equipo y del trabajo que se acuerde para cada caso.",
   },
   {
-    q: "¿Tienen garantía los servicios?",
-    a: "Todos nuestros servicios incluyen 6 meses de garantía en la mano de obra y el repuesto instalado. Aplican ciertas restricciones.",
-  },
-  {
-    q: "¿Puedo llevar mi equipo sin cita?",
-    a: "Sí. Para reparaciones complejas recomendamos coordinar por WhatsApp para asegurar disponibilidad del repuesto.",
+    q: "¿Dónde reviso la garantía o las condiciones del servicio?",
+    a: "La tienda debe informarte las condiciones aplicables al servicio antes del cierre. Conserva la constancia o documento que recibas.",
   },
 ];
 
 export default function ServicesPage() {
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
-
-      {/* Hero */}
-      <section className="relative overflow-hidden border-b border-white/[0.06]">
-        <div className="topo-bg absolute inset-0 pointer-events-none" />
-        <div className="dot-grid absolute right-0 top-0 h-72 w-72 opacity-35 pointer-events-none" />
-        <div className="dot-grid absolute left-0 bottom-0 h-56 w-56 opacity-25 pointer-events-none" />
-
-        <div className="relative mx-auto max-w-7xl px-6 py-20 lg:px-8 lg:py-28">
-          <span className="section-label">Servicio Técnico</span>
-          <h1 className="font-display mt-4 max-w-3xl text-6xl font-black uppercase leading-[0.9] tracking-tight text-white sm:text-7xl lg:text-8xl">
-            ¿Tu iPhone<br />No Funciona<br />
-            <span className="text-zinc-500">Como Antes?</span>
+    <div className="min-h-screen bg-background text-foreground">
+      <section className="relative overflow-hidden border-b border-bd-border">
+        <div className="topo-bg pointer-events-none absolute inset-0 opacity-75" />
+        <div className="relative mx-auto max-w-7xl px-6 py-16 lg:px-8 lg:py-24">
+          <span className="section-label">Servicio técnico</span>
+          <h1 className="mt-4 max-w-4xl font-display text-5xl font-black italic uppercase leading-[0.86] tracking-[-0.05em] text-foreground sm:text-7xl lg:text-8xl">
+            Primero entendemos el problema.
           </h1>
-          <p className="mt-6 max-w-xl text-lg leading-7 text-zinc-400">
-            Técnicos especializados en productos Apple. Repuestos originales,
-            diagnóstico gratuito y garantía de 6 meses en cada servicio.
+          <p className="mt-6 max-w-2xl text-base leading-7 text-muted sm:text-lg sm:leading-8">
+            El servicio comienza con una evaluación clara del equipo y continúa con el alcance que se acuerde para el caso.
           </p>
-          <div className="mt-8 flex flex-wrap gap-3">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <ServicesCta
-              label="Diagnóstico gratuito"
-              className="inline-flex items-center gap-2.5 rounded-full bg-white px-8 py-4 text-sm font-black uppercase tracking-widest text-[#080808] transition hover:bg-zinc-200"
+              label="Consultar servicio"
+              className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
             />
             <Link
               href="/product"
-              className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.05] px-8 py-4 text-sm font-bold uppercase tracking-widest text-white transition hover:border-white/25 hover:bg-white/10"
+              className="inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border bg-surface px-6 py-3 text-sm font-bold uppercase tracking-[0.08em] text-foreground transition hover:border-foreground/25"
             >
               Ver catálogo
             </Link>
@@ -151,143 +136,96 @@ export default function ServicesPage() {
         </div>
       </section>
 
-      {/* Stats bar */}
-      <section className="border-b border-white/[0.06] bg-[#111]">
-        <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-white/[0.06] lg:grid-cols-4">
-          {stats.map((item) => (
-            <div key={item.label} className="px-8 py-8 text-center">
-              <p className="font-display text-4xl font-black tracking-tight text-white lg:text-5xl">{item.stat}</p>
-              <p className="mt-1.5 text-xs uppercase tracking-widest text-zinc-500">{item.label}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <main className="mx-auto max-w-7xl px-6 py-16 lg:px-8">
-
-        {/* Services grid */}
+      <main className="mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
         <section>
-          <span className="section-label">Servicios disponibles</span>
-          <h2 className="font-display mt-3 text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">
-            ¿Qué podemos reparar?
-          </h2>
-
-          <div className="mt-10 divide-y divide-white/[0.06]">
-            {services.map((service) => (
-              <div
-                key={service.title}
-                className="group flex flex-col gap-4 py-8 sm:flex-row sm:items-start sm:gap-8 lg:items-center"
-              >
-                {/* Number */}
-                <p className="font-display shrink-0 text-4xl font-black text-zinc-800 lg:text-5xl">{service.num}</p>
-
-                {/* Content */}
-                <div className="flex-1">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h3 className="font-display text-2xl font-black uppercase text-white">{service.title}</h3>
-                    {service.highlight && (
-                      <span className="rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-zinc-400">
-                        {service.highlight}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-500">{service.description}</p>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {service.devices.map((d) => (
-                      <span
-                        key={d}
-                        className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-[10px] font-semibold text-zinc-500"
-                      >
-                        {d}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Time + CTA */}
-                <div className="flex shrink-0 items-center gap-6 sm:flex-col sm:items-end sm:gap-3">
-                  <p className="text-xs text-zinc-600">⏱ {service.time}</p>
-                  <ServicesCta
-                    label="Consultar"
-                    withIcon={false}
-                    className="rounded-full border border-white/10 bg-white/[0.05] px-5 py-2 text-xs font-bold uppercase tracking-widest text-zinc-400 transition hover:border-white/25 hover:text-white"
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Nasan Certificate section */}
-        <section className="mt-20 overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111]">
-          <div className="grid gap-0 lg:grid-cols-2">
-            <div className="border-b border-white/[0.06] px-8 py-12 sm:px-12 lg:border-b-0 lg:border-r">
-              <span className="section-label">Certificación</span>
-              <h2 className="font-display mt-3 text-4xl font-black uppercase leading-none tracking-tight text-white sm:text-5xl">
-                Baterías<br />Nasan<br />Originales
+          <div className="grid gap-6 border-b border-bd-border pb-8 lg:grid-cols-[0.75fr_1.25fr] lg:items-end">
+            <div>
+              <span className="section-label">Servicios disponibles</span>
+              <h2 className="mt-3 font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground sm:text-5xl">
+                Casos que podemos evaluar.
               </h2>
-              <p className="mt-4 text-sm leading-6 text-zinc-500">
-                Esta tienda cuenta con el certificado de autenticidad de{" "}
-                <strong className="text-white">Nasan Technology</strong> — empresa oficial de
-                baterías para iPhone. Garantizamos que usamos baterías 100% originales en cada servicio.
-              </p>
-              <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2">
-                <span className="h-2 w-2 rounded-full bg-white" />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">
-                  Certificado Nasan — Abril 2025
-                </span>
-              </div>
             </div>
-            <div className="px-8 py-12 sm:px-12">
-              <div className="grid grid-cols-2 gap-4">
-                {[
-                  { label: "6 Meses", sub: "De garantía" },
-                  { label: "100%", sub: "Original" },
-                  { label: "Certificado", sub: "Nasan Technology" },
-                  { label: "Sin msg", sub: "Pieza reparada" },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-[#0d0d0d] p-5">
-                    <p className="font-display text-3xl font-black text-white">{item.label}</p>
-                    <p className="mt-1 text-xs text-zinc-600">{item.sub}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <p className="max-w-xl text-sm leading-7 text-muted lg:justify-self-end">
+              La lista orienta el tipo de atención. El diagnóstico final depende del equipo y de su condición real.
+            </p>
           </div>
-        </section>
 
-        {/* FAQ */}
-        <section className="mt-20">
-          <span className="section-label">FAQ</span>
-          <h2 className="font-display mt-3 text-4xl font-black uppercase tracking-tight text-white sm:text-5xl">
-            Preguntas<br />Frecuentes
-          </h2>
-          <div className="mt-10 divide-y divide-white/[0.06]">
-            {faqs.map((faq) => (
-              <div key={faq.q} className="py-7">
-                <h3 className="font-display text-lg font-black uppercase text-white">{faq.q}</h3>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">{faq.a}</p>
-              </div>
+          <div className="grid sm:grid-cols-2">
+            {services.map((service) => (
+              <article key={service.title} className="border-b border-bd-border py-8 sm:px-6 lg:py-10">
+                <span className="text-[10px] font-bold tracking-[0.18em] text-muted">{service.num}</span>
+                <h3 className="mt-5 font-display text-2xl font-extrabold uppercase tracking-[-0.025em] text-foreground">
+                  {service.title}
+                </h3>
+                <p className="mt-3 max-w-xl text-sm leading-7 text-muted">{service.description}</p>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {service.devices.map((device) => (
+                    <span key={device} className="rounded-full border border-bd-border px-3 py-1 text-[10px] font-semibold text-muted">
+                      {device}
+                    </span>
+                  ))}
+                </div>
+                <ServicesCta
+                  label="Consultar"
+                  withIcon={false}
+                  className="mt-6 inline-flex rounded-xl border border-bd-border px-4 py-2.5 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25"
+                />
+              </article>
             ))}
           </div>
         </section>
 
-        {/* Final CTA */}
-        <section className="my-20 overflow-hidden rounded-3xl bg-white text-center">
-          <div className="relative px-8 py-16 sm:px-12">
-            <p className="font-display text-5xl font-black uppercase leading-none tracking-tight text-[#080808] sm:text-6xl">
-              ¿Listo para<br />reparar tu Apple?
-            </p>
-            <p className="mt-4 text-sm text-zinc-600">
-              Escríbenos ahora y cuéntanos qué le pasa a tu equipo. Respuesta en minutos.
-            </p>
+        <section className="mt-16 overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface sm:mt-20">
+          <div className="topo-bg">
+            <div className="grid gap-8 p-7 sm:p-10 lg:grid-cols-[0.7fr_1.3fr] lg:p-12">
+              <div>
+                <span className="section-label">Proceso</span>
+                <h2 className="mt-3 font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground">
+                  Un servicio que puedes seguir.
+                </h2>
+              </div>
+              <ol className="grid sm:grid-cols-2">
+                {process.map((step) => (
+                  <li key={step.num} className="border-b border-bd-border p-5 sm:border-l sm:p-6">
+                    <span className="text-[10px] font-bold tracking-[0.18em] text-muted">{step.num}</span>
+                    <h3 className="mt-4 font-display text-lg font-extrabold uppercase text-foreground">{step.title}</h3>
+                    <p className="mt-2 text-sm leading-6 text-muted">{step.text}</p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-16 sm:mt-20">
+          <span className="section-label">Preguntas frecuentes</span>
+          <h2 className="mt-3 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+            Antes de dejar tu equipo.
+          </h2>
+          <div className="mt-8 divide-y divide-bd-border">
+            {faqs.map((faq) => (
+              <article key={faq.q} className="grid gap-3 py-6 md:grid-cols-[0.8fr_1.2fr] md:gap-8">
+                <h3 className="font-display text-lg font-extrabold uppercase text-foreground">{faq.q}</h3>
+                <p className="text-sm leading-7 text-muted">{faq.a}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="my-16 border-t border-bd-border pt-10 sm:my-20">
+          <div className="grid gap-6 lg:grid-cols-[1fr_auto] lg:items-center">
+            <div>
+              <p className="font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground sm:text-4xl">
+                Cuéntanos qué le pasa a tu equipo.
+              </p>
+              <p className="mt-2 text-sm text-muted">La tienda te indicará el siguiente paso de atención.</p>
+            </div>
             <ServicesCta
-              label="Hablar con un técnico"
-              className="mt-8 inline-flex items-center gap-2.5 rounded-full bg-[#080808] px-8 py-4 text-sm font-black uppercase tracking-widest text-white transition hover:bg-zinc-800"
+              label="Hablar con la tienda"
+              className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-6 py-3 text-sm font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
             />
           </div>
         </section>
-
       </main>
     </div>
   );
