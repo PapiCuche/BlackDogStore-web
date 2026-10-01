@@ -141,7 +141,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
           </div>
         </FilterBar>
 
-        <section className="rounded-2xl border border-bd-border bg-surface">
+        <section className="rounded-xl border border-bd-border bg-surface">
           {error ? <p className="px-5 pt-5 text-sm text-red-300" role="alert">{error}</p> : null}
           {loading ? (
             <p className="px-5 py-10 text-center text-sm text-muted">Cargando órdenes…</p>
