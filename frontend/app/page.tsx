@@ -196,7 +196,6 @@ export default function Home() {
 
         {/* Service process */}
         <section className="relative overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface">
-          <div className="topo-bg pointer-events-none absolute inset-0 opacity-60" />
           <div className="relative grid gap-10 px-7 py-10 sm:px-10 sm:py-12 lg:grid-cols-[0.8fr_1.2fr] lg:px-12 lg:py-14">
             <div>
               <span className="section-label">Cómo trabajamos</span>
