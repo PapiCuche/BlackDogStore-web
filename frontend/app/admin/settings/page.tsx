@@ -191,6 +191,24 @@ function Field({
   );
 }
 
+function relativeLuminance(hex: string): number | null {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return null;
+  const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255);
+  const linear = channels.map((value) =>
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(a: string, b: string): number | null {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  if (l1 === null || l2 === null) return null;
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
   const hex = (v: string, fallback: string) =>
     /^#[0-9A-Fa-f]{6}$/.test(v) ? v : fallback;
@@ -200,6 +218,12 @@ function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
   const border = hex(draft.border_color, "#262626");
   const primary = hex(draft.primary_color, "#FFFFFF");
   const accent = hex(draft.accent_color, "#A1A1AA");
+  const textContrast = contrastRatio(text, bg);
+  const primaryContrast = contrastRatio(primary, bg);
+  const contrastChecks = [
+    { label: "Texto / fondo", ratio: textContrast, passes: (textContrast ?? 0) >= 4.5 },
+    { label: "Botón primario / fondo", ratio: primaryContrast, passes: (primaryContrast ?? 0) >= 4.5 },
+  ];
 
   return (
     <div
@@ -224,11 +248,30 @@ function BrandPreview({ draft, name }: { draft: Draft; name: string }) {
           Así se verá tu tienda
         </p>
         <span
-          className="mt-3 inline-block rounded-full px-4 py-1.5 text-xs font-bold uppercase tracking-widest"
+          className="mt-3 inline-block rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-[0.06em]"
           style={{ background: primary, color: bg }}
         >
           Comprar
         </span>
+      </div>
+
+      <div className="mt-4 space-y-2 border-t pt-4" style={{ borderColor: border }}>
+        <p className="text-[10px] font-bold uppercase tracking-[0.12em]" style={{ color: text }}>
+          Contraste
+        </p>
+        {contrastChecks.map((check) => (
+          <div key={check.label} className="flex items-center justify-between gap-3 text-[11px]">
+            <span style={{ color: text }}>{check.label}</span>
+            <span style={{ color: check.passes ? text : "#FCA5A5" }}>
+              {check.ratio === null ? "Revisa el color" : `${check.ratio.toFixed(1)}:1 · ${check.passes ? "AA" : "Bajo"}`}
+            </span>
+          </div>
+        ))}
+        {contrastChecks.some((check) => !check.passes) ? (
+          <p className="text-[11px] leading-5" style={{ color: text }}>
+            Ajusta la paleta si quieres una lectura más accesible. Esta advertencia no bloquea el guardado.
+          </p>
+        ) : null}
       </div>
     </div>
   );
