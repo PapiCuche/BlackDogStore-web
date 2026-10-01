@@ -12,6 +12,7 @@
  */
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
@@ -157,13 +158,23 @@ export function MobileSidebar({
   open: boolean;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    if (!open) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 lg:hidden">
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navegación del control interno">
       <button
         type="button"
         aria-label="Cerrar menú"
         onClick={onClose}
+        tabIndex={-1}
         className="absolute inset-0 h-full w-full bg-black/70"
       />
       <div className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background">
