@@ -16,8 +16,6 @@ export default function Hero() {
 
   return (
     <section className="relative overflow-hidden border-b border-bd-border bg-background">
-      <div className="topo-bg pointer-events-none absolute inset-0 opacity-80" />
-
       <div className="relative mx-auto max-w-7xl px-6 pb-10 pt-14 sm:pt-20 lg:px-8 lg:pb-14 lg:pt-20">
         <div className="grid gap-12 lg:grid-cols-[1.08fr_0.92fr] lg:items-end">
           <div className="max-w-3xl">
@@ -78,7 +76,6 @@ export default function Hero() {
           </div>
 
           <div className="relative min-h-[360px] overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface p-6 sm:min-h-[440px] sm:p-8">
-            <div className="topo-bg pointer-events-none absolute inset-0 opacity-70" />
             <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full border border-foreground/[0.05]" />
             <div className="pointer-events-none absolute -right-4 top-8 h-32 w-32 rounded-full border border-foreground/[0.04]" />
 
