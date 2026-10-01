@@ -17,22 +17,25 @@ type ProductCardProps = {
 
 function StockBadge({ inventory }: { inventory?: number }) {
   if (inventory === undefined) return null;
+
   if (inventory === 0) {
     return (
-      <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-red-400">
+      <span className="rounded-full border border-red-500/25 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-red-300">
         Sin stock
       </span>
     );
   }
+
   if (inventory <= 3) {
     return (
-      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-400">
+      <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-200">
         Últimas {inventory}
       </span>
     );
   }
+
   return (
-    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+    <span className="rounded-full border border-bd-border bg-background/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">
       En stock
     </span>
   );
@@ -54,69 +57,63 @@ export function ProductCard({
   return (
     <Link
       href={`/product/${slug}`}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111] transition-all duration-300 hover:border-white/20 hover:bg-[#161616]"
+      className="group flex min-h-full flex-col overflow-hidden rounded-2xl border border-bd-border bg-surface transition hover:border-foreground/20 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
     >
-      {/* Image */}
-      <div className="relative h-52 overflow-hidden bg-[#0d0d0d]">
+      <div className="relative aspect-[4/3] overflow-hidden border-b border-bd-border bg-background">
         {image_url ? (
           <Image
             src={image_url}
             alt={name}
             fill
-            className={`object-cover transition duration-500 group-hover:scale-105 ${outOfStock ? "opacity-50" : ""}`}
+            className={`object-cover transition-transform duration-500 group-hover:scale-[1.025] ${outOfStock ? "opacity-55" : ""}`}
             sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <img
-              src="/assets/branding/logo-icon.png"
-              alt=""
-              className="h-12 w-12 object-contain opacity-[0.07] invert"
-            />
+          <div className="flex h-full items-center justify-center">
+            <div className="flex h-20 w-20 items-center justify-center rounded-full border border-bd-border text-2xl font-black text-foreground/[0.12]" aria-hidden="true">
+              {name.trim().charAt(0).toUpperCase() || "·"}
+            </div>
           </div>
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#111]/80 to-transparent" />
 
-        {/* Stock badge overlay */}
-        <div className="absolute left-3 top-3">
+        <div className="absolute left-4 top-4">
           <StockBadge inventory={inventory} />
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
-        {/* Category + rating row */}
-        <div className="mb-2 flex items-center justify-between gap-2">
-          {category ? (
-            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-zinc-600">
-              {category.name}
-            </span>
-          ) : (
-            <span />
-          )}
+      <div className="flex flex-1 flex-col p-5 sm:p-6">
+        <div className="flex min-h-5 items-center justify-between gap-3">
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">
+            {category?.name || "Producto"}
+          </span>
           {average_rating !== null && average_rating !== undefined && review_count ? (
-            <span className="text-[9px] text-zinc-600">
-              ★ {average_rating.toFixed(1)} ({review_count})
+            <span className="text-[11px] tabular-nums text-muted">
+              ★ {average_rating.toFixed(1)} · {review_count}
             </span>
           ) : null}
         </div>
 
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-lg font-black uppercase leading-tight text-white transition group-hover:text-zinc-200 line-clamp-2">
-            {name}
-          </h2>
-          <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-sm font-black text-white">
-            S/ {formatMoney(price)}
-          </span>
-        </div>
+        <h2 className="mt-3 line-clamp-2 font-display text-xl font-extrabold uppercase leading-[1.05] tracking-[-0.025em] text-foreground">
+          {name}
+        </h2>
 
-        <p className="mt-2 flex-1 text-sm leading-6 text-zinc-600 line-clamp-2">
-          {description || "Producto Apple de calidad premium con garantía."}
+        <p className="mt-3 line-clamp-2 flex-1 text-sm leading-6 text-muted">
+          {description || "Revisa el detalle del producto, su disponibilidad y condiciones de compra."}
         </p>
 
-        <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-zinc-500 transition group-hover:text-white">
-          {outOfStock ? "Ver producto" : "Ver detalles"}
-          <span className="transition group-hover:translate-x-1">→</span>
+        <div className="mt-6 flex items-end justify-between gap-4 border-t border-bd-border pt-5">
+          <div>
+            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
+              Precio
+            </span>
+            <span className="mt-1 block text-lg font-extrabold tabular-nums text-foreground">
+              S/ {formatMoney(price)}
+            </span>
+          </div>
+          <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.08em] text-foreground">
+            {outOfStock ? "Ver producto" : "Ver detalle"}
+            <span className="transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
+          </span>
         </div>
       </div>
     </Link>
