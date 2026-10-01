@@ -112,8 +112,6 @@ export default function AuthPage() {
     <div className="min-h-screen bg-background">
       <div className="grid min-h-[calc(100vh-64px)] lg:grid-cols-[0.9fr_1.1fr]">
         <aside className="relative hidden overflow-hidden border-r border-bd-border bg-surface lg:flex lg:flex-col lg:justify-between lg:p-12">
-          <div className="topo-bg pointer-events-none absolute inset-0 opacity-70" />
-
           <div className="relative flex items-center gap-3">
             {branding.logo_url ? (
               // eslint-disable-next-line @next/next/no-img-element
