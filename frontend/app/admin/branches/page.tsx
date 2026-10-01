@@ -31,6 +31,7 @@ import {
   type BranchRow,
   type CompanyConfiguration,
 } from "../lib/internal-api";
+import { hasCompanyWideScope, reachesBranch } from "../lib/branch-authority";
 
 type Draft = { name: string; address: string; phone: string; email: string };
 
@@ -204,6 +205,11 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
   }, [load]);
 
   const canManage = config?.can_manage ?? false;
+  // WHAT is `can_manage` (company.manage, decided by the server); WHERE is the
+  // caller's branch scope. Creating a branch and choosing the fulfillment branch
+  // reach the whole company; editing reaches one branch (WRITE-SCOPE-01).
+  const scope = ctx.dashboard?.branch_scope;
+  const canManageCompanyWide = canManage && hasCompanyWideScope(scope);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -281,7 +287,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
               id="fulfillment-branch"
               className={`${field} max-w-sm`}
               value={config.fulfillment_branch?.id ?? ""}
-              disabled={busy || !canManage}
+              disabled={busy || !canManageCompanyWide}
               onChange={(e) => void handleFulfillment(e.target.value)}
             >
               <option value="">Sin configurar</option>
@@ -304,7 +310,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
           </div>
         ) : null}
 
-        {canManage ? (
+        {canManageCompanyWide ? (
           <form
             onSubmit={handleCreate}
             className="rounded-xl border border-bd-border bg-surface p-5"
@@ -378,7 +384,7 @@ function BranchesContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   <BranchEditor
                     key={branch.id}
                     branch={branch}
-                    disabled={!canManage}
+                    disabled={!canManage || !reachesBranch(scope, branch.id)}
                     onSaved={(next) => {
                       setBranches((prev) =>
                         prev.map((b) => (b.id === next.id ? next : b)),

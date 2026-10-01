@@ -30,6 +30,7 @@ import {
   updateCompanyConfiguration,
   type CompanyConfiguration,
 } from "../lib/internal-api";
+import { hasCompanyWideScope } from "../lib/branch-authority";
 
 type Draft = Record<string, string>;
 
@@ -301,7 +302,11 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
   }
 
   const canManage = config?.can_manage ?? false;
-  const disabled = saving || !canManage;
+  // WHAT is `can_manage`; WHERE is the branch scope. These settings reach every
+  // branch, so editing them needs both (WRITE-SCOPE-01). Reading does not.
+  const companyWide = hasCompanyWideScope(ctx.dashboard?.branch_scope);
+  const canEdit = canManage && companyWide;
+  const disabled = saving || !canEdit;
 
   const sections: [string, string, FieldProps[]][] = [
     ["General", "Identidad de la empresa.", GENERAL],
@@ -343,6 +348,15 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
             <p className="text-sm text-muted">
               Puedes ver esta configuración pero no editarla. Se requiere la
               capacidad <code className="text-foreground/85">company.manage</code>.
+            </p>
+          </div>
+        ) : null}
+        {config && canManage && !companyWide ? (
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
+              Puedes ver esta configuración pero no editarla: afecta a toda la
+              empresa y tu acceso está limitado a algunas sucursales. Sí puedes
+              editar la numeración de tus sucursales.
             </p>
           </div>
         ) : null}
@@ -390,7 +404,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                   title="Numeración interna"
                   description="Cómo se numeran tus notas de venta internas."
                 >
-                  <SequenceSettings companyId={companyId} />
+                  <SequenceSettings companyId={companyId} companyWide={companyWide} />
                 </DashboardSection>
               </div>
 
@@ -423,7 +437,7 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
               </div>
             </div>
 
-            {canManage ? (
+            {canEdit ? (
               <div className="flex flex-wrap items-center gap-3 border-t border-bd-border pt-6">
                 <button
                   type="button"

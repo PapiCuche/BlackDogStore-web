@@ -38,6 +38,8 @@ import {
   type StaffInvitation,
   type StaffPerson,
 } from "../../lib/staff";
+import type { BranchScope } from "../lib/internal-api";
+import { hasCompanyWideScope, reachableBranchIds } from "../lib/branch-authority";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "Pendiente",
@@ -225,6 +227,7 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
             areas={areas.filter((a) => a.is_active)}
             roles={roles}
             branches={branches}
+            branchScope={ctx.dashboard?.branch_scope}
             onDone={async () => {
               setShowForm(false);
               await load(filters);
@@ -536,21 +539,31 @@ function PendingInvitations({
 }
 
 function AddWorkerForm({
-  companyId, areas, roles, branches, onDone, onError,
+  companyId, areas, roles, branches, branchScope, onDone, onError,
 }: {
   companyId: number;
   areas: CompanyAreaRow[];
   roles: NamedOption[];
   branches: NamedOption[];
+  /** The CALLER's branch scope, from the server (WHERE). */
+  branchScope: BranchScope | null | undefined;
   onDone: () => Promise<void>;
   onError: (m: string | null) => void;
 }) {
+  // F-BRANCH-01: a caller restricted to some branches invites only into those
+  // and never to "todas"; the server refuses anything else.
+  const companyWide = hasCompanyWideScope(branchScope);
+  const reachable = reachableBranchIds(branchScope);
+  const offeredBranches = companyWide
+    ? branches
+    : branches.filter((branch) => reachable.has(branch.id));
+  const initialScope: "all" | "selected" = companyWide ? "all" : "selected";
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
   const [email, setEmail] = useState("");
   const [roleId, setRoleId] = useState<string>("");
   const [areaId, setAreaId] = useState<string>("");
-  const [scope, setScope] = useState<"all" | "selected">("all");
+  const [scope, setScope] = useState<"all" | "selected">(initialScope);
   const [selected, setSelected] = useState<number[]>([]);
   const [sending, setSending] = useState(false);
 
@@ -575,7 +588,7 @@ function AddWorkerForm({
         branch_ids: scope === "selected" ? selected : [],
       });
       setFirst(""); setLast(""); setEmail(""); setRoleId(""); setAreaId("");
-      setScope("all"); setSelected([]);
+      setScope(initialScope); setSelected([]);
       await onDone();
     } catch (err) {
       onError(err instanceof Error ? err.message : "No se pudo enviar la invitación.");
@@ -642,14 +655,16 @@ function AddWorkerForm({
             Alcance por sucursal
           </span>
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm text-foreground">
-              <input
-                type="radio" name="scope" checked={scope === "all"}
-                onChange={() => setScope("all")}
-                className="h-4 w-4"
-              />
-              Todas las sucursales
-            </label>
+            {companyWide ? (
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="radio" name="scope" checked={scope === "all"}
+                  onChange={() => setScope("all")}
+                  className="h-4 w-4"
+                />
+                Todas las sucursales
+              </label>
+            ) : null}
             <label className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="radio" name="scope" checked={scope === "selected"}
@@ -660,7 +675,7 @@ function AddWorkerForm({
             </label>
             {scope === "selected" ? (
               <div className="ml-6 space-y-1.5">
-                {branches.map((branch) => (
+                {offeredBranches.map((branch) => (
                   <label
                     key={branch.id}
                     className="flex items-center gap-2 text-sm text-foreground"

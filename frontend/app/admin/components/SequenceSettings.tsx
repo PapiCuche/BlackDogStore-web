@@ -189,7 +189,19 @@ function SequenceRow({
   );
 }
 
-export function SequenceSettings({ companyId }: { companyId: number | null }) {
+export function SequenceSettings({
+  companyId,
+  companyWide,
+}: {
+  companyId: number | null;
+  /**
+   * Whether the caller's branch scope covers the whole company (WRITE-SCOPE-01).
+   * The company series and the scope switch number every branch, so they need
+   * it as well as `can_manage`; a branch series listed here is one the caller
+   * reaches — the server lists no other.
+   */
+  companyWide: boolean;
+}) {
   const [data, setData] = useState<SequenceList | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -270,7 +282,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
               name="sequence-scope"
               className="mt-1"
               checked={data.scope === value}
-              disabled={!canManage || busy || !data.can_change_scope}
+              disabled={!canManage || !companyWide || busy || !data.can_change_scope}
               onChange={() => void changeScope(value)}
             />
             <span>
@@ -295,7 +307,7 @@ export function SequenceSettings({ companyId }: { companyId: number | null }) {
           <SequenceRow
             key={sequence.id}
             sequence={sequence}
-            canManage={canManage}
+            canManage={canManage && (companyWide || sequence.branch !== null)}
             onSaved={(next) =>
               setData((prev) =>
                 prev

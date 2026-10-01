@@ -8,6 +8,12 @@ import {
   type InternalContext,
 } from "../components/InternalControlGuard";
 import { fetchWithAuth } from "../../lib/auth";
+import type { BranchScope } from "../lib/internal-api";
+import {
+  canEditBranchScopeOf,
+  hasCompanyWideScope,
+  reachableBranchIds,
+} from "../lib/branch-authority";
 import { API_BASE } from "../../lib/api";
 
 type Branch = { id: number; name: string; is_active: boolean };
@@ -103,6 +109,7 @@ function MemberCard({
   areas,
   branches,
   canManage,
+  branchScope,
   onChanged,
 }: {
   membership: Membership;
@@ -111,6 +118,8 @@ function MemberCard({
   areas: Area[];
   branches: Branch[];
   canManage: boolean;
+  /** The CALLER's branch scope, from the server (WHERE). */
+  branchScope: BranchScope | null | undefined;
   onChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -125,6 +134,22 @@ function MemberCard({
     setMode(membership.branch_access_mode);
     setSelectedBranches(membership.branch_access.map((row) => row.id));
   }, [membership.branch_access, membership.branch_access_mode]);
+
+  // WHAT is memberships.manage; WHERE mirrors F-BRANCH-01: a caller restricted
+  // to some branches grants only those, never "Todas", and does not touch
+  // someone who reaches further than they do. The server refuses all of it.
+  const companyWide = hasCompanyWideScope(branchScope);
+  const canEditScope = canManage && canEditBranchScopeOf(branchScope, {
+    mode: membership.branch_access_mode,
+    grantedIds: membership.branch_access.map((row) => row.id),
+  });
+  const reachable = reachableBranchIds(branchScope);
+  const offeredModes: ("all" | "selected")[] = !canEditScope
+    ? [membership.branch_access_mode]
+    : companyWide ? ["all", "selected"] : ["selected"];
+  const offeredBranches = branches.filter(
+    (branch) => branch.is_active && (companyWide || reachable.has(branch.id)),
+  );
 
   const activeAssignments = assignments.filter((row) => row.is_active);
   const effective = activeAssignments.flatMap((row) => row.capabilities);
@@ -354,11 +379,11 @@ function MemberCard({
               <p className="mt-1 text-xs text-muted">Responde dónde puede operar; nunca agrega capacidades.</p>
 
               <div className="mt-3 flex gap-2">
-                {(["all", "selected"] as const).map((value) => (
+                {offeredModes.map((value) => (
                   <button
                     key={value}
                     type="button"
-                    disabled={!canManage || busy}
+                    disabled={!canEditScope || busy}
                     onClick={() => setMode(value)}
                     className={`rounded-lg border px-3 py-2 text-xs ${mode === value ? "border-bd-border bg-surface-2 text-foreground" : "border-bd-border text-muted"}`}
                   >
@@ -369,14 +394,14 @@ function MemberCard({
 
               {mode === "selected" ? (
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {branches.filter((branch) => branch.is_active).map((branch) => {
+                  {offeredBranches.map((branch) => {
                     const checked = selectedBranches.includes(branch.id);
                     return (
                       <label key={branch.id} className="flex items-center gap-2 rounded-lg border border-bd-border px-3 py-2 text-sm text-muted">
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={!canManage || busy}
+                          disabled={!canEditScope || busy}
                           onChange={() => setSelectedBranches((current) => checked ? current.filter((id) => id !== branch.id) : [...current, branch.id])}
                         />
                         {branch.name}
@@ -386,7 +411,13 @@ function MemberCard({
                 </div>
               ) : null}
 
-              {canManage ? (
+              {canManage && !canEditScope ? (
+                <p className="mt-3 text-xs text-muted">
+                  Esta persona llega a sucursales que tú no alcanzas: solo quien
+                  tiene acceso a todas puede cambiar su alcance.
+                </p>
+              ) : null}
+              {canEditScope ? (
                 <button type="button" onClick={() => void saveBranches()} disabled={busy} className="mt-3 rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground/85 hover:text-foreground disabled:opacity-40">
                   Guardar sucursales
                 </button>
@@ -509,6 +540,7 @@ function StaffAccess({ ctx }: { ctx: InternalContext }) {
                     areas={areas}
                     branches={branches}
                     canManage={canManage}
+                    branchScope={ctx.dashboard?.branch_scope}
                     onChanged={load}
                   />
                 ))}
