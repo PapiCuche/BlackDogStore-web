@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { PageHeader, internalButtonClass, internalInputClass } from "../../components/internal-ui";
 import { StaffGuard } from "../../components/StaffGuard";
 import { StockMovementForm } from "../../components/StockMovementForm";
 import {
@@ -141,37 +142,23 @@ function MovementsContent({ user }: { user: AuthUser }) {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const fieldClass =
-    "w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-zinc-200 outline-none transition focus:border-white/25";
-  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-zinc-500";
+  const fieldClass = internalInputClass;
+  const labelClass = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Movimientos de inventario</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Kardex completo. Cada línea registra el stock antes y después.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              ← Inventario
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Inventario"
+          title="Movimientos"
+          description="Kardex completo. Cada línea registra el stock antes y después."
+          actions={
+            <>
+              <BranchSelector access={scope.access} value={scope.branch} onChange={(next) => { setLoading(true); scope.setBranch(next); }} />
+              <Link href="/admin/inventory" className={internalButtonClass}>Inventario</Link>
+            </>
+          }
+        />
 
         <ScopeNote scope={resultScope} />
         {scope.error ? <ErrorBox message={scope.error} /> : null}
@@ -201,8 +188,8 @@ function MovementsContent({ user }: { user: AuthUser }) {
             />
           </Panel>
         ) : (
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3">
-            <p className="text-sm text-zinc-500">
+          <div className="rounded-lg border border-bd-border bg-surface px-4 py-3">
+            <p className="text-sm text-muted">
               Tu rol permite consultar el Kardex pero no modificar stock.
             </p>
           </div>
@@ -277,14 +264,14 @@ function MovementsContent({ user }: { user: AuthUser }) {
             <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-5">
               <button
                 type="submit"
-                className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200"
+                className={internalPrimaryButtonClass}
               >
                 Filtrar
               </button>
               <button
                 type="button"
                 onClick={resetFilters}
-                className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
+                className="rounded-lg border border-bd-border px-4 py-2 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground"
               >
                 Limpiar
               </button>
@@ -302,7 +289,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
             <>
               <TableWrap>
                 <thead>
-                  <tr className="border-b border-white/[0.06]">
+                  <tr className="border-b border-bd-border">
                     <Th>Fecha</Th>
                     <Th>Sucursal</Th>
                     <Th>Producto</Th>
@@ -317,13 +304,13 @@ function MovementsContent({ user }: { user: AuthUser }) {
                 </thead>
                 <tbody>
                   {movements.map((m) => (
-                    <tr key={m.id} className="border-b border-white/[0.03]">
+                    <tr key={m.id} className="border-b border-bd-border/60">
                       <Td muted>{formatDateTime(m.created_at)}</Td>
                       <Td muted>{m.branch_name}</Td>
                       <Td>
                         <Link
                           href={`/admin/products/${m.product}/stock-card`}
-                          className="transition hover:text-white"
+                          className="transition hover:text-foreground"
                         >
                           {m.product_name}
                         </Link>
@@ -341,7 +328,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
               </TableWrap>
 
               <div className="mt-5 flex items-center justify-between">
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-muted">
                   Página {page} de {totalPages}
                 </p>
                 <div className="flex gap-2">
@@ -352,7 +339,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
                       setLoading(true);
                       setPage((p) => Math.max(1, p - 1));
                     }}
-                    className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-30"
+                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground disabled:opacity-30"
                   >
                     Anterior
                   </button>
@@ -363,7 +350,7 @@ function MovementsContent({ user }: { user: AuthUser }) {
                       setLoading(true);
                       setPage((p) => Math.min(totalPages, p + 1));
                     }}
-                    className="rounded-lg border border-white/10 px-3 py-1.5 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white disabled:opacity-30"
+                    className="rounded-lg border border-bd-border px-3 py-1.5 text-sm text-foreground transition hover:border-foreground/20 hover:text-foreground disabled:opacity-30"
                   >
                     Siguiente
                   </button>
