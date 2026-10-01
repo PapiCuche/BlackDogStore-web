@@ -84,7 +84,7 @@ function PermissionSummary({ codes }: { codes: string[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {unique.slice(0, 4).map((code) => (
-        <code key={code} className="rounded-md border border-bd-border bg-white/[0.025] px-2 py-1 text-[10px] text-muted">
+        <code key={code} className="rounded-md border border-bd-border bg-foreground/[0.025] px-2 py-1 text-[10px] text-muted">
           {code}
         </code>
       ))}
