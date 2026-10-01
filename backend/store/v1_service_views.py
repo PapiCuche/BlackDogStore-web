@@ -85,10 +85,10 @@ CAP_DEVICES_MANAGE = 'service.devices.manage'
 CAP_ORDERS_VIEW = 'service.orders.view'
 CAP_ORDERS_CREATE = 'service.orders.create'
 CAP_ORDERS_MANAGE = 'service.orders.manage'
-CAP_ORDERS_ASSIGN = 'service.orders.assign'
 #: SVC-ASSIGN-01. Assigning has its own capability so reception and the till can
-#: name the technician; `service.orders.manage` keeps implying it.
-ASSIGN_AUTHORITY = (CAP_ORDERS_ASSIGN, CAP_ORDERS_MANAGE)
+#: name the technician; `service.orders.manage` keeps implying it. Who may use
+#: it is ONE rule: `V1ServiceSurfaceMixin.require_assignment_authority`.
+CAP_ORDERS_ASSIGN = 'service.orders.assign'
 CAP_CUSTOMERS_VIEW = 'service.customers.view'
 
 _DEFAULT_PAGE_SIZE = 25
@@ -162,6 +162,30 @@ class V1ServiceSurfaceMixin(V1InternalSurfaceMixin):
         if device is None:
             raise NotFound('No encontrado.')
         return device
+
+    def require_assignment_authority(self, company):
+        """
+        Who may name the technician of an order — the ONLY statement of it.
+
+            service.orders.manage
+            OR (service.orders.assign AND service.orders.view)
+
+        Used by every place a technician is named or offered: the assignment of
+        an existing order, the candidates of a branch, and an intake that
+        arrives with its technician (SVC-ASSIGN-VIEW-01).
+
+        WHY `view` RIDES WITH `assign`. These answers carry what an order
+        viewer sees — the order itself, or who works at a branch — and an order
+        handed out by somebody who cannot see orders is one nobody at the
+        counter can follow up. `manage` is the wider authority and stays whole.
+
+        Releasing an order (a null technician) is narrower still: see
+        `V1ServiceOrderAssignmentView.post`.
+        """
+        if has_capability(self.request.user, company, CAP_ORDERS_MANAGE):
+            return
+        self.require_capability(company, CAP_ORDERS_ASSIGN)
+        self.require_capability(company, CAP_ORDERS_VIEW)
 
     def get_order(self, company, pk) -> RepairOrder:
         """
@@ -439,7 +463,7 @@ class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
         # written, like every other gate here.
         technician_id = data.get('technician_id')
         if technician_id is not None:
-            self.require_any_capability(company, *ASSIGN_AUTHORITY)
+            self.require_assignment_authority(company)
 
         branch, _ = self.resolve_branch(company, data['branch_id'], required=True)
         customer = self.get_customer(company, data['customer_id'])
@@ -578,7 +602,7 @@ class V1ServiceTechnicianCandidatesView(V1ServiceSurfaceMixin, APIView):
 
     def get(self, request, company_slug=None):
         company = self.get_internal_company()
-        self.require_any_capability(company, *ASSIGN_AUTHORITY)
+        self.require_assignment_authority(company)
         branch, _ = self.resolve_branch(
             company, request.query_params.get('branch_id'), required=True,
         )
@@ -599,21 +623,6 @@ class V1ServiceOrderAssignmentView(V1ServiceSurfaceMixin, APIView):
     """
 
     throttle_classes = [AdminOrderStatusChangeThrottle]
-
-    def require_assignment_authority(self, company):
-        """
-        `service.orders.manage`, as always — or `service.orders.assign` held by
-        somebody who may SEE orders. Releasing an order (a null technician) is
-        narrower still: see `post`.
-
-        Both answers of this endpoint carry the order: who has it now, and after
-        a change the whole detail. The narrow capability says who gets a device;
-        it is not a way to read an order its holder could not open.
-        """
-        if has_capability(self.request.user, company, CAP_ORDERS_MANAGE):
-            return
-        self.require_capability(company, CAP_ORDERS_ASSIGN)
-        self.require_capability(company, CAP_ORDERS_VIEW)
 
     def get(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()

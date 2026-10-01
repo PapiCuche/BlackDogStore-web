@@ -61698,6 +61698,167 @@ class SvcUnassignAuthorityTest(SvcFuncBase):
             self.assertEqual(sorted(row), ['id', 'name'])
 
 
+class SvcAssignVisibilityTest(SvcFuncBase):
+    """
+    SVC-ASSIGN-VIEW-01. ONE rule says who may name a technician, wherever the
+    naming happens:
+
+        service.orders.manage  OR  (service.orders.assign AND service.orders.view)
+
+    It applied to the assignment of an existing order. It did not apply to the
+    list of candidates of a branch, nor to an intake that names its technician —
+    so a CUSTOM role holding `assign` without `view` could read who works at a
+    branch and hand out orders it may not see. The standard presets never had
+    that combination; a role a tenant builds can.
+    """
+
+    CREATE = ('company.view', 'service.orders.create',
+              'service.customers.view', 'service.devices.view')
+
+    def setUp(self):
+        super().setUp()
+        self.tech = self.member('svc_vis_tech', self.VIEW)
+        self.other_tech = self.member('svc_vis_tech_2', self.VIEW)
+        self.order = self.make_order(branch=self.branch_a)
+
+    def candidates(self):
+        return self.client.get(
+            _m8_url('m8-taller', 'technicians/') + f'?branch_id={self.branch_a.pk}',
+        )
+
+    def assign(self, technician_id, order=None):
+        return self.client.post(
+            self.assignment_url(order or self.order), {'technician_id': technician_id},
+            format='json',
+        )
+
+    def create(self, **extra):
+        body = {
+            'customer_id': self.customer.pk, 'device_id': self.device.pk,
+            'branch_id': self.branch_a.pk, 'reported_issue': 'Pantalla rota.',
+        }
+        body.update(extra)
+        return self.client.post(_m8_url('m8-taller', 'orders/'), body, format='json')
+
+    def footprint(self):
+        return {
+            'orders': _M8RepairOrder.objects.count(),
+            'assignments': _M8Assignment.objects.count(),
+            'history': _M8History.objects.count(),
+            'audit': AdminAuditLog.objects.count(),
+        }
+
+    # A — assign + view ---------------------------------------------------------
+
+    def test_assign_with_view_reads_candidates_and_assigns(self):
+        self.acting_with('company.view', 'service.orders.view', 'service.orders.assign',
+                         slug='vis-a')
+        res = self.candidates()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(sorted(res.data), ['candidates'])
+        self.assertIn(self.tech.pk, {row['id'] for row in res.data['candidates']})
+        for row in res.data['candidates']:
+            self.assertEqual(sorted(row), ['id', 'name'])
+        self.assertNotIn('@', json.dumps(res.data))
+
+        self.assertEqual(self.assign(self.tech.pk).status_code, 200)
+
+    # B — assign WITHOUT view ----------------------------------------------------
+
+    def test_assign_without_view_reads_no_candidates(self):
+        self.acting_with('company.view', 'service.orders.assign', slug='vis-b')
+        res = self.candidates()
+        self.assertEqual(res.status_code, 403)
+        self.assertNotIn('candidates', res.data)
+
+    def test_assign_without_view_assigns_nothing(self):
+        self.acting_with('company.view', 'service.orders.assign', slug='vis-b2')
+        before = self.footprint()
+        self.assertEqual(self.client.get(self.assignment_url(self.order)).status_code, 403)
+        self.assertEqual(self.assign(self.tech.pk).status_code, 403)
+        self.assertEqual(self.footprint(), before)
+
+    # C — create + assign WITHOUT view, naming a technician ------------------------
+
+    def test_an_intake_that_names_a_technician_needs_view_too(self):
+        self.acting_with(*self.CREATE, 'service.orders.assign', slug='vis-c')
+        before = self.footprint()
+
+        res = self.create(technician_id=self.tech.pk)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.footprint(), before)
+
+    def test_the_refusal_comes_before_any_lookup(self):
+        # Same answer for a technician that exists and for one that does not:
+        # without the authority, the id is never looked at.
+        self.acting_with(*self.CREATE, 'service.orders.assign', slug='vis-c2')
+        self.assertEqual(self.create(technician_id=self.tech.pk).status_code, 403)
+        self.assertEqual(self.create(technician_id=987654).status_code, 403)
+
+    # D — create + assign + view ---------------------------------------------------
+
+    def test_an_intake_with_assign_and_view_creates_and_assigns(self):
+        self.acting_with(*self.CREATE, 'service.orders.view', 'service.orders.assign',
+                         slug='vis-d')
+        res = self.create(technician_id=self.tech.pk)
+        self.assertEqual(res.status_code, 201, res.data)
+        row = _M8Assignment.objects.get(repair_order_id=res.data['id'])
+        self.assertEqual(row.technician, self.tech)
+        self.assertIsNone(row.unassigned_at)
+
+    # E — manage, without an explicit assign ----------------------------------------
+
+    def test_manage_alone_keeps_the_whole_authority(self):
+        self.acting_with(*self.CREATE, 'service.orders.manage', slug='vis-e')
+        self.assertEqual(self.candidates().status_code, 200)
+        self.assertEqual(self.assign(self.tech.pk).status_code, 200)
+        self.assertEqual(self.assign(self.other_tech.pk).status_code, 200)
+        self.assertEqual(self.assign(None).status_code, 200)
+        self.assertFalse(_M8Assignment.objects.filter(
+            repair_order=self.order, unassigned_at__isnull=True,
+        ).exists())
+        res = self.create(technician_id=self.tech.pk)
+        self.assertEqual(res.status_code, 201, res.data)
+
+    # F — reception without a technician is not touched -------------------------------
+
+    def test_an_intake_without_a_technician_needs_nothing_new(self):
+        self.acting_with(*self.CREATE, slug='vis-f')
+        res = self.create()
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertFalse(_M8Assignment.objects.filter(repair_order_id=res.data['id']).exists())
+
+        res = self.create(technician_id=None)
+        self.assertEqual(res.status_code, 201, res.data)
+
+    # The anti-oracle did not move ------------------------------------------------------
+
+    def test_everybody_outside_the_set_is_the_same_not_found(self):
+        foreigner = _m7_user('svc_vis_foreign')
+        _assign(
+            Membership.objects.create(user=foreigner, company=self.other, role='customer'),
+            _role(self.other, 'Rol ajeno vis', capabilities=list(self.VIEW), slug='rol-ajeno-vis'),
+        )
+        outsiders = {
+            'otro tenant': foreigner.pk,
+            'inactivo': self.member('svc_vis_inactive', self.VIEW, active=False).pk,
+            'fuera de sucursal': self.member('svc_vis_b', self.VIEW, branches=[self.branch_b]).pk,
+            'sin ver órdenes': self.member('svc_vis_blind', ('company.view',)).pk,
+            'inexistente': 987654,
+        }
+        self.acting_with(*self.CREATE, 'service.orders.view', 'service.orders.assign',
+                         slug='vis-oracle')
+        before = self.footprint()
+        answers = set()
+        for label, pk in outsiders.items():
+            for res in (self.assign(pk), self.create(technician_id=pk)):
+                self.assertEqual(res.status_code, 404, label)
+                answers.add(json.dumps(res.data, sort_keys=True))
+        self.assertEqual(len(answers), 1, answers)
+        self.assertEqual(self.footprint(), before)
+
+
 class SvcTechnicianEligibilityTest(SvcFuncBase):
     """
     If the order can be assigned to someone, it can appear in their queue: the
