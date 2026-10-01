@@ -102,7 +102,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
         <PageHeader
           eyebrow="Taller"
           title="Órdenes de servicio"
-          description={`${count} orden(es) dentro del alcance actual de tu cuenta. La vista abre en tus reparaciones asignadas y permite pasar al taller completo cuando tu acceso lo permite.`}
+          description={loading ? "Cargando el alcance actual del taller…" : `${count} orden${count === 1 ? "" : "es"} dentro del alcance actual de tu cuenta. La vista abre en tus reparaciones asignadas y permite pasar al taller completo cuando tu acceso lo permite.`}
         />
 
         <FilterBar>
@@ -119,7 +119,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                   setPage(1);
                 }}
                 aria-pressed={mine === option.value}
-                className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                className={`rounded-lg border px-3.5 py-2 text-sm font-semibold transition ${
                   mine === option.value
                     ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
                     : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
@@ -189,11 +189,11 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
         ) : null}
 
         {loading ? (
-          <div className="rounded-2xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
+          <div className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
             Cargando órdenes…
           </div>
         ) : rows.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
+          <div className="rounded-xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
             {mine
               ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
               : "No hay órdenes que coincidan con ese filtro."}
