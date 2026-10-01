@@ -9,6 +9,36 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-01 / UXUI-03 — Foundations y storefront público
+
+**Estado: PARCIAL.** Rama `uxui/header-hero-foundations`. Sin migraciones.
+
+### Implementado
+
+- Foundations visuales: Montserrat, roles semánticos de color, foco visible y `prefers-reduced-motion`.
+- Header simplificado y accesible; el carrito muestra unidades reales y el menú móvil responde a Escape.
+- Hero recompuesto sin claims absolutos ni logo usado como ilustración con sombra.
+- Home simplificada: sin barra de claims, marquee ni preventa hardcodeada; catálogo y servicio técnico pasan a una jerarquía editorial más limpia.
+- ProductCard y catálogo tenant-safe: sin isotipo Black Dog como fallback, búsqueda con debounce, error de categorías visible y estados vacíos neutrales.
+- Página de servicios reescrita sin afirmaciones no verificadas; el foco es proceso, evaluación y alcance acordado.
+- Footer tenant-aware simplificado y corregido de `?cat=` a `?category=`.
+- Auth, carrito y checkout alineados con el mismo sistema visual. El checkout conserva intacta su lógica de pago y validaciones.
+
+### Verificación
+
+- Revisión adicional de diff contra `master`: rama por delante y sin divergencia al cerrar esta subfase.
+- Búsqueda explícita en los archivos modificados: sin `5,000+`, `True Tone`, `Tecnología Láser`, `pieza reparada`, preventa fija ni fallback `/assets/branding/logo-icon.png` en las superficies intervenidas.
+- El entorno de ejecución no pudo clonar GitHub por falta de DNS, por lo que `npm ci`, tests, lint y build quedan **PENDIENTES DE CI/LOCAL**; no se marcan como PASS.
+
+### Deuda pendiente
+
+- El contenido del storefront continúa parcialmente hardcodeado por categorías/servicios; falta un modelo de contenido por tenant.
+- El color dorado del manual no se activa todavía porque el tenant piloto conserva su `accent_color` histórico; no se cambió el modelo ni la migración de branding.
+- Figma Foundations sigue pendiente de poblar por límite MCP del plan Starter.
+- Falta consolidar el design system del SaaS interno.
+
+---
+
 ## M12A — Acceso real del técnico y «Mis reparaciones»
 
 **Estado: IMPLEMENTADO.** Migración **0057**.
