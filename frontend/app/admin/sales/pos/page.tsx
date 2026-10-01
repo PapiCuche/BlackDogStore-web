@@ -513,11 +513,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
           actions={
             <>
               <label className="flex items-center gap-2 text-xs font-semibold text-muted">
-                Sucursal
+                <span>Sucursal</span>
                 <select
                   value={branch ?? ""}
                   onChange={(e) => setBranch(e.target.value ? Number(e.target.value) : null)}
-                  className="rounded-xl border border-bd-border bg-background px-3 py-2 text-sm text-foreground outline-none"
+                  className="rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-foreground/30"
                 >
                   <option value="">Selecciona…</option>
                   {context.branches.map((b) => (
@@ -540,7 +540,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
           {/* --- entrada --------------------------------------------- */}
           <div className="space-y-4">
-            <div>
+            <section className="rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
               <label
                 className="mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted"
                 htmlFor="pos-scan"
@@ -582,6 +582,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {feedback.text}
               </p>
             ) : null}
+            </section>
 
             <div>
               <label
