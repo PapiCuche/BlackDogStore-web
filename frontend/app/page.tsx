@@ -22,44 +22,40 @@ type Product = {
   category?: Category;
 };
 
-const REPAIR_SERVICES = [
+const SERVICE_CAPABILITIES = [
   {
-    title: "Cambio de Pantalla",
-    desc: "Evaluación, reemplazo de pantalla y pruebas funcionales antes de la entrega.",
-    badge: null,
+    title: "Diagnóstico técnico",
+    desc: "Evaluación del problema, síntomas y condición del equipo antes de proponer una intervención.",
     icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 4a7 7 0 105.2 11.7L21 20.5M8.5 11h5M11 8.5v5" />
       </svg>
     ),
   },
   {
-    title: "Cambio de Batería",
-    desc: "Revisión del estado de batería, reemplazo cuando corresponde y pruebas posteriores.",
-    badge: null,
+    title: "Reparación",
+    desc: "Intervención técnica sobre el alcance previamente evaluado y aceptado para cada caso.",
     icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h2a2 2 0 002-2V8a2 2 0 00-2-2h-2M3 8h14v12H3V8zM9 4h6v4H9V4z" />
+      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.7 6.3a4 4 0 01-5 5L4 17l3 3 5.7-5.7a4 4 0 005-5L15 12l-3-3 2.7-2.7z" />
       </svg>
     ),
   },
   {
-    title: "Tapa Trasera",
-    desc: "Evaluación de carcasa y tapa trasera con intervención según el estado del equipo.",
-    badge: null,
+    title: "Mantenimiento",
+    desc: "Revisión preventiva o correctiva según el tipo de equipo, su uso y las necesidades detectadas.",
     icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h16v16H4zM9 9h6v6H9z" />
+      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 7h14M5 12h14M5 17h9M3 7h.01M3 12h.01M3 17h.01" />
       </svg>
     ),
   },
   {
-    title: "Cambio de Glass",
-    desc: "Revisión del cristal y alternativas de intervención según el modelo y el daño.",
-    badge: null,
+    title: "Pruebas y entrega",
+    desc: "Comprobaciones finales, comunicación del resultado y cierre del servicio con el cliente.",
     icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4M5 4h14v16H5z" />
       </svg>
     ),
   },
@@ -161,7 +157,7 @@ export default function Home() {
             <div>
               <span className="section-label">Servicio técnico</span>
               <h2 className="mt-3 font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground sm:text-6xl">
-                Tu equipo.<br />Nuestro proceso.
+                Tu equipo.<br />Un proceso claro.
               </h2>
             </div>
             <Link href="/services" className="text-sm font-bold text-foreground transition hover:text-muted">
@@ -170,7 +166,7 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-4">
-            {REPAIR_SERVICES.map((service, index) => (
+            {SERVICE_CAPABILITIES.map((service, index) => (
               <Link
                 key={service.title}
                 href="/services"
