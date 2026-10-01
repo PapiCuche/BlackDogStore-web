@@ -9,6 +9,37 @@ información que no esté respaldada por código o commits.
 
 ---
 
+## UXUI-06B — Validación técnica actualizada
+
+**Estado: IMPLEMENTADO EN RAMA.** Frontend validado por GitHub Actions sobre `358aa74a373f9bb314b49251655e303f65d839e2`.
+
+### Baseline actual
+
+- `npm ci`: **PASS**.
+- Jest: **9 suites / 55 tests — PASS**.
+- ESLint: **PASS, 0 errores / 14 warnings**.
+- Next.js production build: **PASS**.
+- Generación estática: **38/38 rutas — PASS**.
+- Workflow: `Frontend UX/UI Validation`, run `36813568087`.
+
+### Cobertura añadida en esta pasada
+
+- Migración compatible de storage `blackdog_*` → `storefront_*` para sesión invitada y cupón.
+- Tests de migración de storage, datos corruptos y limpieza.
+- Tests de `BranchSelector`: alcance único, agregado, selección y Escape.
+- `CompanySwitcher` usa la propia opción como elemento interactivo accesible; test actualizado al contrato semántico real.
+- Warnings `act(...)` de `InternalControlGuard` corregidos en la suite.
+- Un solo landmark `<main>` en el storefront; rutas internas ya no anidan landmarks.
+- Nombres de PDF descargados neutralizados: ya no incluyen `blackdog`.
+
+### Deuda no bloqueante
+
+- Los **14 warnings** de ESLint son `react-hooks/set-state-in-effect`; requieren revisión individual y no se silencian de forma masiva.
+- QA visual real desktop/tablet/mobile y lector de pantalla sigue **PENDIENTE**.
+- Figma Foundations sigue **PENDIENTE** por cuota MCP Starter.
+
+---
+
 ## UXUI-06 — Validación técnica del frontend
 
 **Estado: IMPLEMENTADO EN RAMA.** Código validado en `794e8cc` mediante GitHub Actions.
