@@ -333,10 +333,23 @@ export const createServiceDevice = (slug: string, body: {
   customer_id: number; device_type: string; brand: string; model: string;
 }) => post<{ id: number; display_name: string }>(`${base(slug)}/devices/`, body);
 
+/**
+ * With `technician_id` the order is created AND assigned in one transaction on
+ * the server: there is no moment in which it exists without its technician.
+ */
 export const createServiceOrder = (slug: string, body: {
   customer_id: number; device_id: number; branch_id: number; reported_issue: string;
-  physical_condition: string; received_accessories: string;
+  physical_condition: string; received_accessories: string; technician_id?: number;
 }) => post<ServiceOrderDetail>(`${base(slug)}/orders/`, body);
+
+/**
+ * Who may be given an order of this branch. The server answers with names and
+ * ids only, and only to a caller who may assign.
+ */
+export const fetchServiceTechnicians = (slug: string, branchId: number) =>
+  get<{ candidates: ServiceAssignmentCandidate[] }>(
+    `${base(slug)}/technicians/?branch_id=${branchId}`,
+  );
 
 export function fetchServiceOrders(
   slug: string,
