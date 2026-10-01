@@ -228,14 +228,18 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Consultar las órdenes de servicio y su historial.', STATUS_ACTIVE),
     _cap('service.orders.create', 'service', 'Crear órdenes de servicio',
          'Recibir un equipo y abrir su orden de servicio.', STATUS_ACTIVE),
-    # Deliberately covers BOTH moving an order through its lifecycle and
-    # deciding who works on it. A separate `service.orders.assign` would be a
-    # capability invented for a distinction the business has not made: whoever
-    # may move an order to "en diagnóstico" is whoever decides which technician
-    # is doing the diagnosing. When a company asks to separate them, that phase
-    # adds the code — this one does not guess.
+    # Covers moving an order through its lifecycle AND deciding who works on
+    # it. It used to be the only way to assign, by design: nobody had asked to
+    # separate the two. SVC-ASSIGN-01 is that request — reception and the till
+    # choose the technician when they take a device in, and must not thereby
+    # be able to move orders through the workshop. So assigning now also has
+    # its own code below, and this one keeps implying it: no existing role
+    # loses anything.
     _cap('service.orders.manage', 'service', 'Administrar órdenes de servicio',
          'Cambiar el estado de una orden y asignar al técnico responsable.',
+         STATUS_ACTIVE),
+    _cap('service.orders.assign', 'service', 'Asignar técnico',
+         'Asignar o reasignar el técnico responsable de una orden de servicio.',
          STATUS_ACTIVE),
     # STILL RESERVED. Each of these names a module M8 did not build: a
     # diagnosis needs a diagnosis record, a repair needs parts and execution,

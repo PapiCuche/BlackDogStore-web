@@ -312,6 +312,10 @@ class V1ServiceOrderCreateSerializer(serializers.Serializer):
     internal_notes = serializers.CharField(
         max_length=2000, required=False, allow_blank=True,
     )
+    # POS-SVC-01. Optional: ordinary reception may still take a device in with
+    # nobody assigned. When present, order and assignment are one transaction.
+    # An id is a SELECTOR — the view resolves it inside the eligible set.
+    technician_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
     # ── Absent on purpose ────────────────────────────────────────────────────
     # `number`, `status`, `received_by`, `received_at`, `closed_at`, `company`

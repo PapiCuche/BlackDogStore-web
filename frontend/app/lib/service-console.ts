@@ -590,11 +590,17 @@ export const recordDelivery = (
 export const CAP_ORDERS_VIEW = "service.orders.view";
 export const CAP_ORDERS_CREATE = "service.orders.create";
 export const CAP_ORDERS_MANAGE = "service.orders.manage";
+export const CAP_ORDERS_ASSIGN = "service.orders.assign";
 export const CAP_DIAGNOSTIC_MANAGE = "service.diagnostic.manage";
 export const CAP_REPAIR_MANAGE = "service.repair.manage";
 export const CAP_QUALITY_MANAGE = "service.quality.manage";
 export const CAP_DELIVERY_MANAGE = "service.delivery.manage";
 export const CAP_PAYMENTS_MANAGE = "service.payments.manage";
+
+type May = (capability: string) => boolean;
+
+/** Choosing the technician: its own capability, or the wider one that implies it. */
+export const mayAssignTechnician = (may: May) => may(CAP_ORDERS_ASSIGN) || may(CAP_ORDERS_MANAGE);
 
 /** A key that is stable for one intention and different for the next. */
 export function makeIdempotencyKey(shape: string): string {

@@ -130,6 +130,19 @@ class V1InternalSurfaceMixin:
         if not has_capability(self.request.user, company, capability):
             raise PermissionDenied('No tienes permiso para esta acción.')
 
+    def require_any_capability(self, company, *capabilities: str):
+        """
+        Gate 2 for an act that more than one capability authorises.
+
+        Used where a narrower capability was split out of a wider one and the
+        wider one must keep implying it — assigning a technician, recording a
+        payment. Same answer as `require_capability` when none is held.
+        """
+        if not any(
+            has_capability(self.request.user, company, code) for code in capabilities
+        ):
+            raise PermissionDenied('No tienes permiso para esta acción.')
+
 
 class V1InternalContextView(V1InternalSurfaceMixin, APIView):
     """

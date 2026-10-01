@@ -58,6 +58,7 @@ import {
   fetchServiceQualityHistory,
   fetchServiceQuotes,
   makeIdempotencyKey,
+  mayAssignTechnician,
   passQualityCheck,
   pauseForParts,
   publishQuote,
@@ -149,7 +150,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
           fetchServiceQualityHistory(slug, orderId),
           fetchDelivery(slug, orderId),
           fetchServicePayments(slug, orderId),
-          may(CAP_ORDERS_MANAGE)
+          mayAssignTechnician(may)
             ? fetchServiceAssignmentOptions(slug, orderId)
             : Promise.resolve({ current: null, candidates: [] }),
         ]);
@@ -372,7 +373,7 @@ function LifecycleSection({
 
 function AssignmentSection({ data, may, busy, run, slug, orderId }: SectionProps) {
   const [technicianId, setTechnicianId] = useState("");
-  if (!may(CAP_ORDERS_MANAGE)) return null;
+  if (!mayAssignTechnician(may)) return null;
 
   return (
     <Panel

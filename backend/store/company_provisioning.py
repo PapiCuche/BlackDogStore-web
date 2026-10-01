@@ -147,6 +147,9 @@ _SALES_CAPS = (
     'service.customers.view', 'service.customers.manage',
     'service.devices.view', 'service.devices.manage',
     'service.orders.create', 'service.orders.view',
+    # SVC-ASSIGN-01: reception and the till name the technician at intake. NOT
+    # `service.orders.manage` — the counter does not run the workshop.
+    'service.orders.assign',
     # M12B. Ventas IS the counter: the till, the sales note, and now the money a
     # customer hands over for a repair. 0054 had already given this role
     # technical RECEPTION for the same reason — the person who takes the device

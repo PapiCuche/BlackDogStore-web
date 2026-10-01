@@ -73,6 +73,7 @@ from .v1_service_views import (
     V1ServiceDeviceDetailView,
     V1ServiceDeviceListView,
     V1ServiceOrderAssignmentView,
+    V1ServiceTechnicianCandidatesView,
     V1ServiceOrderDetailView,
     V1ServiceOrderHistoryView,
     V1ServiceOrderListView,
@@ -273,6 +274,13 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/devices/<int:pk>/',
         V1ServiceDeviceDetailView.as_view(), name='v1-internal-service-device-detail',
+    ),
+    # SVC-ASSIGN-01 / POS-SVC-01: who may be handed a repair at a branch, for
+    # the moment before the order exists.
+    path(
+        'internal/<slug:company_slug>/service/technicians/',
+        V1ServiceTechnicianCandidatesView.as_view(),
+        name='v1-internal-service-technicians',
     ),
     path(
         'internal/<slug:company_slug>/service/orders/',
