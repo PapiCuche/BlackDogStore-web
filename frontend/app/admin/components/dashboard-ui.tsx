@@ -7,9 +7,9 @@
  * because the backend already returned its data, and the backend returned it
  * because the caller's capability allowed it.
  *
- * Palette: strictly the brand tokens from globals.css — #080808 background,
- * #111111 surfaces, white at low opacity for elevation, zinc for text. No new
- * hues. Emphasis comes from contrast and spacing, not colour.
+ * Presentation consumes semantic tokens from globals.css. Operational state
+ * colours are reserved for warnings/errors/success; ordinary hierarchy comes
+ * from spacing, type and contrast.
  */
 
 import type { IconComponent } from "./icons";
@@ -33,12 +33,12 @@ export function DashboardHeader({
   isPlatformAdmin: boolean;
 }) {
   return (
-    <header className="relative overflow-hidden rounded-2xl border border-bd-border bg-surface px-6 py-7 sm:px-8">
-      <div className="relative">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-muted">
+    <header className="border-b border-bd-border pb-6">
+      <div>
+        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">
           Control interno
         </p>
-        <h1 className="mt-1.5 font-display text-2xl font-bold text-foreground sm:text-3xl">
+        <h1 className="mt-1.5 font-display text-2xl font-extrabold tracking-[-0.03em] text-foreground sm:text-[2rem]">
           {greeting}, {name}
         </h1>
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -106,15 +106,13 @@ export function SummaryStatCard({
   icon?: IconComponent;
 }) {
   return (
-    <div className="group rounded-xl border border-bd-border bg-surface p-5 transition hover:border-foreground/20">
+    <div className="group rounded-xl border border-bd-border bg-surface p-4 transition hover:border-foreground/20 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
           {label}
         </p>
         {Icon ? (
-          <span className="rounded-lg border border-bd-border bg-foreground/[0.03] p-1.5 text-muted transition group-hover:text-foreground">
-            <Icon className="h-4 w-4" />
-          </span>
+          <Icon className="h-4 w-4 shrink-0 text-muted transition group-hover:text-foreground" />
         ) : null}
       </div>
       <p className="mt-3 font-display text-3xl font-bold tabular-nums leading-none text-foreground">
@@ -137,7 +135,7 @@ export function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+    <div className="flex flex-col rounded-xl border border-bd-border bg-surface p-5">
       <div className="mb-5">
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         {description ? (
