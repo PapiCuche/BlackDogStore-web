@@ -6,7 +6,7 @@ documentación real, sin reemplazar su historial.
 ## 2026-10-01 — SVC-FUNC-01: servicio técnico operativo e integrado con la caja
 
 Rama `feature/service-pos-functional-integration`, sobre `master` `ef9890f`. Código
-en `1d35b7d`. Nada se ha empujado al remoto.
+en `4796db0`.
 
 Qué cambia para quien usa el sistema:
 
@@ -21,6 +21,9 @@ Qué cambia para quien usa el sistema:
   El rol estándar Ventas recibe `assign`, y no `manage`. Sólo se puede asignar a
   una persona activa de la empresa, que puede ver órdenes de servicio y alcanza
   la sucursal de la orden; cualquier otro identificador responde «no encontrado».
+  Con `assign` se asigna y se reasigna; dejar una orden sin técnico exige
+  `service.orders.manage` (SVC-ASSIGN-UNASSIGN, `4796db0`): con sólo `assign` el
+  servidor responde 403 y no cambia nada.
 - **Cobrar el servicio (SVC-PAY-01, `d62fa30`).** Nueva capacidad
   `service.payments.collect`. Registra un pago quien tiene `collect` o
   `service.payments.manage`; reversar sigue exigiendo `manage`. Los roles estándar
@@ -67,18 +70,18 @@ quedado sobre `_notify` desde `108a904`. `assign_technician` bloquea la fila de 
 orden y, fuera de una transacción, PostgreSQL lo rechaza. Lo cubre
 `SvcAssignOutsideATransactionTest`.
 
-Validación sobre `1d35b7d`: backend PostgreSQL 4624 pruebas (4621 OK, 3 omitidas,
-0 fallos), 1575,3 s; `check` sin problemas; `makemigrations --check` sin cambios;
-base nueva migrada hasta 0095. Frontend 426 pruebas en 40 suites, OK; typecheck
+Validación sobre `4796db0`: backend PostgreSQL 4634 pruebas (4631 OK, 3 omitidas,
+0 fallos), 1632,0 s; `check` sin problemas; `makemigrations --check` sin cambios;
+base nueva migrada hasta 0095. Frontend 428 pruebas en 40 suites, OK; typecheck
 OK; lint 0 errores y 33 advertencias (las del baseline); build OK (50 páginas).
-Playwright sin pasada completa limpia: el equipo entró en suspensión durante las corridas y agotó el tiempo de la prueba que estuviera en curso (110 de 121 en la completa, con 4 tiempos agotados y 7 sin ejecutar; `service-pos` 3 de 3 y `h411-auth-interop` 8 de 8 en verde); queda por repetir con el equipo conectado. Cada commit de código se comprobó además por separado
-(pruebas del área, typecheck y migraciones).
+Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,1 min. Los commits de código anteriores se comprobaron además por
+separado (pruebas del área, typecheck y migraciones).
 
 Deuda y límites conocidos: al volver de «Servicio técnico» a «Productos» se pierde
 una recepción a medio llenar (la cesta sí se conserva); si el contexto de la caja
 no carga, tampoco se llega al modo servicio; una orden recién recibida aparece en
 Órdenes › «Mis reparaciones», y en la cola Reparación sólo cuando su cotización
-está aprobada; quien sólo tiene `assign` también puede retirar al técnico; un
+está aprobada; un
 superusuario de plataforma con membresía de personal figura como candidato. Detalle:
 [docs/AUDIT_MEMORY.md](docs/AUDIT_MEMORY.md).
 
