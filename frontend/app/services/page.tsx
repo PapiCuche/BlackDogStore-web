@@ -10,59 +10,51 @@ export const metadata: Metadata = {
 const services = [
   {
     num: "01",
-    title: "Pantalla",
+    title: "Diagnóstico técnico",
     description:
-      "Evaluación del daño, reemplazo cuando corresponde y pruebas funcionales antes de la entrega.",
-    devices: ["Smartphone", "Tablet"],
+      "Evaluación del problema, síntomas reportados y condición del equipo antes de definir el siguiente paso.",
   },
   {
     num: "02",
-    title: "Batería",
+    title: "Reparación correctiva",
     description:
-      "Revisión del estado de batería, diagnóstico del consumo y reemplazo cuando el caso lo requiere.",
-    devices: ["Smartphone", "Tablet", "Laptop"],
+      "Intervención sobre la falla identificada de acuerdo con el alcance y las condiciones aceptadas para el caso.",
   },
   {
     num: "03",
-    title: "Carcasa y tapa",
+    title: "Mantenimiento preventivo",
     description:
-      "Evaluación de daños externos y alternativas de intervención según el modelo y la condición del equipo.",
-    devices: ["Smartphone"],
+      "Revisión orientada a conservar el funcionamiento del equipo y detectar señales que requieren atención.",
   },
   {
     num: "04",
-    title: "Cristal",
+    title: "Reemplazo de componentes",
     description:
-      "Revisión del cristal y del conjunto de pantalla para definir la intervención adecuada.",
-    devices: ["Smartphone", "Tablet"],
+      "Evaluación y sustitución de piezas o conjuntos cuando el diagnóstico determina que corresponde.",
   },
   {
     num: "05",
-    title: "Daño por líquidos",
+    title: "Configuración y puesta a punto",
     description:
-      "Inspección técnica del equipo para identificar componentes afectados y el alcance posible de recuperación.",
-    devices: ["Smartphone", "Tablet", "Laptop"],
+      "Ajustes de configuración, sistema o funcionamiento necesarios para dejar el equipo listo para su uso.",
   },
   {
     num: "06",
-    title: "Diagnóstico técnico",
+    title: "Pruebas funcionales",
     description:
-      "Evaluación del equipo, síntomas reportados y componentes relacionados antes de proponer una intervención.",
-    devices: ["Smartphone", "Tablet", "Laptop", "Wearable"],
+      "Comprobaciones posteriores a la intervención para revisar el resultado antes de la entrega.",
   },
   {
     num: "07",
-    title: "Datos y respaldo",
+    title: "Limpieza y revisión técnica",
     description:
-      "Evaluación de alternativas de acceso o recuperación de información según el estado del dispositivo.",
-    devices: ["Smartphone", "Tablet", "Laptop"],
+      "Atención preventiva o complementaria según el tipo de equipo, su condición y las necesidades detectadas.",
   },
   {
     num: "08",
-    title: "Software y sistema",
+    title: "Soporte y seguimiento",
     description:
-      "Soporte para configuración, actualizaciones, restauración y problemas de funcionamiento del sistema.",
-    devices: ["Smartphone", "Tablet", "Laptop"],
+      "Orientación posterior al servicio y revisión de incidencias relacionadas con el trabajo realizado.",
   },
 ];
 
@@ -145,7 +137,7 @@ export default function ServicesPage() {
               </h2>
             </div>
             <p className="max-w-xl text-sm leading-7 text-muted lg:justify-self-end">
-              La lista orienta el tipo de atención. El diagnóstico final depende del equipo y de su condición real.
+              Esta lista describe capacidades generales de atención. El alcance real depende del equipo, la evaluación y lo que la empresa tenga configurado para ofrecer.
             </p>
           </div>
 
@@ -157,13 +149,6 @@ export default function ServicesPage() {
                   {service.title}
                 </h3>
                 <p className="mt-3 max-w-xl text-sm leading-7 text-muted">{service.description}</p>
-                <div className="mt-5 flex flex-wrap gap-2">
-                  {service.devices.map((device) => (
-                    <span key={device} className="rounded-full border border-bd-border px-3 py-1 text-[10px] font-semibold text-muted">
-                      {device}
-                    </span>
-                  ))}
-                </div>
                 <ServicesCta
                   label="Consultar"
                   withIcon={false}
