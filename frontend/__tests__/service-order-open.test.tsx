@@ -32,7 +32,7 @@ it.each(['sales', 'technician', 'admin'])('opens a real-shaped order detail for 
     else if (path.endsWith('/execution/')) body = { execution: null };
     else if (path.endsWith('/quality/')) body = { quality_check: null };
     else if (path.endsWith('/delivery/')) body = { delivery: null };
-    else if (path.endsWith('/assignment/')) body = { current: null, technicians: [] };
+    else if (path.endsWith('/assignment/')) body = { current: null, candidates: [] };
     else if (path.endsWith('/payments/')) body = { results: [], summary: { currency: 'PEN', quoted_total: null,
       confirmed_paid: '0.00', outstanding: null, credit: '0.00', payment_status: 'no_quote', requires_payment_before_delivery: false } };
     return { ok: true, status: 200, json: async () => body } as Response;

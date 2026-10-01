@@ -395,8 +395,24 @@ export const fetchServiceQuality = (slug: string, id: number) =>
 export const fetchServiceQualityHistory = (slug: string, id: number) =>
   get<Rows<ServiceQualityCheck>>(`${order(slug, id)}/quality/history/`);
 
+/** One open assignment, as `V1ServiceAssignmentSerializer` returns it. */
+export interface ServiceAssignment {
+  id: number;
+  technician: number;
+  technician_name: string;
+  assigned_at: string;
+  unassigned_at: string | null;
+}
+
+/** Someone the server says may be assigned: active staff, display name only. */
+export interface ServiceAssignmentCandidate {
+  id: number;
+  name: string;
+}
+
+// DRIFT-01: the server answers `candidates`, not `technicians`.
 export const fetchServiceAssignmentOptions = (slug: string, id: number) =>
-  get<{ current: { technician_name: string } | null; technicians: { id: number; name: string }[] }>(
+  get<{ current: ServiceAssignment | null; candidates: ServiceAssignmentCandidate[] }>(
     `${order(slug, id)}/assignment/`,
   );
 

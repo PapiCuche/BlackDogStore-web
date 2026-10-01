@@ -73,6 +73,7 @@ import {
   startRepair,
   transitionServiceOrder,
   updateExecution,
+  type ServiceAssignmentCandidate,
   type ServiceDelivery,
   type ServicePayment,
   type ServicePaymentSummary,
@@ -99,7 +100,7 @@ type Data = {
   payments: ServicePayment[];
   paymentSummary: ServicePaymentSummary;
   qualityHistory: ServiceQualityCheck[];
-  technicians: { id: number; name: string }[];
+  technicians: ServiceAssignmentCandidate[];
 };
 
 const RESULTS = [
@@ -150,7 +151,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
           fetchServicePayments(slug, orderId),
           may(CAP_ORDERS_MANAGE)
             ? fetchServiceAssignmentOptions(slug, orderId)
-            : Promise.resolve({ current: null, technicians: [] }),
+            : Promise.resolve({ current: null, candidates: [] }),
         ]);
       setData({
         order,
@@ -165,7 +166,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         delivery: delivery.delivery,
         payments: payments.results,
         paymentSummary: payments.summary,
-        technicians: assignment.technicians ?? [],
+        technicians: assignment.candidates,
       });
     } catch (err) {
       // A 403 means the capability is gone, not that the app is broken. Reload
