@@ -94,7 +94,7 @@ export function CountsBar({ job }: { job: ImportJob }) {
       {items.map(([label, value, tone]) => (
         <div
           key={label}
-          className="rounded-2xl border border-bd-border bg-surface px-3 py-2"
+          className="rounded-xl border border-bd-border bg-surface px-3 py-2"
         >
           <div className="text-[10px] uppercase tracking-widest text-muted">
             {label}
@@ -161,7 +161,7 @@ export function PreviewTable({
     );
   }
   return (
-    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       <table className="w-full min-w-[720px] text-left text-xs">
         <thead className="bg-foreground/[0.03] text-[10px] uppercase tracking-widest text-muted">
           <tr>
@@ -226,7 +226,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
     );
   }
   return (
-    <div className="overflow-x-auto rounded-2xl border border-bd-border bg-surface">
+    <div className="overflow-x-auto rounded-xl border border-bd-border bg-surface">
       <table className="w-full min-w-[760px] text-left text-xs">
         <thead className="bg-foreground/[0.03] text-[10px] uppercase tracking-widest text-muted">
           <tr>
