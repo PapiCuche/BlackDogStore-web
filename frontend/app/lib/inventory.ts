@@ -705,7 +705,7 @@ export async function downloadSalesNotePdf(orderId: number, number: string): Pro
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `blackdog-nota-venta-${number}.pdf`;
+  link.download = `nota-venta-${number}.pdf`;
   document.body.appendChild(link);
   link.click();
   link.remove();
