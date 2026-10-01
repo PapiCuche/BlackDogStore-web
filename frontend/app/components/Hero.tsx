@@ -18,7 +18,7 @@ export default function Hero() {
     <section className="relative overflow-hidden border-b border-bd-border bg-background">
       <div className="topo-bg pointer-events-none absolute inset-0 opacity-80" />
 
-      <div className="relative mx-auto max-w-7xl px-6 pb-10 pt-14 sm:pt-18 lg:px-8 lg:pb-14 lg:pt-20">
+      <div className="relative mx-auto max-w-7xl px-6 pb-10 pt-14 sm:pt-20 lg:px-8 lg:pb-14 lg:pt-20">
         <div className="grid gap-12 lg:grid-cols-[1.08fr_0.92fr] lg:items-end">
           <div className="max-w-3xl">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
