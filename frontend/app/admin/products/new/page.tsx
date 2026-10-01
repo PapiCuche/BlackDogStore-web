@@ -45,7 +45,7 @@ function NewProductContent({ user }: { user: AuthUser }) {
           </p>
         ) : null}
 
-        <section className="rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
+        <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
           <ProductForm categories={categories} onSaved={handleSaved} />
         </section>
       </div>
@@ -60,7 +60,7 @@ export default function NewProductPage() {
         if (user.role !== "admin" && user.role !== "superadmin") {
           return (
             <AdminShell user={user}>
-              <div className="rounded-2xl border border-bd-border bg-surface p-5 text-sm text-muted">
+              <div className="rounded-xl border border-bd-border bg-surface p-5 text-sm text-muted">
                 Solo los administradores pueden crear productos.
               </div>
             </AdminShell>
