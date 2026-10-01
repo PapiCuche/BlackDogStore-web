@@ -5,6 +5,12 @@ import { AdminGuard } from "../components/AdminGuard";
 import { AdminShell } from "../components/AdminShell";
 import { AuditLogTable } from "../components/AuditLogTable";
 import {
+  FilterBar,
+  PageHeader,
+  internalButtonClass,
+  internalInputClass,
+} from "../components/internal-ui";
+import {
   fetchAuditLogs,
   type AuditLogEntry,
   type PaginatedResponse,
@@ -24,25 +30,16 @@ function Pagination({
 }) {
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
   if (totalPages <= 1) return null;
+
   return (
-    <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
-      <span>
-        Página {page} de {totalPages} ({count} registros)
-      </span>
+    <div className="flex flex-col gap-3 border-t border-bd-border pt-4 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
+      <span>Página {page} de {totalPages} · {count} registros</span>
       <div className="flex gap-2">
-        <button
-          onClick={() => onPage(page - 1)}
-          disabled={page <= 1}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
-        >
-          ← Anterior
+        <button type="button" onClick={() => onPage(page - 1)} disabled={page <= 1} className={internalButtonClass}>
+          Anterior
         </button>
-        <button
-          onClick={() => onPage(page + 1)}
-          disabled={page >= totalPages}
-          className="rounded border border-white/10 px-3 py-1.5 transition hover:border-white/20 hover:text-white disabled:opacity-30"
-        >
-          Siguiente →
+        <button type="button" onClick={() => onPage(page + 1)} disabled={page >= totalPages} className={internalButtonClass}>
+          Siguiente
         </button>
       </div>
     </div>
@@ -63,8 +60,7 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchAuditLogs({ action, actor, page, page_size: PAGE_SIZE });
-      setData(result);
+      setData(await fetchAuditLogs({ action, actor, page, page_size: PAGE_SIZE }));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error al cargar registros.");
     } finally {
@@ -73,58 +69,63 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
   }, [action, actor, page]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   function handleSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setPage(1);
-    load();
+    void load();
   }
 
   return (
     <AdminShell user={user}>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-xl font-semibold text-white">Auditoría</h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Historial de acciones administrativas.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Seguridad"
+          title="Auditoría"
+          description="Historial de acciones administrativas para seguimiento y trazabilidad."
+        />
 
-        {/* Filters */}
-        <form onSubmit={handleSearch} className="flex flex-wrap gap-3">
-          <input
-            type="search"
-            value={actor}
-            onChange={(e) => setActor(e.target.value)}
-            placeholder="Filtrar por actor…"
-            className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:border-white/20 focus:outline-none"
-          />
-          <input
-            type="search"
-            value={action}
-            onChange={(e) => setAction(e.target.value)}
-            placeholder="Filtrar por acción…"
-            className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:border-white/20 focus:outline-none"
-          />
-          <button
-            type="submit"
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:text-white"
-          >
-            Filtrar
-          </button>
-        </form>
+        <FilterBar>
+          <form onSubmit={handleSearch} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+            <label>
+              <span className="sr-only">Filtrar por actor</span>
+              <input
+                type="search"
+                value={actor}
+                onChange={(e) => setActor(e.target.value)}
+                placeholder="Filtrar por actor…"
+                className={internalInputClass}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Filtrar por acción</span>
+              <input
+                type="search"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                placeholder="Filtrar por acción…"
+                className={internalInputClass}
+              />
+            </label>
+            <button type="submit" className={internalButtonClass}>Filtrar</button>
+          </form>
+        </FilterBar>
 
-        {loading && (
-          <div className="py-12 text-center text-zinc-600">Cargando…</div>
-        )}
-        {error && !loading && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-5 py-4 text-sm text-red-400">
+        {loading ? (
+          <div className="rounded-2xl border border-bd-border bg-surface px-5 py-10 text-center text-sm text-muted">
+            Cargando auditoría…
+          </div>
+        ) : null}
+
+        {error && !loading ? (
+          <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-5 py-4 text-sm text-red-200" role="alert">
             {error}
           </div>
-        )}
-        {data && !loading && (
+        ) : null}
+
+        {data && !loading ? (
           <>
             <AuditLogTable logs={data.results} />
             <Pagination
@@ -134,7 +135,7 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
               onPage={setPage}
             />
           </>
-        )}
+        ) : null}
       </div>
     </AdminShell>
   );
