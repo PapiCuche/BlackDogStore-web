@@ -1,24 +1,17 @@
 "use client";
 
-/**
- * H2 — the technical-service console.
- *
- * The backend has had this surface since M8 and Mobile has consumed it since
- * then; the Web had no screen at all, and its own module registry called the
- * whole group "pending" while the capabilities behind it were ACTIVE. This is
- * that gap, closed against the SAME endpoints Mobile calls.
- *
- * WHAT DECIDES WHAT YOU SEE. Capabilities from the internal dashboard, and
- * nothing else. No `role === "technician"`, no `isAdmin`. The server re-checks
- * every request, so a 403 here is a normal outcome — the permission may have
- * been revoked between drawing a button and pressing it — and the answer is to
- * reload the context rather than to log anybody out.
- */
-
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
+import {
+  FilterBar,
+  PageHeader,
+  TableShell,
+  internalButtonClass,
+  internalInputClass,
+} from "../components/internal-ui";
+import { Panel, Pill } from "./components/ServiceUi";
 import {
   CAP_ORDERS_VIEW,
   ServiceApiError,
@@ -27,22 +20,6 @@ import {
   type ServiceContext,
   type ServiceOrderRow,
 } from "../../lib/service-console";
-
-function Panel({ children }: { children: React.ReactNode }) {
-  return (
-    <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-6">
-      {children}
-    </section>
-  );
-}
-
-function StatusPill({ label }: { label: string }) {
-  return (
-    <span className="rounded-full border border-white/[0.12] px-2.5 py-1 text-[11px] text-white/70">
-      {label}
-    </span>
-  );
-}
 
 function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   const slug = ctx.dashboard?.company?.slug ?? null;
@@ -55,20 +32,19 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("");
   const [branchId, setBranchId] = useState<number | null>(null);
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  // "Mis reparaciones" — a flag the server resolves, not an id this page
-  // holds. See fetchServiceOrders.
-  //
-  // TRUE, because that is what this feature says it does. The comment below,
-  // the CHANGELOG entry and the PR all said the console opens on the
-  // technician's own queue; the code opened on the whole workshop. Three
-  // statements and one behaviour, and they disagreed. The behaviour now
-  // matches — a technician lands on their work, and "Todo el taller" is one
-  // click away for whoever needs it, including a supervisor who has no
-  // assigned repairs of their own.
   const [mine, setMine] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   const load = useCallback(async () => {
     if (!slug || !mayView) return;
@@ -84,8 +60,6 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
       setCount(pageData.count);
     } catch (err) {
       if (err instanceof ServiceApiError && err.isForbidden) {
-        // The capability went away while this screen was open. Re-read the
-        // context rather than guessing: the server is the one that knows.
         ctx.reload();
       }
       setError(err instanceof Error ? err.message : "No se pudo cargar.");
@@ -102,7 +76,7 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
         <Panel>
-          <p className="text-sm text-white/60">
+          <p className="text-sm text-muted">
             Selecciona una empresa para ver sus órdenes de servicio.
           </p>
         </Panel>
@@ -113,11 +87,9 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   if (!mayView) {
     return (
       <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
-        <Panel>
-          <h1 className="text-lg font-semibold">Servicio técnico</h1>
-          <p className="mt-2 text-sm text-white/60">
-            Tu cuenta no tiene permiso para ver las órdenes de servicio de esta
-            empresa.
+        <Panel title="Servicio técnico">
+          <p className="text-sm text-muted">
+            Tu cuenta no tiene permiso para ver las órdenes de servicio de esta empresa.
           </p>
         </Panel>
       </AdminShell>
@@ -127,19 +99,13 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
   return (
     <AdminShell user={ctx.user} dashboard={ctx.dashboard} onSelectCompany={ctx.selectCompany}>
       <div className="space-y-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">Órdenes de servicio</h1>
-            <p className="mt-1 text-sm text-white/50">
-              {count} orden(es) en el alcance que tu cuenta alcanza.
-            </p>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Taller"
+          title="Órdenes de servicio"
+          description={`${count} orden(es) dentro del alcance actual de tu cuenta. La vista abre en tus reparaciones asignadas y permite pasar al taller completo cuando tu acceso lo permite.`}
+        />
 
-        <Panel>
-          {/* M12A — "Mis reparaciones" primero.
-              El técnico entra a trabajar lo suyo; la vista del taller completo
-              sigue a un clic, porque supervisar también es parte del trabajo. */}
+        <FilterBar>
           <div className="mb-4 flex flex-wrap items-center gap-2">
             {([
               { value: true, label: "Mis reparaciones" },
@@ -148,41 +114,46 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
               <button
                 key={String(option.value)}
                 type="button"
-                onClick={() => { setMine(option.value); setPage(1); }}
-                className={`rounded-lg border px-4 py-2 text-sm transition ${
+                onClick={() => {
+                  setMine(option.value);
+                  setPage(1);
+                }}
+                aria-pressed={mine === option.value}
+                className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
                   mine === option.value
-                    ? "border-white/30 bg-white/[0.07] text-white"
-                    : "border-white/[0.07] text-white/50 hover:text-white/80"
+                    ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
+                    : "border-bd-border text-muted hover:border-foreground/20 hover:text-foreground"
                 }`}
               >
                 {option.label}
               </button>
             ))}
             {mine ? (
-              <span className="text-xs text-white/40">
+              <span className="text-xs text-muted">
                 Órdenes donde figuras como técnico asignado.
               </span>
             ) : null}
           </div>
 
           <div className="grid gap-3 md:grid-cols-4">
-            <label className="text-xs text-white/50">
+            <label className="text-xs font-semibold text-muted">
               Estado
-              {/* The list comes from the SERVER, per tenant. A company that
-                  renamed "Recibido" sees its own word here. */}
               <select
                 value={status}
-                onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                onChange={(e) => {
+                  setStatus(e.target.value);
+                  setPage(1);
+                }}
+                className={`mt-1.5 ${internalInputClass}`}
               >
                 <option value="">Todos</option>
-                {(context?.statuses ?? []).map((s) => (
-                  <option key={s.code} value={s.code}>{s.label}</option>
+                {(context?.statuses ?? []).map((item) => (
+                  <option key={item.code} value={item.code}>{item.label}</option>
                 ))}
               </select>
             </label>
 
-            <label className="text-xs text-white/50">
+            <label className="text-xs font-semibold text-muted">
               Sucursal
               <select
                 value={branchId ?? ""}
@@ -190,107 +161,104 @@ function ServiceOrdersContent({ ctx }: { ctx: InternalContext }) {
                   setBranchId(e.target.value ? Number(e.target.value) : null);
                   setPage(1);
                 }}
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className={`mt-1.5 ${internalInputClass}`}
               >
-                {/* Only the branches this member reaches — the server decides
-                    that, and an id outside it is not found rather than
-                    refused. */}
                 <option value="">Todas las que alcanzo</option>
-                {(context?.available_branches ?? []).map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
+                {(context?.available_branches ?? []).map((branch) => (
+                  <option key={branch.id} value={branch.id}>{branch.name}</option>
                 ))}
               </select>
             </label>
 
-            <label className="text-xs text-white/50 md:col-span-2">
+            <label className="text-xs font-semibold text-muted md:col-span-2">
               Buscar
               <input
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Número, cliente o equipo"
-                className="mt-1 w-full rounded-lg border border-white/[0.08] bg-black/40 px-3 py-2 text-sm text-white"
+                className={`mt-1.5 ${internalInputClass}`}
               />
             </label>
           </div>
-        </Panel>
+        </FilterBar>
 
         {error ? (
-          <Panel>
-            <p className="text-sm text-rose-300">{error}</p>
-          </Panel>
+          <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-5 py-4 text-sm text-red-200" role="alert">
+            {error}
+          </div>
         ) : null}
 
-        <Panel>
-          {loading ? (
-            <p className="text-sm text-white/50">Cargando…</p>
-          ) : rows.length === 0 ? (
-            <p className="text-sm text-white/50">
-              {mine
-                ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
-                : "No hay órdenes que coincidan con ese filtro."}
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="text-xs uppercase tracking-wide text-white/40">
-                  <tr>
-                    <th className="py-2 pr-4">Número</th>
-                    <th className="py-2 pr-4">Cliente</th>
-                    <th className="py-2 pr-4">Equipo</th>
-                    <th className="py-2 pr-4">Sucursal</th>
-                    <th className="py-2 pr-4">Técnico</th>
-                    <th className="py-2 pr-4">Estado</th>
+        {loading ? (
+          <div className="rounded-2xl border border-bd-border bg-surface px-5 py-8 text-sm text-muted">
+            Cargando órdenes…
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-bd-border px-5 py-10 text-center text-sm text-muted">
+            {mine
+              ? "No tienes órdenes asignadas con ese filtro. Prueba «Todo el taller»."
+              : "No hay órdenes que coincidan con ese filtro."}
+          </div>
+        ) : (
+          <TableShell>
+            <table className="w-full min-w-[58rem] text-left text-sm">
+              <thead className="border-b border-bd-border text-[11px] uppercase tracking-[0.1em] text-muted">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Número</th>
+                  <th className="px-4 py-3 font-semibold">Cliente</th>
+                  <th className="px-4 py-3 font-semibold">Equipo</th>
+                  <th className="px-4 py-3 font-semibold">Sucursal</th>
+                  <th className="px-4 py-3 font-semibold">Técnico</th>
+                  <th className="px-4 py-3 font-semibold">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className="border-b border-bd-border/70 last:border-0 hover:bg-foreground/[0.025]">
+                    <td className="px-4 py-3">
+                      <Link
+                        href={`/admin/service/orders/${row.id}`}
+                        className="font-semibold text-foreground transition hover:underline"
+                      >
+                        {row.number}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-foreground/80">{row.customer_name}</td>
+                    <td className="px-4 py-3 text-foreground/80">{row.device_summary}</td>
+                    <td className="px-4 py-3 text-muted">{row.branch_name}</td>
+                    <td className="px-4 py-3 text-muted">{row.technician_name || "—"}</td>
+                    <td className="px-4 py-3">
+                      <Pill label={row.status_label} />
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.id} className="border-t border-white/[0.06]">
-                      <td className="py-3 pr-4">
-                        <Link
-                          href={`/admin/service/orders/${row.id}`}
-                          className="font-medium text-white hover:underline"
-                        >
-                          {row.number}
-                        </Link>
-                      </td>
-                      <td className="py-3 pr-4 text-white/70">{row.customer_name}</td>
-                      <td className="py-3 pr-4 text-white/70">{row.device_summary}</td>
-                      <td className="py-3 pr-4 text-white/50">{row.branch_name}</td>
-                      <td className="py-3 pr-4 text-white/50">
-                        {row.technician_name || "—"}
-                      </td>
-                      <td className="py-3 pr-4">
-                        <StatusPill label={row.status_label} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
+        )}
 
-          {count > rows.length ? (
-            <div className="mt-4 flex items-center gap-2">
+        {count > rows.length ? (
+          <div className="flex flex-col gap-3 border-t border-bd-border pt-4 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+            <span>Página {page}</span>
+            <div className="flex gap-2">
               <button
                 type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs disabled:opacity-30"
+                className={internalButtonClass}
               >
                 Anterior
               </button>
-              <span className="text-xs text-white/40">Página {page}</span>
               <button
                 type="button"
                 disabled={rows.length === 0}
                 onClick={() => setPage((p) => p + 1)}
-                className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs disabled:opacity-30"
+                className={internalButtonClass}
               >
                 Siguiente
               </button>
             </div>
-          ) : null}
-        </Panel>
+          </div>
+        ) : null}
       </div>
     </AdminShell>
   );
