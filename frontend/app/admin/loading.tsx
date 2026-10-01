@@ -1,6 +1,6 @@
 export default function AdminLoading() {
   return (
-    <main className="min-h-[70vh] bg-background px-5 py-8 text-foreground sm:px-8" aria-busy="true">
+    <main id="admin-main-content" tabIndex={-1} className="outline-none min-h-[70vh] bg-background px-5 py-8 text-foreground sm:px-8" aria-busy="true">
       <div className="mx-auto max-w-7xl" role="status" aria-label="Cargando control interno">
         <span className="sr-only">Cargando control interno…</span>
         <div className="border-b border-bd-border pb-6">
