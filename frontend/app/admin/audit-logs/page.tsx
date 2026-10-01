@@ -114,7 +114,7 @@ function AuditLogsContent({ user }: { user: AuthUser }) {
         </FilterBar>
 
         {loading ? (
-          <div className="rounded-2xl border border-bd-border bg-surface px-5 py-10 text-center text-sm text-muted">
+          <div className="rounded-xl border border-bd-border bg-surface px-5 py-10 text-center text-sm text-muted">
             Cargando auditoría…
           </div>
         ) : null}
