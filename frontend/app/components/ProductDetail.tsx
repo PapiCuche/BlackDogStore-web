@@ -43,10 +43,10 @@ function StarDisplay({ rating, size = "sm" }: { rating: number; size?: "sm" | "m
   );
 }
 
-function StarPicker({ rating, onChange }: { rating: number; onChange: (rating: number) => void }) {
+function StarPicker({ rating, onChange, labelledBy }: { rating: number; onChange: (rating: number) => void; labelledBy?: string }) {
   const [hover, setHover] = useState(0);
   return (
-    <div className="flex gap-1" role="group" aria-label="Calificación">
+    <div className="flex gap-1" role="group" aria-label={labelledBy ? undefined : "Calificación"} aria-labelledby={labelledBy}>
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
@@ -360,12 +360,14 @@ export default function ProductDetail({ product }: { product: Product }) {
             ) : (
               <form onSubmit={handleReviewSubmit} className="mt-5 space-y-4">
                 <div>
-                  <label className="mb-2 block text-sm font-semibold text-muted">Calificación</label>
-                  <StarPicker rating={reviewRating} onChange={setReviewRating} />
+                  <p id="review-rating-label" className="mb-2 block text-sm font-semibold text-muted">Calificación</p>
+                  <StarPicker rating={reviewRating} onChange={setReviewRating} labelledBy="review-rating-label" />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-semibold text-muted">Comentario (opcional)</label>
+                  <label htmlFor="review-comment" className="mb-1.5 block text-sm font-semibold text-muted">Comentario (opcional)</label>
                   <textarea
+                    id="review-comment"
+                    name="review_comment"
                     value={reviewComment}
                     onChange={(event) => setReviewComment(event.target.value)}
                     placeholder="¿Qué te pareció el producto?"
