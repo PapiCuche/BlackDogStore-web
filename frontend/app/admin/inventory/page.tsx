@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
+import { PageHeader, internalButtonClass } from "../components/internal-ui";
 import { StaffGuard } from "../components/StaffGuard";
 import { BranchSelector, ScopeNote } from "../components/BranchSelector";
 import { useBranchScope } from "../lib/use-branch-scope";
@@ -98,54 +99,34 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
   return (
     <AdminShell user={user}>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Inventario</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Stock por sucursal, movimientos y rotación.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <BranchSelector
-              access={scope.access}
-              value={scope.branch}
-              onChange={(next) => {
-                setLoading(true);
-                scope.setBranch(next);
-              }}
-            />
-            <Link
-              href="/admin/inventory/movements"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Movimientos
-            </Link>
-            <Link
-              href="/admin/inventory/transfers"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Transferencias
-            </Link>
-            <Link
-              href="/admin/inventory/counts"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Recuentos
-            </Link>
-            <Link
-              href="/admin/inventory/replenishment"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Reposición
-            </Link>
-            <Link
-              href="/admin/inventory/reports"
-              className="rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white"
-            >
-              Reportes
-            </Link>
-          </div>
-        </div>
+        <PageHeader
+          eyebrow="Operaciones"
+          title="Inventario"
+          description="Stock por sucursal, movimientos, reposición y control físico dentro del alcance de tu cuenta."
+          actions={
+            <>
+              <BranchSelector
+                access={scope.access}
+                value={scope.branch}
+                onChange={(next) => {
+                  setLoading(true);
+                  scope.setBranch(next);
+                }}
+              />
+              {[
+                ["/admin/inventory/movements", "Movimientos"],
+                ["/admin/inventory/transfers", "Transferencias"],
+                ["/admin/inventory/counts", "Recuentos"],
+                ["/admin/inventory/replenishment", "Reposición"],
+                ["/admin/inventory/reports", "Reportes"],
+              ].map(([href, label]) => (
+                <Link key={href} href={href} className={internalButtonClass}>
+                  {label}
+                </Link>
+              ))}
+            </>
+          }
+        />
 
         <ScopeNote scope={data?.dashboard.scope} />
 
@@ -240,7 +221,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                 action={
                   <Link
                     href="/admin/inventory/movements"
-                    className="text-xs text-zinc-500 transition hover:text-white"
+                    className="text-xs text-muted transition hover:text-foreground"
                   >
                     Ver todos →
                   </Link>
@@ -251,7 +232,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                 ) : (
                   <TableWrap>
                     <thead>
-                      <tr className="border-b border-white/[0.06]">
+                      <tr className="border-b border-bd-border">
                         <Th>Fecha</Th>
                         <Th>Sucursal</Th>
                         <Th>Producto</Th>
@@ -262,7 +243,7 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
                     </thead>
                     <tbody>
                       {data.movements.map((m) => (
-                        <tr key={m.id} className="border-b border-white/[0.03]">
+                        <tr key={m.id} className="border-b border-bd-border/60">
                           <Td muted>{formatDateTime(m.created_at)}</Td>
                           <Td muted>{m.branch_name}</Td>
                           <Td>{m.product_name}</Td>
