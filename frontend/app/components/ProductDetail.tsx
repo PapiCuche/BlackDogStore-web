@@ -263,19 +263,19 @@ export default function ProductDetail({ product }: { product: Product }) {
                     type="button"
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
                     disabled={!inStock || quantity <= 1}
-                    className="flex h-10 w-10 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
+                    className="flex h-11 w-11 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
                     aria-label="Reducir cantidad"
                   >
                     −
                   </button>
-                  <span className="flex h-10 w-12 items-center justify-center border-x border-bd-border text-sm font-bold tabular-nums text-foreground">
+                  <span className="flex h-11 w-12 items-center justify-center border-x border-bd-border text-sm font-bold tabular-nums text-foreground">
                     {quantity}
                   </span>
                   <button
                     type="button"
                     onClick={() => setQuantity(Math.min(product.inventory, quantity + 1))}
                     disabled={!inStock || quantity >= product.inventory}
-                    className="flex h-10 w-10 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
+                    className="flex h-11 w-11 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
                     aria-label="Aumentar cantidad"
                   >
                     +
