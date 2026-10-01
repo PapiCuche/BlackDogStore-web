@@ -12,7 +12,7 @@
 
 - **IMPLEMENTADO en rama:** foundations visuales semánticos, Montserrat, Header, Hero, Home, ProductCard, catálogo, servicios, Footer, Auth, carrito y presentación del checkout.
 - **PARCIAL:** branding multiempresa. Los seis colores del tenant siguen siendo la fuente de datos, pero aún existen superficies no migradas y contenido comercial hardcodeado fuera del bloque intervenido.
-- **PARCIAL:** design system unificado del panel SaaS interno. Shell, sidebar/topbar y las tres capas compartidas (`dashboard-ui`, `internal-ui`, `ServiceUi`) ya usan foundations semánticos; quedan páginas y componentes locales por migrar.
+- **PARCIAL:** design system unificado del panel SaaS interno. Shell, sidebar/topbar, `dashboard-ui`, `internal-ui`, `ServiceUi`, `InventoryUi` y las superficies principales de Dashboard, Clientes, Servicio, Inventario, POS y Configuración ya consumen foundations comunes; quedan rutas administrativas secundarias y detalles por migrar.
 - **PENDIENTE DE VERIFICACIÓN:** tests, lint y build de esta rama; no pudieron ejecutarse desde este entorno porque el contenedor no resolvió `github.com` para obtener el repositorio/dependencias.
 - **Sin cambios** en autenticación, roles, endpoints, base de datos, migraciones o flujo de pago.
 
