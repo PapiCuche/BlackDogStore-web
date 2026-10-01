@@ -137,7 +137,7 @@ export function StatusBadge({ status }: { status: ModuleStatus }) {
       ? "border-foreground/25 bg-foreground/[0.08] text-foreground"
       : status === "partial"
         ? "border-foreground/20 bg-foreground/[0.04] text-foreground"
-        : "border-white/[0.08] bg-transparent text-muted";
+        : "border-bd-border bg-transparent text-muted";
   return (
     <span
       className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${tone}`}
@@ -246,7 +246,7 @@ export function AlertsPanel({
           alert.level === "critical"
             ? "border-red-500/25 bg-red-500/[0.07]"
             : alert.level === "warning"
-              ? "border-white/20 bg-foreground/[0.05]"
+              ? "border-foreground/20 bg-foreground/[0.05]"
               : "border-bd-border bg-surface";
         return (
           <div
