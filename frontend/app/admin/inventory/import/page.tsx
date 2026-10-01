@@ -361,7 +361,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
           <CountsBar job={job} />
           <Notices job={job} />
 
-          <p className="mb-4 rounded-lg border border-bd-border bg-black/30 px-4 py-2 text-xs text-muted">
+          <p className="mb-4 rounded-lg border border-bd-border bg-surface px-4 py-2 text-xs text-muted">
             Las filas marcadas <strong className="text-amber-300">Omitir</strong>{" "}
             tienen la celda de cantidad vacía: su stock no cambia. Un cero escrito
             explícitamente sí baja el stock a cero.
