@@ -310,7 +310,7 @@ function OrderDetailContent({ user }: { user: AuthUser }) {
             </thead>
             <tbody>
               {order.items.map((item) => (
-                <tr key={item.id} className="border-b border-white/[0.04]">
+                <tr key={item.id} className="border-b border-bd-border/70">
                   <td className="py-2.5 pr-4 text-foreground">{item.product_name}</td>
                   <td className="py-2.5 pr-4 text-right text-muted">
                     S/ {parseFloat(item.price).toFixed(2)}
