@@ -257,6 +257,18 @@ Tests: `service-navigation.test.tsx`, `service-authority-console.test.tsx`,
 `service-pos`).
 Estado: VERIFICADO @ `ee3a8d3` (rama `reconcile/uxui-after-svc`, pendiente de merge).
 
+**STOREFRONT-V3** — La tienda pública no supone qué vende ni quién es la empresa.
+Autoridad: `app/lib/catalog-categories.ts::useCatalogCategories` (única lista de
+categorías; cabecera, pie y portada); `Hero.tsx` (losa `bg-slab` en ambos temas;
+campaña `campaigns.home_hero` opcional; sin imagen por slug); `StoreInformation.tsx`
+(`/about`, `/contact`, sólo datos de `useStorefront()`); `StorefrontChrome.tsx`
+(`StorefrontContent` marca `shop-surface` / `internal-surface`; sin armazón en
+`/admin`); `globals.css` (clases `v3-*`, sin selectores de elemento).
+Tests: `storefront-v3-navigation`, `storefront-v3-home`, `storefront-v3-information`,
+`storefront-v3-products`; E2E `storefront-v3`, `storefront`, `brand-contrast` (sin
+modificar).
+Estado: VERIFICADO @ `7f49168` (rama `reconcile/storefront-v3-after-ux`, pendiente de merge).
+
 **PROXY-01** — El proxy Next nunca sale de `${BACKEND_API}/`.
 Autoridad: `frontend/app/api/[...path]/route.ts` (rechaza con 400 segmentos `.`, `..` o con `/` `\` tras decodificar).
 Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
@@ -461,6 +473,12 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
 | IDOR-01 limpieza | SALES | segunda fuente de verdad en resend | Baja | — |
 | Lint 33 warnings | FRONTEND | 24 `set-state-in-effect` y otras | Baja | — |
+| STOREFRONT-EDITORIAL-CMS | STOREFRONT | PENDIENTE: ilustraciones por categoría y material editorial como contenido de la tienda; hoy sólo la imagen de campaña | Media | decisión de producto |
+| STOREFRONT-FEATURED-CATEGORIES | STOREFRONT | PROPUESTA: destacar y ordenar categorías en la portada; hoy, las seis primeras en el orden del servidor | Baja | — |
+| TENANT-TYPOGRAPHY | BRANDING | PROPUESTA: tipografía por tienda (el manual del piloto pide Montserrat; la plataforma usa Inter + Unbounded) | Baja | — |
+| INTERNAL-UI-V3 | FRONTEND | PENDIENTE: menú móvil del panel, gráficos y estilos del trabajo paralelo V3 | Media | fase propia |
+| STOREFRONT-IMAGES-LICENSE | STOREFRONT | imágenes de producto y recortes del trabajo paralelo, y `populate_storefront_images`, no portados hasta demostrar origen y licencia | Media | decisión legal |
+| STOREFRONT-HERO-VARIANT | STOREFRONT | PENDIENTE: variante de hero configurable por tienda; hoy losa oscura para todas | Baja | — |
 | POS-CUSTOM-PRODUCT | POS | PROPUESTA: vender en caja un artículo que no está en el catálogo. No se implementa con productos falsos ni con `OrderItem.product` nulo | Por decidir | decisión de producto |
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
 | SVC-QUOTE-INSHOP | SERVICE | PENDIENTE: la cotización sólo se aprueba desde la cuenta del cliente; no hay aprobación en tienda | Media | decisión de producto |
@@ -477,7 +495,8 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
 - **Integración**: ERP + F1/F2 en `master` por el PR #42 (merge `ef9890f`).
 - **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `9b59a31` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`), SVC-ASSIGN-VIEW-01 (`9b59a31`). Integrado en `master` por el PR #44 (merge `d98d70c`, árbol `b7d570e` idéntico al validado). Backend 4643 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
-- **UX-RECON-SVC-01 — Interfaz de #43 sobre el master con servicio y caja**: merge `ee3a8d3` en `reconcile/uxui-after-svc` (padres `d98d70c` y `9c1486b`; 5 conflictos de texto, 1 archivo fusionado sin conflicto y revisado; 0 backend, 0 migraciones). Frontend 437 pruebas en 43 suites, lint 0/26, build 50 páginas, Playwright 121/121. #43 queda abierto como referencia. Pendiente de merge.
+- **UX-RECON-SVC-01 — Interfaz de #43 sobre el master con servicio y caja**: merge `ee3a8d3` en `reconcile/uxui-after-svc` (padres `d98d70c` y `9c1486b`; 5 conflictos de texto, 1 archivo fusionado sin conflicto y revisado; 0 backend, 0 migraciones). Frontend 437 pruebas en 43 suites, lint 0/26, build 50 páginas, Playwright 121/121. Integrado en `master` por el PR #45 (merge `0c83381`, árbol `4fe7e61` idéntico al validado); #43 y #39 quedaron contenidos.
+- **STOREFRONT-V3 — Convergencia de la tienda pública**: PARCIAL, código @ `7f49168` en `reconcile/storefront-v3-after-ux` (desde `0c83381`). Navegación y pie (`a57c72e`), carrusel y carrito (`9ba1a70`), portada y hero (`11f69f0`), Nosotros/Contacto (`5380ca6`), E2E (`7f49168`). Frontend 483 pruebas en 47 suites, lint 0/25, build 52 páginas, Playwright 143/143; 0 backend, 0 panel interno. #38 no se usó. Pendiente de merge.
 - **Integración**: ERP + F1/F2 en `master` por PR #42 (merge `ef9890f`, árbol `44cfffd` idéntico al validado). Reconciliación UX/UI de #39: merge `1fea6b9` en `reconcile/uxui-after-f2` (75 archivos en conflicto, 0 backend, 0 migraciones), PARCIAL, pendiente de merge.
 
 ---

@@ -3,6 +3,66 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-01 — STOREFRONT-V3: la tienda pública converge sobre el master auditado
+
+Rama `reconcile/storefront-v3-after-ux`, sobre `master` `0c83381`. Código en
+`7f49168`. Estado: **PARCIAL** — se portó lo aprobado del trabajo paralelo «V3»;
+el contenido editorial por tienda, las imágenes de producto y el rediseño del panel
+quedan fuera a propósito.
+
+`master` decide comportamiento, autenticación, multiempresa, comercio y temas. Del
+trabajo paralelo se tomó, archivo por archivo, sólo presentación. El PR #38 no se
+usó.
+
+Qué cambia para quien visita una tienda:
+
+- **Categorías reales.** La cabecera, el pie y la portada tenían cada uno una lista
+  de categorías escrita a mano para el piloto. Ahora las tres leen el catálogo de
+  la tienda (`useCatalogCategories`). El pie enlazaba con `?cat=`, que el catálogo
+  no lee: no filtraba nada. Usa `?category=`.
+- **Portada.** Productos en un carrusel (flechas, teclado, avance lento que cede
+  al tocar, quieto con «reducir movimiento»). Preguntas frecuentes de la tienda.
+  Los bloques de servicio sólo si la tienda publicó servicios. Sin copy que nombre
+  una marca de equipos.
+- **Hero.** Sigue siendo una losa oscura en los dos temas; sus pruebas no se
+  tocaron. Si la tienda publica la campaña `home_hero`, aporta texto, botones e
+  imagen; sin campaña, el hero es el de antes. Ninguna imagen se elige por el
+  identificador de la empresa.
+- **Nosotros y Contacto** (`/about`, `/contact`): sólo datos que la tienda
+  publicó. Sin datos, lo dicen.
+- **Carrito.** La línea enlaza a la ficha del producto y cada campo de cantidad
+  dice de qué producto es.
+- **Navegación móvil.** El menú declara su estado y lleva a Contacto y Nosotros.
+  «Control interno» sigue dependiendo de la respuesta del servidor.
+
+Sin cambios: checkout, pagos, desglose fiscal, pedidos, autenticación, proveedor
+de tema, panel interno y `backend/` (subárbol idéntico a `master`, `736690e`;
+vale su medición de 4643 pruebas, 0 fallos, 3 omitidas). Sin migraciones.
+
+El defecto «identificador repetido en las líneas del carrito» no existe en
+`master`: lo corrigió la reconciliación anterior. No se tocó.
+
+Validación sobre `7f49168`: frontend 483 pruebas en 47 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 143 de 143,
+sin fallos, omitidas ni reintentos, 8,6 min.
+
+Queda fuera, registrado:
+
+- STOREFRONT-EDITORIAL-CMS = PENDIENTE. Ilustraciones por categoría y material
+  editorial deben ser contenido subido por la tienda. Hoy sólo existe la imagen
+  de campaña.
+- STOREFRONT-FEATURED-CATEGORIES = PROPUESTA. La portada muestra las primeras seis
+  categorías en el orden del servidor; no hay forma de destacar u ordenar.
+- TENANT-TYPOGRAPHY = PROPUESTA. El manual del piloto pide Montserrat; la
+  plataforma usa Inter y Unbounded para todas las tiendas.
+- INTERNAL-UI-V3 = PENDIENTE. Menú móvil del panel, gráficos y estilos del
+  trabajo paralelo.
+- Imágenes de producto con licencia: el comando `populate_storefront_images`, el
+  manifiesto y los recortes del trabajo paralelo no se portaron.
+- Hero configurable por tienda (variante clara u oscura): PENDIENTE.
+
+La deuda de SVC-FUNC-01 no cambia.
+
 ## 2026-10-01 — UX-RECON-SVC-01: la interfaz de #43 sobre el master con servicio y caja
 
 Rama `reconcile/uxui-after-svc`, sobre `master` `d98d70c` (que ya incluye SVC-FUNC-01
