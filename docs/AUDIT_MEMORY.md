@@ -336,7 +336,6 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | RBAC-F3 (sidebar) | MEDIUM | FRONTEND | `app/admin/lib/internal-modules.ts::canAccessModule` | cae a `Membership.role`; `admin.audit` sólo por rol legacy |
 | DRIFT-02 | MEDIUM | INVENTORY/FRONTEND | `frontend/app/lib/admin.ts` ajuste | no permite elegir sucursal; backend usa default |
 | AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
-| FE-AUTH-05 | MEDIUM | FRONTEND | `route.ts` | cuerpo del proxy sin límite de tamaño |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
 | DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
@@ -406,6 +405,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SVC-ASSIGN-UNASSIGN | MEDIUM | `4796db0` | `V1ServiceOrderAssignmentView.post` (null exige `service.orders.manage`); «Quitar» en `orders/[id]/page.tsx` | `SvcUnassignAuthorityTest`, `service-authority-console.test.tsx` | CORREGIDO |
 | SVC-ASSIGN-VIEW-01 | MEDIUM | `9b59a31` | `V1ServiceSurfaceMixin.require_assignment_authority` en candidatos y en recepción con técnico (antes bastaba `assign` sin `view`) | `SvcAssignVisibilityTest` | CORREGIDO |
 | HERO-MOBILE-CLIP | MEDIUM | `ff564e9`, `e082b26` | `Hero.tsx` (columna `min-w-0`, titular `min(clamp(…), 7.4vw)`), `product/page.tsx`, `ProductDetail.tsx` | E2E `hero-mobile-clip`, `storefront-text-fit` | CORREGIDO (pendiente de merge) |
+| FE-AUTH-05 | MEDIUM | `4fad36b` | `frontend/app/api/[...path]/route.ts` (`readBody`, `API_PROXY_MAX_BODY_BYTES`, 413) | `frontend/__tests__/api-proxy-body-limit.test.ts` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
