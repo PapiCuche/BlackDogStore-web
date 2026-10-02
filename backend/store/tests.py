@@ -558,8 +558,23 @@ class Phase50ProductAPITest(TestCase):
     def test_ordering_name_asc(self):
         slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=name")
         active = [s for s in slugs if s in {"macbook-air-p50", "macbook-pro-p50", "mac-studio-p50"}]
-        # "Mac Studio" < "MacBook Air" < "MacBook Pro" (space ASCII 32 < 'B' ASCII 66)
-        self.assertEqual(active, ["mac-studio-p50", "macbook-air-p50", "macbook-pro-p50"])
+        # WHERE "Mac Studio" FALLS DEPENDS ON THE DATABASE, AND BOTH ANSWERS ARE
+        # ALPHABETICAL. A byte collation ("C") puts it first because a space
+        # sorts before "B"; a linguistic one (en_US, what the PostgreSQL image
+        # ships with) ignores the space and puts "MacBook" first. This test
+        # asserted the byte order and failed on the first PostgreSQL that was
+        # not a developer's.
+        #
+        # What the endpoint owes is that `ordering=name` IS the database's
+        # order by name, so that is what is compared; and the pair every
+        # collation agrees on is pinned explicitly.
+        expected = list(
+            Product.objects
+            .filter(slug__in=active).order_by("name").values_list("slug", flat=True)
+        )
+        self.assertEqual(active, expected)
+        self.assertEqual(len(active), 3)
+        self.assertLess(active.index("macbook-air-p50"), active.index("macbook-pro-p50"))
 
     def test_ordering_newest(self):
         slugs = self._get_slugs("/api/products/?category=mac-p50&ordering=newest")

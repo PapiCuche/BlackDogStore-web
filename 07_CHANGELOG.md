@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — Backend PostgreSQL CI
+
+- Añadido workflow `.github/workflows/backend-postgres-validation.yml`.
+- Ejecuta Django con Python 3.12 y PostgreSQL 16 en pull requests que toquen
+  `backend/**` o el propio workflow.
+- Gates: `manage.py check`, migraciones sin cambios pendientes y suite backend
+  completa en un solo proceso.
+- Sin cambios funcionales ni migraciones.
+- La primera ejecución completa encontró dos defectos reales: `qrcode` faltaba en
+  `requirements.txt` (los PDF fiscales fallaban en una instalación limpia) y una
+  prueba de orden por nombre dependía de la colación de la base. Corregidos.
+
 ## 2026-10-02 — FE-AUTH-02 · FE-AUTH-04 · FE-AUTH-07 · Endurecimiento del frontend
 
 - La clave del carrito anónimo sale de una fuente segura (`5adcd28`).

@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — Backend CI sobre PostgreSQL
+
+Rama `ci/backend-postgres-validation`, desde `master` `1815ac1`.
+Estado: **PARCIAL / pendiente de CI remoto**. La primera ejecución se canceló al
+llegar a su límite de 35 minutos con la suite aún corriendo, sin ninguna prueba
+fallida; el límite pasa a 120 minutos (`0a17afd`).
+
+La segunda ejecución terminó en 53 minutos: 4643 pruebas, 1 fallo y 16 errores.
+Los dos eran defectos reales que las máquinas de desarrollo escondían:
+
+- **`qrcode` no estaba en `requirements.txt`.** Lo importa `store/fiscal/qr.py`
+  para el código QR del comprobante electrónico. Estaba instalado en las máquinas
+  de desarrollo, así que las pruebas pasaban allí; en una instalación limpia —el
+  runner de CI y la imagen de producción— todo PDF fiscal fallaba con
+  `ModuleNotFoundError` (16 errores). Se declara `qrcode==8.2`. Se revisaron los
+  demás paquetes que importa el backend: no falta ninguno más.
+- **Una prueba dependía de la colación de la base.** `test_ordering_name_asc`
+  esperaba «Mac Studio» antes de «MacBook Air», que es el orden por bytes de la
+  base local (colación `C`). La imagen de PostgreSQL usa una colación lingüística
+  (`en_US`), que ignora el espacio y pone «MacBook» primero. Los dos órdenes son
+  alfabéticos. La prueba compara ahora contra el orden por nombre de la propia
+  base y fija el par en el que todas las colaciones coinciden. El catálogo en
+  producción ordena por nombre con la colación de su base.
+
+Se añade una compuerta reproducible para cualquier cambio de backend:
+PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
+`manage.py check`, `makemigrations --check --dry-run` y la suite completa
+`manage.py test`. La suite corre en un solo proceso, sobre PostgreSQL, para que
+los cambios de seguridad y persistencia no dependan de una base SQLite local.
+
+No cambia código de aplicación, modelos, migraciones, auth, RBAC ni contratos API.
+
 ## 2026-10-02 — Endurecimiento del frontend: FE-AUTH-02, FE-AUTH-04, FE-AUTH-07
 
 Rama `security/frontend-hardening`, desde `master` `3f70ca0`. Código en `113a8dd`.
@@ -114,7 +146,7 @@ Deuda menor observada: el menú lista dos entradas hacia `/admin/settings`
 ## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
 
 Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`
-incorporado en `02b8ba4`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+incorporado en `02b8ba4`. Estado: **IMPLEMENTADO / MERGED** por PR #51 (`64b4d5e`). Sin backend, sin
 migraciones, sin cambios de permisos.
 
 El cajón de navegación del panel en un teléfono ya era un diálogo con el foco

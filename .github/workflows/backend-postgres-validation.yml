@@ -1,0 +1,82 @@
+name: Backend PostgreSQL Validation
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-postgres-validation.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-postgres-validation.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-postgres-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Django tests on PostgreSQL
+    runs-on: ubuntu-latest
+    # The full suite takes about 27 minutes on a developer laptop and did not
+    # finish in 35 on a hosted runner (run 36976127633 was cancelled by the
+    # limit, not by a failing test). It runs in one process on purpose.
+    timeout-minutes: 120
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: blackdog_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d blackdog_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      DEBUG: "1"
+      SECRET_KEY: "ci-backend-only-not-production"
+      ALLOWED_HOSTS: "localhost,127.0.0.1,testserver"
+      DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5432/blackdog_ci"
+      EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
+      FISCAL_ENABLED: "0"
+      FISCAL_ENVIRONMENT: "beta"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Verify migrations are committed
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run backend test suite
+        run: python manage.py test
