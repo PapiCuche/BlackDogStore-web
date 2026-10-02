@@ -39,6 +39,10 @@ export function StorefrontFooter() {
   return <Footer />;
 }
 
+const SHOP_CONTENT_ID = "contenido";
+// The panel's frame already marks its main area with this id.
+const PANEL_CONTENT_ID = "admin-main-content";
+
 /**
  * El contenido de la página, marcado con la superficie a la que pertenece.
  *
@@ -48,7 +52,33 @@ export function StorefrontFooter() {
  */
 export function StorefrontContent({ children }: { children: React.ReactNode }) {
   const internal = isInternalSurface(usePathname());
-  return <div className={internal ? "internal-surface" : "shop-surface"}>{children}</div>;
+  if (internal) return <div className="internal-surface">{children}</div>;
+  // `tabIndex={-1}`: the skip link moves FOCUS here, not just the scroll.
+  return (
+    <div id={SHOP_CONTENT_ID} tabIndex={-1} className="shop-surface outline-none">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * "Saltar al contenido" — the first thing the keyboard finds.
+ *
+ * Without it, someone using a keyboard or a screen reader walks the whole
+ * header on every page before reaching what they came for. It is invisible
+ * until it takes focus, and it points at the content of whichever surface the
+ * route belongs to.
+ */
+export function SkipLink() {
+  const internal = isInternalSurface(usePathname());
+  return (
+    <a
+      href={`#${internal ? PANEL_CONTENT_ID : SHOP_CONTENT_ID}`}
+      className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-foreground focus:px-4 focus:py-3 focus:text-sm focus:font-semibold focus:text-background"
+    >
+      Saltar al contenido
+    </a>
+  );
 }
 
 export function WhatsAppButton() {

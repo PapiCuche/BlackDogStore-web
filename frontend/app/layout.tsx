@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Unbounded } from "next/font/google";
 import "./globals.css";
 import {
+  SkipLink,
   StorefrontContent,
   StorefrontFooter,
   StorefrontHeader,
@@ -114,6 +115,7 @@ export default async function RootLayout({
             tiene el suyo — barra lateral, selector de empresa, barra superior —
             y llevaba los dos puestos a la vez.
           */}
+          <SkipLink />
           <StorefrontHeader />
           {/*
             SIN `pt-16`. El header es `sticky`, no `fixed`: participa en el
