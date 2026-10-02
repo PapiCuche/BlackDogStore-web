@@ -34,8 +34,9 @@ from rest_framework_simplejwt.tokens import AccessToken
 from .token_revocation import refresh_is_revoked, revoke_access_token
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from . import security_log
 from .tenancy import access_contexts, is_platform_admin, verified_company_relations
-from .throttles import LoginThrottle
+from .throttles import LoginThrottle, RefreshThrottle
 from .v1_auth_serializers import (
     V1AccessContextSerializer,
     V1CompanyRelationSerializer,
@@ -157,11 +158,13 @@ class V1LoginView(APIView):
         if user is None:
             # Spend the time anyway. See _DUMMY_HASH.
             check_password(password, _DUMMY_HASH)
+            security_log.login_failed(request, channel='native', identifier=email)
             return Response(
                 {'detail': INVALID_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED,
             )
 
         if not user.check_password(password):
+            security_log.login_failed(request, channel='native', identifier=email)
             return Response(
                 {'detail': INVALID_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED,
             )
@@ -169,10 +172,12 @@ class V1LoginView(APIView):
         # Checked AFTER the password, so an attacker cannot learn that an
         # address exists by watching this branch answer faster.
         if not user.is_active:
+            security_log.login_failed(request, channel='native', identifier=email)
             return Response(
                 {'detail': INVALID_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        security_log.login_succeeded(request, channel='native', user=user)
         refresh = RefreshToken.for_user(user)
         return Response({**_token_payload(refresh), **_identity_payload(user)})
 
@@ -189,6 +194,7 @@ class V1RefreshView(APIView):
 
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [RefreshThrottle]
 
     def post(self, request):
         serializer = V1RefreshSerializer(data=request.data)

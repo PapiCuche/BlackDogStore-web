@@ -3,10 +3,103 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — AUDIT-07 y DEP-05: auditoría del catálogo y versiones de parche
+
+Rama `fix/audit-log-company`, sobre `security/backend-hardening`. Estado:
+**CORREGIDO** en esta rama. Sin migraciones.
+
+- **AUDIT-07 (`06cd798`).** El registro de auditoría de una empresa sólo enseña
+  las filas que llevan esa empresa. Cambiar un producto (precio, nombre,
+  publicación) y crear una categoría escribían la fila sin empresa: existía, pero
+  ningún administrador del tenant podía verla. Ahora la llevan. El cambio de rol
+  global sigue sin empresa a propósito: es una operación de plataforma. Las filas
+  antiguas de catálogo sin empresa no se rellenan; en una base nueva no existen.
+- **DEP-05 (`65d34ad`).** Cinco dependencias del backend pasan al último parche
+  de su línea: djangorestframework 3.17.2, psycopg2-binary 2.9.13, boto3
+  1.43.107, reportlab 4.4.10 y cryptography 50.0.2.
+
+Pruebas: `test_audit_company` (4; 3 fallan antes del cambio). La suite completa
+sobre una instalación limpia con las versiones nuevas la da el CI de backend de
+este PR.
+
+AUDIT-01…06 = PROPUESTA. Son ediciones de borrador sin fila de auditoría: líneas
+de presupuesto, líneas de transferencia, cantidades de un recuento y audiencia de
+un comunicado. Sus cierres (publicar, despachar, aprobar) sí se auditan y el
+resultado queda en el Kardex o en el documento. Falta decidir si cada edición de
+un borrador merece su propia fila.
+
+## 2026-10-02 — Endurecimiento del backend: sesión, configuración, transferencias y admin
+
+Rama `security/backend-hardening`, desde `master` `dbe30b2`. Estado: **CORREGIDO**
+en esta rama. Sin migraciones. Sin cambios en contratos de la API salvo los que
+se dicen.
+
+- **SEC-SET-04-A — renovar la sesión tiene límite (`e066183`).** Las dos rutas de
+  renovación (cookie para la web, cuerpo para la app) no tenían limitador, y cada
+  renovación válida escribe una fila de token. Ahora comparten un cupo de 30 por
+  minuto por dirección. Sólo cuentan las peticiones que traen un refresh: la web
+  intenta renovar en cada 401, también para visitantes sin sesión, y esas
+  peticiones no gastan el cupo de quien sí la tiene.
+- **AUTH-LOGGING-01 — cada intento de inicio de sesión deja registro
+  (`7d5efc8`).** Ningún canal lo hacía. Fallos a nivel de aviso con canal,
+  dirección y el nombre escrito; aciertos con el identificador del usuario. La
+  contraseña no se registra nunca. Son líneas de registro, no filas: un anónimo no
+  puede llenar una tabla.
+- **Configuración que falla cerrada (`e2dff73`).** `JWT_COOKIE_SAMESITE` sólo
+  admite `Lax` o `Strict` (SEC-SET-03). Producción responde sólo JSON; la API
+  navegable queda en desarrollo (SEC-SET-09). Producción no arranca con
+  `FRONTEND_URL` o `CHECKOUT_RETURN_URL` ausentes o en `localhost` (SEC-SET-10,
+  ENV-02). Hay configuración de registro: antes no había ninguna y los eventos de
+  seguridad de Django se descartaban en producción (SEC-SET-06).
+- **SEC-SET-05 — la importación de Excel aplica su límite antes de leer
+  (`e2dff73`).** Leía el archivo entero y después comparaba con 10 MB.
+- **ENV-04 — `.env.example` describe todas las variables que lee el backend
+  (`a6beda6`).** Faltaban 27.
+- **INV-LEGACY-V1-F2 — una línea no se edita sobre una transferencia ya despachada
+  (`1f965f7`).** Se decidía si era borrador mirando el objeto en la mano, sin
+  bloquear la fila; un despacho simultáneo dejaba la línea escrita sobre un
+  documento cuyas unidades ya habían salido. Ahora se bloquea y se relee, con el
+  mismo bloqueo que toma el despacho.
+- **INV-LEGACY-V1-F3 — `page_size` negativo ya no responde 500 (`1f965f7`).**
+- **SEC-SET-02 — el admin de Django no se registra en producción (`79d1077`,
+  `b0d2434`).** Trabajo de la otra sesión, incorporado aquí. En producción no
+  existe la ruta `/admin/` del backend; en desarrollo sigue disponible.
+
+Cambios que ve quien despliega: producción exige `FRONTEND_URL` y
+`CHECKOUT_RETURN_URL` reales, y el admin de Django deja de existir allí. El primer
+administrador se crea con `createsuperuser`, como ya decía la guía de despliegue.
+
+Pruebas nuevas: `test_refresh_throttle` (8), `test_security_log` (6),
+`test_production_settings` (14; cada ajuste se comprueba arrancando un proceso
+nuevo con ese entorno), `test_transfer_line_lock` (8) y
+`test_production_url_surface` (3). Todas se vieron fallar antes del cambio.
+
+Validación local: las 55 pruebas del área, OK en PostgreSQL; `check` y
+`makemigrations --check` sin cambios. La suite completa se midió por separado
+sobre el límite de renovación (`e066183`: 4651 pruebas, 0 fallos, 3 omitidas) y
+sobre el cambio del admin (`7f0f459`: 4646, 0 fallos, 3 omitidas); la del conjunto
+la da el CI de backend de este PR. Con el backend del límite de renovación,
+Playwright completo: 164 de 164.
+
+Queda abierto, con el motivo:
+
+- **F-TENANT-01 = BLOQUEADO (decisión de producto).** Un administrador de empresa
+  puede añadir por identificador a cualquier usuario de la plataforma y ver su
+  nombre de usuario. La invitación con aceptación ya existe y es lo único que usa
+  la interfaz. Cerrar el alta directa a los administradores de empresa cambia un
+  contrato que 27 pruebas ejercen. Falta decidir: ¿el alta directa queda sólo para
+  el administrador de la plataforma?
+- **THROTTLE-CACHE-01 = PENDIENTE.** Los límites se cuentan en la memoria de cada
+  proceso. Con un proceso (lo que usa el despliegue preparado) son exactos; con
+  varios, cada uno cuenta por su lado. Compartirlos necesita una caché común.
+- **TOKEN-HYGIENE-01 = PENDIENTE.** Las filas de token caducadas no se purgan
+  solas; falta programar `flushexpiredtokens` en el servidor.
+
 ## 2026-10-02 — Backend CI sobre PostgreSQL
 
 Rama `ci/backend-postgres-validation`, desde `master` `1815ac1`.
-Estado: **PARCIAL / pendiente de CI remoto**. La primera ejecución se canceló al
+Estado: **IMPLEMENTADO / MERGED** por PR #49 (`dbe30b2`). La tercera ejecución, sobre
+`d195632`, terminó en verde. La primera ejecución se canceló al
 llegar a su límite de 35 minutos con la suite aún corriendo, sin ninguna prueba
 fallida; el límite pasa a 120 minutos (`0a17afd`).
 

@@ -668,6 +668,9 @@ class AdminProductDetailView(APIView):
                 target_id=product.pk,
                 metadata={'product_name': product.name, 'product_id': product.pk, 'changed_fields': changed},
                 request=request,
+                # AUDIT-07: without it the row exists but the tenant's own
+                # audit log, which reads by company, never shows it.
+                company=company,
             )
 
         return Response(AdminProductSerializer(product).data)
@@ -803,6 +806,7 @@ class AdminCategoryListView(APIView):
             target_id=category.pk,
             metadata={'name': category.name, 'slug': category.slug},
             request=request,
+            company=company,
         )
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
 

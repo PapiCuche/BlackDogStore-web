@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — AUDIT-07 · DEP-05
+
+- Los cambios de producto y la creación de categorías quedan en la auditoría de su
+  empresa (`06cd798`).
+- Cinco dependencias del backend al último parche de su línea (`65d34ad`).
+- Sin migraciones.
+
+## 2026-10-02 — Endurecimiento del backend
+
+- Límite de 30 por minuto y dirección al renovar la sesión, web y app
+  (SEC-SET-04-A, `e066183`).
+- Registro de cada intento de inicio de sesión, sin la contraseña
+  (AUTH-LOGGING-01, `7d5efc8`).
+- Configuración que falla cerrada: `SameSite`, sólo JSON en producción, URL
+  públicas obligatorias, registro a stderr (SEC-SET-03/06/09/10, `e2dff73`).
+- La importación de Excel aplica su límite antes de leer (SEC-SET-05, `e2dff73`).
+- `.env.example` describe las 27 variables que faltaban (ENV-04, `a6beda6`).
+- La edición de líneas bloquea la transferencia; `page_size` negativo ya no da 500
+  (INV-LEGACY-V1-F2/F3, `1f965f7`).
+- El admin de Django no se registra en producción (SEC-SET-02, `79d1077`).
+- Sin migraciones.
+- PR #49 (CI de backend) y PR #54 (endurecimiento del frontend) ya están en master.
+
 ## 2026-10-02 — Backend PostgreSQL CI
 
 - Añadido workflow `.github/workflows/backend-postgres-validation.yml`.
