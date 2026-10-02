@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — HERO-MOBILE-CLIP · El texto de la tienda cabe en un teléfono
+
+Rama `fix/hero-mobile-clip`, desde `master` `c47c538`. El titular y el párrafo del
+hero ya no se cortan en pantallas de hasta 414 px (`ff564e9`); lo mismo para el
+titular del catálogo y «Productos relacionados» de la ficha (`e082b26`). De 640 px
+en adelante todo sale idéntico a `master`. Dos pruebas de navegador nuevas miden el
+texto contra la pantalla, no sólo el ancho de la página (`ff564e9`, `e082b26`,
+`42ef631`). Sin backend, sin migraciones, sin cambios en el panel. Frontend 483
+pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright 163/163.
+
+Revisión del diseño V3 pendiente, sin código: el perrito es el isotipo de cada
+tienda y ya está; las imágenes del trabajo paralelo siguen fuera por falta de
+licencia (STOREFRONT-IMAGES-LICENSE); INTERNAL-UI-V3 sigue pendiente porque sólo
+toca piezas compartidas del panel; TENANT-TYPOGRAPHY y STOREFRONT-PILLARS-CMS
+siguen como propuesta. Deuda nueva: ADMIN-INVENTORY-MOBILE-OVERFLOW.
+
 ## 2026-10-01 — STOREFRONT-V3 · Tienda pública sobre el master auditado
 
 Rama `reconcile/storefront-v3-after-ux`. Cabecera, pie y portada leen las
