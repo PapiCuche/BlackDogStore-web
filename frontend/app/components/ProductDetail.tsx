@@ -391,7 +391,8 @@ export default function ProductDetail({ product }: { product: Product }) {
         {relatedProducts.length > 0 ? (
           <section className="mb-8 mt-16 border-t border-bd-border pt-10 sm:mt-20 sm:pt-12">
             <span className="section-label">Explorar</span>
-            <h2 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+            {/* A 320 px «RELACIONADOS» no cabía a 1.875rem y desbordaba la página. */}
+            <h2 className="mt-2 font-display text-[min(1.875rem,8vw)] font-black italic uppercase leading-9 tracking-[-0.035em] text-foreground">
               Productos relacionados
             </h2>
             <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">

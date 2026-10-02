@@ -3,6 +3,98 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — HERO-MOBILE-CLIP y cierre del frontend V3
+
+Rama `fix/hero-mobile-clip`, sobre `master` `c47c538`. Código en `42ef631`.
+Estado: **CORREGIDO, pendiente de revisión y merge**. Sin backend, sin
+migraciones, sin cambios en el panel interno.
+
+Qué se corrigió:
+
+- **Hero (`ff564e9`).** Hasta 414 px el titular y el párrafo se cortaban por la
+  derecha. La columna de texto no podía encogerse por debajo de su palabra más
+  larga y la sección escondía lo que sobraba. Ahora la columna puede encogerse,
+  el titular escala con el ancho de la pantalla hasta su tamaño de siempre, y el
+  marco y la etiqueta superior ocupan menos en pantallas estrechas. No hay ningún
+  valor escrito para un ancho concreto. De 640 px en adelante el hero sale
+  idéntico píxel a píxel al de `master`, en tema claro y oscuro (medido en 640,
+  768, 1024 y 1440 px). La losa oscura, los temas y el logotipo no cambian.
+- **Titular del catálogo y «Productos relacionados» (`e082b26`).** Al barrer el
+  resto de la tienda con la misma medición aparecieron dos titulares con el mismo
+  defecto: el de `/product` entre 320 y 390 px y el de la ficha a 320 px. Ambos
+  escalan ahora con el ancho. A 640 y 1440 px salen idénticos a `master`.
+
+Pruebas nuevas, las dos de navegador:
+
+- `e2e/hero-mobile-clip.spec.ts` mide cada trozo de texto del hero contra el área
+  visible en 320, 360, 375, 390 y 414 px, en tema claro y oscuro; comprueba que
+  ninguna palabra del titular se parte, que la letra no baja de 20 px, que la losa
+  sigue oscura y que en escritorio el tamaño del titular es el de antes. Sobre
+  `master` fallan 10 de sus 12 casos.
+- `e2e/storefront-text-fit.spec.ts` aplica la misma medición a `/`, `/product`,
+  una ficha con relacionados, `/services`, `/about`, `/contact`, `/cart` y `/auth`
+  en los cinco anchos. Cada ruta se carga una sola vez y se redimensiona
+  (`42ef631`): cargarla una vez por ancho agotaba el límite de peticiones del
+  carrito y hacía fallar la prueba siguiente.
+
+La prueba de desbordamiento que ya existía compara el ancho de la página con el
+de la pantalla. No ve un texto cortado dentro de una sección con
+`overflow-hidden`; por eso el defecto pasó. Las pruebas nuevas miden el texto.
+
+Validación sobre `42ef631`: frontend 483 pruebas en 47 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 163 de 163,
+sin fallos, omitidas ni reintentos, 10,1 min. `backend/` es idéntico al de
+`master`; vale su medición de 4643 pruebas, 0 fallos, 3 omitidas.
+
+Una pasada anterior, sobre `e082b26`, dio 194 de 195: falló «una línea del
+carrito vuelve a la ficha de su producto» con un 429 del límite del carrito,
+provocado por la primera versión de la prueba nueva. No era un defecto de la
+tienda; se corrigió la prueba y se repitió la pasada completa.
+
+### Qué queda del diseño V3
+
+Se comparó `master`, el trabajo paralelo sin integrar y el manual de marca.
+
+Ya está en `master` y no se rehízo: categorías reales en cabecera, pie y portada;
+navegación móvil; pie con datos de la tienda; hero con campaña opcional; carrusel;
+`/about` y `/contact`; temas; línea del carrito enlazada; separación entre tienda
+y panel; movimiento reducido.
+
+- **Perrito decorativo = IMPLEMENTADO como marca de la tienda.** Es el isotipo que
+  cada empresa sube en su configuración (`logo_isotype_on_*_url`). Aparece como
+  marca de agua del hero, en el bloque de promoción, en el acceso y en el menú del
+  panel. Otra empresa ve el suyo. En móvil la marca de agua del hero no se
+  muestra: PROPUESTA, no defecto.
+- **STOREFRONT-IMAGES-LICENSE = PENDIENTE.** El trabajo paralelo trae diez
+  ilustraciones (`assets/editorial/`: hero, iphone, mac, ipad y accesorios, cada
+  una con y sin fondo) y cuatro fotos de producto (`assets/products/`) con su
+  manifiesto. Según su propia nota, las ilustraciones salen de una propuesta de
+  Figma con el fondo quitado y muestran productos Apple; las fotos son copias de
+  imágenes del sitio de Apple. No hay evidencia de origen ni de licencia de
+  ninguna. No se integran. Los originales no se borraron. Para integrarlas hace
+  falta, por cada imagen: quién la hizo, de dónde salió y un permiso de uso
+  comercial por escrito.
+- **TENANT-TYPOGRAPHY = PROPUESTA.** Sin cambio.
+- **STOREFRONT-PILLARS-CMS = PROPUESTA.** La portada funciona con los pilares
+  compilados; no es imprescindible.
+- **INTERNAL-UI-V3 = PENDIENTE.** El trabajo paralelo cambia sólo piezas
+  compartidas del panel, ninguna página: el armazón (`AdminShell`), el menú
+  lateral con diálogo móvil, la barra superior, los selectores de empresa y
+  sucursal, la campana, los gráficos y los estilos globales `.admin-workspace`.
+  Por eso alcanza a todas las rutas a la vez (`/admin`, productos, inventario,
+  ventas, caja, clientes, servicio y configuración) y no se puede portar una ruta
+  sin las demás. Seis de los nueve archivos chocan con `master`, que ya cambió
+  esas piezas en SVC-FUNC-01 y UX-RECON-SVC-01. No hay un port pequeño y seguro;
+  necesita fase propia con sus pruebas.
+
+Deuda nueva:
+
+- **ADMIN-INVENTORY-MOBILE-OVERFLOW.** `/admin/inventory` desborda la página entre
+  284 y 378 px en pantallas de hasta 414 px. Ya ocurre en `master`. No se tocó: es
+  del panel.
+- **HERO-WATERMARK-MOBILE = PROPUESTA.** Mostrar el isotipo del hero también en
+  móvil.
+
 ## 2026-10-01 — STOREFRONT-V3: la tienda pública converge sobre el master auditado
 
 Rama `reconcile/storefront-v3-after-ux`, sobre `master` `0c83381`. Código en
@@ -70,7 +162,8 @@ reducido correctos.
 Defecto encontrado, **anterior a esta rama** (idéntico en `master`): en móvil, hasta
 414 px, el titular y el párrafo del hero se cortan por la derecha. La columna de
 texto mide 367 px fijos y la sección oculta lo que sobra, así que la prueba de
-desbordamiento no lo detecta. Queda como HERO-MOBILE-CLIP, sin corregir aquí.
+desbordamiento no lo detecta. Queda como HERO-MOBILE-CLIP, sin corregir aquí
+(corregido después en `ff564e9`, rama `fix/hero-mobile-clip`).
 
 Queda fuera, registrado:
 
