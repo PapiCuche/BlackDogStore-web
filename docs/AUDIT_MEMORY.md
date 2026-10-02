@@ -330,10 +330,9 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username`. BLOQUEADO: decidir si el alta directa queda sólo para el administrador de plataforma (la invitación ya existe; 27 pruebas ejercen el alta directa) |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
-| AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
+| AUDIT-01…06 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py` | PROPUESTA: ediciones de borrador sin fila de auditoría (los cierres sí se auditan); falta decidir la granularidad |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-03 | MEDIUM | INFRA | `.github/` | sin alertas Dependabot ni `dependabot.yml` (CI-01 cerrado: hay CI de frontend y de backend) |
-| DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
 | INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
@@ -414,6 +413,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | AUTH-LOGGING-01 | LOW | `7d5efc8` | `store/security_log.py`, `LoginView`, `V1LoginView` | `store/test_security_log.py` | CORREGIDO |
 | ENV-04 | LOW | `a6beda6` | `.env.example` | — | CORREGIDO |
 | CI-01 | MEDIUM | `ba4e9ff` | `.github/workflows/backend-postgres-validation.yml` (encontró `qrcode` sin declarar y una prueba dependiente de la colación) | CI en PR | CORREGIDO |
+| AUDIT-07 | LOW | `06cd798` | `admin_views.py` (`product_updated`/`deactivated`/`reactivated`, `category_created` con `company`) | `store/test_audit_company.py` | CORREGIDO |
+| DEP-05 | MEDIUM | `65d34ad` | `backend/requirements.txt` | CI de backend en instalación limpia | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
