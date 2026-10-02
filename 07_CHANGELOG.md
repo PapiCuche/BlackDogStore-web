@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — RBAC-F3 · RBAC-F4 · El panel no ofrece lo que el servidor niega
+
+- Personal sólo ofrece invitar, desactivar acceso y reenviar o revocar invitaciones
+  a quien tiene `memberships.manage` (`58d17de`).
+- El menú del panel usa la misma regla que las páginas: con empresa mandan las
+  capacidades; Auditoría declara `memberships.view` (`847d3bf`).
+- Eliminado `BranchAccessPanel.tsx`, sin uso (`4f5d736`).
+- RBAC-F6, RBAC-F7 y RBAC-F11 ya estaban corregidos en `master`; RBAC-F5 era el
+  mismo defecto que RBAC-F3.
+- Sin cambios de backend, migraciones ni API.
+- Frontend 506 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #51 (botón del menú móvil) ya está integrado en master por merge `64b4d5e`.
+
 ## 2026-10-02 — ADMIN-MENU-ARIA · Botón del menú móvil del panel
 
 - El botón que abre la navegación del panel en un teléfono anuncia que abre un

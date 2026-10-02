@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — RBAC-F3 y RBAC-F4: el panel no ofrece lo que el servidor niega
+
+Rama `fix/staff-actions-capability`, desde `master` `64b4d5e`. Código en
+`4f5d736`. Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones. La
+autoridad sigue en el servidor; cambia sólo qué enseña la interfaz.
+
+- **Personal (RBAC-F4, `58d17de`).** Ver al personal pide `memberships.view`;
+  invitar, desactivar el acceso y reenviar o revocar una invitación piden
+  `memberships.manage`. La pantalla pintaba todos los botones a quien pudiera
+  entrar, y a quien sólo podía ver cada clic le devolvía un 403. Ahora los botones
+  siguen la capacidad que comprueba el servidor.
+- **Menú del panel (RBAC-F3, `847d3bf`).** Cada página decide con las capacidades
+  cuando hay empresa, y con el rol antiguo sólo para el operador sin empresa. El
+  menú seguía otra regla: si las capacidades no alcanzaban, caía al rol antiguo y
+  listaba módulos cuya página respondía «sin permiso». Ahora usa la misma regla
+  que las páginas. Auditoría declara `memberships.view`, que es lo que piden su
+  página y el servidor; antes sólo declaraba rol antiguo y quien tenía la
+  capacidad no la veía en el menú.
+- **Código sin uso (`4f5d736`).** Se elimina `BranchAccessPanel.tsx` (334 líneas):
+  ninguna pantalla lo monta y nada lo importa. Conservaba la oferta de «Todas».
+
+Revisados y ya corregidos en `master` por trabajo posterior a la auditoría F1, sin
+cambio aquí: RBAC-F6 (detalle de transferencia: las acciones piden
+`inventory.adjust`), RBAC-F7 (accesos del personal: `memberships.manage`) y
+RBAC-F11 (detalle de pedido: reenviar correo, nota de venta y comprobante piden
+su capacidad). RBAC-F5 era el mismo defecto del menú que RBAC-F3.
+
+Pruebas: `staff-screen-authority.test.tsx` (3 casos; el de sólo lectura falla
+sobre `master`) e `internal-modules-access.test.ts` (9 casos; 6 fallan sobre
+`master`). En navegador, con las cuentas de ventas, inventario y técnico: cada
+entrada del menú abre su página, ninguna responde «sin permiso».
+
+Validación sobre `4f5d736`: frontend 506 pruebas en 52 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,0 min.
+
+Deuda menor observada: el menú lista dos entradas hacia `/admin/settings`
+(«Empresa» y «Configuración») y dos hacia `/admin/inventory/reports`.
+
 ## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
 
 Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`
