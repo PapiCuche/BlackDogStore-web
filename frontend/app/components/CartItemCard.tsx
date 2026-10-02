@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { formatMoney } from "../lib/format";
 
 type CartItemCardProps = {
@@ -42,9 +43,14 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
             )}
           </div>
           <div className="min-w-0">
-            <p className="truncate font-display font-extrabold uppercase tracking-[-0.02em] text-foreground">
+            {/* STOREFRONT-V3 — la línea lleva a la ficha: quien duda de lo que
+                puso en el carrito vuelve a verlo sin buscarlo. */}
+            <Link
+              href={`/product/${product.slug}`}
+              className="block truncate font-display font-extrabold uppercase tracking-[-0.02em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
               {product.name}
-            </p>
+            </Link>
             <p className="mt-1 text-sm text-muted">S/ {formatMoney(product.price)} c/u</p>
           </div>
         </div>
@@ -56,6 +62,8 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
               type="number"
               min={1}
               value={quantity}
+              // Con dos líneas hay dos campos «Cantidad»: cada uno dice de qué.
+              aria-label={`Cantidad de ${product.name}`}
               onChange={(event) => updateQuantity(event.target.value)}
               className="h-11 w-16 rounded-xl border border-bd-border bg-background px-2 text-center text-sm tabular-nums text-foreground focus:border-foreground/25 focus:outline-none"
             />
