@@ -74,6 +74,72 @@ const CLIENT_IDENTITY_HEADERS = new Set([
   "fly-client-ip",
 ]);
 
+/**
+ * A BODY HAS A CEILING — FE-AUTH-05.
+ *
+ * This handler read the whole request body into memory before forwarding it,
+ * with no limit: anyone, signed in or not, could post a body of any size to any
+ * path under /api/ and this process held all of it. The backend has its own
+ * limits, but they apply after the memory is already spent here.
+ *
+ * The ceiling sits above the largest body the backend accepts — a service
+ * evidence photo, 25 MB by default (`SERVICE_EVIDENCE_MAX_UPLOAD_BYTES`), plus
+ * its multipart envelope. A deployment that raises that limit raises this one
+ * with `API_PROXY_MAX_BODY_BYTES`.
+ */
+const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+const MAX_BODY_BYTES = (() => {
+  const configured = Number(process.env.API_PROXY_MAX_BODY_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_MAX_BODY_BYTES;
+})();
+
+function bodyTooLarge(): NextResponse {
+  return new NextResponse(
+    JSON.stringify({ detail: "El contenido enviado es demasiado grande." }),
+    { status: 413, headers: { "content-type": "application/json" } },
+  );
+}
+
+/**
+ * Reads the body up to the ceiling and returns `null` when it goes past it.
+ *
+ * `Content-Length` is only a shortcut to refuse early: it is the sender's
+ * claim, and a chunked body carries none. The count of bytes actually read is
+ * what decides, and reading stops at the first chunk that crosses the line.
+ */
+async function readBody(req: NextRequest): Promise<ArrayBuffer | null> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
+
+  if (!req.body) {
+    const whole = await req.arrayBuffer();
+    return whole.byteLength > MAX_BODY_BYTES ? null : whole;
+  }
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const whole = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    whole.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return whole.buffer;
+}
+
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 /**
@@ -137,7 +203,9 @@ async function proxy(req: NextRequest, ctx: RouteContext): Promise<NextResponse>
 
   let body: ArrayBuffer | undefined;
   if (!["GET", "HEAD"].includes(req.method.toUpperCase())) {
-    body = await req.arrayBuffer();
+    const read = await readBody(req);
+    if (read === null) return bodyTooLarge();
+    body = read;
   }
 
   let upstream: Response;

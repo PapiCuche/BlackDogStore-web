@@ -6,7 +6,9 @@ documentación real, sin reemplazar su historial.
 ## 2026-10-02 — Backend CI sobre PostgreSQL
 
 Rama `ci/backend-postgres-validation`, desde `master` `1815ac1`.
-Estado: **PARCIAL / pendiente de CI remoto**.
+Estado: **PARCIAL / pendiente de CI remoto**. La primera ejecución se canceló al
+llegar a su límite de 35 minutos con la suite aún corriendo, sin ninguna prueba
+fallida; el límite pasa a 120 minutos (`0a17afd`).
 
 Se añade una compuerta reproducible para cualquier cambio de backend:
 PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
@@ -15,6 +17,74 @@ PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
 los cambios de seguridad y persistencia no dependan de una base SQLite local.
 
 No cambia código de aplicación, modelos, migraciones, auth, RBAC ni contratos API.
+
+## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
+
+Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`
+incorporado en `02b8ba4`. Estado: **IMPLEMENTADO / MERGED** por PR #51 (`64b4d5e`). Sin backend, sin
+migraciones, sin cambios de permisos.
+
+El cajón de navegación del panel en un teléfono ya era un diálogo con el foco
+atrapado. El botón que lo abre no llevaba estado: un lector de pantalla anunciaba
+un botón sin más y nada cambiaba al pulsarlo. Ahora lleva
+`aria-haspopup="dialog"` y `aria-expanded`, y mientras el cajón está abierto
+apunta a él con `aria-controls`.
+
+Pruebas: `__tests__/admin-menu-trigger-a11y.test.tsx` (3 casos, los 3 fallan
+sobre `master`). La prueba del selector de empresa buscaba «el botón plegado»;
+ahora hay dos y elige el que abre una lista. Comprobado en navegador a 375 px:
+plegado, abierto con 32 enlaces, y Escape devuelve el foco al botón.
+
+Validación sobre `02b8ba4`: frontend 494 pruebas en 50 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,3 min.
+
+## 2026-10-02 — FE-AUTH-05: el proxy `/api` pone tope al cuerpo que acepta
+
+Rama `fix/api-proxy-body-limit`, desde `master` `1815ac1`. Código en `4fad36b`.
+Estado: **IMPLEMENTADO / MERGED** por PR #50 (`2d9cc97`). Sin backend, sin migraciones, sin cambios de
+autenticación, permisos ni contratos de la API.
+
+El proxy de Next (`frontend/app/api/[...path]/route.ts`) leía entero en memoria el
+cuerpo de cada petición antes de reenviarlo, sin límite. Cualquiera, con sesión o
+sin ella, podía enviar un cuerpo de cualquier tamaño a cualquier ruta bajo `/api/`
+y el proceso de Next lo retenía completo. Los topes del backend se aplicaban
+después.
+
+Ahora el cuerpo se lee a trozos hasta un tope y se rechaza con 413 en cuanto lo
+supera, sin llamar al backend. `Content-Length` sólo sirve para rechazar antes;
+deciden los bytes leídos, así que un tamaño declarado falso o un envío a trozos no
+lo evitan. El tope es 32 MiB: por encima de la subida más grande que acepta el
+backend (una foto de evidencia de servicio, 25 MB, más su envoltorio). Se cambia
+con `API_PROXY_MAX_BODY_BYTES`.
+
+Alcance: en la topología de producción aprobada Caddy envía `/api/*` directo a
+Django, así que este proxy no atiende al navegador allí. Sí lo atiende en
+desarrollo y en cualquier despliegue que publique Next sin un proxy delante.
+
+Pruebas: `__tests__/api-proxy-body-limit.test.ts` (7 casos; 4 fallan sobre
+`master`). Comprobado además contra un servidor real: 34 MB declarados y 34 MB a
+trozos responden 413; 1 MB y un inicio de sesión llegan al backend.
+
+Validación sobre `4fad36b`: frontend 491 pruebas en 49 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,0 min.
+
+Dos pasadas anteriores de Playwright sobre el mismo commit no fueron limpias, por
+el entorno de pruebas y no por el cambio. En la primera, `fiscal-invoice` no pudo
+iniciar sesión: una prueba manual mía acababa de gastar el límite de inicios de
+sesión. En la segunda se omitieron 9 casos de `tax-breakdown`: la base de pruebas
+se había quedado sin ningún producto con 4 unidades tras varias pasadas seguidas.
+Se repuso el stock y la tercera pasada fue completa.
+
+Además, sobre `master` `1815ac1`:
+
+- Playwright completo en local: 164 de 164.
+- Barrido del panel en un teléfono: 37 rutas de `/admin` (33 fijas y 4 de
+  detalle) en 320, 360, 375, 390, 414 y 768 px, con sesión de administrador.
+  Ninguna desborda la página y ningún texto queda cortado fuera de un contenedor
+  desplazable. El menú móvil del panel ya existe en `master` (diálogo, foco
+  atrapado, Escape, foco devuelto).
 
 ## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
 

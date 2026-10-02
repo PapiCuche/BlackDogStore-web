@@ -35,7 +35,13 @@ describe('AdminShell company switcher', () => {
       </AdminShell>,
     );
 
-    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    // The switcher is the button that opens a LISTBOX. The mobile menu button
+    // is also collapsible, so "the collapsed button" no longer names one thing.
+    const switcher = screen
+      .getAllByRole('button', { expanded: false })
+      .find((button) => button.getAttribute('aria-haspopup') === 'listbox');
+    expect(switcher).toBeDefined();
+    await userEvent.click(switcher!);
     // The interactive element itself owns role="option", so keyboard focus,
     // selection semantics and the click target are the same element.
     const option = screen.getByRole('option', { name: /Otra/ });

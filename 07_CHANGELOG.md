@@ -12,6 +12,28 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   completa en un solo proceso.
 - Sin cambios funcionales ni migraciones.
 
+## 2026-10-02 — ADMIN-MENU-ARIA · Botón del menú móvil del panel
+
+- El botón que abre la navegación del panel en un teléfono anuncia que abre un
+  diálogo y si está abierto (`aria-haspopup`, `aria-expanded`, `aria-controls`)
+  (`e2ce0e2`).
+- Sin cambios de backend, migraciones, auth, RBAC ni API.
+- Cobertura nueva: Jest `admin-menu-trigger-a11y.test.tsx`.
+- Frontend 494 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #50 (FE-AUTH-05) ya está integrado en master por merge `2d9cc97`.
+
+## 2026-10-02 — FE-AUTH-05 · Tope al cuerpo en el proxy `/api`
+
+- El proxy de Next ya no guarda en memoria un cuerpo sin límite: lee a trozos
+  hasta 32 MiB (`API_PROXY_MAX_BODY_BYTES`) y responde 413 si se supera, sin llamar
+  al backend (`4fad36b`).
+- Sin cambios de backend, migraciones, auth, RBAC ni API.
+- Cobertura nueva: Jest `api-proxy-body-limit.test.ts`.
+- Frontend 491 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- Barrido móvil del panel sobre `master` `1815ac1`: 37 rutas, sin desbordes.
+
 ## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
 
 - Corregido el desbordamiento móvil de `/admin/inventory`: los paneles y su cuerpo

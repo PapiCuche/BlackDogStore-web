@@ -19,6 +19,7 @@
 import Link from "next/link";
 import { CompanySwitcher } from "./CompanySwitcher";
 import { IconBranch, IconMenu, IconShield } from "./icons";
+import { MOBILE_SIDEBAR_ID } from "./InternalSidebar";
 import type { BranchScope, InternalDashboard } from "../lib/internal-api";
 import { roleLabel, type AuthUser } from "../../lib/auth";
 
@@ -28,6 +29,8 @@ type Props = {
   user: AuthUser;
   dashboard: InternalDashboard | null;
   onOpenMenu: () => void;
+  /** Whether the mobile drawer is open, so the button that opens it can say so. */
+  menuOpen?: boolean;
   onSelectCompany: (companyId: number) => void;
 };
 
@@ -52,6 +55,7 @@ export function InternalTopbar({
   user,
   dashboard,
   onOpenMenu,
+  menuOpen = false,
   onSelectCompany,
 }: Props) {
   const access = dashboard?.access;
@@ -76,6 +80,9 @@ export function InternalTopbar({
             type="button"
             onClick={onOpenMenu}
             aria-label="Abrir menú de módulos"
+            aria-haspopup="dialog"
+            aria-expanded={menuOpen}
+            aria-controls={menuOpen ? MOBILE_SIDEBAR_ID : undefined}
             className="rounded-lg p-2 text-muted transition hover:bg-surface-2 hover:text-foreground lg:hidden"
           >
             <IconMenu />
