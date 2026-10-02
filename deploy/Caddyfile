@@ -3,12 +3,11 @@
 # Caddy pide y renueva solo el certificado de Let's Encrypt para SITE_DOMAIN y
 # redirige el puerto 80 a HTTPS. Requisito: el registro DNS del dominio tiene
 # que apuntar ya a este servidor y los puertos 80 y 443 estar abiertos.
-{
-	email {$ACME_EMAIL}
-}
-
+#
+# CADDY_TLS_DIRECTIVE va vacío en producción (certificado público). Sólo para
+# ensayar en local, sin dominio que validar, vale `tls internal`.
 (tls_mode) {
-	tls {$CADDY_TLS}
+	{$CADDY_TLS_DIRECTIVE}
 }
 
 {$SITE_DOMAIN} {
@@ -20,6 +19,7 @@
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
+		-X-Powered-By
 	}
 
 	# LA API VA DIRECTA A DJANGO.

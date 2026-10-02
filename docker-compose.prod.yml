@@ -24,10 +24,9 @@ services:
       - "${HTTPS_PORT:-443}:443"
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN:?Define SITE_DOMAIN en deploy/.env.production}
-      ACME_EMAIL: ${ACME_EMAIL:-}
-      # Vacío = certificado público de Let's Encrypt. `internal` sólo para
+      # Vacío = certificado público de Let's Encrypt. `tls internal` sólo para
       # ensayar en local, donde no hay dominio que validar.
-      CADDY_TLS: ${CADDY_TLS:-}
+      CADDY_TLS_DIRECTIVE: ${CADDY_TLS_DIRECTIVE:-}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificados y claves ACME. Perder este volumen obliga a reemitir y
