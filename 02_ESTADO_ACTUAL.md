@@ -3,10 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
+
+Rama `fix/admin-inventory-mobile-overflow`, desde `master` `03581ea`.
+Estado: **CORREGIDO** en esta fase; sin backend, migraciones, auth, RBAC ni contratos API.
+
+Causa: los paneles del dashboard de inventario son ítems de grid. `TableWrap` ya
+encapsulaba las tablas de mínimo 640 px con `overflow-x-auto`, pero el `Panel` y
+su cuerpo conservaban `min-width:auto`; por el cálculo de min-content de CSS Grid,
+la tabla podía imponer su ancho al panel completo y ensanchar `/admin/inventory`
+en pantallas móviles.
+
+Corrección: `InventoryUi.Panel` y su cuerpo declaran `min-w-0`. La tabla mantiene
+su ancho y se desplaza únicamente dentro de `TableWrap`; no se cambia contenido,
+permisos ni comportamiento de inventario.
+
+Cobertura: `inventory-mobile-layout.test.tsx` protege el contrato estructural y
+`admin-inventory-mobile.spec.ts` mide que la página no desborde en 320, 360, 375,
+390 y 414 px con sesión interna real.
+
 ## 2026-10-02 — HERO-MOBILE-CLIP y cierre del frontend V3
 
 Rama `fix/hero-mobile-clip`, sobre `master` `c47c538`. Código en `42ef631`.
-Estado: **CORREGIDO, pendiente de revisión y merge**. Sin backend, sin
+Estado: **IMPLEMENTADO / MERGED** por PR #47 (`03581ea`). Sin backend, sin
 migraciones, sin cambios en el panel interno.
 
 Qué se corrigió:
