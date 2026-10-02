@@ -3,10 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
+
+Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`
+incorporado en `02b8ba4`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+migraciones, sin cambios de permisos.
+
+El cajón de navegación del panel en un teléfono ya era un diálogo con el foco
+atrapado. El botón que lo abre no llevaba estado: un lector de pantalla anunciaba
+un botón sin más y nada cambiaba al pulsarlo. Ahora lleva
+`aria-haspopup="dialog"` y `aria-expanded`, y mientras el cajón está abierto
+apunta a él con `aria-controls`.
+
+Pruebas: `__tests__/admin-menu-trigger-a11y.test.tsx` (3 casos, los 3 fallan
+sobre `master`). La prueba del selector de empresa buscaba «el botón plegado»;
+ahora hay dos y elige el que abre una lista. Comprobado en navegador a 375 px:
+plegado, abierto con 32 enlaces, y Escape devuelve el foco al botón.
+
+Validación sobre `02b8ba4`: frontend 494 pruebas en 50 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,3 min.
+
 ## 2026-10-02 — FE-AUTH-05: el proxy `/api` pone tope al cuerpo que acepta
 
 Rama `fix/api-proxy-body-limit`, desde `master` `1815ac1`. Código en `4fad36b`.
-Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones, sin cambios de
+Estado: **IMPLEMENTADO / MERGED** por PR #50 (`2d9cc97`). Sin backend, sin migraciones, sin cambios de
 autenticación, permisos ni contratos de la API.
 
 El proxy de Next (`frontend/app/api/[...path]/route.ts`) leía entero en memoria el

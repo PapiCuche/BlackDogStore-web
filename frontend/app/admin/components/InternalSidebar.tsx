@@ -157,6 +157,9 @@ export function InternalSidebar({
   );
 }
 
+/** What the topbar button points at with `aria-controls` while the drawer is open. */
+export const MOBILE_SIDEBAR_ID = "internal-mobile-navigation";
+
 /** Mobile: drawer over a dimmed backdrop. */
 export function MobileSidebar({
   access,
@@ -223,7 +226,7 @@ export function MobileSidebar({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navegación del control interno">
+    <div id={MOBILE_SIDEBAR_ID} className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navegación del control interno">
       <button
         type="button"
         aria-label="Cerrar navegación al hacer clic fuera"
