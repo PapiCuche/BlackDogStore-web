@@ -328,17 +328,14 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
-| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username` |
-| SEC-SET-04-A | MEDIUM | AUTH | `auth_views.py` refresh, `v1_auth_views.py` refresh | refresh sin throttle; filas `OutstandingToken` sin límite |
+| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username`. BLOQUEADO: decidir si el alta directa queda sólo para el administrador de plataforma (la invitación ya existe; 27 pruebas ejercen el alta directa) |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
-| SEC-SET-02 | MEDIUM | INFRA/AUTH | `backend/backend/urls.py` `admin/` | admin Django sin limitador/bloqueo/MFA en origen backend |
-| INV-LEGACY-V1-F2 | MEDIUM | INVENTORY | `v1_transfer_views.py` PUT items | no re-bloquea la transferencia (carrera INV-10) |
 | AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
-| CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
+| CI-03 | MEDIUM | INFRA | `.github/` | sin alertas Dependabot ni `dependabot.yml` (CI-01 cerrado: hay CI de frontend y de backend) |
 | DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
-| INV-LEGACY-V1-F1/F3 | LOW | INVENTORY | `serializers.py` movimientos legacy; v1 transfers `page_size<0` → 500 | |
-| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
+| INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
+| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
 SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
 FE-AUTH-06 PENDIENTE (el proxy sigue redirecciones reenviando cabeceras); FE-AUTH-08
@@ -410,6 +407,13 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | FE-AUTH-02 | LOW | `5adcd28` | `app/lib/cart.ts::getSessionKey` (`crypto.randomUUID` / `getRandomValues`) | `frontend/__tests__/cart-session-key.test.ts` | CORREGIDO |
 | FE-AUTH-07 | LOW | `40f9769` | `app/lib/auth.ts::fetchWithAuth` (`isOwnApiUrl`) | `frontend/__tests__/fetch-with-auth.test.ts` | CORREGIDO |
 | FE-AUTH-04 | LOW | `113a8dd` | `frontend/next.config.ts` (`headers()`) | `frontend/__tests__/security-headers.test.ts` | CORREGIDO (sin política de scripts: CSP-SCRIPT = PROPUESTA) |
+| SEC-SET-04-A | MEDIUM | `e066183` | `throttles.RefreshThrottle` (por IP, sólo peticiones con credencial) en `RefreshView` y `V1RefreshView` | `store/test_refresh_throttle.py` | CORREGIDO |
+| SEC-SET-02 | MEDIUM | `79d1077` | `backend/urls.py::build_urlpatterns` (admin sólo con `DEBUG`) | `store/test_production_url_surface.py` | CORREGIDO |
+| INV-LEGACY-V1-F2 · F3 | MEDIUM · LOW | `1f965f7` | `inventory_services.set_transfer_item` (`select_for_update`), `v1_transfer_views` (`page_size` ≥ 1) | `store/test_transfer_line_lock.py` | CORREGIDO |
+| SEC-SET-03 · 05 · 06 · 09 · 10 · ENV-02 | LOW | `e2dff73` | `backend/settings.py`, `xlsx_reader.check_upload` | `store/test_production_settings.py` | CORREGIDO |
+| AUTH-LOGGING-01 | LOW | `7d5efc8` | `store/security_log.py`, `LoginView`, `V1LoginView` | `store/test_security_log.py` | CORREGIDO |
+| ENV-04 | LOW | `a6beda6` | `.env.example` | — | CORREGIDO |
+| CI-01 | MEDIUM | `ba4e9ff` | `.github/workflows/backend-postgres-validation.yml` (encontró `qrcode` sin declarar y una prueba dependiente de la colación) | CI en PR | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -474,9 +478,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
 | THROTTLE-CACHE-01 | INFRA | cache compartida antes de calibrar throttles | Alta | — |
-| SEC-SET-04-A | AUTH | throttle de refresh | Media | THROTTLE-CACHE-01 |
 | TOKEN-HYGIENE-01 | AUTH | purga de `OutstandingToken`/`BlacklistedToken` | Baja | — |
-| CI-01 | INFRA | sin CI | Media | — |
 | INFRA-01/02/03 | INFRA | imágenes dev-grade | Media | — |
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
 | IDOR-01 limpieza | SALES | segunda fuente de verdad en resend | Baja | — |
