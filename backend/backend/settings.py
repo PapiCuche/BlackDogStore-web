@@ -487,6 +487,8 @@ LOGGING = {
     'loggers': {
         'django.security': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
         'django.request': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        # AUTH-LOGGING-01: sign-in attempts. See store/security_log.py.
+        'store.security': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }
 
