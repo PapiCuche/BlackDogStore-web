@@ -86,6 +86,13 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.AllowAny',
     ),
+    # SEC-SET-09. The browsable API is a developer tool: an HTML page with
+    # forms for every endpoint. Production answers JSON only. A view that needs
+    # another format declares its own `renderer_classes`, as before.
+    'DEFAULT_RENDERER_CLASSES': (
+        ('rest_framework.renderers.JSONRenderer', 'rest_framework.renderers.BrowsableAPIRenderer')
+        if DEBUG else ('rest_framework.renderers.JSONRenderer',)
+    ),
     # Pagination NOT enabled globally — frontend expects raw arrays.
     # Add per-ViewSet pagination in Phase 5 after updating the frontend fetchers.
     #
@@ -325,7 +332,15 @@ else:
 JWT_COOKIE_ACCESS_NAME = env('JWT_COOKIE_ACCESS_NAME', default='blackdog_access')
 JWT_COOKIE_REFRESH_NAME = env('JWT_COOKIE_REFRESH_NAME', default='blackdog_refresh')
 JWT_COOKIE_HTTPONLY = True
-JWT_COOKIE_SAMESITE = env('JWT_COOKIE_SAMESITE', default='Lax')
+# SEC-SET-03. Only Lax or Strict. The refresh endpoint checks CSRF only when the
+# access cookie is present; when it has expired — the normal case for a refresh —
+# what stops a cross-site request is SameSite. `None` removed that, silently.
+JWT_COOKIE_SAMESITE = env('JWT_COOKIE_SAMESITE', default='Lax').strip().capitalize()
+if JWT_COOKIE_SAMESITE not in ('Lax', 'Strict'):
+    raise ImproperlyConfigured(
+        "JWT_COOKIE_SAMESITE must be 'Lax' or 'Strict'. 'None' would send the "
+        "session cookies on cross-site requests."
+    )
 JWT_COOKIE_SECURE = not DEBUG
 
 # --- Payments -------------------------------------------------------------
@@ -377,6 +392,26 @@ IZIPAY_IPN_URL = env('IZIPAY_IPN_URL', default='')
 # Where the buyer comes back to after paying.
 CHECKOUT_RETURN_URL = env('CHECKOUT_RETURN_URL', default='http://localhost:3000')
 
+
+def _require_public_url(name, value):
+    """
+    SEC-SET-10 / ENV-02. These URLs go into emails and payment returns. Left at
+    their development default in production, every verification, password reset
+    and invitation link points at the recipient's own machine, and nothing says
+    so until a customer reports it.
+    """
+    from urllib.parse import urlsplit
+    host = (urlsplit(value).hostname or '').lower()
+    if not host or host in ('localhost', '127.0.0.1', '0.0.0.0', '::1'):
+        raise ImproperlyConfigured(
+            f"{name} must be set to the public address of the site in production "
+            f"(e.g. {name}=https://yourdomain.com), not {value!r}."
+        )
+
+
+if not DEBUG:
+    _require_public_url('CHECKOUT_RETURN_URL', CHECKOUT_RETURN_URL)
+
 # Email
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
 # Transport-level sender. Platform configuration, not tenant configuration:
@@ -385,6 +420,8 @@ EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.
 # CompanySettings). The DISPLAY identity inside each message is per tenant.
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='no-reply@localhost')
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+if not DEBUG:
+    _require_public_url('FRONTEND_URL', FRONTEND_URL)
 REQUIRE_EMAIL_VERIFICATION = env.bool('REQUIRE_EMAIL_VERIFICATION', default=False)
 EMAIL_HOST = env('EMAIL_HOST', default='')
 EMAIL_PORT = env.int('EMAIL_PORT', default=587)
@@ -425,6 +462,33 @@ if (
         "EMAIL_HOST must be set when using SMTP backend in production. "
         "Set EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend for development."
     )
+
+# Logging — SEC-SET-06.
+#
+# There was no LOGGING at all. Django's default sends `django.*` records to a
+# handler that only speaks when DEBUG is on, so in production nothing below
+# WARNING reached anywhere and security events (a refused Host, a failed CSRF
+# check) were discarded. One handler to stderr, which is where a container's
+# logs are read from; the level is INFO in production and can be raised or
+# lowered with DJANGO_LOG_LEVEL.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'plain': {'format': '%(asctime)s %(levelname)s %(name)s %(message)s'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'plain'},
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': env('DJANGO_LOG_LEVEL', default='WARNING' if DEBUG else 'INFO'),
+    },
+    'loggers': {
+        'django.security': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'django.request': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
+}
 
 # HTTPS security headers — only enforce in production
 if not DEBUG:
