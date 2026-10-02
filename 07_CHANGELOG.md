@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
+
+- Corregido el desbordamiento móvil de `/admin/inventory`: los paneles y su cuerpo
+  ahora pueden encogerse dentro del grid y las tablas de 640 px permanecen dentro
+  de su `overflow-x-auto` local.
+- Sin cambios de backend, migraciones, auth, RBAC, tenant scope ni API.
+- Cobertura nueva: Jest `inventory-mobile-layout.test.tsx` y Playwright
+  `admin-inventory-mobile.spec.ts` para 320/360/375/390/414 px.
+- PR #47 (HERO-MOBILE-CLIP) ya está integrado en master por merge `03581ea`.
+
 ## 2026-10-02 — HERO-MOBILE-CLIP · El texto de la tienda cabe en un teléfono
 
 Rama `fix/hero-mobile-clip`, desde `master` `c47c538`. El titular y el párrafo del
