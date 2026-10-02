@@ -3,10 +3,40 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — FE-AUTH-06 y enlace «Saltar al contenido»
+
+Rama `fix/frontend-proxy-redirects-skip-link`. Código en `085aa2e` y `cf72ee5`,
+juntos en `abfda62`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+migraciones.
+
+- **FE-AUTH-06 — el proxy `/api` sólo sigue las redirecciones del propio backend
+  (`085aa2e`).** Seguía en el servidor cualquier redirección reenviando las
+  cabeceras del visitante. Hay una que sale del sitio: con las evidencias en un
+  almacenamiento externo, el backend responde 302 hacia una URL firmada de ese
+  proveedor, y el proxy le entregaba el `X-CSRFToken` del visitante. Ahora una
+  redirección hacia otro origen vuelve al navegador, que la sigue solo. Dentro
+  del backend se sigue, con la sesión, sólo bajo `/api/` y como mucho tres saltos.
+- **Enlace «Saltar al contenido» (`cf72ee5`).** Quien navega con teclado o lector
+  de pantalla recorría la cabecera entera en cada página. El enlace existió y se
+  perdió al reconciliar la interfaz; el panel conservaba el destino sin nadie que
+  apuntara a él. Es el primer tabulador, invisible hasta recibir el foco, y mueve
+  el foco al contenido, en la tienda y en el panel.
+
+Pruebas: `api-proxy-redirects.test.ts` (8; 6 fallan sobre `master`),
+`skip-link.test.tsx` (3; 2 fallan sobre `master`) y `e2e/skip-link.spec.ts` (5,
+con teclado real).
+
+Validación sobre `abfda62`: frontend 538 pruebas en 57 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 169 de 169,
+sin fallos, omitidas ni reintentos, 9,1 min, sin suspensiones del equipo. El
+árbol de `frontend/` de esta rama no cambió al incorporar `master`.
+
 ## 2026-10-02 — AUDIT-07 y DEP-05: auditoría del catálogo y versiones de parche
 
 Rama `fix/audit-log-company`, sobre `security/backend-hardening`. Estado:
-**CORREGIDO** en esta rama. Sin migraciones.
+**IMPLEMENTADO / MERGED** por PR #56 (`f7fd6e6`). CI de backend sobre una
+instalación limpia con las versiones nuevas: 4686 pruebas, 0 fallos, 3 omitidas.
+Sin migraciones.
 
 - **AUDIT-07 (`06cd798`).** El registro de auditoría de una empresa sólo enseña
   las filas que llevan esa empresa. Cambiar un producto (precio, nombre,
@@ -30,8 +60,9 @@ un borrador merece su propia fila.
 
 ## 2026-10-02 — Endurecimiento del backend: sesión, configuración, transferencias y admin
 
-Rama `security/backend-hardening`, desde `master` `dbe30b2`. Estado: **CORREGIDO**
-en esta rama. Sin migraciones. Sin cambios en contratos de la API salvo los que
+Rama `security/backend-hardening`, desde `master` `dbe30b2`. Estado:
+**IMPLEMENTADO / MERGED** por PR #55 (`bd6dbc2`). CI de backend: 4682 pruebas, 0
+fallos, 3 omitidas. Sin migraciones. Sin cambios en contratos de la API salvo los que
 se dicen.
 
 - **SEC-SET-04-A — renovar la sesión tiene límite (`e066183`).** Las dos rutas de
