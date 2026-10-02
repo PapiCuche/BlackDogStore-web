@@ -25,7 +25,10 @@ jobs:
   backend:
     name: Django tests on PostgreSQL
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # The full suite takes about 27 minutes on a developer laptop and did not
+    # finish in 35 on a hosted runner (run 36976127633 was cancelled by the
+    # limit, not by a failing test). It runs in one process on purpose.
+    timeout-minutes: 120
 
     services:
       postgres:
