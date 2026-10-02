@@ -93,6 +93,8 @@ REST_FRAMEWORK = {
     # Rates apply per IP for AnonRateThrottle (login, register, etc.).
     'DEFAULT_THROTTLE_RATES': {
         'login': '5/min',
+        # SEC-SET-04-A. Renovar la sesión, por dirección: web y app comparten cubo.
+        'token_refresh': '30/min',
         'register': '5/min',
         'coupon': '20/min',
         'review_create': '5/min',

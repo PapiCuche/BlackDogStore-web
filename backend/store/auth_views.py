@@ -23,7 +23,7 @@ from .models import AccountToken
 from .permissions import get_user_role
 from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
-    LoginThrottle, RegisterThrottle,
+    LoginThrottle, RefreshThrottle, RegisterThrottle,
     ResendVerificationThrottle, PasswordResetRequestThrottle,
     PasswordResetConfirmThrottle, ChangePasswordThrottle,
 )
@@ -112,6 +112,7 @@ class LoginView(APIView):
 class RefreshView(APIView):
     """Reads the refresh cookie, issues a new access cookie (and rotated refresh if enabled)."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [RefreshThrottle]
 
     def post(self, request):
         refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)

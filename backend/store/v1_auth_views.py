@@ -35,7 +35,7 @@ from .token_revocation import refresh_is_revoked, revoke_access_token
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .tenancy import access_contexts, is_platform_admin, verified_company_relations
-from .throttles import LoginThrottle
+from .throttles import LoginThrottle, RefreshThrottle
 from .v1_auth_serializers import (
     V1AccessContextSerializer,
     V1CompanyRelationSerializer,
@@ -189,6 +189,7 @@ class V1RefreshView(APIView):
 
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [RefreshThrottle]
 
     def post(self, request):
         serializer = V1RefreshSerializer(data=request.data)
