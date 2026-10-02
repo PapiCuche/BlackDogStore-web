@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — DRIFT-02 · Sucursal en el ajuste de inventario
+
+- Con varias sucursales al alcance, el ajuste de inventario pregunta en cuál se
+  aplica y la envía; con una sola no cambia nada (`068bee1`).
+- Sin cambios de backend, migraciones ni API: el servidor ya aceptaba `branch`.
+- Cobertura nueva: Jest `inventory-adjust-branch.test.tsx`.
+- Frontend 511 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #52 (RBAC-F3, RBAC-F4) ya está integrado en master por merge `a6d725b`.
+
 ## 2026-10-02 — RBAC-F3 · RBAC-F4 · El panel no ofrece lo que el servidor niega
 
 - Personal sólo ofrece invitar, desactivar acceso y reenviar o revocar invitaciones
