@@ -15,6 +15,7 @@
 import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
 import { BrandLogo } from "./BrandLogo";
+import { categoryHref, useCatalogCategories } from "../lib/catalog-categories";
 
 const WHATSAPP_SVG = (
   <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
@@ -23,7 +24,10 @@ const WHATSAPP_SVG = (
 );
 
 export function Footer() {
-  const { company, contact, services } = useStorefront();
+  const { company, contact, services, policies } = useStorefront();
+  // Las categorías reales de esta tienda. El pie llevaba tres del piloto,
+  // escritas con `?cat=`, un parámetro que el catálogo no lee.
+  const categories = useCatalogCategories();
   const storeName = company.name;
 
   return (
@@ -178,10 +182,12 @@ export function Footer() {
             <ul className="mt-4 space-y-3">
               {[
                 { href: "/product", label: "Catálogo" },
-                { href: "/product?cat=iphone", label: "iPhones" },
-                { href: "/product?cat=accesorios", label: "Accesorios" },
-                { href: "/product?cat=repuestos", label: "Repuestos" },
-                { href: "/cart", label: "Mi Carrito" },
+                ...categories.slice(0, 4).map((category) => ({
+                  href: categoryHref(category.slug), label: category.name,
+                })),
+                { href: "/cart", label: "Mi carrito" },
+                { href: "/about", label: "Nosotros" },
+                { href: "/contact", label: "Contacto" },
               ].map((link) => (
                 <li key={link.href}>
                   <Link
@@ -226,6 +232,16 @@ export function Footer() {
           </div>
           ) : null}
         </div>
+
+        {/* Sólo lo que la tienda publicó: un enlace a una política que no
+            existe es una promesa que nadie hizo. */}
+        {policies.warranty_url || policies.terms_url || policies.privacy_url ? (
+          <nav aria-label="Información legal" className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs text-muted">
+            {policies.warranty_url ? <a className="transition hover:text-foreground" href={policies.warranty_url}>Garantía</a> : null}
+            {policies.terms_url ? <a className="transition hover:text-foreground" href={policies.terms_url}>Términos y condiciones</a> : null}
+            {policies.privacy_url ? <a className="transition hover:text-foreground" href={policies.privacy_url}>Privacidad</a> : null}
+          </nav>
+        ) : null}
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-bd-border pt-8 sm:flex-row">

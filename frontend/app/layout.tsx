@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Unbounded } from "next/font/google";
 import "./globals.css";
 import {
+  StorefrontContent,
   StorefrontFooter,
   StorefrontHeader,
   WhatsAppButton,
@@ -119,7 +120,7 @@ export default async function RootLayout({
             flujo y ya ocupa su propio alto. El padding lo compensaba una
             segunda vez y dejaba una franja vacía entre la cabecera y el hero.
           */}
-          <div>{children}</div>
+          <StorefrontContent>{children}</StorefrontContent>
           <StorefrontFooter />
           <WhatsAppButton />
         </StorefrontProvider>
