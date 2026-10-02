@@ -1,3 +1,5 @@
+from django.conf import settings
+from rest_framework.exceptions import APIException
 from rest_framework.throttling import (
     AnonRateThrottle,
     SimpleRateThrottle,
@@ -22,6 +24,52 @@ class LoginThrottle(SimpleRateThrottle):
     scope = 'login'
 
     def get_cache_key(self, request, view):
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': self.get_ident(request),
+        }
+
+
+class RefreshThrottle(SimpleRateThrottle):
+    """
+    Rate-limit session renewal per IP — SEC-SET-04-A.
+
+    Neither refresh endpoint had a limiter. Every valid renewal rotates the
+    refresh token and writes an `OutstandingToken` row, so a caller holding one
+    refresh token could write rows without a ceiling, and anyone could hammer
+    the endpoint with no session at all.
+
+    Keyed by IP like `LoginThrottle`, and for the same reason: both endpoints
+    are open to anyone, and an AnonRateThrottle does not count requests that
+    arrive authenticated — which for the web refresh is the normal case. The
+    web and the native endpoint share the bucket: it is one operation reached
+    through two doors.
+
+    Only requests that CARRY a refresh credential are counted, valid or forged.
+    The web client tries to renew whenever a request answers 401, including for
+    a visitor who never signed in; that request has no refresh cookie, is
+    refused before any work is done, and must not spend the budget of the
+    people who do hold a session behind the same address.
+
+    The rate is far above honest use (an access token lives 30 minutes, so a
+    session renews about twice an hour) and leaves room for a shop whose whole
+    staff shares one address.
+    """
+
+    scope = 'token_refresh'
+
+    def get_cache_key(self, request, view):
+        presented = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
+        if not presented:
+            try:
+                body = request.data
+            except APIException:
+                # A body that cannot be parsed carries no credential either; the
+                # view answers it with its own error.
+                body = None
+            presented = body.get('refresh') if hasattr(body, 'get') else None
+        if not presented:
+            return None
         return self.cache_format % {
             'scope': self.scope,
             'ident': self.get_ident(request),
