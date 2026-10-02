@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — Backend CI sobre PostgreSQL
+
+Rama `ci/backend-postgres-validation`, desde `master` `1815ac1`.
+Estado: **PARCIAL / pendiente de CI remoto**.
+
+Se añade una compuerta reproducible para cualquier cambio de backend:
+PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
+`manage.py check`, `makemigrations --check --dry-run` y la suite completa
+`manage.py test`. La suite corre en un solo proceso, sobre PostgreSQL, para que
+los cambios de seguridad y persistencia no dependan de una base SQLite local.
+
+No cambia código de aplicación, modelos, migraciones, auth, RBAC ni contratos API.
+
 ## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
 
 Rama `fix/admin-inventory-mobile-overflow`, desde `master` `03581ea`.
