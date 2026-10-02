@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.middleware.csrf import get_token
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
@@ -17,13 +18,14 @@ from .auth_serializers import (
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
 )
+from . import security_log
 from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
 from .models import AccountToken
 from .permissions import get_user_role
 from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
-    LoginThrottle, RegisterThrottle,
+    LoginThrottle, RefreshThrottle, RegisterThrottle,
     ResendVerificationThrottle, PasswordResetRequestThrottle,
     PasswordResetConfirmThrottle, ChangePasswordThrottle,
 )
@@ -88,6 +90,12 @@ class RegisterView(generics.CreateAPIView):
         )
 
 
+def _submitted(request, field):
+    """A field of the request body, whatever shape the body arrived in."""
+    data = request.data
+    return data.get(field) if hasattr(data, 'get') else None
+
+
 class LoginView(APIView):
     """Validates credentials and sets JWT tokens in HttpOnly cookies (not response body)."""
     permission_classes = [permissions.AllowAny]
@@ -99,7 +107,13 @@ class LoginView(APIView):
             serializer.is_valid(raise_exception=True)
         except TokenError as exc:
             raise InvalidToken(exc.args[0])
+        except AuthenticationFailed:
+            security_log.login_failed(
+                request, channel='web', identifier=_submitted(request, 'username'),
+            )
+            raise
 
+        security_log.login_succeeded(request, channel='web', user=serializer.user)
         data = serializer.validated_data
         response = Response({
             'detail': 'Login correcto.',
@@ -112,6 +126,7 @@ class LoginView(APIView):
 class RefreshView(APIView):
     """Reads the refresh cookie, issues a new access cookie (and rotated refresh if enabled)."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [RefreshThrottle]
 
     def post(self, request):
         refresh_cookie = request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME)
