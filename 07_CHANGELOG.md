@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — FE-AUTH-02 · FE-AUTH-04 · FE-AUTH-07 · Endurecimiento del frontend
+
+- La clave del carrito anónimo sale de una fuente segura (`5adcd28`).
+- `fetchWithAuth` sólo envía la sesión a la API propia (`40f9769`).
+- Cabeceras de seguridad en todas las rutas; `no-referrer` en las páginas con
+  token en la URL (`113a8dd`).
+- Sin cambios de backend, migraciones ni API.
+- Frontend 527 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #53 (DRIFT-02) ya está integrado en master por merge `3f70ca0`.
+
 ## 2026-10-02 — DRIFT-02 · Sucursal en el ajuste de inventario
 
 - Con varias sucursales al alcance, el ajuste de inventario pregunta en cuál se

@@ -56,7 +56,45 @@ function remoteImagePatterns() {
   ];
 }
 
+/**
+ * Security response headers — FE-AUTH-04.
+ *
+ * The frontend sent none. Two things were concretely open: the storefront and
+ * the panel could be framed by another site (clickjacking against a signed-in
+ * panel), and the pages that receive a one-time token in the URL handed it over
+ * in `Referer` to any external resource they loaded.
+ *
+ * The Content-Security-Policy here is deliberately narrow: who may frame us and
+ * where `<base>` may point. A script or style policy would need a nonce on
+ * every inline script Next emits and is a change of its own. There is no
+ * `object-src` either: the till prints its ticket as a PDF inside a hidden
+ * frame, a document created by this page inherits its policy, and forbidding
+ * objects can stop the browser's PDF viewer.
+ *
+ * In the production topology the reverse proxy adds its own headers; these also
+ * hold when Next is published without one in front.
+ */
+const SECURITY_HEADERS = [
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+];
+
+// Pages whose URL carries a one-time token. Listed AFTER the general rule:
+// when two rules set the same header, the last one wins.
+const TOKEN_IN_URL_PAGES = ["/auth/verify-email", "/auth/reset-password", "/invitacion"];
+
 const nextConfig: NextConfig = {
+  async headers() {
+    return [
+      { source: "/:path*", headers: SECURITY_HEADERS },
+      ...TOKEN_IN_URL_PAGES.map((source) => ({
+        source,
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      })),
+    ];
+  },
   // No rewrites needed — /api/* is handled by app/api/[...path]/route.ts (Route Handler proxy).
   images: {
     remotePatterns: remoteImagePatterns(),

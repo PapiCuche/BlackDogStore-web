@@ -3,10 +3,53 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — Endurecimiento del frontend: FE-AUTH-02, FE-AUTH-04, FE-AUTH-07
+
+Rama `security/frontend-hardening`, desde `master` `3f70ca0`. Código en `113a8dd`.
+Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones. Eran hallazgos
+«sin veredicto» de la auditoría F1; se verificaron en el código antes de tocarlos.
+
+- **FE-AUTH-02 — clave del carrito anónimo (`5adcd28`).** Esa clave es lo único
+  que elige un carrito de invitado en el servidor. Se fabricaba con la hora y seis
+  caracteres de `Math.random()`. Las claves nuevas salen de `crypto.randomUUID`
+  (o de `crypto.getRandomValues` donde falta). Quien ya tenía una clave la
+  conserva, así que nadie pierde su carrito.
+- **FE-AUTH-07 — la sesión sólo viaja a la API propia (`40f9769`).**
+  `fetchWithAuth` añadía cookies y token CSRF a cualquier URL que le pasaran.
+  Ningún llamador le pasaba una ajena (revisados los 105), pero era una costumbre
+  de los llamadores, no una propiedad de la función. Ahora rechaza antes de la red
+  cualquier URL que no esté bajo `API_BASE`.
+- **FE-AUTH-04 — cabeceras de seguridad (`113a8dd`).** El frontend no enviaba
+  ninguna. Todas las rutas envían ahora `X-Frame-Options: DENY`, una política de
+  contenido estrecha (`frame-ancestors 'none'; base-uri 'self'`), `nosniff` y
+  política de referente. Las tres páginas que reciben un token de un solo uso en
+  la URL (verificar correo, restablecer contraseña, aceptar invitación) envían
+  `no-referrer`. No hay política de scripts ni de estilos: exigiría un nonce en
+  cada script que emite Next y es un cambio aparte (CSP-SCRIPT = PROPUESTA).
+  Tampoco `object-src`: el ticket de caja se imprime como PDF en un marco y esa
+  directiva puede bloquear el visor.
+
+Revisados y sin cambio: FE-AUTH-08 (la tarjeta de cuentas de demostración sólo se
+pinta en desarrollo y el servidor responde 404 fuera de él: aceptado) y FE-AUTH-09
+(la configuración de la tienda se pide desde el servidor sin reenviar el host;
+con una sola tienda por despliegue resuelve por `DEFAULT_STOREFRONT_COMPANY_SLUG`;
+para varias tiendas por dominio es una decisión de arquitectura: PROPUESTA).
+FE-AUTH-06 (el proxy sigue redirecciones reenviando cabeceras) queda PENDIENTE.
+
+Pruebas: `cart-session-key.test.ts` (4; 3 fallan sobre `master`),
+`fetch-with-auth.test.ts` (6 casos nuevos; 5 fallan sobre `master`) y
+`security-headers.test.ts` (6; los 6 fallan sobre `master`). Cabeceras
+comprobadas contra un servidor real.
+
+Validación sobre `113a8dd`: frontend 527 pruebas en 55 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 10,2 min. La impresión del ticket de caja
+sigue pasando con las cabeceras nuevas.
+
 ## 2026-10-02 — DRIFT-02: el ajuste de inventario dice en qué sucursal se aplica
 
 Rama `fix/inventory-adjust-branch`. Código en `068bee1`, con `master` `a6d725b`
-incorporado en `1fa05af`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+incorporado en `1fa05af`. Estado: **IMPLEMENTADO / MERGED** por PR #53 (`3f70ca0`). Sin backend, sin
 migraciones.
 
 El servidor acepta `branch` en el ajuste de inventario y, si no llega, lo aplica a
