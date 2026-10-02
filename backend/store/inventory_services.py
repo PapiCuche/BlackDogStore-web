@@ -811,11 +811,13 @@ def set_transfer_item(transfer: StockTransfer, *, product, quantity: int) -> Sto
     Refuses once anything physical has happened: after dispatch the document
     describes units already on a van, and editing it would make the Kardex
     disagree with the paperwork somebody is holding.
+
+    The transfer row is LOCKED and re-read before deciding (INV-LEGACY-V1-F2).
+    The object the caller holds was loaded earlier and may predate a dispatch;
+    judging "is it still a draft" on it let a line be written onto a document
+    whose units had already left. `dispatch_transfer` takes the same lock, so
+    the two cannot interleave.
     """
-    if not transfer.is_editable:
-        raise TransferError(
-            'Solo se pueden editar las líneas de una transferencia en borrador.'
-        )
     if product.company_id != transfer.company_id:
         raise TransferError('El producto no pertenece a la empresa de esta transferencia.')
 
@@ -826,14 +828,21 @@ def set_transfer_item(transfer: StockTransfer, *, product, quantity: int) -> Sto
     if quantity < 0:
         raise TransferError('La cantidad no puede ser negativa.')
 
-    if quantity == 0:
-        StockTransferItem.objects.filter(transfer=transfer, product=product).delete()
-        return None
+    with transaction.atomic():
+        locked = StockTransfer.objects.select_for_update().get(pk=transfer.pk)
+        if not locked.is_editable:
+            raise TransferError(
+                'Solo se pueden editar las líneas de una transferencia en borrador.'
+            )
 
-    item, _created = StockTransferItem.objects.update_or_create(
-        transfer=transfer, product=product, defaults={'quantity': quantity},
-    )
-    return item
+        if quantity == 0:
+            StockTransferItem.objects.filter(transfer=locked, product=product).delete()
+            return None
+
+        item, _created = StockTransferItem.objects.update_or_create(
+            transfer=locked, product=product, defaults={'quantity': quantity},
+        )
+        return item
 
 
 def dispatch_transfer(transfer: StockTransfer, *, actor=None, request=None) -> list[StockMovement]:

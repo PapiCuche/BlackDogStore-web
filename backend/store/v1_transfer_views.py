@@ -223,7 +223,11 @@ class V1TransferListView(V1TransferSurfaceMixin, APIView):
 
         total = qs.count()
         try:
-            page_size = min(int(request.query_params.get('page_size', _PAGE_SIZE)), _MAX_PAGE_SIZE)
+            # Floor of 1: a zero or negative size reached the queryset slice and
+            # answered a 500 (INV-LEGACY-V1-F3).
+            page_size = max(
+                1, min(int(request.query_params.get('page_size', _PAGE_SIZE)), _MAX_PAGE_SIZE),
+            )
             page = max(int(request.query_params.get('page', 1)), 1)
         except ValueError:
             page_size, page = _PAGE_SIZE, 1
