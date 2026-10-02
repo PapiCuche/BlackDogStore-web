@@ -39,6 +39,18 @@ export function StorefrontFooter() {
   return <Footer />;
 }
 
+/**
+ * El contenido de la página, marcado con la superficie a la que pertenece.
+ *
+ * Los estilos de la tienda (`.shop-surface …`) no deben alcanzar el control
+ * interno, que tiene su propio diseño. La clase es la frontera: lo que se
+ * escribe para la tienda se escribe bajo `.shop-surface` y `/admin` no lo ve.
+ */
+export function StorefrontContent({ children }: { children: React.ReactNode }) {
+  const internal = isInternalSurface(usePathname());
+  return <div className={internal ? "internal-surface" : "shop-surface"}>{children}</div>;
+}
+
 export function WhatsAppButton() {
   const pathname = usePathname();
   const { contact } = useStorefront();

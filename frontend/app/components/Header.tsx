@@ -11,6 +11,7 @@ import { useTheme } from "./ThemeProvider";
 import { getSessionKey } from "../lib/cart";
 import { apiUrl } from "../lib/api";
 import { useStorefront } from "./StorefrontProvider";
+import { categoryHref, useCatalogCategories } from "../lib/catalog-categories";
 
 const CART_ICON = (
   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -18,14 +19,6 @@ const CART_ICON = (
   </svg>
 );
 
-const CATEGORY_LINKS = [
-  { href: "/product?category=iphone", label: "iPhone" },
-  { href: "/product?category=apple-watch", label: "Watch" },
-  { href: "/product?category=ipad", label: "iPad" },
-  { href: "/product?category=mac", label: "Mac" },
-  { href: "/product?category=accesorios", label: "Accesorios" },
-  { href: "/product?category=audifonos", label: "Audífonos" },
-];
 
 export function Header() {
   // Phase 3: the shop's own name and logo, from the tenant that owns this host.
@@ -41,6 +34,10 @@ export function Header() {
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  // Las categorías del catálogo de ESTA tienda, no una lista del piloto.
+  const categoryLinks = useCatalogCategories().map((category) => ({
+    href: categoryHref(category.slug), label: category.name,
+  }));
   const userLoggedIn = Boolean(user);
 
   async function fetchCartCount() {
@@ -139,12 +136,12 @@ export function Header() {
               </svg>
             </Link>
 
-            {catalogOpen && (
-              <div className="absolute left-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-2xl border border-bd-border bg-surface py-2 shadow-2xl">
+            {catalogOpen && categoryLinks.length > 0 && (
+              <div className="v3-pop absolute left-0 top-full z-50 mt-1 w-52 origin-top-left overflow-hidden rounded-2xl border border-bd-border bg-surface py-2 shadow-2xl">
                 <div className="px-3 pb-2 pt-1">
                   <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-muted">Categorías</p>
                 </div>
-                {CATEGORY_LINKS.map((item) => (
+                {categoryLinks.map((item) => (
                   <Link
                     key={item.href}
                     href={item.href}
@@ -167,6 +164,9 @@ export function Header() {
             )}
           </div>
 
+          <Link href="/contact" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+            Contacto
+          </Link>
           <Link href="/services" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
             Servicios
           </Link>
@@ -227,7 +227,9 @@ export function Header() {
           <button
             onClick={() => setMenuOpen(!menuOpen)}
             className="rounded-lg p-2 text-muted transition hover:bg-surface-2 hover:text-foreground"
-            aria-label="Abrir menú"
+            aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
+            aria-expanded={menuOpen}
+            aria-controls="store-mobile-menu"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               {menuOpen
@@ -241,10 +243,12 @@ export function Header() {
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div className="border-t border-bd-border bg-background px-5 pb-5 pt-3 lg:hidden">
-          <nav className="flex flex-col gap-1 text-sm font-medium">
-            <p className="px-3 pt-1 pb-1 text-[9px] font-bold uppercase tracking-[0.25em] text-muted">Categorías</p>
-            {CATEGORY_LINKS.map((item) => (
+        <div id="store-mobile-menu" className="v3-reveal border-t border-bd-border bg-background px-5 pb-5 pt-3 lg:hidden">
+          <nav aria-label="Navegación de la tienda" className="flex flex-col gap-1 text-sm font-medium">
+            {categoryLinks.length > 0 ? (
+              <p className="px-3 pt-1 pb-1 text-[9px] font-bold uppercase tracking-[0.25em] text-muted">Categorías</p>
+            ) : null}
+            {categoryLinks.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
@@ -266,6 +270,8 @@ export function Header() {
 
             {[
               { href: "/services", label: "Servicios" },
+              { href: "/contact", label: "Contacto" },
+              { href: "/about", label: "Nosotros" },
               { href: "/cart", label: `Carrito${cartCount > 0 ? ` (${cartCount})` : ""}` },
             ].map((item) => (
               <Link

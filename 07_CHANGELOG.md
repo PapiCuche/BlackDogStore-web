@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-01 — STOREFRONT-V3 · Tienda pública sobre el master auditado
+
+Rama `reconcile/storefront-v3-after-ux`. Cabecera, pie y portada leen las
+categorías del catálogo real y el pie filtra con `?category=` (`a57c72e`). Carrusel
+de productos, entradas con movimiento reducido respetado y línea del carrito
+enlazada a su ficha (`9ba1a70`). Portada sobre el CMS de la tienda, con campaña
+`home_hero` opcional y la losa oscura del hero intacta (`11f69f0`). Páginas
+`/about` y `/contact` con datos de la tienda (`5380ca6`). Pruebas de navegador de
+la experiencia pública (`7f49168`). Sin backend ni migraciones; ningún archivo del
+panel interno cambia (su contenido queda envuelto en `internal-surface`).
+Frontend 483 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+143/143.
+
 ## 2026-10-01 — UX-RECON-SVC-01 · Interfaz reconciliada con servicio y caja
 
 Rama `reconcile/uxui-after-svc`: la capa UX/UI del PR #43 (`9c1486b`) sobre el
