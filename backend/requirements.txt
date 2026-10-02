@@ -59,6 +59,14 @@ gunicorn==26.0.0
 # Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
 reportlab==4.4.1
 
+# QR code on the electronic invoice PDF (store/fiscal/qr.py).
+#
+# This was MISSING. It was installed on the development machines, so the fiscal
+# PDF tests passed there, and on a clean install — the CI runner, the production
+# image — every fiscal PDF failed with ModuleNotFoundError. The first run of the
+# backend CI is what found it. Rendering uses Pillow, already pinned above.
+qrcode==8.2
+
 # Spreadsheet reading — bulk product and inventory import (Phase C1.4).
 #
 # This was MISSING. It was installed in the development environment and the
