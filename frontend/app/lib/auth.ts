@@ -204,10 +204,25 @@ function withSelectedCompany(url: string): string {
  *   · un `Content-Type` del llamador → se respeta.
  *   · lo demás → `application/json`.
  */
+/**
+ * The session only travels to our own API — FE-AUTH-07.
+ *
+ * Cookies, the CSRF token and whatever the caller put in the body used to go to
+ * any URL this function was handed. No caller passes a foreign one today; the
+ * check makes that a property of the function instead of a habit of its
+ * callers. Anything that is not under `API_BASE` is refused before the network.
+ */
+function isOwnApiUrl(url: string): boolean {
+  return url === API_BASE || url.startsWith(`${API_BASE}/`) || url.startsWith(`${API_BASE}?`);
+}
+
 export async function fetchWithAuth(
   rawUrl: string,
   options: RequestInit = {}
 ): Promise<Response> {
+  if (!isOwnApiUrl(rawUrl)) {
+    throw new Error("fetchWithAuth sólo envía la sesión a la API propia.");
+  }
   const url = withSelectedCompany(rawUrl);
   const method = ((options.method as string) || "GET").toUpperCase();
   const needsCsrf = ["POST", "PUT", "PATCH", "DELETE"].includes(method);

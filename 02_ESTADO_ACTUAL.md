@@ -35,6 +35,114 @@ los cambios de seguridad y persistencia no dependan de una base SQLite local.
 
 No cambia código de aplicación, modelos, migraciones, auth, RBAC ni contratos API.
 
+## 2026-10-02 — Endurecimiento del frontend: FE-AUTH-02, FE-AUTH-04, FE-AUTH-07
+
+Rama `security/frontend-hardening`, desde `master` `3f70ca0`. Código en `113a8dd`.
+Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones. Eran hallazgos
+«sin veredicto» de la auditoría F1; se verificaron en el código antes de tocarlos.
+
+- **FE-AUTH-02 — clave del carrito anónimo (`5adcd28`).** Esa clave es lo único
+  que elige un carrito de invitado en el servidor. Se fabricaba con la hora y seis
+  caracteres de `Math.random()`. Las claves nuevas salen de `crypto.randomUUID`
+  (o de `crypto.getRandomValues` donde falta). Quien ya tenía una clave la
+  conserva, así que nadie pierde su carrito.
+- **FE-AUTH-07 — la sesión sólo viaja a la API propia (`40f9769`).**
+  `fetchWithAuth` añadía cookies y token CSRF a cualquier URL que le pasaran.
+  Ningún llamador le pasaba una ajena (revisados los 105), pero era una costumbre
+  de los llamadores, no una propiedad de la función. Ahora rechaza antes de la red
+  cualquier URL que no esté bajo `API_BASE`.
+- **FE-AUTH-04 — cabeceras de seguridad (`113a8dd`).** El frontend no enviaba
+  ninguna. Todas las rutas envían ahora `X-Frame-Options: DENY`, una política de
+  contenido estrecha (`frame-ancestors 'none'; base-uri 'self'`), `nosniff` y
+  política de referente. Las tres páginas que reciben un token de un solo uso en
+  la URL (verificar correo, restablecer contraseña, aceptar invitación) envían
+  `no-referrer`. No hay política de scripts ni de estilos: exigiría un nonce en
+  cada script que emite Next y es un cambio aparte (CSP-SCRIPT = PROPUESTA).
+  Tampoco `object-src`: el ticket de caja se imprime como PDF en un marco y esa
+  directiva puede bloquear el visor.
+
+Revisados y sin cambio: FE-AUTH-08 (la tarjeta de cuentas de demostración sólo se
+pinta en desarrollo y el servidor responde 404 fuera de él: aceptado) y FE-AUTH-09
+(la configuración de la tienda se pide desde el servidor sin reenviar el host;
+con una sola tienda por despliegue resuelve por `DEFAULT_STOREFRONT_COMPANY_SLUG`;
+para varias tiendas por dominio es una decisión de arquitectura: PROPUESTA).
+FE-AUTH-06 (el proxy sigue redirecciones reenviando cabeceras) queda PENDIENTE.
+
+Pruebas: `cart-session-key.test.ts` (4; 3 fallan sobre `master`),
+`fetch-with-auth.test.ts` (6 casos nuevos; 5 fallan sobre `master`) y
+`security-headers.test.ts` (6; los 6 fallan sobre `master`). Cabeceras
+comprobadas contra un servidor real.
+
+Validación sobre `113a8dd`: frontend 527 pruebas en 55 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 10,2 min. La impresión del ticket de caja
+sigue pasando con las cabeceras nuevas.
+
+## 2026-10-02 — DRIFT-02: el ajuste de inventario dice en qué sucursal se aplica
+
+Rama `fix/inventory-adjust-branch`. Código en `068bee1`, con `master` `a6d725b`
+incorporado en `1fa05af`. Estado: **IMPLEMENTADO / MERGED** por PR #53 (`3f70ca0`). Sin backend, sin
+migraciones.
+
+El servidor acepta `branch` en el ajuste de inventario y, si no llega, lo aplica a
+la sucursal por defecto de quien ajusta. La pantalla nunca lo enviaba: en una
+empresa con varias sucursales todos los ajustes caían en la sucursal por defecto,
+sin decirlo y sin poder elegir otra.
+
+Ahora, con más de una sucursal al alcance, el formulario pregunta, parte de la
+sucursal por defecto y envía la elegida. Si no hay sucursal por defecto, pide
+escogerla antes de enviar. Con una sola sucursal —el caso del piloto— no pregunta
+nada y la petición es la de siempre. El servidor sigue decidiendo si quien ajusta
+alcanza esa sucursal.
+
+Pruebas: `inventory-adjust-branch.test.tsx` (5 casos; 3 fallan sobre `master`).
+Contrato del servidor comprobado sobre una copia desechable de la base con dos
+sucursales: con `branch` el movimiento queda en esa sucursal; sin `branch`, en la
+de por defecto; con una sucursal inexistente responde 404.
+
+Validación sobre `1fa05af`: frontend 511 pruebas en 53 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos.
+
+## 2026-10-02 — RBAC-F3 y RBAC-F4: el panel no ofrece lo que el servidor niega
+
+Rama `fix/staff-actions-capability`, desde `master` `64b4d5e`. Código en
+`4f5d736`. Estado: **IMPLEMENTADO / MERGED** por PR #52 (`a6d725b`). Sin backend, sin migraciones. La
+autoridad sigue en el servidor; cambia sólo qué enseña la interfaz.
+
+- **Personal (RBAC-F4, `58d17de`).** Ver al personal pide `memberships.view`;
+  invitar, desactivar el acceso y reenviar o revocar una invitación piden
+  `memberships.manage`. La pantalla pintaba todos los botones a quien pudiera
+  entrar, y a quien sólo podía ver cada clic le devolvía un 403. Ahora los botones
+  siguen la capacidad que comprueba el servidor.
+- **Menú del panel (RBAC-F3, `847d3bf`).** Cada página decide con las capacidades
+  cuando hay empresa, y con el rol antiguo sólo para el operador sin empresa. El
+  menú seguía otra regla: si las capacidades no alcanzaban, caía al rol antiguo y
+  listaba módulos cuya página respondía «sin permiso». Ahora usa la misma regla
+  que las páginas. Auditoría declara `memberships.view`, que es lo que piden su
+  página y el servidor; antes sólo declaraba rol antiguo y quien tenía la
+  capacidad no la veía en el menú.
+- **Código sin uso (`4f5d736`).** Se elimina `BranchAccessPanel.tsx` (334 líneas):
+  ninguna pantalla lo monta y nada lo importa. Conservaba la oferta de «Todas».
+
+Revisados y ya corregidos en `master` por trabajo posterior a la auditoría F1, sin
+cambio aquí: RBAC-F6 (detalle de transferencia: las acciones piden
+`inventory.adjust`), RBAC-F7 (accesos del personal: `memberships.manage`) y
+RBAC-F11 (detalle de pedido: reenviar correo, nota de venta y comprobante piden
+su capacidad). RBAC-F5 era el mismo defecto del menú que RBAC-F3.
+
+Pruebas: `staff-screen-authority.test.tsx` (3 casos; el de sólo lectura falla
+sobre `master`) e `internal-modules-access.test.ts` (9 casos; 6 fallan sobre
+`master`). En navegador, con las cuentas de ventas, inventario y técnico: cada
+entrada del menú abre su página, ninguna responde «sin permiso».
+
+Validación sobre `4f5d736`: frontend 506 pruebas en 52 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,0 min.
+
+Deuda menor observada: el menú lista dos entradas hacia `/admin/settings`
+(«Empresa» y «Configuración») y dos hacia `/admin/inventory/reports`.
+
 ## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
 
 Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`

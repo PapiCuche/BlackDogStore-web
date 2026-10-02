@@ -15,6 +15,41 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   `requirements.txt` (los PDF fiscales fallaban en una instalación limpia) y una
   prueba de orden por nombre dependía de la colación de la base. Corregidos.
 
+## 2026-10-02 — FE-AUTH-02 · FE-AUTH-04 · FE-AUTH-07 · Endurecimiento del frontend
+
+- La clave del carrito anónimo sale de una fuente segura (`5adcd28`).
+- `fetchWithAuth` sólo envía la sesión a la API propia (`40f9769`).
+- Cabeceras de seguridad en todas las rutas; `no-referrer` en las páginas con
+  token en la URL (`113a8dd`).
+- Sin cambios de backend, migraciones ni API.
+- Frontend 527 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #53 (DRIFT-02) ya está integrado en master por merge `3f70ca0`.
+
+## 2026-10-02 — DRIFT-02 · Sucursal en el ajuste de inventario
+
+- Con varias sucursales al alcance, el ajuste de inventario pregunta en cuál se
+  aplica y la envía; con una sola no cambia nada (`068bee1`).
+- Sin cambios de backend, migraciones ni API: el servidor ya aceptaba `branch`.
+- Cobertura nueva: Jest `inventory-adjust-branch.test.tsx`.
+- Frontend 511 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #52 (RBAC-F3, RBAC-F4) ya está integrado en master por merge `a6d725b`.
+
+## 2026-10-02 — RBAC-F3 · RBAC-F4 · El panel no ofrece lo que el servidor niega
+
+- Personal sólo ofrece invitar, desactivar acceso y reenviar o revocar invitaciones
+  a quien tiene `memberships.manage` (`58d17de`).
+- El menú del panel usa la misma regla que las páginas: con empresa mandan las
+  capacidades; Auditoría declara `memberships.view` (`847d3bf`).
+- Eliminado `BranchAccessPanel.tsx`, sin uso (`4f5d736`).
+- RBAC-F6, RBAC-F7 y RBAC-F11 ya estaban corregidos en `master`; RBAC-F5 era el
+  mismo defecto que RBAC-F3.
+- Sin cambios de backend, migraciones ni API.
+- Frontend 506 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #51 (botón del menú móvil) ya está integrado en master por merge `64b4d5e`.
+
 ## 2026-10-02 — ADMIN-MENU-ARIA · Botón del menú móvil del panel
 
 - El botón que abre la navegación del panel en un teléfono anuncia que abre un

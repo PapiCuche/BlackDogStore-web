@@ -248,3 +248,33 @@ describe('hasInternalAccess — lo decide el servidor, no el rol', () => {
     expect(calls.filter((c) => c.url.includes('/me/memberships/'))).toHaveLength(2);
   });
 });
+
+/**
+ * FE-AUTH-07 — la sesión sólo viaja a la API propia.
+ *
+ * `fetchWithAuth` añadía cookies y CSRF a cualquier URL que le pasaran. Hoy
+ * ningún llamador le pasa una ajena, pero bastaba un `href` venido de datos
+ * para mandar el token CSRF y un cuerpo con credenciales a otro servidor.
+ */
+describe('fetchWithAuth · destino', () => {
+  it.each([
+    'https://otro-servidor.example/api/x/',
+    'http://otro-servidor.example/api/x/',
+    '//otro-servidor.example/api/x/',
+    '/\\otro-servidor.example/api/x/',
+    'otro-servidor.example/api/x/',
+  ])('se niega a enviar a %s y no llama a la red', async (url) => {
+    install(() => reply(200));
+
+    await expect(fetchWithAuth(url, { method: 'POST', body: '{}' })).rejects.toThrow(/API/);
+    expect(calls).toEqual([]);
+  });
+
+  it('sigue enviando a una ruta de la API propia', async () => {
+    install(() => reply(200));
+
+    const res = await fetchWithAuth('/api/admin/products/?page_size=1');
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+});

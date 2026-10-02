@@ -291,7 +291,7 @@ Estado: VERIFICADO @ `4a9dd5c`.
 ### Sucursal (DÓNDE)
 - `tenancy.py`: `can_delegate_branch_scope`, `visible_branches`, `visible_branch_ids`, `_branch_authority`, `_granted_branches`, `describe_branch_scope`, `has_branch_access`, `assert_branch_access`, `assert_branch_in_company`, `default_branch_for_user`, `resolve_branch_for_user`.
 - Escritores de sucursal: `tenant_views.py::_apply_branch_access`, `promotion_views.py::_write_promotion`, `settings_views.py::AdminSequenceDetailView.patch` / `AdminSequenceScopeView`.
-- Frontend: `app/admin/components/BranchAccessPanel.tsx`, `app/admin/staff/page.tsx`, `app/admin/users/page.tsx`, `app/lib/staff.ts`, `app/admin/lib/internal-api.ts` (sequences, promotions).
+- Frontend: `app/admin/staff/page.tsx`, `app/admin/users/page.tsx`, `app/lib/staff.ts`, `app/admin/lib/internal-api.ts` (sequences, promotions).
 
 ### Servicio técnico
 - `service_services.py` (`eligible_technicians`, `assign_technician`, `create_repair_order_with_assignment`, `record_service_payment`), `v1_service_views.py` (`V1ServiceSurfaceMixin.get_order`, asignación devuelve `{current, candidates}`, `V1ServiceTechnicianCandidatesView`, `require_assignment_authority`, `COLLECT_AUTHORITY`; la lista de órdenes acepta `status=a,b,c`).
@@ -333,17 +333,17 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
 | SEC-SET-02 | MEDIUM | INFRA/AUTH | `backend/backend/urls.py` `admin/` | admin Django sin limitador/bloqueo/MFA en origen backend |
 | INV-LEGACY-V1-F2 | MEDIUM | INVENTORY | `v1_transfer_views.py` PUT items | no re-bloquea la transferencia (carrera INV-10) |
-| RBAC-F3 (sidebar) | MEDIUM | FRONTEND | `app/admin/lib/internal-modules.ts::canAccessModule` | cae a `Membership.role`; `admin.audit` sólo por rol legacy |
-| DRIFT-02 | MEDIUM | INVENTORY/FRONTEND | `frontend/app/lib/admin.ts` ajuste | no permite elegir sucursal; backend usa default |
 | AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
 | DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
-| RBAC-F6/F7/F4/F5/F11 | LOW | FRONTEND | transfers `[id]`, `users/page.tsx`, `staff/page.tsx`, `internal-modules.ts`, `orders/[id]` | UI ofrece acciones que el backend niega |
 | INV-LEGACY-V1-F1/F3 | LOW | INVENTORY | `serializers.py` movimientos legacy; v1 transfers `page_size<0` → 500 | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
-SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets), FE-AUTH-02/04/06/07/08/09.
+SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
+FE-AUTH-06 PENDIENTE (el proxy sigue redirecciones reenviando cabeceras); FE-AUTH-08
+ACEPTADO (tarjeta de demostración sólo en desarrollo); FE-AUTH-09 PROPUESTA (tienda
+por dominio); FE-AUTH-02/04/07 corregidos, ver sección 6.
 Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `administrador` tiene
 `products.manage`, y también tiene `inventory.adjust`; `inventario` tiene `inventory.adjust`.
 
@@ -370,9 +370,6 @@ conoce (escaparate por CMS, tema claro/oscuro, `BrandLogo`): `app/page.tsx`, `co
 `Header.tsx`, `Footer.tsx`, `services/page.tsx`, `layout.tsx`, `globals.css` y `auth/page.tsx`.
 Tampoco `AppChrome.tsx` (duplicaba `StorefrontChrome`; se pierde su enlace «Saltar al contenido»)
 ni la fila de sellos de confianza de `ProductDetail`. #39 queda PARCIAL.
-DEUDA (surgida en DRIFT-07): `app/admin/components/BranchAccessPanel.tsx` no se monta en ninguna
-pantalla (código muerto) y conserva la oferta de «Todas»; el botón «Añadir trabajador» de
-`staff/page.tsx` no comprueba capacidad (RBAC-F4 de F1, LOW, sin cambio).
 NO AUDITADO bajo WRITE-SCOPE-01: `storefront_content_views` (campañas y páginas de la
 tienda, también de nivel empresa) y otras mutaciones de nivel empresa fuera de
 `tenant_views`/`settings_views`.
@@ -406,6 +403,13 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SVC-ASSIGN-VIEW-01 | MEDIUM | `9b59a31` | `V1ServiceSurfaceMixin.require_assignment_authority` en candidatos y en recepción con técnico (antes bastaba `assign` sin `view`) | `SvcAssignVisibilityTest` | CORREGIDO |
 | HERO-MOBILE-CLIP | MEDIUM | `ff564e9`, `e082b26` | `Hero.tsx` (columna `min-w-0`, titular `min(clamp(…), 7.4vw)`), `product/page.tsx`, `ProductDetail.tsx` | E2E `hero-mobile-clip`, `storefront-text-fit` | CORREGIDO (pendiente de merge) |
 | FE-AUTH-05 | MEDIUM | `4fad36b` | `frontend/app/api/[...path]/route.ts` (`readBody`, `API_PROXY_MAX_BODY_BYTES`, 413) | `frontend/__tests__/api-proxy-body-limit.test.ts` | CORREGIDO |
+| RBAC-F3 · RBAC-F5 | MEDIUM | `847d3bf` | `app/admin/lib/internal-modules.ts::canAccessModule` (misma regla que `InternalAccess.can`); `admin.audit` declara `memberships.view` | `frontend/__tests__/internal-modules-access.test.ts` | CORREGIDO |
+| RBAC-F4 | LOW | `58d17de` | `app/admin/staff/page.tsx` (`canManage` = `memberships.manage`) | `frontend/__tests__/staff-screen-authority.test.tsx` | CORREGIDO |
+| RBAC-F6 · F7 · F11 | LOW | — | transfers `[id]` (`mayTransfer`), `users/page.tsx` (`canManage`), `orders/[id]` (`access.can`) | revisado @ `64b4d5e` | OBSOLETO (ya corregido en master) |
+| DRIFT-02 | MEDIUM | `068bee1` | `app/admin/components/InventoryAdjustForm.tsx` (selector de sucursal), `app/lib/admin.ts::adjustInventory` (`branch` opcional) | `frontend/__tests__/inventory-adjust-branch.test.tsx` | CORREGIDO |
+| FE-AUTH-02 | LOW | `5adcd28` | `app/lib/cart.ts::getSessionKey` (`crypto.randomUUID` / `getRandomValues`) | `frontend/__tests__/cart-session-key.test.ts` | CORREGIDO |
+| FE-AUTH-07 | LOW | `40f9769` | `app/lib/auth.ts::fetchWithAuth` (`isOwnApiUrl`) | `frontend/__tests__/fetch-with-auth.test.ts` | CORREGIDO |
+| FE-AUTH-04 | LOW | `113a8dd` | `frontend/next.config.ts` (`headers()`) | `frontend/__tests__/security-headers.test.ts` | CORREGIDO (sin política de scripts: CSP-SCRIPT = PROPUESTA) |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -424,7 +428,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SERVICE-INTAKE técnico | `POST service/orders/` acepta `technician_id` opcional; crea y asigna en una transacción | `createServiceOrder`; obligatorio en la caja, opcional en recepción | OK @ `1d35b7d` |
 | SERVICE-PAYMENT autoridad | registrar: `collect` o `manage`; reversar: `manage` | `mayCollectPayment` / `CAP_PAYMENTS_MANAGE` en `orders/[id]/page.tsx` | OK @ `1d35b7d` |
 | SERVICE-QUEUES | `status` admite varios códigos separados por comas | `app/admin/service/queues.ts` | OK @ `1d35b7d` |
-| INVENTORY-ADJUST branch | acepta sucursal / usa default | no envía sucursal (`app/lib/admin.ts`) | DRIFT (DRIFT-02) |
+| INVENTORY-ADJUST branch | acepta sucursal / usa default | envía `branch` cuando hay más de una sucursal al alcance (`InventoryAdjustForm`) | OK (DRIFT-02 corregido) |
 | DRF field errors | `{field: [msg]}` | clientes que sólo leen `detail` | DRIFT LOW (DRIFT-03) |
 | Legacy role sets | backend | frontend | OK (`H412bFrontendLegacyRoleParityTest`) |
 | POS `receipt_options` | `enabled` + causa | selector | OK (`Fiscal6ReceiptOptionsTest`, E2E `pos-receipt-options`) |
