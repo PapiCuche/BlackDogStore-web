@@ -1,0 +1,53 @@
+# Black Dog Store — borde HTTPS.
+#
+# Caddy pide y renueva solo el certificado de Let's Encrypt para SITE_DOMAIN y
+# redirige el puerto 80 a HTTPS. Requisito: el registro DNS del dominio tiene
+# que apuntar ya a este servidor y los puertos 80 y 443 estar abiertos.
+{
+	email {$ACME_EMAIL}
+}
+
+(tls_mode) {
+	tls {$CADDY_TLS}
+}
+
+{$SITE_DOMAIN} {
+	import tls_mode
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# LA API VA DIRECTA A DJANGO.
+	#
+	# El proxy interno de Next (`app/api/[...path]`) descarta a propósito las
+	# cabeceras de identidad del cliente. Detrás de él, Django vería a todos los
+	# visitantes con la misma IP y compartirían los límites de peticiones: cinco
+	# inicios de sesión por minuto PARA TODA LA TIENDA. Aquí Caddy escribe la IP
+	# real en X-Forwarded-For —ignorando la que envíe el cliente— y Django la
+	# lee con TRUSTED_PROXY_COUNT=1.
+	#
+	# Sólo `/api/*` llega a Django. Su `/admin/` (el admin de Django) NO se
+	# publica: se entra por túnel SSH, ver docs/despliegue-produccion.md.
+	@api path /api/*
+	handle @api {
+		# El frontend llama sin barra final y Django las exige. Es lo mismo que
+		# hace el proxy de Next: añadirla antes de reenviar.
+		@noslash not path */
+		rewrite @noslash {path}/
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+www.{$SITE_DOMAIN} {
+	import tls_mode
+	redir https://{$SITE_DOMAIN}{uri} permanent
+}
