@@ -73,6 +73,14 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
   // nunca salía de «cargando».
   const companyId = ctx.dashboard?.company?.id ?? null;
 
+  // RBAC-F4: ver al personal pide `memberships.view`; invitar, cambiar el acceso
+  // y tocar una invitación piden `memberships.manage`. El servidor es quien lo
+  // decide; esto sólo evita ofrecer un botón cuyo clic acabaría en un 403.
+  const access = ctx.dashboard?.access;
+  const canManage = Boolean(
+    access?.is_platform_admin || access?.capabilities.includes("memberships.manage"),
+  );
+
   const [people, setPeople] = useState<StaffPerson[] | null>(null);
   const [invitations, setInvitations] = useState<StaffInvitation[]>([]);
   const [areas, setAreas] = useState<CompanyAreaRow[]>([]);
@@ -180,7 +188,7 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
               Administra trabajadores, responsabilidades y acceso por sucursal.
             </p>
           </div>
-          {companyId ? (
+          {companyId && canManage ? (
             <button
               type="button"
               onClick={() => setShowForm((v) => !v)}
@@ -221,7 +229,7 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
           </section>
         ) : null}
 
-        {showForm && companyId ? (
+        {showForm && companyId && canManage ? (
           <AddWorkerForm
             companyId={companyId}
             areas={areas.filter((a) => a.is_active)}
@@ -250,11 +258,12 @@ function StaffScreen({ ctx }: { ctx: InternalContext }) {
               <PendingInvitations
                 invitations={invitations}
                 busy={busy}
+                canManage={canManage}
                 onAction={invitationAction}
               />
             ) : null}
 
-            <PeopleList people={people} busy={busy} onToggle={toggleAccess} />
+            <PeopleList people={people} busy={busy} canManage={canManage} onToggle={toggleAccess} />
           </>
         ) : null}
       </div>
@@ -365,10 +374,11 @@ function Select({
 }
 
 function PeopleList({
-  people, busy, onToggle,
+  people, busy, canManage, onToggle,
 }: {
   people: StaffPerson[] | null;
   busy: string | null;
+  canManage: boolean;
   onToggle: (p: StaffPerson) => void;
 }) {
   if (people === null) {
@@ -436,7 +446,7 @@ function PeopleList({
             <Row label="Sucursales">{person.branch_scope_label}</Row>
           </dl>
 
-          {person.is_self ? (
+          {!canManage ? null : person.is_self ? (
             /*
               Tu propia ficha no lleva botón. Quitarte el acceso a ti mismo
               dejaría a la empresa sin nadie que pueda devolverlo, así que el
@@ -477,10 +487,11 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function PendingInvitations({
-  invitations, busy, onAction,
+  invitations, busy, canManage, onAction,
 }: {
   invitations: StaffInvitation[];
   busy: string | null;
+  canManage: boolean;
   onAction: (i: StaffInvitation, a: "resend" | "revoke") => void;
 }) {
   return (
@@ -513,6 +524,7 @@ function PendingInvitations({
                 {STATUS_LABEL[invitation.status] ?? invitation.status}
               </p>
             </div>
+            {canManage ? (
             <div className="flex shrink-0 gap-2">
               <button
                 type="button"
@@ -531,6 +543,7 @@ function PendingInvitations({
                 {busy === `revoke-${invitation.id}` ? "Revocando…" : "Revocar"}
               </button>
             </div>
+            ) : null}
           </li>
         ))}
       </ul>
