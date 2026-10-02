@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — AUDIT-07 y DEP-05: auditoría del catálogo y versiones de parche
+
+Rama `fix/audit-log-company`, sobre `security/backend-hardening`. Estado:
+**CORREGIDO** en esta rama. Sin migraciones.
+
+- **AUDIT-07 (`06cd798`).** El registro de auditoría de una empresa sólo enseña
+  las filas que llevan esa empresa. Cambiar un producto (precio, nombre,
+  publicación) y crear una categoría escribían la fila sin empresa: existía, pero
+  ningún administrador del tenant podía verla. Ahora la llevan. El cambio de rol
+  global sigue sin empresa a propósito: es una operación de plataforma. Las filas
+  antiguas de catálogo sin empresa no se rellenan; en una base nueva no existen.
+- **DEP-05 (`65d34ad`).** Cinco dependencias del backend pasan al último parche
+  de su línea: djangorestframework 3.17.2, psycopg2-binary 2.9.13, boto3
+  1.43.107, reportlab 4.4.10 y cryptography 50.0.2.
+
+Pruebas: `test_audit_company` (4; 3 fallan antes del cambio). La suite completa
+sobre una instalación limpia con las versiones nuevas la da el CI de backend de
+este PR.
+
+AUDIT-01…06 = PROPUESTA. Son ediciones de borrador sin fila de auditoría: líneas
+de presupuesto, líneas de transferencia, cantidades de un recuento y audiencia de
+un comunicado. Sus cierres (publicar, despachar, aprobar) sí se auditan y el
+resultado queda en el Kardex o en el documento. Falta decidir si cada edición de
+un borrador merece su propia fila.
+
 ## 2026-10-02 — Endurecimiento del backend: sesión, configuración, transferencias y admin
 
 Rama `security/backend-hardening`, desde `master` `dbe30b2`. Estado: **CORREGIDO**

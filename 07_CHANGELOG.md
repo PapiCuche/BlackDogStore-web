@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — AUDIT-07 · DEP-05
+
+- Los cambios de producto y la creación de categorías quedan en la auditoría de su
+  empresa (`06cd798`).
+- Cinco dependencias del backend al último parche de su línea (`65d34ad`).
+- Sin migraciones.
+
 ## 2026-10-02 — Endurecimiento del backend
 
 - Límite de 30 por minuto y dirección al renovar la sesión, web y app
