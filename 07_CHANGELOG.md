@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — Backend PostgreSQL CI
+
+- Añadido workflow `.github/workflows/backend-postgres-validation.yml`.
+- Ejecuta Django con Python 3.12 y PostgreSQL 16 en pull requests que toquen
+  `backend/**` o el propio workflow.
+- Gates: `manage.py check`, migraciones sin cambios pendientes y suite backend
+  completa en un solo proceso.
+- Sin cambios funcionales ni migraciones.
+
 ## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
 
 - Corregido el desbordamiento móvil de `/admin/inventory`: los paneles y su cuerpo
