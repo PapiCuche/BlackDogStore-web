@@ -333,7 +333,6 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
 | SEC-SET-02 | MEDIUM | INFRA/AUTH | `backend/backend/urls.py` `admin/` | admin Django sin limitador/bloqueo/MFA en origen backend |
 | INV-LEGACY-V1-F2 | MEDIUM | INVENTORY | `v1_transfer_views.py` PUT items | no re-bloquea la transferencia (carrera INV-10) |
-| DRIFT-02 | MEDIUM | INVENTORY/FRONTEND | `frontend/app/lib/admin.ts` ajuste | no permite elegir sucursal; backend usa default |
 | AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
@@ -404,6 +403,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | RBAC-F3 · RBAC-F5 | MEDIUM | `847d3bf` | `app/admin/lib/internal-modules.ts::canAccessModule` (misma regla que `InternalAccess.can`); `admin.audit` declara `memberships.view` | `frontend/__tests__/internal-modules-access.test.ts` | CORREGIDO |
 | RBAC-F4 | LOW | `58d17de` | `app/admin/staff/page.tsx` (`canManage` = `memberships.manage`) | `frontend/__tests__/staff-screen-authority.test.tsx` | CORREGIDO |
 | RBAC-F6 · F7 · F11 | LOW | — | transfers `[id]` (`mayTransfer`), `users/page.tsx` (`canManage`), `orders/[id]` (`access.can`) | revisado @ `64b4d5e` | OBSOLETO (ya corregido en master) |
+| DRIFT-02 | MEDIUM | `068bee1` | `app/admin/components/InventoryAdjustForm.tsx` (selector de sucursal), `app/lib/admin.ts::adjustInventory` (`branch` opcional) | `frontend/__tests__/inventory-adjust-branch.test.tsx` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -422,7 +422,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SERVICE-INTAKE técnico | `POST service/orders/` acepta `technician_id` opcional; crea y asigna en una transacción | `createServiceOrder`; obligatorio en la caja, opcional en recepción | OK @ `1d35b7d` |
 | SERVICE-PAYMENT autoridad | registrar: `collect` o `manage`; reversar: `manage` | `mayCollectPayment` / `CAP_PAYMENTS_MANAGE` en `orders/[id]/page.tsx` | OK @ `1d35b7d` |
 | SERVICE-QUEUES | `status` admite varios códigos separados por comas | `app/admin/service/queues.ts` | OK @ `1d35b7d` |
-| INVENTORY-ADJUST branch | acepta sucursal / usa default | no envía sucursal (`app/lib/admin.ts`) | DRIFT (DRIFT-02) |
+| INVENTORY-ADJUST branch | acepta sucursal / usa default | envía `branch` cuando hay más de una sucursal al alcance (`InventoryAdjustForm`) | OK (DRIFT-02 corregido) |
 | DRF field errors | `{field: [msg]}` | clientes que sólo leen `detail` | DRIFT LOW (DRIFT-03) |
 | Legacy role sets | backend | frontend | OK (`H412bFrontendLegacyRoleParityTest`) |
 | POS `receipt_options` | `enabled` + causa | selector | OK (`Fiscal6ReceiptOptionsTest`, E2E `pos-receipt-options`) |

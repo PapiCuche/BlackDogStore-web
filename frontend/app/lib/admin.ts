@@ -212,10 +212,12 @@ export async function adjustInventory(
   productId: number,
   delta: number,
   reason: string,
+  /** Omitted: the server applies it to the caller's default branch. */
+  branch?: number,
 ): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/inventory-adjust/`, {
     method: 'POST',
-    body: JSON.stringify({ delta, reason }),
+    body: JSON.stringify(branch === undefined ? { delta, reason } : { delta, reason, branch }),
   });
   if (res.status === 400) {
     const err = await res.json().catch(() => null);

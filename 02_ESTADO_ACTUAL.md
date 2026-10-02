@@ -3,10 +3,36 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — DRIFT-02: el ajuste de inventario dice en qué sucursal se aplica
+
+Rama `fix/inventory-adjust-branch`. Código en `068bee1`, con `master` `a6d725b`
+incorporado en `1fa05af`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+migraciones.
+
+El servidor acepta `branch` en el ajuste de inventario y, si no llega, lo aplica a
+la sucursal por defecto de quien ajusta. La pantalla nunca lo enviaba: en una
+empresa con varias sucursales todos los ajustes caían en la sucursal por defecto,
+sin decirlo y sin poder elegir otra.
+
+Ahora, con más de una sucursal al alcance, el formulario pregunta, parte de la
+sucursal por defecto y envía la elegida. Si no hay sucursal por defecto, pide
+escogerla antes de enviar. Con una sola sucursal —el caso del piloto— no pregunta
+nada y la petición es la de siempre. El servidor sigue decidiendo si quien ajusta
+alcanza esa sucursal.
+
+Pruebas: `inventory-adjust-branch.test.tsx` (5 casos; 3 fallan sobre `master`).
+Contrato del servidor comprobado sobre una copia desechable de la base con dos
+sucursales: con `branch` el movimiento queda en esa sucursal; sin `branch`, en la
+de por defecto; con una sucursal inexistente responde 404.
+
+Validación sobre `1fa05af`: frontend 511 pruebas en 53 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos.
+
 ## 2026-10-02 — RBAC-F3 y RBAC-F4: el panel no ofrece lo que el servidor niega
 
 Rama `fix/staff-actions-capability`, desde `master` `64b4d5e`. Código en
-`4f5d736`. Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones. La
+`4f5d736`. Estado: **IMPLEMENTADO / MERGED** por PR #52 (`a6d725b`). Sin backend, sin migraciones. La
 autoridad sigue en el servidor; cambia sólo qué enseña la interfaz.
 
 - **Personal (RBAC-F4, `58d17de`).** Ver al personal pide `memberships.view`;
