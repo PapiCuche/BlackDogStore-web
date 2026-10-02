@@ -93,21 +93,32 @@ export default function Hero() {
         separado del borde. Es lo que hace que la pieza se lea como impresa y no
         como una pantalla, y cuesta un borde.
       */}
-      <div className="relative mx-auto max-w-7xl px-6 py-10 lg:px-8 lg:py-14">
-        <div className="border border-slab-border px-6 py-16 sm:px-10 lg:px-14 lg:py-24">
+      {/*
+        HERO-MOBILE-CLIP. En pantallas estrechas el marco y su margen se comían
+        98 px de cada 320: quedaban 222 para un titular. Por debajo de `sm` el
+        margen baja a 16 + 16; de `sm` hacia arriba no cambia nada.
+      */}
+      <div className="relative mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+        <div className="border border-slab-border px-4 py-16 sm:px-10 lg:px-14 lg:py-24">
           {/* 7/5, no mitad y mitad: la tarjeta es asimétrica y ésa es la mitad
               de su carácter. */}
           <div className="grid gap-12 lg:grid-cols-12 lg:items-center">
 
             {/* Left: copy */}
-            <div className="lg:col-span-7">
+            {/*
+              `min-w-0`: un hijo de rejilla no encoge por debajo de su palabra
+              más larga salvo que se le diga. Sin esto la columna medía lo que
+              «ESPECIALIZADO» a 36 px —más que la pantalla—, arrastraba al
+              párrafo con ella y la sección escondía el sobrante.
+            */}
+            <div className="min-w-0 lg:col-span-7">
             {/* Label */}
-            <div className="inline-flex items-center gap-2.5 border border-slab-border px-3.5 py-1.5">
+            <div className="inline-flex max-w-full items-center gap-2.5 border border-slab-border px-3.5 py-1.5">
               {/* EL PUNTO DORADO. Uno de los usos que el manual reserva al
                   acento: pequeño, sobre negro, donde rinde 8.4:1. No es
                   decoración perdida — es el 3–5 % puesto donde se ve. */}
-              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-              <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-slab-muted">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+              <span className="min-w-0 text-[10px] font-bold uppercase tracking-[0.3em] text-slab-muted">
                 {eyebrow}
               </span>
             </div>
@@ -125,18 +136,32 @@ export default function Hero() {
               La frase principal y el descriptor salen literalmente del manual.
             */}
             {/*
-              SIN `break-words`. Partir «ESPECIALIZADO» a mitad de palabra no
-              es responsive: es un titular roto. El tamaño se elige para que la
+              NO SE PARTEN PALABRAS PARA CABER. Partir «ESPECIALIZADO» a mitad
+              de palabra no es responsive: es un titular roto. El tamaño se
+              elige para que la
               palabra más larga quepa en la columna —medido con navegador— y el
               ancho máximo evita la línea de sesenta caracteres que ningún
               titular debería tener.
 
               `clamp()` escala de forma continua, así que no hay un ancho donde
               se quede grande justo antes de saltar.
+
+              HERO-MOBILE-CLIP. El mínimo de 2.25rem no cabía en un teléfono:
+              a 36 px «ESPECIALIZADO» mide más que una pantalla de 414, y el
+              titular salía cortado por la derecha. `min(…, 7.4vw)` deja que
+              encoja con la pantalla POR DEBAJO de ~486 px, que es donde 7.4vw
+              baja de 36 px; de ahí hacia arriba manda el `clamp` de siempre y
+              el escritorio no cambia.
+
+              `overflow-wrap: break-word` es la red para el titular de OTRA
+              tienda, con una palabra aún más larga: sólo actúa si una palabra
+              no cabe ni sola en su línea, y entonces la parte en vez de
+              esconderla. Con el titular del piloto no llega a actuar — y una
+              prueba de navegador lo comprueba palabra por palabra.
             */}
             <h1
-              className="font-display mt-5 max-w-[15ch] font-black uppercase leading-[0.95] tracking-tight text-slab-foreground text-balance"
-              style={{ fontSize: "clamp(2.25rem, 4.2vw, 4rem)" }}
+              className="font-display mt-5 max-w-[15ch] font-black uppercase leading-[0.95] tracking-tight text-slab-foreground text-balance [overflow-wrap:break-word]"
+              style={{ fontSize: "min(clamp(2.25rem, 4.2vw, 4rem), 7.4vw)" }}
             >
               {titleLines.map((line, i) => (
                 <span key={i} className="block">
