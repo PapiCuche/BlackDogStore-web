@@ -10,7 +10,7 @@
 # highest patch because staying one release behind on an LTS line to dodge a CVE
 # that "does not apply today" is how it applies tomorrow.
 Django==5.2.17
-djangorestframework==3.17.1
+djangorestframework==3.17.2
 
 # JWT authentication
 djangorestframework-simplejwt==5.5.1
@@ -19,7 +19,7 @@ djangorestframework-simplejwt==5.5.1
 django-environ==0.14.0
 
 # Database adapters
-psycopg2-binary==2.9.12
+psycopg2-binary==2.9.13
 
 # CORS headers middleware
 django-cors-headers==4.9.0
@@ -50,14 +50,14 @@ pillow-heif==1.6.0
 # sin estas dependencias sigue funcionando con FileSystemStorage. El dominio
 # conoce una abstracción; R2 es infraestructura.
 django-storages==1.14.6
-boto3==1.43.87
+boto3==1.43.107
 
 # WSGI server for production (replaces runserver)
 gunicorn==26.0.0
 
 # PDF generation — internal purchase receipts (Phase 4.2)
 # Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
-reportlab==4.4.1
+reportlab==4.4.10
 
 # QR code on the electronic invoice PDF (store/fiscal/qr.py).
 #
@@ -96,7 +96,7 @@ sqlparse==0.6.0
 # restante de forma indistinguible de una firma falsificada.
 lxml==6.1.3            # BSD-3-Clause — árbol XML y canonicalización C14N 1.0
 signxml==5.1.0         # Apache-2.0 — XMLDSig sobre lxml + cryptography
-cryptography==50.0.1   # Apache-2.0 / BSD — RSA y X.509
+cryptography==50.0.2   # Apache-2.0 / BSD — RSA y X.509
 
 # `store/fiscal/provider.py` importa `requests` DIRECTAMENTE para el envío SOAP
 # a SUNAT; hasta ahora sólo llegaba como transitiva de `stripe`, y un despliegue
