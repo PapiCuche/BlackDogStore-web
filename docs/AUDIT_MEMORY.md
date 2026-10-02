@@ -340,7 +340,10 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | INV-LEGACY-V1-F1/F3 | LOW | INVENTORY | `serializers.py` movimientos legacy; v1 transfers `page_size<0` → 500 | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
-SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets), FE-AUTH-02/04/06/07/08/09.
+SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
+FE-AUTH-06 PENDIENTE (el proxy sigue redirecciones reenviando cabeceras); FE-AUTH-08
+ACEPTADO (tarjeta de demostración sólo en desarrollo); FE-AUTH-09 PROPUESTA (tienda
+por dominio); FE-AUTH-02/04/07 corregidos, ver sección 6.
 Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `administrador` tiene
 `products.manage`, y también tiene `inventory.adjust`; `inventario` tiene `inventory.adjust`.
 
@@ -404,6 +407,9 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | RBAC-F4 | LOW | `58d17de` | `app/admin/staff/page.tsx` (`canManage` = `memberships.manage`) | `frontend/__tests__/staff-screen-authority.test.tsx` | CORREGIDO |
 | RBAC-F6 · F7 · F11 | LOW | — | transfers `[id]` (`mayTransfer`), `users/page.tsx` (`canManage`), `orders/[id]` (`access.can`) | revisado @ `64b4d5e` | OBSOLETO (ya corregido en master) |
 | DRIFT-02 | MEDIUM | `068bee1` | `app/admin/components/InventoryAdjustForm.tsx` (selector de sucursal), `app/lib/admin.ts::adjustInventory` (`branch` opcional) | `frontend/__tests__/inventory-adjust-branch.test.tsx` | CORREGIDO |
+| FE-AUTH-02 | LOW | `5adcd28` | `app/lib/cart.ts::getSessionKey` (`crypto.randomUUID` / `getRandomValues`) | `frontend/__tests__/cart-session-key.test.ts` | CORREGIDO |
+| FE-AUTH-07 | LOW | `40f9769` | `app/lib/auth.ts::fetchWithAuth` (`isOwnApiUrl`) | `frontend/__tests__/fetch-with-auth.test.ts` | CORREGIDO |
+| FE-AUTH-04 | LOW | `113a8dd` | `frontend/next.config.ts` (`headers()`) | `frontend/__tests__/security-headers.test.ts` | CORREGIDO (sin política de scripts: CSP-SCRIPT = PROPUESTA) |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
