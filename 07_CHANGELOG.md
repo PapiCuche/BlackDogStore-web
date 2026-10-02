@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — DEPLOY-PREP-01 · Configuración de producción
+
+Rama `deploy/production-vps`: imágenes de producción, `docker-compose.prod.yml` con
+Caddy (HTTPS automático), PostgreSQL con volumen, variables de ejemplo y scripts de
+copia y restauración. Procedimiento en `docs/despliegue-produccion.md`. Ensayado en
+local con Docker; nada contratado ni publicado. Sin cambios de aplicación.
+
 ## 2026-10-01 — UX-RECON-SVC-01 · Interfaz reconciliada con servicio y caja
 
 Rama `reconcile/uxui-after-svc`: la capa UX/UI del PR #43 (`9c1486b`) sobre el

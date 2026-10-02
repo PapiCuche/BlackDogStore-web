@@ -3,6 +3,40 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-02 — DEPLOY-PREP-01: configuración de producción preparada, sin publicar
+
+Rama `deploy/production-vps`, sobre `master` `0c83381`. Nada contratado, nada
+publicado.
+
+El repositorio sólo tenía imágenes de desarrollo (`runserver`, `next dev`). Se
+añade, sin tocar el entorno de desarrollo, lo necesario para un servidor con Docker
+Compose: `backend/Dockerfile.prod` (gunicorn, sin privilegios, un proceso),
+`frontend/Dockerfile.prod` (`next build` + `next start`), `docker-compose.prod.yml`
+(Caddy, Next, Django, PostgreSQL; sólo Caddy publica puertos), `deploy/Caddyfile`
+(HTTPS automático; `/api/*` directo a Django), `deploy/.env.production.example` y
+los scripts de copia y restauración. Pasos exactos:
+[docs/despliegue-produccion.md](docs/despliegue-produccion.md).
+
+Decisión de topología: en producción la API no pasa por el proxy interno de Next,
+porque ese proxy descarta la identidad del cliente y Django contaría a todos los
+visitantes como uno solo en los límites de peticiones. Caddy entrega la dirección
+real y Django la lee con `TRUSTED_PROXY_COUNT=1`.
+
+Ensayado en local con Docker (proyecto aislado): compilación, migraciones sobre
+PostgreSQL nuevo, HTTPS con redirección, tienda y API, inicio de sesión real con
+cookies seguras, CSRF, carrito, límite por IP con cabecera falsificada,
+persistencia tras reinicio y copia + restauración. Sin ensayar: certificado
+público, correo SMTP y cobro con Izipay.
+
+Datos: una base nueva ya trae empresa, sucursal, roles, configuración, categorías
+y los tres productos (los crean las migraciones), con existencias de ejemplo que
+hay que ajustar desde el panel. Los ocho usuarios de desarrollo son cuentas de
+demostración y no pasan a producción. Sin cambios de backend, frontend ni
+migraciones.
+
+Faltan datos que sólo tiene el propietario: dominio, servidor SMTP, credenciales
+de Izipay y dónde se alojan las fotos de producto.
+
 ## 2026-10-01 — UX-RECON-SVC-01: la interfaz de #43 sobre el master con servicio y caja
 
 Rama `reconcile/uxui-after-svc`, sobre `master` `d98d70c` (que ya incluye SVC-FUNC-01
