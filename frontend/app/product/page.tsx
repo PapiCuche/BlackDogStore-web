@@ -125,7 +125,12 @@ function CatalogContent() {
       <section className="relative overflow-hidden border-b border-bd-border">
         <div className="relative mx-auto max-w-7xl px-6 py-14 lg:px-8 lg:py-20">
           <span className="section-label">Catálogo</span>
-          <h1 className="mt-3 max-w-3xl font-display text-5xl font-black italic uppercase leading-[0.88] tracking-[-0.05em] text-foreground sm:text-7xl">
+          {/*
+            A 3rem «PRODUCTOS» mide más que un teléfono, y la sección esconde
+            el sobrante: el titular salía cortado hasta 390 px. Por debajo de
+            `sm` el tamaño encoge con la pantalla; de `sm` arriba no cambia.
+          */}
+          <h1 className="mt-3 max-w-3xl font-display text-[min(3rem,10.5vw)] font-black italic uppercase leading-[0.88] tracking-[-0.05em] text-foreground sm:text-7xl">
             Productos para elegir con claridad.
           </h1>
           <p className="mt-5 max-w-xl text-sm leading-7 text-muted sm:text-base">
