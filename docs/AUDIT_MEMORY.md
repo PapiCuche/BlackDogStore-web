@@ -263,7 +263,10 @@ categorías; cabecera, pie y portada); `Hero.tsx` (losa `bg-slab` en ambos temas
 campaña `campaigns.home_hero` opcional; sin imagen por slug); `StoreInformation.tsx`
 (`/about`, `/contact`, sólo datos de `useStorefront()`); `StorefrontChrome.tsx`
 (`StorefrontContent` marca `shop-surface` / `internal-surface`; sin armazón en
-`/admin`); `globals.css` (clases `v3-*`, sin selectores de elemento).
+`/admin`; ningún archivo bajo `app/admin` cambia y el panel se comprobó idéntico
+píxel a píxel contra master en cuatro pantallas); `globals.css` (clases `v3-*`, la
+variable `:root --v3-ease-out`, `@starting-style` y un `@keyframes`; ningún selector
+de elemento que alcance al panel).
 Tests: `storefront-v3-navigation`, `storefront-v3-home`, `storefront-v3-information`,
 `storefront-v3-products`; E2E `storefront-v3`, `storefront`, `brand-contrast` (sin
 modificar).
@@ -478,6 +481,8 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | TENANT-TYPOGRAPHY | BRANDING | PROPUESTA: tipografía por tienda (el manual del piloto pide Montserrat; la plataforma usa Inter + Unbounded) | Baja | — |
 | INTERNAL-UI-V3 | FRONTEND | PENDIENTE: menú móvil del panel, gráficos y estilos del trabajo paralelo V3 | Media | fase propia |
 | STOREFRONT-IMAGES-LICENSE | STOREFRONT | imágenes de producto y recortes del trabajo paralelo, y `populate_storefront_images`, no portados hasta demostrar origen y licencia | Media | decisión legal |
+| HERO-MOBILE-CLIP | STOREFRONT | DEFECTO anterior a STOREFRONT-V3 (idéntico en master `0c83381`): hasta 414 px el titular y el párrafo del hero se cortan por la derecha; la columna mide 367 px fijos y `overflow-hidden` lo esconde de la prueba de desbordamiento | Media | — |
+| STOREFRONT-PILLARS-CMS | STOREFRONT | PROPUESTA: los cuatro pilares de la portada están compilados; sin campo en el CMS | Baja | — |
 | STOREFRONT-HERO-VARIANT | STOREFRONT | PENDIENTE: variante de hero configurable por tienda; hoy losa oscura para todas | Baja | — |
 | POS-CUSTOM-PRODUCT | POS | PROPUESTA: vender en caja un artículo que no está en el catálogo. No se implementa con productos falsos ni con `OrderItem.product` nulo | Por decidir | decisión de producto |
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |

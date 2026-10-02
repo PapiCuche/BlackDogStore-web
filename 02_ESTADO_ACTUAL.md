@@ -22,8 +22,12 @@ Qué cambia para quien visita una tienda:
   no lee: no filtraba nada. Usa `?category=`.
 - **Portada.** Productos en un carrusel (flechas, teclado, avance lento que cede
   al tocar, quieto con «reducir movimiento»). Preguntas frecuentes de la tienda.
-  Los bloques de servicio sólo si la tienda publicó servicios. Sin copy que nombre
-  una marca de equipos.
+  Los bloques de servicio sólo si la tienda publicó servicios. El código ya no
+  escribe copy que nombre una marca de equipos: el titular y el texto del bloque
+  «Cómo trabajamos» salen de `services_hero_title` y `services_hero_subtitle` de la
+  tienda (los mismos de `/services`), con un respaldo neutro. El primer pilar pasó
+  de «Productos y equipos Apple» a «Conocemos lo que vendemos y reparamos»: ese
+  texto sigue compilado y **no** tiene campo en el CMS.
 - **Hero.** Sigue siendo una losa oscura en los dos temas; sus pruebas no se
   tocaron. Si la tienda publica la campaña `home_hero`, aporta texto, botones e
   imagen; sin campaña, el hero es el de antes. Ninguna imagen se elige por el
@@ -36,8 +40,19 @@ Qué cambia para quien visita una tienda:
   «Control interno» sigue dependiendo de la respuesta del servidor.
 
 Sin cambios: checkout, pagos, desglose fiscal, pedidos, autenticación, proveedor
-de tema, panel interno y `backend/` (subárbol idéntico a `master`, `736690e`;
-vale su medición de 4643 pruebas, 0 fallos, 3 omitidas). Sin migraciones.
+de tema y `backend/` (subárbol idéntico a `master`, `736690e`; vale su medición de
+4643 pruebas, 0 fallos, 3 omitidas). Sin migraciones.
+
+Panel interno: ningún archivo bajo `frontend/app/admin` cambia. Sí cambia lo que lo
+envuelve: `layout.tsx` y `StorefrontChrome.tsx` ponen el contenido dentro de un
+`div` con clase `internal-surface` (antes un `div` sin clase). Comprobado en
+navegador contra `master`, con la misma cuenta y los mismos datos: `/admin`,
+`/admin/sales/pos`, `/admin/service/orders` y `/admin/inventory` salen idénticos
+píxel a píxel y sin diferencias de estilo calculado.
+
+CSS: lo añadido a `globals.css` son clases `v3-*`, una variable en `:root`
+(`--v3-ease-out`), reglas `@starting-style` y un `@keyframes`. No se añadió ningún
+selector de elemento (`table`, `h1`, `input`, `button`) que alcance al panel.
 
 El defecto «identificador repetido en las líneas del carrito» no existe en
 `master`: lo corrigió la reconciliación anterior. No se tocó.
@@ -46,7 +61,21 @@ Validación sobre `7f49168`: frontend 483 pruebas en 47 suites, OK; typecheck OK
 lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 143 de 143,
 sin fallos, omitidas ni reintentos, 8,6 min.
 
+Aceptación visual del piloto (2026-10-02) sobre `743aa5e`: siete rutas (`/`,
+`/product`, una ficha, `/cart`, `/services`, `/about`, `/contact`) en 1440 y 390 px,
+temas claro y oscuro. Sin desbordamiento, logotipo correcto por contraste, hero
+oscuro en ambos temas, categorías reales, carrusel, navegación móvil y movimiento
+reducido correctos.
+
+Defecto encontrado, **anterior a esta rama** (idéntico en `master`): en móvil, hasta
+414 px, el titular y el párrafo del hero se cortan por la derecha. La columna de
+texto mide 367 px fijos y la sección oculta lo que sobra, así que la prueba de
+desbordamiento no lo detecta. Queda como HERO-MOBILE-CLIP, sin corregir aquí.
+
 Queda fuera, registrado:
+
+- STOREFRONT-PILLARS-CMS = PROPUESTA. Los cuatro pilares de la portada están
+  compilados; para que una tienda los redacte hace falta un campo propio.
 
 - STOREFRONT-EDITORIAL-CMS = PENDIENTE. Ilustraciones por categoría y material
   editorial deben ser contenido subido por la tienda. Hoy sólo existe la imagen

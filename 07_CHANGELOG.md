@@ -11,7 +11,8 @@ de productos, entradas con movimiento reducido respetado y línea del carrito
 enlazada a su ficha (`9ba1a70`). Portada sobre el CMS de la tienda, con campaña
 `home_hero` opcional y la losa oscura del hero intacta (`11f69f0`). Páginas
 `/about` y `/contact` con datos de la tienda (`5380ca6`). Pruebas de navegador de
-la experiencia pública (`7f49168`). Sin backend, migraciones ni panel interno.
+la experiencia pública (`7f49168`). Sin backend ni migraciones; ningún archivo del
+panel interno cambia (su contenido queda envuelto en `internal-surface`).
 Frontend 483 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
 143/143.
 
