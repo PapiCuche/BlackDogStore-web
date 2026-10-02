@@ -72,19 +72,25 @@ test.describe("el texto de la tienda cabe en un teléfono", () => {
     productPath = chosen ? `/product/${chosen.slug}` : "";
   });
 
-  for (const width of WIDTHS) {
-    for (const route of ["/", "/product", "FICHA", "/services", "/about", "/contact", "/cart", "/auth"]) {
-      test(`${route} a ${width}px`, async ({ page }) => {
-        const path = route === "FICHA" ? productPath : route;
-        test.skip(!path, "el catálogo no tiene ningún producto para abrir su ficha");
+  // Cada ruta se carga UNA vez y se mide en los cinco anchos. Cargarla una vez
+  // por ancho son cuarenta visitas seguidas, cada una pide el carrito, y eso
+  // agota el límite de peticiones del carrito para la prueba que venga después.
+  for (const route of ["/", "/product", "FICHA", "/services", "/about", "/contact", "/cart", "/auth"]) {
+    test(`${route} entre ${WIDTHS[0]} y ${WIDTHS[WIDTHS.length - 1]}px`, async ({ page }) => {
+      const path = route === "FICHA" ? productPath : route;
+      test.skip(!path, "el catálogo no tiene ningún producto para abrir su ficha");
 
+      await page.setViewportSize({ width: WIDTHS[0], height: 844 });
+      await page.goto(path, { waitUntil: "networkidle" });
+
+      for (const width of WIDTHS) {
         await page.setViewportSize({ width, height: 844 });
-        await page.goto(path, { waitUntil: "networkidle" });
+        await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
         const result = await clippedText(page);
 
-        expect(result.found, `texto recortado en ${path} a ${width}px`).toEqual([]);
-        expect(result.pageOverflow, `${path} desborda a ${width}px`).toBeLessThanOrEqual(1);
-      });
-    }
+        expect.soft(result.found, `texto recortado en ${path} a ${width}px`).toEqual([]);
+        expect.soft(result.pageOverflow, `${path} desborda a ${width}px`).toBeLessThanOrEqual(1);
+      }
+    });
   }
 });
