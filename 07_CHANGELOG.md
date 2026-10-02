@@ -11,6 +11,9 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Gates: `manage.py check`, migraciones sin cambios pendientes y suite backend
   completa en un solo proceso.
 - Sin cambios funcionales ni migraciones.
+- La primera ejecución completa encontró dos defectos reales: `qrcode` faltaba en
+  `requirements.txt` (los PDF fiscales fallaban en una instalación limpia) y una
+  prueba de orden por nombre dependía de la colación de la base. Corregidos.
 
 ## 2026-10-02 — ADMIN-MENU-ARIA · Botón del menú móvil del panel
 

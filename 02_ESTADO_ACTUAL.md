@@ -10,6 +10,23 @@ Estado: **PARCIAL / pendiente de CI remoto**. La primera ejecución se canceló 
 llegar a su límite de 35 minutos con la suite aún corriendo, sin ninguna prueba
 fallida; el límite pasa a 120 minutos (`0a17afd`).
 
+La segunda ejecución terminó en 53 minutos: 4643 pruebas, 1 fallo y 16 errores.
+Los dos eran defectos reales que las máquinas de desarrollo escondían:
+
+- **`qrcode` no estaba en `requirements.txt`.** Lo importa `store/fiscal/qr.py`
+  para el código QR del comprobante electrónico. Estaba instalado en las máquinas
+  de desarrollo, así que las pruebas pasaban allí; en una instalación limpia —el
+  runner de CI y la imagen de producción— todo PDF fiscal fallaba con
+  `ModuleNotFoundError` (16 errores). Se declara `qrcode==8.2`. Se revisaron los
+  demás paquetes que importa el backend: no falta ninguno más.
+- **Una prueba dependía de la colación de la base.** `test_ordering_name_asc`
+  esperaba «Mac Studio» antes de «MacBook Air», que es el orden por bytes de la
+  base local (colación `C`). La imagen de PostgreSQL usa una colación lingüística
+  (`en_US`), que ignora el espacio y pone «MacBook» primero. Los dos órdenes son
+  alfabéticos. La prueba compara ahora contra el orden por nombre de la propia
+  base y fija el par en el que todas las colaciones coinciden. El catálogo en
+  producción ordena por nombre con la colación de su base.
+
 Se añade una compuerta reproducible para cualquier cambio de backend:
 PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
 `manage.py check`, `makemigrations --check --dry-run` y la suite completa
