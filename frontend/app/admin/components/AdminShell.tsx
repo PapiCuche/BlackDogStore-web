@@ -100,6 +100,7 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
             user={user}
             dashboard={selfLoaded ? effective : null}
             onOpenMenu={() => setMenuOpen(true)}
+            menuOpen={menuOpen}
             onSelectCompany={(companyId) => onSelectCompany?.(companyId)}
           />
           <main id="admin-main-content" tabIndex={-1} className="mx-auto max-w-7xl px-4 py-6 outline-none sm:px-6 sm:py-8">
