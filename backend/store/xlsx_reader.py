@@ -109,12 +109,24 @@ def check_upload(uploaded, *, filename: str | None = None) -> bytes:
             )
         raise XlsxError('Sólo se aceptan archivos .xlsx.')
 
-    data = uploaded.read() if hasattr(uploaded, 'read') else bytes(uploaded)
-    if len(data) > MAX_UPLOAD_BYTES:
+    # SEC-SET-05. The limit is applied BEFORE the file is in memory. It used to
+    # be compared with the length of what had already been read, so it bounded
+    # nothing. The declared size refuses early; the read itself is capped one
+    # byte past the limit, because a declared size is the sender's claim.
+    limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+    declared = getattr(uploaded, 'size', None)
+    if isinstance(declared, int) and declared > MAX_UPLOAD_BYTES:
         raise XlsxTooLarge(
-            f'El archivo pesa {len(data) // (1024 * 1024)} MB y el límite es '
-            f'{MAX_UPLOAD_BYTES // (1024 * 1024)} MB.'
+            f'El archivo pesa {declared // (1024 * 1024)} MB y el límite es '
+            f'{limit_mb} MB.'
         )
+
+    if hasattr(uploaded, 'read'):
+        data = uploaded.read(MAX_UPLOAD_BYTES + 1)
+    else:
+        data = bytes(uploaded)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise XlsxTooLarge(f'El archivo supera el límite de {limit_mb} MB.')
     if not data:
         raise XlsxError('El archivo está vacío.')
 
