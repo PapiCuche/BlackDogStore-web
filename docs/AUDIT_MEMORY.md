@@ -337,7 +337,7 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
 SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
-FE-AUTH-06 PENDIENTE (el proxy sigue redirecciones reenviando cabeceras); FE-AUTH-08
+FE-AUTH-06 corregido (sección 6); FE-AUTH-08
 ACEPTADO (tarjeta de demostración sólo en desarrollo); FE-AUTH-09 PROPUESTA (tienda
 por dominio); FE-AUTH-02/04/07 corregidos, ver sección 6.
 Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `administrador` tiene
@@ -415,6 +415,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | CI-01 | MEDIUM | `ba4e9ff` | `.github/workflows/backend-postgres-validation.yml` (encontró `qrcode` sin declarar y una prueba dependiente de la colación) | CI en PR | CORREGIDO |
 | AUDIT-07 | LOW | `06cd798` | `admin_views.py` (`product_updated`/`deactivated`/`reactivated`, `category_created` con `company`) | `store/test_audit_company.py` | CORREGIDO |
 | DEP-05 | MEDIUM | `65d34ad` | `backend/requirements.txt` | CI de backend en instalación limpia | CORREGIDO |
+| FE-AUTH-06 | LOW | `085aa2e` | `frontend/app/api/[...path]/route.ts::fetchFollowingOwnRedirects` (`redirect: "manual"`) | `frontend/__tests__/api-proxy-redirects.test.ts` | CORREGIDO |
+| SKIP-LINK | LOW | `cf72ee5` | `StorefrontChrome.tsx::SkipLink`, `#contenido`, `#admin-main-content` | `frontend/__tests__/skip-link.test.tsx`, E2E `skip-link` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |

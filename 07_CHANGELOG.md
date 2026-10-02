@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-02 — FE-AUTH-06 · Enlace de salto
+
+- El proxy `/api` devuelve al navegador las redirecciones hacia otro origen y sólo
+  sigue las del propio backend bajo `/api/` (`085aa2e`).
+- «Saltar al contenido» vuelve a ser el primer tabulador en la tienda y en el
+  panel (`cf72ee5`).
+- Frontend 538 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  169/169.
+- PR #55 (endurecimiento del backend) y PR #56 (AUDIT-07, DEP-05) ya están en
+  master; su CI de backend pasó con 4682 y 4686 pruebas.
+
 ## 2026-10-02 — AUDIT-07 · DEP-05
 
 - Los cambios de producto y la creación de categorías quedan en la auditoría de su
