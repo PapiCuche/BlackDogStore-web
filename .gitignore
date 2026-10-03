@@ -22,3 +22,8 @@ coverage/
 
 # Local databases
 *.sqlite3
+
+# Production secrets and local backups never enter the repo.
+.env.production
+deploy/.env.production
+backups/

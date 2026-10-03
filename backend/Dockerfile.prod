@@ -1,0 +1,43 @@
+# Black Dog Store — backend, PRODUCCIÓN.
+#
+# El `Dockerfile` de al lado es el de desarrollo (runserver, código montado).
+# Éste sirve con gunicorn, sin privilegios y sin tocar la base al arrancar.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
+
+COPY . /app
+
+# Sin root. El único directorio que se escribe es el de evidencias del servicio
+# técnico, que en producción es un volumen: se crea aquí para que el volumen
+# herede el propietario.
+RUN useradd --system --uid 10001 --home-dir /app app \
+    && mkdir -p /app/private-media/evidence \
+    && chown -R app:app /app/private-media
+USER app
+
+EXPOSE 8000
+
+# UN SOLO PROCESO, varios hilos.
+#
+# Los límites de peticiones (login 5/min, carrito 60/min…) se cuentan en la
+# caché en memoria del proceso. Con N procesos cada uno lleva su cuenta y el
+# límite real se multiplica por N (THROTTLE-CACHE-01). Un proceso con hilos
+# mantiene el límite exacto y sobra para una tienda; subir de aquí pide antes
+# una caché compartida.
+#
+# LAS MIGRACIONES NO SE APLICAN AL ARRANCAR. Algunas cambian datos y una (0025)
+# puede detenerse a pedir una decisión. Aplicarlas es un paso explícito del
+# despliegue: ver docs/despliegue-produccion.md.
+CMD ["gunicorn", "backend.wsgi:application", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "1", "--threads", "8", \
+     "--timeout", "60", \
+     "--access-logfile", "-", "--error-logfile", "-"]
