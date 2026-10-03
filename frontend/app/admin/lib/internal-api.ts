@@ -1394,20 +1394,15 @@ export type InspectResult = {
 };
 
 /**
- * POST multipart WITHOUT forcing a Content-Type.
+ * POST multipart WITHOUT a Content-Type.
  *
- * `fetchWithAuth` always sets `application/json`, which is right for every other
- * call in this file and fatal here: a multipart body needs the boundary the
- * browser generates, and a hand-written Content-Type has no boundary in it, so
- * the server receives a body it cannot split into parts. Deleting the header
- * lets the browser write the correct one.
+ * A multipart body needs the boundary the browser generates, so no header is
+ * passed at all and `fetchWithAuth` leaves it to the browser. This used to pass
+ * `"Content-Type": ""` to "delete" it; an empty header is still a header, the
+ * browser sent it, and the server answered 415 to every import.
  */
 async function postForm<T>(path: string, form: FormData, fallback: string): Promise<T> {
-  const res = await fetchWithAuth(`${API_BASE}${path}`, {
-    method: "POST",
-    body: form,
-    headers: { "Content-Type": "" },
-  });
+  const res = await fetchWithAuth(`${API_BASE}${path}`, { method: "POST", body: form });
   if (res.ok) return res.json();
   throw new Error(await readDetail(res, fallback));
 }

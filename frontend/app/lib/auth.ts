@@ -197,10 +197,11 @@ function withSelectedCompany(url: string): string {
  *   · 403 y 404 → nunca: no son sesiones caducadas, son respuestas.
  *
  * CONTENT-TYPE:
- *   · `FormData` → no se fija. El navegador escribe
- *     `multipart/form-data; boundary=…`; fijarlo a mano —o dejar el JSON por
- *     defecto, como hacía esta función— borra el boundary y el servidor no
- *     encuentra el archivo. Así fallaba la subida de evidencias.
+ *   · `FormData` → no se fija, y el que traiga el llamador se descarta. El
+ *     navegador escribe `multipart/form-data; boundary=…`; fijarlo a mano —o
+ *     dejar el JSON por defecto, como hacía esta función— borra el boundary y
+ *     el servidor no encuentra el archivo. Así fallaba la subida de evidencias,
+ *     y así fallaba la importación, que lo mandaba vacío.
  *   · un `Content-Type` del llamador → se respeta.
  *   · lo demás → `application/json`.
  */
@@ -229,7 +230,15 @@ export async function fetchWithAuth(
 
   const headers = headerRecord(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
-  if (!isFormData && !hasHeader(headers, "Content-Type")) {
+  if (isFormData) {
+    // IMPORT-UPLOAD-415. Con un archivo la cabecera es del navegador, que la
+    // escribe con el boundary. Lo que traiga el llamador sobra SIEMPRE, vacío
+    // incluido: una cabecera vacía no es «sin cabecera», se envía tal cual y el
+    // servidor responde 415.
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "content-type") delete headers[key];
+    }
+  } else if (!hasHeader(headers, "Content-Type")) {
     setHeader(headers, "Content-Type", "application/json");
   }
 

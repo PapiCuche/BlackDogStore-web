@@ -250,6 +250,34 @@ describe('hasInternalAccess — lo decide el servidor, no el rol', () => {
 });
 
 /**
+ * IMPORT-UPLOAD-415 — un archivo nunca sale con un Content-Type escrito a mano.
+ *
+ * La importación de productos y de stock llamaba con `"Content-Type": ""` para
+ * «quitar» la cabecera. No la quitaba: el navegador enviaba la cabecera vacía,
+ * el servidor no sabía partir el cuerpo y respondía 415. La importación desde
+ * el panel no funcionaba. Con un `FormData` la cabecera la escribe el
+ * navegador, con su boundary; cualquier valor que traiga el llamador sobra.
+ */
+describe('fetchWithAuth · archivos', () => {
+  it.each(['', 'multipart/form-data', 'application/json'])(
+    'con un FormData descarta el Content-Type %p del llamador',
+    async (value) => {
+      install(() => reply(200));
+      const form = new FormData();
+      form.append('file', new Blob(['x']), 'catalogo.xlsx');
+
+      await fetchWithAuth('/api/admin/imports/inspect/', {
+        method: 'POST', body: form, headers: { 'Content-Type': value },
+      });
+
+      expect(header(calls[0], 'Content-Type')).toBeUndefined();
+      expect(calls[0].init.body).toBe(form);
+      expect(header(calls[0], 'X-CSRFToken')).toBe('csrf-de-prueba');
+    },
+  );
+});
+
+/**
  * FE-AUTH-07 — la sesión sólo viaja a la API propia.
  *
  * `fetchWithAuth` añadía cookies y CSRF a cualquier URL que le pasaran. Hoy
