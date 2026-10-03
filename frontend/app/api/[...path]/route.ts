@@ -7,7 +7,8 @@
  *
  * Key behaviours:
  * - Always appends trailing slash to the Django path (avoids APPEND_SLASH redirect/error)
- * - Follows redirects server-side (browser never sees cross-origin Django URLs)
+ * - Follows the backend's own redirects server-side; a redirect to another
+ *   origin is returned to the browser instead (FE-AUTH-06)
  * - Forwards request headers including cookies (auth) and X-CSRFToken (CSRF),
  *   but STRIPS network-identity headers the browser must not be able to set
  * - Returns all response headers including Set-Cookie (JWT cookie flow)
@@ -74,6 +75,137 @@ const CLIENT_IDENTITY_HEADERS = new Set([
   "fly-client-ip",
 ]);
 
+/**
+ * A BODY HAS A CEILING — FE-AUTH-05.
+ *
+ * This handler read the whole request body into memory before forwarding it,
+ * with no limit: anyone, signed in or not, could post a body of any size to any
+ * path under /api/ and this process held all of it. The backend has its own
+ * limits, but they apply after the memory is already spent here.
+ *
+ * The ceiling sits above the largest body the backend accepts — a service
+ * evidence photo, 25 MB by default (`SERVICE_EVIDENCE_MAX_UPLOAD_BYTES`), plus
+ * its multipart envelope. A deployment that raises that limit raises this one
+ * with `API_PROXY_MAX_BODY_BYTES`.
+ */
+const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+const MAX_BODY_BYTES = (() => {
+  const configured = Number(process.env.API_PROXY_MAX_BODY_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_MAX_BODY_BYTES;
+})();
+
+function bodyTooLarge(): NextResponse {
+  return new NextResponse(
+    JSON.stringify({ detail: "El contenido enviado es demasiado grande." }),
+    { status: 413, headers: { "content-type": "application/json" } },
+  );
+}
+
+/**
+ * Reads the body up to the ceiling and returns `null` when it goes past it.
+ *
+ * `Content-Length` is only a shortcut to refuse early: it is the sender's
+ * claim, and a chunked body carries none. The count of bytes actually read is
+ * what decides, and reading stops at the first chunk that crosses the line.
+ */
+async function readBody(req: NextRequest): Promise<ArrayBuffer | null> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
+
+  if (!req.body) {
+    const whole = await req.arrayBuffer();
+    return whole.byteLength > MAX_BODY_BYTES ? null : whole;
+  }
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const whole = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    whole.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return whole.buffer;
+}
+
+/**
+ * REDIRECTS ARE FOLLOWED BY HAND — FE-AUTH-06.
+ *
+ * This handler used `redirect: "follow"`, so whatever the backend redirected to
+ * was fetched from here with the visitor's forwarded headers. One redirect does
+ * leave the site: with evidence photos in external storage the backend answers
+ * 302 to a signed URL at that provider, and the proxy downloaded it itself,
+ * handing the provider the visitor's `X-CSRFToken` along the way.
+ *
+ * Now:
+ *   - a redirect to ANOTHER origin is not fetched. It goes back to the browser,
+ *     which follows it alone and carries nothing of ours;
+ *   - a redirect inside the backend is followed, with the session, only while
+ *     it stays under the API prefix. Anything else under the backend origin is
+ *     a route this proxy does not serve (see FE-AUTH-01) and is refused;
+ *   - a few hops at most.
+ */
+const MAX_REDIRECTS = 3;
+const BACKEND_ORIGIN = new URL(BACKEND_API).origin;
+const BACKEND_PREFIX = `${new URL(BACKEND_API).pathname.replace(/\/$/, "")}/`;
+
+class RedirectRefused extends Error {}
+
+async function fetchFollowingOwnRedirects(
+  url: string,
+  method: string,
+  headers: Headers,
+  body: ArrayBuffer | undefined,
+): Promise<Response> {
+  let currentUrl = url;
+  let currentMethod = method;
+  let currentBody = body;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const res = await fetch(currentUrl, {
+      method: currentMethod,
+      headers,
+      body: currentBody,
+      redirect: "manual",
+    });
+
+    const location = res.headers.get("location");
+    if (res.status < 300 || res.status >= 400 || !location) return res;
+
+    const next = new URL(location, currentUrl);
+    // Off-site: hand it to the browser untouched.
+    if (next.origin !== BACKEND_ORIGIN) return res;
+    if (!next.pathname.startsWith(BACKEND_PREFIX)) {
+      throw new RedirectRefused(`outside the API prefix: ${next.pathname}`);
+    }
+
+    // What a browser does: 307/308 repeat the request, the rest become a GET.
+    if (res.status !== 307 && res.status !== 308) {
+      currentMethod = "GET";
+      currentBody = undefined;
+      // The body is gone; the headers that described it go with it.
+      headers.delete("content-length");
+      headers.delete("content-type");
+    }
+    currentUrl = next.toString();
+  }
+
+  throw new RedirectRefused("too many redirects");
+}
+
 type RouteContext = { params: Promise<{ path: string[] }> };
 
 /**
@@ -137,20 +269,22 @@ async function proxy(req: NextRequest, ctx: RouteContext): Promise<NextResponse>
 
   let body: ArrayBuffer | undefined;
   if (!["GET", "HEAD"].includes(req.method.toUpperCase())) {
-    body = await req.arrayBuffer();
+    const read = await readBody(req);
+    if (read === null) return bodyTooLarge();
+    body = read;
   }
 
   let upstream: Response;
   try {
-    upstream = await fetch(targetUrl, {
-      method: req.method,
-      headers: forwardHeaders,
-      body,
-      // Follow Django redirects server-side so the browser never receives a
-      // cross-origin 301 pointing to http://127.0.0.1:8000
-      redirect: "follow",
-    });
+    upstream = await fetchFollowingOwnRedirects(targetUrl, req.method, forwardHeaders, body);
   } catch (err) {
+    if (err instanceof RedirectRefused) {
+      console.error("[proxy] Redirect refused", { targetUrl, reason: err.message });
+      return new NextResponse(
+        JSON.stringify({ detail: "Backend no disponible." }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      );
+    }
     // This runs server-side — console.error here does NOT trigger the browser overlay
     console.error("[proxy] Upstream unreachable", { targetUrl, err: String(err) });
     return new NextResponse(

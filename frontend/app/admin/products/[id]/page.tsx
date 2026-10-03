@@ -119,6 +119,8 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
             <InventoryAdjustForm
               productId={product.id}
               currentInventory={product.inventory}
+              branches={access.dashboard?.branch_scope?.branches ?? []}
+              defaultBranchId={access.dashboard?.branch_scope?.default_branch?.id ?? null}
               onAdjusted={(newInventory) =>
                 setProduct((prev) => prev ? { ...prev, inventory: newInventory } : prev)
               }

@@ -257,6 +257,21 @@ Tests: `service-navigation.test.tsx`, `service-authority-console.test.tsx`,
 `service-pos`).
 Estado: VERIFICADO @ `ee3a8d3` (rama `reconcile/uxui-after-svc`, pendiente de merge).
 
+**STOREFRONT-V3** — La tienda pública no supone qué vende ni quién es la empresa.
+Autoridad: `app/lib/catalog-categories.ts::useCatalogCategories` (única lista de
+categorías; cabecera, pie y portada); `Hero.tsx` (losa `bg-slab` en ambos temas;
+campaña `campaigns.home_hero` opcional; sin imagen por slug); `StoreInformation.tsx`
+(`/about`, `/contact`, sólo datos de `useStorefront()`); `StorefrontChrome.tsx`
+(`StorefrontContent` marca `shop-surface` / `internal-surface`; sin armazón en
+`/admin`; ningún archivo bajo `app/admin` cambia y el panel se comprobó idéntico
+píxel a píxel contra master en cuatro pantallas); `globals.css` (clases `v3-*`, la
+variable `:root --v3-ease-out`, `@starting-style` y un `@keyframes`; ningún selector
+de elemento que alcance al panel).
+Tests: `storefront-v3-navigation`, `storefront-v3-home`, `storefront-v3-information`,
+`storefront-v3-products`; E2E `storefront-v3`, `storefront`, `brand-contrast` (sin
+modificar).
+Estado: VERIFICADO @ `7f49168` (rama `reconcile/storefront-v3-after-ux`, pendiente de merge).
+
 **PROXY-01** — El proxy Next nunca sale de `${BACKEND_API}/`.
 Autoridad: `frontend/app/api/[...path]/route.ts` (rechaza con 400 segmentos `.`, `..` o con `/` `\` tras decodificar).
 Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
@@ -276,7 +291,7 @@ Estado: VERIFICADO @ `4a9dd5c`.
 ### Sucursal (DÓNDE)
 - `tenancy.py`: `can_delegate_branch_scope`, `visible_branches`, `visible_branch_ids`, `_branch_authority`, `_granted_branches`, `describe_branch_scope`, `has_branch_access`, `assert_branch_access`, `assert_branch_in_company`, `default_branch_for_user`, `resolve_branch_for_user`.
 - Escritores de sucursal: `tenant_views.py::_apply_branch_access`, `promotion_views.py::_write_promotion`, `settings_views.py::AdminSequenceDetailView.patch` / `AdminSequenceScopeView`.
-- Frontend: `app/admin/components/BranchAccessPanel.tsx`, `app/admin/staff/page.tsx`, `app/admin/users/page.tsx`, `app/lib/staff.ts`, `app/admin/lib/internal-api.ts` (sequences, promotions).
+- Frontend: `app/admin/staff/page.tsx`, `app/admin/users/page.tsx`, `app/lib/staff.ts`, `app/admin/lib/internal-api.ts` (sequences, promotions).
 
 ### Servicio técnico
 - `service_services.py` (`eligible_technicians`, `assign_technician`, `create_repair_order_with_assignment`, `record_service_payment`), `v1_service_views.py` (`V1ServiceSurfaceMixin.get_order`, asignación devuelve `{current, candidates}`, `V1ServiceTechnicianCandidatesView`, `require_assignment_authority`, `COLLECT_AUTHORITY`; la lista de órdenes acepta `status=a,b,c`).
@@ -313,23 +328,18 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
-| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username` |
-| SEC-SET-04-A | MEDIUM | AUTH | `auth_views.py` refresh, `v1_auth_views.py` refresh | refresh sin throttle; filas `OutstandingToken` sin límite |
+| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username`. BLOQUEADO: decidir si el alta directa queda sólo para el administrador de plataforma (la invitación ya existe; 27 pruebas ejercen el alta directa) |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
-| SEC-SET-02 | MEDIUM | INFRA/AUTH | `backend/backend/urls.py` `admin/` | admin Django sin limitador/bloqueo/MFA en origen backend |
-| INV-LEGACY-V1-F2 | MEDIUM | INVENTORY | `v1_transfer_views.py` PUT items | no re-bloquea la transferencia (carrera INV-10) |
-| RBAC-F3 (sidebar) | MEDIUM | FRONTEND | `app/admin/lib/internal-modules.ts::canAccessModule` | cae a `Membership.role`; `admin.audit` sólo por rol legacy |
-| DRIFT-02 | MEDIUM | INVENTORY/FRONTEND | `frontend/app/lib/admin.ts` ajuste | no permite elegir sucursal; backend usa default |
-| AUDIT-01…07 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py`, `admin_views.py` | escrituras sin fila de auditoría / sin `company` |
-| FE-AUTH-05 | MEDIUM | FRONTEND | `route.ts` | cuerpo del proxy sin límite de tamaño |
+| AUDIT-01…06 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py` | PROPUESTA: ediciones de borrador sin fila de auditoría (los cierres sí se auditan); falta decidir la granularidad |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
-| CI-01 · CI-03 | MEDIUM | INFRA | `.github/` | sin CI, sin alertas Dependabot |
-| DEP-05 | MEDIUM | INFRA | `backend/requirements.txt` | pins atrasados |
-| RBAC-F6/F7/F4/F5/F11 | LOW | FRONTEND | transfers `[id]`, `users/page.tsx`, `staff/page.tsx`, `internal-modules.ts`, `orders/[id]` | UI ofrece acciones que el backend niega |
-| INV-LEGACY-V1-F1/F3 | LOW | INVENTORY | `serializers.py` movimientos legacy; v1 transfers `page_size<0` → 500 | |
-| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/03/05…10, SEC-SET-04-B, AUTH-LOGGING-01, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01…04, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
+| CI-03 | MEDIUM | INFRA | `.github/` | sin alertas Dependabot ni `dependabot.yml` (CI-01 cerrado: hay CI de frontend y de backend) |
+| INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
+| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 
-SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets), FE-AUTH-02/04/06/07/08/09.
+SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
+FE-AUTH-06 corregido (sección 6); FE-AUTH-08
+ACEPTADO (tarjeta de demostración sólo en desarrollo); FE-AUTH-09 PROPUESTA (tienda
+por dominio); FE-AUTH-02/04/07 corregidos, ver sección 6.
 Presets vigentes (`company_provisioning.PRESET_ROLES` @ `c042fea`): sólo `administrador` tiene
 `products.manage`, y también tiene `inventory.adjust`; `inventario` tiene `inventory.adjust`.
 
@@ -356,9 +366,6 @@ conoce (escaparate por CMS, tema claro/oscuro, `BrandLogo`): `app/page.tsx`, `co
 `Header.tsx`, `Footer.tsx`, `services/page.tsx`, `layout.tsx`, `globals.css` y `auth/page.tsx`.
 Tampoco `AppChrome.tsx` (duplicaba `StorefrontChrome`; se pierde su enlace «Saltar al contenido»)
 ni la fila de sellos de confianza de `ProductDetail`. #39 queda PARCIAL.
-DEUDA (surgida en DRIFT-07): `app/admin/components/BranchAccessPanel.tsx` no se monta en ninguna
-pantalla (código muerto) y conserva la oferta de «Todas»; el botón «Añadir trabajador» de
-`staff/page.tsx` no comprueba capacidad (RBAC-F4 de F1, LOW, sin cambio).
 NO AUDITADO bajo WRITE-SCOPE-01: `storefront_content_views` (campañas y páginas de la
 tienda, también de nivel empresa) y otras mutaciones de nivel empresa fuera de
 `tenant_views`/`settings_views`.
@@ -390,6 +397,26 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SVC-ASSIGN-01 | MEDIUM | `1928b05` | `eligible_technicians`, `V1ServiceOrderAssignmentView`, `V1ServiceTechnicianCandidatesView`, migración 0094 | `SvcAssignCapabilityTest`, `SvcTechnicianEligibilityTest`, `SvcAssignPresetTest` | IMPLEMENTADO |
 | SVC-ASSIGN-UNASSIGN | MEDIUM | `4796db0` | `V1ServiceOrderAssignmentView.post` (null exige `service.orders.manage`); «Quitar» en `orders/[id]/page.tsx` | `SvcUnassignAuthorityTest`, `service-authority-console.test.tsx` | CORREGIDO |
 | SVC-ASSIGN-VIEW-01 | MEDIUM | `9b59a31` | `V1ServiceSurfaceMixin.require_assignment_authority` en candidatos y en recepción con técnico (antes bastaba `assign` sin `view`) | `SvcAssignVisibilityTest` | CORREGIDO |
+| HERO-MOBILE-CLIP | MEDIUM | `ff564e9`, `e082b26` | `Hero.tsx` (columna `min-w-0`, titular `min(clamp(…), 7.4vw)`), `product/page.tsx`, `ProductDetail.tsx` | E2E `hero-mobile-clip`, `storefront-text-fit` | CORREGIDO (pendiente de merge) |
+| FE-AUTH-05 | MEDIUM | `4fad36b` | `frontend/app/api/[...path]/route.ts` (`readBody`, `API_PROXY_MAX_BODY_BYTES`, 413) | `frontend/__tests__/api-proxy-body-limit.test.ts` | CORREGIDO |
+| RBAC-F3 · RBAC-F5 | MEDIUM | `847d3bf` | `app/admin/lib/internal-modules.ts::canAccessModule` (misma regla que `InternalAccess.can`); `admin.audit` declara `memberships.view` | `frontend/__tests__/internal-modules-access.test.ts` | CORREGIDO |
+| RBAC-F4 | LOW | `58d17de` | `app/admin/staff/page.tsx` (`canManage` = `memberships.manage`) | `frontend/__tests__/staff-screen-authority.test.tsx` | CORREGIDO |
+| RBAC-F6 · F7 · F11 | LOW | — | transfers `[id]` (`mayTransfer`), `users/page.tsx` (`canManage`), `orders/[id]` (`access.can`) | revisado @ `64b4d5e` | OBSOLETO (ya corregido en master) |
+| DRIFT-02 | MEDIUM | `068bee1` | `app/admin/components/InventoryAdjustForm.tsx` (selector de sucursal), `app/lib/admin.ts::adjustInventory` (`branch` opcional) | `frontend/__tests__/inventory-adjust-branch.test.tsx` | CORREGIDO |
+| FE-AUTH-02 | LOW | `5adcd28` | `app/lib/cart.ts::getSessionKey` (`crypto.randomUUID` / `getRandomValues`) | `frontend/__tests__/cart-session-key.test.ts` | CORREGIDO |
+| FE-AUTH-07 | LOW | `40f9769` | `app/lib/auth.ts::fetchWithAuth` (`isOwnApiUrl`) | `frontend/__tests__/fetch-with-auth.test.ts` | CORREGIDO |
+| FE-AUTH-04 | LOW | `113a8dd` | `frontend/next.config.ts` (`headers()`) | `frontend/__tests__/security-headers.test.ts` | CORREGIDO (sin política de scripts: CSP-SCRIPT = PROPUESTA) |
+| SEC-SET-04-A | MEDIUM | `e066183` | `throttles.RefreshThrottle` (por IP, sólo peticiones con credencial) en `RefreshView` y `V1RefreshView` | `store/test_refresh_throttle.py` | CORREGIDO |
+| SEC-SET-02 | MEDIUM | `79d1077` | `backend/urls.py::build_urlpatterns` (admin sólo con `DEBUG`) | `store/test_production_url_surface.py` | CORREGIDO |
+| INV-LEGACY-V1-F2 · F3 | MEDIUM · LOW | `1f965f7` | `inventory_services.set_transfer_item` (`select_for_update`), `v1_transfer_views` (`page_size` ≥ 1) | `store/test_transfer_line_lock.py` | CORREGIDO |
+| SEC-SET-03 · 05 · 06 · 09 · 10 · ENV-02 | LOW | `e2dff73` | `backend/settings.py`, `xlsx_reader.check_upload` | `store/test_production_settings.py` | CORREGIDO |
+| AUTH-LOGGING-01 | LOW | `7d5efc8` | `store/security_log.py`, `LoginView`, `V1LoginView` | `store/test_security_log.py` | CORREGIDO |
+| ENV-04 | LOW | `a6beda6` | `.env.example` | — | CORREGIDO |
+| CI-01 | MEDIUM | `ba4e9ff` | `.github/workflows/backend-postgres-validation.yml` (encontró `qrcode` sin declarar y una prueba dependiente de la colación) | CI en PR | CORREGIDO |
+| AUDIT-07 | LOW | `06cd798` | `admin_views.py` (`product_updated`/`deactivated`/`reactivated`, `category_created` con `company`) | `store/test_audit_company.py` | CORREGIDO |
+| DEP-05 | MEDIUM | `65d34ad` | `backend/requirements.txt` | CI de backend en instalación limpia | CORREGIDO |
+| FE-AUTH-06 | LOW | `085aa2e` | `frontend/app/api/[...path]/route.ts::fetchFollowingOwnRedirects` (`redirect: "manual"`) | `frontend/__tests__/api-proxy-redirects.test.ts` | CORREGIDO |
+| SKIP-LINK | LOW | `cf72ee5` | `StorefrontChrome.tsx::SkipLink`, `#contenido`, `#admin-main-content` | `frontend/__tests__/skip-link.test.tsx`, E2E `skip-link` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -408,7 +435,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SERVICE-INTAKE técnico | `POST service/orders/` acepta `technician_id` opcional; crea y asigna en una transacción | `createServiceOrder`; obligatorio en la caja, opcional en recepción | OK @ `1d35b7d` |
 | SERVICE-PAYMENT autoridad | registrar: `collect` o `manage`; reversar: `manage` | `mayCollectPayment` / `CAP_PAYMENTS_MANAGE` en `orders/[id]/page.tsx` | OK @ `1d35b7d` |
 | SERVICE-QUEUES | `status` admite varios códigos separados por comas | `app/admin/service/queues.ts` | OK @ `1d35b7d` |
-| INVENTORY-ADJUST branch | acepta sucursal / usa default | no envía sucursal (`app/lib/admin.ts`) | DRIFT (DRIFT-02) |
+| INVENTORY-ADJUST branch | acepta sucursal / usa default | envía `branch` cuando hay más de una sucursal al alcance (`InventoryAdjustForm`) | OK (DRIFT-02 corregido) |
 | DRF field errors | `{field: [msg]}` | clientes que sólo leen `detail` | DRIFT LOW (DRIFT-03) |
 | Legacy role sets | backend | frontend | OK (`H412bFrontendLegacyRoleParityTest`) |
 | POS `receipt_options` | `enabled` + causa | selector | OK (`Fiscal6ReceiptOptionsTest`, E2E `pos-receipt-options`) |
@@ -454,13 +481,20 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
 | THROTTLE-CACHE-01 | INFRA | cache compartida antes de calibrar throttles | Alta | — |
-| SEC-SET-04-A | AUTH | throttle de refresh | Media | THROTTLE-CACHE-01 |
 | TOKEN-HYGIENE-01 | AUTH | purga de `OutstandingToken`/`BlacklistedToken` | Baja | — |
-| CI-01 | INFRA | sin CI | Media | — |
 | INFRA-01/02/03 | INFRA | imágenes dev-grade | Media | — |
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
 | IDOR-01 limpieza | SALES | segunda fuente de verdad en resend | Baja | — |
 | Lint 33 warnings | FRONTEND | 24 `set-state-in-effect` y otras | Baja | — |
+| STOREFRONT-EDITORIAL-CMS | STOREFRONT | PENDIENTE: ilustraciones por categoría y material editorial como contenido de la tienda; hoy sólo la imagen de campaña | Media | decisión de producto |
+| STOREFRONT-FEATURED-CATEGORIES | STOREFRONT | PROPUESTA: destacar y ordenar categorías en la portada; hoy, las seis primeras en el orden del servidor | Baja | — |
+| TENANT-TYPOGRAPHY | BRANDING | PROPUESTA: tipografía por tienda (el manual del piloto pide Montserrat; la plataforma usa Inter + Unbounded) | Baja | — |
+| INTERNAL-UI-V3 | FRONTEND | PENDIENTE: el trabajo paralelo V3 sólo cambia piezas compartidas del panel (`AdminShell`, menú lateral con diálogo móvil, barra superior, selectores, campana, gráficos, `.admin-workspace`), ninguna página; alcanza a todas las rutas a la vez y 6 de 9 archivos chocan con master | Media | fase propia |
+| STOREFRONT-IMAGES-LICENSE | STOREFRONT | PENDIENTE: 10 ilustraciones (`assets/editorial/`, de una propuesta de Figma, muestran productos Apple) y 4 fotos de producto (`assets/products/`, copias del sitio de Apple) del trabajo paralelo, y `populate_storefront_images`, no portados: sin evidencia de origen ni licencia | Media | decisión legal |
+| ADMIN-INVENTORY-MOBILE-OVERFLOW | FRONTEND | `/admin/inventory` desborda la página 284–378 px hasta 414 px de ancho; ya ocurre en master `c47c538` | Baja | INTERNAL-UI-V3 |
+| HERO-WATERMARK-MOBILE | STOREFRONT | PROPUESTA: el isotipo del hero sólo se muestra desde `lg` | Baja | — |
+| STOREFRONT-PILLARS-CMS | STOREFRONT | PROPUESTA: los cuatro pilares de la portada están compilados; sin campo en el CMS | Baja | — |
+| STOREFRONT-HERO-VARIANT | STOREFRONT | PENDIENTE: variante de hero configurable por tienda; hoy losa oscura para todas | Baja | — |
 | POS-CUSTOM-PRODUCT | POS | PROPUESTA: vender en caja un artículo que no está en el catálogo. No se implementa con productos falsos ni con `OrderItem.product` nulo | Por decidir | decisión de producto |
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
 | SVC-QUOTE-INSHOP | SERVICE | PENDIENTE: la cotización sólo se aprueba desde la cuenta del cliente; no hay aprobación en tienda | Media | decisión de producto |
@@ -477,7 +511,9 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **F2 — Eje DÓNDE: delegación y alcance por sucursal**: COMPLETADA @ `c191a84`. F-BRANCH-01 (`20d110c`), F-BRANCH-02 (`cccb4d2`), F-BRANCH-03 (`70286d1`), F-CAP-01 (`c042fea`), RBAC-01 (`5afdb81`), RBAC-02 (`d18e983`), WRITE-SCOPE-01 (`fa85d41`, `c076120`), DRIFT-01 (`a4be03b`), DRIFT-07 (`6958ec0`, `f6dc9ca`), E2E-02 (`9c3445f`), E2E-01 (`c191a84`). Sin push. Siguiente fase: por decidir.
 - **Integración**: ERP + F1/F2 en `master` por el PR #42 (merge `ef9890f`).
 - **SVC-FUNC-01 — Servicio técnico operativo e integración con la caja**: código @ `9b59a31` en `feature/service-pos-functional-integration` (desde `ef9890f`). SVC-NAV-01 (`937cf82`), SVC-ASSIGN-01 y SVC-TX-01 (`1928b05`), SVC-PAY-01 (`d62fa30`), POS-SVC-01 (`6caa88c`), pruebas del flujo y fixture E2E (`1d35b7d`), SVC-ASSIGN-UNASSIGN (`4796db0`), SVC-ASSIGN-VIEW-01 (`9b59a31`). Integrado en `master` por el PR #44 (merge `d98d70c`, árbol `b7d570e` idéntico al validado). Backend 4643 pruebas, 0 fallos; frontend 428; Playwright 121 de 121, sin fallos, omitidas ni reintentos, 9,0 min.
-- **UX-RECON-SVC-01 — Interfaz de #43 sobre el master con servicio y caja**: merge `ee3a8d3` en `reconcile/uxui-after-svc` (padres `d98d70c` y `9c1486b`; 5 conflictos de texto, 1 archivo fusionado sin conflicto y revisado; 0 backend, 0 migraciones). Frontend 437 pruebas en 43 suites, lint 0/26, build 50 páginas, Playwright 121/121. #43 queda abierto como referencia. Pendiente de merge.
+- **UX-RECON-SVC-01 — Interfaz de #43 sobre el master con servicio y caja**: merge `ee3a8d3` en `reconcile/uxui-after-svc` (padres `d98d70c` y `9c1486b`; 5 conflictos de texto, 1 archivo fusionado sin conflicto y revisado; 0 backend, 0 migraciones). Frontend 437 pruebas en 43 suites, lint 0/26, build 50 páginas, Playwright 121/121. Integrado en `master` por el PR #45 (merge `0c83381`, árbol `4fe7e61` idéntico al validado); #43 y #39 quedaron contenidos.
+- **STOREFRONT-V3 — Convergencia de la tienda pública**: PARCIAL, código @ `7f49168` en `reconcile/storefront-v3-after-ux` (desde `0c83381`). Navegación y pie (`a57c72e`), carrusel y carrito (`9ba1a70`), portada y hero (`11f69f0`), Nosotros/Contacto (`5380ca6`), E2E (`7f49168`). Frontend 483 pruebas en 47 suites, lint 0/25, build 52 páginas, Playwright 143/143; 0 backend, 0 panel interno. #38 no se usó. Pendiente de merge.
+- **HERO-MOBILE-CLIP y cierre del frontend V3**: código @ `42ef631` en `fix/hero-mobile-clip` (desde `c47c538`), pendiente de revisión y merge. Hero (`ff564e9`), titulares de catálogo y ficha (`e082b26`), prueba sin agotar el límite del carrito (`42ef631`). Frontend 483 pruebas, lint 0/25, build 52 páginas, Playwright 163/163. Una prueba de «texto recortado» mide rectángulos de texto, no `scrollWidth`.
 - **Integración**: ERP + F1/F2 en `master` por PR #42 (merge `ef9890f`, árbol `44cfffd` idéntico al validado). Reconciliación UX/UI de #39: merge `1fea6b9` en `reconcile/uxui-after-f2` (75 archivos en conflicto, 0 backend, 0 migraciones), PARCIAL, pendiente de merge.
 
 ---

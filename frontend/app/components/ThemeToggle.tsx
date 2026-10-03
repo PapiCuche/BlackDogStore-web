@@ -80,7 +80,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
         <div
           role="menu"
           aria-label="Tema"
-          className="absolute right-0 z-50 mt-2 w-44 overflow-hidden rounded-xl border border-bd-border bg-surface shadow-2xl"
+          className="v3-pop absolute right-0 z-50 mt-2 w-44 origin-top-right overflow-hidden rounded-xl border border-bd-border bg-surface shadow-2xl"
         >
           {ORDER.map((option) => (
             <button

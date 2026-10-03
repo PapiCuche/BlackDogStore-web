@@ -3,39 +3,538 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-02 — DEPLOY-PREP-01: configuración de producción preparada, sin publicar
+## 2026-10-02 — FE-AUTH-06 y enlace «Saltar al contenido»
 
-Rama `deploy/production-vps`, sobre `master` `0c83381`. Nada contratado, nada
-publicado.
-
-El repositorio sólo tenía imágenes de desarrollo (`runserver`, `next dev`). Se
-añade, sin tocar el entorno de desarrollo, lo necesario para un servidor con Docker
-Compose: `backend/Dockerfile.prod` (gunicorn, sin privilegios, un proceso),
-`frontend/Dockerfile.prod` (`next build` + `next start`), `docker-compose.prod.yml`
-(Caddy, Next, Django, PostgreSQL; sólo Caddy publica puertos), `deploy/Caddyfile`
-(HTTPS automático; `/api/*` directo a Django), `deploy/.env.production.example` y
-los scripts de copia y restauración. Pasos exactos:
-[docs/despliegue-produccion.md](docs/despliegue-produccion.md).
-
-Decisión de topología: en producción la API no pasa por el proxy interno de Next,
-porque ese proxy descarta la identidad del cliente y Django contaría a todos los
-visitantes como uno solo en los límites de peticiones. Caddy entrega la dirección
-real y Django la lee con `TRUSTED_PROXY_COUNT=1`.
-
-Ensayado en local con Docker (proyecto aislado): compilación, migraciones sobre
-PostgreSQL nuevo, HTTPS con redirección, tienda y API, inicio de sesión real con
-cookies seguras, CSRF, carrito, límite por IP con cabecera falsificada,
-persistencia tras reinicio y copia + restauración. Sin ensayar: certificado
-público, correo SMTP y cobro con Izipay.
-
-Datos: una base nueva ya trae empresa, sucursal, roles, configuración, categorías
-y los tres productos (los crean las migraciones), con existencias de ejemplo que
-hay que ajustar desde el panel. Los ocho usuarios de desarrollo son cuentas de
-demostración y no pasan a producción. Sin cambios de backend, frontend ni
+Rama `fix/frontend-proxy-redirects-skip-link`. Código en `085aa2e` y `cf72ee5`,
+juntos en `abfda62`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
 migraciones.
 
-Faltan datos que sólo tiene el propietario: dominio, servidor SMTP, credenciales
-de Izipay y dónde se alojan las fotos de producto.
+- **FE-AUTH-06 — el proxy `/api` sólo sigue las redirecciones del propio backend
+  (`085aa2e`).** Seguía en el servidor cualquier redirección reenviando las
+  cabeceras del visitante. Hay una que sale del sitio: con las evidencias en un
+  almacenamiento externo, el backend responde 302 hacia una URL firmada de ese
+  proveedor, y el proxy le entregaba el `X-CSRFToken` del visitante. Ahora una
+  redirección hacia otro origen vuelve al navegador, que la sigue solo. Dentro
+  del backend se sigue, con la sesión, sólo bajo `/api/` y como mucho tres saltos.
+- **Enlace «Saltar al contenido» (`cf72ee5`).** Quien navega con teclado o lector
+  de pantalla recorría la cabecera entera en cada página. El enlace existió y se
+  perdió al reconciliar la interfaz; el panel conservaba el destino sin nadie que
+  apuntara a él. Es el primer tabulador, invisible hasta recibir el foco, y mueve
+  el foco al contenido, en la tienda y en el panel.
+
+Pruebas: `api-proxy-redirects.test.ts` (8; 6 fallan sobre `master`),
+`skip-link.test.tsx` (3; 2 fallan sobre `master`) y `e2e/skip-link.spec.ts` (5,
+con teclado real).
+
+Validación sobre `abfda62`: frontend 538 pruebas en 57 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 169 de 169,
+sin fallos, omitidas ni reintentos, 9,1 min, sin suspensiones del equipo. El
+árbol de `frontend/` de esta rama no cambió al incorporar `master`.
+
+## 2026-10-02 — AUDIT-07 y DEP-05: auditoría del catálogo y versiones de parche
+
+Rama `fix/audit-log-company`, sobre `security/backend-hardening`. Estado:
+**IMPLEMENTADO / MERGED** por PR #56 (`f7fd6e6`). CI de backend sobre una
+instalación limpia con las versiones nuevas: 4686 pruebas, 0 fallos, 3 omitidas.
+Sin migraciones.
+
+- **AUDIT-07 (`06cd798`).** El registro de auditoría de una empresa sólo enseña
+  las filas que llevan esa empresa. Cambiar un producto (precio, nombre,
+  publicación) y crear una categoría escribían la fila sin empresa: existía, pero
+  ningún administrador del tenant podía verla. Ahora la llevan. El cambio de rol
+  global sigue sin empresa a propósito: es una operación de plataforma. Las filas
+  antiguas de catálogo sin empresa no se rellenan; en una base nueva no existen.
+- **DEP-05 (`65d34ad`).** Cinco dependencias del backend pasan al último parche
+  de su línea: djangorestframework 3.17.2, psycopg2-binary 2.9.13, boto3
+  1.43.107, reportlab 4.4.10 y cryptography 50.0.2.
+
+Pruebas: `test_audit_company` (4; 3 fallan antes del cambio). La suite completa
+sobre una instalación limpia con las versiones nuevas la da el CI de backend de
+este PR.
+
+AUDIT-01…06 = PROPUESTA. Son ediciones de borrador sin fila de auditoría: líneas
+de presupuesto, líneas de transferencia, cantidades de un recuento y audiencia de
+un comunicado. Sus cierres (publicar, despachar, aprobar) sí se auditan y el
+resultado queda en el Kardex o en el documento. Falta decidir si cada edición de
+un borrador merece su propia fila.
+
+## 2026-10-02 — Endurecimiento del backend: sesión, configuración, transferencias y admin
+
+Rama `security/backend-hardening`, desde `master` `dbe30b2`. Estado:
+**IMPLEMENTADO / MERGED** por PR #55 (`bd6dbc2`). CI de backend: 4682 pruebas, 0
+fallos, 3 omitidas. Sin migraciones. Sin cambios en contratos de la API salvo los que
+se dicen.
+
+- **SEC-SET-04-A — renovar la sesión tiene límite (`e066183`).** Las dos rutas de
+  renovación (cookie para la web, cuerpo para la app) no tenían limitador, y cada
+  renovación válida escribe una fila de token. Ahora comparten un cupo de 30 por
+  minuto por dirección. Sólo cuentan las peticiones que traen un refresh: la web
+  intenta renovar en cada 401, también para visitantes sin sesión, y esas
+  peticiones no gastan el cupo de quien sí la tiene.
+- **AUTH-LOGGING-01 — cada intento de inicio de sesión deja registro
+  (`7d5efc8`).** Ningún canal lo hacía. Fallos a nivel de aviso con canal,
+  dirección y el nombre escrito; aciertos con el identificador del usuario. La
+  contraseña no se registra nunca. Son líneas de registro, no filas: un anónimo no
+  puede llenar una tabla.
+- **Configuración que falla cerrada (`e2dff73`).** `JWT_COOKIE_SAMESITE` sólo
+  admite `Lax` o `Strict` (SEC-SET-03). Producción responde sólo JSON; la API
+  navegable queda en desarrollo (SEC-SET-09). Producción no arranca con
+  `FRONTEND_URL` o `CHECKOUT_RETURN_URL` ausentes o en `localhost` (SEC-SET-10,
+  ENV-02). Hay configuración de registro: antes no había ninguna y los eventos de
+  seguridad de Django se descartaban en producción (SEC-SET-06).
+- **SEC-SET-05 — la importación de Excel aplica su límite antes de leer
+  (`e2dff73`).** Leía el archivo entero y después comparaba con 10 MB.
+- **ENV-04 — `.env.example` describe todas las variables que lee el backend
+  (`a6beda6`).** Faltaban 27.
+- **INV-LEGACY-V1-F2 — una línea no se edita sobre una transferencia ya despachada
+  (`1f965f7`).** Se decidía si era borrador mirando el objeto en la mano, sin
+  bloquear la fila; un despacho simultáneo dejaba la línea escrita sobre un
+  documento cuyas unidades ya habían salido. Ahora se bloquea y se relee, con el
+  mismo bloqueo que toma el despacho.
+- **INV-LEGACY-V1-F3 — `page_size` negativo ya no responde 500 (`1f965f7`).**
+- **SEC-SET-02 — el admin de Django no se registra en producción (`79d1077`,
+  `b0d2434`).** Trabajo de la otra sesión, incorporado aquí. En producción no
+  existe la ruta `/admin/` del backend; en desarrollo sigue disponible.
+
+Cambios que ve quien despliega: producción exige `FRONTEND_URL` y
+`CHECKOUT_RETURN_URL` reales, y el admin de Django deja de existir allí. El primer
+administrador se crea con `createsuperuser`, como ya decía la guía de despliegue.
+
+Pruebas nuevas: `test_refresh_throttle` (8), `test_security_log` (6),
+`test_production_settings` (14; cada ajuste se comprueba arrancando un proceso
+nuevo con ese entorno), `test_transfer_line_lock` (8) y
+`test_production_url_surface` (3). Todas se vieron fallar antes del cambio.
+
+Validación local: las 55 pruebas del área, OK en PostgreSQL; `check` y
+`makemigrations --check` sin cambios. La suite completa se midió por separado
+sobre el límite de renovación (`e066183`: 4651 pruebas, 0 fallos, 3 omitidas) y
+sobre el cambio del admin (`7f0f459`: 4646, 0 fallos, 3 omitidas); la del conjunto
+la da el CI de backend de este PR. Con el backend del límite de renovación,
+Playwright completo: 164 de 164.
+
+Queda abierto, con el motivo:
+
+- **F-TENANT-01 = BLOQUEADO (decisión de producto).** Un administrador de empresa
+  puede añadir por identificador a cualquier usuario de la plataforma y ver su
+  nombre de usuario. La invitación con aceptación ya existe y es lo único que usa
+  la interfaz. Cerrar el alta directa a los administradores de empresa cambia un
+  contrato que 27 pruebas ejercen. Falta decidir: ¿el alta directa queda sólo para
+  el administrador de la plataforma?
+- **THROTTLE-CACHE-01 = PENDIENTE.** Los límites se cuentan en la memoria de cada
+  proceso. Con un proceso (lo que usa el despliegue preparado) son exactos; con
+  varios, cada uno cuenta por su lado. Compartirlos necesita una caché común.
+- **TOKEN-HYGIENE-01 = PENDIENTE.** Las filas de token caducadas no se purgan
+  solas; falta programar `flushexpiredtokens` en el servidor.
+
+## 2026-10-02 — Backend CI sobre PostgreSQL
+
+Rama `ci/backend-postgres-validation`, desde `master` `1815ac1`.
+Estado: **IMPLEMENTADO / MERGED** por PR #49 (`dbe30b2`). La tercera ejecución, sobre
+`d195632`, terminó en verde. La primera ejecución se canceló al
+llegar a su límite de 35 minutos con la suite aún corriendo, sin ninguna prueba
+fallida; el límite pasa a 120 minutos (`0a17afd`).
+
+La segunda ejecución terminó en 53 minutos: 4643 pruebas, 1 fallo y 16 errores.
+Los dos eran defectos reales que las máquinas de desarrollo escondían:
+
+- **`qrcode` no estaba en `requirements.txt`.** Lo importa `store/fiscal/qr.py`
+  para el código QR del comprobante electrónico. Estaba instalado en las máquinas
+  de desarrollo, así que las pruebas pasaban allí; en una instalación limpia —el
+  runner de CI y la imagen de producción— todo PDF fiscal fallaba con
+  `ModuleNotFoundError` (16 errores). Se declara `qrcode==8.2`. Se revisaron los
+  demás paquetes que importa el backend: no falta ninguno más.
+- **Una prueba dependía de la colación de la base.** `test_ordering_name_asc`
+  esperaba «Mac Studio» antes de «MacBook Air», que es el orden por bytes de la
+  base local (colación `C`). La imagen de PostgreSQL usa una colación lingüística
+  (`en_US`), que ignora el espacio y pone «MacBook» primero. Los dos órdenes son
+  alfabéticos. La prueba compara ahora contra el orden por nombre de la propia
+  base y fija el par en el que todas las colaciones coinciden. El catálogo en
+  producción ordena por nombre con la colación de su base.
+
+Se añade una compuerta reproducible para cualquier cambio de backend:
+PostgreSQL 16, Python 3.12, instalación desde `backend/requirements.txt`,
+`manage.py check`, `makemigrations --check --dry-run` y la suite completa
+`manage.py test`. La suite corre en un solo proceso, sobre PostgreSQL, para que
+los cambios de seguridad y persistencia no dependan de una base SQLite local.
+
+No cambia código de aplicación, modelos, migraciones, auth, RBAC ni contratos API.
+
+## 2026-10-02 — Endurecimiento del frontend: FE-AUTH-02, FE-AUTH-04, FE-AUTH-07
+
+Rama `security/frontend-hardening`, desde `master` `3f70ca0`. Código en `113a8dd`.
+Estado: **CORREGIDO** en esta rama. Sin backend, sin migraciones. Eran hallazgos
+«sin veredicto» de la auditoría F1; se verificaron en el código antes de tocarlos.
+
+- **FE-AUTH-02 — clave del carrito anónimo (`5adcd28`).** Esa clave es lo único
+  que elige un carrito de invitado en el servidor. Se fabricaba con la hora y seis
+  caracteres de `Math.random()`. Las claves nuevas salen de `crypto.randomUUID`
+  (o de `crypto.getRandomValues` donde falta). Quien ya tenía una clave la
+  conserva, así que nadie pierde su carrito.
+- **FE-AUTH-07 — la sesión sólo viaja a la API propia (`40f9769`).**
+  `fetchWithAuth` añadía cookies y token CSRF a cualquier URL que le pasaran.
+  Ningún llamador le pasaba una ajena (revisados los 105), pero era una costumbre
+  de los llamadores, no una propiedad de la función. Ahora rechaza antes de la red
+  cualquier URL que no esté bajo `API_BASE`.
+- **FE-AUTH-04 — cabeceras de seguridad (`113a8dd`).** El frontend no enviaba
+  ninguna. Todas las rutas envían ahora `X-Frame-Options: DENY`, una política de
+  contenido estrecha (`frame-ancestors 'none'; base-uri 'self'`), `nosniff` y
+  política de referente. Las tres páginas que reciben un token de un solo uso en
+  la URL (verificar correo, restablecer contraseña, aceptar invitación) envían
+  `no-referrer`. No hay política de scripts ni de estilos: exigiría un nonce en
+  cada script que emite Next y es un cambio aparte (CSP-SCRIPT = PROPUESTA).
+  Tampoco `object-src`: el ticket de caja se imprime como PDF en un marco y esa
+  directiva puede bloquear el visor.
+
+Revisados y sin cambio: FE-AUTH-08 (la tarjeta de cuentas de demostración sólo se
+pinta en desarrollo y el servidor responde 404 fuera de él: aceptado) y FE-AUTH-09
+(la configuración de la tienda se pide desde el servidor sin reenviar el host;
+con una sola tienda por despliegue resuelve por `DEFAULT_STOREFRONT_COMPANY_SLUG`;
+para varias tiendas por dominio es una decisión de arquitectura: PROPUESTA).
+FE-AUTH-06 (el proxy sigue redirecciones reenviando cabeceras) queda PENDIENTE.
+
+Pruebas: `cart-session-key.test.ts` (4; 3 fallan sobre `master`),
+`fetch-with-auth.test.ts` (6 casos nuevos; 5 fallan sobre `master`) y
+`security-headers.test.ts` (6; los 6 fallan sobre `master`). Cabeceras
+comprobadas contra un servidor real.
+
+Validación sobre `113a8dd`: frontend 527 pruebas en 55 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 10,2 min. La impresión del ticket de caja
+sigue pasando con las cabeceras nuevas.
+
+## 2026-10-02 — DRIFT-02: el ajuste de inventario dice en qué sucursal se aplica
+
+Rama `fix/inventory-adjust-branch`. Código en `068bee1`, con `master` `a6d725b`
+incorporado en `1fa05af`. Estado: **IMPLEMENTADO / MERGED** por PR #53 (`3f70ca0`). Sin backend, sin
+migraciones.
+
+El servidor acepta `branch` en el ajuste de inventario y, si no llega, lo aplica a
+la sucursal por defecto de quien ajusta. La pantalla nunca lo enviaba: en una
+empresa con varias sucursales todos los ajustes caían en la sucursal por defecto,
+sin decirlo y sin poder elegir otra.
+
+Ahora, con más de una sucursal al alcance, el formulario pregunta, parte de la
+sucursal por defecto y envía la elegida. Si no hay sucursal por defecto, pide
+escogerla antes de enviar. Con una sola sucursal —el caso del piloto— no pregunta
+nada y la petición es la de siempre. El servidor sigue decidiendo si quien ajusta
+alcanza esa sucursal.
+
+Pruebas: `inventory-adjust-branch.test.tsx` (5 casos; 3 fallan sobre `master`).
+Contrato del servidor comprobado sobre una copia desechable de la base con dos
+sucursales: con `branch` el movimiento queda en esa sucursal; sin `branch`, en la
+de por defecto; con una sucursal inexistente responde 404.
+
+Validación sobre `1fa05af`: frontend 511 pruebas en 53 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos.
+
+## 2026-10-02 — RBAC-F3 y RBAC-F4: el panel no ofrece lo que el servidor niega
+
+Rama `fix/staff-actions-capability`, desde `master` `64b4d5e`. Código en
+`4f5d736`. Estado: **IMPLEMENTADO / MERGED** por PR #52 (`a6d725b`). Sin backend, sin migraciones. La
+autoridad sigue en el servidor; cambia sólo qué enseña la interfaz.
+
+- **Personal (RBAC-F4, `58d17de`).** Ver al personal pide `memberships.view`;
+  invitar, desactivar el acceso y reenviar o revocar una invitación piden
+  `memberships.manage`. La pantalla pintaba todos los botones a quien pudiera
+  entrar, y a quien sólo podía ver cada clic le devolvía un 403. Ahora los botones
+  siguen la capacidad que comprueba el servidor.
+- **Menú del panel (RBAC-F3, `847d3bf`).** Cada página decide con las capacidades
+  cuando hay empresa, y con el rol antiguo sólo para el operador sin empresa. El
+  menú seguía otra regla: si las capacidades no alcanzaban, caía al rol antiguo y
+  listaba módulos cuya página respondía «sin permiso». Ahora usa la misma regla
+  que las páginas. Auditoría declara `memberships.view`, que es lo que piden su
+  página y el servidor; antes sólo declaraba rol antiguo y quien tenía la
+  capacidad no la veía en el menú.
+- **Código sin uso (`4f5d736`).** Se elimina `BranchAccessPanel.tsx` (334 líneas):
+  ninguna pantalla lo monta y nada lo importa. Conservaba la oferta de «Todas».
+
+Revisados y ya corregidos en `master` por trabajo posterior a la auditoría F1, sin
+cambio aquí: RBAC-F6 (detalle de transferencia: las acciones piden
+`inventory.adjust`), RBAC-F7 (accesos del personal: `memberships.manage`) y
+RBAC-F11 (detalle de pedido: reenviar correo, nota de venta y comprobante piden
+su capacidad). RBAC-F5 era el mismo defecto del menú que RBAC-F3.
+
+Pruebas: `staff-screen-authority.test.tsx` (3 casos; el de sólo lectura falla
+sobre `master`) e `internal-modules-access.test.ts` (9 casos; 6 fallan sobre
+`master`). En navegador, con las cuentas de ventas, inventario y técnico: cada
+entrada del menú abre su página, ninguna responde «sin permiso».
+
+Validación sobre `4f5d736`: frontend 506 pruebas en 52 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,0 min.
+
+Deuda menor observada: el menú lista dos entradas hacia `/admin/settings`
+(«Empresa» y «Configuración») y dos hacia `/admin/inventory/reports`.
+
+## 2026-10-02 — ADMIN-MENU-ARIA: el botón del menú móvil del panel dice qué abre
+
+Rama `fix/admin-menu-trigger-aria`. Código en `e2ce0e2`, con `master` `2d9cc97`
+incorporado en `02b8ba4`. Estado: **IMPLEMENTADO / MERGED** por PR #51 (`64b4d5e`). Sin backend, sin
+migraciones, sin cambios de permisos.
+
+El cajón de navegación del panel en un teléfono ya era un diálogo con el foco
+atrapado. El botón que lo abre no llevaba estado: un lector de pantalla anunciaba
+un botón sin más y nada cambiaba al pulsarlo. Ahora lleva
+`aria-haspopup="dialog"` y `aria-expanded`, y mientras el cajón está abierto
+apunta a él con `aria-controls`.
+
+Pruebas: `__tests__/admin-menu-trigger-a11y.test.tsx` (3 casos, los 3 fallan
+sobre `master`). La prueba del selector de empresa buscaba «el botón plegado»;
+ahora hay dos y elige el que abre una lista. Comprobado en navegador a 375 px:
+plegado, abierto con 32 enlaces, y Escape devuelve el foco al botón.
+
+Validación sobre `02b8ba4`: frontend 494 pruebas en 50 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,3 min.
+
+## 2026-10-02 — FE-AUTH-05: el proxy `/api` pone tope al cuerpo que acepta
+
+Rama `fix/api-proxy-body-limit`, desde `master` `1815ac1`. Código en `4fad36b`.
+Estado: **IMPLEMENTADO / MERGED** por PR #50 (`2d9cc97`). Sin backend, sin migraciones, sin cambios de
+autenticación, permisos ni contratos de la API.
+
+El proxy de Next (`frontend/app/api/[...path]/route.ts`) leía entero en memoria el
+cuerpo de cada petición antes de reenviarlo, sin límite. Cualquiera, con sesión o
+sin ella, podía enviar un cuerpo de cualquier tamaño a cualquier ruta bajo `/api/`
+y el proceso de Next lo retenía completo. Los topes del backend se aplicaban
+después.
+
+Ahora el cuerpo se lee a trozos hasta un tope y se rechaza con 413 en cuanto lo
+supera, sin llamar al backend. `Content-Length` sólo sirve para rechazar antes;
+deciden los bytes leídos, así que un tamaño declarado falso o un envío a trozos no
+lo evitan. El tope es 32 MiB: por encima de la subida más grande que acepta el
+backend (una foto de evidencia de servicio, 25 MB, más su envoltorio). Se cambia
+con `API_PROXY_MAX_BODY_BYTES`.
+
+Alcance: en la topología de producción aprobada Caddy envía `/api/*` directo a
+Django, así que este proxy no atiende al navegador allí. Sí lo atiende en
+desarrollo y en cualquier despliegue que publique Next sin un proxy delante.
+
+Pruebas: `__tests__/api-proxy-body-limit.test.ts` (7 casos; 4 fallan sobre
+`master`). Comprobado además contra un servidor real: 34 MB declarados y 34 MB a
+trozos responden 413; 1 MB y un inicio de sesión llegan al backend.
+
+Validación sobre `4fad36b`: frontend 491 pruebas en 49 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 164 de 164,
+sin fallos, omitidas ni reintentos, 9,0 min.
+
+Dos pasadas anteriores de Playwright sobre el mismo commit no fueron limpias, por
+el entorno de pruebas y no por el cambio. En la primera, `fiscal-invoice` no pudo
+iniciar sesión: una prueba manual mía acababa de gastar el límite de inicios de
+sesión. En la segunda se omitieron 9 casos de `tax-breakdown`: la base de pruebas
+se había quedado sin ningún producto con 4 unidades tras varias pasadas seguidas.
+Se repuso el stock y la tercera pasada fue completa.
+
+Además, sobre `master` `1815ac1`:
+
+- Playwright completo en local: 164 de 164.
+- Barrido del panel en un teléfono: 37 rutas de `/admin` (33 fijas y 4 de
+  detalle) en 320, 360, 375, 390, 414 y 768 px, con sesión de administrador.
+  Ninguna desborda la página y ningún texto queda cortado fuera de un contenedor
+  desplazable. El menú móvil del panel ya existe en `master` (diálogo, foco
+  atrapado, Escape, foco devuelto).
+
+## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
+
+Rama `fix/admin-inventory-mobile-overflow`, desde `master` `03581ea`.
+Estado: **CORREGIDO** en esta fase; sin backend, migraciones, auth, RBAC ni contratos API.
+
+Causa: los paneles del dashboard de inventario son ítems de grid. `TableWrap` ya
+encapsulaba las tablas de mínimo 640 px con `overflow-x-auto`, pero el `Panel` y
+su cuerpo conservaban `min-width:auto`; por el cálculo de min-content de CSS Grid,
+la tabla podía imponer su ancho al panel completo y ensanchar `/admin/inventory`
+en pantallas móviles.
+
+Corrección: `InventoryUi.Panel` y su cuerpo declaran `min-w-0`. La tabla mantiene
+su ancho y se desplaza únicamente dentro de `TableWrap`; no se cambia contenido,
+permisos ni comportamiento de inventario.
+
+Cobertura: `inventory-mobile-layout.test.tsx` protege el contrato estructural y
+`admin-inventory-mobile.spec.ts` mide que la página no desborde en 320, 360, 375,
+390 y 414 px con sesión interna real.
+
+## 2026-10-02 — HERO-MOBILE-CLIP y cierre del frontend V3
+
+Rama `fix/hero-mobile-clip`, sobre `master` `c47c538`. Código en `42ef631`.
+Estado: **IMPLEMENTADO / MERGED** por PR #47 (`03581ea`). Sin backend, sin
+migraciones, sin cambios en el panel interno.
+
+Qué se corrigió:
+
+- **Hero (`ff564e9`).** Hasta 414 px el titular y el párrafo se cortaban por la
+  derecha. La columna de texto no podía encogerse por debajo de su palabra más
+  larga y la sección escondía lo que sobraba. Ahora la columna puede encogerse,
+  el titular escala con el ancho de la pantalla hasta su tamaño de siempre, y el
+  marco y la etiqueta superior ocupan menos en pantallas estrechas. No hay ningún
+  valor escrito para un ancho concreto. De 640 px en adelante el hero sale
+  idéntico píxel a píxel al de `master`, en tema claro y oscuro (medido en 640,
+  768, 1024 y 1440 px). La losa oscura, los temas y el logotipo no cambian.
+- **Titular del catálogo y «Productos relacionados» (`e082b26`).** Al barrer el
+  resto de la tienda con la misma medición aparecieron dos titulares con el mismo
+  defecto: el de `/product` entre 320 y 390 px y el de la ficha a 320 px. Ambos
+  escalan ahora con el ancho. A 640 y 1440 px salen idénticos a `master`.
+
+Pruebas nuevas, las dos de navegador:
+
+- `e2e/hero-mobile-clip.spec.ts` mide cada trozo de texto del hero contra el área
+  visible en 320, 360, 375, 390 y 414 px, en tema claro y oscuro; comprueba que
+  ninguna palabra del titular se parte, que la letra no baja de 20 px, que la losa
+  sigue oscura y que en escritorio el tamaño del titular es el de antes. Sobre
+  `master` fallan 10 de sus 12 casos.
+- `e2e/storefront-text-fit.spec.ts` aplica la misma medición a `/`, `/product`,
+  una ficha con relacionados, `/services`, `/about`, `/contact`, `/cart` y `/auth`
+  en los cinco anchos. Cada ruta se carga una sola vez y se redimensiona
+  (`42ef631`): cargarla una vez por ancho agotaba el límite de peticiones del
+  carrito y hacía fallar la prueba siguiente.
+
+La prueba de desbordamiento que ya existía compara el ancho de la página con el
+de la pantalla. No ve un texto cortado dentro de una sección con
+`overflow-hidden`; por eso el defecto pasó. Las pruebas nuevas miden el texto.
+
+Validación sobre `42ef631`: frontend 483 pruebas en 47 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 163 de 163,
+sin fallos, omitidas ni reintentos, 10,1 min. `backend/` es idéntico al de
+`master`; vale su medición de 4643 pruebas, 0 fallos, 3 omitidas.
+
+Una pasada anterior, sobre `e082b26`, dio 194 de 195: falló «una línea del
+carrito vuelve a la ficha de su producto» con un 429 del límite del carrito,
+provocado por la primera versión de la prueba nueva. No era un defecto de la
+tienda; se corrigió la prueba y se repitió la pasada completa.
+
+### Qué queda del diseño V3
+
+Se comparó `master`, el trabajo paralelo sin integrar y el manual de marca.
+
+Ya está en `master` y no se rehízo: categorías reales en cabecera, pie y portada;
+navegación móvil; pie con datos de la tienda; hero con campaña opcional; carrusel;
+`/about` y `/contact`; temas; línea del carrito enlazada; separación entre tienda
+y panel; movimiento reducido.
+
+- **Perrito decorativo = IMPLEMENTADO como marca de la tienda.** Es el isotipo que
+  cada empresa sube en su configuración (`logo_isotype_on_*_url`). Aparece como
+  marca de agua del hero, en el bloque de promoción, en el acceso y en el menú del
+  panel. Otra empresa ve el suyo. En móvil la marca de agua del hero no se
+  muestra: PROPUESTA, no defecto.
+- **STOREFRONT-IMAGES-LICENSE = PENDIENTE.** El trabajo paralelo trae diez
+  ilustraciones (`assets/editorial/`: hero, iphone, mac, ipad y accesorios, cada
+  una con y sin fondo) y cuatro fotos de producto (`assets/products/`) con su
+  manifiesto. Según su propia nota, las ilustraciones salen de una propuesta de
+  Figma con el fondo quitado y muestran productos Apple; las fotos son copias de
+  imágenes del sitio de Apple. No hay evidencia de origen ni de licencia de
+  ninguna. No se integran. Los originales no se borraron. Para integrarlas hace
+  falta, por cada imagen: quién la hizo, de dónde salió y un permiso de uso
+  comercial por escrito.
+- **TENANT-TYPOGRAPHY = PROPUESTA.** Sin cambio.
+- **STOREFRONT-PILLARS-CMS = PROPUESTA.** La portada funciona con los pilares
+  compilados; no es imprescindible.
+- **INTERNAL-UI-V3 = PENDIENTE.** El trabajo paralelo cambia sólo piezas
+  compartidas del panel, ninguna página: el armazón (`AdminShell`), el menú
+  lateral con diálogo móvil, la barra superior, los selectores de empresa y
+  sucursal, la campana, los gráficos y los estilos globales `.admin-workspace`.
+  Por eso alcanza a todas las rutas a la vez (`/admin`, productos, inventario,
+  ventas, caja, clientes, servicio y configuración) y no se puede portar una ruta
+  sin las demás. Seis de los nueve archivos chocan con `master`, que ya cambió
+  esas piezas en SVC-FUNC-01 y UX-RECON-SVC-01. No hay un port pequeño y seguro;
+  necesita fase propia con sus pruebas.
+
+Deuda nueva:
+
+- **ADMIN-INVENTORY-MOBILE-OVERFLOW.** `/admin/inventory` desborda la página entre
+  284 y 378 px en pantallas de hasta 414 px. Ya ocurre en `master`. No se tocó: es
+  del panel.
+- **HERO-WATERMARK-MOBILE = PROPUESTA.** Mostrar el isotipo del hero también en
+  móvil.
+
+## 2026-10-01 — STOREFRONT-V3: la tienda pública converge sobre el master auditado
+
+Rama `reconcile/storefront-v3-after-ux`, sobre `master` `0c83381`. Código en
+`7f49168`. Estado: **PARCIAL** — se portó lo aprobado del trabajo paralelo «V3»;
+el contenido editorial por tienda, las imágenes de producto y el rediseño del panel
+quedan fuera a propósito.
+
+`master` decide comportamiento, autenticación, multiempresa, comercio y temas. Del
+trabajo paralelo se tomó, archivo por archivo, sólo presentación. El PR #38 no se
+usó.
+
+Qué cambia para quien visita una tienda:
+
+- **Categorías reales.** La cabecera, el pie y la portada tenían cada uno una lista
+  de categorías escrita a mano para el piloto. Ahora las tres leen el catálogo de
+  la tienda (`useCatalogCategories`). El pie enlazaba con `?cat=`, que el catálogo
+  no lee: no filtraba nada. Usa `?category=`.
+- **Portada.** Productos en un carrusel (flechas, teclado, avance lento que cede
+  al tocar, quieto con «reducir movimiento»). Preguntas frecuentes de la tienda.
+  Los bloques de servicio sólo si la tienda publicó servicios. El código ya no
+  escribe copy que nombre una marca de equipos: el titular y el texto del bloque
+  «Cómo trabajamos» salen de `services_hero_title` y `services_hero_subtitle` de la
+  tienda (los mismos de `/services`), con un respaldo neutro. El primer pilar pasó
+  de «Productos y equipos Apple» a «Conocemos lo que vendemos y reparamos»: ese
+  texto sigue compilado y **no** tiene campo en el CMS.
+- **Hero.** Sigue siendo una losa oscura en los dos temas; sus pruebas no se
+  tocaron. Si la tienda publica la campaña `home_hero`, aporta texto, botones e
+  imagen; sin campaña, el hero es el de antes. Ninguna imagen se elige por el
+  identificador de la empresa.
+- **Nosotros y Contacto** (`/about`, `/contact`): sólo datos que la tienda
+  publicó. Sin datos, lo dicen.
+- **Carrito.** La línea enlaza a la ficha del producto y cada campo de cantidad
+  dice de qué producto es.
+- **Navegación móvil.** El menú declara su estado y lleva a Contacto y Nosotros.
+  «Control interno» sigue dependiendo de la respuesta del servidor.
+
+Sin cambios: checkout, pagos, desglose fiscal, pedidos, autenticación, proveedor
+de tema y `backend/` (subárbol idéntico a `master`, `736690e`; vale su medición de
+4643 pruebas, 0 fallos, 3 omitidas). Sin migraciones.
+
+Panel interno: ningún archivo bajo `frontend/app/admin` cambia. Sí cambia lo que lo
+envuelve: `layout.tsx` y `StorefrontChrome.tsx` ponen el contenido dentro de un
+`div` con clase `internal-surface` (antes un `div` sin clase). Comprobado en
+navegador contra `master`, con la misma cuenta y los mismos datos: `/admin`,
+`/admin/sales/pos`, `/admin/service/orders` y `/admin/inventory` salen idénticos
+píxel a píxel y sin diferencias de estilo calculado.
+
+CSS: lo añadido a `globals.css` son clases `v3-*`, una variable en `:root`
+(`--v3-ease-out`), reglas `@starting-style` y un `@keyframes`. No se añadió ningún
+selector de elemento (`table`, `h1`, `input`, `button`) que alcance al panel.
+
+El defecto «identificador repetido en las líneas del carrito» no existe en
+`master`: lo corrigió la reconciliación anterior. No se tocó.
+
+Validación sobre `7f49168`: frontend 483 pruebas en 47 suites, OK; typecheck OK;
+lint 0 errores y 25 advertencias; build OK (52 páginas); Playwright 143 de 143,
+sin fallos, omitidas ni reintentos, 8,6 min.
+
+Aceptación visual del piloto (2026-10-02) sobre `743aa5e`: siete rutas (`/`,
+`/product`, una ficha, `/cart`, `/services`, `/about`, `/contact`) en 1440 y 390 px,
+temas claro y oscuro. Sin desbordamiento, logotipo correcto por contraste, hero
+oscuro en ambos temas, categorías reales, carrusel, navegación móvil y movimiento
+reducido correctos.
+
+Defecto encontrado, **anterior a esta rama** (idéntico en `master`): en móvil, hasta
+414 px, el titular y el párrafo del hero se cortan por la derecha. La columna de
+texto mide 367 px fijos y la sección oculta lo que sobra, así que la prueba de
+desbordamiento no lo detecta. Queda como HERO-MOBILE-CLIP, sin corregir aquí
+(corregido después en `ff564e9`, rama `fix/hero-mobile-clip`).
+
+Queda fuera, registrado:
+
+- STOREFRONT-PILLARS-CMS = PROPUESTA. Los cuatro pilares de la portada están
+  compilados; para que una tienda los redacte hace falta un campo propio.
+
+- STOREFRONT-EDITORIAL-CMS = PENDIENTE. Ilustraciones por categoría y material
+  editorial deben ser contenido subido por la tienda. Hoy sólo existe la imagen
+  de campaña.
+- STOREFRONT-FEATURED-CATEGORIES = PROPUESTA. La portada muestra las primeras seis
+  categorías en el orden del servidor; no hay forma de destacar u ordenar.
+- TENANT-TYPOGRAPHY = PROPUESTA. El manual del piloto pide Montserrat; la
+  plataforma usa Inter y Unbounded para todas las tiendas.
+- INTERNAL-UI-V3 = PENDIENTE. Menú móvil del panel, gráficos y estilos del
+  trabajo paralelo.
+- Imágenes de producto con licencia: el comando `populate_storefront_images`, el
+  manifiesto y los recortes del trabajo paralelo no se portaron.
+- Hero configurable por tienda (variante clara u oscura): PENDIENTE.
+
+La deuda de SVC-FUNC-01 no cambia.
 
 ## 2026-10-01 — UX-RECON-SVC-01: la interfaz de #43 sobre el master con servicio y caja
 

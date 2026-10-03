@@ -3,12 +3,147 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-02 — DEPLOY-PREP-01 · Configuración de producción
+## 2026-10-02 — FE-AUTH-06 · Enlace de salto
 
-Rama `deploy/production-vps`: imágenes de producción, `docker-compose.prod.yml` con
-Caddy (HTTPS automático), PostgreSQL con volumen, variables de ejemplo y scripts de
-copia y restauración. Procedimiento en `docs/despliegue-produccion.md`. Ensayado en
-local con Docker; nada contratado ni publicado. Sin cambios de aplicación.
+- El proxy `/api` devuelve al navegador las redirecciones hacia otro origen y sólo
+  sigue las del propio backend bajo `/api/` (`085aa2e`).
+- «Saltar al contenido» vuelve a ser el primer tabulador en la tienda y en el
+  panel (`cf72ee5`).
+- Frontend 538 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  169/169.
+- PR #55 (endurecimiento del backend) y PR #56 (AUDIT-07, DEP-05) ya están en
+  master; su CI de backend pasó con 4682 y 4686 pruebas.
+
+## 2026-10-02 — AUDIT-07 · DEP-05
+
+- Los cambios de producto y la creación de categorías quedan en la auditoría de su
+  empresa (`06cd798`).
+- Cinco dependencias del backend al último parche de su línea (`65d34ad`).
+- Sin migraciones.
+
+## 2026-10-02 — Endurecimiento del backend
+
+- Límite de 30 por minuto y dirección al renovar la sesión, web y app
+  (SEC-SET-04-A, `e066183`).
+- Registro de cada intento de inicio de sesión, sin la contraseña
+  (AUTH-LOGGING-01, `7d5efc8`).
+- Configuración que falla cerrada: `SameSite`, sólo JSON en producción, URL
+  públicas obligatorias, registro a stderr (SEC-SET-03/06/09/10, `e2dff73`).
+- La importación de Excel aplica su límite antes de leer (SEC-SET-05, `e2dff73`).
+- `.env.example` describe las 27 variables que faltaban (ENV-04, `a6beda6`).
+- La edición de líneas bloquea la transferencia; `page_size` negativo ya no da 500
+  (INV-LEGACY-V1-F2/F3, `1f965f7`).
+- El admin de Django no se registra en producción (SEC-SET-02, `79d1077`).
+- Sin migraciones.
+- PR #49 (CI de backend) y PR #54 (endurecimiento del frontend) ya están en master.
+
+## 2026-10-02 — Backend PostgreSQL CI
+
+- Añadido workflow `.github/workflows/backend-postgres-validation.yml`.
+- Ejecuta Django con Python 3.12 y PostgreSQL 16 en pull requests que toquen
+  `backend/**` o el propio workflow.
+- Gates: `manage.py check`, migraciones sin cambios pendientes y suite backend
+  completa en un solo proceso.
+- Sin cambios funcionales ni migraciones.
+- La primera ejecución completa encontró dos defectos reales: `qrcode` faltaba en
+  `requirements.txt` (los PDF fiscales fallaban en una instalación limpia) y una
+  prueba de orden por nombre dependía de la colación de la base. Corregidos.
+
+## 2026-10-02 — FE-AUTH-02 · FE-AUTH-04 · FE-AUTH-07 · Endurecimiento del frontend
+
+- La clave del carrito anónimo sale de una fuente segura (`5adcd28`).
+- `fetchWithAuth` sólo envía la sesión a la API propia (`40f9769`).
+- Cabeceras de seguridad en todas las rutas; `no-referrer` en las páginas con
+  token en la URL (`113a8dd`).
+- Sin cambios de backend, migraciones ni API.
+- Frontend 527 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #53 (DRIFT-02) ya está integrado en master por merge `3f70ca0`.
+
+## 2026-10-02 — DRIFT-02 · Sucursal en el ajuste de inventario
+
+- Con varias sucursales al alcance, el ajuste de inventario pregunta en cuál se
+  aplica y la envía; con una sola no cambia nada (`068bee1`).
+- Sin cambios de backend, migraciones ni API: el servidor ya aceptaba `branch`.
+- Cobertura nueva: Jest `inventory-adjust-branch.test.tsx`.
+- Frontend 511 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #52 (RBAC-F3, RBAC-F4) ya está integrado en master por merge `a6d725b`.
+
+## 2026-10-02 — RBAC-F3 · RBAC-F4 · El panel no ofrece lo que el servidor niega
+
+- Personal sólo ofrece invitar, desactivar acceso y reenviar o revocar invitaciones
+  a quien tiene `memberships.manage` (`58d17de`).
+- El menú del panel usa la misma regla que las páginas: con empresa mandan las
+  capacidades; Auditoría declara `memberships.view` (`847d3bf`).
+- Eliminado `BranchAccessPanel.tsx`, sin uso (`4f5d736`).
+- RBAC-F6, RBAC-F7 y RBAC-F11 ya estaban corregidos en `master`; RBAC-F5 era el
+  mismo defecto que RBAC-F3.
+- Sin cambios de backend, migraciones ni API.
+- Frontend 506 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #51 (botón del menú móvil) ya está integrado en master por merge `64b4d5e`.
+
+## 2026-10-02 — ADMIN-MENU-ARIA · Botón del menú móvil del panel
+
+- El botón que abre la navegación del panel en un teléfono anuncia que abre un
+  diálogo y si está abierto (`aria-haspopup`, `aria-expanded`, `aria-controls`)
+  (`e2ce0e2`).
+- Sin cambios de backend, migraciones, auth, RBAC ni API.
+- Cobertura nueva: Jest `admin-menu-trigger-a11y.test.tsx`.
+- Frontend 494 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- PR #50 (FE-AUTH-05) ya está integrado en master por merge `2d9cc97`.
+
+## 2026-10-02 — FE-AUTH-05 · Tope al cuerpo en el proxy `/api`
+
+- El proxy de Next ya no guarda en memoria un cuerpo sin límite: lee a trozos
+  hasta 32 MiB (`API_PROXY_MAX_BODY_BYTES`) y responde 413 si se supera, sin llamar
+  al backend (`4fad36b`).
+- Sin cambios de backend, migraciones, auth, RBAC ni API.
+- Cobertura nueva: Jest `api-proxy-body-limit.test.ts`.
+- Frontend 491 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+  164/164.
+- Barrido móvil del panel sobre `master` `1815ac1`: 37 rutas, sin desbordes.
+
+## 2026-10-02 — ADMIN-INVENTORY-MOBILE-OVERFLOW
+
+- Corregido el desbordamiento móvil de `/admin/inventory`: los paneles y su cuerpo
+  ahora pueden encogerse dentro del grid y las tablas de 640 px permanecen dentro
+  de su `overflow-x-auto` local.
+- Sin cambios de backend, migraciones, auth, RBAC, tenant scope ni API.
+- Cobertura nueva: Jest `inventory-mobile-layout.test.tsx` y Playwright
+  `admin-inventory-mobile.spec.ts` para 320/360/375/390/414 px.
+- PR #47 (HERO-MOBILE-CLIP) ya está integrado en master por merge `03581ea`.
+
+## 2026-10-02 — HERO-MOBILE-CLIP · El texto de la tienda cabe en un teléfono
+
+Rama `fix/hero-mobile-clip`, desde `master` `c47c538`. El titular y el párrafo del
+hero ya no se cortan en pantallas de hasta 414 px (`ff564e9`); lo mismo para el
+titular del catálogo y «Productos relacionados» de la ficha (`e082b26`). De 640 px
+en adelante todo sale idéntico a `master`. Dos pruebas de navegador nuevas miden el
+texto contra la pantalla, no sólo el ancho de la página (`ff564e9`, `e082b26`,
+`42ef631`). Sin backend, sin migraciones, sin cambios en el panel. Frontend 483
+pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright 163/163.
+
+Revisión del diseño V3 pendiente, sin código: el perrito es el isotipo de cada
+tienda y ya está; las imágenes del trabajo paralelo siguen fuera por falta de
+licencia (STOREFRONT-IMAGES-LICENSE); INTERNAL-UI-V3 sigue pendiente porque sólo
+toca piezas compartidas del panel; TENANT-TYPOGRAPHY y STOREFRONT-PILLARS-CMS
+siguen como propuesta. Deuda nueva: ADMIN-INVENTORY-MOBILE-OVERFLOW.
+
+## 2026-10-01 — STOREFRONT-V3 · Tienda pública sobre el master auditado
+
+Rama `reconcile/storefront-v3-after-ux`. Cabecera, pie y portada leen las
+categorías del catálogo real y el pie filtra con `?category=` (`a57c72e`). Carrusel
+de productos, entradas con movimiento reducido respetado y línea del carrito
+enlazada a su ficha (`9ba1a70`). Portada sobre el CMS de la tienda, con campaña
+`home_hero` opcional y la losa oscura del hero intacta (`11f69f0`). Páginas
+`/about` y `/contact` con datos de la tienda (`5380ca6`). Pruebas de navegador de
+la experiencia pública (`7f49168`). Sin backend ni migraciones; ningún archivo del
+panel interno cambia (su contenido queda envuelto en `internal-surface`).
+Frontend 483 pruebas, typecheck, lint 0/25 y build OK (52 páginas); Playwright
+143/143.
 
 ## 2026-10-01 — UX-RECON-SVC-01 · Interfaz reconciliada con servicio y caja
 

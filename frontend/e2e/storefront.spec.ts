@@ -15,7 +15,9 @@ const VIEWPORTS = [
   { name: "1440", width: 1440, height: 900 },
 ];
 
-const PUBLIC_ROUTES = ["/", "/services", "/product", "/cart", "/auth"];
+// STOREFRONT-V3 añade «Nosotros» y «Contacto» a la misma batería: mismo ancho,
+// mismo tema, mismas exigencias que el resto de la tienda.
+const PUBLIC_ROUTES = ["/", "/services", "/product", "/cart", "/auth", "/about", "/contact"];
 const ADMIN_ROUTES = ["/admin", "/admin/settings/storefront"];
 
 /** Fija el tema ANTES de cargar, como haría un visitante que ya eligió. */

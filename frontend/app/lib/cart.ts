@@ -16,6 +16,25 @@ export function emitCartChange() {
   window.dispatchEvent(new Event("cartChange"));
 }
 
+/**
+ * A guest cart key nobody can guess — FE-AUTH-02.
+ *
+ * The key is the only thing that selects a guest cart on the server: whoever
+ * knows it reads and changes that cart. It used to be the clock plus six
+ * characters of `Math.random()`, which is not a secure source.
+ */
+function randomGuestId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+
+  // Same shape as a v4 UUID, from the same secure source, for browsers that
+  // only expose `randomUUID` on secure origins.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function getSessionKey(): string {
   if (typeof window === "undefined") {
     return "guest-session";
@@ -37,7 +56,7 @@ export function getSessionKey(): string {
     return legacy;
   }
 
-  const newKey = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const newKey = `guest-${randomGuestId()}`;
   window.localStorage.setItem(SESSION_KEY, newKey);
   // Transitional compatibility only. Remove this mirror after the old
   // storefront version can no longer coexist with the new one.

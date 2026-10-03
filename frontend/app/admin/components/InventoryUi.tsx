@@ -47,7 +47,7 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-bd-border bg-surface">
+    <section className="min-w-0 rounded-xl border border-bd-border bg-surface">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -57,7 +57,7 @@ export function Panel({
         </div>
         {action}
       </header>
-      <div className="p-5">{children}</div>
+      <div className="min-w-0 p-5">{children}</div>
     </section>
   );
 }

@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Inter, Unbounded } from "next/font/google";
 import "./globals.css";
 import {
+  SkipLink,
+  StorefrontContent,
   StorefrontFooter,
   StorefrontHeader,
   WhatsAppButton,
@@ -113,13 +115,14 @@ export default async function RootLayout({
             tiene el suyo — barra lateral, selector de empresa, barra superior —
             y llevaba los dos puestos a la vez.
           */}
+          <SkipLink />
           <StorefrontHeader />
           {/*
             SIN `pt-16`. El header es `sticky`, no `fixed`: participa en el
             flujo y ya ocupa su propio alto. El padding lo compensaba una
             segunda vez y dejaba una franja vacía entre la cabecera y el hero.
           */}
-          <div>{children}</div>
+          <StorefrontContent>{children}</StorefrontContent>
           <StorefrontFooter />
           <WhatsAppButton />
         </StorefrontProvider>

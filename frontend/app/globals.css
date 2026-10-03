@@ -356,3 +356,93 @@ img { display: block; max-width: 100%; }
     transform: translateX(0);
   }
 }
+
+/* -------------------------------------------------------------------- */
+/* STOREFRONT V3 — lenguaje visual de la TIENDA.                          */
+/*                                                                       */
+/* TODO lo de aquí es una clase `v3-*`. No hay un solo selector de        */
+/* elemento (`table`, `h1`, `input`, `button`): una regla así alcanzaría  */
+/* el control interno, que tiene su propio diseño. Lo que la tienda       */
+/* quiera cambiar lo pide con una clase, y `/admin` no se entera.         */
+/*                                                                       */
+/* No toca tokens de tema, ni tipografías, ni la losa de marca.           */
+/* -------------------------------------------------------------------- */
+:root {
+  /* Arranca rápido —cuando se está mirando— y frena largo. */
+  --v3-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.v3-container { width: min(1248px, calc(100% - 48px)); margin-inline: auto; }
+.v3-heading { font-size: clamp(1.8rem, 3.1vw, 2.75rem); line-height: 1.1; }
+.v3-text-link {
+  display: inline-flex; align-items: center; gap: .5rem; min-height: 44px;
+  font-size: .875rem; font-weight: 600;
+}
+.v3-category {
+  border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+  background: var(--background);
+  transition: translate 200ms var(--v3-ease-out), box-shadow 200ms var(--v3-ease-out);
+}
+
+/* ENTRADAS. Menús y paneles se montan con `{open && …}` y aparecían de golpe.
+   `@starting-style` anima la entrada sin estado en React; la salida sigue
+   siendo inmediata, a propósito. Sin soporte, se muestra sin animar. */
+.v3-pop { transition: opacity 150ms var(--v3-ease-out), scale 150ms var(--v3-ease-out); }
+.v3-reveal { transition: opacity 180ms var(--v3-ease-out), translate 180ms var(--v3-ease-out); }
+@starting-style {
+  .v3-pop { opacity: 0; scale: 0.96; }
+  .v3-reveal { opacity: 0; translate: 0 -6px; }
+}
+
+/* Un recorte con transparencia conserva sus colores; sólo la sombra sigue a
+   la superficie. Sobre la losa oscura, un halo claro en vez de una sombra. */
+.v3-cutout { filter: drop-shadow(0 8px 12px rgb(0 0 0 / .18)); }
+.v3-cutout-on-slab {
+  filter: drop-shadow(0 0 1px rgb(255 255 255 / .5)) drop-shadow(0 6px 18px rgb(255 255 255 / .12));
+}
+
+/* CARRUSEL. Scroll nativo: conserva la inercia del dedo, los enlaces y el
+   foco del navegador. */
+.v3-carousel { min-width: 0; }
+.v3-carousel-track {
+  display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain; scrollbar-width: none; padding: 4px 0 12px;
+}
+.v3-carousel-track::-webkit-scrollbar { display: none; }
+.v3-carousel-item { flex: 0 0 31%; min-width: 0; scroll-snap-align: start; }
+.v3-carousel-item > * { height: 100%; }
+.v3-carousel-control {
+  display: grid; place-items: center; width: 44px; height: 44px;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: var(--background); color: var(--foreground); cursor: pointer;
+  transition: transform 160ms var(--v3-ease-out), opacity 160ms var(--v3-ease-out);
+}
+.v3-carousel-control:disabled { opacity: .3; cursor: default; }
+.v3-carousel-control:focus-visible,
+.v3-carousel-track:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
+@media (max-width: 1023px) { .v3-carousel-item { flex-basis: 46%; } }
+@media (max-width: 639px) {
+  .v3-container { width: calc(100% - 32px); }
+  .v3-category { padding: 16px; }
+  .v3-carousel-item { flex-basis: 86%; }
+}
+
+/* Un dispositivo táctil dispara `:hover` al tocar y lo deja pegado. */
+@media (hover: hover) and (pointer: fine) {
+  .v3-category:hover { translate: 0 -3px; box-shadow: 0 12px 30px rgb(0 0 0 / .06); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .v3-hero-art { animation: v3-hero-enter 850ms var(--v3-ease-out) 80ms backwards; }
+}
+@keyframes v3-hero-enter {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Quien pidió menos movimiento no ve avance automático, ni su botón. */
+@media (prefers-reduced-motion: reduce) {
+  .v3-autoplay-control { display: none; }
+  .v3-pop, .v3-reveal, .v3-category { transition: none; }
+}

@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useStoreName, useStorefront } from "./components/StorefrontProvider";
-import { ProductCard } from "./components/ProductCard";
+import { ProductCarousel } from "./components/ProductCarousel";
+import { StorefrontMotion } from "./components/StorefrontMotion";
+import { categoryHref, useCatalogCategories } from "./lib/catalog-categories";
 import { BrandLogo } from "./components/BrandLogo";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
@@ -41,32 +43,17 @@ const STROKE = {
   strokeLinejoin: "round" as const,
 };
 
-const CATALOG_SECTIONS = [
-  {
-    label: "iPhone", slug: "iphone",
-    path: <><rect x="7" y="2.5" width="10" height="19" rx="2.2" /><path d="M10.6 5.4h2.8" /></>,
-  },
-  {
-    label: "Apple Watch", slug: "apple-watch",
-    path: <><rect x="7.5" y="6.5" width="9" height="11" rx="2.4" /><path d="M9.6 6.5 10 3h4l.4 3.5M9.6 17.5 10 21h4l.4-3.5" /></>,
-  },
-  {
-    label: "iPad", slug: "ipad",
-    path: <><rect x="4.5" y="2.5" width="15" height="19" rx="2" /><path d="M10.4 5.2h3.2" /></>,
-  },
-  {
-    label: "Mac", slug: "mac",
-    path: <><rect x="3" y="4.5" width="18" height="11.5" rx="1.6" /><path d="M2 19.5h20" /></>,
-  },
-  {
-    label: "Accesorios", slug: "accesorios",
-    path: <><path d="M5 12.5a7 7 0 0 1 14 0" /><rect x="3" y="12" width="4" height="7" rx="1.6" /><rect x="17" y="12" width="4" height="7" rx="1.6" /></>,
-  },
-  {
-    label: "Audífonos", slug: "audifonos",
-    path: <><path d="M9 4.5v10.2" /><circle cx="7" cy="16.5" r="2.4" /><path d="M9 7.5 18 5.5v9" /><circle cx="16" cy="16.5" r="2.4" /></>,
-  },
-];
+/*
+  AQUÍ HABÍA SEIS CATEGORÍAS ESCRITAS A MANO — iPhone, Apple Watch, iPad, Mac…
+  Eran las del piloto, y cualquier otra tienda las veía en su portada con
+  enlaces a categorías que no vende. Las categorías salen ahora del catálogo
+  real (`useCatalogCategories`), en el orden que da el servidor. El icono es
+  uno solo y neutro: dibujar un teléfono para «Laptops» sería volver a suponer
+  qué vende la tienda.
+*/
+const CATEGORY_GLYPH = (
+  <><rect x="4" y="4" width="7" height="7" rx="1.6" /><rect x="13" y="4" width="7" height="7" rx="1.6" /><rect x="4" y="13" width="7" height="7" rx="1.6" /><rect x="13" y="13" width="7" height="7" rx="1.6" /></>
+);
 
 /*
   LOS CUATRO NÚMEROS QUE HABÍA AQUÍ NO ERAN COMPROBABLES.
@@ -85,7 +72,7 @@ const CATALOG_SECTIONS = [
   un cliente cita cuando reclama.
 */
 const PILLARS = [
-  { title: "Especialización", label: "Productos y equipos Apple" },
+  { title: "Especialización", label: "Conocemos lo que vendemos y reparamos" },
   { title: "Respaldo", label: "Condiciones claras y postventa" },
   { title: "Transparencia", label: "Estado, procedencia y entrega" },
   { title: "Experiencia", label: "Atención antes, durante y después" },
@@ -177,6 +164,8 @@ export default function Home() {
   const bottomPromo = useStorefront().campaigns.home_bottom_promo;
   // La MISMA fuente que /services y el pie. Tres listas de lo mismo divergen.
   const services = useStorefront().services;
+  const { faqs, page } = useStorefront();
+  const categories = useCatalogCategories();
 
   useEffect(() => {
     fetcher<Product[]>(apiUrl("/products?ordering=newest"))
@@ -186,6 +175,7 @@ export default function Home() {
   }, []);
 
   return (
+    <StorefrontMotion>
     <div className="min-h-screen bg-background text-foreground">
       <Hero />
 
@@ -232,8 +222,9 @@ export default function Home() {
 
       <main className="mx-auto max-w-7xl px-6 lg:px-8">
 
-        {/* Category sections grid */}
-        <section className="py-16">
+        {/* Categorías reales del catálogo. Sin categorías, sin bloque. */}
+        {categories.length > 0 ? (
+        <section className="py-16" data-motion-reveal>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
@@ -246,7 +237,7 @@ export default function Home() {
             </Link>
           </div>
           <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {CATALOG_SECTIONS.map((section) => (
+            {categories.slice(0, 6).map((category) => (
               /*
                 MENOS CARD, MÁS CELDA. Seis rectángulos redondeados idénticos
                 con borde y fondo es el aspecto de cualquier panel de control.
@@ -254,23 +245,27 @@ export default function Home() {
                 al pasar, y ésa es toda la interacción que necesita.
               */
               <Link
-                key={section.slug}
-                href={`/product?category=${section.slug}`}
-                className="group relative flex flex-col items-start gap-4 border-t border-bd-border px-1 py-6 transition-colors hover:border-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                key={category.slug}
+                href={categoryHref(category.slug)}
+                className="group relative flex flex-col items-start gap-4 border-t border-bd-border px-1 py-6 transition-colors hover:border-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-foreground"
               >
                 <svg {...STROKE} className="h-7 w-7 text-muted transition-colors group-hover:text-foreground" aria-hidden="true">
-                  {section.path}
+                  {CATEGORY_GLYPH}
                 </svg>
                 <span className="font-display text-xs font-black uppercase tracking-widest text-foreground">
-                  {section.label}
+                  {category.name}
                 </span>
               </Link>
             ))}
           </div>
         </section>
+        ) : null}
 
-        {/* Services section */}
-        <section className="py-20">
+        {/* Servicios — sólo si la tienda publicó alguno. Una tienda que no
+            repara no anuncia un taller. */}
+        {services.length > 0 ? (
+        <>
+        <section className="py-20" data-motion-reveal>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Reparaciones</span>
@@ -352,12 +347,13 @@ export default function Home() {
             <div className="lg:col-span-5">
               <span className="section-label text-slab-muted">Cómo trabajamos</span>
               <h2 className="font-display mt-3 text-[clamp(1.75rem,3.4vw,2.75rem)] font-black uppercase leading-[1.05] tracking-tight text-slab-foreground">
-                ¿Tu iPhone no funciona?
+                {/* El titular es el que la tienda escribió para sus servicios;
+                    sin él, uno que no supone qué equipos atiende. */}
+                {page.services_hero_title || "¿Tu equipo no funciona?"}
               </h2>
               <p className="mt-5 max-w-[46ch] text-base leading-7 text-slab-muted text-pretty">
-                En {storeName} ofrecemos servicio técnico especializado en
-                equipos Apple, con diagnóstico previo y condiciones claras
-                antes de empezar.
+                {page.services_hero_subtitle
+                  || `En ${storeName} ofrecemos servicio técnico con diagnóstico previo y condiciones claras antes de empezar.`}
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <a
@@ -407,9 +403,11 @@ export default function Home() {
             </ol>
           </div>
         </section>
+        </>
+        ) : null}
 
         {/* Products section */}
-        <section className="py-20">
+        <section className="py-20" data-motion-reveal>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <span className="section-label">Catálogo</span>
@@ -434,28 +432,67 @@ export default function Home() {
             </div>
           ) : products.length === 0 ? (
             <div className="mt-8 flex flex-col items-center gap-6 rounded-3xl border border-dashed border-bd-border p-16 text-center">
-              <img src="/assets/branding/logo-icon.png" alt="" className="h-16 w-16 opacity-10 invert" />
+              {/* El logotipo de ESTA tienda, por `BrandLogo`. Aquí había un PNG
+                  del piloto escrito en la ruta. */}
+              <div className="opacity-20" aria-hidden="true">
+                <BrandLogo
+                  placement="compact"
+                  surface="theme"
+                  className="h-16 w-16 object-contain"
+                  wordmarkClassName="sr-only"
+                />
+              </div>
               <div>
                 <p className="font-display text-2xl font-black uppercase text-muted">
                   Catálogo en preparación
                 </p>
-                <p className="mt-1 text-sm text-muted">Escríbenos por WhatsApp para consultar disponibilidad.</p>
+                <p className="mt-1 text-sm text-muted">
+                  {whatsappLink ? "Escríbenos por WhatsApp para consultar disponibilidad." : "Vuelve pronto: estamos publicando los productos."}
+                </p>
               </div>
+              {whatsappLink ? (
               <a
-                href={whatsappLink || "#"}
+                href={whatsappLink}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="rounded-full bg-foreground px-6 py-3 text-xs font-black uppercase tracking-widest text-background transition hover:bg-foreground/90"
               >
                 Consultar stock
               </a>
+              ) : null}
             </div>
           ) : (
-            <div className="mt-10 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-              {products.slice(0, 6).map((product) => (
-                <ProductCard key={product.id} {...product} />
-              ))}
-            </div>
+            /* STOREFRONT-V3 — los mismos productos, en una fila que se
+               recorre. Conserva enlaces, stock y precio de cada tarjeta. */
+            <ProductCarousel products={products.slice(0, 6)} />
           )}
         </section>
+
+        {/*
+          PREGUNTAS FRECUENTES — las que la tienda publicó, y sólo ésas. Es la
+          misma lista que muestra `/services`; aquí van las primeras. Sin
+          preguntas publicadas no hay bloque: una pregunta inventada es una
+          promesa que nadie hizo.
+        */}
+        {faqs.length > 0 ? (
+          <section className="py-20" data-motion-reveal>
+            <span className="section-label">Antes de decidir</span>
+            <h2 className="font-display mt-2 text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-foreground break-words">
+              Preguntas frecuentes
+            </h2>
+            <div className="mt-10 border-t border-bd-border">
+              {faqs.slice(0, 6).map((faq) => (
+                <details key={faq.question} className="group border-b border-bd-border">
+                  <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-6 py-5 text-base font-semibold text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+                    {faq.question}
+                    <span className="shrink-0 text-muted transition-transform group-open:rotate-45" aria-hidden="true">+</span>
+                  </summary>
+                  <p className="max-w-[70ch] pb-6 text-sm leading-7 text-muted text-pretty">{faq.answer}</p>
+                </details>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {/*
           M12F — LA PROMOCIÓN ES UN DATO, NO UN COMPONENTE.
@@ -595,5 +632,6 @@ export default function Home() {
 
       </main>
     </div>
+    </StorefrontMotion>
   );
 }

@@ -360,7 +360,9 @@ export const INTERNAL_MODULES: InternalModule[] = [
     label: "Auditoría",
     description: "Registro de acciones administrativas.",
     href: "/admin/audit-logs",
-    legacyRoles: ADMIN_ROLES,
+    // Lo que piden su página y el servidor. Sin rol antiguo: el puente legacy
+    // no abre esta pantalla.
+    requiredCapabilities: ["memberships.view"],
     status: "implemented",
     quickAction: true,
   },
@@ -452,9 +454,13 @@ export type ModuleAccessContext = {
 /**
  * Whether the caller can reach a module, as far as the UI can tell.
  *
- * Prefers capabilities when the module declares them AND company context exists;
- * otherwise falls back to the legacy role, which is what the commercial
- * endpoints still check. A platform master passes everything.
+ * The same rule each page applies through `InternalAccess.can` (RBAC-F3):
+ * with a resolved company, capabilities decide and the legacy role grants
+ * nothing; the legacy role only speaks for the pre-SaaS operator who has no
+ * company context. A platform master passes everything.
+ *
+ * The menu used to fall back to the legacy role whenever the capabilities fell
+ * short, so it listed modules whose page then answered "no access".
  */
 export function canAccessModule(
   module: InternalModule,
@@ -462,18 +468,16 @@ export function canAccessModule(
 ): boolean {
   if (ctx.isPlatformAdmin) return true;
 
-  if (module.requiredCapabilities?.length && ctx.hasCompanyContext) {
-    const covered = module.requiredCapabilities.every((c) =>
-      ctx.capabilities.includes(c),
-    );
-    if (covered) return true;
+  const required = module.requiredCapabilities ?? [];
+  const legacyRoles = module.legacyRoles ?? [];
+
+  if (ctx.hasCompanyContext && required.length) {
+    return required.every((c) => ctx.capabilities.includes(c));
   }
 
-  if (module.legacyRoles?.length && ctx.legacyRole) {
-    return module.legacyRoles.includes(ctx.legacyRole);
-  }
+  if (!required.length && !legacyRoles.length) return true;
 
-  return !module.requiredCapabilities?.length && !module.legacyRoles?.length;
+  return Boolean(ctx.legacyRole) && legacyRoles.includes(ctx.legacyRole as string);
 }
 
 /** Sidebar entries: implemented, reachable and actually routable. */
