@@ -31,6 +31,11 @@ las tiendas» y cierra STOREFRONT-HERO-VARIANT.
 - El formato se conserva. Las evidencias se aplanan sobre blanco y pasan a WebP
   porque son fotos; una imagen de la tienda suele ser un recorte en PNG sin fondo
   y aplanarla le pondría un rectángulo detrás.
+- Presentación: cualquier imagen subida por esta tubería usa una sombra suave en
+  el storefront. En un PNG/WebP transparente `drop-shadow` sigue la silueta y evita
+  el efecto de recorte «pegado»; las URLs externas no reciben esta regla.
+- Además de hero/categorías/campañas, la página estable puede guardar una imagen
+  editorial de servicio técnico y otra de ubicación. Son opcionales y por tenant.
 - El estilo del hero (`dark` o `light`) lo elige cada tienda. `dark` es el valor
   por defecto: ninguna tienda cambia de aspecto por esta decisión.
 - Descartado: escribir las imágenes del piloto en el repositorio (no hay
