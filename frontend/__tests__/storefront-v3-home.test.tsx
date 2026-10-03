@@ -84,9 +84,12 @@ const PILOT = /black dog|iphone|ipad|apple|\bmac\b|watch|arequipa/i;
 describe('portada · categorías', () => {
   it('son las del catálogo real de la tienda, con el filtro que el catálogo lee', async () => {
     inStore(<Home />);
-    const section = (await screen.findByRole('heading', { name: 'Categorías' })).closest('section') as HTMLElement;
+    // V4: el bloque se titula «Encuentra lo que necesitas.» y cada categoría es
+    // una tarjeta con su nombre y «Ver más». Lo que se fija no cambia: son las
+    // del catálogo, en su orden, con el filtro que el catálogo lee.
+    const section = (await screen.findByRole('heading', { name: 'Encuentra lo que necesitas.' })).closest('section') as HTMLElement;
     const links = within(section).getAllByRole('link').filter((a) => a.getAttribute('href')?.includes('category='));
-    expect(links.map((a) => [a.textContent?.trim(), a.getAttribute('href')])).toEqual([
+    expect(links.map((a) => [a.textContent?.replace(/Ver más.*/, '').trim(), a.getAttribute('href')])).toEqual([
       ['Laptops', '/product?category=laptops'],
       ['Audio', '/product?category=audio'],
     ]);
@@ -96,7 +99,7 @@ describe('portada · categorías', () => {
     categories = [];
     inStore(<Home />);
     await screen.findByRole('region', { name: 'Productos destacados' });
-    expect(screen.queryByRole('heading', { name: 'Categorías' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Encuentra lo que necesitas.' })).not.toBeInTheDocument();
   });
 });
 
@@ -104,7 +107,7 @@ describe('portada · sin datos del piloto', () => {
   it('otra tienda no ve categorías, copy ni imágenes del piloto', async () => {
     const { container } = inStore(<Home />);
     await screen.findByRole('region', { name: 'Productos destacados' });
-    await screen.findByRole('link', { name: 'Laptops' });
+    await screen.findByRole('heading', { name: 'Encuentra lo que necesitas.' });
 
     expect(container.textContent ?? '').not.toMatch(PILOT);
     const sources = Array.from(container.querySelectorAll('img')).map((img) => img.getAttribute('src') ?? '');
@@ -119,7 +122,8 @@ describe('portada · sin datos del piloto', () => {
     expect(container.textContent ?? '').not.toMatch(PILOT);
     expect(container.querySelector('img[src*="logo-icon"]')).toBeNull();
     // Sin servicios publicados no se anuncia un taller.
-    expect(screen.queryByText('Cómo trabajamos')).not.toBeInTheDocument();
+    expect(screen.queryByText('Servicio técnico')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Ver servicios' })).not.toBeInTheDocument();
   });
 });
 

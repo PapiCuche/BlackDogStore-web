@@ -264,6 +264,14 @@ EVIDENCE_STORAGE_URL_TTL_SECONDS = env.int(
 
 #: Lo que se acepta RECIBIR, antes de decodificar nada. Distinto de lo que se
 #: acaba almacenando: una foto de 20 MB es legítima y termina pesando 200 KB.
+# Imágenes públicas de la tienda, subidas desde el panel (hero, categorías).
+# Comparten el almacenamiento de las evidencias, bajo otra ruta.
+STOREFRONT_IMAGE_MAX_UPLOAD_BYTES = env.int(
+    'STOREFRONT_IMAGE_MAX_UPLOAD_BYTES', default=8 * 1024 * 1024
+)
+STOREFRONT_IMAGE_MAX_EDGE = env.int('STOREFRONT_IMAGE_MAX_EDGE', default=2400)
+STOREFRONT_IMAGE_MAX_PIXELS = env.int('STOREFRONT_IMAGE_MAX_PIXELS', default=40_000_000)
+
 SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
     'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024
 )

@@ -32,6 +32,8 @@ import {
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
 import { ListContentEditor } from "./ListContentEditor";
+import { CategoryImagesEditor } from "./CategoryImagesEditor";
+import { ImageUploadField } from "../../components/ImageUploadField";
 import {
   ContentValidationError,
   actOnStorefrontCampaign,
@@ -52,6 +54,10 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const EMPTY_PAGE: StorefrontPageContent = {
+  hero_variant: "dark",
+  hero_image_url: "",
+  services_image_url: "",
+  location_image_url: "",
   hero_eyebrow: "",
   hero_title: "",
   hero_subtitle: "",
@@ -222,6 +228,19 @@ function StorefrontContent({ ctx }: { ctx: InternalContext }) {
             certificación de la que no hay documento. Como datos, quien las
             escribe responde por ellas — y por eso el aviso de arriba.
           */}
+          <DashboardSection title="Imágenes de categorías">
+            <p className="mb-4 text-xs leading-5 text-muted">
+              La portada muestra cada categoría con su imagen. Una categoría sin
+              imagen se muestra con su nombre, sin hueco roto.
+            </p>
+            <CategoryImagesEditor
+              companyId={companyId}
+              canManage={(ctx.dashboard?.access.capabilities ?? []).includes("products.manage")
+                || Boolean(ctx.dashboard?.access.is_platform_admin)}
+              onNotice={setNotice}
+            />
+          </DashboardSection>
+
           <DashboardSection title="Servicios">
             <ListContentEditor
               kind="services" companyId={companyId}
@@ -473,6 +492,32 @@ function PageForm({
 
   return (
     <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
+      {/*
+        CÓMO SE VE EL HERO lo decide la tienda. El oscuro es la losa con el
+        isotipo; el claro deja sitio a una imagen junto al texto. La imagen es
+        opcional en los dos: sin ella el hero se compone sólo con el texto.
+      */}
+      <label htmlFor="f-hero_variant" className="block">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+          Estilo del hero
+        </span>
+        <select
+          id="f-hero_variant"
+          name="hero_variant"
+          value={draft.hero_variant}
+          disabled={readOnly}
+          onChange={(e) => set("hero_variant", e.target.value)}
+          className={FIELD_CLASS}
+        >
+          <option value="dark">Oscuro, con el isotipo de fondo</option>
+          <option value="light">Claro, con imagen al lado</option>
+        </select>
+      </label>
+      <ImageUploadField
+        label="Imagen del hero" name="hero_image_url" value={draft.hero_image_url}
+        companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
+        hint="Opcional. Un PNG sin fondo se apoya sobre el color del hero. Se guarda con «Guardar portada»."
+      />
       <Field label="Línea superior" name="hero_eyebrow" value={draft.hero_eyebrow}
         onChange={set} errors={errors} maxLength={80}
         hint="Vacío usa el nombre de la empresa y la ciudad." />
@@ -504,6 +549,16 @@ function PageForm({
           value={draft.services_hero_subtitle} onChange={set} errors={errors}
           as="textarea" maxLength={400} />
       </div>
+      <ImageUploadField
+        label="Imagen de servicio técnico" name="services_image_url" value={draft.services_image_url}
+        companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
+        hint="Opcional. Usa una foto o recorte autorizado del trabajo/servicio. Los PNG transparentes reciben una sombra suave."
+      />
+      <ImageUploadField
+        label="Imagen de la tienda o ubicación" name="location_image_url" value={draft.location_image_url}
+        companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
+        hint="Opcional. Se muestra en «Cerca de ti». Usa una imagen propia o autorizada."
+      />
       <div className="sm:col-span-2">
         {/*
           LA NOTA DE GARANTÍA. Existe porque la página afirmaba que todos los
@@ -616,8 +671,10 @@ function CampaignForm({
         <Field label="Texto" name="body" value={draft.body} onChange={set}
           errors={errors} as="textarea" maxLength={600} />
       </div>
-      <Field label="Imagen" name="image_url" value={draft.image_url} onChange={set}
-        errors={errors} hint="Ruta del sitio o URL http(s)." />
+      <ImageUploadField
+        label="Imagen" name="image_url" value={draft.image_url}
+        companyId={companyId} onChange={set} errors={errors}
+      />
       <Field label="Prioridad" name="priority" value={draft.priority} onChange={set}
         errors={errors} type="number"
         hint="Desempata si dos campañas comparten posición." />

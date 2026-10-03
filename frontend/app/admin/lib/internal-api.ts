@@ -1394,20 +1394,15 @@ export type InspectResult = {
 };
 
 /**
- * POST multipart WITHOUT forcing a Content-Type.
+ * POST multipart WITHOUT a Content-Type.
  *
- * `fetchWithAuth` always sets `application/json`, which is right for every other
- * call in this file and fatal here: a multipart body needs the boundary the
- * browser generates, and a hand-written Content-Type has no boundary in it, so
- * the server receives a body it cannot split into parts. Deleting the header
- * lets the browser write the correct one.
+ * A multipart body needs the boundary the browser generates, so no header is
+ * passed at all and `fetchWithAuth` leaves it to the browser. This used to pass
+ * `"Content-Type": ""` to "delete" it; an empty header is still a header, the
+ * browser sent it, and the server answered 415 to every import.
  */
 async function postForm<T>(path: string, form: FormData, fallback: string): Promise<T> {
-  const res = await fetchWithAuth(`${API_BASE}${path}`, {
-    method: "POST",
-    body: form,
-    headers: { "Content-Type": "" },
-  });
+  const res = await fetchWithAuth(`${API_BASE}${path}`, { method: "POST", body: form });
   if (res.ok) return res.json();
   throw new Error(await readDetail(res, fallback));
 }
@@ -1559,6 +1554,11 @@ export type StorefrontCampaignList = {
 };
 
 export type StorefrontPageContent = {
+  /** Cómo se ve el hero: losa oscura o claro con imagen. Lo decide la tienda. */
+  hero_variant: "dark" | "light";
+  hero_image_url: string;
+  services_image_url: string;
+  location_image_url: string;
   hero_eyebrow: string;
   hero_title: string;
   hero_subtitle: string;
@@ -1665,6 +1665,41 @@ export async function updateStorefrontPage(
     { method: "PATCH", body: JSON.stringify(payload) },
   );
   return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+// ---------------------------------------------------------------------------
+// Imágenes de la tienda — subir un archivo y recibir su dirección
+// ---------------------------------------------------------------------------
+
+export type StorefrontImage = {
+  id: string;
+  /** Ruta del propio sitio. Es lo que se guarda en el hueco. */
+  url: string;
+  mime_type: string;
+  byte_size: number;
+  width: number;
+  height: number;
+  /** PNG o WebP con transparencia: se conserva tal cual. */
+  has_alpha: boolean;
+};
+
+/** Lo que el servidor acepta. El tipo lo decide él al decodificar, no el nombre. */
+export const STOREFRONT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+
+export async function uploadStorefrontImage(
+  file: File, companyId?: number | null,
+): Promise<StorefrontImage> {
+  const form = new FormData();
+  form.append("file", file);
+  // Sin `Content-Type`: con un `FormData` lo escribe el navegador, con el
+  // boundary que separa las partes. Fijarlo a mano —aunque sea vacío— hace que
+  // el servidor reciba un cuerpo que no sabe partir y responda 415.
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/images/${companyQuery(companyId)}`,
+    { method: "POST", body: form },
+  );
+  if (res.ok) return res.json();
+  throw new Error(await readDetail(res, "No se pudo subir la imagen."));
 }
 
 // ---------------------------------------------------------------------------
