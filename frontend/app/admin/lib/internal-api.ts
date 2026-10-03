@@ -1559,6 +1559,9 @@ export type StorefrontCampaignList = {
 };
 
 export type StorefrontPageContent = {
+  /** Cómo se ve el hero: losa oscura o claro con imagen. Lo decide la tienda. */
+  hero_variant: "dark" | "light";
+  hero_image_url: string;
   hero_eyebrow: string;
   hero_title: string;
   hero_subtitle: string;
@@ -1665,6 +1668,36 @@ export async function updateStorefrontPage(
     { method: "PATCH", body: JSON.stringify(payload) },
   );
   return handle<{ page: StorefrontPageContent }>(res, "la portada");
+}
+
+// ---------------------------------------------------------------------------
+// Imágenes de la tienda — subir un archivo y recibir su dirección
+// ---------------------------------------------------------------------------
+
+export type StorefrontImage = {
+  id: string;
+  /** Ruta del propio sitio. Es lo que se guarda en el hueco. */
+  url: string;
+  mime_type: string;
+  byte_size: number;
+  width: number;
+  height: number;
+  /** PNG o WebP con transparencia: se conserva tal cual. */
+  has_alpha: boolean;
+};
+
+/** Lo que el servidor acepta. El tipo lo decide él al decodificar, no el nombre. */
+export const STOREFRONT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+
+export async function uploadStorefrontImage(
+  file: File, companyId?: number | null,
+): Promise<StorefrontImage> {
+  const form = new FormData();
+  form.append("file", file);
+  return postForm<StorefrontImage>(
+    `/admin/storefront/images/${companyQuery(companyId)}`,
+    form, "No se pudo subir la imagen.",
+  );
 }
 
 // ---------------------------------------------------------------------------
