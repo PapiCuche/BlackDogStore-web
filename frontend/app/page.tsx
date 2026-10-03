@@ -302,6 +302,7 @@ export default function Home() {
                       src={category.image_url}
                       alt=""
                       loading="lazy"
+                      style={storefrontMediaStyle(category.image_url)}
                       className="max-h-full max-w-full object-contain transition-transform duration-300 group-hover:scale-[1.03]"
                     />
                   </span>
@@ -608,6 +609,7 @@ export default function Home() {
                   <img
                     src={bottomPromo.image_url}
                     alt={bottomPromo.title}
+                    style={storefrontMediaStyle(bottomPromo.image_url)}
                     className="max-h-64 w-auto max-w-full object-contain"
                     loading="lazy"
                   />
