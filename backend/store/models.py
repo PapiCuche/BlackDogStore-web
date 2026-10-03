@@ -7011,8 +7011,14 @@ class StorefrontImage(models.Model):
 
     @property
     def url(self) -> str:
-        """Ruta del propio sitio: no cambia si la tienda cambia de dominio."""
-        return f'/api/storefront/images/{self.public_id}/'
+        """
+        Ruta del propio sitio: no cambia si la tienda cambia de dominio.
+
+        SIN barra final. El frontend quita la barra final de toda URL con una
+        redirección, así que con ella cada imagen costaba dos peticiones. Quien
+        reenvía a Django (Caddy, o el proxy de Next) la añade.
+        """
+        return f'/api/storefront/images/{self.public_id}'
 
     def clean(self):
         from django.core.exceptions import ValidationError

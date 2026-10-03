@@ -79,7 +79,9 @@ class StorefrontMediaBase(TestCase):
         )
 
     def _fetch(self, url):
-        res = APIClient().get(url)
+        # La dirección pública no lleva barra final; quien reenvía a Django la
+        # añade (Caddy en producción, el proxy de Next en desarrollo).
+        res = APIClient().get(url if url.endswith('/') else url + '/')
         body = b''.join(res.streaming_content) if getattr(res, 'streaming', False) else res.content
         return res, body
 
@@ -104,7 +106,7 @@ class StorefrontImageUploadTest(StorefrontMediaBase):
         self.assertEqual(res.status_code, 201, res.data)
         self.assertTrue(res.data['has_alpha'])
         self.assertEqual(res.data['mime_type'], 'image/png')
-        self.assertRegex(res.data['url'], r'^/api/storefront/images/[0-9a-f]{32}/$')
+        self.assertRegex(res.data['url'], r'^/api/storefront/images/[0-9a-f]{32}$')
 
         served, body = self._fetch(res.data['url'])
         self.assertEqual(served.status_code, 200)
