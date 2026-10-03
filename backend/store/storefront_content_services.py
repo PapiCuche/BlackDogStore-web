@@ -58,6 +58,7 @@ PAGE_FIELDS = (
     'hero_primary_cta_label', 'hero_primary_cta_url',
     'hero_secondary_cta_label', 'hero_secondary_cta_url',
     'hero_variant', 'hero_image_url',
+    'services_image_url', 'location_image_url',
     'services_hero_title', 'services_hero_subtitle', 'services_warranty_note',
 )
 
