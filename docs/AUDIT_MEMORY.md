@@ -417,6 +417,9 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | DEP-05 | MEDIUM | `65d34ad` | `backend/requirements.txt` | CI de backend en instalación limpia | CORREGIDO |
 | FE-AUTH-06 | LOW | `085aa2e` | `frontend/app/api/[...path]/route.ts::fetchFollowingOwnRedirects` (`redirect: "manual"`) | `frontend/__tests__/api-proxy-redirects.test.ts` | CORREGIDO |
 | SKIP-LINK | LOW | `cf72ee5` | `StorefrontChrome.tsx::SkipLink`, `#contenido`, `#admin-main-content` | `frontend/__tests__/skip-link.test.tsx`, E2E `skip-link` | CORREGIDO |
+| STOREFRONT-HERO-VARIANT | — | `0e9db9d`, `9c39716` | `StorefrontPageSettings.hero_variant` / `hero_image_url`, `Hero.tsx` (`HeroLight`) | `store/test_storefront_media.py`, `storefront-v4-home.test.tsx`, E2E `storefront-v4-images` | IMPLEMENTADO |
+| STOREFRONT-IMAGE-UPLOAD | — | `0e9db9d`, `57ed321` | `storefront_media.py` (PNG/WebP conservan alfa), `StorefrontImage`, `ImageUploadField.tsx`, migración 0096 | `store/test_storefront_media.py`, `image-upload-field.test.tsx` | IMPLEMENTADO |
+| IMPORT-UPLOAD-415 | MEDIUM | `b5de287` | `app/lib/auth.ts::fetchWithAuth` (descarta el `Content-Type` del llamador con `FormData`), `postForm` | `fetch-with-auth.test.ts` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
@@ -486,15 +489,15 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
 | IDOR-01 limpieza | SALES | segunda fuente de verdad en resend | Baja | — |
 | Lint 33 warnings | FRONTEND | 24 `set-state-in-effect` y otras | Baja | — |
-| STOREFRONT-EDITORIAL-CMS | STOREFRONT | PENDIENTE: ilustraciones por categoría y material editorial como contenido de la tienda; hoy sólo la imagen de campaña | Media | decisión de producto |
+| STOREFRONT-EDITORIAL-CMS | STOREFRONT | PARCIAL: hay imagen de hero y por categoría, subidas desde el panel; sin más material editorial | Baja | decisión de producto |
+| STOREFRONT-IMAGE-CLEANUP | STOREFRONT | una imagen sustituida queda guardada; sin listado ni borrado | Baja | — |
 | STOREFRONT-FEATURED-CATEGORIES | STOREFRONT | PROPUESTA: destacar y ordenar categorías en la portada; hoy, las seis primeras en el orden del servidor | Baja | — |
 | TENANT-TYPOGRAPHY | BRANDING | PROPUESTA: tipografía por tienda (el manual del piloto pide Montserrat; la plataforma usa Inter + Unbounded) | Baja | — |
 | INTERNAL-UI-V3 | FRONTEND | PENDIENTE: el trabajo paralelo V3 sólo cambia piezas compartidas del panel (`AdminShell`, menú lateral con diálogo móvil, barra superior, selectores, campana, gráficos, `.admin-workspace`), ninguna página; alcanza a todas las rutas a la vez y 6 de 9 archivos chocan con master | Media | fase propia |
-| STOREFRONT-IMAGES-LICENSE | STOREFRONT | PENDIENTE: 10 ilustraciones (`assets/editorial/`, de una propuesta de Figma, muestran productos Apple) y 4 fotos de producto (`assets/products/`, copias del sitio de Apple) del trabajo paralelo, y `populate_storefront_images`, no portados: sin evidencia de origen ni licencia | Media | decisión legal |
+| STOREFRONT-IMAGES-LICENSE | STOREFRONT | BLOQUEADO para el repositorio: las imágenes de la propuesta de Figma no tienen licencia demostrada y no se versionan. Ya no bloquea la portada: la tienda sube las suyas desde el panel | Baja | decisión legal |
 | ADMIN-INVENTORY-MOBILE-OVERFLOW | FRONTEND | `/admin/inventory` desborda la página 284–378 px hasta 414 px de ancho; ya ocurre en master `c47c538` | Baja | INTERNAL-UI-V3 |
 | HERO-WATERMARK-MOBILE | STOREFRONT | PROPUESTA: el isotipo del hero sólo se muestra desde `lg` | Baja | — |
-| STOREFRONT-PILLARS-CMS | STOREFRONT | PROPUESTA: los cuatro pilares de la portada están compilados; sin campo en el CMS | Baja | — |
-| STOREFRONT-HERO-VARIANT | STOREFRONT | PENDIENTE: variante de hero configurable por tienda; hoy losa oscura para todas | Baja | — |
+| STOREFRONT-PILLARS-CMS | STOREFRONT | PROPUESTA: los pilares (sólo con el hero oscuro) y la frase de la franja de marca (hero claro) están compilados; sin campo en el CMS | Baja | — |
 | POS-CUSTOM-PRODUCT | POS | PROPUESTA: vender en caja un artículo que no está en el catálogo. No se implementa con productos falsos ni con `OrderItem.product` nulo | Por decidir | decisión de producto |
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
 | SVC-QUOTE-INSHOP | SERVICE | PENDIENTE: la cotización sólo se aprueba desde la cuenta del cliente; no hay aprobación en tienda | Media | decisión de producto |

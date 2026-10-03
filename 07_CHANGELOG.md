@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-03 — Portada V4 · Imágenes subidas desde el panel
+
+- La tienda sube sus imágenes desde «Escaparate»: hero, campaña y una por
+  categoría. PNG y WebP conservan la transparencia (`0e9db9d`, `57ed321`).
+- El hero tiene estilo oscuro o claro, elegido por la tienda (`9c39716`).
+- Portada V4: tarjetas de categoría con imagen, franja de marca, servicios de la
+  tienda y «Cerca de ti» (`9c39716`).
+- Migración `0096_storefront_images`: tres columnas y una tabla.
+- Corregido: la importación de productos y stock respondía 415 (`b5de287`).
+- `backend/private-media/` pasa a `.gitignore` (`3fa9b42`).
+- Frontend 563 pruebas, typecheck, lint 0/25; Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
+
 ## 2026-10-02 — FE-AUTH-06 · Enlace de salto
 
 - El proxy `/api` devuelve al navegador las redirecciones hacia otro origen y sólo
