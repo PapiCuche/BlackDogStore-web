@@ -1557,6 +1557,8 @@ export type StorefrontPageContent = {
   /** Cómo se ve el hero: losa oscura o claro con imagen. Lo decide la tienda. */
   hero_variant: "dark" | "light";
   hero_image_url: string;
+  services_image_url: string;
+  location_image_url: string;
   hero_eyebrow: string;
   hero_title: string;
   hero_subtitle: string;
