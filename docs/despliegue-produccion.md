@@ -318,30 +318,45 @@ Pendiente, y conviene saberlo:
   tienda; crecer pide antes una caché compartida (THROTTLE-CACHE-01).
 - **Facturación electrónica apagada** (`FISCAL_ENABLED=0`). Encenderla necesita
   certificado digital y credenciales SOL, y es una fase aparte.
-- El inicio de sesión no exige token CSRF cuando el origen es el propio dominio;
-  un origen ajeno recibe 403.
+- El inicio de sesión no exige token CSRF ni rechaza por origen (LOGIN-CSRF-01,
+  baja). Las operaciones con sesión sí: un origen ajeno recibe 403.
 
 ## 9. Qué se ensayó
 
-Con `SITE_DOMAIN=localhost` y un certificado interno de Caddy:
+Ensayo completo sobre `f0c29ce`, con `master` `833fdec` incorporado, el 2026-10-03.
+Imágenes reconstruidas sin caché, PostgreSQL vacío, dominio reservado
+`tienda.test` y certificado interno de Caddy. Las comprobaciones de navegador se
+hicieron con un navegador real a través de Caddy. Todo se desmontó al terminar.
 
-| Comprobación | Resultado |
-|---|---|
-| Compilar las dos imágenes | OK |
-| `migrate` sobre PostgreSQL nuevo | OK |
-| `check --deploy` | 1 aviso esperado (W008) |
-| Puerto 80 redirige a HTTPS | 308 |
-| Tienda, catálogo, carrito, servicios, inicio de sesión | 200 |
-| API sin barra final, con y sin parámetros | 200 |
-| Accesos de demostración | 404 |
-| Admin de Django desde fuera, incluido con `..` en la ruta | no alcanzable |
-| Inicio de sesión real, cookies `Secure` + `HttpOnly` | OK |
-| Petición desde un origen ajeno | 403 |
-| Cerrar sesión sin CSRF | 403 |
-| Carrito anónimo: añadir y leer | OK |
-| Siete intentos de inicio de sesión con `X-Forwarded-For` distinto | 429 desde el sexto |
-| `down` y `up`: los datos siguen | OK |
-| Copia, cambio posterior y restauración | vuelve al estado de la copia |
+| # | Comprobación | Resultado |
+|---|---|---|
+| 1–2 | Compilar las dos imágenes sin caché | OK. Sin `.env`, base ni evidencias dentro; el frontend no lleva ningún secreto del backend |
+| 3–4 | PostgreSQL vacío y migraciones | 107 migraciones aplicadas, 0 pendientes |
+| 5 | `makemigrations --check --dry-run` | Sin cambios |
+| 6 | `collectstatic` | Funciona; no se usa, Django no sirve estáticos en producción |
+| — | `check --deploy` | 1 aviso esperado (W008) |
+| 7–9 | Arranque, Caddy y comprobaciones de salud | Los cuatro servicios arriba; sólo Caddy publica puertos; backend sin root; un proceso de gunicorn |
+| 10–17 | Portada, catálogo, ficha, carrito, checkout, servicios, nosotros, contacto | 200, con contenido real y sin desbordes a 390 px |
+| 13–14 | Añadir al carrito y cotizar el pedido, sin pagar | OK; el desglose de impuestos llega del servidor |
+| 18 | Inicio de sesión con el administrador creado con `createsuperuser` | OK |
+| 19–22 | Panel, inventario, caja (sin vender), servicio técnico, productos | OK, sin ninguna respuesta 5xx |
+| 23 | Cookies de sesión | `Secure`, `HttpOnly`, `SameSite=Lax` |
+| 24 | CSRF | Con sesión y sin token: 403. Cerrar sesión sin token: 403 |
+| 25 | CORS | Sólo se concede al dominio propio |
+| 26 | Origen ajeno con sesión | 403 |
+| 27 | `X-Forwarded-For` falso | Django ve la dirección real; el límite no se evita |
+| 28 | Límites | Inicio de sesión: 429 desde el sexto intento. Renovación: 429 desde la número 31. Otro cliente con otra dirección no hereda el límite |
+| 29 | Apagar y encender | Los mismos datos |
+| 30 | `deploy/backup.sh` | Volcado completo y evidencias |
+| 31 | Cambio posterior y `deploy/restore.sh` | Vuelve exactamente al estado de la copia; relaciones íntegras |
+| — | Admin de Django | No existe: 404 incluso preguntando directamente al backend |
+| — | Cuentas de demostración | El comando se niega; la ruta responde 404; la tarjeta no se pinta |
+| — | Cabeceras | HSTS, `nosniff`, `X-Frame-Options: DENY`, política de contenido; `no-referrer` en las páginas con token |
+| — | `flushexpiredtokens` | Se ejecuta sin error |
+
+Observado y anotado: el inicio de sesión no rechaza por origen. Desde un origen
+ajeno, con credenciales erróneas, responde 401 y no 403. Las operaciones con
+sesión sí rechazan un origen ajeno (LOGIN-CSRF-01, baja).
 
 No se pudo ensayar en local: el certificado público de Let's Encrypt (necesita el
 dominio real), el envío de correo por SMTP y el cobro con Izipay.
