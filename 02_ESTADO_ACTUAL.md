@@ -19,13 +19,15 @@ Qué hay ahora:
   sus píxeles, así que no sale ningún metadato, y se reduce si pasa de 2400 px.
   **PNG y WebP conservan la transparencia.** La dirección pública es
   `/api/storefront/images/<id>`, con un identificador aleatorio.
-- **Tres huecos.** La imagen del hero y el estilo del hero (oscuro o claro) en
-  la portada de la tienda; una imagen por categoría. Migración `0096`: tres
-  columnas y una tabla, sin cambio de datos.
-- **Panel (`57ed321`).** En «Escaparate» hay un hueco de imagen que sube el
-  archivo, lo muestra sobre una cuadrícula para que se vea la transparencia y
-  entrega la dirección al formulario. Sirve para el hero, la campaña y cada
-  categoría.
+- **Huecos de imagen tenant-aware.** Hero, una imagen por categoría, una imagen
+  opcional del bloque de servicio y una de «Cerca de ti». `0096` introduce la
+  tubería de imágenes y `0097` añade los dos huecos editoriales sin reescribir la
+  migración ya aplicada en entornos locales.
+- **Panel (`57ed321` + seguimiento V4).** En «Escaparate» hay huecos de imagen
+  para hero, campaña, categorías, servicio técnico y ubicación. La vista previa
+  usa cuadrícula para comprobar transparencia. Toda imagen servida por la tubería
+  propia del escaparate recibe una sombra `drop-shadow` suave; en PNG/WebP
+  transparentes sigue el contorno del recorte en vez de dibujar una caja.
 - **Portada V4 (`9c39716`).** El hero tiene dos estilos y lo elige la tienda; el
   oscuro sigue siendo el de quien no eligió. Las categorías son tarjetas con su
   imagen; una sin imagen muestra un hueco tranquilo, no una imagen rota. Con el
