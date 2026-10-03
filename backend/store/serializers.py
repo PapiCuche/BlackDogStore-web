@@ -19,7 +19,7 @@ from .models import (
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ['id', 'name', 'slug']
+        fields = ['id', 'name', 'slug', 'image_url']
 
 
 class ReviewSerializer(serializers.ModelSerializer):
@@ -490,6 +490,21 @@ class AdminOrderDetailSerializer(serializers.ModelSerializer):
 class AdminOrderFulfillmentSerializer(serializers.Serializer):
     fulfillment_status = serializers.ChoiceField(choices=Order.FulfillmentStatus.choices)
     note = serializers.CharField(required=False, allow_blank=True, max_length=500, default='')
+
+
+class AdminCategoryUpdateSerializer(serializers.ModelSerializer):
+    """
+    What the panel may change on an existing category: how it is presented.
+
+    The slug is not here on purpose. It is the category's address in the
+    storefront and in every link already shared; renaming it is a different
+    operation with its own consequences.
+    """
+
+    class Meta:
+        model = Category
+        fields = ['name', 'image_url']
+        extra_kwargs = {'name': {'required': False}, 'image_url': {'required': False}}
 
 
 class AdminCategoryWriteSerializer(serializers.ModelSerializer):
