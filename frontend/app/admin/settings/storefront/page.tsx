@@ -56,6 +56,8 @@ const STATUS_LABEL: Record<string, string> = {
 const EMPTY_PAGE: StorefrontPageContent = {
   hero_variant: "dark",
   hero_image_url: "",
+  services_image_url: "",
+  location_image_url: "",
   hero_eyebrow: "",
   hero_title: "",
   hero_subtitle: "",
@@ -547,6 +549,16 @@ function PageForm({
           value={draft.services_hero_subtitle} onChange={set} errors={errors}
           as="textarea" maxLength={400} />
       </div>
+      <ImageUploadField
+        label="Imagen de servicio técnico" name="services_image_url" value={draft.services_image_url}
+        companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
+        hint="Opcional. Usa una foto o recorte autorizado del trabajo/servicio. Los PNG transparentes reciben una sombra suave."
+      />
+      <ImageUploadField
+        label="Imagen de la tienda o ubicación" name="location_image_url" value={draft.location_image_url}
+        companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
+        hint="Opcional. Se muestra en «Cerca de ti». Usa una imagen propia o autorizada."
+      />
       <div className="sm:col-span-2">
         {/*
           LA NOTA DE GARANTÍA. Existe porque la página afirmaba que todos los
