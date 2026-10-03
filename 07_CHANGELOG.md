@@ -17,6 +17,18 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - `backend/private-media/` pasa a `.gitignore` (`3fa9b42`).
 - Frontend 563 pruebas, typecheck, lint 0/25; Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
 
+## 2026-10-02 — F-TENANT-01
+
+- Seguridad multiempresa: un administrador de empresa ya no puede vincular una
+  cuenta global arbitraria por id mediante `POST /api/admin/memberships/`.
+- El alta directa queda reservada a `User.is_superuser` / administrador de
+  plataforma para bootstrap y migración.
+- El onboarding normal de personal usa el flujo existente de
+  `StaffInvitation` + aceptación.
+- GET/PATCH de membresías mantienen su alcance tenant/branch actual.
+- Sin migraciones.
+- Cobertura nueva: `backend/store/test_membership_consent.py`.
+
 ## 2026-10-02 — FE-AUTH-06 · Enlace de salto
 
 - El proxy `/api` devuelve al navegador las redirecciones hacia otro origen y sólo

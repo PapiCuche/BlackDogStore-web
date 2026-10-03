@@ -7400,8 +7400,25 @@ class SaasIsolationApiTest(TestCase):
         )
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_company_admin_can_grant_inside_own_company(self):
+    def test_company_admin_cannot_enrol_a_user_directly(self):
+        """
+        F-TENANT-01. A company admin used to be able to attach any platform user
+        by id, without that person agreeing, and read their username back. Staff
+        now join by invitation; direct creation is the platform operator's.
+        """
         res = self._as(self.admin_a).post('/api/admin/memberships/', {
+            'user': self.orphan.pk,
+            'company': self.company_a.pk,
+            'role': 'inventory',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            Membership.objects.filter(user=self.orphan, company=self.company_a).exists()
+        )
+        self.assertNotIn(self.orphan.username, str(res.data))
+
+    def test_the_platform_operator_can_still_create_one(self):
+        res = self._as(self.platform).post('/api/admin/memberships/', {
             'user': self.orphan.pk,
             'company': self.company_a.pk,
             'role': 'inventory',
@@ -7412,7 +7429,7 @@ class SaasIsolationApiTest(TestCase):
         )
 
     def test_duplicate_membership_via_api_is_rejected(self):
-        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+        res = self._as(self.platform).post('/api/admin/memberships/', {
             'user': self.sales_a.pk,
             'company': self.company_a.pk,
             'role': 'inventory',
@@ -7420,7 +7437,7 @@ class SaasIsolationApiTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_branch_from_another_company_is_rejected_by_api(self):
-        res = self._as(self.admin_a).post('/api/admin/memberships/', {
+        res = self._as(self.platform).post('/api/admin/memberships/', {
             'user': self.orphan.pk,
             'company': self.company_a.pk,
             'role': 'sales',
@@ -7430,7 +7447,7 @@ class SaasIsolationApiTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_membership_creation_is_audited_with_company(self):
-        self._as(self.admin_a).post('/api/admin/memberships/', {
+        self._as(self.platform).post('/api/admin/memberships/', {
             'user': self.orphan.pk,
             'company': self.company_a.pk,
             'role': 'inventory',
@@ -7438,7 +7455,7 @@ class SaasIsolationApiTest(TestCase):
         log = AdminAuditLog.objects.filter(action='membership_created').first()
         self.assertIsNotNone(log)
         self.assertEqual(log.company_id, self.company_a.pk)
-        self.assertEqual(log.actor, self.admin_a)
+        self.assertEqual(log.actor, self.platform)
 
     # --- platform administrator ---
 
@@ -7948,8 +7965,16 @@ class Phase2aPrivilegeEscalationTest(TestCase):
 
     # --- who may administer memberships ---
 
-    def test_company_admin_may_grant_inside_own_company(self):
-        self.assertEqual(self._post(self.admin_a).status_code, status.HTTP_201_CREATED)
+    def test_company_admin_cannot_enrol_a_user_directly(self):
+        # F-TENANT-01: staff join by invitation; a company admin does not attach
+        # a platform user by id.
+        self.assertEqual(self._post(self.admin_a).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            Membership.objects.filter(user=self.target, company=self.company_a).exists()
+        )
+
+    def test_the_platform_operator_may_create_a_membership(self):
+        self.assertEqual(self._post(self.platform).status_code, status.HTTP_201_CREATED)
 
     def test_sales_may_not_administer_memberships(self):
         res = self._post(self.sales_a)
@@ -8046,8 +8071,8 @@ class Phase2aPrivilegeEscalationTest(TestCase):
     def test_missing_user_and_duplicate_membership_answer_identically(self):
         """The endpoint must not be a platform-wide user-id oracle."""
         Membership.objects.create(user=self.target, company=self.company_a, role='sales')
-        duplicate = self._post(self.admin_a, user=self.target.pk)
-        missing = self._post(self.admin_a, user=999999)
+        duplicate = self._post(self.platform, user=self.target.pk)
+        missing = self._post(self.platform, user=999999)
         self.assertEqual(duplicate.status_code, missing.status_code)
         self.assertEqual(duplicate.data['detail'], missing.data['detail'])
         self.assertEqual(duplicate.status_code, status.HTTP_400_BAD_REQUEST)
@@ -8077,12 +8102,15 @@ class Phase2aAuditTest(TestCase):
         return ' '.join(str(log.metadata) for log in AdminAuditLog.objects.all()).lower()
 
     def test_membership_created_is_audited_with_company(self):
-        self.client.post('/api/admin/memberships/', {
+        # F-TENANT-01: direct creation is the platform operator's path.
+        operator = APIClient()
+        operator.force_authenticate(user=self.platform)
+        operator.post('/api/admin/memberships/', {
             'user': self.target.pk, 'company': self.company.pk, 'role': 'sales',
         }, format='json')
         log = AdminAuditLog.objects.filter(action='membership_created').first()
         self.assertIsNotNone(log)
-        self.assertEqual(log.actor, self.admin)
+        self.assertEqual(log.actor, self.platform)
         self.assertEqual(log.company_id, self.company.pk)
         self.assertIsNotNone(log.created_at)
 
@@ -14211,7 +14239,14 @@ class Phase2dBranchAccessApiTest(TestCase):
             'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
         }
         payload.update(extra)
-        return self.client.post('/api/admin/memberships/', payload, format='json')
+        # F-TENANT-01. A company admin no longer enrols a user by id: people join
+        # by invitation. Direct creation is the platform operator's bootstrap
+        # path, and what these tests check is how that endpoint treats branch
+        # access. The PATCHes below are still the company admin's.
+        operator = User.objects.create_superuser(username='p2d_api_operator', password='x')
+        client = APIClient()
+        client.force_authenticate(user=operator)
+        return client.post('/api/admin/memberships/', payload, format='json')
 
     def test_a_new_membership_defaults_to_all_branches(self):
         """
@@ -39242,16 +39277,38 @@ class G3LegacyRoleEscalationTest(TestCase):
         self.client.force_authenticate(user=self.user)
         self.outsider = _saas_user('g3_confederate')
 
-    def _post(self, role):
-        return self.client.post('/api/admin/memberships/', {
-            'company': self.company.pk, 'user': self.outsider.pk, 'role': role,
-        }, format='json')
+    def _grant(self, role, *, client=None, start='customer'):
+        """
+        Give `role` to the confederate the way a company admin still can.
+
+        F-TENANT-01 took direct creation away from company admins: people join
+        by invitation, and POST answers 403 before it ever looks at the role.
+        Left on POST, every refusal below would pass for that reason and prove
+        nothing about THIS rule. The role is granted on an existing membership,
+        which is the path `can_grant_company_role` still guards for them.
+        """
+        target = Membership.objects.create(
+            user=self.outsider, company=self.company, role=start, is_active=True,
+        )
+        res = (client or self.client).patch(
+            f'/api/admin/memberships/{target.pk}/', {'role': role}, format='json',
+        )
+        target.refresh_from_db()
+        return res, target
 
     # -- the hole ----------------------------------------------------------
 
     def test_it_cannot_mint_a_legacy_admin_it_could_not_have_authored(self):
         self.assertFalse(has_capability(self.user, self.company, 'inventory.adjust'))
-        res = self._post('admin')
+        res, target = self._grant('admin')
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(target.role, 'customer')
+
+    def test_it_cannot_create_a_membership_directly_at_all(self):
+        # F-TENANT-01, stated here so the class says where creation went.
+        res = self.client.post('/api/admin/memberships/', {
+            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'customer',
+        }, format='json')
         self.assertEqual(res.status_code, 403)
         self.assertFalse(
             Membership.objects.filter(user=self.outsider, company=self.company).exists()
@@ -39290,12 +39347,14 @@ class G3LegacyRoleEscalationTest(TestCase):
         role.save(update_fields=['capabilities'])
         cache.clear()
 
-        res = self._post('technician')
-        self.assertEqual(res.status_code, 201, res.data)
+        res, target = self._grant('technician')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(target.role, 'technician')
 
     def test_a_role_that_confers_nothing_is_still_grantable(self):
-        res = self._post('customer')
-        self.assertEqual(res.status_code, 201, res.data)
+        res, target = self._grant('customer', start='sales')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(target.role, 'customer')
 
     def test_a_full_company_admin_is_unaffected(self):
         admin_user, admin_membership = _m11_member(self.company, 'g3_full', 'staff')
@@ -39306,10 +39365,9 @@ class G3LegacyRoleEscalationTest(TestCase):
         cache.clear()
         client = APIClient()
         client.force_authenticate(user=admin_user)
-        res = client.post('/api/admin/memberships/', {
-            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'admin',
-        }, format='json')
-        self.assertEqual(res.status_code, 201, res.data)
+        res, target = self._grant('admin', client=client)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(target.role, 'admin')
 
     def test_a_platform_master_is_exempt(self):
         master = _saas_user('g3_master')
@@ -39335,10 +39393,9 @@ class G3LegacyRoleEscalationTest(TestCase):
         cache.clear()
         client = APIClient()
         client.force_authenticate(user=admin_user)
-        res = client.post('/api/admin/memberships/', {
-            'company': self.company.pk, 'user': self.outsider.pk, 'role': 'superadmin',
-        }, format='json')
+        res, target = self._grant('superadmin', client=client)
         self.assertEqual(res.status_code, 403)
+        self.assertEqual(target.role, 'customer')
 
 
 class G3SalesPresetDiscriminatorTest(TestCase):
@@ -60422,13 +60479,18 @@ class F2BranchDelegationTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(Membership.objects.filter(user=self.target).exists())
 
-    def test_a_selected_member_may_create_a_membership_inside_their_reach(self):
+    def test_a_selected_member_cannot_create_a_membership_directly(self):
+        # F-TENANT-01: even inside their reach. A company admin brings someone in
+        # with an invitation that the person accepts — see
+        # `test_a_selected_member_may_invite_someone_inside_their_reach`.
         res = self._as(self.actor).post('/api/admin/memberships/', {
             'user': self.target.pk, 'company': self.company.pk, 'role': 'inventory',
             'branch_access_mode': 'selected', 'branch_access': [self.b1.pk],
         }, format='json')
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual([b['id'] for b in res.data['branch_access']], [self.b1.pk])
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            Membership.objects.filter(user=self.target, company=self.company).exists()
+        )
 
     # -- staff invitations ---------------------------------------------------
 
@@ -61013,8 +61075,11 @@ class F2MembershipBranchOracleTest(TestCase):
         return res.status_code, str(res.data)
 
     def test_create_missing_and_foreign_branch_answer_alike(self):
-        missing = self._post(self.wide, self.MISSING)
-        foreign = self._post(self.wide, self.foreign.pk)
+        # F-TENANT-01: direct creation is the platform operator's path, so the
+        # oracle is asked of the caller who can still reach it.
+        operator = User.objects.create_superuser(username='f2o_operator', password='x')
+        missing = self._post(operator, self.MISSING)
+        foreign = self._post(operator, self.foreign.pk)
         self.assertEqual(self._answer(foreign), self._answer(missing))
         self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
         self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
@@ -61060,9 +61125,11 @@ class F2MembershipBranchOracleTest(TestCase):
         self.assertEqual(
             self._patch(self.selected, self.b1.pk).status_code, status.HTTP_200_OK,
         )
+        # Creating is no longer theirs (F-TENANT-01): staff join by invitation,
+        # and `F2BranchDelegationTest` covers the invitation inside their reach.
         res = self._post(self.selected, self.b1.pk)
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(res.data['branch'], self.b1.pk)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Membership.objects.filter(user=self.newcomer).exists())
 
     def test_a_company_wide_admin_still_sets_any_branch_of_the_company(self):
         from .models import MembershipBranchAccess as Grant

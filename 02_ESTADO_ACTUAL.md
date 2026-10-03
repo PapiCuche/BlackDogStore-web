@@ -193,17 +193,34 @@ Playwright completo: 164 de 164.
 
 Queda abierto, con el motivo:
 
-- **F-TENANT-01 = BLOQUEADO (decisión de producto).** Un administrador de empresa
-  puede añadir por identificador a cualquier usuario de la plataforma y ver su
-  nombre de usuario. La invitación con aceptación ya existe y es lo único que usa
-  la interfaz. Cerrar el alta directa a los administradores de empresa cambia un
-  contrato que 27 pruebas ejercen. Falta decidir: ¿el alta directa queda sólo para
-  el administrador de la plataforma?
+- **F-TENANT-01 = CORREGIDO en rama, pendiente de CI/merge.** El alta directa
+  por `POST /api/admin/memberships/` queda reservada al administrador de
+  plataforma. Un administrador de empresa incorpora personal mediante
+  `StaffInvitation` + aceptación, que ya es el flujo de la interfaz. Así no
+  puede vincular por id a una cuenta global que nunca aceptó entrar al tenant.
 - **THROTTLE-CACHE-01 = PENDIENTE.** Los límites se cuentan en la memoria de cada
   proceso. Con un proceso (lo que usa el despliegue preparado) son exactos; con
   varios, cada uno cuenta por su lado. Compartirlos necesita una caché común.
 - **TOKEN-HYGIENE-01 = PENDIENTE.** Las filas de token caducadas no se purgan
   solas; falta programar `flushexpiredtokens` en el servidor.
+
+## 2026-10-02 — F-TENANT-01: alta de personal con consentimiento
+
+Rama `security/f-tenant-01-consent-based-membership`, desde `master`
+`833fdec`. Estado: **PARCIAL / pendiente de CI y merge**.
+
+El endpoint de bajo nivel `POST /api/admin/memberships/` deja de aceptar altas
+directas hechas por administradores de empresa. Se conserva para el administrador
+de plataforma como herramienta de bootstrap/migración. El flujo normal de empresa
+es la invitación existente: la persona recibe la invitación y su aceptación crea
+la membresía.
+
+No hay migraciones. GET/PATCH de membresías siguen tenant-scoped; no se cambia
+RBAC, branch scope ni la interfaz de Personal.
+
+Cobertura nueva: `test_membership_consent.py` comprueba que un admin de empresa
+recibe 403 sin crear la membresía ni obtener el username y que un platform admin
+conserva el alta directa.
 
 ## 2026-10-02 — Backend CI sobre PostgreSQL
 
