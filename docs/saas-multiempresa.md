@@ -52,7 +52,7 @@ Order/Cart/Checkout tenant-aware         PENDIENTE
 Inventory tenant-aware                   PENDIENTE
 Servicio técnico                         PENDIENTE
 Dashboard interno avanzado               PENDIENTE
-Membership Invitation Flow               PENDIENTE
+Membership Invitation Flow               IMPLEMENTADO
 Branding                                 PENDIENTE
 IMEI/Serial                              PENDIENTE
 ```
@@ -238,7 +238,7 @@ de permisos sin una migración de datos a contrarreloj.
 | `GET` | `/api/admin/companies/{id}/` | Solo empresas visibles para el llamante |
 | `PATCH` | `/api/admin/companies/{id}/` | Solo administrador de plataforma |
 | `GET`/`POST` | `/api/admin/branches/` | Miembro; crear exige ser admin de esa empresa |
-| `GET`/`POST` | `/api/admin/memberships/` | Miembro; crear exige ser admin de esa empresa |
+| `GET` | `/api/admin/memberships/` | Personal visible dentro del alcance del llamante |\n| `POST` | `/api/admin/memberships/` | Solo administrador de plataforma; bootstrap/migración |
 | `GET`/`PATCH` | `/api/admin/memberships/{id}/` | Ver: scopeado. Escribir: admin de la empresa |
 | `GET` | `/api/me/memberships/` | Las propias del llamante |
 

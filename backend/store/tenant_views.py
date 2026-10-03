@@ -69,6 +69,10 @@ _MEMBERSHIP_NOT_FOUND = 'Membresía no encontrada o sin acceso.'
 # Flow in docs/saas-multiempresa.md: proper consent-based onboarding removes the
 # need to reference foreign user ids at all.
 _TARGET_USER_UNAVAILABLE = 'No se puede asignar una membresía a ese usuario.'
+_DIRECT_MEMBERSHIP_PLATFORM_ONLY = (
+    'El alta directa de personal está reservada al administrador de plataforma. '
+    'Los administradores de empresa deben usar una invitación con aceptación.'
+)
 _ROLE_NOT_GRANTABLE = (
     'No tienes autoridad para asignar ese rol. El rol "superadmin" es un valor '
     'heredado y solo un administrador de plataforma puede asignarlo.'
@@ -559,8 +563,10 @@ def _scope_membership_reads(queryset, user, *, company_field='company'):
 class AdminMembershipListView(APIView):
     """
     GET  /api/admin/memberships/  — memberships inside the caller's companies.
-    POST /api/admin/memberships/ — grant a role. Company administrators only,
-                                   and only inside their OWN company.
+    POST /api/admin/memberships/ — bootstrap/migration path for a PLATFORM
+                                   administrator only. Company administrators
+                                   onboard staff through the invitation flow,
+                                   which requires the invitee to accept.
     """
 
     permission_classes = [permissions.IsAuthenticated, HasCompanyMembership]
@@ -597,6 +603,24 @@ class AdminMembershipListView(APIView):
         if not can_manage_company_memberships(request.user, company):
             return Response(
                 {'detail': 'Se requiere rol de administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # F-TENANT-01 — consent is part of tenant onboarding.
+        #
+        # A company administrator used to be able to attach ANY global User by
+        # numeric id. Even though the endpoint hid "missing" vs "already a
+        # member", a successful request still enrolled a person into a company
+        # they never accepted and returned their username. The product already
+        # has StaffInvitation, whose acceptance creates the membership and is
+        # the only path used by the UI.
+        #
+        # Keep this low-level endpoint for platform bootstrap/migrations, where
+        # an operator may legitimately repair tenant state. Company admins use
+        # the consent-bearing invitation flow instead.
+        if not is_platform_admin(request.user):
+            return Response(
+                {'detail': _DIRECT_MEMBERSHIP_PLATFORM_ONLY},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

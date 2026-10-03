@@ -80,7 +80,7 @@ Estado: VERIFICADO @ `4a9dd5c` (F1, 51 modelos, ningún cruce de empresa).
 **TENANT-02** — Serializers escribibles excluyen `company`/`branch`; el servicio
 re-deriva el alcance.
 Tests: `Phase2dCrossTenantIsolationTest`, `C14PromotionTenantInvariantTest`, `M12CTenantIsolationTest`, `C22BFiscalTenantIsolationTest`, `H412bIsolationMatrixTest`.
-Estado: VERIFICADO @ `4a9dd5c`. Excepción de exposición: F-TENANT-01.
+Estado: VERIFICADO @ `4a9dd5c`. F-TENANT-01 queda cerrado por el límite de alta directa descrito abajo.
 
 **BRANCH-01** — Lecturas por sucursal nacen acotadas.
 Autoridad: `tenancy.py::visible_branches`, `_branch_authority`, `_granted_branches`, `visible_orders`, `resolve_branch_for_user`; servicio: `v1_service_views.py::V1ServiceSurfaceMixin.get_order` (`branch__in=allowed`); POS: `resolve_pos_branch`.
@@ -328,7 +328,7 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 
 | ID | Sev. | Dominio | Símbolo | Reproducción |
 |---|---|---|---|---|
-| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post` + `serializers.py::MembershipSerializer` | POST membresía con `user` de otra plataforma → 201 devuelve su `username`. BLOQUEADO: decidir si el alta directa queda sólo para el administrador de plataforma (la invitación ya existe; 27 pruebas ejercen el alta directa) |
+| F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post`; `test_membership_consent.py` | CORREGIDO: alta directa sólo platform admin; administradores de empresa usan invitación + aceptación; sin oracle de username ni enrolamiento sin consentimiento |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
 | AUDIT-01…06 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py` | PROPUESTA: ediciones de borrador sin fila de auditoría (los cierres sí se auditan); falta decidir la granularidad |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
