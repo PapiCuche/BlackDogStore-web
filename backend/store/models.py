@@ -6932,6 +6932,19 @@ class StorefrontPageSettings(models.Model):
         max_length=500, blank=True, default='', validators=[validate_asset_url],
     )
 
+    #: Imagen editorial opcional del bloque de servicio técnico en la portada.
+    #: Es contenido del tenant: una tienda puede mostrar su banco de trabajo,
+    #: una reparación o un recorte de producto; otra puede dejarla vacía.
+    services_image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
+    #: Imagen opcional de la tienda/local para el bloque «Cerca de ti».
+    #: No se deriva de mapas ni de terceros: la empresa sube la que tiene
+    #: autorización para publicar.
+    location_image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
+
     # --- M12F.1 — la página de servicios ----------------------------------
     #
     # Se amplía ESTE modelo en vez de crear un segundo singleton: sigue siendo
