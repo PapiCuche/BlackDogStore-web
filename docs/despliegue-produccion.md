@@ -24,8 +24,46 @@ internet ──443──> Caddy ──┬── /api/*   ──> Django (gunicor
 | Django | `backend/Dockerfile.prod` | La API, con gunicorn y sin privilegios |
 | PostgreSQL | `docker-compose.prod.yml` | La base de datos, en el volumen `pgdata` |
 
-Sólo Caddy publica puertos. Django, Next y PostgreSQL no son alcanzables desde
-internet.
+Sólo Caddy publica puertos (80 y 443). Django, Next y PostgreSQL viven en la red
+privada de Docker y no son alcanzables desde internet. Caddy no empieza a atender
+hasta que Django y Next responden a su comprobación de salud.
+
+### La dirección del visitante
+
+Hay exactamente **un** proxy delante de Django: Caddy. No hay CDN ni otro proxy.
+
+1. El visitante se conecta a Caddy.
+2. Caddy descarta el `X-Forwarded-For`, el `X-Forwarded-Proto` y el
+   `X-Forwarded-Host` que traiga la petición y escribe los suyos con la dirección
+   real de la conexión.
+3. Django lee esa dirección porque `TRUSTED_PROXY_COUNT=1`.
+
+Esa dirección es la que cuentan los límites de peticiones y la que queda en el
+registro. Si algún día se pone otro proxy delante (un CDN, un balanceador), hay
+que subir `TRUSTED_PROXY_COUNT` en la misma cantidad; si no, todos los visitantes
+compartirían la dirección de ese proxy.
+
+### Un solo proceso de Django
+
+El backend corre con un proceso de gunicorn y ocho hilos. Es deliberado: los
+límites de peticiones se cuentan en la memoria del proceso, y con un proceso son
+exactos. **No subas el número de procesos (`--workers`) sin antes poner una caché
+compartida**: cada proceso contaría por su lado y los límites se multiplicarían
+(THROTTLE-CACHE-01).
+
+### Dónde vive cada archivo
+
+| Qué | Dónde | Quién lo ve |
+|---|---|---|
+| Fotos de producto | Una URL en cada producto; el archivo está en el host que elijas | Público |
+| Imagen de una campaña | Una URL en la campaña | Público |
+| Logotipos de la tienda | URL en la configuración de la empresa | Público |
+| Evidencias del servicio técnico | Volumen `evidence` del servidor, o un almacenamiento S3 privado | Sólo personal con permiso, a través de la API |
+
+La aplicación no guarda archivos públicos: guarda su dirección. Las evidencias
+son lo único que almacena, y nunca tienen URL pública: con el volumen se sirven
+por la API tras comprobar el permiso; con S3, por un enlace firmado que caduca a
+los cinco minutos.
 
 **Por qué la API no pasa por el proxy interno de Next.** Ese proxy descarta a
 propósito las cabeceras que identifican al cliente. Detrás de él, Django vería a
@@ -111,6 +149,13 @@ $C ps
 Django recibe además llamadas internas de Next por HTTP que una redirección
 rompería.
 
+No hace falta `collectstatic`: Django no sirve ningún archivo estático en
+producción. La API responde sólo JSON y el admin de Django no existe allí.
+
+El backend **no arranca** si `FRONTEND_URL` o `CHECKOUT_RETURN_URL` faltan o
+apuntan a `localhost`. El archivo de Compose las arma a partir de `SITE_DOMAIN`,
+así que basta con que el dominio sea el real.
+
 Las migraciones **no** se aplican solas al arrancar. Algunas cambian datos, y
 aplicarlas es una decisión de cada despliegue.
 
@@ -174,6 +219,25 @@ Para hacerla cada noche, en el `crontab` del servidor:
 15 3 * * * cd /ruta/al/repositorio && sh deploy/backup.sh >> backups/backup.log 2>&1
 ```
 
+### 6.1.1 Limpieza de sesiones caducadas
+
+Cada inicio y cada renovación de sesión deja una fila en la base. Las caducadas
+no se borran solas. Una vez al día, en el mismo `crontab`, después de la copia:
+
+```
+45 3 * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py flushexpiredtokens >> backups/flushexpiredtokens.log 2>&1
+```
+
+Lo ejecuta el contenedor `backend`, que ya está encendido; no hace falta otro
+servicio. Para comprobarlo:
+
+```sh
+tail backups/flushexpiredtokens.log        # sin errores
+$C exec backend python manage.py shell -c "from rest_framework_simplejwt.token_blacklist.models import OutstandingToken as T; from django.utils import timezone as z; print(T.objects.filter(expires_at__lt=z.now()).count())"
+```
+
+El segundo comando debe imprimir `0` justo después de la limpieza.
+
 ### 6.2 Copia externa
 
 Una copia en el mismo servidor no protege si se pierde el servidor. Lleva la
@@ -235,9 +299,15 @@ Ya resuelto por el código o por esta configuración:
 - Los accesos de demostración responden 404 y la tarjeta de `/auth` no se pinta.
 - Las cookies de sesión son `Secure` y `HttpOnly`; las peticiones que modifican
   exigen CSRF y un origen del propio dominio.
-- El admin de Django (`/admin/` del backend) no se publica: Caddy sólo envía
-  `/api/*` a Django. Lo que haga falta se hace desde el panel de la aplicación o
-  con `$C exec backend python manage.py shell` en el servidor.
+- El admin de Django no existe en producción: con `DEBUG=0` el backend no registra
+  esa ruta, y además Caddy sólo envía `/api/*` a Django. Lo que haga falta se hace
+  desde el panel de la aplicación o con `$C exec backend python manage.py shell`
+  en el servidor.
+- Renovar la sesión tiene un límite de 30 por minuto y dirección, y cada intento
+  de inicio de sesión queda en el registro (`$C logs backend | grep login_`), sin
+  la contraseña.
+- La tienda y el panel no se pueden incrustar en otro sitio, y las páginas que
+  reciben un enlace de un solo uso no lo entregan a terceros.
 - Los límites de peticiones se cuentan por la dirección real del cliente. Una
   cabecera `X-Forwarded-For` falsa no los evita.
 
@@ -246,7 +316,6 @@ Pendiente, y conviene saberlo:
 - **Un solo proceso de Django.** Los límites se cuentan en la memoria del proceso,
   así que el backend corre con un proceso y varios hilos. Suficiente para una
   tienda; crecer pide antes una caché compartida (THROTTLE-CACHE-01).
-- **Sin integración continua de backend** en el repositorio (CI-01).
 - **Facturación electrónica apagada** (`FISCAL_ENABLED=0`). Encenderla necesita
   certificado digital y credenciales SOL, y es una fase aparte.
 - El inicio de sesión no exige token CSRF cuando el origen es el propio dominio;
