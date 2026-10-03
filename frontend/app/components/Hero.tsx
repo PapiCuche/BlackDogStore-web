@@ -3,6 +3,7 @@
 import { useStorefront } from "./StorefrontProvider";
 import { BrandLogo } from "./BrandLogo";
 import { StoreLink } from "./StoreLink";
+import { storefrontMediaStyle } from "../lib/storefront-media";
 
 /*
   AQUÍ HABÍA UNA FRANJA DE CUATRO SERVICIOS CON EMOJIS, y sobraba por tres
@@ -383,6 +384,7 @@ function HeroLight({
             <img
               src={image}
               alt={imageAlt}
+              style={storefrontMediaStyle(image)}
               className="mx-auto max-h-[28rem] w-full object-contain"
             />
           </div>
