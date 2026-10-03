@@ -116,6 +116,7 @@ describe('hero · estilo que elige la tienda', () => {
     expect(art.getAttribute('src')).toBe(IMAGE);
     // Sin recorte ni relleno: un PNG sin fondo se ve entero y sin caja.
     expect(art.className).toContain('object-contain');
+    expect(art).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
   });
 
   it.each(['dark', 'light'] as const)('en el estilo %s, sin imagen no deja un hueco roto', (variant) => {
@@ -167,6 +168,7 @@ describe('portada · categorías con imagen', () => {
     const img = withImage.querySelector('img') as HTMLImageElement;
     expect(img.getAttribute('src')).toBe(IMAGE);
     expect(img.className).toContain('object-contain');
+    expect(img).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
     expect(withImage.querySelector('[data-image-slot="filled"]')).not.toBeNull();
 
     expect(without.querySelector('img')).toBeNull();
@@ -199,6 +201,33 @@ describe('portada · bloques de la tienda', () => {
       </ThemeProvider>,
     );
     expect((await screen.findByTestId('brand-statement')).textContent).toMatch(/repara con respaldo/i);
+  });
+
+  it('muestra imágenes opcionales de servicio y ubicación sin hardcodearlas', async () => {
+    const config = store({
+      contact: { ...OTHER_STORE.contact, address: 'Av. España 123', city: 'Trujillo' },
+      page: {
+        ...OTHER_STORE.page,
+        services_image_url: IMAGE,
+        location_image_url: IMAGE,
+      },
+      services: [{
+        title: 'Cambio de pantalla', description: 'Diagnóstico y reemplazo.',
+        devices_text: '', estimated_time_text: '', highlight: '',
+      }],
+    });
+    const { container } = inStore(<Home />, config);
+
+    await screen.findByRole('heading', { name: 'Cerca de ti, antes y después.' });
+    const serviceImage = container.querySelector('[data-storefront-section-image="services"] img') as HTMLImageElement;
+    const locationImage = container.querySelector('[data-storefront-section-image="location"] img') as HTMLImageElement;
+
+    expect(serviceImage).not.toBeNull();
+    expect(locationImage).not.toBeNull();
+    expect(serviceImage.getAttribute('src')).toBe(IMAGE);
+    expect(locationImage.getAttribute('src')).toBe(IMAGE);
+    expect(serviceImage).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
+    expect(locationImage).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
   });
 
   it('«Cerca de ti» aparece con la dirección de la tienda y no sin ella', async () => {
