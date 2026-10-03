@@ -50,6 +50,10 @@ describe('hueco de imagen', () => {
     const [url, init] = mockFetch.mock.calls[0];
     expect(String(url)).toContain('/admin/storefront/images/?company=7');
     expect(init.method).toBe('POST');
+    // El navegador escribe el Content-Type de un FormData, con su boundary.
+    // Fijarlo aquí, aunque sea vacío, hace que el servidor responda 415.
+    expect(Object.keys((init.headers ?? {}) as Record<string, string>).map((k) => k.toLowerCase()))
+      .not.toContain('content-type');
     expect((init.body as FormData).get('file')).toBeInstanceOf(File);
     expect(((init.body as FormData).get('file') as File).name).toBe('recorte.png');
   });

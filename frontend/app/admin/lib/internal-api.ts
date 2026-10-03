@@ -1694,10 +1694,15 @@ export async function uploadStorefrontImage(
 ): Promise<StorefrontImage> {
   const form = new FormData();
   form.append("file", file);
-  return postForm<StorefrontImage>(
-    `/admin/storefront/images/${companyQuery(companyId)}`,
-    form, "No se pudo subir la imagen.",
+  // Sin `Content-Type`: con un `FormData` lo escribe el navegador, con el
+  // boundary que separa las partes. Fijarlo a mano —aunque sea vacío— hace que
+  // el servidor reciba un cuerpo que no sabe partir y responda 415.
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/storefront/images/${companyQuery(companyId)}`,
+    { method: "POST", body: form },
   );
+  if (res.ok) return res.json();
+  throw new Error(await readDetail(res, "No se pudo subir la imagen."));
 }
 
 // ---------------------------------------------------------------------------
