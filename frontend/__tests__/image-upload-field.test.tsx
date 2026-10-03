@@ -78,6 +78,7 @@ describe('hueco de imagen', () => {
 
     const preview = screen.getByRole('img', { name: 'Imagen del hero' });
     expect(preview).toHaveAttribute('src', URL_);
+    expect(preview).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
     expect(preview.closest('[data-transparency-grid]')).not.toBeNull();
   });
 
