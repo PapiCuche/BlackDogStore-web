@@ -9,6 +9,7 @@ import { categoryHref, useCatalogCategories } from "./lib/catalog-categories";
 import { BrandLogo } from "./components/BrandLogo";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
+import { storefrontMediaStyle } from "./lib/storefront-media";
 
 type Product = {
   id: number;
@@ -365,6 +366,22 @@ export default function Home() {
                 Ver servicios
               </Link>
             </div>
+
+            {page.services_image_url ? (
+              <div
+                data-storefront-section-image="services"
+                className="mt-8 flex min-h-48 items-center justify-center overflow-hidden rounded-2xl bg-surface p-4 sm:p-6"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={page.services_image_url}
+                  alt=""
+                  loading="lazy"
+                  style={storefrontMediaStyle(page.services_image_url)}
+                  className="max-h-72 w-auto max-w-full object-contain"
+                />
+              </div>
+            ) : null}
           </div>
 
           <ol className="min-w-0 lg:col-span-7">
@@ -494,7 +511,22 @@ export default function Home() {
                 </p>
               ) : null}
             </div>
-            <div className="mt-8 grid gap-3 sm:gap-4 md:grid-cols-2">
+            <div className={`mt-8 grid gap-3 sm:gap-4 ${page.location_image_url ? "lg:grid-cols-3" : "md:grid-cols-2"}`}>
+              {page.location_image_url ? (
+                <div
+                  data-storefront-section-image="location"
+                  className="flex min-h-64 items-center justify-center overflow-hidden rounded-2xl bg-surface p-4 sm:p-6"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={page.location_image_url}
+                    alt=""
+                    loading="lazy"
+                    style={storefrontMediaStyle(page.location_image_url)}
+                    className="max-h-80 w-auto max-w-full object-contain"
+                  />
+                </div>
+              ) : null}
               <div className="rounded-2xl bg-surface p-6 sm:p-8">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">Visítanos</p>
                 <h3 className="mt-4 text-xl font-semibold tracking-tight text-foreground">Nuestra tienda</h3>
