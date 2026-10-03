@@ -14,6 +14,7 @@
 
 import { useId, useState } from "react";
 import { STOREFRONT_IMAGE_ACCEPT, uploadStorefrontImage } from "../lib/internal-api";
+import { storefrontMediaStyle } from "../../lib/storefront-media";
 
 type Props = {
   label: string;
@@ -73,7 +74,7 @@ export function ImageUploadField({
           {value ? (
             // Imagen del propio tenant, de tamaño desconocido: no pasa por el optimizador.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={value} alt={label} className="max-h-full max-w-full object-contain" />
+            <img src={value} alt={label} style={storefrontMediaStyle(value)} className="max-h-full max-w-full object-contain" />
           ) : (
             <span className="rounded bg-background/80 px-2 py-1 text-xs text-muted">Sin imagen</span>
           )}
@@ -114,7 +115,7 @@ export function ImageUploadField({
         <p role="alert" className="mt-1.5 text-xs text-danger">{problem}</p>
       ) : (
         <p className="mt-1.5 text-xs text-muted">
-          {hint ?? "PNG, JPEG o WebP, hasta 8 MB. Un PNG sin fondo se muestra sin fondo."}
+          {hint ?? "PNG, JPEG o WebP, hasta 8 MB. Un recorte PNG/WebP conserva la transparencia y recibe una sombra suave en la portada."}
         </p>
       )}
     </div>
