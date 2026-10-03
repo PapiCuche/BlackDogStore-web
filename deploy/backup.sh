@@ -15,7 +15,9 @@
 # en docs/despliegue-produccion.md.
 set -eu
 
-COMPOSE="docker compose -f docker-compose.prod.yml --env-file deploy/.env.production"
+# Se puede sustituir desde fuera para ensayar con otro nombre de proyecto.
+COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml --env-file deploy/.env.production}"
+export COMPOSE
 DEST="${BACKUP_DIR:-backups}"
 KEEP="${BACKUP_KEEP_DAYS:-14}"
 STAMP="$(date +%Y%m%d-%H%M%S)"

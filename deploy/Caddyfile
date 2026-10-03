@@ -14,10 +14,15 @@
 	import tls_mode
 	encode zstd gzip
 
+	# HSTS lo pone el borde, que es quien termina TLS. Las otras dos llevan `?`:
+	# sólo se añaden si la aplicación no envió la suya. Next y Django ya las
+	# envían, y hay páginas que piden una política más estricta —las que reciben
+	# un token en la URL responden `Referrer-Policy: no-referrer`—; pisarla
+	# aquí la debilitaría.
 	header {
 		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
+		?X-Content-Type-Options "nosniff"
+		?Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 		-X-Powered-By
 	}
@@ -31,8 +36,8 @@
 	# real en X-Forwarded-For —ignorando la que envíe el cliente— y Django la
 	# lee con TRUSTED_PROXY_COUNT=1.
 	#
-	# Sólo `/api/*` llega a Django. Su `/admin/` (el admin de Django) NO se
-	# publica: se entra por túnel SSH, ver docs/despliegue-produccion.md.
+	# Sólo `/api/*` llega a Django. El admin de Django no existe en producción:
+	# con DEBUG=0 el backend no registra esa ruta.
 	@api path /api/*
 	handle @api {
 		# El frontend llama sin barra final y Django las exige. Es lo mismo que
