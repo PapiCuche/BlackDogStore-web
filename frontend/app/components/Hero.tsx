@@ -291,6 +291,7 @@ export default function Hero() {
                 <img
                   src={heroImage}
                   alt={campaign?.title || ""}
+                  style={storefrontMediaStyle(heroImage)}
                   className="v3-cutout-on-slab absolute inset-0 h-full w-full object-contain"
                 />
               </div>
