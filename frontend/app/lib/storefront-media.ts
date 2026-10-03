@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 /**
  * Presentation rule for images uploaded from the tenant storefront editor.
  *
@@ -15,7 +17,7 @@ export function isManagedStorefrontImage(src: string): boolean {
   return MANAGED_STOREFRONT_IMAGE.test(src || "");
 }
 
-export function storefrontMediaStyle(src: string): React.CSSProperties | undefined {
+export function storefrontMediaStyle(src: string): CSSProperties | undefined {
   if (!isManagedStorefrontImage(src)) return undefined;
   return {
     filter: "drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))",
