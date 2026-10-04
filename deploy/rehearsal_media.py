@@ -260,7 +260,7 @@ def upload():
                         {'image_url': urls['categoría']})
     check('colocar imagen de categoría', res.status == 200, res.status)
     res, body = admin.json('POST', f'/api/admin/storefront/campaigns?company={company}', {
-        'slot': 'home_promo', 'title': 'Ensayo', 'image_url': urls['campaña'],
+        'slot': 'home_bottom_promo', 'title': 'Ensayo', 'image_url': urls['campaña'],
     })
     check('crear campaña con imagen', res.status == 201, f'{res.status} {body}')
     res, _ = admin.json('POST', f"/api/admin/storefront/campaigns/{(body or {}).get('id')}/publish?company={company}")
