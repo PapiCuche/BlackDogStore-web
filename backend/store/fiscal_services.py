@@ -45,6 +45,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from lxml import etree
 
+from . import fiscal_logo
 from .fiscal import builder, packaging, rules, schema, signing
 from .fiscal.data import (
     ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, Allowance, InvoiceData, Line,
@@ -663,6 +664,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
                 issuer_legal_name=data.supplier.legal_name,
                 issuer_trade_name=data.supplier.trade_name,
                 issuer_address=data.supplier.address_line,
+                **fiscal_logo.snapshot(order.company),
                 customer_doc_type=data.customer.doc_type,
                 customer_doc_number=data.customer.doc_number,
                 customer_legal_name=data.customer.legal_name,

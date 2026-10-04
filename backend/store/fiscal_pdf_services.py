@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
+from . import fiscal_logo
 from .fiscal.qr import build_qr_payload, render_qr_png
 from .models import FiscalDocument, FiscalDocumentStatus, FiscalEnvironment
 
@@ -198,8 +199,19 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
         'is_test': document.environment != FiscalEnvironment.PRODUCTION,
         'qr_payload': qr_payload,
         'qr_png': render_qr_png(qr_payload),
+        # El logotipo CONGELADO con este comprobante, no el vigente de la tienda.
+        'logo_png': fiscal_logo.load(document),
         'digest_value': rep.digest_value or document.digest_value,
     }
+
+
+def _fit(png: bytes, max_width: float, max_height: float) -> tuple[float, float]:
+    """El tamaño al que cabe la imagen en la caja, sin deformarla ni ampliarla de más."""
+    from reportlab.lib.utils import ImageReader
+
+    width, height = ImageReader(io.BytesIO(png)).getSize()
+    scale = min(max_width / width, max_height / height)
+    return width * scale, height * scale
 
 
 def _symbol(currency: str) -> str:
@@ -281,8 +293,16 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
 
+    bloque_emisor = [Paragraph('<br/>'.join(emisor), body)]
+    if ctx['logo_png']:
+        ancho, alto = _fit(ctx['logo_png'], 5.0 * cm, 1.9 * cm)
+        # Tal cual y una sola vez: sin sombra, sin marco y sin máscara.
+        logo = Image(io.BytesIO(ctx['logo_png']), width=ancho, height=alto)
+        logo.hAlign = 'LEFT'
+        bloque_emisor = [logo, Spacer(1, 4)] + bloque_emisor
+
     cabecera = Table(
-        [[Paragraph('<br/>'.join(emisor), body), recuadro]],
+        [[bloque_emisor, recuadro]],
         colWidths=[9.5 * cm, 7.5 * cm],
     )
     cabecera.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP')]))
@@ -445,6 +465,19 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
 
     def trazar(pdf, alto):
         cursor = _Cursor(pdf, margin, alto - margin, content)
+
+        if ctx['logo_png']:
+            # Centrado, tal cual y una sola vez: sin sombra ni máscara.
+            logo_w, logo_h = _fit(ctx['logo_png'], 42 * mm, 16 * mm)
+            if pdf is not None:
+                from reportlab.lib.utils import ImageReader
+
+                pdf.drawImage(
+                    ImageReader(io.BytesIO(ctx['logo_png'])),
+                    margin + (content - logo_w) / 2, cursor.y - logo_h,
+                    width=logo_w, height=logo_h,
+                )
+            cursor.gap(logo_h + 3)
 
         cursor.line(ctx['issuer']['legal_name'], size=9.5, bold=True, align='center')
         if ctx['issuer']['trade_name']:

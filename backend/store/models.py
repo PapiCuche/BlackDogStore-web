@@ -2561,6 +2561,17 @@ class CompanySettings(models.Model):
         max_length=500, blank=True, validators=[validate_asset_url],
     )
 
+    # --- Logotipo de los comprobantes -------------------------------------
+    #
+    # UNO, y sobre papel blanco: aquí no hay contraste que elegir. Tiene que ser
+    # una imagen subida por la tienda (`/api/storefront/images/<id>`), porque el
+    # servidor necesita sus bytes para dibujarla en el PDF y para congelar una
+    # copia con cada comprobante; los logotipos de arriba son rutas que sirve
+    # el frontend y el backend no puede leer.
+    document_logo_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
     # --- M12E — tema claro ------------------------------------------------
     #
     # Los seis campos de arriba se diseñaron cuando el storefront tenía UN tema,
@@ -7493,6 +7504,12 @@ class FiscalDocument(models.Model):
     digest_value = models.CharField(max_length=128, blank=True)
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
+
+    # --- logotipo del emisor, congelado ---
+    #: Copia propia de la imagen con la que se emitió (ver `fiscal_logo`). Vacía
+    #: si la tienda no tenía logotipo: el papel sale sin él, como salió.
+    logo_storage_key = models.CharField(max_length=255, blank=True, editable=False)
+    logo_sha256 = models.CharField(max_length=64, blank=True, editable=False)
 
     sunat_response_code = models.CharField(max_length=8, blank=True)
     sunat_response_message = models.CharField(max_length=500, blank=True)
