@@ -115,9 +115,10 @@ export default function ProductDetail({ product }: { product: Product }) {
     setLoading(true);
     try {
       const sessionKey = getSessionKey();
-      const res = await fetch(`${API_BASE}/cart/add/`, {
+      // Con `fetchWithAuth`: el carrito es de la sesión del navegador, pero la
+      // cookie de acceso viaja sola y con ella el servidor exige el token CSRF.
+      const res = await fetchWithAuth(`${API_BASE}/cart/add/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_key: sessionKey, product: product.id, quantity }),
       });
       if (!res.ok) {

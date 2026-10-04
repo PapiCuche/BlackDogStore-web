@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { API_BASE, fetcher } from "../lib/api";
-import { getCurrentUser } from "../lib/auth";
+import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, writeStoredCoupon } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { CartItemCard } from "../components/CartItemCard";
@@ -55,11 +55,13 @@ export default function CartPage() {
 
   async function updateItem(id: number, quantity: number) {
     try {
-      await fetch(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, {
+      // Las escrituras salen con `fetchWithAuth`: con sesión iniciada el
+      // servidor exige el token CSRF, y un `fetch` a secas no lo lleva.
+      const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quantity }),
       });
+      if (!res.ok) throw new Error("No se pudo actualizar.");
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -69,7 +71,8 @@ export default function CartPage() {
 
   async function removeItem(id: number) {
     try {
-      await fetch(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
+      const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("No se pudo eliminar.");
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -82,9 +85,8 @@ export default function CartPage() {
     setCouponLoading(true);
     setCouponError(null);
     try {
-      const res = await fetch(`${API_BASE}/coupons/validate/`, {
+      const res = await fetchWithAuth(`${API_BASE}/coupons/validate/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: couponInput }),
       });
       const data = await res.json();
