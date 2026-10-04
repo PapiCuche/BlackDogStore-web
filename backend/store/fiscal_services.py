@@ -644,6 +644,12 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     # documento no cumple una regla, el `rollback` devuelve el correlativo. Una
     # negativa no puede gastar un número, porque cada intento fallido dejaría un
     # hueco que hay que explicar ante SUNAT.
+    # ANTES de reservar el número: leer y copiar una imagen es entrada/salida
+    # (un disco, o un almacén remoto), y eso no se hace con la fila de la serie
+    # bloqueada. Una copia que al final no se use no estorba: su clave depende
+    # del contenido y la comparten todos los comprobantes con ese logotipo.
+    logo = fiscal_logo.snapshot(order.company)
+
     try:
         with transaction.atomic():
             number = _reserve(series)
@@ -668,7 +674,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
                 issuer_legal_name=data.supplier.legal_name,
                 issuer_trade_name=data.supplier.trade_name,
                 issuer_address=data.supplier.address_line,
-                **fiscal_logo.snapshot(order.company),
+                **logo,
                 customer_doc_type=data.customer.doc_type,
                 customer_doc_number=data.customer.doc_number,
                 customer_legal_name=data.customer.legal_name,
