@@ -32,31 +32,25 @@ export function Footer() {
 
   return (
     <footer className="relative border-t border-bd-border bg-background">
-      {/* Top CTA band */}
-      <div className="relative overflow-hidden bg-inverse px-6 py-12 text-center topo-bg">
-        <div className="relative z-10 mx-auto max-w-2xl">
-          {/*
-            Esta banda se pinta con `bg-foreground`, que tras la traducción de paleta
-            de M12F ES el color del texto: su contraste es el CONTRARIO al de la
-            página. En tema oscuro sale clara; en tema claro, oscura. Por eso
-            `surface="inverse"` y no `"theme"`.
+      {/*
+        BANDA DE CIERRE (V4).
 
-            Antes leía `branding.logo_url` directamente y se saltaba las seis
-            variantes por contraste: sobre esta banda invertida, eso ponía el
-            logotipo del contraste equivocado exactamente la mitad del tiempo.
-          */}
-          <div className="mb-6 flex justify-center">
-            <BrandLogo
-              placement="hero"
-              surface="inverse"
-              className="h-28 w-auto object-contain"
-              wordmarkClassName="font-display text-3xl font-black uppercase tracking-tight text-inverse-foreground"
-            />
-          </div>
-          <p className="font-display text-4xl font-black uppercase tracking-tight text-inverse-foreground sm:text-5xl">
+        Se pinta con el color del texto, así que su contraste es el CONTRARIO al
+        de la página: clara en tema oscuro, oscura en tema claro.
+
+        Ya no lleva el logotipo: el pie lo pinta justo debajo, y dos marcas una
+        encima de otra son la misma marca dos veces. Aquí va el nombre de la
+        tienda en texto, que es lo que el diseño pide.
+      */}
+      <div className="bg-inverse px-6 py-14 text-center sm:py-16">
+        <div className="mx-auto max-w-2xl">
+          {storeName ? (
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-inverse-muted">{storeName}</p>
+          ) : null}
+          <p className="mt-3 text-[clamp(1.75rem,4.2vw,2.75rem)] font-semibold uppercase leading-[1.08] tracking-tight text-inverse-foreground text-balance break-words">
             ¿Necesitas ayuda?
           </p>
-          <p className="mt-3 text-sm text-inverse-muted">
+          <p className="mt-3 text-sm leading-6 text-inverse-muted">
             Escríbenos y te respondemos lo antes posible.
           </p>
           {contact.whatsapp_link ? (
@@ -146,39 +140,45 @@ export function Footer() {
             {/* Social — each icon appears only if this tenant published that
                 link. Leaving them hardcoded would have pointed every company's
                 customers at one specific business's accounts. */}
-            <div className="mt-6 flex gap-3">
+            {contact.facebook_url || contact.instagram_url ? (
+            <ul aria-label="Redes sociales" className="mt-6 flex gap-2">
               {contact.facebook_url ? (
+              <li>
               <a
                 href={contact.facebook_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-bd-border hover:text-foreground"
-                aria-label="Facebook"
+                className="flex h-11 w-11 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-foreground/30 hover:text-foreground"
+                aria-label="Facebook (abre en otra pestaña)"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                 </svg>
               </a>
+              </li>
               ) : null}
               {contact.instagram_url ? (
+              <li>
               <a
                 href={contact.instagram_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-bd-border hover:text-foreground"
-                aria-label="Instagram"
+                className="flex h-11 w-11 items-center justify-center rounded-full border border-bd-border bg-surface text-muted transition hover:border-foreground/30 hover:text-foreground"
+                aria-label="Instagram (abre en otra pestaña)"
               >
                 <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
                 </svg>
               </a>
+              </li>
               ) : null}
-            </div>
+            </ul>
+            ) : null}
           </div>
 
           {/* Navigation */}
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Tienda</p>
+          <nav aria-label="Tienda">
+            <p aria-hidden="true" className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Tienda</p>
             <ul className="mt-4 space-y-3">
               {[
                 { href: "/product", label: "Catálogo" },
@@ -199,7 +199,7 @@ export function Footer() {
                 </li>
               ))}
             </ul>
-          </div>
+          </nav>
 
           {/*
             UNA SOLA FUENTE.
@@ -215,8 +215,8 @@ export function Footer() {
             sitios.
           */}
           {services.length > 0 ? (
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Servicios</p>
+          <nav aria-label="Servicios">
+            <p aria-hidden="true" className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted">Servicios</p>
             <ul className="mt-4 space-y-3">
               {services.slice(0, 5).map((s) => (
                 <li key={s.title}>
@@ -229,7 +229,7 @@ export function Footer() {
                 </li>
               ))}
             </ul>
-          </div>
+          </nav>
           ) : null}
         </div>
 
@@ -254,7 +254,7 @@ export function Footer() {
               href={contact.website_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-muted transition hover:text-muted"
+              className="text-xs text-muted transition hover:text-foreground"
             >
               {contact.website_url.replace(/^https?:\/\//, "")}
             </a>
