@@ -3,6 +3,43 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Infraestructura de producción: ensayo final
+
+Rama `deploy/production-vps` con `master` `69bda12` incorporado. No se ha publicado nada en
+Internet.
+
+**El ensayo es un guion.** `sh deploy/rehearsal.sh` construye la pila de producción sin
+caché, arranca PostgreSQL vacío, la recorre a través de Caddy como un cliente y la desmonta.
+Proyecto, puertos y dominio reservados; certificado interno; sin correo ni cobros. Resultado
+sobre `9f8b7cb`: `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de navegador, 0 fallos.
+La tabla completa está en `docs/despliegue-produccion.md` §9.
+
+**Imágenes públicas y evidencias privadas.** Comparten volumen y almacén, no autorización:
+
+- cinco PNG sin fondo subidos por la API (hero, categoría, servicio, ubicación, campaña) se
+  sirven a cualquiera con su transparencia intacta y caché inmutable, y se ven en la portada
+  a 320, 390, 768 y 1440 px en claro y en oscuro, con sombra por silueta y sin fondo detrás;
+- una evidencia del servicio técnico, en el mismo volumen, no se entrega sin sesión ni a
+  quien no trabaja en la empresa;
+- las claves reales del almacén no se alcanzan por ninguna ruta de archivos: Caddy no tiene
+  `file_server`;
+- SVG, GIF, HTML con extensión de imagen, PNG truncado y archivos de más de 8 MB se rechazan.
+
+**Persistencia.** Datos y archivos sobreviven a apagar y encender, a reconstruir las imágenes
+y recrear los contenedores, y a borrar todos los archivos y restaurar la copia.
+
+**Cambios en la rama.** PostgreSQL 16 en producción, el mismo que valida la CI (no hay datos
+de producción que migrar). Limpieza diaria de imágenes sin uso en la guía (§6.1.2).
+Dependabot vigila también las imágenes base de los `Dockerfile.prod`.
+
+**Lo que el ensayo enseñó del propio ensayo.** `seed_demo_users` se niega en producción, así
+que el guion crea su orden de servicio. El inicio de sesión se limita a 5 por minuto: un
+arnés que inicia más sesiones que eso se falla a sí mismo.
+
+Estado: **READY FOR EXTERNAL PRODUCTION CONFIGURATION**. Falta lo que sólo el propietario
+puede dar: dominio y DNS, servidor, credenciales SMTP, credenciales de producción de Izipay,
+host de las fotos de producto y destino de la copia externa.
+
 ## 2026-10-04 — Limpieza de imágenes de la tienda (STOREFRONT-IMAGE-CLEANUP)
 
 Una imagen subida se quedaba para siempre en el almacén: reemplazar la del hero dejaba la

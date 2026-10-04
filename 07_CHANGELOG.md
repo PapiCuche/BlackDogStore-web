@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Infraestructura de producción: ensayo final
+
+- `deploy/rehearsal.sh`: ensayo completo y repetible. Última pasada: `ENSAYO: OK` (83 + 26).
+- Imágenes de la tienda públicas y evidencias privadas en el mismo volumen, sin rutas de archivo.
+- Persistencia tras reinicio, reconstrucción y restauración de copia.
+- PostgreSQL 16 en producción; limpieza diaria de imágenes sin uso; Dependabot para imágenes base.
+
 ## 2026-10-04 — Limpieza de imágenes de la tienda
 
 - Una imagen reemplazada o nunca colocada se borra cuando nadie la usa; nunca una en uso.

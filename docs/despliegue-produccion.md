@@ -355,40 +355,53 @@ Pendiente, y conviene saberlo:
 
 ## 9. Qué se ensayó
 
-Ensayo completo sobre `f0c29ce`, con `master` `833fdec` incorporado, el 2026-10-03.
-Imágenes reconstruidas sin caché, PostgreSQL vacío, dominio reservado
-`tienda.test` y certificado interno de Caddy. Las comprobaciones de navegador se
-hicieron con un navegador real a través de Caddy. Todo se desmontó al terminar.
+El ensayo es un guion y se puede repetir:
+
+```sh
+sh deploy/rehearsal.sh
+```
+
+Construye las dos imágenes sin caché, arranca PostgreSQL vacío, recorre la tienda
+a través de Caddy como lo haría un cliente y lo desmonta todo. Usa un proyecto de
+Docker, unos puertos y un dominio reservados (`bds-rehearsal`, 18080/18443,
+`tienda.test`) y un certificado interno de Caddy. No sale a Internet, no envía
+correo y no cobra. Termina con `ENSAYO: OK` o con el número de fallos.
+
+Última pasada: 2026-10-04, sobre `9f8b7cb` con `master` `69bda12` incorporado.
+Resultado: `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de
+navegador, 0 fallos.
 
 | # | Comprobación | Resultado |
 |---|---|---|
-| 1–2 | Compilar las dos imágenes sin caché | OK. Sin `.env`, base ni evidencias dentro; el frontend no lleva ningún secreto del backend |
-| 3–4 | PostgreSQL vacío y migraciones | 107 migraciones aplicadas, 0 pendientes |
-| 5 | `makemigrations --check --dry-run` | Sin cambios |
-| 6 | `collectstatic` | Funciona; no se usa, Django no sirve estáticos en producción |
-| — | `check --deploy` | 1 aviso esperado (W008) |
-| 7–9 | Arranque, Caddy y comprobaciones de salud | Los cuatro servicios arriba; sólo Caddy publica puertos; backend sin root; un proceso de gunicorn |
-| 10–17 | Portada, catálogo, ficha, carrito, checkout, servicios, nosotros, contacto | 200, con contenido real y sin desbordes a 390 px |
-| 13–14 | Añadir al carrito y cotizar el pedido, sin pagar | OK; el desglose de impuestos llega del servidor |
-| 18 | Inicio de sesión con el administrador creado con `createsuperuser` | OK |
-| 19–22 | Panel, inventario, caja (sin vender), servicio técnico, productos | OK, sin ninguna respuesta 5xx |
-| 23 | Cookies de sesión | `Secure`, `HttpOnly`, `SameSite=Lax` |
-| 24 | CSRF | Con sesión y sin token: 403. Cerrar sesión sin token: 403 |
-| 25 | CORS | Sólo se concede al dominio propio |
-| 26 | Origen ajeno con sesión | 403 |
-| 27 | `X-Forwarded-For` falso | Django ve la dirección real; el límite no se evita |
-| 28 | Límites | Inicio de sesión: 429 desde el sexto intento. Renovación: 429 desde la número 31. Otro cliente con otra dirección no hereda el límite |
-| 29 | Apagar y encender | Los mismos datos |
-| 30 | `deploy/backup.sh` | Volcado completo y evidencias |
-| 31 | Cambio posterior y `deploy/restore.sh` | Vuelve exactamente al estado de la copia; relaciones íntegras |
-| — | Admin de Django | No existe: 404 incluso preguntando directamente al backend |
-| — | Cuentas de demostración | El comando se niega; la ruta responde 404; la tarjeta no se pinta |
-| — | Cabeceras | HSTS, `nosniff`, `X-Frame-Options: DENY`, política de contenido; `no-referrer` en las páginas con token |
-| — | `flushexpiredtokens` | Se ejecuta sin error |
+| 1 | Construcción sin caché | Dos imágenes. Sin `.env` ni base dentro; el backend corre sin root (uid 10001); el frontend no lleva ningún secreto |
+| 2–3 | PostgreSQL 16 vacío y migraciones | 109 migraciones de `store` aplicadas, 0 pendientes; `makemigrations --check` sin cambios |
+| 4 | Arranque | Backend y frontend sanos; sólo Caddy publica puertos; un proceso de gunicorn |
+| 5 | Ajustes efectivos | `DEBUG=False`; cookies `Secure` y `HttpOnly`; un proxy de confianza; sólo JSON; sin admin de Django |
+| 6 | Datos de demostración | `seed_demo_users` se niega; ninguna cuenta `dev_`; la ruta responde 404 |
+| 7 | Rutas por Caddy | Tienda, ficha, carrito, checkout, panel y API: 200. `/admin/login/`, `/static/admin/…`, `/media/…` y `/private-media/…` no llegan a Django ni a un archivo. Host desconocido: sin respuesta |
+| 8 | Cabeceras | HSTS una sola vez, `nosniff`, `X-Frame-Options: DENY`, política de contenido, `Permissions-Policy`; `no-referrer` en las páginas con token; no se anuncia el servidor |
+| 9–10 | Carrito, cotización, CORS | Añadir y cotizar: 200. CORS sólo para el origen propio |
+| 11 | **Imágenes de la tienda** | Cinco PNG sin fondo subidos (hero, categoría, servicio, ubicación, campaña): 200 para cualquiera, `image/png`, transparencia intacta, caché inmutable |
+| 11 | **Evidencia privada, en el mismo volumen** | Sin sesión: 401. Con sesión de quien no trabaja en la empresa: no se entrega. Quien trabaja en ella: 200, sin caché pública |
+| 11 | **Sin rutas de archivo** | Las claves reales del almacén (una imagen y una evidencia) pedidas por `/media/`, `/private-media/`, `/app/private-media/`, `/api/media/` y `/static/`: ninguna se sirve |
+| 11 | Subidas rechazadas | SVG, SVG y HTML con extensión `.png`, GIF, PNG truncado y archivo de 9 MB: rechazados. Nombre con `../`: la dirección no lo conserva. Sin sesión: 401 |
+| 12 | Navegador real | Portada con el hero claro y las cinco imágenes a 320, 390, 768 y 1440 px, en claro y en oscuro: sombra por silueta, sin fondo detrás, sin desbordes. Categorías con teclado. Sesión, panel, inventario, caja, servicio y editor de portada |
+| 13 | CSRF | Con sesión, desde un origen ajeno o sin token: 403 |
+| 14 | Tareas programadas | `flushexpiredtokens` y `cleanup_storefront_images --dry-run` corren; la limpieza no toca nada colocado |
+| 15 | Límites | Inicio de sesión: 429 desde el sexto intento aunque cambie `X-Forwarded-For`; Django ve la dirección real. Renovación: 429 desde la número 31. Otro cliente no hereda el límite |
+| 16 | Apagar y encender | Los mismos datos y los mismos archivos; imágenes y evidencias responden igual |
+| 17 | Reconstruir y recrear contenedores | Lo mismo |
+| 18 | `deploy/backup.sh` | Volcado completo y archivo con imágenes de la tienda y evidencias |
+| 19 | Daño y `deploy/restore.sh` | Se borran todos los archivos y se crea una cuenta nueva; tras restaurar, datos y archivos son los de la copia y la cuenta posterior no existe |
+| 21 | Desmontaje | No queda ningún contenedor, volumen, imagen ni archivo de variables |
 
 Observado y anotado: el inicio de sesión no rechaza por origen. Desde un origen
 ajeno, con credenciales erróneas, responde 401 y no 403. Las operaciones con
 sesión sí rechazan un origen ajeno (LOGIN-CSRF-01, baja).
 
-No se pudo ensayar en local: el certificado público de Let's Encrypt (necesita el
-dominio real), el envío de correo por SMTP y el cobro con Izipay.
+`check --deploy` avisa de `SECURE_SSL_REDIRECT` (W008). Es deliberado: la
+redirección a HTTPS la hace Caddy, que es quien termina TLS; hacerla también en
+Django rompería la comprobación de salud interna.
+
+No se puede ensayar en local: el certificado público de Let's Encrypt (necesita
+el dominio real), el envío de correo por SMTP y el cobro con Izipay.
