@@ -143,7 +143,15 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
 
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("application/pdf");
-  const bytes = await res.body();
+  expect(await res.finished(), "la descarga del PDF no terminó bien").toBeNull();
+  expect(Number(res.headers()["content-length"])).toBeGreaterThan(800);
+  // EL CONTENIDO SE PIDE OTRA VEZ, con la misma sesión. La página lee esta
+  // respuesta como un blob para imprimirla, y desde Playwright 1.63 el cuerpo
+  // de una respuesta así llega vacío al arnés aunque el navegador la recibió
+  // entera. Pedirla de nuevo comprueba lo que importa: que esa dirección,
+  // con esta sesión, devuelve un PDF de verdad. No pasa por `page`, así que no
+  // cuenta entre las llamadas que se vigilan más abajo.
+  const bytes = await (await page.request.get(res.url())).body();
   expect(bytes.subarray(0, 4).toString(), "lo devuelto no es un PDF").toBe("%PDF");
   expect(bytes.length).toBeGreaterThan(800);
 
