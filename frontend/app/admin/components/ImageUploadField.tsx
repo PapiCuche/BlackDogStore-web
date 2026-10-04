@@ -26,6 +26,13 @@ type Props = {
   errors?: Record<string, string[]>;
   hint?: string;
   readOnly?: boolean;
+  /**
+   * Sin la sombra de la tienda. Para imágenes que no se muestran en la
+   * portada sino en un documento —el logotipo de los comprobantes—, donde se
+   * dibujan tal cual: la vista previa no debe enseñar un adorno que el papel
+   * no va a tener.
+   */
+  plain?: boolean;
 };
 
 const GRID_STYLE = {
@@ -38,7 +45,7 @@ const GRID_STYLE = {
 } as const;
 
 export function ImageUploadField({
-  label, name, value, companyId, onChange, errors, hint, readOnly = false,
+  label, name, value, companyId, onChange, errors, hint, readOnly = false, plain = false,
 }: Props) {
   const inputId = useId();
   const [uploading, setUploading] = useState(false);
@@ -74,7 +81,7 @@ export function ImageUploadField({
           {value ? (
             // Imagen del propio tenant, de tamaño desconocido: no pasa por el optimizador.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={value} alt={label} style={storefrontMediaStyle(value)} className="max-h-full max-w-full object-contain" />
+            <img src={value} alt={label} style={plain ? undefined : storefrontMediaStyle(value)} className="max-h-full max-w-full object-contain" />
           ) : (
             <span className="rounded bg-background/80 px-2 py-1 text-xs text-muted">Sin imagen</span>
           )}
