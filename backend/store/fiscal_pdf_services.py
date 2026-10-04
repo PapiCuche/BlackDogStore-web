@@ -36,6 +36,45 @@ _TITLE = {
     '07': 'NOTA DE CRÉDITO ELECTRÓNICA', '08': 'NOTA DE DÉBITO ELECTRÓNICA',
 }
 
+#: Catálogo N.º 06 → cómo se nombra el documento del adquirente en el papel:
+#: (etiqueta en A4, etiqueta en el rollo de 80 mm, etiqueta del nombre).
+#:
+#: Los Anexos I y II de la RS 114-2019/SUNAT piden el TIPO y el número (campo
+#: 11). La etiqueta estaba escrita a mano —«RUC»— y una boleta a un DNI salía
+#: diciendo que ese número era un RUC.
+_CUSTOMER_DOCUMENT = {
+    '6': ('RUC', 'RUC', 'Razón social'),
+    '1': ('DNI', 'DNI', 'Cliente'),
+    '4': ('Carné de extranjería', 'C.E.', 'Cliente'),
+    '7': ('Pasaporte', 'Pasaporte', 'Cliente'),
+    'A': ('Cédula diplomática', 'Céd. diplomática', 'Cliente'),
+}
+
+#: Cómo dice el XML la forma de pago y cómo se lee en el papel.
+_PAYMENT_FORM = {'contado': 'Contado', 'credito': 'Crédito'}
+
+
+def _customer_block(doc_type: str, doc_number: str, legal_name: str) -> dict:
+    """
+    Quién compra, con la etiqueta que corresponde a SU documento.
+
+    Sin documento (código `0`, la boleta a consumidor final) no se imprime
+    ninguna etiqueta de documento: no hay número que etiquetar.
+    """
+    labels = _CUSTOMER_DOCUMENT.get((doc_type or '').strip())
+    number = (doc_number or '').strip()
+    has_document = bool(labels) and number not in ('', '0', '-')
+    return {
+        'doc_type': doc_type,
+        'doc_number': number,
+        'legal_name': legal_name,
+        'has_document': has_document,
+        'doc_label': labels[0] if has_document else '',
+        'doc_label_short': labels[1] if has_document else '',
+        'name_label': labels[2] if has_document else 'Cliente',
+    }
+
+
 #: Etiqueta del comprobante que una nota modifica, para el «Documento que
 #: modifica» del papel. Catálogo N.º 01.
 _ORIGINAL_TYPE_LABEL = {'01': 'Factura', '03': 'Boleta de venta'}
@@ -78,6 +117,7 @@ def _document_lines(rep):
             'unit_price': line.unit_price,
             'unit_price_with_tax': line.unit_price_with_tax,
             'amount': line.line_amount,
+            'unit_code': line.unit_code,
         }
 
 
@@ -139,10 +179,16 @@ def build_fiscal_context(document: FiscalDocument) -> dict:
             'trade_name': document.issuer_trade_name,
             'address': document.issuer_address,
         },
-        'customer': {
-            'doc_number': rep.customer_doc_number or document.customer_doc_number,
-            'legal_name': rep.customer_legal_name or document.customer_legal_name,
-        },
+        'customer': _customer_block(
+            document.customer_doc_type,
+            rep.customer_doc_number or document.customer_doc_number,
+            rep.customer_legal_name or document.customer_legal_name,
+        ),
+        # Campos 62 (factura) y 58 (boleta): la leyenda nombra el comprobante.
+        'legend': 'Representación impresa de la '
+                  + _TITLE.get(document.document_type, 'comprobante electrónico').lower(),
+        'amount_in_words': rep.amount_in_words,
+        'payment_form': _PAYMENT_FORM.get(rep.payment_form.strip().lower(), rep.payment_form),
         'lines': list(_document_lines(rep)),
         'taxable_amount': rep.taxable_amount,
         'tax_amount': rep.tax_amount,
@@ -283,12 +329,16 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
 
     # --- adquirente y fecha ---
     story.append(Paragraph('Adquirente', h2))
-    datos = Table([
-        ['RUC:', ctx['customer']['doc_number']],
-        ['Razón social:', ctx['customer']['legal_name']],
-        ['Fecha de emisión:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M')],
-        ['Moneda:', ctx['currency']],
-    ], colWidths=[4 * cm, 13 * cm])
+    cliente = ctx['customer']
+    filas_cliente = []
+    if cliente['has_document']:
+        filas_cliente.append([f"{cliente['doc_label']}:", cliente['doc_number']])
+    filas_cliente.append([f"{cliente['name_label']}:", cliente['legal_name']])
+    filas_cliente.append(['Fecha de emisión:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M')])
+    filas_cliente.append(['Moneda:', ctx['currency']])
+    if ctx['payment_form']:
+        filas_cliente.append(['Forma de pago:', ctx['payment_form']])
+    datos = Table(filas_cliente, colWidths=[4 * cm, 13 * cm])
     datos.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8.5),
@@ -300,23 +350,25 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
     story.append(Spacer(1, 10))
 
     # --- detalle ---
-    filas = [['Cant.', 'Descripción', 'V. unitario', 'P. unitario', 'Importe']]
+    filas = [['Cant.', 'Und.', 'Descripción', 'V. unitario', 'P. unitario', 'Importe']]
     for linea in ctx['lines']:
         filas.append([
             str(linea['quantity']),
+            linea['unit_code'],
             Paragraph(str(linea['description']), body),
             f"{cur} {linea['unit_price']:.2f}",
             f"{cur} {linea['unit_price_with_tax']:.2f}",
             f"{cur} {linea['amount']:.2f}",
         ])
-    detalle = Table(filas, colWidths=[1.6 * cm, 7.4 * cm, 2.7 * cm, 2.7 * cm, 2.6 * cm],
-                    repeatRows=1)
+    detalle = Table(
+        filas, colWidths=[1.5 * cm, 1.3 * cm, 6.4 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm],
+        repeatRows=1)
     detalle.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3f4f6')),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
-        ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
+        ('ALIGN', (0, 0), (1, -1), 'CENTER'),
+        ('ALIGN', (3, 0), (-1, -1), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#e5e7eb')),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
@@ -340,12 +392,15 @@ def generate_fiscal_pdf(document: FiscalDocument) -> bytes:
         ('TOPPADDING', (0, 0), (-1, -1), 2),
     ]))
     story.append(totales)
+    if ctx['amount_in_words']:
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f"SON: {ctx['amount_in_words']}", body))
     story.append(Spacer(1, 12))
 
     # --- QR: parte inferior, como exige el numeral 6.4.4 ---
     qr = Image(io.BytesIO(ctx['qr_png']), width=3.6 * cm, height=3.6 * cm)
     pie = Table([[qr, Paragraph(
-        f"Representación impresa del comprobante electrónico.<br/>"
+        f"{ctx['legend']}.<br/>"
         f"Estado: {ctx['status_text']}<br/>"
         f"Valor resumen: {ctx['digest_value']}", small)]],
         colWidths=[4.2 * cm, 12.8 * cm])
@@ -421,14 +476,23 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
             cursor.rule()
 
         cursor.row('Fecha:', ctx['issued_at'].strftime('%d/%m/%Y %H:%M'), size=6.5)
-        cursor.row('RUC cliente:', ctx['customer']['doc_number'], size=6.5)
-        cursor.line(ctx['customer']['legal_name'], size=6.5)
+        cliente = ctx['customer']
+        if cliente['has_document']:
+            cursor.row(f"{cliente['doc_label_short']}:", cliente['doc_number'], size=6.5)
+        cursor.line(f"{cliente['name_label']}: {cliente['legal_name']}", size=6.5)
+        if ctx['payment_form']:
+            cursor.line(f"Forma de pago: {ctx['payment_form']}", size=6.5)
         cursor.rule()
 
+        # Cantidad, unidad y PRECIO DE VENTA unitario (con IGV) a la izquierda;
+        # el valor de venta de la línea (sin IGV) a la derecha, que es lo que
+        # suman los totales de abajo.
+        cursor.row('Cant. Und. x P. unit.', 'V. venta', size=6)
         for linea in ctx['lines']:
             cursor.line(str(linea['description']), size=7)
             cursor.row(
-                f"  {linea['quantity']} x {cur} {linea['unit_price']:.2f}",
+                f"  {linea['quantity']} {linea['unit_code']} x "
+                f"{cur} {linea['unit_price_with_tax']:.2f}".replace('  x', ' x'),
                 f"{cur} {linea['amount']:.2f}", size=7,
             )
         cursor.rule()
@@ -438,6 +502,9 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
         cursor.row(f'IGV ({porcentaje:f}%)', f"{cur} {ctx['tax_amount']:.2f}", size=7)
         cursor.gap(1)
         cursor.row('TOTAL', f"{cur} {ctx['total']:.2f}", size=10, bold=True)
+        if ctx['amount_in_words']:
+            cursor.gap(1)
+            cursor.line(f"SON: {ctx['amount_in_words']}", size=6)
         cursor.rule()
 
         cursor.line(f"Estado: {ctx['status_text']}", size=6, align='center')
@@ -453,8 +520,8 @@ def generate_fiscal_ticket_pdf(document: FiscalDocument) -> bytes:
                 width=qr_side, height=qr_side, mask='auto',
             )
         cursor.gap(qr_side + 4)
-        cursor.line('Representación impresa del comprobante electrónico.',
-                    size=5.5, align='center')
+        cursor.line(f"Valor resumen: {ctx['digest_value']}", size=5, align='center')
+        cursor.line(f"{ctx['legend']}.", size=5.5, align='center')
         cursor.gap(margin)
         return cursor.used + margin
 

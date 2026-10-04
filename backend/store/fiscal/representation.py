@@ -42,6 +42,9 @@ class RepLine:
     #: pueda reflejar el original al pie de la letra, incluida su tasa (18.00), sin
     #: reintroducir un porcentaje inventado por el redondeo (REVIEW ERP-FISCAL-5A).
     tax_percent: Decimal = Decimal('0')
+    #: Catálogo N.º 03 (`@unitCode` de la cantidad): «NIU», «ZZ»… Es información
+    #: mínima de la representación impresa (campo 14 del Anexo I).
+    unit_code: str = ''
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,10 @@ class SignedInvoiceRepresentation:
     tax_amount: Decimal
     payable_amount: Decimal
     digest_value: str
+    #: Leyenda 1000 del Catálogo N.º 52: el importe en letras, tal como se firmó.
+    amount_in_words: str = ''
+    #: `cac:PaymentTerms` con `cbc:ID = FormaPago`: «Contado» o «Credito».
+    payment_form: str = ''
 
 
 def _text(node, path: str, default: str = '') -> str:
@@ -68,6 +75,25 @@ def _text(node, path: str, default: str = '') -> str:
 
 def _dec(node, path: str) -> Decimal:
     return Decimal(_text(node, path, '0') or '0')
+
+
+def _attr(node, path: str, name: str) -> str:
+    found = node.find(path, NS)
+    return (found.get(name) or '') if found is not None else ''
+
+
+def _amount_in_words(root) -> str:
+    for note in root.findall('cbc:Note', NS):
+        if note.get('languageLocaleID') == '1000':
+            return (note.text or '').strip()
+    return ''
+
+
+def _payment_form(root) -> str:
+    for terms in root.findall('cac:PaymentTerms', NS):
+        if _text(terms, 'cbc:ID') == 'FormaPago':
+            return _text(terms, 'cbc:PaymentMeansID').strip()
+    return ''
 
 
 #: Lo único que cambia entre una factura/boleta y sus notas: el nombre del
@@ -111,6 +137,7 @@ def parse_signed_invoice_for_representation(xml) -> SignedInvoiceRepresentation:
             tax_amount=_dec(node, 'cac:TaxTotal/cbc:TaxAmount'),
             tax_percent=_dec(
                 node, 'cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:Percent'),
+            unit_code=_attr(node, qty_tag, 'unitCode'),
         )
         for node in root.findall(line_tag, NS)
     )
@@ -138,4 +165,6 @@ def parse_signed_invoice_for_representation(xml) -> SignedInvoiceRepresentation:
         tax_amount=_dec(root, 'cac:TaxTotal/cbc:TaxAmount'),
         payable_amount=_dec(root, f'{total_tag}/cbc:PayableAmount'),
         digest_value=_text(root, './/ds:DigestValue'),
+        amount_in_words=_amount_in_words(root),
+        payment_form=_payment_form(root),
     )
