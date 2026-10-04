@@ -1,0 +1,89 @@
+# Dependabot — CI-03.
+#
+# The repository had no dependency updates at all: the only record of a known
+# vulnerability was a comment somebody wrote in requirements.txt. This opens
+# pull requests instead, once a week, so they arrive together and can be read.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# Nothing is merged automatically. Every pull request runs the same CI as any
+# other change (the backend suite takes over an hour on PostgreSQL) and waits
+# for a person.
+#
+# WHY MINOR AND PATCH ARE GROUPED
+# -------------------------------
+# One pull request per ecosystem per week instead of one per package: a single
+# CI run validates the set, and the review is one diff. A MAJOR version of a
+# library still arrives on its own, because that is the update that needs to
+# be read line by line.
+#
+# WHY THE FRAMEWORKS ARE HELD ON THEIR MAJOR
+# ------------------------------------------
+# Django is pinned to its LTS line on purpose (see backend/requirements.txt),
+# and Next and React move together and with the code. Moving any of them to a
+# new major is a migration somebody plans, not a pull request that shows up on
+# a Monday. Their patches and minors still come through the groups above.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Lima
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      backend-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: django
+        update-types:
+          - version-update:semver-major
+          # 5.2 is the LTS line; 5.3+/6.x is a planned move.
+          - version-update:semver-minor
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Lima
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      frontend-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: next
+        update-types:
+          - version-update:semver-major
+      - dependency-name: eslint-config-next
+        update-types:
+          - version-update:semver-major
+      - dependency-name: react
+        update-types:
+          - version-update:semver-major
+      - dependency-name: react-dom
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Lima
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci(deps)"
