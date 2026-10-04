@@ -262,3 +262,54 @@ class ReprintTest(PrintApiBase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual([row['status'] for row in res.data['results']], ['pending'])
         self.assertNotIn('claim_token', str(res.data))
+
+
+from store.tests import Ip1PosBase  # noqa: E402
+
+
+class PosSaleQueuesItsTicketTest(Ip1PosBase):
+    """
+    Una venta en caja —también desde un teléfono— manda su ticket a la
+    impresora del local. El navegador no abre ningún diálogo de impresión: la
+    respuesta de la venta dice qué trabajo se encoló.
+    """
+
+    URL = '/api/v1/internal/ip1-tienda/sales/pos/sales/'
+
+    def sell(self, **over):
+        return self.client.post(self.URL, self.sale_body(**over), format='json')
+
+    def test_the_sale_answers_with_the_job_it_queued(self):
+        printer = Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+
+        res = self.sell(receipt_type='sales_note')
+
+        self.assertEqual(res.status_code, 201, res.data)
+        job = PrintJob.objects.get()
+        self.assertEqual(res.data['print_job'], {
+            'id': job.pk, 'status': 'pending', 'printer': 'Caja'})
+        self.assertEqual(
+            (job.order_id, job.printer, job.branch, job.kind),
+            (res.data['order_id'], printer, self.branch_a, PrintJob.Kind.SALES_NOTE_TICKET))
+
+    def test_repeating_the_sale_request_queues_no_second_ticket(self):
+        Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+
+        first = self.sell(receipt_type='sales_note')
+        again = self.sell(receipt_type='sales_note')
+
+        self.assertEqual(again.data['order_id'], first.data['order_id'])
+        self.assertEqual(PrintJob.objects.count(), 1)
+        self.assertEqual(again.data['print_job']['id'], first.data['print_job']['id'])
+
+    def test_a_branch_without_a_printer_answers_with_no_job(self):
+        Printer.objects.create(
+            company=self.company, branch=self.branch_b, name='Norte', host='192.168.2.50')
+
+        res = self.sell(receipt_type='sales_note')
+
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIsNone(res.data['print_job'])
+        self.assertEqual(PrintJob.objects.count(), 0)

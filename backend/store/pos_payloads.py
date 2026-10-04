@@ -255,6 +255,15 @@ def sale_payload(
             for i in order.items.select_related('product').all()
         ],
     }
+    # EL TICKET LO IMPRIME LA TIENDA, NO EL NAVEGADOR. Si el local tiene una
+    # impresora automática, la venta ya dejó su trabajo en la cola; quien cobra
+    # desde un teléfono sólo necesita saberlo. `None`: no hay impresora del
+    # local y el ticket se imprime, como antes, desde el navegador.
+    job = order.print_jobs.select_related('printer').order_by('-pk').first()
+    payload['print_job'] = (
+        None if job is None
+        else {'id': job.pk, 'status': job.status, 'printer': job.printer.name}
+    )
     if available_elsewhere:
         payload['available_elsewhere'] = available_elsewhere
     return payload
