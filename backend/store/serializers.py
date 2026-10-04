@@ -1188,6 +1188,8 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # M12E — variantes por contraste. Aditivas: `logo_url` sigue.
             'logo_on_light_url', 'logo_on_dark_url',
             'logo_horizontal_on_light_url', 'logo_horizontal_on_dark_url',
+            # El logotipo de los comprobantes: una imagen subida por la tienda.
+            'document_logo_url',
             'primary_color', 'accent_color', 'background_color',
             'surface_color', 'text_color', 'border_color',
             # M12E — tema claro
@@ -1207,6 +1209,29 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
     def get_whatsapp_link(self, obj):
         from .company_settings import build_whatsapp_link
         return build_whatsapp_link(obj.whatsapp_number)
+
+    def validate_document_logo_url(self, value):
+        """
+        Sólo una imagen subida por ESTA tienda.
+
+        El servidor dibuja este logotipo en el PDF y guarda una copia con cada
+        comprobante: necesita sus bytes. Una URL externa o una ruta del frontend
+        no se pueden leer desde aquí, y la imagen de otra tienda responde igual
+        que una que no existe.
+        """
+        from . import storefront_media
+        from .models import StorefrontImage
+
+        value = (value or '').strip()
+        if not value:
+            return ''
+        public_id = storefront_media.managed_public_id(value)
+        company = getattr(self.instance, 'company', None)
+        if not public_id or not StorefrontImage.objects.filter(
+                public_id=public_id, company=company).exists():
+            raise serializers.ValidationError(
+                'Sube el logotipo desde este panel: tiene que ser una imagen de tu tienda.')
+        return value
 
     def validate_warranty_policy_text(self, value):
         """

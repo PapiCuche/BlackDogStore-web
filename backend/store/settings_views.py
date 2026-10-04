@@ -26,6 +26,7 @@ with `exclude` would leak every field added after somebody forgot to update it.
 
 import logging
 
+from django.db import transaction
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_control
 from rest_framework import permissions, status
@@ -38,6 +39,7 @@ from .company_settings import (
     company_identity,
     get_company_settings,
 )
+from . import storefront_media
 from .models import AdminAuditLog, Company, CompanySettings
 from .storefront_content_services import (
     public_campaigns, public_list_content, public_page_settings,
@@ -331,7 +333,22 @@ class AdminCompanySettingsView(APIView):
             if getattr(settings_row, field) != value
         ]
         if settings_changed:
-            settings_ser.save()
+            # El logotipo de los comprobantes es una imagen subida: se reclama
+            # con la fila bloqueada antes de guardar y la anterior se libera
+            # después, igual que las imágenes de la portada.
+            previous_logo = settings_row.document_logo_url
+            with transaction.atomic():
+                if 'document_logo_url' in settings_changed:
+                    try:
+                        storefront_media.claim(
+                            settings_ser.validated_data['document_logo_url'],
+                            company=company, field='document_logo_url')
+                    except DjangoValidationError as exc:
+                        return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+                settings_ser.save()
+                if 'document_logo_url' in settings_changed:
+                    storefront_media.release(
+                        [previous_logo], company=company, actor=request.user, request=request)
             changed.extend(settings_changed)
 
         if changed:

@@ -399,6 +399,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     quickAction: true,
   },
   {
+    id: "admin.printing",
+    group: "administration",
+    label: "Impresoras",
+    description: "Térmicas de cada local, agentes y tickets recientes.",
+    href: "/admin/settings/printing",
+    // Configurar exige `company.manage`; el servidor lo aplica. Con
+    // `company.view` se llega y se ve la cola.
+    requiredCapabilities: ["company.view"],
+    status: "implemented",
+  },
+  {
     id: "admin.storefront",
     group: "administration",
     label: "Escaparate",

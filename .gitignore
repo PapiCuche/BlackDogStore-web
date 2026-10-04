@@ -30,3 +30,7 @@ backups/
 # Stored files: service evidence photos and shop images. They are data, some of
 # it private, and must never be committed.
 backend/private-media/
+# The print agent's real configuration carries its token; its journal is local state.
+backend/print_agent/config.json
+print-agent-journal.json
+print-agent-journal.json.tmp

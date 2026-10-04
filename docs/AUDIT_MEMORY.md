@@ -330,6 +330,9 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post`; `test_membership_consent.py` | CORREGIDO: alta directa sólo platform admin; administradores de empresa usan invitación + aceptación; sin oracle de username ni enrolamiento sin consentimiento |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
+| IZIPAY-TOKEN-CONTRACT | MEDIUM | PAYMENTS | `payments/izipay.py::request_session_token`, `checkout_services.py::build_payment_config` | BLOCKED/CREDENTIALS: la forma exacta del cuerpo de `Token/Generate` no se pudo leer en la referencia pública; sólo el sandbox real lo confirma (`IzipaySandboxSmokeTest`) |
+| FISCAL-PRINT-EXO | LOW | FISCAL | `fiscal_pdf_services.py`, `fiscal/representation.py` | PENDIENTE: totales exonerado/inafecto y descuentos no se imprimen por separado; el dominio sólo emite operaciones gravadas |
+| PRINT-USB | LOW | PRINTING | `backend/print_agent/agent.py` | PROPUESTA: sólo impresoras en red; USB y Bluetooth fuera |
 | AUDIT-01 | LOW | AUDIT | `service_services.py::add_quote_item`, `remove_quote_item`, `update_quote` | PROPUESTA: editar una cotización en borrador no deja fila; `publish_quote` y `cancel_quote` sí |
 | AUDIT-02 | LOW | AUDIT | `inventory_services.py::set_transfer_item` | PROPUESTA: editar líneas de una transferencia en borrador no deja fila; crear, despachar, recibir y cancelar sí |
 | AUDIT-03 | LOW | AUDIT | `inventory_services.py::set_count_item` | PROPUESTA: anotar cantidades de un recuento no deja fila; crear, aprobar y cancelar sí |
@@ -430,6 +433,11 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | STOREFRONT-HERO-VARIANT | — | `0e9db9d`, `9c39716` | `StorefrontPageSettings.hero_variant` / `hero_image_url`, `Hero.tsx` (`HeroLight`) | `store/test_storefront_media.py`, `storefront-v4-home.test.tsx`, E2E `storefront-v4-images` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-UPLOAD | — | `0e9db9d`, `57ed321` | `storefront_media.py` (PNG/WebP conservan alfa), `StorefrontImage`, `ImageUploadField.tsx`, migración 0096 | `store/test_storefront_media.py`, `image-upload-field.test.tsx` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-CLEANUP | — | `634a6e8`, `6f29193` | `storefront_media.py` (`reference_fields`, `reference_count`, `claim`, `release`, `unplaced`), `cleanup_storefront_images` | `store/test_storefront_image_cleanup.py` (23), `test_storefront_media.py` | CORREGIDO: una imagen reemplazada o nunca colocada se borra sólo con cero referencias en toda la plataforma; contar y colocar bloquean la misma fila |
+| IZIPAY-REPLAY-INTEGRITY | MEDIUM | `29bbf3a` | `views.py::IzipayNotificationView._record_integrity_failure` (sólo desde `PENDING`) | `test_izipay_contract.py` | CORREGIDO: un mensaje contradictorio tras autorizar ya no reescribe el intento |
+| IZIPAY-CONTRACT-HARNESS | — | `ca73423` | `payments/fake_izipay.py` (`FakeIzipay`) | `test_izipay_contract.py` (21) | IMPLEMENTADO: token y notificaciones sin credenciales |
+| FISCAL-PRINT-LABEL | MEDIUM | `ca91705` | `fiscal_pdf_services.py::_customer_block`, `fiscal/representation.py` | `test_fiscal_print.py` (10) | CORREGIDO: etiqueta por catálogo 06, leyenda, unidad, precio, letras, forma de pago |
+| FISCAL-LOGO-SNAPSHOT | — | `dc8fad8` | `fiscal_logo.py`, `FiscalDocument.logo_storage_key`, migración `0098` | `test_fiscal_logo.py` (10) | IMPLEMENTADO |
+| PRINT-QUEUE | — | `86de056`, `264292f`, `0dd10be` | `printing/services.py`, `printing/escpos.py`, `print_views.py`, `print_agent/agent.py`, migración `0099` | `test_printing.py`, `test_printing_api.py`, `test_print_agent.py`, `test_payment_to_print.py` | IMPLEMENTADO |
 | IMPORT-UPLOAD-415 | MEDIUM | `b5de287` | `app/lib/auth.ts::fetchWithAuth` (descarta el `Content-Type` del llamador con `FormData`), `postForm` | `fetch-with-auth.test.ts` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |

@@ -455,12 +455,31 @@ class IzipayNotificationView(APIView):
     # -- outcomes --------------------------------------------------------------
 
     def _record_integrity_failure(self, attempt, result, reason: str) -> None:
-        PaymentTransaction.objects.filter(pk=attempt.pk).update(
+        """
+        ONLY AN OPEN ATTEMPT CAN FAIL. A message that contradicts the database
+        is refused whatever the attempt's state, but it may only be WRITTEN
+        onto an attempt that is still waiting for its answer.
+
+        Without that filter a second message — well signed, same transaction,
+        another amount — arriving after the payment was authorised turned the
+        record of a good payment into "integrity failed", with the order still
+        paid: the money and the ledger disagreeing because of a message that
+        was correctly rejected.
+        """
+        updated = PaymentTransaction.objects.filter(
+            pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
+        ).update(
             status=PaymentTransaction.Status.INTEGRITY_FAILED,
             signature_verified=True,
             response_code=result.response_code[:8],
             failure_reason=reason[:200],
         )
+        if not updated:
+            logger.warning(
+                'Izipay: notificación contradictoria sobre un intento ya resuelto '
+                '(intento=%s, motivo=%s); se rechaza y el registro no cambia.',
+                attempt.pk, reason,
+            )
 
     def _record_rejection(self, attempt, result) -> None:
         PaymentTransaction.objects.filter(

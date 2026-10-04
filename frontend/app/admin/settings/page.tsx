@@ -22,6 +22,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
+import { ImageUploadField } from "../components/ImageUploadField";
 import { InternalControlGuard, type InternalContext } from "../components/InternalControlGuard";
 import { DashboardSection } from "../components/dashboard-ui";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../components/internal-ui";
@@ -103,7 +104,12 @@ const NOTIFICATIONS: FieldProps[] = [
   }),
 ];
 
-const ALL_FIELDS = [...GENERAL, ...CONTACT, ...BRANDING, ...POLICIES, ...NOTIFICATIONS];
+// No se pinta con el formulario genérico: es una imagen que se sube, no un texto.
+const DOCUMENTS: FieldProps[] = [FIELD("Logotipo de los comprobantes", "document_logo_url")];
+
+const ALL_FIELDS = [
+  ...GENERAL, ...CONTACT, ...BRANDING, ...POLICIES, ...NOTIFICATIONS, ...DOCUMENTS,
+];
 
 function draftFrom(config: CompanyConfiguration): Draft {
   const s = config.settings as unknown as Record<string, unknown>;
@@ -438,6 +444,25 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                     </DashboardSection>
                   </div>
                 ))}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Comprobantes"
+                    description="El logotipo que llevan tus comprobantes electrónicos."
+                  >
+                    <ImageUploadField
+                      label="Logotipo de los comprobantes"
+                      name="document_logo_url"
+                      value={draft.document_logo_url ?? ""}
+                      companyId={companyId}
+                      onChange={set}
+                      readOnly={disabled}
+                      plain
+                      errors={errors.document_logo_url
+                        ? { document_logo_url: [errors.document_logo_url] } : undefined}
+                      hint="PNG, JPEG o WebP. Se imprime tal cual sobre papel blanco, sin sombra. Cada comprobante conserva el logotipo con el que se emitió, aunque después lo cambies. Guarda los cambios para aplicarlo."
+                    />
+                  </DashboardSection>
+                </div>
                 {/* Phase 2E — the counter lives behind its own endpoint, so
                     it saves separately from the fields above. That is the point:
                     an unrelated settings save must not be able to move a

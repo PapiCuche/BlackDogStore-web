@@ -1,6 +1,7 @@
 import hashlib
 import re
 import secrets
+import uuid
 from datetime import timedelta
 
 from decimal import Decimal
@@ -2558,6 +2559,17 @@ class CompanySettings(models.Model):
         max_length=500, blank=True, validators=[validate_asset_url],
     )
     logo_isotype_on_dark_url = models.CharField(
+        max_length=500, blank=True, validators=[validate_asset_url],
+    )
+
+    # --- Logotipo de los comprobantes -------------------------------------
+    #
+    # UNO, y sobre papel blanco: aquí no hay contraste que elegir. Tiene que ser
+    # una imagen subida por la tienda (`/api/storefront/images/<id>`), porque el
+    # servidor necesita sus bytes para dibujarla en el PDF y para congelar una
+    # copia con cada comprobante; los logotipos de arriba son rutas que sirve
+    # el frontend y el backend no puede leer.
+    document_logo_url = models.CharField(
         max_length=500, blank=True, validators=[validate_asset_url],
     )
 
@@ -7494,6 +7506,12 @@ class FiscalDocument(models.Model):
     cdr_xml = models.TextField(blank=True)
     cdr_sha256 = models.CharField(max_length=64, blank=True)
 
+    # --- logotipo del emisor, congelado ---
+    #: Copia propia de la imagen con la que se emitió (ver `fiscal_logo`). Vacía
+    #: si la tienda no tenía logotipo: el papel sale sin él, como salió.
+    logo_storage_key = models.CharField(max_length=255, blank=True, editable=False)
+    logo_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+
     sunat_response_code = models.CharField(max_length=8, blank=True)
     sunat_response_message = models.CharField(max_length=500, blank=True)
 
@@ -8250,3 +8268,160 @@ class StaffInvitation(models.Model):
     @property
     def full_name(self) -> str:
         return f'{self.first_name} {self.last_name}'.strip()
+
+
+# ---------------------------------------------------------------------------
+# Impresión en la tienda — PAYMENT-FISCAL-PRINT-01
+# ---------------------------------------------------------------------------
+#
+# EL NAVEGADOR NO IMPRIME. Un teléfono que cobra en el mostrador no tiene una
+# impresora térmica conectada ni debe abrir un diálogo de impresión. Lo que hay
+# es una cola: el servidor decide QUÉ se imprime y DÓNDE, y un programa pequeño
+# dentro de la red de la tienda —el agente— recoge los trabajos de SU sucursal y
+# se los entrega a la impresora.
+#
+# TODO ES DE UNA SUCURSAL. Una impresora está en un local; un agente también; un
+# trabajo va a una impresora. Ninguno cruza a otra sucursal ni a otra empresa.
+
+
+class Printer(models.Model):
+    """Una impresora térmica de un local, alcanzable por red desde su agente."""
+
+    class Connection(models.TextChoices):
+        NETWORK = 'network', 'Red (cable o Wi-Fi, puerto 9100)'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='printers')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='printers')
+    name = models.CharField(max_length=120)
+    connection = models.CharField(
+        max_length=20, choices=Connection.choices, default=Connection.NETWORK)
+    #: Dirección EN LA RED DEL LOCAL. Sólo el agente llega a ella; el servidor
+    #: nunca abre una conexión hacia aquí.
+    host = models.CharField(max_length=255)
+    port = models.PositiveIntegerField(default=9100)
+    paper_width_mm = models.PositiveSmallIntegerField(default=80)
+    #: Página de códigos con la que la impresora entiende los acentos.
+    encoding = models.CharField(max_length=20, default='cp858')
+    #: Recibe los tickets que se imprimen solos al confirmarse una venta.
+    auto_print = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['branch_id', 'name']
+        constraints = [
+            models.UniqueConstraint(fields=['branch', 'name'], name='printer_unique_name_per_branch'),
+            # Una sola impresora automática por local: si hubiera dos, cada
+            # venta saldría dos veces.
+            models.UniqueConstraint(
+                fields=['branch'], condition=models.Q(is_active=True, auto_print=True),
+                name='printer_one_auto_per_branch'),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.host}:{self.port})'
+
+
+class PrintAgent(models.Model):
+    """
+    El programa que corre en el local y habla con las impresoras.
+
+    Se identifica con un token que se enseña UNA vez, al crearlo; aquí sólo queda
+    su huella. Vale para una sucursal y para nada más: no es una sesión de
+    usuario y no abre ninguna pantalla del panel.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='print_agents')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='print_agents')
+    name = models.CharField(max_length=120)
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
+    #: Los primeros caracteres, para reconocerlo en una lista sin poder usarlo.
+    token_hint = models.CharField(max_length=12, editable=False)
+    is_active = models.BooleanField(default=True, db_index=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['branch_id', 'name']
+
+    def __str__(self):
+        return f'{self.name} · {self.token_hint}…'
+
+
+class PrintJob(models.Model):
+    """
+    Un ticket que tiene que salir por una impresora concreta.
+
+    IDEMPOTENTE POR CLAVE. La misma venta confirmada dos veces —una notificación
+    de pago repetida, un reintento— produce un solo trabajo, porque la clave se
+    deriva del documento y no de la petición.
+
+    SE ENTREGA AL MENOS UNA VEZ. El agente lo reclama con un plazo; si no
+    confirma a tiempo, vuelve a la cola. Que el papel no salga dos veces lo
+    garantiza el agente, que recuerda lo que ya imprimió.
+    """
+
+    class Kind(models.TextChoices):
+        FISCAL_TICKET = 'fiscal_ticket', 'Comprobante electrónico (80 mm)'
+        SALES_NOTE_TICKET = 'sales_note_ticket', 'Nota de venta (80 mm)'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'En cola'
+        PRINTING = 'printing', 'Enviado a la impresora'
+        PRINTED = 'printed', 'Impreso'
+        FAILED = 'failed', 'Falló'
+        CANCELLED = 'cancelled', 'Cancelado'
+
+    class Reason(models.TextChoices):
+        AUTO = 'auto', 'Automático, al confirmarse la venta'
+        MANUAL = 'manual', 'Reimpresión pedida por una persona'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='print_jobs')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='print_jobs')
+    printer = models.ForeignKey(Printer, on_delete=models.PROTECT, related_name='jobs')
+    kind = models.CharField(max_length=30, choices=Kind.choices)
+    reason = models.CharField(max_length=10, choices=Reason.choices, default=Reason.AUTO)
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='print_jobs')
+    fiscal_document = models.ForeignKey(
+        'FiscalDocument', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
+    sales_note = models.ForeignKey(
+        'SalesNote', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
+    idempotency_key = models.CharField(max_length=120)
+    #: Identificador que no se repite entre bases de datos. El agente lo apunta
+    #: en su diario: el número de fila sí se repite si la base se restaura o si
+    #: el agente pasa de un servidor de pruebas al de verdad.
+    uid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    status = models.CharField(
+        max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    #: No se entrega antes de este momento: la espera entre un intento fallido
+    #: y el siguiente.
+    available_at = models.DateTimeField(null=True, blank=True)
+    claimed_by = models.ForeignKey(
+        PrintAgent, on_delete=models.SET_NULL, null=True, blank=True, related_name='jobs')
+    #: Cambia en cada entrega: sólo quien tiene el de la entrega vigente puede
+    #: cerrar el trabajo.
+    claim_token = models.CharField(max_length=64, blank=True, editable=False)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    printed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=300, blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'idempotency_key'], name='print_job_idempotency_per_company'),
+        ]
+        indexes = [models.Index(fields=['branch', 'status', 'id'])]
+
+    def __str__(self):
+        return f'{self.get_kind_display()} · pedido {self.order_id} · {self.get_status_display()}'

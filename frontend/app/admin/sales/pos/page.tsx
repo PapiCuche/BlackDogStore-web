@@ -35,6 +35,8 @@
  *   with the sale it already made instead of making a second one.
  */
 
+import { PosPrintNotice } from "./PosPrintNotice";
+import { retryPrintJob } from "../../lib/printing-api";
 import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
@@ -483,6 +485,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
    * uno-a-uno. Imprimir cinco veces devuelve cinco veces LA MISMA nota con el
    * mismo correlativo.
    */
+  async function handleRetryPrint(jobId: number) {
+    setPrintError(null);
+    try {
+      const job = await retryPrintJob(companyId, jobId);
+      setDone((sale) => (sale ? {
+        ...sale, print_job: { id: job.id, status: job.status, printer: job.printer_name },
+      } : sale));
+    } catch (err) {
+      setPrintError(err instanceof Error ? err.message : "No se pudo reenviar el ticket.");
+    }
+  }
+
   async function handlePrint(kind: "ticket" | "a4") {
     if (!done || printing) return;
     setPrinting(kind);
@@ -605,6 +619,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               {printError}
             </p>
           ) : null}
+
+          {/* El ticket lo imprime la tienda: si el local tiene impresora
+              propia, la venta ya dejó su trabajo en la cola. */}
+          <PosPrintNotice job={done.print_job} onRetry={(id) => void handleRetryPrint(id)} />
 
           {/*
             EL COMPROBANTE REAL, no una nota interna disfrazada. Para factura y

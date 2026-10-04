@@ -841,6 +841,8 @@ export type PosSaleResult = {
   customer: string;
   commission: string | null;
   items: { product: number; name: string; quantity: number; price: string }[];
+  /** El ticket que la venta dejó en la cola de la impresora del local, si la hay. */
+  print_job?: { id: number; status: string; printer: string; agent_online?: boolean } | null;
 };
 
 /** A sale refused because the shelf is empty, with where the units actually are. */

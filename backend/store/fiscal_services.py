@@ -37,6 +37,8 @@ Nada de esto cambia un céntimo de lo cobrado: representa; no recalcula.
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
@@ -45,6 +47,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from lxml import etree
 
+from . import fiscal_logo
 from .fiscal import builder, packaging, rules, schema, signing
 from .fiscal.data import (
     ALLOWANCE_GLOBAL_TAXABLE, ALLOWANCE_LINE_TAXABLE, Allowance, InvoiceData, Line,
@@ -56,6 +59,8 @@ from .models import (
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalSeries,
     FiscalSubmissionAttempt, Order,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Los estados de `ProviderOutcome` traducidos al dominio. Se escribe el mapa en
 #: vez de encadenar `if`: así se ve de un vistazo que TRANSPORT_ERROR y
@@ -639,6 +644,12 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     # documento no cumple una regla, el `rollback` devuelve el correlativo. Una
     # negativa no puede gastar un número, porque cada intento fallido dejaría un
     # hueco que hay que explicar ante SUNAT.
+    # ANTES de reservar el número: leer y copiar una imagen es entrada/salida
+    # (un disco, o un almacén remoto), y eso no se hace con la fila de la serie
+    # bloqueada. Una copia que al final no se use no estorba: su clave depende
+    # del contenido y la comparten todos los comprobantes con ese logotipo.
+    logo = fiscal_logo.snapshot(order.company)
+
     try:
         with transaction.atomic():
             number = _reserve(series)
@@ -663,6 +674,7 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
                 issuer_legal_name=data.supplier.legal_name,
                 issuer_trade_name=data.supplier.trade_name,
                 issuer_address=data.supplier.address_line,
+                **logo,
                 customer_doc_type=data.customer.doc_type,
                 customer_doc_number=data.customer.doc_number,
                 customer_legal_name=data.customer.legal_name,
@@ -729,7 +741,29 @@ def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
     document.save(update_fields=[
         'signed_xml', 'signed_xml_sha256', 'digest_value', 'status', 'updated_at',
     ])
+    _queue_ticket(document)
     return document
+
+
+def _queue_ticket(document: FiscalDocument) -> None:
+    """
+    El comprobante acaba de volverse imprimible: se encola su ticket.
+
+    AQUÍ y no al crear la fila, porque sin firma no hay representación impresa.
+    La cola decide si corresponde (pedido pagado, local con impresora
+    automática) y es idempotente. Un fallo al encolar nunca deshace una firma:
+    el ticket se puede reimprimir; una firma perdida, no.
+    """
+    try:
+        from .printing import services as printing
+
+        # Punto de guardado propio: si la cola falla, se deshace sólo esto y la
+        # transacción de la venta sigue sana.
+        with transaction.atomic():
+            printing.enqueue_fiscal_ticket(document)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            'No se pudo encolar el ticket del comprobante %s.', document.pk, exc_info=True)
 
 
 #: Cuánto puede durar un envío antes de darlo por muerto. Un intento con

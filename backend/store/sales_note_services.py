@@ -18,6 +18,8 @@ Hard rules:
 
 from __future__ import annotations
 
+import logging
+
 import io
 from decimal import Decimal
 
@@ -34,6 +36,8 @@ from .pdf_services import (
     _RECEIPT_LABELS,
     _safe_slug,
 )
+
+logger = logging.getLogger(__name__)
 
 # Must appear visibly on every generated sales-note PDF.
 SALES_NOTE_DISCLAIMER = (
@@ -99,7 +103,26 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
             },
         )
 
+    _queue_ticket(note)
     return note, True
+
+
+def _queue_ticket(note) -> None:
+    """
+    La nota acaba de crearse sobre un pedido pagado: se encola su ticket.
+
+    La cola decide si corresponde (local con impresora automática) y es
+    idempotente. Un fallo al encolar no deshace la nota: se puede reimprimir.
+    """
+    try:
+        from .printing import services as printing
+
+        # Punto de guardado propio: si la cola falla, se deshace sólo esto y la
+        # transacción de la venta sigue sana.
+        with transaction.atomic():
+            printing.enqueue_sales_note_ticket(note)
+    except Exception:  # noqa: BLE001
+        logger.warning('No se pudo encolar el ticket de la nota %s.', note.pk, exc_info=True)
 
 
 def get_sales_note_filename(sales_note: SalesNote) -> str:

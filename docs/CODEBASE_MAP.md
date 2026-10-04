@@ -19,6 +19,8 @@ Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.
 | Servicio técnico | `service_services.py`, `v1_service_views.py`, `evidence_*` | `/api/v1/internal/<slug>/service/*` | Evidencias privadas; asignar ≠ cobrar |
 | Escaparate (CMS) | `storefront_content_services.py`, `storefront_content_views.py`, `company_settings.py`, `settings_views.py` | `/api/storefront/config/`, `/api/admin/storefront/{page,campaigns,<kind>}/` | `company.manage`; publicar es acción propia |
 | Imágenes de la tienda | `storefront_media.py`, `storefront_media_views.py`, modelo `StorefrontImage` | `POST /api/admin/storefront/images/`, `GET /api/storefront/images/<id>` | Públicas; el decodificador decide el tipo; comparten almacén con evidencias, no autorización |
+| Pagos (Izipay) | `payments/izipay.py`, `checkout_services.py`, `views.py` (`IzipayNotificationView`), `payments/fake_izipay.py` (sólo pruebas) | `/api/payments/create-checkout-session/`, `/api/payments/izipay/notification/` | Sólo la notificación firmada paga un pedido; importe, moneda y comercio contra la base |
+| Impresión en tienda | `printing/services.py`, `printing/escpos.py`, `print_views.py`, `fiscal_logo.py`, `backend/print_agent/` | `/api/admin/printing/{printers,agents,jobs}/`, `/api/v1/print-agent/jobs/…` | Todo por sucursal; token de agente por local; direcciones sólo de red local |
 | Fiscal (SUNAT) | `fiscal/`, `fiscal_*` | emisión, notas, bajas, resúmenes | Apagado por defecto (`FISCAL_ENABLED=0`) |
 | Configuración | `backend/backend/settings.py`, `urls.py` | variables en `.env.example` | Falla cerrado con `DEBUG=0`; sin admin de Django |
 

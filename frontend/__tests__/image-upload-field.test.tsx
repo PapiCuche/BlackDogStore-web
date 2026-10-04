@@ -85,6 +85,17 @@ describe('hueco de imagen', () => {
     },
   );
 
+  it('en modo «plain» la vista previa no lleva sombra: así sale en un comprobante', () => {
+    // El logotipo de un comprobante se imprime tal cual. Enseñarlo con la
+    // sombra de la tienda sería enseñar algo que el papel no va a tener.
+    setup({ value: URL_, plain: true });
+
+    const preview = screen.getByRole('img', { name: 'Imagen del hero' });
+    expect(preview).toHaveAttribute('src', URL_);
+    expect(preview.style.filter).toBe('');
+    expect(preview.className).not.toMatch(/shadow/);
+  });
+
   it('muestra la imagen colocada sobre un fondo que deja ver la transparencia', () => {
     setup({ value: URL_ });
 
