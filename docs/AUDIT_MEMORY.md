@@ -340,10 +340,9 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | LINT-EFFECT-01 | LOW | FRONTEND | 23 sitios, 20 pantallas del panel | PROPUESTA: `react-hooks/set-state-in-effect`; quitarlo cambia el patrón de carga de datos. No se silencia |
 | INTERNAL-UI-KIT | LOW | FRONTEND | `admin/components/internal-ui.tsx`, `InventoryUi.tsx`, `service/components/ServiceUi.tsx` | PROPUESTA: `Panel`, `Field`, `Button`, `StatCard` definidos en tres sitios. La rama `uxui/phase-03-internal-ui` (578 commits detrás) es OBSOLETA: no se mergea |
 | DEP-TS7 · DEP-ESLINT10 | LOW | INFRA | `frontend/package.json` | PROPUESTA: TypeScript 7 y ESLint 10 rompen la CI (#71, #72 cerrados); migración planificada |
-| INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
 | CI-03 | MEDIUM | INFRA | `.github/dependabot.yml` | CORREGIDO: PR semanales para pip, npm y Actions, sin merge automático. Pendiente del propietario: alertas de vulnerabilidad, escaneo de secretos y protección de push en la configuración del repositorio |
 | INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
-| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
+| Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, ENV-01/03, DEP-04/06…08, CI-02 | ver checkpoint |
 
 SIN VEREDICTO (no abiertos por F1): SEC-01…SEC-10 (secrets). De `frontend-auth`:
 FE-AUTH-06 corregido (sección 6); FE-AUTH-08
@@ -426,6 +425,8 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | DEP-05 | MEDIUM | `65d34ad` | `backend/requirements.txt` | CI de backend en instalación limpia | CORREGIDO |
 | FE-AUTH-06 | LOW | `085aa2e` | `frontend/app/api/[...path]/route.ts::fetchFollowingOwnRedirects` (`redirect: "manual"`) | `frontend/__tests__/api-proxy-redirects.test.ts` | CORREGIDO |
 | SKIP-LINK | LOW | `cf72ee5` | `StorefrontChrome.tsx::SkipLink`, `#contenido`, `#admin-main-content` | `frontend/__tests__/skip-link.test.tsx`, E2E `skip-link` | CORREGIDO |
+| INFRA-01…08 · DEP-01…03 · DOC-01 | MEDIUM→LOW | `91f1c9f`, `9b76dfd` | `backend/Dockerfile.prod` (gunicorn, sin root, sin migrar al arrancar), `frontend/Dockerfile.prod` (`npm ci`, `next build`, Node 22), `docker-compose.prod.yml` (sólo Caddy publica, healthchecks, sin contraseñas escritas), `.dockerignore` | ensayo de 31 comprobaciones, `docs/despliegue-produccion.md` §9 | CORREGIDO para producción (los archivos de desarrollo no cambian) |
+| TOKEN-HYGIENE-01 | LOW | `f0c29ce` | `docs/despliegue-produccion.md` §6.1.1 (`flushexpiredtokens` diario) | ensayo: el comando corre sin error | CORREGIDO (procedimiento) |
 | STOREFRONT-HERO-VARIANT | — | `0e9db9d`, `9c39716` | `StorefrontPageSettings.hero_variant` / `hero_image_url`, `Hero.tsx` (`HeroLight`) | `store/test_storefront_media.py`, `storefront-v4-home.test.tsx`, E2E `storefront-v4-images` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-UPLOAD | — | `0e9db9d`, `57ed321` | `storefront_media.py` (PNG/WebP conservan alfa), `StorefrontImage`, `ImageUploadField.tsx`, migración 0096 | `store/test_storefront_media.py`, `image-upload-field.test.tsx` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-CLEANUP | — | `634a6e8`, `6f29193` | `storefront_media.py` (`reference_fields`, `reference_count`, `claim`, `release`, `unplaced`), `cleanup_storefront_images` | `store/test_storefront_image_cleanup.py` (23), `test_storefront_media.py` | CORREGIDO: una imagen reemplazada o nunca colocada se borra sólo con cero referencias en toda la plataforma; contar y colocar bloquean la misma fila |
@@ -493,9 +494,8 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
-| THROTTLE-CACHE-01 | INFRA | cache compartida antes de calibrar throttles | Alta | — |
-| TOKEN-HYGIENE-01 | AUTH | purga de `OutstandingToken`/`BlacklistedToken` | Baja | — |
-| INFRA-01/02/03 | INFRA | imágenes dev-grade | Media | — |
+| THROTTLE-CACHE-01 | INFRA | CONTROLADO: producción corre un proceso de gunicorn y los límites son exactos; subir procesos exige antes una caché compartida (`docs/despliegue-produccion.md`) | Media | infraestructura |
+| LOGIN-CSRF-01 | AUTH | el inicio de sesión no rechaza por origen (401 con credenciales erróneas desde un origen ajeno); las operaciones con sesión sí | Baja | — |
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
 | IDOR-01 limpieza | SALES | segunda fuente de verdad en resend | Baja | — |
 | Lint 33 warnings | FRONTEND | 24 `set-state-in-effect` y otras | Baja | — |

@@ -1,0 +1,11 @@
+# Nada de esto entra en la imagen de producción.
+.env
+.env.*
+*.sqlite3
+private-media/
+static/
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/

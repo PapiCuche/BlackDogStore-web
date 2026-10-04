@@ -3,6 +3,42 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Infraestructura de producción: ensayo final
+
+Rama `deploy/production-vps` con `master` `1b748b1` incorporado. No se ha publicado nada en
+Internet.
+
+**El ensayo es un guion.** `sh deploy/rehearsal.sh` construye la pila de producción sin
+caché, arranca PostgreSQL vacío, la recorre a través de Caddy como un cliente y la desmonta.
+Proyecto, puertos y dominio reservados; certificado interno; sin correo ni cobros. Resultado
+sobre `9043c89` (con gunicorn 26.2.0 y DRF 3.18.1): `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de navegador, 0 fallos.
+La tabla completa está en `docs/despliegue-produccion.md` §9.
+
+**Imágenes públicas y evidencias privadas.** Comparten volumen y almacén, no autorización:
+
+- cinco PNG sin fondo subidos por la API (hero, categoría, servicio, ubicación, campaña) se
+  sirven a cualquiera con su transparencia intacta y caché inmutable, y se ven en la portada
+  a 320, 390, 768 y 1440 px en claro y en oscuro, con sombra por silueta y sin fondo detrás;
+- una evidencia del servicio técnico, en el mismo volumen, no se entrega sin sesión ni a
+  quien no trabaja en la empresa;
+- las claves reales del almacén no se alcanzan por ninguna ruta de archivos: Caddy no tiene
+  `file_server`;
+- SVG, GIF, HTML con extensión de imagen, PNG truncado y archivos de más de 8 MB se rechazan.
+
+**Persistencia.** Datos y archivos sobreviven a apagar y encender, a reconstruir las imágenes
+y recrear los contenedores, y a borrar todos los archivos y restaurar la copia.
+
+**Cambios en la rama.** PostgreSQL 16 en producción, el mismo que valida la CI (no hay datos
+de producción que migrar). Limpieza diaria de imágenes sin uso en la guía (§6.1.2).
+Dependabot vigila también las imágenes base de los `Dockerfile.prod`.
+
+**Lo que el ensayo enseñó del propio ensayo.** `seed_demo_users` se niega en producción, así
+que el guion crea su orden de servicio. El inicio de sesión se limita a 5 por minuto: un
+arnés que inicia más sesiones que eso se falla a sí mismo.
+
+Estado: **READY FOR EXTERNAL PRODUCTION CONFIGURATION**. Falta lo que sólo el propietario
+puede dar: dominio y DNS, servidor, credenciales SMTP, credenciales de producción de Izipay,
+host de las fotos de producto y destino de la copia externa.
 ## 2026-10-04 — Playwright completo y aislamiento de tres pruebas
 
 La pasada completa tras subir Playwright a 1.63 y reconstruir el entorno local encontró tres
@@ -234,11 +270,72 @@ Deuda nueva:
 - STOREFRONT-IMAGE-CLEANUP. Una imagen subida y luego sustituida queda guardada.
   No hay listado ni borrado.
 - La cabecera y el pie siguen con el diseño anterior; el diseño V4 los simplifica.
+## 2026-10-03 — DEPLOY-PREP: la infraestructura de producción, sobre el master actual
+
+Rama `deploy/production-vps`, con `master` `833fdec` incorporado. Estado:
+**PARCIAL** hasta que el PR esté integrado; nada desplegado.
+
+Qué añade: `backend/Dockerfile.prod` y `frontend/Dockerfile.prod`,
+`docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.production.example`,
+los guiones de copia y restauración, y la guía
+[docs/despliegue-produccion.md](docs/despliegue-produccion.md). No cambia código de
+la aplicación ni migraciones.
+
+Topología: internet → Caddy (único que publica puertos, HTTPS automático) →
+`/api/*` a Django con gunicorn, lo demás a Next → PostgreSQL en la red privada.
+Un solo proxy delante de Django: Caddy sobrescribe las cabeceras de dirección del
+cliente y Django la lee con `TRUSTED_PROXY_COUNT=1`.
+
+Decisiones que quedan fijadas:
+
+- **Un proceso de Django, ocho hilos.** Los límites de peticiones se cuentan en la
+  memoria del proceso y así son exactos. THROTTLE-CACHE-01 queda controlado, no
+  cerrado: subir procesos exige antes una caché compartida, y la guía lo dice.
+- **TOKEN-HYGIENE-01 resuelto en la guía.** `flushexpiredtokens` una vez al día
+  desde el `crontab` del servidor, en el contenedor `backend`, con cómo comprobarlo.
+- **Las migraciones no se aplican al arrancar.** Son un paso explícito de cada
+  despliegue.
+- **Almacenamiento.** Fotos de producto, imagen de campaña y logotipos son URL
+  públicas que la tienda carga donde elija. Las evidencias del servicio técnico
+  son lo único que guarda la aplicación y nunca tienen URL pública.
+
+Ajustes hechos al traer `master`: Caddy ya no pisa la política de referente que
+envía la aplicación; el frontend tiene comprobación de salud y Caddy espera a que
+las dos aplicaciones respondan; los guiones de copia se pueden ensayar con otro
+nombre de proyecto.
+
+Ensayo completo sobre `f0c29ce` (2026-10-03): imágenes sin caché, PostgreSQL
+vacío, 31 comprobaciones, con navegador real a través de Caddy. Todas pasan; el
+detalle está en la sección 9 de la guía. Un primer ensayo dio tres fallos en
+comprobaciones hechas con `curl`; eran comillas mal anidadas en el guion de
+ensayo, no la aplicación. Se corrigió el guion y se repitió entero.
+
+Escaneo de los commits a publicar: sin secretos, sin datos, sin copias de
+seguridad. El archivo de ejemplo lleva todos los secretos vacíos.
+
+El respaldo de los datos locales sigue fuera del repositorio y sin tocar
+(integridad correcta, sin relaciones rotas; sus ocho usuarios son de
+demostración y no pasan a producción).
+
+Pendiente de datos del propietario, sin los cuales no se publica:
+
+| Dato | Estado |
+|---|---|
+| Dominio y DNS, certificado público | PENDIENTE DOMINIO/DNS |
+| Servidor (VPS) | PENDIENTE CONTRATACIÓN |
+| SMTP | PENDIENTE CREDENCIALES |
+| Izipay producción | PENDIENTE CREDENCIALES (queda en `sandbox`) |
+| Host de las fotos de producto | PENDIENTE DECISIÓN |
+| Destino de la copia externa | PENDIENTE DECISIÓN |
+| Imágenes del trabajo paralelo | BLOQUEADO: LICENCIA |
+
+Deuda nueva: LOGIN-CSRF-01 (baja). El inicio de sesión no rechaza por origen;
+las operaciones con sesión sí.
 
 ## 2026-10-02 — FE-AUTH-06 y enlace «Saltar al contenido»
 
 Rama `fix/frontend-proxy-redirects-skip-link`. Código en `085aa2e` y `cf72ee5`,
-juntos en `abfda62`. Estado: **CORREGIDO** en esta rama. Sin backend, sin
+juntos en `abfda62`. Estado: **IMPLEMENTADO / MERGED** por PR #57 (`833fdec`). Sin backend, sin
 migraciones.
 
 - **FE-AUTH-06 — el proxy `/api` sólo sigue las redirecciones del propio backend

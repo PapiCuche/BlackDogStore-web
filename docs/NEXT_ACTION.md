@@ -2,25 +2,29 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: e40e440 (merge de #60, Storefront V4)
+master: ver `git log -1 origin/master` (este archivo se escribió con la infraestructura en #59)
 
 open_prs:
-- #59 deploy/production-vps — borrador, en conflicto con master; se actualiza al final
+- #64 (`actions/setup-python` 7): CI verde; el merge exige permiso `workflow`, lo hace el propietario.
+- #67 (`reportlab` 5, DEP-REPORTLAB5): comparar a la vista un ticket y un A4 antes de mergear.
+- Las demás de Dependabot que estén esperando su CI. Menores y parches: mergear con CI verde.
+  Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-Cierre de la aplicación antes del ensayo final de producción.
+READY FOR EXTERNAL PRODUCTION CONFIGURATION. La aplicación y la infraestructura están
+cerradas y ensayadas; no hay nada publicado en Internet.
 
 current_priority:
-1. Mergear ramas locales listas: `ci/dependabot` (CI-03) y `feat/storefront-image-cleanup`
-   (STOREFRONT-IMAGE-CLEANUP, 23 tests verdes en local, falta CI).
-2. Corregir lo que dejó la revisión de #60 (ver known_debt).
-3. Cabecera y pie V4, conservando todas las funciones actuales.
-4. Avisos de ESLint (25) y entradas duplicadas del menú del panel.
-5. Master definitivo → actualizar #59 → ensayo Docker nuevo → copia/restauración → merge de #59.
+1. Esperar los datos del propietario (blocked_external).
+2. Con ellos: `docs/despliegue-produccion.md` §4, en orden.
+3. Mientras tanto, sólo mantenimiento: Dependabot y deuda P4.
 
 validated:
-- master e40e440: árbol idéntico al HEAD de #60 (c7cd81e), que pasó CI de frontend y de backend
-  (4719 tests), Jest 564/564, typecheck, lint 0 errores/25 avisos y Playwright 170/170.
+- Backend: 4744 pruebas en PostgreSQL 16, 0 fallos (CI).
+- Frontend: Jest 590/590, typecheck, lint 0 errores / 23 avisos, build.
+- Ensayo de producción: `sh deploy/rehearsal.sh` → `ENSAYO: OK` (83 comprobaciones + 26 pasos
+  de navegador) sobre `9043c89`.
+- Playwright completo: 171/171, 0 omitidas.
 
 blocked_external:
 - Dominio, DNS y certificado público.
@@ -29,17 +33,18 @@ blocked_external:
 - Credenciales de producción de Izipay (queda en sandbox).
 - Host de las fotos de producto y destino de la copia externa.
 - Licencia de las imágenes de la propuesta de Figma (no se versionan).
+- Configuración del repositorio: alertas de vulnerabilidad, escaneo de secretos y protección
+  de push (sólo el propietario).
 
-known_debt:
-- P2 Hero oscuro: la sombra en línea pisa el halo de `.v3-cutout-on-slab` y no se ve sobre la losa.
-- P3 Regla de sombra definida dos veces (`.v3-cutout` en CSS y `storefrontMediaStyle`).
-- P3 Imagen de servicio y de ubicación llevan un fondo detrás del recorte.
-- P3 PNG con transparencia por color clave (tRNS) se aplana a RGB.
-- P3 La ruta pública sirve imágenes de empresas desactivadas.
-- P4 Límite de subida compartido con escritura de productos; nombre accesible del campo de archivo.
-- Cabecera y pie con el diseño anterior.
-- LOGIN-CSRF-01 (baja), THROTTLE-CACHE-01 (controlado: un proceso), AUDIT-01…06 (propuesta).
+known_debt (todo P4 o propuesta; detalle en `docs/AUDIT_MEMORY.md`):
+- AUDIT-01…06: ediciones de borrador sin fila de auditoría.
+- CSP-01: política de scripts (nonce + captura del SDK de Izipay).
+- LINT-EFFECT-01: 23 avisos `set-state-in-effect`.
+- INTERNAL-UI-KIT: componentes del panel definidos en tres sitios.
+- DEP-TS7, DEP-ESLINT10: versiones mayores que rompen la CI. DEP-REPORTLAB5: mayor de la librería de PDF.
+- LOGIN-CSRF-01 (baja); THROTTLE-CACHE-01 (controlado: un proceso de gunicorn).
+- Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Abrir PR de `ci/dependabot`; terminar y abrir PR de `feat/storefront-image-cleanup`; después
-rama `fix/storefront-image-depth` para los hallazgos P2/P3 de la sombra.
+Con dominio y servidor: `docs/despliegue-produccion.md` §4.1. Antes de publicar, repetir
+`sh deploy/rehearsal.sh` sobre el commit que se va a desplegar.

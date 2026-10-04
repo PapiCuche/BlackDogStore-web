@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Infraestructura de producción: ensayo final
+
+- `deploy/rehearsal.sh`: ensayo completo y repetible. Última pasada: `ENSAYO: OK` (83 + 26).
+- Imágenes de la tienda públicas y evidencias privadas en el mismo volumen, sin rutas de archivo.
+- Persistencia tras reinicio, reconstrucción y restauración de copia.
+- PostgreSQL 16 en producción; limpieza diaria de imágenes sin uso; Dependabot para imágenes base.
 ## 2026-10-04 — Playwright completo y aislamiento de pruebas
 
 - Tres pruebas E2E dejan de depender de otro servidor, de un detalle de Playwright y del orden.
@@ -70,6 +76,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - GET/PATCH de membresías mantienen su alcance tenant/branch actual.
 - Sin migraciones.
 - Cobertura nueva: `backend/store/test_membership_consent.py`.
+## 2026-10-03 — DEPLOY-PREP · Infraestructura de producción
+
+- Imágenes de producción de backend y frontend, `docker-compose.prod.yml`, Caddy
+  con HTTPS automático, ejemplo de variables y guiones de copia y restauración.
+- Guía completa en `docs/despliegue-produccion.md`, con la cadena de proxy, el
+  proceso único de Django, el almacenamiento y la limpieza diaria de sesiones.
+- Ensayo de 31 comprobaciones sobre el master actual: todas pasan.
+- Sin cambios en el código de la aplicación ni migraciones. Nada desplegado.
 
 ## 2026-10-02 — FE-AUTH-06 · Enlace de salto
 
