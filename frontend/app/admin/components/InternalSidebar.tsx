@@ -12,6 +12,7 @@
  */
 
 import Link from "next/link";
+import { ThemeToggle } from "../../components/ThemeToggle";
 import { BrandLogo } from "../../components/BrandLogo";
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
@@ -45,10 +46,10 @@ export function InternalSidebarContent({
   const groups = navigableGroups(access);
 
   const linkClass = (active: boolean) =>
-    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
+    `flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition ${
       active
-        ? "bg-foreground/[0.08] font-medium text-foreground"
-        : "text-muted hover:bg-foreground/[0.04] hover:text-foreground"
+        ? "bg-foreground font-semibold text-background"
+        : "text-muted hover:bg-surface hover:text-foreground"
     }`;
 
   return (
@@ -133,6 +134,8 @@ export function InternalSidebarContent({
         })}
       </nav>
 
+      {onClose ? <div className="flex items-center justify-between border-t border-bd-border px-4 py-3"><span className="text-sm text-muted">Apariencia</span><ThemeToggle /></div> : null}
+
       {/* El enlace de vuelta a la tienda vive en la barra superior. Estaba
           también aquí abajo: dos caminos al mismo sitio, y el de abajo quedaba
           fuera de vista cuando la lista de módulos crece. */}
@@ -149,7 +152,7 @@ export function InternalSidebar({
   companyName?: string | null;
 }) {
   return (
-    <aside className="hidden w-[260px] shrink-0 border-r border-bd-border bg-background lg:block">
+    <aside className="hidden w-[260px] shrink-0 border-r border-bd-border bg-surface lg:block">
       <div className="sticky top-0 h-screen">
         <InternalSidebarContent access={access} companyName={companyName} />
       </div>
@@ -232,12 +235,13 @@ export function MobileSidebar({
         aria-label="Cerrar navegación al hacer clic fuera"
         onClick={onClose}
         tabIndex={-1}
-        className="absolute inset-0 h-full w-full bg-black/70"
+        data-no-press
+        className="v3-backdrop absolute inset-0 h-full w-full bg-background/70"
       />
       <div
         ref={panelRef}
         tabIndex={-1}
-        className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background outline-none"
+        className="v3-drawer absolute left-0 top-0 h-full w-[280px] max-w-[85vw] border-r border-bd-border bg-background outline-none"
       >
         <InternalSidebarContent
           access={access}

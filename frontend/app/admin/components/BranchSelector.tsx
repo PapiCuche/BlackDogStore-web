@@ -107,7 +107,7 @@ export function BranchSelector({ access, value, onChange, allowAll = true }: Pro
           id="branch-selector-options"
           role="listbox"
           aria-label="Seleccionar sucursal"
-          className="absolute right-0 z-50 mt-1.5 min-w-[14rem] overflow-hidden rounded-xl border border-bd-border bg-surface py-1"
+          className="v3-pop absolute right-0 z-50 mt-1.5 min-w-[14rem] origin-top-right overflow-hidden rounded-xl border border-bd-border bg-surface py-1 shadow-2xl"
         >
           {options.map((option) => {
             const selected = option.value === value;

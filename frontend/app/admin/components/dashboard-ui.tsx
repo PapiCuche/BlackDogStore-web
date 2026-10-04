@@ -33,9 +33,9 @@ export function DashboardHeader({
   isPlatformAdmin: boolean;
 }) {
   return (
-    <header className="border-b border-bd-border pb-6">
-      <div>
-        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted">
+    <header className="relative overflow-hidden rounded-xl border border-bd-border bg-surface px-6 py-7 sm:px-8">
+      <div className="relative">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">
           Control interno
         </p>
         <h1 className="mt-1.5 font-display text-2xl font-extrabold tracking-[-0.03em] text-foreground sm:text-[2rem]">
@@ -51,7 +51,7 @@ export function DashboardHeader({
             {scope}
           </span>
           {isPlatformAdmin ? (
-            <span className="rounded-lg border border-foreground/25 bg-foreground/[0.08] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-widest text-foreground">
+            <span className="rounded-lg border border-bd-border bg-surface-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
               Master
             </span>
           ) : null}
@@ -108,7 +108,7 @@ export function SummaryStatCard({
   return (
     <div className="group rounded-xl border border-bd-border bg-surface p-4 transition hover:border-foreground/20 sm:p-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
           {label}
         </p>
         {Icon ? (
@@ -222,7 +222,7 @@ export function EmptyState({ message }: { message: string }) {
 export function DashboardSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true" aria-label="Cargando dashboard">
-      <div className="h-32 animate-pulse rounded-xl bg-foreground/[0.03]" />
+      <div className="h-32 animate-pulse rounded-xl bg-surface" />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {[0, 1, 2, 3, 4, 5].map((i) => (
           <div key={i} className="h-28 animate-pulse rounded-xl bg-foreground/[0.03]" />
