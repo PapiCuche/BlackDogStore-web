@@ -106,6 +106,10 @@ from .storefront_content_views import (
     AdminStorefrontCampaignPreviewView,
     AdminStorefrontPageView,
 )
+from .print_views import (
+    AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
+    AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
+)
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -265,6 +269,13 @@ urlpatterns = [
         AdminStorefrontImageUploadView.as_view(), name='admin-storefront-images',
     ),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
+    # Impresión en la tienda: impresoras, agentes y cola, por sucursal.
+    path('admin/printing/printers/', AdminPrinterListView.as_view(), name='admin-printers'),
+    path('admin/printing/printers/<int:pk>/', AdminPrinterDetailView.as_view(), name='admin-printer'),
+    path('admin/printing/agents/', AdminPrintAgentListView.as_view(), name='admin-print-agents'),
+    path('admin/printing/agents/<int:pk>/', AdminPrintAgentDetailView.as_view(), name='admin-print-agent'),
+    path('admin/printing/jobs/', AdminPrintJobListView.as_view(), name='admin-print-jobs'),
+    path('admin/printing/jobs/<int:pk>/retry/', AdminPrintJobRetryView.as_view(), name='admin-print-job-retry'),
     # M12F — contenido comercial del escaparate.
     path(
         'admin/storefront/page/',

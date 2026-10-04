@@ -37,9 +37,9 @@ from .pdf_services import (
     _safe_slug,
 )
 
-# Must appear visibly on every generated sales-note PDF.
 logger = logging.getLogger(__name__)
 
+# Must appear visibly on every generated sales-note PDF.
 SALES_NOTE_DISCLAIMER = (
     "Documento interno de venta. "
     "No válido como comprobante electrónico SUNAT."

@@ -118,6 +118,8 @@ REST_FRAMEWORK = {
         'staff_invite': '30/min',
         'staff_accept': '20/min',
         'cart': '60/min',
+        # El agente de impresión de cada local pregunta cada pocos segundos.
+        'print_agent': '240/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',
         'password_reset_request': '3/min',
