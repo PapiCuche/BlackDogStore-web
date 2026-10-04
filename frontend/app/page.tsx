@@ -150,7 +150,7 @@ function PromoLink({
 
 /** El titular de sección de la portada: sin mayúsculas forzadas, peso medio. */
 const SECTION_TITLE =
-  "text-[clamp(1.75rem,3.6vw,2.75rem)] font-semibold leading-[1.08] tracking-tight text-foreground text-balance";
+  "text-[clamp(1.75rem,3.6vw,2.75rem)] font-semibold leading-[1.08] tracking-tight text-foreground text-balance break-words";
 
 /**
  * LA FRANJA DE MARCA. Negra, con el isotipo de la tienda sangrando por la
@@ -370,7 +370,7 @@ export default function Home() {
             {page.services_image_url ? (
               <div
                 data-storefront-section-image="services"
-                className="mt-8 flex min-h-48 items-center justify-center overflow-hidden rounded-2xl bg-surface p-4 sm:p-6"
+                className="mt-8 flex min-h-48 items-center justify-center p-4 sm:p-6"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -515,7 +515,7 @@ export default function Home() {
               {page.location_image_url ? (
                 <div
                   data-storefront-section-image="location"
-                  className="flex min-h-64 items-center justify-center overflow-hidden rounded-2xl bg-surface p-4 sm:p-6"
+                  className="flex min-h-64 items-center justify-center p-4 sm:p-6"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -641,7 +641,7 @@ export default function Home() {
                   <img
                     src={bottomPromo.image_url}
                     alt={bottomPromo.title}
-                    style={storefrontMediaStyle(bottomPromo.image_url)}
+                    style={storefrontMediaStyle(bottomPromo.image_url, "slab")}
                     className="max-h-64 w-auto max-w-full object-contain"
                     loading="lazy"
                   />

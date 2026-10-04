@@ -33,7 +33,7 @@ it('sube la imagen de una categoría y la guarda en esa categoría', async () =>
   const onNotice = jest.fn();
   render(<CategoryImagesEditor companyId={7} canManage onNotice={onNotice} />);
 
-  const input = await screen.findByLabelText('Subir iPhone');
+  const input = await screen.findByLabelText('Subir imagen: iPhone');
   await userEvent.upload(input, new File([new Uint8Array([1])], 'iphone.png', { type: 'image/png' }));
 
   await waitFor(() => expect(patched).toEqual([{ image_url: URL_ }]));
@@ -51,7 +51,7 @@ it('dice el motivo si el servidor no deja guardar', async () => {
   render(<CategoryImagesEditor companyId={7} canManage onNotice={jest.fn()} />);
 
   await userEvent.upload(
-    await screen.findByLabelText('Subir Accesorios'),
+    await screen.findByLabelText('Subir imagen: Accesorios'),
     new File([new Uint8Array([1])], 'a.png', { type: 'image/png' }),
   );
 
@@ -64,5 +64,5 @@ it('sin permiso sobre el catálogo sólo muestra', async () => {
   render(<CategoryImagesEditor companyId={7} canManage={false} onNotice={jest.fn()} />);
 
   expect(await screen.findByRole('img', { name: 'Accesorios' })).toBeInTheDocument();
-  expect(screen.queryByLabelText('Subir Accesorios')).toBeNull();
+  expect(screen.queryByLabelText(/imagen: Accesorios$/)).toBeNull();
 });

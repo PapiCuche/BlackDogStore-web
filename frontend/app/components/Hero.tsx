@@ -54,6 +54,9 @@ export default function Hero() {
   // La campaña vigente manda; sin ella, la imagen que la tienda dejó colocada
   // en su portada. Las dos las subió la tienda: aquí no hay ninguna compilada.
   const heroImage = campaign?.image_url || page.hero_image_url || "";
+  // El título de la campaña describe la imagen de la campaña. La imagen propia
+  // de la portada es decorativa: el titular ya dice lo que hay que decir.
+  const heroImageAlt = campaign?.image_url ? campaign.title : "";
 
   if (page.hero_variant === "light") {
     return (
@@ -71,7 +74,7 @@ export default function Hero() {
         }
         place={[contact.address, contact.city].filter(Boolean).join(", ")}
         image={heroImage}
-        imageAlt={campaign?.title || ""}
+        imageAlt={heroImageAlt}
       />
     );
   }
@@ -290,9 +293,9 @@ export default function Hero() {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={heroImage}
-                  alt={campaign?.title || ""}
-                  style={storefrontMediaStyle(heroImage)}
-                  className="v3-cutout-on-slab absolute inset-0 h-full w-full object-contain"
+                  alt={heroImageAlt}
+                  style={storefrontMediaStyle(heroImage, "slab")}
+                  className="absolute inset-0 h-full w-full object-contain"
                 />
               </div>
             ) : (
