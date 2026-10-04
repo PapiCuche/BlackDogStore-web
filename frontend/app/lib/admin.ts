@@ -112,6 +112,8 @@ export type AdminCategory = {
   id: number;
   name: string;
   slug: string;
+  /** Con la que la portada presenta la categoría. Vacía = sin imagen. */
+  image_url?: string;
 };
 
 export async function fetchAdminProducts(params?: {
@@ -256,6 +258,27 @@ export async function createAdminCategory(data: {
   }
   if (res.status === 403) throw new Error('Solo admin puede crear categorías.');
   if (!res.ok) throw new Error('No se pudo crear la categoría.');
+  return res.json();
+}
+
+export async function updateAdminCategory(
+  categoryId: number,
+  data: { name?: string; image_url?: string },
+): Promise<AdminCategory> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/categories/${categoryId}/`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+  if (res.status === 400) {
+    const err = await res.json().catch(() => null);
+    const msg = err && typeof err === 'object'
+      ? Object.values(err).flat().join(' ')
+      : 'Datos inválidos.';
+    throw new Error(msg);
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para editar categorías.');
+  if (res.status === 404) throw new Error('Categoría no encontrada.');
+  if (!res.ok) throw new Error('No se pudo guardar la categoría.');
   return res.json();
 }
 

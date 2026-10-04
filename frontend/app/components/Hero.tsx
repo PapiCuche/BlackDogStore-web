@@ -3,6 +3,7 @@
 import { useStorefront } from "./StorefrontProvider";
 import { BrandLogo } from "./BrandLogo";
 import { StoreLink } from "./StoreLink";
+import { storefrontMediaStyle } from "../lib/storefront-media";
 
 /*
   AQUÍ HABÍA UNA FRANJA DE CUATRO SERVICIOS CON EMOJIS, y sobraba por tres
@@ -50,7 +51,30 @@ export default function Hero() {
   // y sin WhatsApp, ninguno: un botón que no lleva a ningún sitio sobra.
   const secondaryLabel = campaign?.secondary_cta_label || page.hero_secondary_cta_label;
   const secondaryHref = campaign?.secondary_cta_url || page.hero_secondary_cta_url;
-  const heroImage = campaign?.image_url || "";
+  // La campaña vigente manda; sin ella, la imagen que la tienda dejó colocada
+  // en su portada. Las dos las subió la tienda: aquí no hay ninguna compilada.
+  const heroImage = campaign?.image_url || page.hero_image_url || "";
+
+  if (page.hero_variant === "light") {
+    return (
+      <HeroLight
+        eyebrow={eyebrow}
+        titleLines={titleLines}
+        subtitle={[subtitle, policies.warranty_text].filter(Boolean).join(" ")}
+        primary={{ label: primaryLabel, href: primaryHref }}
+        secondary={
+          secondaryLabel && secondaryHref
+            ? { label: secondaryLabel, href: secondaryHref }
+            : whatsappLink
+              ? { label: "Consultar por WhatsApp", href: whatsappLink }
+              : null
+        }
+        place={[contact.address, contact.city].filter(Boolean).join(", ")}
+        image={heroImage}
+        imageAlt={campaign?.title || ""}
+      />
+    );
+  }
 
   return (
     /*
@@ -63,7 +87,7 @@ export default function Hero() {
       que el sistema no supiera qué contraste usar encima, y para eso están
       los tokens `slab-*`.
     */
-    <section className="relative overflow-hidden bg-slab text-slab-foreground">
+    <section data-hero-variant="dark" className="relative overflow-hidden bg-slab text-slab-foreground">
       {/*
         EL ISOTIPO SANGRANDO — el device de la tarjeta de presentación.
 
@@ -267,6 +291,7 @@ export default function Hero() {
                 <img
                   src={heroImage}
                   alt={campaign?.title || ""}
+                  style={storefrontMediaStyle(heroImage)}
                   className="v3-cutout-on-slab absolute inset-0 h-full w-full object-contain"
                 />
               </div>
@@ -276,6 +301,95 @@ export default function Hero() {
           </div>
         </div>
 
+      </div>
+    </section>
+  );
+}
+
+type HeroAction = { label: string; href: string };
+
+/**
+ * EL HERO CLARO — el que la tienda elige cuando quiere enseñar una imagen.
+ *
+ * Mismo contenido que la losa: la línea superior, el titular con sus saltos, el
+ * texto, los dos botones. Cambia la superficie, que es la del propio sitio, y
+ * que la columna derecha es un hueco de imagen.
+ *
+ * LA IMAGEN SE MUESTRA SIN CAJA. `object-contain`, sin fondo, sin borde y sin
+ * recorte: un PNG sin fondo se apoya directamente sobre el color de la página,
+ * que es para lo que se sube así. Sin imagen no hay columna vacía: el texto
+ * ocupa el ancho y la sección no deja un rectángulo reservado.
+ */
+function HeroLight({
+  eyebrow, titleLines, subtitle, primary, secondary, place, image, imageAlt,
+}: {
+  eyebrow: string;
+  titleLines: string[];
+  subtitle: string;
+  primary: HeroAction;
+  secondary: HeroAction | null;
+  place: string;
+  image: string;
+  imageAlt: string;
+}) {
+  return (
+    <section data-hero-variant="light" className="relative overflow-hidden bg-background text-foreground">
+      <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 py-14 sm:px-6 lg:grid-cols-12 lg:gap-12 lg:px-8 lg:py-24">
+        <div className={`min-w-0 ${image ? "lg:col-span-6" : "lg:col-span-9"}`}>
+          {eyebrow ? (
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
+              {eyebrow}
+            </p>
+          ) : null}
+          {/* El mismo criterio de tamaño que la losa: la palabra más larga cabe
+              en un teléfono, y de ahí hacia arriba crece de forma continua. */}
+          <h1
+            className="mt-4 max-w-[16ch] font-semibold uppercase leading-[1.02] tracking-tight text-foreground text-balance [overflow-wrap:break-word]"
+            style={{ fontSize: "min(clamp(2.25rem, 4.4vw, 4rem), 8vw)" }}
+          >
+            {titleLines.map((line, i) => (
+              <span key={i} className="block">{line}</span>
+            ))}
+          </h1>
+          {subtitle ? (
+            <p className="mt-6 max-w-[46ch] text-base leading-7 text-muted text-pretty sm:text-lg sm:leading-8">
+              {subtitle}
+            </p>
+          ) : null}
+
+          <div className="mt-8 flex flex-wrap gap-3">
+            <StoreLink
+              href={primary.href}
+              className="inline-flex min-h-11 items-center rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              {primary.label}
+            </StoreLink>
+            {secondary ? (
+              <StoreLink
+                href={secondary.href}
+                className="inline-flex min-h-11 items-center rounded-full border border-foreground/30 px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:border-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                {secondary.label}
+              </StoreLink>
+            ) : null}
+          </div>
+
+          {place ? <p className="mt-6 text-xs text-muted">{place}</p> : null}
+        </div>
+
+        {image ? (
+          <div data-hero-art className="v3-hero-art relative mx-auto w-full max-w-xl lg:col-span-6 lg:max-w-none">
+            {/* `<img>` y no `next/image`: la imagen es de la tienda y su tamaño
+                no se conoce de antemano. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={image}
+              alt={imageAlt}
+              style={storefrontMediaStyle(image)}
+              className="mx-auto max-h-[28rem] w-full object-contain"
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );

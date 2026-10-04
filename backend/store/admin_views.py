@@ -32,7 +32,7 @@ from .permissions import (
     HasCompanyMembership, IsPlatformAdmin, get_user_role,
 )
 from .serializers import (
-    AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
+    AdminCategoryUpdateSerializer, AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
     AdminOrderDetailSerializer, AdminOrderFulfillmentSerializer, AdminOrderListSerializer,
     AdminProductSerializer, AdminProductWriteSerializer,
     CategorySerializer,
@@ -809,6 +809,48 @@ class AdminCategoryListView(APIView):
             company=company,
         )
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+
+class AdminCategoryDetailView(APIView):
+    """
+    PATCH /api/admin/categories/<id>/ — name and image. `products.manage`.
+
+    A category of another company answers 404, exactly like one that does not
+    exist.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        return [AdminCategoriesThrottle()]
+
+    def patch(self, request, pk):
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+        category = Category.objects.filter(company=company, pk=pk).first()
+        if category is None:
+            return Response({'detail': 'Categoría no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        before = {'name': category.name, 'image_url': category.image_url}
+        ser = AdminCategoryUpdateSerializer(category, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        category = ser.save()
+        changed = {
+            field: {'old': before[field], 'new': getattr(category, field)}
+            for field in before if before[field] != getattr(category, field)
+        }
+        if changed:
+            AdminAuditLog.log(
+                actor=request.user,
+                action='category_updated',
+                target_type='category',
+                target_id=category.pk,
+                metadata={'slug': category.slug, 'changed_fields': changed},
+                request=request,
+                company=company,
+            )
+        return Response(CategorySerializer(category).data)
 
 
 # ---------------------------------------------------------------------------

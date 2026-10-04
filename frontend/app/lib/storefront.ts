@@ -67,6 +67,15 @@ export type StorefrontCampaign = {
 };
 
 export type StorefrontPage = {
+  /**
+   * Cómo se ve el hero, elegido por la tienda. `dark` es la losa de marca con
+   * el isotipo; `light` es un hero claro con sitio para una imagen.
+   */
+  hero_variant: "dark" | "light";
+  /** Imagen subida desde el panel. Vacía = el hero se compone sin imagen. */
+  hero_image_url: string;
+  services_image_url: string;
+  location_image_url: string;
   hero_eyebrow: string;
   hero_title: string;
   hero_subtitle: string;
@@ -81,6 +90,10 @@ export type StorefrontPage = {
 };
 
 export const EMPTY_PAGE: StorefrontPage = {
+  hero_variant: "dark",
+  hero_image_url: "",
+  services_image_url: "",
+  location_image_url: "",
   hero_eyebrow: "",
   hero_title: "",
   hero_subtitle: "",

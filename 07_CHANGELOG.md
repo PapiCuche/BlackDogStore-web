@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-03 — Portada V4 · Imágenes subidas desde el panel
+
+- La tienda sube sus imágenes desde «Escaparate»: hero, campaña, categorías,
+  servicio técnico y ubicación. PNG/WebP conservan transparencia y las imágenes
+  gestionadas por el panel reciben una sombra suave de profundidad.
+- El hero tiene estilo oscuro o claro, elegido por la tienda (`9c39716`).
+- Portada V4: tarjetas de categoría con imagen, franja de marca, servicios de la
+  tienda y «Cerca de ti» (`9c39716`).
+- Migraciones `0096_storefront_images` (tubería/hero/categorías) y
+  `0097_storefront_section_images` (servicio/ubicación).
+- Corregido: la importación de productos y stock respondía 415 (`b5de287`).
+- `backend/private-media/` pasa a `.gitignore` (`3fa9b42`).
+- Frontend 563 pruebas, typecheck, lint 0/25; Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
+
 ## 2026-10-02 — F-TENANT-01
 
 - Seguridad multiempresa: un administrador de empresa ya no puede vincular una

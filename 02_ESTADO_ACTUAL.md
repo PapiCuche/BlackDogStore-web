@@ -3,6 +3,85 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-03 — Portada V4: imágenes que la tienda sube desde su panel
+
+Rama `feat/storefront-v4-images`, desde `master` `833fdec`. Código en `3fa9b42`.
+Estado: **IMPLEMENTADO en esta rama**, pendiente de revisión y merge.
+
+El propietario pidió la portada del diseño V4 con los huecos de imagen listos
+para llenarlos desde el panel, y que un PNG sin fondo se vea sin fondo.
+
+Qué hay ahora:
+
+- **Subida de imágenes (`0e9db9d`).** `POST /api/admin/storefront/images/`
+  (`company.manage`). Acepta PNG, JPEG y WebP; el tipo lo decide el
+  decodificador, no el nombre del archivo. La imagen se vuelve a codificar desde
+  sus píxeles, así que no sale ningún metadato, y se reduce si pasa de 2400 px.
+  **PNG y WebP conservan la transparencia.** La dirección pública es
+  `/api/storefront/images/<id>`, con un identificador aleatorio.
+- **Huecos de imagen tenant-aware.** Hero, una imagen por categoría, una imagen
+  opcional del bloque de servicio y una de «Cerca de ti». `0096` introduce la
+  tubería de imágenes y `0097` añade los dos huecos editoriales sin reescribir la
+  migración ya aplicada en entornos locales.
+- **Panel (`57ed321` + seguimiento V4).** En «Escaparate» hay huecos de imagen
+  para hero, campaña, categorías, servicio técnico y ubicación. La vista previa
+  usa cuadrícula para comprobar transparencia. Toda imagen servida por la tubería
+  propia del escaparate recibe una sombra `drop-shadow` suave; en PNG/WebP
+  transparentes sigue el contorno del recorte en vez de dibujar una caja.
+- **Portada V4 (`9c39716`).** El hero tiene dos estilos y lo elige la tienda; el
+  oscuro sigue siendo el de quien no eligió. Las categorías son tarjetas con su
+  imagen; una sin imagen muestra un hueco tranquilo, no una imagen rota. Con el
+  hero claro sigue una franja de marca oscura con el isotipo. El bloque de
+  servicio lista los servicios de la tienda. «Cerca de ti» sólo aparece con una
+  dirección publicada.
+
+Lo que no cambia: ninguna imagen, categoría ni texto del piloto está en el
+código. Las imágenes de la propuesta de Figma siguen fuera del repositorio; la
+tienda sube las suyas (STOREFRONT-IMAGES-LICENSE sigue BLOQUEADO para subirlas
+al repositorio, y ya no hace falta que estén en él).
+
+Decisiones que esto cambia:
+
+- STOREFRONT-HERO-VARIANT = IMPLEMENTADO. Sustituye a «el hero es una losa
+  oscura para todas las tiendas»: la losa es el valor por defecto, no la única.
+  Las pruebas que protegen la losa siguen midiéndola tal cual.
+- STOREFRONT-EDITORIAL-CMS = PARCIAL. Hay imagen por categoría e imagen de hero;
+  no hay más material editorial.
+
+Dónde se guardan: en el mismo almacenamiento que las evidencias, bajo
+`companies/<id>/storefront/`, y se sirven por la API. En el despliegue preparado
+eso es el volumen `evidence`, que ya entra en la copia de seguridad.
+
+Encontrado y corregido por el camino:
+
+- **IMPORT-UPLOAD-415 (`b5de287`).** Importar productos o stock desde el panel
+  respondía 415: el archivo salía con una cabecera `Content-Type` vacía. Ya estaba
+  roto en `master`. Confirmado en navegador antes y después.
+- **`backend/private-media/` no estaba en `.gitignore` (`3fa9b42`).** Ahí viven
+  las evidencias de servicio. Un `git add -A` en una copia usada podía publicarlas.
+  Nunca llegó a ocurrir: no hay ningún archivo de esa carpeta en el historial.
+
+Pruebas nuevas: `test_storefront_media` (26, backend), `image-upload-field` (7),
+`category-images-editor` (3), `storefront-v4-home` (12), tres casos en
+`fetch-with-auth`, y `e2e/storefront-v4-images.spec.ts`, que sube un recorte en el
+panel con un navegador real y comprueba en la portada pública que sus esquinas
+siguen transparentes y que nada pinta un fondo detrás.
+
+Validación sobre `3fa9b42`: backend, 26 pruebas propias y 161 vecinas en
+PostgreSQL, `makemigrations --check` sin cambios; la suite completa la da el CI.
+Frontend 563 pruebas en 60 suites, OK; typecheck OK; lint 0 errores y 25
+advertencias; build OK (52 páginas); Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
+
+Una pasada anterior de Playwright no cuenta: el equipo se suspendió veinte
+minutos a mitad de la ejecución y dos pruebas agotaron su tiempo. Se repitió
+entera.
+
+Deuda nueva:
+
+- STOREFRONT-IMAGE-CLEANUP. Una imagen subida y luego sustituida queda guardada.
+  No hay listado ni borrado.
+- La cabecera y el pie siguen con el diseño anterior; el diseño V4 los simplifica.
+
 ## 2026-10-02 — FE-AUTH-06 y enlace «Saltar al contenido»
 
 Rama `fix/frontend-proxy-redirects-skip-link`. Código en `085aa2e` y `cf72ee5`,
