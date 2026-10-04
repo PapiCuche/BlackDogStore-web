@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Cierre previo al despliegue: menú, cabeceras y clasificación
+
+**Menú del panel.** Dos pantallas tenían dos entradas cada una (`/admin/inventory/reports`
+bajo Inventario y bajo Reportes; `/admin/settings` como «Empresa» y como «Configuración»,
+con la misma capacidad), y `admin.areas` estaba definido dos veces, la segunda diciendo
+«pantalla pendiente» de una pantalla que existe. Queda una entrada por pantalla y un
+identificador por módulo, con prueba que lo exige.
+
+**Cabeceras.** Auditoría de la política de contenido: no usa `unsafe-inline`,
+`unsafe-eval` ni comodines; sólo limita quién puede enmarcar la página y a dónde apunta
+`<base>`. Se añade `Permissions-Policy: camera=(), microphone=(), geolocation=()` (la
+aplicación no usa ninguna de las tres). Una política de scripts queda como CSP-01.
+
+**Clasificación.**
+
+| ID | Estado | Motivo |
+|---|---|---|
+| AUDIT-01…06 | PROPUESTA | Ediciones de borradores sin fila de auditoría; todos los cierres se auditan. Detalle por función en `docs/AUDIT_MEMORY.md` |
+| CSP-01 | PROPUESTA | Exige nonce por petición y la captura de red del SDK de Izipay |
+| LINT-EFFECT-01 | PROPUESTA | 23 avisos; cambia el patrón de carga de 20 pantallas |
+| INTERNAL-UI-KIT | PROPUESTA | Componentes del panel definidos en tres sitios |
+| `uxui/phase-03-internal-ui` | OBSOLETO | 578 commits detrás; mergearla revertiría el panel y la portada |
+| DEP-TS7, DEP-ESLINT10 | PROPUESTA | Las versiones mayores rompen la CI |
+
+Dependabot: mergeados #65 (`setup-node`), #68 (menores y parches del frontend) y #70
+(`jest-dom`); cerrados #69, #71 y #72 con su motivo.
+
+Validación: Jest 590/590 (62 suites), typecheck OK, lint 0 errores/23 avisos.
+
 ## 2026-10-04 — Cabecera y pie V4
 
 La cabecera y el pie ya salían enteros de la configuración de la tienda; no cambia qué

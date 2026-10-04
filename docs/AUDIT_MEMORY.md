@@ -330,9 +330,18 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post`; `test_membership_consent.py` | CORREGIDO: alta directa sólo platform admin; administradores de empresa usan invitación + aceptación; sin oracle de username ni enrolamiento sin consentimiento |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
-| AUDIT-01…06 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py` | PROPUESTA: ediciones de borrador sin fila de auditoría (los cierres sí se auditan); falta decidir la granularidad |
+| AUDIT-01 | LOW | AUDIT | `service_services.py::add_quote_item`, `remove_quote_item`, `update_quote` | PROPUESTA: editar una cotización en borrador no deja fila; `publish_quote` y `cancel_quote` sí |
+| AUDIT-02 | LOW | AUDIT | `inventory_services.py::set_transfer_item` | PROPUESTA: editar líneas de una transferencia en borrador no deja fila; crear, despachar, recibir y cancelar sí |
+| AUDIT-03 | LOW | AUDIT | `inventory_services.py::set_count_item` | PROPUESTA: anotar cantidades de un recuento no deja fila; crear, aprobar y cancelar sí |
+| AUDIT-04 | LOW | AUDIT | `announcement_services.py::set_audience`, `update_draft`, `create_draft` | PROPUESTA: preparar un comunicado no deja fila; `publish` y `cancel_draft` sí |
+| AUDIT-05 | LOW | AUDIT | `service_services.py::update_diagnostic`, `update_execution` | PROPUESTA: notas de trabajo en curso sin fila; los cambios de estado de la orden sí |
+| AUDIT-06 | LOW | AUDIT | `service_services.py::record_quality_result` | PROPUESTA: el resultado de control de calidad no deja fila propia; la entrega sí |
+| CSP-01 | LOW | FRONTEND | `frontend/next.config.ts` | PROPUESTA: la política sólo limita marcos y `<base>` (sin `unsafe-*` ni comodines). Una política de scripts exige un nonce por petición y la captura de red del SDK de Izipay en sandbox |
+| LINT-EFFECT-01 | LOW | FRONTEND | 23 sitios, 20 pantallas del panel | PROPUESTA: `react-hooks/set-state-in-effect`; quitarlo cambia el patrón de carga de datos. No se silencia |
+| INTERNAL-UI-KIT | LOW | FRONTEND | `admin/components/internal-ui.tsx`, `InventoryUi.tsx`, `service/components/ServiceUi.tsx` | PROPUESTA: `Panel`, `Field`, `Button`, `StatCard` definidos en tres sitios. La rama `uxui/phase-03-internal-ui` (578 commits detrás) es OBSOLETA: no se mergea |
+| DEP-TS7 · DEP-ESLINT10 | LOW | INFRA | `frontend/package.json` | PROPUESTA: TypeScript 7 y ESLint 10 rompen la CI (#71, #72 cerrados); migración planificada |
 | INFRA-01/02/03 | MEDIUM | INFRA | `backend/Dockerfile`, `docker-compose.yml` | imagen dev-grade, secretos copiados, DEBUG=1 por defecto |
-| CI-03 | MEDIUM | INFRA | `.github/` | sin alertas Dependabot ni `dependabot.yml` (CI-01 cerrado: hay CI de frontend y de backend) |
+| CI-03 | MEDIUM | INFRA | `.github/dependabot.yml` | CORREGIDO: PR semanales para pip, npm y Actions, sin merge automático. Pendiente del propietario: alertas de vulnerabilidad, escaneo de secretos y protección de push en la configuración del repositorio |
 | INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, TOKEN-HYGIENE-01, ENV-01/03, INFRA-04…08, DEP-01…04/06…08, CI-02, DOC-01 | ver checkpoint |
 

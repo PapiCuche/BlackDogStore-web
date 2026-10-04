@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Cierre previo al despliegue
+
+- Menú del panel: una entrada por pantalla, un identificador por módulo.
+- `Permissions-Policy` en todas las páginas.
+- AUDIT-01…06, CSP-01, LINT-EFFECT-01 e INTERNAL-UI-KIT clasificados como propuesta; la rama
+  `uxui/phase-03-internal-ui`, obsoleta.
+
 ## 2026-10-04 — Cabecera y pie V4
 
 - Categorías de la cabecera accesibles con teclado y lector de pantalla.
