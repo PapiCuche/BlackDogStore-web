@@ -120,9 +120,9 @@ def _open(raw: bytes) -> Image.Image:
 
 
 def _carries_transparency(image: Image.Image) -> bool:
-    return image.mode in ('RGBA', 'LA', 'PA') or (
-        image.mode == 'P' and 'transparency' in image.info
-    )
+    # Con canal alfa, o declarando un color como transparente (tRNS), que PNG
+    # admite también en RGB y en escala de grises, no sólo con paleta.
+    return image.mode in ('RGBA', 'LA', 'PA') or 'transparency' in image.info
 
 
 def process(raw: bytes) -> ProcessedImage:
