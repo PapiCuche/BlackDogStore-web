@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Limpieza de imágenes de la tienda (STOREFRONT-IMAGE-CLEANUP)
+
+Una imagen subida se quedaba para siempre en el almacén: reemplazar la del hero dejaba la
+anterior, y también una subida que nunca se guardó.
+
+- Al reemplazar o vaciar una imagen (portada, servicio, ubicación, categoría, campaña), la
+  anterior se borra **sólo si ningún campo de ninguna empresa la sigue usando**. Las
+  referencias son direcciones en campos de texto, así que se cuentan en todos los campos que
+  pueden llevar una dirección (`storefront_media.reference_fields()` los calcula; hoy son 23).
+- El recuento se hace con la fila de la imagen bloqueada, y colocar una imagen toma el mismo
+  bloqueo: un borrado y una colocación no pueden cruzarse. El archivo se borra al confirmarse
+  la transacción.
+- Colocar una imagen que ya no existe, o que es de otra empresa, responde 400 con el mismo
+  mensaje: no se confirma que exista la de otra tienda.
+- `python manage.py cleanup_storefront_images [--older-than-hours 24] [--dry-run]` borra las
+  subidas que nunca se colocaron. Cada borrado se audita bajo su empresa
+  (`storefront_image_deleted`).
+- De la revisión de #60: un PNG con transparencia por color clave (tRNS en RGB o en escala de
+  grises) conserva su transparencia, y la ruta pública responde 404 para una empresa
+  desactivada.
+
+Sin migraciones nuevas. Validación (CI de #73, PostgreSQL 16): 4744 pruebas, 0 fallos,
+3 omitidas, 2516 s.
+
+Trabajo local: un reinicio del equipo vació `/tmp` con los worktrees dentro. No se perdió nada
+confirmado. Los worktrees pasan a `~/Library/Caches/blackdog-worktrees/` (`AGENTS.md` §5).
+
 ## 2026-10-04 — Cierre previo al despliegue: menú, cabeceras y clasificación
 
 **Menú del panel.** Dos pantallas tenían dos entradas cada una (`/admin/inventory/reports`
