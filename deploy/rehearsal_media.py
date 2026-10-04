@@ -200,7 +200,7 @@ def public_checks(urls):
     check('la portada se sirve con el hero claro', res.status == 200 and b'data-hero-variant="light"' in html)
 
 
-def private_checks(state):
+def private_checks(state, staff=None):
     content = state['evidence_content']
     anonymous = Client()
     res, _ = anonymous.request('GET', content, origin=False)
@@ -213,12 +213,15 @@ def private_checks(state):
     res, _ = outsider.request('GET', content)
     check('evidencia privada · con sesión de quien no trabaja en la empresa',
           status == 200 and res.status in (403, 404), f'login {status}, evidencia {res.status}')
+    # La ruta de cliente es de la API móvil y no acepta la cookie de sesión:
+    # responde 401. Con otra credencial respondería 403 o 404. Nunca 200.
     res, _ = outsider.request('GET', state['evidence_customer'])
     check('evidencia privada · con sesión de un cliente ajeno a la orden',
-          res.status in (403, 404), res.status)
+          res.status in (401, 403, 404), res.status)
 
-    staff = Client()
-    staff.login(os.environ['R_USER'], os.environ['R_PASSWORD'])
+    if staff is None:
+        staff = Client()
+        staff.login(os.environ['R_USER'], os.environ['R_PASSWORD'])
     res, _ = staff.request('GET', content)
     check('evidencia privada · quien trabaja en la empresa sí la ve',
           res.status == 200 and res.headers.get('Content-Type', '').startswith('image/'), res.status)
@@ -260,6 +263,8 @@ def upload():
         'slot': 'home_promo', 'title': 'Ensayo', 'image_url': urls['campaña'],
     })
     check('crear campaña con imagen', res.status == 201, f'{res.status} {body}')
+    res, _ = admin.json('POST', f"/api/admin/storefront/campaigns/{(body or {}).get('id')}/publish?company={company}")
+    check('publicar la campaña', res.status == 200, res.status)
 
     # --- lo que NO se acepta -------------------------------------------------
     svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
@@ -301,13 +306,16 @@ def upload():
     }
     with open(STATE, 'w') as handle:
         json.dump(state, handle)
-    return state
+    return state, admin
 
 
 def main():
     mode = sys.argv[1]
+    staff = None
     if mode == 'upload':
-        state = upload()
+        # La sesión del administrador se reutiliza: el inicio de sesión está
+        # limitado a 5 por minuto y el ensayo no debe gastarlos en sí mismo.
+        state, staff = upload()
     else:
         with open(STATE) as handle:
             state = json.load(handle)
@@ -316,7 +324,7 @@ def main():
         with open(STATE, 'w') as handle:
             json.dump(state, handle)
     public_checks(state['urls'])
-    private_checks(state)
+    private_checks(state, staff)
     print(f"  {'TODO OK' if not FAILED else 'FALLOS: ' + '; '.join(FAILED)}")
     sys.exit(1 if FAILED else 0)
 

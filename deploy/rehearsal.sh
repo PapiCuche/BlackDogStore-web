@@ -203,13 +203,17 @@ expect "CORS para un origen ajeno" "$($K -I -H 'Origin: https://evil.test' "$BAS
 expect "login desde un origen ajeno" "$(code -X POST -H 'Content-Type: application/json' -H 'Origin: https://evil.test' -d '{"username":"x","password":"y"}' "$BASE/api/auth/login")" "403|401|400"
 
 step "11 archivos subidos: imágenes públicas y evidencias privadas"
+# El inicio de sesión está limitado a 5 por minuto y por dirección: se deja
+# vaciar la ventana antes de que el ensayo inicie sus propias sesiones.
+pause 62
 media "subir, colocar y servir" upload
 KEYS=$(shell "
 from store.models import StorefrontImage, RepairEvidence
 print(','.join(list(StorefrontImage.objects.order_by('pk').values_list('storage_key', flat=True)[:1]) + list(RepairEvidence.objects.order_by('pk').values_list('storage_key', flat=True)[:1])))" | tail -1)
 echo "  claves del almacén a probar por rutas de archivo: $(echo "$KEYS" | tr ',' '\n' | wc -l | tr -d ' ')"
 media "públicas, privadas y sin rutas de archivo" verify "$KEYS"
-expect "las imágenes y las evidencias comparten almacén" "$($C exec -T backend sh -c 'ls /app/private-media | sort | tr "\n" " "')" "companies evidence |companies evidence"
+expect "hay imágenes de tienda en el volumen" "$($C exec -T backend sh -c 'find /app/private-media -type f -path "*/storefront/*" | wc -l' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
+expect "hay evidencias en el mismo volumen" "$($C exec -T backend sh -c 'find /app/private-media -type f ! -path "*/storefront/*" | wc -l' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 
 step "12 navegador real: tienda, imágenes, sesión y panel"
 # El límite de inicio de sesión es de 5 por minuto y por dirección: se deja
@@ -291,7 +295,7 @@ step "18 copia de seguridad (deploy/backup.sh): base de datos y archivos"
 COMPOSE="$C" BACKUP_DIR="$BK" sh deploy/backup.sh 2>&1 | tail -3 | sed "s|$BK|<copias>|g"
 DB=$(ls "$BK"/db-*.sql.gz 2>/dev/null | head -1); EV=$(ls "$BK"/evidence-*.tar.gz 2>/dev/null | head -1)
 expect "la copia de archivos lleva imágenes de tienda" "$(tar -tzf "$EV" 2>/dev/null | grep -c '/storefront/.*\.png$' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
-expect "la copia de archivos lleva evidencias" "$(tar -tzf "$EV" 2>/dev/null | grep -c 'private-media/evidence/.' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
+expect "la copia de archivos lleva evidencias" "$(tar -tzf "$EV" 2>/dev/null | grep -v '/storefront/' | grep -cE '\.(jpe?g|png|webp)$' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 
 step "19 daño posterior y restauración (deploy/restore.sh)"
 $C exec -T -e DJANGO_SUPERUSER_PASSWORD="$ADMIN_PW" backend python manage.py createsuperuser --noinput --username intruso_posterior --email posterior@example.invalid 2>&1 | tail -1

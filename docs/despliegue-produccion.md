@@ -56,14 +56,24 @@ compartida**: cada proceso contaría por su lado y los límites se multiplicarí
 | Qué | Dónde | Quién lo ve |
 |---|---|---|
 | Fotos de producto | Una URL en cada producto; el archivo está en el host que elijas | Público |
-| Imagen de una campaña | Una URL en la campaña | Público |
 | Logotipos de la tienda | URL en la configuración de la empresa | Público |
-| Evidencias del servicio técnico | Volumen `evidence` del servidor, o un almacenamiento S3 privado | Sólo personal con permiso, a través de la API |
+| Imágenes de la tienda (hero, categorías, servicio, ubicación, campañas) subidas desde el panel | Volumen `evidence`, bajo `companies/<id>/storefront/` | Público, por `/api/storefront/images/<id>` |
+| Evidencias del servicio técnico | El mismo volumen `evidence`, o un almacenamiento S3 privado | Sólo personal con permiso, a través de la API |
 
-La aplicación no guarda archivos públicos: guarda su dirección. Las evidencias
-son lo único que almacena, y nunca tienen URL pública: con el volumen se sirven
-por la API tras comprobar el permiso; con S3, por un enlace firmado que caduca a
-los cinco minutos.
+**Mismo volumen, distinta autorización.** Las imágenes de la tienda y las
+evidencias comparten almacén, pero no permiso. Una imagen de la tienda la sirve
+la API a cualquiera, con su transparencia y con caché de un año: su dirección no
+cambia nunca de contenido. Una evidencia nunca tiene URL pública: con el volumen
+se sirve por la API tras comprobar el permiso; con S3, por un enlace firmado que
+caduca a los cinco minutos.
+
+**Caddy no sirve archivos.** No hay ningún `file_server` ni ninguna ruta `/media`:
+publicar la carpeta para servir las imágenes de la tienda publicaría también las
+evidencias. Todo archivo sale por la API, que es quien decide. El ensayo lo
+comprueba pidiendo las claves reales del almacén por cinco rutas de archivo.
+
+Las fotos de producto siguen siendo una URL: la aplicación guarda su dirección,
+no el archivo.
 
 **Por qué la API no pasa por el proxy interno de Next.** Ese proxy descarta a
 propósito las cabeceras que identifican al cliente. Detrás de él, Django vería a
@@ -209,8 +219,9 @@ Lo que **no** es real en una base nueva:
 sh deploy/backup.sh
 ```
 
-Deja en `backups/` un volcado completo de PostgreSQL y las evidencias del servicio
-técnico, y borra las copias con más de 14 días. El volcado sólo se guarda si
+Deja en `backups/` un volcado completo de PostgreSQL y un archivo con todo el
+almacén —las evidencias del servicio técnico y las imágenes de la tienda; el
+archivo se llama `evidence-…` por el volumen—, y borra las copias con más de 14 días. El volcado sólo se guarda si
 terminó entero.
 
 Para hacerla cada noche, en el `crontab` del servidor:
@@ -237,6 +248,20 @@ $C exec backend python manage.py shell -c "from rest_framework_simplejwt.token_b
 ```
 
 El segundo comando debe imprimir `0` justo después de la limpieza.
+
+### 6.1.2 Limpieza de imágenes sin uso
+
+Al reemplazar una imagen de la tienda, la anterior se borra sola si nadie más la
+usa. Lo que queda son las subidas que nunca se guardaron (se cerró el formulario
+sin guardar). Una vez al día:
+
+```
+55 3 * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py cleanup_storefront_images >> backups/cleanup_storefront_images.log 2>&1
+```
+
+Sólo borra imágenes con cero referencias en toda la plataforma y con más de 24
+horas (`--older-than-hours`). `--dry-run` las lista sin borrar. Cada borrado
+queda en el registro de auditoría de su empresa.
 
 ### 6.2 Copia externa
 
@@ -287,7 +312,8 @@ Si algo sale mal: `git checkout <commit anterior>`, `$C build`, `$C up -d`. Si
 además una migración cambió datos, restaura la copia del paso 1.
 
 `docker compose down` conserva los datos. **`docker compose down -v` los borra**:
-elimina el volumen de la base de datos.
+elimina el volumen de la base de datos y el de los archivos (evidencias e
+imágenes de la tienda).
 
 ## 8. Seguridad
 
@@ -297,6 +323,12 @@ Ya resuelto por el código o por esta configuración:
 - Sin `SECRET_KEY` real, `ALLOWED_HOSTS` y `CORS_ALLOWED_ORIGINS`, Django se niega a
   arrancar.
 - Los accesos de demostración responden 404 y la tarjeta de `/auth` no se pinta.
+- Una imagen subida se recodifica a partir de sus píxeles: sólo PNG, JPEG o WebP,
+  hasta 8 MB. Un SVG, un GIF o un HTML con extensión de imagen se rechazan, y el
+  nombre original no llega al almacén.
+- Las evidencias no se entregan sin sesión ni a quien no trabaja en la empresa,
+  aunque compartan volumen con las imágenes públicas.
+- Las páginas renuncian a cámara, micrófono y ubicación (`Permissions-Policy`).
 - Las cookies de sesión son `Secure` y `HttpOnly`; las peticiones que modifican
   exigen CSRF y un origen del propio dominio.
 - El admin de Django no existe en producción: con `DEBUG=0` el backend no registra

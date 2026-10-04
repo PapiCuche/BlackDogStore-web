@@ -87,3 +87,27 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci(deps)"
+
+  # Base images of the production build. Patch and minor tags only: moving to
+  # a new Node or Python line is a runtime change that is planned and
+  # rehearsed (deploy/rehearsal.sh), not a weekly update.
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Lima
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "build(deps)"
+    ignore:
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
