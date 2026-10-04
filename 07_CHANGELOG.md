@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Profundidad de los recortes (revisión de #60)
+
+- La sombra de un recorte se ve sobre superficies oscuras (hero oscuro, promoción, tema
+  oscuro): dos variables de CSS, una sola regla.
+- Sin azulejo detrás de las imágenes de servicio y ubicación.
+- `alt` correcto en la imagen de la portada; nombre accesible del campo de subida (WCAG 2.5.3).
+
 ## 2026-10-04 — Actualización de dependencias (CI-03)
 
 - Dependabot semanal para `pip`, `npm` y GitHub Actions, sin merge automático.

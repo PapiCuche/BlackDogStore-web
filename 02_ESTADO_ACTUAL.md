@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Profundidad de los recortes (revisión de #60)
+
+La revisión de Storefront V4 no dejó hallazgos P0 ni P1. Corregido en el frontend:
+
+- **Sombra sobre superficies oscuras (P2).** En el hero oscuro el estilo en línea
+  pisaba el halo claro y el recorte quedaba sin profundidad; lo mismo en la promoción
+  inferior y en todo el tema oscuro. El valor vive ahora en dos variables de CSS
+  (`--cutout-shadow`, `--cutout-shadow-on-slab`); el tema oscuro apunta la primera a la
+  segunda. `storefrontMediaStyle(src, "page" | "slab")` sólo dice sobre qué superficie
+  está la imagen. La regla duplicada `.v3-cutout` desaparece.
+- Las imágenes de servicio y de ubicación ya no pintan un azulejo detrás del recorte.
+- La imagen propia de la portada es decorativa: no toma el título de una campaña sin imagen.
+- El nombre accesible del campo de subida empieza por el texto visible del botón
+  («Subir imagen: …», «Cambiar imagen: …») — WCAG 2.5.3.
+- Los títulos de sección parten una palabra larga antes que desbordar.
+
+Validación: Jest 575/575 (61 suites), typecheck OK, lint 0 errores/25 avisos. Playwright
+de la tienda (imágenes V4, contraste, hero, ajuste de texto, tienda V3, enlace de salto):
+116 pruebas OK; una falló en la pasada conjunta por el límite del carrito y pasó sola.
+
+Las dos correcciones de backend de la misma revisión (transparencia por color clave,
+imágenes de una empresa desactivada) van con la limpieza de imágenes en el PR #73.
+
 ## 2026-10-04 — Actualización de dependencias (CI-03)
 
 `.github/dependabot.yml`: una vez por semana (lunes 06:00, Lima) Dependabot abre pull
