@@ -2,6 +2,7 @@ import logging
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.http import HttpResponse
 from django.db.models import F, Q
@@ -66,6 +67,7 @@ _MAX_PAGE_SIZE = 100
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import order_fulfillment_services as fulfillment
+from . import storefront_media
 
 CAP_ORDERS_VIEW = 'sales.orders.view'
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
@@ -835,21 +837,36 @@ class AdminCategoryDetailView(APIView):
         before = {'name': category.name, 'image_url': category.image_url}
         ser = AdminCategoryUpdateSerializer(category, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
-        category = ser.save()
-        changed = {
-            field: {'old': before[field], 'new': getattr(category, field)}
-            for field in before if before[field] != getattr(category, field)
-        }
-        if changed:
-            AdminAuditLog.log(
-                actor=request.user,
-                action='category_updated',
-                target_type='category',
-                target_id=category.pk,
-                metadata={'slug': category.slug, 'changed_fields': changed},
-                request=request,
-                company=company,
-            )
+        # Una sola transacción: lo que se coloca se comprueba, se guarda, y lo
+        # que el hueco suelta se retira si nadie más lo muestra. Si algo falla,
+        # no se borra nada.
+        with transaction.atomic():
+            new_image = ser.validated_data.get('image_url', before['image_url'])
+            if new_image != before['image_url']:
+                try:
+                    storefront_media.claim(new_image, company=company, field='image_url')
+                except DjangoValidationError as exc:
+                    return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+            category = ser.save()
+            changed = {
+                field: {'old': before[field], 'new': getattr(category, field)}
+                for field in before if before[field] != getattr(category, field)
+            }
+            if changed:
+                AdminAuditLog.log(
+                    actor=request.user,
+                    action='category_updated',
+                    target_type='category',
+                    target_id=category.pk,
+                    metadata={'slug': category.slug, 'changed_fields': changed},
+                    request=request,
+                    company=company,
+                )
+            if 'image_url' in changed:
+                storefront_media.release(
+                    [before['image_url']], company=company,
+                    actor=request.user, request=request,
+                )
         return Response(CategorySerializer(category).data)
 
 
