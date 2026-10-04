@@ -139,7 +139,9 @@ from django.urls import get_resolver; print('rutas raíz', sorted(str(p.pattern)
 expect "DEBUG" "$(shell "from django.conf import settings as s; print(s.DEBUG)")" False
 
 step "6 datos de ensayo: semilla, primer administrador y una persona ajena"
-$C exec -T backend python manage.py seed_demo_users --company-slug "$SLUG" --e2e-fixtures 2>&1 | tail -1 | cut -c1-120
+$C exec -T backend python manage.py seed_demo_users --company-slug "$SLUG" >/dev/null 2>&1
+expect "seed_demo_users se niega en producción" "$([ $? -ne 0 ] && echo sí || echo no)" "sí"
+expect "no existe ninguna cuenta de demostración" "$(shell "from django.contrib.auth import get_user_model as U; print(U().objects.filter(username__startswith='dev_').count())")" 0
 expect "las cuentas de demostración no se anuncian" "$(code "$BASE/api/dev/demo-accounts")" 404
 $C exec -T -e DJANGO_SUPERUSER_PASSWORD="$ADMIN_PW" backend python manage.py createsuperuser --noinput --username ensayo_admin --email ensayo@example.invalid 2>&1 | tail -1
 $C exec -T -e OUTSIDER_PW="$OUTSIDER_PW" backend python manage.py shell -c "
@@ -147,6 +149,18 @@ import os
 from django.contrib.auth import get_user_model
 get_user_model().objects.create_user('ensayo_ajeno', email='ajeno@example.invalid', password=os.environ['OUTSIDER_PW'])
 print('persona sin empresa creada')" 2>&1 | grep creada
+# Una orden de servicio, para tener una evidencia privada que proteger.
+shell "
+from django.contrib.auth import get_user_model
+from store import service_services as service
+from store.models import Branch, Company, Customer, Device
+company = Company.objects.get(slug='$SLUG')
+branch = Branch.objects.filter(company=company, is_active=True).order_by('pk').first()
+admin = get_user_model().objects.get(username='ensayo_admin')
+customer = Customer.objects.create(company=company, customer_type=Customer.TYPE_PERSON, first_name='Ensayo', last_name='Evidencia', notes='ensayo')
+device = Device.objects.create(company=company, customer=customer, device_type=Device.TYPE_PHONE, brand='Ensayo', model='Evidencia', notes='ensayo')
+order = service.create_repair_order(company=company, branch=branch, customer=customer, device=device, reported_issue='Ensayo de evidencia privada', actor=admin)
+print('orden de servicio de ensayo creada:', bool(order.pk))" | tail -1
 echo "admin de Django, directo al backend: $($C exec -T backend python -c "
 import urllib.request, urllib.error
 for p in ('/admin/', '/admin/login/'):
