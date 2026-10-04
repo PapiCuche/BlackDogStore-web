@@ -24,6 +24,17 @@ it('dice a qué impresora del local se envió el ticket', () => {
   expect(notice).toHaveTextContent('No hace falta imprimir desde este equipo');
 });
 
+it('sin agente conectado no dice que se envió: dice que espera y que se puede imprimir aquí', () => {
+  // «En cola» no es «enviado». Si nadie en el local está recogiendo tickets,
+  // decir «no hace falta imprimir» dejaría al cliente sin su ticket.
+  render(<PosPrintNotice job={{ id: 4, status: 'pending', printer: 'Caja', agent_online: false }} />);
+
+  const notice = screen.getByRole('status');
+  expect(notice).toHaveTextContent('El ticket está en cola para «Caja»');
+  expect(notice).toHaveTextContent('el agente de impresión de este local no está conectado');
+  expect(notice).not.toHaveTextContent('No hace falta imprimir');
+});
+
 it('un ticket ya impreso se dice como impreso', () => {
   render(<PosPrintNotice job={{ id: 4, status: 'printed', printer: 'Caja' }} />);
   expect(screen.getByRole('status')).toHaveTextContent('Ticket impreso en «Caja»');

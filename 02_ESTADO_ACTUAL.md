@@ -53,10 +53,15 @@ comprobante firmado → PDF A4 y ticket → trabajo → el agente lo entrega a u
 simulada. Un pago rechazado, manipulado o repetido no deja ni un comprobante ni un
 ticket de más.
 
-Validación local: 99 pruebas nuevas de backend (pago 21, papel 10, logotipo 10, cola 23,
-API 22, agente 10, extremo a extremo 3) más las clases de pago, fiscal y caja existentes;
-Jest 601/601 (64 suites), typecheck, lint 0 errores / 23 avisos, build. La suite completa
-corre en la CI del PR.
+**Revisión independiente del código** antes de subir: sin P0 ni P1; 12 hallazgos P2–P4,
+todos corregidos con su prueba. Los tres P2: un `ESC` en el nombre del comprador llegaba
+a la impresora como orden; no había espera entre reintentos; y la caja decía «enviado»
+sin ningún agente escuchando. El detalle está en DEC-PRINT-01.
+
+Validación local: 121 pruebas nuevas de backend (pago 21, papel 10, logotipo 10, cola 32,
+API 29, agente 16, extremo a extremo 3), en SQLite y en PostgreSQL, más 796 de las clases
+de pago, fiscal y caja existentes; Jest 602/602 (64 suites), typecheck, lint 0 errores /
+23 avisos, build. La suite completa corre en la CI del PR.
 
 ## 2026-10-04 — Infraestructura de producción: ensayo final
 

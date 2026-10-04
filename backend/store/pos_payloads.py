@@ -260,10 +260,17 @@ def sale_payload(
     # desde un teléfono sólo necesita saberlo. `None`: no hay impresora del
     # local y el ticket se imprime, como antes, desde el navegador.
     job = order.print_jobs.select_related('printer').order_by('-pk').first()
-    payload['print_job'] = (
-        None if job is None
-        else {'id': job.pk, 'status': job.status, 'printer': job.printer.name}
-    )
+    if job is None:
+        payload['print_job'] = None
+    else:
+        from .printing.services import agent_online
+
+        payload['print_job'] = {
+            'id': job.pk, 'status': job.status, 'printer': job.printer.name,
+            # Sin un agente escuchando, «en cola» no es «enviado»: la caja lo
+            # dice y ofrece imprimir desde el navegador.
+            'agent_online': agent_online(job.branch),
+        }
     if available_elsewhere:
         payload['available_elsewhere'] = available_elsewhere
     return payload

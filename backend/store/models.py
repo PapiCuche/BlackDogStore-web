@@ -1,6 +1,7 @@
 import hashlib
 import re
 import secrets
+import uuid
 from datetime import timedelta
 
 from decimal import Decimal
@@ -8390,9 +8391,16 @@ class PrintJob(models.Model):
     sales_note = models.ForeignKey(
         'SalesNote', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     idempotency_key = models.CharField(max_length=120)
+    #: Identificador que no se repite entre bases de datos. El agente lo apunta
+    #: en su diario: el número de fila sí se repite si la base se restaura o si
+    #: el agente pasa de un servidor de pruebas al de verdad.
+    uid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     status = models.CharField(
         max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
     attempts = models.PositiveSmallIntegerField(default=0)
+    #: No se entrega antes de este momento: la espera entre un intento fallido
+    #: y el siguiente.
+    available_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.ForeignKey(
         PrintAgent, on_delete=models.SET_NULL, null=True, blank=True, related_name='jobs')
     #: Cambia en cada entrega: sólo quien tiene el de la entrega vigente puede

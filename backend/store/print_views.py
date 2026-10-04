@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 CAP_CONFIGURE = 'company.manage'
 CAP_OPERATE = ('sales.pos.use', 'sales.orders.view')
 _NOT_FOUND = 'No encontrado.'
+#: Lo que es una red de un local: las privadas de IPv4, el enlace local, y sus
+#: equivalentes de IPv6. Nada más.
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16',
+    'fc00::/7', 'fe80::/10',
+))
 _LOCAL_NAME = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.local$', re.IGNORECASE)
 
 
@@ -79,14 +85,14 @@ class PrintAgentClaimView(APIView):
                 return Response({'job': None})
             try:
                 payload = printing.render(job)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning('Trabajo de impresión %s imposible de dibujar: %s', job.pk, exc)
-                PrintJob.objects.filter(pk=job.pk).update(
-                    status=PrintJob.Status.FAILED, claim_token='', lease_expires_at=None,
-                    last_error='El documento no se pudo preparar para la impresora.')
+            except Exception:  # noqa: BLE001
+                logger.exception('Trabajo de impresión %s: no se pudo preparar.', job.pk)
+                printing.release_unrenderable(
+                    job, 'El documento no se pudo preparar para la impresora.')
                 continue
             return Response({'job': {
                 'id': job.pk,
+                'uid': job.uid.hex,
                 'claim_token': job.claim_token,
                 'kind': job.kind,
                 'attempt': job.attempts,
@@ -162,7 +168,10 @@ def _local_host(value) -> str | None:
         address = ipaddress.ip_address(host)
     except ValueError:
         return None
-    if address.is_private and not address.is_loopback and not address.is_unspecified:
+    # REDES ESCRITAS A MANO, no `is_private`: lo que esa propiedad considera
+    # privado cambia entre versiones de Python (una dirección IPv4 metida en
+    # una IPv6, por ejemplo, pasaba por privada en algunas).
+    if any(address in network for network in _LOCAL_NETWORKS):
         return str(address)
     return None
 
@@ -305,8 +314,7 @@ class AdminPrinterDetailView(APIView):
         printer = self._printer(request, company, pk)
         if printer is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-        printer.is_active = False
-        printer.save(update_fields=['is_active', 'updated_at'])
+        printing.deactivate_printer(printer)
         AdminAuditLog.log(
             actor=request.user, action='printer_deactivated', target_type='printer',
             target_id=printer.pk, metadata={}, request=request, company=company)
@@ -450,6 +458,8 @@ class AdminPrintJobListView(APIView):
             company=company, idempotency_key=f'manual:{key}'[:120]).exists()
         try:
             job = printing.enqueue_manual(order=order, printer=printer, key=key, actor=request.user)
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
         except printing.PrintError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if not existed:

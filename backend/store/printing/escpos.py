@@ -51,6 +51,11 @@ class Receipt:
     # -- texto ----------------------------------------------------------------
 
     def _encode(self, text: str) -> bytes:
+        # NINGÚN CARÁCTER DE CONTROL. El nombre, la dirección y las notas los
+        # escribe el comprador, y para la impresora un ESC o un GS dentro del
+        # texto es una orden: abrir el cajón, cortar, apagarse. Las órdenes las
+        # pone este módulo; del texto sólo sale texto.
+        text = ''.join(' ' if unicodedata.category(c) in ('Cc', 'Cf') else c for c in text)
         for odd, plain in _SUBSTITUTES.items():
             text = text.replace(odd, plain)
         try:

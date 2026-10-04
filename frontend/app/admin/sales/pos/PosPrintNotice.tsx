@@ -11,7 +11,11 @@
  * imprimir desde el navegador, como siempre.
  */
 
-export type PosPrintJob = { id: number; status: string; printer: string };
+export type PosPrintJob = {
+  id: number; status: string; printer: string;
+  /** ¿Hay un agente de este local recogiendo tickets ahora? */
+  agent_online?: boolean;
+};
 
 export function PosPrintNotice({
   job, onRetry,
@@ -38,6 +42,20 @@ export function PosPrintNotice({
           </button>
         ) : null}
       </div>
+    );
+  }
+
+  if (job.status === "pending" && job.agent_online === false) {
+    // «En cola» no es «enviado»: si nadie en el local recoge tickets, se dice,
+    // y la caja sigue ofreciendo imprimir desde aquí.
+    return (
+      <p
+        role="status"
+        className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-left text-sm text-warning"
+      >
+        El ticket está en cola para «{job.printer}», pero el agente de impresión de este local
+        no está conectado. Saldrá cuando vuelva; si lo necesitas ya, imprímelo desde este equipo.
+      </p>
     );
   }
 

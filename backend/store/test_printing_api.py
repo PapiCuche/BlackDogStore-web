@@ -90,8 +90,8 @@ class AgentDoorTest(PrintApiBase):
         self.assertGreater(job['lease_seconds'], 0)
         # Nada de lo que no necesita para imprimir: ni cliente, ni importes, ni pedido.
         self.assertEqual(
-            set(job), {'id', 'claim_token', 'kind', 'attempt', 'printer', 'payload_base64',
-                       'lease_seconds'})
+            set(job), {'id', 'uid', 'claim_token', 'kind', 'attempt', 'printer',
+                       'payload_base64', 'lease_seconds'})
 
     def test_confirming_closes_the_job_and_repeating_it_changes_nothing(self):
         self.issue()
@@ -117,6 +117,9 @@ class AgentDoorTest(PrintApiBase):
 
         self.assertEqual(res.data['status'], 'pending')
         self.assertEqual(PrintJob.objects.get().last_error, 'Connection refused')
+        # Espera antes del siguiente intento; pasada la espera, se entrega otra vez.
+        self.assertIsNone(self.as_agent().post(CLAIM).data['job'])
+        PrintJob.objects.update(available_at=None)
         self.assertEqual(self.as_agent().post(CLAIM).data['job']['attempt'], 2)
 
     def test_a_stale_or_foreign_confirmation_is_refused(self):
@@ -143,10 +146,11 @@ class AgentDoorTest(PrintApiBase):
 
         job = self.as_agent().post(CLAIM).data['job']
 
-        # El primero no se puede dibujar: se marca como fallido y se entrega el siguiente.
+        # El primero no se puede dibujar: se aparta, con espera, y se entrega el siguiente.
         self.assertIn(b'B001-2', base64.b64decode(job['payload_base64']))
-        self.assertEqual(
-            PrintJob.objects.get(fiscal_document=first).status, PrintJob.Status.FAILED)
+        apartado = PrintJob.objects.get(fiscal_document=first)
+        self.assertEqual(apartado.status, PrintJob.Status.PENDING)
+        self.assertIsNotNone(apartado.available_at)
 
 
 class PrinterConfigTest(PrintApiBase):
@@ -288,7 +292,7 @@ class PosSaleQueuesItsTicketTest(Ip1PosBase):
         self.assertEqual(res.status_code, 201, res.data)
         job = PrintJob.objects.get()
         self.assertEqual(res.data['print_job'], {
-            'id': job.pk, 'status': 'pending', 'printer': 'Caja'})
+            'id': job.pk, 'status': 'pending', 'printer': 'Caja', 'agent_online': False})
         self.assertEqual(
             (job.order_id, job.printer, job.branch, job.kind),
             (res.data['order_id'], printer, self.branch_a, PrintJob.Kind.SALES_NOTE_TICKET))
@@ -313,3 +317,75 @@ class PosSaleQueuesItsTicketTest(Ip1PosBase):
         self.assertEqual(res.status_code, 201, res.data)
         self.assertIsNone(res.data['print_job'])
         self.assertEqual(PrintJob.objects.count(), 0)
+
+
+class ReviewHardeningApiTest(PrintApiBase):
+    def test_only_addresses_of_a_local_network_are_accepted_whatever_their_form(self):
+        from store.print_views import _local_host
+
+        for host in ('192.168.1.50', '10.0.0.9', '172.16.4.2', '169.254.10.1', 'termica.local'):
+            self.assertIsNotNone(_local_host(host), host)
+        for host in ('8.8.8.8', '::ffff:8.8.8.8', '::ffff:127.0.0.1', '2002:808:808::1',
+                     '127.0.0.1', '0.0.0.0', '::1', '3232235826', '0xC0A80132', 'a.b.local',
+                     'localhost', '172.32.0.1'):
+            self.assertIsNone(_local_host(host), host)
+
+    def test_a_document_that_fails_to_render_is_retried_before_it_is_given_up(self):
+        document = self.issue()
+        document.signed_xml = ''
+        document.save(update_fields=['signed_xml'])
+
+        self.assertIsNone(self.as_agent().post(CLAIM).data['job'])
+
+        job = PrintJob.objects.get()
+        self.assertEqual((job.status, job.attempts), (PrintJob.Status.PENDING, 1))
+        self.assertTrue(job.last_error)
+
+    def test_the_claim_carries_the_stable_identifier_of_the_job(self):
+        self.issue()
+
+        job = self.as_agent().post(CLAIM).data['job']
+
+        self.assertEqual(job['uid'], PrintJob.objects.get().uid.hex)
+
+    def test_reusing_a_reprint_key_for_another_order_is_refused(self):
+        first, second = self.issue(), self.issue()
+        client = self.as_user(self.seller)
+        client.post(JOBS + self.q(), {'order': first.order_id}, format='json',
+                    HTTP_IDEMPOTENCY_KEY='clave-repetida')
+
+        res = client.post(JOBS + self.q(), {'order': second.order_id}, format='json',
+                          HTTP_IDEMPOTENCY_KEY='clave-repetida')
+
+        self.assertEqual(res.status_code, 409)
+
+    def test_deactivating_a_printer_from_the_panel_fails_its_waiting_jobs(self):
+        self.issue()
+
+        res = self.as_user(self.manager).delete(f'{PRINTERS}{self.printer.pk}/{self.q()}')
+
+        self.assertEqual(res.status_code, 204)
+        self.assertEqual(PrintJob.objects.get().status, PrintJob.Status.FAILED)
+
+
+class PosSaysWhetherTheShopPrinterIsListeningTest(Ip1PosBase):
+    URL = '/api/v1/internal/ip1-tienda/sales/pos/sales/'
+
+    def test_the_sale_says_when_no_agent_is_connected(self):
+        Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+
+        res = self.client.post(self.URL, self.sale_body(receipt_type='sales_note'), format='json')
+
+        self.assertEqual(res.data['print_job']['agent_online'], False)
+
+    def test_the_sale_says_when_the_agent_is_listening(self):
+        Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50')
+        agent, _token = printing.create_agent(
+            company=self.company, branch=self.branch_a, name='Mostrador', actor=None)
+        printing.claim_next(agent)
+
+        res = self.client.post(self.URL, self.sale_body(receipt_type='sales_note'), format='json')
+
+        self.assertEqual(res.data['print_job']['agent_online'], True)

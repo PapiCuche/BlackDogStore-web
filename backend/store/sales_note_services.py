@@ -117,7 +117,10 @@ def _queue_ticket(note) -> None:
     try:
         from .printing import services as printing
 
-        printing.enqueue_sales_note_ticket(note)
+        # Punto de guardado propio: si la cola falla, se deshace sólo esto y la
+        # transacción de la venta sigue sana.
+        with transaction.atomic():
+            printing.enqueue_sales_note_ticket(note)
     except Exception:  # noqa: BLE001
         logger.warning('No se pudo encolar el ticket de la nota %s.', note.pk, exc_info=True)
 

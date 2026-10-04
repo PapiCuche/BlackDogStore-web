@@ -84,6 +84,23 @@ ADR por dominio, que no se reescriben.
   porque el agente lleva un diario de lo impreso.
 - **Sólo la red del local.** La dirección de una impresora tiene que ser privada o
   `.local`; lo comprueban el servidor al guardarla y el agente antes de conectar.
+- **Del texto sólo sale texto.** Lo que escribe el comprador —nombre, dirección,
+  notas— pierde todo carácter de control antes de ir a la impresora: un `ESC` dentro
+  de un nombre sería una orden (abrir el cajón, cortar).
+- **Espera entre intentos y caducidad.** Tras un fallo el trabajo espera 10, 30, 60 y
+  120 segundos; sin eso una impresora apagada quema los cinco intentos en un segundo.
+  Un ticket que nadie recogió en 12 horas ya no se imprime, y uno cuyo pedido dejó de
+  estar pagado se cancela al ir a entregarlo.
+- **«En cola» no es «enviado».** La venta dice si hay un agente del local escuchando.
+  Sin él, la caja lo avisa y sigue ofreciendo imprimir desde el navegador. Desactivar
+  una impresora da por fallidos sus trabajos pendientes, y un reenvío va a la impresora
+  que el local tiene hoy.
+- **El diario del agente no se fía del número de fila.** Cada trabajo lleva un
+  identificador que no se repite entre bases; el número sí se repite tras una
+  restauración o al cambiar de servidor.
+- **Redes escritas a mano.** `is_private` cambia entre versiones de Python (una IPv4
+  metida en una IPv6 pasaba por privada). Servidor y agente comparan contra la lista
+  explícita de redes locales. El agente no sigue redirecciones.
 - **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera.
 
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda

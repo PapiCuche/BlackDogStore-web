@@ -136,7 +136,7 @@ class PrintAgentTest(SimpleTestCase):
         _url, body = self.server.results[0]
         self.assertFalse(body['ok'])
         self.assertTrue(body['error'])
-        self.assertFalse(Journal(self.journal_path).was_printed(8))
+        self.assertEqual(Journal(self.journal_path).printed, [])
 
     def test_a_lost_confirmation_does_not_print_the_ticket_twice(self):
         self.server.job(9, port=self.printer.port, claim_token='primera')
@@ -214,3 +214,67 @@ class PrintAgentTest(SimpleTestCase):
 
         self.assertTrue(all(call[2] == TOKEN for call in self.server.calls))
         self.assertNotIn(TOKEN, '\n'.join(logs.output))
+
+    # -- lo que encontró la revisión -------------------------------------------
+
+    def test_addresses_that_only_look_local_are_refused(self):
+        for host in ('::ffff:8.8.8.8', '::ffff:127.0.0.1', '2002:808:808::1', '::1',
+                     '3232235826', '0xC0A80132', 'a.b.local', 'localhost'):
+            self.assertFalse(is_local_address(host), host)
+        self.assertTrue(is_local_address('169.254.10.1'))
+
+    def test_a_server_that_only_starts_like_localhost_is_not_localhost(self):
+        with self.assertRaises(AgentError):
+            validate_config({'server': 'http://localhost.evil.example', 'token': TOKEN})
+        with self.assertRaises(AgentError):
+            validate_config({'server': 'http://127.0.0.1.evil.example', 'token': TOKEN})
+        validate_config({'server': 'http://localhost:8000', 'token': TOKEN})
+
+    def test_an_unexpected_answer_from_the_server_is_an_error_not_silence(self):
+        self.server.http = lambda *a, **k: (404, {'detail': 'Not found'})
+        agent = Agent(
+            {'server': 'https://tienda.invalid', 'token': TOKEN, 'journal': self.journal_path},
+            http=self.server.http)
+
+        with self.assertLogs('print_agent', level='WARNING') as logs:
+            outcome = agent.run_once()
+
+        self.assertEqual(outcome, 'error')
+        self.assertIn('404', '\n'.join(logs.output))
+
+    def test_the_journal_does_not_confuse_jobs_of_another_database(self):
+        # El mismo número de trabajo, en otra base (pruebas y luego producción):
+        # el identificador estable es distinto y el ticket SÍ se imprime.
+        self.server.job(9, port=self.printer.port)
+        self.server.queue[-1]['uid'] = 'a' * 32
+        self.agent.run_once()
+        self.wait_for_paper()
+
+        self.server.job(9, port=self.printer.port)
+        self.server.queue[-1]['uid'] = 'b' * 32
+        outcome = self.new_agent().run_once()
+        self.wait_for_paper(2)
+
+        self.assertEqual(outcome, 'printed')
+        self.assertEqual(len(self.printer.received), 2)
+
+    def test_a_cycle_that_blows_up_does_not_kill_the_agent(self):
+        calls = []
+
+        def broken(*args, **kwargs):
+            calls.append(1)
+            raise RuntimeError('respuesta truncada')
+
+        agent = Agent(
+            {'server': 'https://tienda.invalid', 'token': TOKEN, 'journal': self.journal_path},
+            http=broken)
+
+        with self.assertLogs('print_agent', level='ERROR'):
+            self.assertEqual(agent.safe_cycle(), 'error')
+        self.assertEqual(len(calls), 1)
+
+    def test_it_waits_after_a_failure_instead_of_hammering_the_printer(self):
+        self.assertGreater(self.agent.pause_after('failed'), 0)
+        self.assertGreater(self.agent.pause_after('error'), 0)
+        self.assertEqual(self.agent.pause_after('printed'), 0)
+

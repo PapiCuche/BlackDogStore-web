@@ -757,7 +757,10 @@ def _queue_ticket(document: FiscalDocument) -> None:
     try:
         from .printing import services as printing
 
-        printing.enqueue_fiscal_ticket(document)
+        # Punto de guardado propio: si la cola falla, se deshace sólo esto y la
+        # transacción de la venta sigue sana.
+        with transaction.atomic():
+            printing.enqueue_fiscal_ticket(document)
     except Exception:  # noqa: BLE001
         logger.warning(
             'No se pudo encolar el ticket del comprobante %s.', document.pk, exc_info=True)

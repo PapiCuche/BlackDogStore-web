@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import ipaddress
 import json
 import logging
@@ -38,11 +39,19 @@ import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logger = logging.getLogger('print_agent')
 
 JOURNAL_LIMIT = 500
+#: Lo que es una red de un local. Escrito a mano y no con `is_private`: lo que
+#: esa propiedad considera privado cambia entre versiones de Python.
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16',
+    'fc00::/7', 'fe80::/10',
+))
+_LOOPBACK = tuple(ipaddress.ip_network(n) for n in ('127.0.0.0/8', '::1/128'))
 _LOCAL_NAME = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.local$', re.IGNORECASE)
 
 
@@ -66,9 +75,14 @@ def validate_config(config: dict) -> dict:
     if not token:
         raise AgentError('Falta "token": lo entrega el panel al dar de alta el agente.')
     # El token viaja en cada petición. Sin TLS lo leería cualquiera en el camino.
-    insecure_local = server.startswith(('http://localhost', 'http://127.0.0.1'))
-    if not server.startswith('https://') and not insecure_local:
+    # Se compara el NOMBRE DE HOST entero: `http://localhost.otro.sitio` empieza
+    # igual que `http://localhost` y no es este equipo.
+    parsed = urllib.parse.urlsplit(server)
+    insecure_local = parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1')
+    if parsed.scheme != 'https' and not insecure_local:
         raise AgentError('"server" tiene que empezar por https://')
+    if not parsed.hostname:
+        raise AgentError('"server" no es una dirección válida.')
     return {
         'server': server,
         'token': token,
@@ -85,22 +99,31 @@ def validate_config(config: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 class Journal:
+    """
+    `printed`: claves de los trabajos que ya salieron por la impresora.
+    `unconfirmed`: los impresos cuya confirmación todavía no llegó al servidor,
+    con el número de trabajo y el token de la entrega para volver a intentarlo.
+    """
+
     def __init__(self, path: str):
         self.path = path
-        self.printed: dict[str, str] = {}      # id del trabajo → token de la entrega impresa
-        self.unconfirmed: dict[str, str] = {}  # impresos cuya confirmación no llegó
+        self.printed: list[str] = []
+        self.unconfirmed: dict[str, tuple] = {}
         try:
             with open(path, encoding='utf-8') as handle:
                 data = json.load(handle)
-            self.printed = dict(data.get('printed', {}))
-            self.unconfirmed = dict(data.get('unconfirmed', {}))
-        except (OSError, ValueError):
+            self.printed = [str(key) for key in data.get('printed', [])]
+            self.unconfirmed = {
+                str(key): (value[0], value[1]) for key, value in data.get('unconfirmed', {}).items()}
+        except (OSError, ValueError, TypeError, IndexError):
             pass
 
     def _save(self):
-        for extra in list(self.printed)[:-JOURNAL_LIMIT]:
-            if extra not in self.unconfirmed:
-                del self.printed[extra]
+        keep = set(self.unconfirmed)
+        overflow = len(self.printed) - JOURNAL_LIMIT
+        if overflow > 0:
+            self.printed = [
+                key for index, key in enumerate(self.printed) if index >= overflow or key in keep]
         temporary = self.path + '.tmp'
         with open(temporary, 'w', encoding='utf-8') as handle:
             json.dump({'printed': self.printed, 'unconfirmed': self.unconfirmed}, handle)
@@ -108,20 +131,21 @@ class Journal:
             os.fsync(handle.fileno())
         os.replace(temporary, self.path)
 
-    def was_printed(self, job_id) -> bool:
-        return str(job_id) in self.printed
+    def was_printed(self, key) -> bool:
+        return str(key) in self.printed
 
-    def record_printed(self, job_id, claim_token: str):
-        self.printed[str(job_id)] = claim_token
-        self.unconfirmed[str(job_id)] = claim_token
+    def record_printed(self, key, job_id, claim_token: str):
+        if str(key) not in self.printed:
+            self.printed.append(str(key))
+        self.unconfirmed[str(key)] = (job_id, claim_token)
         self._save()
 
-    def needs_confirmation(self, job_id, claim_token: str):
-        self.unconfirmed[str(job_id)] = claim_token
+    def needs_confirmation(self, key, job_id, claim_token: str):
+        self.unconfirmed[str(key)] = (job_id, claim_token)
         self._save()
 
-    def confirmed(self, job_id):
-        if self.unconfirmed.pop(str(job_id), None) is not None:
+    def confirmed(self, key):
+        if self.unconfirmed.pop(str(key), None) is not None:
             self._save()
 
 
@@ -145,9 +169,9 @@ def is_local_address(host: str, *, allow_loopback: bool = False) -> bool:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    if address.is_loopback:
+    if any(address in network for network in _LOOPBACK):
         return allow_loopback
-    return address.is_private and not address.is_unspecified
+    return any(address in network for network in _LOCAL_NETWORKS)
 
 
 def send_to_printer(host: str, port: int, payload: bytes, timeout: float) -> None:
@@ -161,6 +185,22 @@ def send_to_printer(host: str, port: int, payload: bytes, timeout: float) -> Non
             pass
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """
+    El agente no sigue redirecciones.
+
+    `urllib` las seguiría llevándose la cabecera `Authorization` a otro host, o
+    de https a http: el token saldría hacia donde el servidor no dijo. Una
+    redirección aquí es una configuración equivocada, y se trata como un error.
+    """
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.0):
     """(estado, cuerpo JSON o None). No levanta por un estado de error."""
     data = None if body is None else json.dumps(body).encode('utf-8')
@@ -170,10 +210,13 @@ def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.
         'Accept': 'application/json',
     })
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             raw, code = response.read(), response.status
     except urllib.error.HTTPError as exc:
         raw, code = exc.read(), exc.code
+    except http.client.HTTPException as exc:
+        # Una respuesta cortada o mal formada es un fallo de red como otro.
+        raise OSError(f'respuesta inválida del servidor ({type(exc).__name__})') from None
     try:
         return code, json.loads(raw.decode('utf-8') or 'null')
     except ValueError:
@@ -208,9 +251,9 @@ class Agent:
         return code in (200, 404, 409)
 
     def _flush_unconfirmed(self):
-        for job_id, claim_token in list(self.journal.unconfirmed.items()):
+        for key, (job_id, claim_token) in list(self.journal.unconfirmed.items()):
             if self._report(job_id, claim_token, ok=True):
-                self.journal.confirmed(job_id)
+                self.journal.confirmed(key)
 
     def run_once(self) -> str:
         """Un ciclo. Devuelve qué pasó: idle, printed, failed, skipped, offline, unauthorised."""
@@ -223,18 +266,27 @@ class Agent:
         if code == 401:
             logger.error('El servidor no reconoce este agente: token revocado o mal copiado.')
             return 'unauthorised'
-        job = (body or {}).get('job') if code == 200 and isinstance(body, dict) else None
+        if code != 200 or not isinstance(body, dict):
+            # Una dirección mal escrita, una redirección, un límite, un fallo del
+            # servidor: nada de eso es «no hay trabajo». Se dice.
+            logger.warning('El servidor respondió %s al pedir trabajo; se reintenta.', code)
+            return 'error'
+        job = body.get('job')
         if not job:
             return 'idle'
 
         job_id, claim_token = job['id'], job['claim_token']
+        # El número de trabajo se repite si la base se restaura o si el agente
+        # cambia de servidor; el identificador estable, no.
+        printed_key = str(job.get('uid') or f"{self.config['server']}#{job_id}")
 
-        if self.journal.was_printed(job_id):
+        if self.journal.was_printed(printed_key):
             # Ya salió por la impresora; lo que se perdió fue la confirmación.
             logger.info('Trabajo %s ya impreso: se confirma sin volver a imprimir.', job_id)
-            self.journal.needs_confirmation(job_id, claim_token)
             if self._report(job_id, claim_token, ok=True):
-                self.journal.confirmed(job_id)
+                self.journal.confirmed(printed_key)
+            else:
+                self.journal.needs_confirmation(printed_key, job_id, claim_token)
             return 'skipped'
 
         printer = job.get('printer') or {}
@@ -256,22 +308,38 @@ class Agent:
 
         # PRIMERO el diario, DESPUÉS el servidor. Si se va la luz entre los dos,
         # al volver el diario dice que ya se imprimió.
-        self.journal.record_printed(job_id, claim_token)
+        self.journal.record_printed(printed_key, job_id, claim_token)
         if self._report(job_id, claim_token, ok=True):
-            self.journal.confirmed(job_id)
+            self.journal.confirmed(printed_key)
         logger.info('Trabajo %s impreso en %s.', job_id, printer.get('name') or host)
         return 'printed'
+
+    def safe_cycle(self) -> str:
+        """Un ciclo que no puede tumbar al agente, pase lo que pase dentro."""
+        try:
+            return self.run_once()
+        except Exception:  # noqa: BLE001 - un programa desatendido no se cae
+            logger.exception('Ciclo interrumpido por un error inesperado.')
+            return 'error'
+
+    def pause_after(self, outcome: str) -> float:
+        """Cuánto esperar antes del siguiente ciclo."""
+        if outcome in ('printed', 'skipped'):
+            return 0.0                              # puede haber otro esperando
+        if outcome == 'unauthorised':
+            return 60.0
+        if outcome in ('failed', 'error', 'offline'):
+            # Con la impresora apagada o el servidor caído, insistir sin pausa
+            # sólo quema los intentos del trabajo.
+            return max(10.0, self.config['poll_seconds'] * 3)
+        return self.config['poll_seconds']
 
     def run_forever(self):
         logger.info('Agente de impresión en marcha contra %s.', self.config['server'])
         while True:
-            outcome = self.run_once()
-            if outcome == 'unauthorised':
-                time.sleep(60)
-            elif outcome in ('printed', 'skipped', 'failed'):
-                continue            # puede haber otro trabajo esperando
-            else:
-                time.sleep(self.config['poll_seconds'])
+            pause = self.pause_after(self.safe_cycle())
+            if pause:
+                time.sleep(pause)
 
 
 def main(argv=None) -> int:

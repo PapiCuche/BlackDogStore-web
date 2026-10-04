@@ -162,6 +162,7 @@ class AgentTest(PrintingBase):
     def test_a_printer_failure_is_retried_and_then_given_up(self):
         self.issue()
         for attempt in range(1, printing.MAX_ATTEMPTS + 1):
+            PrintJob.objects.update(available_at=None)      # pasó la espera
             job = printing.claim_next(self.agent)
             self.assertEqual(job.attempts, attempt)
             job = printing.complete(
@@ -278,3 +279,93 @@ class ReceiptFormatTest(PrintingBase):
         header = data.index(b'\x1dv0')
         self.assertEqual(data[header + 4:header + 8], bytes([8, 0, 16, 0]))
         self.assertEqual(set(data[header + 8:header + 8 + 8 * 16]), {0xFF})
+
+
+class ReviewHardeningTest(PrintingBase):
+    """Lo que encontró la revisión del código de la cola."""
+
+    def test_control_characters_in_a_text_never_reach_the_printer_as_commands(self):
+        # El nombre, la dirección y las notas los escribe el comprador. Un ESC
+        # ahí dentro sería una orden para la impresora: abrir el cajón, cortar.
+        receipt = Receipt()
+        receipt.line('Rosa\x1bp\x00\x19\xfa Quispe\x1dV\x00 \x10\x14\x01')
+        data = receipt.to_bytes()
+
+        body = data[data.index(b'Rosa'):]
+        for forbidden in (b'\x1b', b'\x1d', b'\x10', b'\x00'):
+            self.assertNotIn(forbidden, body.rstrip(b'\n'))
+        self.assertIn(b'Quispe', body)
+
+    def test_a_failed_delivery_waits_before_the_next_attempt(self):
+        self.issue()
+        job = printing.claim_next(self.agent)
+        printing.complete(self.agent, job.pk, job.claim_token, ok=False, error='apagada')
+
+        # Con la impresora apagada, reintentar en el acto quemaría los cinco
+        # intentos en un segundo y dejaría fallidos todos los tickets en cola.
+        self.assertIsNone(printing.claim_next(self.agent))
+
+        PrintJob.objects.filter(pk=job.pk).update(available_at=timezone.now())
+        self.assertEqual(printing.claim_next(self.agent).pk, job.pk)
+
+    def test_a_job_whose_order_is_no_longer_paid_is_cancelled_not_printed(self):
+        document = self.issue()
+        document.order.status = 'cancelled'
+        document.order.paid = False
+        document.order.save(update_fields=['status', 'paid'])
+
+        self.assertIsNone(printing.claim_next(self.agent))
+        self.assertEqual(PrintJob.objects.get().status, PrintJob.Status.CANCELLED)
+
+    def test_an_old_backlog_is_not_printed_when_the_agent_comes_back(self):
+        self.issue()
+        PrintJob.objects.update(
+            created_at=timezone.now() - timedelta(hours=printing.MAX_AGE_HOURS + 1))
+
+        self.assertIsNone(printing.claim_next(self.agent))
+        job = PrintJob.objects.get()
+        self.assertEqual(job.status, PrintJob.Status.FAILED)
+        self.assertIn('Caducó', job.last_error)
+
+    def test_deactivating_a_printer_fails_what_was_waiting_for_it(self):
+        self.issue()
+
+        printing.deactivate_printer(self.printer)
+
+        job = PrintJob.objects.get()
+        self.assertEqual(job.status, PrintJob.Status.FAILED)
+        self.assertFalse(Printer.objects.get(pk=self.printer.pk).is_active)
+
+    def test_a_retry_moves_to_the_printer_the_branch_has_now(self):
+        self.issue()
+        printing.deactivate_printer(self.printer)
+        replacement = Printer.objects.create(
+            company=self.company, branch=self.branch, name='Caja nueva', host='192.168.1.60')
+
+        job = printing.retry(PrintJob.objects.get(), actor=None)
+
+        self.assertEqual((job.status, job.printer), (PrintJob.Status.PENDING, replacement))
+
+    def test_the_same_reprint_key_for_another_order_is_a_conflict(self):
+        first = self.issue()
+        second = self.issue()
+        printing.enqueue_manual(order=first.order, printer=self.printer, key='clave-1', actor=None)
+
+        with self.assertRaises(printing.PrintConflict):
+            printing.enqueue_manual(
+                order=second.order, printer=self.printer, key='clave-1', actor=None)
+
+    def test_the_branch_knows_whether_an_agent_is_listening(self):
+        self.assertFalse(printing.agent_online(self.branch))
+
+        printing.claim_next(self.agent)
+        self.assertTrue(printing.agent_online(self.branch))
+
+        PrintAgent.objects.update(last_seen_at=timezone.now() - timedelta(minutes=10))
+        self.assertFalse(printing.agent_online(self.branch))
+
+    def test_each_job_has_an_identifier_that_does_not_repeat_across_databases(self):
+        self.issue()
+        job = PrintJob.objects.get()
+
+        self.assertEqual(len(job.uid.hex), 32)
