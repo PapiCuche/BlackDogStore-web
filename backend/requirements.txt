@@ -10,7 +10,7 @@
 # highest patch because staying one release behind on an LTS line to dodge a CVE
 # that "does not apply today" is how it applies tomorrow.
 Django==5.2.17
-djangorestframework==3.17.2
+djangorestframework==3.18.1
 
 # JWT authentication
 djangorestframework-simplejwt==5.5.1
@@ -41,7 +41,7 @@ Pillow==12.3.0
 #
 # Se usa SÓLO para DECODIFICAR entradas. El objeto que se almacena es siempre
 # WebP normalizado, así que nada aguas abajo depende de este paquete.
-pillow-heif==1.6.0
+pillow-heif==1.8.0
 
 # M12D — almacenamiento privado compatible con S3 (Cloudflare R2 en producción).
 #
@@ -53,7 +53,7 @@ django-storages==1.14.6
 boto3==1.43.107
 
 # WSGI server for production (replaces runserver)
-gunicorn==26.0.0
+gunicorn==26.2.0
 
 # PDF generation — internal purchase receipts (Phase 4.2)
 # Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
@@ -107,4 +107,4 @@ requests==2.34.2       # Apache-2.0 — cliente HTTP del envío SOAP a SUNAT
 # `response.raw.read(n, decode_content=True)` acota los bytes DESCOMPRIMIDOS a n
 # (en urllib3<2 acotaría los comprimidos, y una respuesta gzip podría exceder el
 # límite antes de la comprobación). Se fija para preservar esa garantía.
-urllib3==2.7.0         # MIT — motor HTTP de requests; requerido >=2 por lo anterior
+urllib3==2.8.0         # MIT — motor HTTP de requests; requerido >=2 por lo anterior
