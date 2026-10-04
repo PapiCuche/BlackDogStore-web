@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Actualización de dependencias (CI-03)
+
+- Dependabot semanal para `pip`, `npm` y GitHub Actions, sin merge automático.
+
+## 2026-10-04 — Sistema de agentes
+
+- Se incorpora política persistente de agentes y eficiencia de contexto.
+
 ## 2026-10-03 — Portada V4 · Imágenes subidas desde el panel
 
 - La tienda sube sus imágenes desde «Escaparate»: hero, campaña, categorías,

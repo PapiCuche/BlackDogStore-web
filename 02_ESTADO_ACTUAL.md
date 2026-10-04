@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Actualización de dependencias (CI-03)
+
+`.github/dependabot.yml`: una vez por semana (lunes 06:00, Lima) Dependabot abre pull
+requests para `pip` (`/backend`), `npm` (`/frontend`) y GitHub Actions. Las versiones
+menores y de parche llegan agrupadas por ecosistema; las mayores, por separado. Django se
+queda en su línea LTS 5.2 y Next/React en su versión mayor: moverlos es una migración
+planificada. Nada se mergea solo: cada PR pasa la misma CI que cualquier cambio.
+
+Pendiente del propietario en la configuración del repositorio: activar las alertas de
+vulnerabilidad, el escaneo de secretos y la protección de push (hoy apagados).
+
+## 2026-10-04 — Sistema de agentes
+
+Se incorpora política persistente de agentes y eficiencia de contexto: `AGENTS.md`,
+`docs/NEXT_ACTION.md`, `docs/AGENT_TOKEN_POLICY.md`, `docs/AGENT_BOOTSTRAP.md` y
+`docs/CODEBASE_MAP.md`. Sin cambios de código. PR #60 (Storefront V4) ya está en
+`master` por merge `e40e440`.
+
 ## 2026-10-03 — Portada V4: imágenes que la tienda sube desde su panel
 
 Rama `feat/storefront-v4-images`, desde `master` `833fdec`. Código en `3fa9b42`.
