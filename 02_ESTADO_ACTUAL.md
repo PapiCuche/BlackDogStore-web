@@ -3,6 +3,62 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Limpieza de imágenes de la tienda (STOREFRONT-IMAGE-CLEANUP)
+
+Una imagen subida se quedaba para siempre en el almacén: reemplazar la del hero dejaba la
+anterior, y también una subida que nunca se guardó.
+
+- Al reemplazar o vaciar una imagen (portada, servicio, ubicación, categoría, campaña), la
+  anterior se borra **sólo si ningún campo de ninguna empresa la sigue usando**. Las
+  referencias son direcciones en campos de texto, así que se cuentan en todos los campos que
+  pueden llevar una dirección (`storefront_media.reference_fields()` los calcula; hoy son 23).
+- El recuento se hace con la fila de la imagen bloqueada, y colocar una imagen toma el mismo
+  bloqueo: un borrado y una colocación no pueden cruzarse. El archivo se borra al confirmarse
+  la transacción.
+- Colocar una imagen que ya no existe, o que es de otra empresa, responde 400 con el mismo
+  mensaje: no se confirma que exista la de otra tienda.
+- `python manage.py cleanup_storefront_images [--older-than-hours 24] [--dry-run]` borra las
+  subidas que nunca se colocaron. Cada borrado se audita bajo su empresa
+  (`storefront_image_deleted`).
+- De la revisión de #60: un PNG con transparencia por color clave (tRNS en RGB o en escala de
+  grises) conserva su transparencia, y la ruta pública responde 404 para una empresa
+  desactivada.
+
+Sin migraciones nuevas. Validación (CI de #73, PostgreSQL 16): 4744 pruebas, 0 fallos,
+3 omitidas, 2516 s.
+
+Trabajo local: un reinicio del equipo vació `/tmp` con los worktrees dentro. No se perdió nada
+confirmado. Los worktrees pasan a `~/Library/Caches/blackdog-worktrees/` (`AGENTS.md` §5).
+
+## 2026-10-04 — Cierre previo al despliegue: menú, cabeceras y clasificación
+
+**Menú del panel.** Dos pantallas tenían dos entradas cada una (`/admin/inventory/reports`
+bajo Inventario y bajo Reportes; `/admin/settings` como «Empresa» y como «Configuración»,
+con la misma capacidad), y `admin.areas` estaba definido dos veces, la segunda diciendo
+«pantalla pendiente» de una pantalla que existe. Queda una entrada por pantalla y un
+identificador por módulo, con prueba que lo exige.
+
+**Cabeceras.** Auditoría de la política de contenido: no usa `unsafe-inline`,
+`unsafe-eval` ni comodines; sólo limita quién puede enmarcar la página y a dónde apunta
+`<base>`. Se añade `Permissions-Policy: camera=(), microphone=(), geolocation=()` (la
+aplicación no usa ninguna de las tres). Una política de scripts queda como CSP-01.
+
+**Clasificación.**
+
+| ID | Estado | Motivo |
+|---|---|---|
+| AUDIT-01…06 | PROPUESTA | Ediciones de borradores sin fila de auditoría; todos los cierres se auditan. Detalle por función en `docs/AUDIT_MEMORY.md` |
+| CSP-01 | PROPUESTA | Exige nonce por petición y la captura de red del SDK de Izipay |
+| LINT-EFFECT-01 | PROPUESTA | 23 avisos; cambia el patrón de carga de 20 pantallas |
+| INTERNAL-UI-KIT | PROPUESTA | Componentes del panel definidos en tres sitios |
+| `uxui/phase-03-internal-ui` | OBSOLETO | 578 commits detrás; mergearla revertiría el panel y la portada |
+| DEP-TS7, DEP-ESLINT10 | PROPUESTA | Las versiones mayores rompen la CI |
+
+Dependabot: mergeados #65 (`setup-node`), #68 (menores y parches del frontend) y #70
+(`jest-dom`); cerrados #69, #71 y #72 con su motivo.
+
+Validación: Jest 590/590 (62 suites), typecheck OK, lint 0 errores/23 avisos.
+
 ## 2026-10-04 — Cabecera y pie V4
 
 La cabecera y el pie ya salían enteros de la configuración de la tienda; no cambia qué

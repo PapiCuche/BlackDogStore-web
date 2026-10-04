@@ -77,3 +77,19 @@ describe('el master de la plataforma', () => {
     expect(INTERNAL_MODULES.every((m) => canAccessModule(m, master))).toBe(true);
   });
 });
+
+describe('el menú no repite nada', () => {
+  // Dos entradas al mismo sitio obligan a preguntarse cuál es la buena, y dos
+  // entradas con el mismo identificador hacen que una tape a la otra.
+  it('cada pantalla tiene una sola entrada', () => {
+    const hrefs = INTERNAL_MODULES.filter((m) => m.href).map((m) => m.href);
+    const repeated = hrefs.filter((href, i) => hrefs.indexOf(href) !== i);
+    expect(repeated).toEqual([]);
+  });
+
+  it('cada módulo tiene un identificador único', () => {
+    const ids = INTERNAL_MODULES.map((m) => m.id);
+    const repeated = ids.filter((id, i) => ids.indexOf(id) !== i);
+    expect(repeated).toEqual([]);
+  });
+});

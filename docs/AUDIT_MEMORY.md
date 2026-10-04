@@ -330,8 +330,17 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post`; `test_membership_consent.py` | CORREGIDO: alta directa sólo platform admin; administradores de empresa usan invitación + aceptación; sin oracle de username ni enrolamiento sin consentimiento |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
-| AUDIT-01…06 | MEDIUM→LOW | AUDIT | `service_services.py`, `inventory_services.py`, `announcement_services.py` | PROPUESTA: ediciones de borrador sin fila de auditoría (los cierres sí se auditan); falta decidir la granularidad |
-| CI-03 | MEDIUM | INFRA | `.github/` | sin alertas Dependabot ni `dependabot.yml` (CI-01 cerrado: hay CI de frontend y de backend) |
+| AUDIT-01 | LOW | AUDIT | `service_services.py::add_quote_item`, `remove_quote_item`, `update_quote` | PROPUESTA: editar una cotización en borrador no deja fila; `publish_quote` y `cancel_quote` sí |
+| AUDIT-02 | LOW | AUDIT | `inventory_services.py::set_transfer_item` | PROPUESTA: editar líneas de una transferencia en borrador no deja fila; crear, despachar, recibir y cancelar sí |
+| AUDIT-03 | LOW | AUDIT | `inventory_services.py::set_count_item` | PROPUESTA: anotar cantidades de un recuento no deja fila; crear, aprobar y cancelar sí |
+| AUDIT-04 | LOW | AUDIT | `announcement_services.py::set_audience`, `update_draft`, `create_draft` | PROPUESTA: preparar un comunicado no deja fila; `publish` y `cancel_draft` sí |
+| AUDIT-05 | LOW | AUDIT | `service_services.py::update_diagnostic`, `update_execution` | PROPUESTA: notas de trabajo en curso sin fila; los cambios de estado de la orden sí |
+| AUDIT-06 | LOW | AUDIT | `service_services.py::record_quality_result` | PROPUESTA: el resultado de control de calidad no deja fila propia; la entrega sí |
+| CSP-01 | LOW | FRONTEND | `frontend/next.config.ts` | PROPUESTA: la política sólo limita marcos y `<base>` (sin `unsafe-*` ni comodines). Una política de scripts exige un nonce por petición y la captura de red del SDK de Izipay en sandbox |
+| LINT-EFFECT-01 | LOW | FRONTEND | 23 sitios, 20 pantallas del panel | PROPUESTA: `react-hooks/set-state-in-effect`; quitarlo cambia el patrón de carga de datos. No se silencia |
+| INTERNAL-UI-KIT | LOW | FRONTEND | `admin/components/internal-ui.tsx`, `InventoryUi.tsx`, `service/components/ServiceUi.tsx` | PROPUESTA: `Panel`, `Field`, `Button`, `StatCard` definidos en tres sitios. La rama `uxui/phase-03-internal-ui` (578 commits detrás) es OBSOLETA: no se mergea |
+| DEP-TS7 · DEP-ESLINT10 | LOW | INFRA | `frontend/package.json` | PROPUESTA: TypeScript 7 y ESLint 10 rompen la CI (#71, #72 cerrados); migración planificada |
+| CI-03 | MEDIUM | INFRA | `.github/dependabot.yml` | CORREGIDO: PR semanales para pip, npm y Actions, sin merge automático. Pendiente del propietario: alertas de vulnerabilidad, escaneo de secretos y protección de push en la configuración del repositorio |
 | INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, ENV-01/03, DEP-04/06…08, CI-02 | ver checkpoint |
 
@@ -420,6 +429,7 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | TOKEN-HYGIENE-01 | LOW | `f0c29ce` | `docs/despliegue-produccion.md` §6.1.1 (`flushexpiredtokens` diario) | ensayo: el comando corre sin error | CORREGIDO (procedimiento) |
 | STOREFRONT-HERO-VARIANT | — | `0e9db9d`, `9c39716` | `StorefrontPageSettings.hero_variant` / `hero_image_url`, `Hero.tsx` (`HeroLight`) | `store/test_storefront_media.py`, `storefront-v4-home.test.tsx`, E2E `storefront-v4-images` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-UPLOAD | — | `0e9db9d`, `57ed321` | `storefront_media.py` (PNG/WebP conservan alfa), `StorefrontImage`, `ImageUploadField.tsx`, migración 0096 | `store/test_storefront_media.py`, `image-upload-field.test.tsx` | IMPLEMENTADO |
+| STOREFRONT-IMAGE-CLEANUP | — | `634a6e8`, `6f29193` | `storefront_media.py` (`reference_fields`, `reference_count`, `claim`, `release`, `unplaced`), `cleanup_storefront_images` | `store/test_storefront_image_cleanup.py` (23), `test_storefront_media.py` | CORREGIDO: una imagen reemplazada o nunca colocada se borra sólo con cero referencias en toda la plataforma; contar y colocar bloquean la misma fila |
 | IMPORT-UPLOAD-415 | MEDIUM | `b5de287` | `app/lib/auth.ts::fetchWithAuth` (descarta el `Content-Type` del llamador con `FormData`), `postForm` | `fetch-with-auth.test.ts` | CORREGIDO |
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |

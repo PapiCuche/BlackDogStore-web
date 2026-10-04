@@ -65,7 +65,9 @@ Un `PENDIENTE` definido, seguro y probable se implementa. Una `PROPUESTA` no se 
   traer `master` al siguiente. Los PR con `backend/**` tardan ~70 min de CI: agruparlos o apilarlos; los de
   sólo frontend (1 min) van al final.
 - El árbol principal `/Users/cmaucorp/Desktop/BlackDogStore-web` tiene trabajo del propietario sin
-  commitear: **sólo lectura**. Trabajar en worktrees (`git worktree add /tmp/...`).
+  commitear: **sólo lectura**. Trabajar en worktrees fuera de `/tmp`
+  (`git worktree add ~/Library/Caches/blackdog-worktrees/<nombre>`): un reinicio vacía `/tmp` y se lleva lo
+  que no estaba confirmado. Confirmar pronto; lo confirmado vive en `.git` y sobrevive.
 - Commits en inglés, docs y PR en español. Código separado de documentación.
 
 ## 6. Tests

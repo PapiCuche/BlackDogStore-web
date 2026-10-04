@@ -28,6 +28,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from . import storefront_media
 from .models import (
     AdminAuditLog, Product, StorefrontCampaign, StorefrontFaq,
     StorefrontPageSettings, StorefrontServiceOffering, StorefrontTrustMetric,
@@ -61,6 +62,10 @@ PAGE_FIELDS = (
     'services_image_url', 'location_image_url',
     'services_hero_title', 'services_hero_subtitle', 'services_warranty_note',
 )
+
+#: Los huecos de imagen de la página estable. Lo que se coloca en ellos se
+#: comprueba, y lo que sueltan se retira si nadie más lo muestra.
+PAGE_IMAGE_FIELDS = ('hero_image_url', 'services_image_url', 'location_image_url')
 
 #: Lo que vale un campo que la tienda nunca escribió. Casi todos, vacío; la
 #: variante del hero no puede serlo: una tienda sin fila sigue teniendo hero.
@@ -202,6 +207,7 @@ def create_campaign(*, company, actor, data, request=None):
     # `full_clean` porque `save()` no lo llama: sin esto, el validador de los
     # campos de URL protegería al serializador y a nada más.
     campaign.full_clean()
+    storefront_media.claim(campaign.image_url, company=company, field='image_url')
     campaign.save()
     AdminAuditLog.log(
         actor=actor, action='storefront_campaign_created',
@@ -223,6 +229,7 @@ def update_campaign(*, campaign, actor, data, request=None):
     if locked.status == StorefrontCampaign.Status.ARCHIVED:
         raise ValidationError('Una campaña archivada no se edita: duplícala.')
 
+    previous_image = locked.image_url
     for field in EDITABLE_FIELDS:
         if field in data:
             setattr(locked, field, data[field])
@@ -230,7 +237,13 @@ def update_campaign(*, campaign, actor, data, request=None):
         locked.product = _check_product(locked.company, data.get('product'))
     locked.updated_by = actor
     locked.full_clean()
+    if locked.image_url != previous_image:
+        storefront_media.claim(locked.image_url, company=locked.company, field='image_url')
     locked.save()
+    if locked.image_url != previous_image:
+        storefront_media.release(
+            [previous_image], company=locked.company, actor=actor, request=request,
+        )
     AdminAuditLog.log(
         actor=actor, action='storefront_campaign_updated',
         target_type='storefront_campaign', target_id=locked.pk,
@@ -296,12 +309,22 @@ def archive_campaign(*, campaign, actor, request=None):
 @transaction.atomic
 def update_page_settings(*, company, actor, data, request=None):
     row, _ = StorefrontPageSettings.objects.get_or_create(company=company)
+    before = {field: getattr(row, field) for field in PAGE_IMAGE_FIELDS}
     for field in PAGE_FIELDS:
         if field in data:
             setattr(row, field, data[field] or PAGE_FIELD_DEFAULTS.get(field, ''))
     row.updated_by = actor
     row.full_clean()
+    # Lo que se coloca tiene que existir; lo que se suelta, se retira si ya
+    # nadie más lo muestra. Las dos cosas dentro de esta misma transacción.
+    for field in PAGE_IMAGE_FIELDS:
+        if getattr(row, field) != before[field]:
+            storefront_media.claim(getattr(row, field), company=company, field=field)
     row.save()
+    storefront_media.release(
+        [before[field] for field in PAGE_IMAGE_FIELDS if getattr(row, field) != before[field]],
+        company=company, actor=actor, request=request,
+    )
     AdminAuditLog.log(
         actor=actor, action='storefront_page_updated',
         target_type='storefront_page', target_id=row.pk,
