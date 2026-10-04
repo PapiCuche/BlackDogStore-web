@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Limpieza de imágenes de la tienda
+
+- Una imagen reemplazada o nunca colocada se borra cuando nadie la usa; nunca una en uso.
+- Comando `cleanup_storefront_images` (con `--dry-run`).
+- PNG con transparencia por color clave; imágenes de empresas desactivadas dejan de servirse.
+- Backend: 4744 pruebas en PostgreSQL, 0 fallos.
+
 ## 2026-10-04 — Cierre previo al despliegue
 
 - Menú del panel: una entrada por pantalla, un identificador por módulo.
