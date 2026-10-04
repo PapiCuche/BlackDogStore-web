@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Actualización de dependencias (CI-03)
+
+`.github/dependabot.yml`: una vez por semana (lunes 06:00, Lima) Dependabot abre pull
+requests para `pip` (`/backend`), `npm` (`/frontend`) y GitHub Actions. Las versiones
+menores y de parche llegan agrupadas por ecosistema; las mayores, por separado. Django se
+queda en su línea LTS 5.2 y Next/React en su versión mayor: moverlos es una migración
+planificada. Nada se mergea solo: cada PR pasa la misma CI que cualquier cambio.
+
+Pendiente del propietario en la configuración del repositorio: activar las alertas de
+vulnerabilidad, el escaneo de secretos y la protección de push (hoy apagados).
+
 ## 2026-10-04 — Sistema de agentes
 
 Se incorpora política persistente de agentes y eficiencia de contexto: `AGENTS.md`,
