@@ -57,7 +57,7 @@ gunicorn==26.2.0
 
 # PDF generation — internal purchase receipts (Phase 4.2)
 # Pure Python, no system dependencies (unlike WeasyPrint which needs libpango/libcairo).
-reportlab==4.4.10
+reportlab==5.0.1
 
 # QR code on the electronic invoice PDF (store/fiscal/qr.py).
 #
