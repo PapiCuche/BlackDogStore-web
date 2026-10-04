@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   logout, getCurrentUser, hasInternalAccess, forgetInternalAccess, type AuthUser,
 } from "../lib/auth";
@@ -14,7 +14,7 @@ import { useStorefront } from "./StorefrontProvider";
 import { categoryHref, useCatalogCategories } from "../lib/catalog-categories";
 
 const CART_ICON = (
-  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13l-1.4 7h12.8M17 21a1 1 0 100-2 1 1 0 000 2zM9 21a1 1 0 100-2 1 1 0 000 2z" />
   </svg>
 );
@@ -34,6 +34,11 @@ export function Header() {
   const [cartCount, setCartCount] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const catalogToggle = useRef<HTMLButtonElement>(null);
+  const menuToggle = useRef<HTMLButtonElement>(null);
+  // Con el puntero encima el menú ya está abierto: un clic no debe cerrarlo
+  // bajo el cursor. Sin puntero (teclado), el botón alterna.
+  const catalogHovered = useRef(false);
   // Las categorías del catálogo de ESTA tienda, no una lista del piloto.
   const categoryLinks = useCatalogCategories().map((category) => ({
     href: categoryHref(category.slug), label: category.name,
@@ -71,11 +76,28 @@ export function Header() {
     };
   }, []);
 
+  // Escape cierra el menú móvil desde cualquier punto y devuelve el foco al
+  // botón que lo abrió: quien navega con teclado no se queda en el vacío.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      menuToggle.current?.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
   function handleLogout() {
     logout().finally(() => {
       forgetInternalAccess();
       setUser(null);
-      window.location.href = "/";
+      // CARGA COMPLETA, a propósito, y sin dejar la página anterior en el
+      // historial. Una navegación de cliente conservaría en memoria lo que la
+      // sesión cerrada había cargado (pedidos, acceso interno, cachés de
+      // módulo); volver a pedir el documento lo tira todo.
+      window.location.replace("/");
     });
   }
 
@@ -118,26 +140,62 @@ export function Header() {
         </Link>
 
         {/* Desktop nav */}
-        <nav className="hidden items-center gap-0.5 text-sm font-medium text-muted lg:flex">
+        <nav aria-label="Principal" className="hidden items-center gap-0.5 text-sm font-medium text-muted lg:flex">
 
-          {/* Catalog with dropdown */}
+          {/*
+            CATÁLOGO Y SUS CATEGORÍAS.
+
+            «Catálogo» es un enlace; las categorías se abren con el botón de al
+            lado. Antes sólo se abrían al pasar el ratón por encima: con
+            teclado, con lector de pantalla o con el dedo no existían.
+
+            El ratón las sigue abriendo al pasar. El foco que sale del bloque
+            las cierra, y Escape las cierra y vuelve al botón.
+          */}
           <div
-            className="relative"
-            onMouseEnter={() => setCatalogOpen(true)}
-            onMouseLeave={() => setCatalogOpen(false)}
+            className="relative flex items-center"
+            onMouseEnter={() => { catalogHovered.current = true; setCatalogOpen(true); }}
+            onMouseLeave={() => { catalogHovered.current = false; setCatalogOpen(false); }}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCatalogOpen(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || !catalogOpen) return;
+              setCatalogOpen(false);
+              catalogToggle.current?.focus();
+            }}
           >
             <Link
               href="/product"
-              className="flex items-center gap-1 rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground"
+              className="rounded-lg py-2 pl-3.5 pr-1.5 transition hover:bg-surface-2 hover:text-foreground"
             >
               Catálogo
-              <svg className="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
-              </svg>
             </Link>
+            {categoryLinks.length > 0 ? (
+              <button
+                ref={catalogToggle}
+                type="button"
+                aria-label="Categorías del catálogo"
+                aria-expanded={catalogOpen}
+                aria-controls="store-catalog-menu"
+                onClick={() => setCatalogOpen((open) => (catalogHovered.current ? true : !open))}
+                className="flex h-9 w-7 items-center justify-center rounded-lg transition hover:bg-surface-2 hover:text-foreground"
+              >
+                <svg
+                  aria-hidden="true"
+                  className={`h-3 w-3 transition-transform ${catalogOpen ? "rotate-180" : ""}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            ) : null}
 
             {catalogOpen && categoryLinks.length > 0 && (
-              <div className="v3-pop absolute left-0 top-full z-50 mt-1 w-52 origin-top-left overflow-hidden rounded-2xl border border-bd-border bg-surface py-2 shadow-2xl">
+              <div
+                id="store-catalog-menu"
+                className="v3-pop absolute left-0 top-full z-50 mt-1 w-52 origin-top-left overflow-hidden rounded-2xl border border-bd-border bg-surface py-2 shadow-2xl"
+              >
                 <div className="px-3 pb-2 pt-1">
                   <p className="text-[9px] font-bold uppercase tracking-[0.25em] text-muted">Categorías</p>
                 </div>
@@ -216,7 +274,11 @@ export function Header() {
         {/* Móvil/tablet: sólo lo esencial — carrito, tema, menú. */}
         <div className="flex items-center gap-1.5 lg:hidden">
           <ThemeToggle />
-          <Link href="/cart" className="relative rounded-lg p-2 text-muted transition hover:text-foreground">
+          <Link
+            href="/cart"
+            aria-label={cartCount > 0 ? `Carrito, ${cartCount} ${cartCount === 1 ? "artículo" : "artículos"}` : "Carrito"}
+            className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted transition hover:text-foreground"
+          >
             {CART_ICON}
             {cartCount > 0 && (
               <span className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-black text-background">
@@ -225,13 +287,15 @@ export function Header() {
             )}
           </Link>
           <button
+            ref={menuToggle}
+            type="button"
             onClick={() => setMenuOpen(!menuOpen)}
-            className="rounded-lg p-2 text-muted transition hover:bg-surface-2 hover:text-foreground"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted transition hover:bg-surface-2 hover:text-foreground"
             aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
             aria-expanded={menuOpen}
             aria-controls="store-mobile-menu"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               {menuOpen
                 ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />

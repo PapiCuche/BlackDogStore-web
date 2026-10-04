@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
-import { PageHeader, internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../components/internal-ui";
+import { PageHeader, internalInputClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import {
   InternalControlGuard,
   type InternalContext,

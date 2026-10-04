@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Cabecera y pie V4
+
+La cabecera y el pie ya salían enteros de la configuración de la tienda; no cambia qué
+muestran. Se corrigen los defectos reales del armazón:
+
+- **Categorías sin ratón.** Sólo se abrían al pasar el puntero. Ahora «Catálogo» es un
+  enlace y a su lado hay un botón («Categorías del catálogo») con `aria-expanded` y
+  `aria-controls`. Se abre con teclado, Escape lo cierra y devuelve el foco, y se cierra
+  cuando el foco sale. Una tienda sin categorías no muestra el botón.
+- **Móvil.** El carrito era un icono sin nombre accesible; ahora dice «Carrito» y cuántos
+  artículos lleva. Escape cierra el menú y devuelve el foco. Carrito y menú miden 44 px.
+- **Pie.** La banda de cierre ya no repite el logotipo que el pie pinta debajo; usa la
+  tipografía de V4. Las columnas «Tienda» y «Servicios» son navegaciones con nombre. Las
+  redes miden 44 px y sólo aparecen si la tienda las publicó.
+- **Cierre de sesión.** Sigue siendo una carga completa (tira lo que la sesión tenía en
+  memoria) y ya no deja la página anterior en el historial.
+
+Dependencias: Next 16.3.8, React 19.3.0, Playwright 1.63.0 (#68, Dependabot).
+
+Validación: Jest 587/587 (62 suites), typecheck OK, lint 0 errores/23 avisos (los 23 son
+`react-hooks/set-state-in-effect`; ver LINT-EFFECT-01). Playwright de tienda y sesión:
+112/112, con una prueba nueva que abre y cierra las categorías con el teclado.
+
+**LINT-EFFECT-01 (P4, propuesta).** Los 23 avisos restantes señalan pantallas que cargan
+datos con `setState` dentro de un efecto. No hay un defecto asociado; quitarlos exige
+cambiar el patrón de carga de 20 pantallas del panel. No se silencian.
+
 ## 2026-10-04 — Profundidad de los recortes (revisión de #60)
 
 La revisión de Storefront V4 no dejó hallazgos P0 ni P1. Corregido en el frontend:

@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Cabecera y pie V4
+
+- Categorías de la cabecera accesibles con teclado y lector de pantalla.
+- Carrito móvil con nombre accesible; Escape cierra el menú; objetivos táctiles de 44 px.
+- Pie: una sola marca, banda de cierre V4, navegaciones con nombre.
+- Lint: de 25 a 23 avisos. Next 16.3.8, React 19.3.0, Playwright 1.63.0.
+
 ## 2026-10-04 — Profundidad de los recortes (revisión de #60)
 
 - La sombra de un recorte se ve sobre superficies oscuras (hero oscuro, promoción, tema
