@@ -79,6 +79,11 @@ const SECURITY_HEADERS = [
   { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  // The app uses none of these. Giving them up stops a third-party script (the
+  // payment SDK, say) from asking for them in the shop's name. Evidence photos
+  // come from a file input, which this does not affect. `payment` is left
+  // alone on purpose: the gateway's SDK may need it.
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
 
 // Pages whose URL carries a one-time token. Listed AFTER the general rule:

@@ -317,15 +317,6 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "service.warranty", group: "service", label: "Garantías", description: "Reingresos y garantías.", status: "pending" },
 
   // ── Reportes ─────────────────────────────────────────────────────────────
-  {
-    id: "reports.inventory",
-    group: "reports",
-    label: "Inventario",
-    description: "Reportes operativos de stock por sucursal.",
-    href: "/admin/inventory/reports",
-    requiredCapabilities: ["inventory.reports"],
-    status: "implemented",
-  },
   { id: "reports.sales", group: "reports", label: "Ventas", description: "Más vendidos e ingresos por producto.", status: "partial" },
   { id: "reports.technicians", group: "reports", label: "Técnicos", description: "Productividad de taller.", status: "pending" },
   { id: "reports.profitability", group: "reports", label: "Rentabilidad", description: "Margen por producto y periodo.", status: "pending" },
@@ -367,15 +358,6 @@ export const INTERNAL_MODULES: InternalModule[] = [
     quickAction: true,
   },
   {
-    id: "admin.company",
-    group: "administration",
-    label: "Empresa",
-    description: "Identidad y datos fiscales. Se editan en Configuración.",
-    href: "/admin/settings",
-    requiredCapabilities: ["company.view"],
-    status: "implemented",
-  },
-  {
     id: "admin.branches",
     group: "administration",
     label: "Sucursales",
@@ -383,14 +365,6 @@ export const INTERNAL_MODULES: InternalModule[] = [
     href: "/admin/branches",
     requiredCapabilities: ["company.view"],
     status: "implemented",
-  },
-  {
-    id: "admin.areas",
-    group: "administration",
-    label: "Áreas",
-    description: "Áreas internas. API lista, pantalla pendiente.",
-    requiredCapabilities: ["areas.manage"],
-    status: "partial",
   },
   {
     id: "admin.roles",
