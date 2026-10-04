@@ -1,0 +1,50 @@
+# Mapa del código
+
+Dónde vive cada cosa. No lista todos los archivos: para un símbolo, `rg`. Los dominios de backend con
+sus funciones y tests están en `docs/AUDIT_MEMORY.md` §4 y §8; aquí va la estructura y lo que allí falta.
+
+Backend: `backend/store/` (una sola app Django). Rutas: `urls.py` (`/api/`) y `v1_urls.py` (`/api/v1/`).
+Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.py` + `test_*.py`,
+`frontend/__tests__/`, `frontend/e2e/`.
+
+## Backend
+
+| Módulo | Archivos | Contrato | Frontera de seguridad |
+|---|---|---|---|
+| Tenancy / RBAC | `tenancy.py`, `capabilities.py`, `permissions.py`, `tenant_views.py`, `access_views.py`, `staff_views.py`, `company_provisioning.py` | `/api/admin/{companies,branches,memberships,roles}/`, invitaciones de personal | Empresa por membresía; capacidades; alta directa de membresía sólo plataforma |
+| Auth | `auth_views.py`, `authentication.py`, `v1_auth_views.py`, `token_revocation.py`, `throttles.py`, `security_log.py`, `client_ip.py` | `/api/auth/*` (cookies), `/api/v1/auth/*` (cuerpo) | HttpOnly + CSRF; límites por IP real; contraseña nunca en logs |
+| Catálogo y pedidos | `views.py`, `admin_views.py`, `serializers.py`, `checkout_services.py`, `checkout_quote_views.py`, `order_fulfillment_services.py`, `tax_services.py` | `/api/products`, `/api/categories`, `/api/cart`, `/api/checkout/*`, `/api/admin/{products,categories,orders}/` | Precio, stock e impuestos sólo en servidor; idempotencia de pago |
+| Inventario | `inventory_services.py`, `inventory_views.py`, `v1_inventory_views.py`, `v1_transfer_views.py`, `import_*`, `stock_import_services.py`, `xlsx_reader.py` | ajustes, Kardex, transferencias, recuentos, importación | `select_for_update`; sucursal por alcance |
+| POS / promociones | `pos_services.py`, `pos_views.py`, `v1_pos_views.py`, `promotion_*`, `sales_note_services.py`, `ticket_services.py` | `/api/v1/internal/<slug>/sales/pos/*` | Idempotencia por empresa |
+| Servicio técnico | `service_services.py`, `v1_service_views.py`, `evidence_*` | `/api/v1/internal/<slug>/service/*` | Evidencias privadas; asignar ≠ cobrar |
+| Escaparate (CMS) | `storefront_content_services.py`, `storefront_content_views.py`, `company_settings.py`, `settings_views.py` | `/api/storefront/config/`, `/api/admin/storefront/{page,campaigns,<kind>}/` | `company.manage`; publicar es acción propia |
+| Imágenes de la tienda | `storefront_media.py`, `storefront_media_views.py`, modelo `StorefrontImage` | `POST /api/admin/storefront/images/`, `GET /api/storefront/images/<id>` | Públicas; el decodificador decide el tipo; comparten almacén con evidencias, no autorización |
+| Fiscal (SUNAT) | `fiscal/`, `fiscal_*` | emisión, notas, bajas, resúmenes | Apagado por defecto (`FISCAL_ENABLED=0`) |
+| Configuración | `backend/backend/settings.py`, `urls.py` | variables en `.env.example` | Falla cerrado con `DEBUG=0`; sin admin de Django |
+
+## Frontend
+
+| Módulo | Archivos | Notas |
+|---|---|---|
+| Armazón de tienda | `layout.tsx`, `components/StorefrontChrome.tsx`, `StorefrontProvider.tsx`, `ThemeProvider.tsx`, `Header.tsx`, `Footer.tsx`, `BrandLogo.tsx` | `shop-surface` / `internal-surface`; logo por contraste |
+| Portada | `page.tsx`, `components/Hero.tsx`, `ProductCarousel.tsx`, `lib/storefront.ts`, `lib/storefront-media.ts`, `lib/catalog-categories.ts` | Todo desde `useStorefront()`; hero `dark`/`light` por tienda |
+| Comercio | `product/`, `cart/`, `checkout/`, `orders/`, `lib/cart.ts`, `lib/payments.ts` | Carrito anónimo por clave aleatoria; Izipay por SDK |
+| Sesión | `auth/`, `invitacion/`, `lib/auth.ts`, `lib/api.ts`, `api/[...path]/route.ts` | `fetchWithAuth`; proxy con tope de cuerpo y redirecciones propias |
+| Panel | `admin/components/` (`AdminShell`, `InternalSidebar`, `InternalTopbar`, `AccessGuard`, `ImageUploadField`), `admin/lib/` (`internal-api.ts`, `internal-modules.ts`, `internal-access.ts`, `branch-authority.ts`) | Menú y botones siguen capacidades |
+| Panel · pantallas | `admin/{products,inventory,sales,customers,service,settings,staff,users,roles,orders,...}/` | Escaparate: `admin/settings/storefront/` |
+| Cabeceras | `next.config.ts` | `frame-ancestors`, `no-referrer` en páginas con token |
+
+## Infraestructura
+
+| Pieza | Archivos | Notas |
+|---|---|---|
+| CI | `.github/workflows/frontend-uxui-validation.yml`, `backend-postgres-validation.yml` | Filtros por ruta; backend ~70 min |
+| Producción | `backend/Dockerfile.prod`, `frontend/Dockerfile.prod`, `docker-compose.prod.yml`, `deploy/` | En la rama `deploy/production-vps` hasta que entre el PR de despliegue |
+| Almacenamiento | `evidence_storage.py` (`filesystem` o `s3`) | Evidencias y `companies/<id>/storefront/` en el mismo almacén |
+| Datos locales | `backend/private-media/`, `*.sqlite3`, `.env` | Ignorados por git; nunca se versionan |
+
+## E2E por área
+
+`storefront*.spec.ts`, `hero-mobile-clip`, `brand-contrast`, `skip-link` (tienda) · `storefront-v4-images`
+(subida desde el panel) · `h411-auth-interop`, `demo-accounts` (sesión) · `pos-*`, `service-pos`,
+`tax-breakdown`, `fiscal-invoice` (venta) · `staff-*`, `admin-inventory-mobile`, `h41-visual` (panel).

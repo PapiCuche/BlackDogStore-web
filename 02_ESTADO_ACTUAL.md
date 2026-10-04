@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Sistema de agentes
+
+Se incorpora política persistente de agentes y eficiencia de contexto: `AGENTS.md`,
+`docs/NEXT_ACTION.md`, `docs/AGENT_TOKEN_POLICY.md`, `docs/AGENT_BOOTSTRAP.md` y
+`docs/CODEBASE_MAP.md`. Sin cambios de código. PR #60 (Storefront V4) ya está en
+`master` por merge `e40e440`.
+
 ## 2026-10-03 — Portada V4: imágenes que la tienda sube desde su panel
 
 Rama `feat/storefront-v4-images`, desde `master` `833fdec`. Código en `3fa9b42`.
