@@ -25,11 +25,11 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="min-h-[70vh] bg-background px-6 py-12">
+    <div className="v3-account-page min-h-[65vh] bg-surface px-4 py-12 sm:px-6 sm:py-16">
       <div className="mx-auto max-w-md">
-        <header className="mb-8">
+        <header className="mb-8 text-center">
           <span className="section-label">Cuenta</span>
-          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground">
+          <h1 className="mt-2 text-3xl font-semibold text-foreground">
             Recuperar acceso
           </h1>
           <p className="mt-3 text-sm leading-6 text-muted">
@@ -37,14 +37,14 @@ export default function ForgotPasswordPage() {
           </p>
         </header>
 
-        <section className="rounded-2xl border border-bd-border bg-surface p-6 sm:p-8">
+        <section className="rounded-xl border border-bd-border bg-background p-6 sm:p-8">
           {submitted ? (
             <div>
               <p className="font-semibold text-foreground">Solicitud recibida</p>
               <p className="mt-3 text-sm leading-6 text-muted">
                 Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña. Revisa también la carpeta de spam.
               </p>
-              <Link href="/auth" className="mt-6 inline-flex rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+              <Link href="/auth" className="mt-6 inline-flex rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface">
                 Volver al inicio de sesión
               </Link>
             </div>
@@ -57,7 +57,7 @@ export default function ForgotPasswordPage() {
               ) : null}
 
               <form onSubmit={handleSubmit} className="space-y-5">
-                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                <label className="block text-sm font-medium text-foreground/85">
                   Correo electrónico
                   <input
                     type="email"
@@ -72,14 +72,14 @@ export default function ForgotPasswordPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:opacity-50"
+                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
                 >
                   {loading ? "Enviando…" : "Enviar instrucciones"}
                 </button>
               </form>
 
-              <Link href="/auth" className="mt-6 inline-flex text-sm font-semibold text-muted transition hover:text-foreground">
-                ← Volver al inicio de sesión
+              <Link href="/auth" className="mt-6 flex justify-center text-sm text-muted transition hover:text-foreground">
+                Volver al inicio de sesión
               </Link>
             </>
           )}

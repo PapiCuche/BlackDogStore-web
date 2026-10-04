@@ -142,7 +142,10 @@ describe('la tipografía escala sin saltos', () => {
     // ancho en el que el titular se queda enorme justo antes de saltar.
     const home = code(path.join(APP, 'page.tsx'));
     const hero = code(path.join(APP, 'components/Hero.tsx'));
-    expect(hero).toContain('clamp(');
-    expect(home).toContain('clamp(');
+    const css = code(path.join(APP, 'globals.css'));
+    expect(hero).toContain('v3-hero-title');
+    expect(home).toContain('v3-heading');
+    expect(css).toMatch(/\.v3-hero-title\s*\{[^}]*font-size:\s*clamp\(/);
+    expect(css).toMatch(/\.v3-heading\s*\{[^}]*font-size:\s*clamp\(/);
   });
 });

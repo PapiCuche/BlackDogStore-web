@@ -35,16 +35,16 @@ function ResetPasswordContent() {
 
   if (!token) {
     return (
-      <div className="min-h-[70vh] bg-background px-6 py-12">
-        <div className="mx-auto max-w-md rounded-2xl border border-bd-border bg-surface p-7 text-center">
+      <div className="v3-account-page min-h-[65vh] bg-surface px-4 py-12 sm:px-6 sm:py-16">
+        <div className="mx-auto max-w-md rounded-xl border border-bd-border bg-background p-6 text-center sm:p-10">
           <span className="section-label">Cuenta</span>
-          <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+          <h1 className="mt-2 text-2xl font-semibold text-foreground">
             Enlace inválido
           </h1>
           <p className="mt-4 text-sm leading-6 text-muted">
             No se encontró un token de recuperación. Usa el enlace recibido por correo o solicita uno nuevo.
           </p>
-          <Link href="/auth/forgot-password" className="mt-6 inline-flex rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+          <Link href="/auth/forgot-password" className="mt-6 inline-flex rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface">
             Solicitar nuevo enlace
           </Link>
         </div>
@@ -56,23 +56,23 @@ function ResetPasswordContent() {
     "mt-2 w-full rounded-xl border border-bd-border bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted/60 focus:border-foreground/25 focus:outline-none";
 
   return (
-    <div className="min-h-[70vh] bg-background px-6 py-12">
+    <div className="v3-account-page min-h-[65vh] bg-surface px-4 py-12 sm:px-6 sm:py-16">
       <div className="mx-auto max-w-md">
-        <header className="mb-8">
+        <header className="mb-8 text-center">
           <span className="section-label">Cuenta</span>
-          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground">
+          <h1 className="mt-2 text-3xl font-semibold text-foreground">
             Nueva contraseña
           </h1>
         </header>
 
-        <section className="rounded-2xl border border-bd-border bg-surface p-6 sm:p-8">
+        <section className="rounded-xl border border-bd-border bg-background p-6 sm:p-8">
           {success ? (
             <div>
               <p className="font-semibold text-foreground">Contraseña restablecida</p>
               <p className="mt-3 text-sm leading-6 text-muted">
                 Ya puedes iniciar sesión con la nueva contraseña.
               </p>
-              <Link href="/auth" className="mt-6 inline-flex rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+              <Link href="/auth" className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90">
                 Iniciar sesión
               </Link>
             </div>
@@ -85,7 +85,7 @@ function ResetPasswordContent() {
               ) : null}
 
               <form onSubmit={handleSubmit} className="space-y-5">
-                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                <label className="block text-sm font-medium text-foreground/85">
                   Nueva contraseña
                   <input
                     type="password"
@@ -97,7 +97,7 @@ function ResetPasswordContent() {
                     placeholder="Mínimo 8 caracteres"
                   />
                 </label>
-                <label className="block text-xs font-bold uppercase tracking-[0.08em] text-muted">
+                <label className="block text-sm font-medium text-foreground/85">
                   Confirmar contraseña
                   <input
                     type="password"
@@ -111,7 +111,7 @@ function ResetPasswordContent() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:opacity-50"
+                  className="w-full rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:opacity-50"
                 >
                   {loading ? "Guardando…" : "Guardar nueva contraseña"}
                 </button>

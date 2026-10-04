@@ -84,12 +84,12 @@ const PILOT = /black dog|iphone|ipad|apple|\bmac\b|watch|arequipa/i;
 describe('portada · categorías', () => {
   it('son las del catálogo real de la tienda, con el filtro que el catálogo lee', async () => {
     inStore(<Home />);
-    // V4: el bloque se titula «Encuentra lo que necesitas.» y cada categoría es
-    // una tarjeta con su nombre y «Ver más». Lo que se fija no cambia: son las
-    // del catálogo, en su orden, con el filtro que el catálogo lee.
+    // El bloque se titula «Encuentra lo que necesitas.» y cada categoría es una
+    // tarjeta con su nombre y «Explorar». Lo que se fija no cambia: son las del
+    // catálogo, en su orden, con el filtro que el catálogo lee.
     const section = (await screen.findByRole('heading', { name: 'Encuentra lo que necesitas.' })).closest('section') as HTMLElement;
     const links = within(section).getAllByRole('link').filter((a) => a.getAttribute('href')?.includes('category='));
-    expect(links.map((a) => [a.textContent?.replace(/Ver más.*/, '').trim(), a.getAttribute('href')])).toEqual([
+    expect(links.map((a) => [a.querySelector('h3')?.textContent, a.getAttribute('href')])).toEqual([
       ['Laptops', '/product?category=laptops'],
       ['Audio', '/product?category=audio'],
     ]);
@@ -152,12 +152,31 @@ describe('portada · catálogo y preguntas', () => {
 });
 
 describe('hero', () => {
-  it('es una losa de marca oscura, no una superficie que sigue al tema', () => {
+  it('se apoya sobre el fondo del tema, no sobre una losa oscura fija', () => {
     const { container } = inStore(<Hero />);
-    const slab = container.querySelector('section') as HTMLElement;
-    expect(slab.className).toContain('bg-slab');
-    expect(slab.className).toContain('text-slab-foreground');
-    expect(slab.className).not.toContain('bg-background');
+    const hero = container.querySelector('section') as HTMLElement;
+    expect(hero.className).toContain('bg-background');
+    expect(hero.className).not.toContain('bg-slab');
+  });
+
+  it('los rótulos bajo los botones son las categorías del catálogo de la tienda', async () => {
+    const { container } = inStore(<Hero />);
+    await waitFor(() => expect(
+      Array.from(container.querySelectorAll('ul li')).map((li) => li.textContent),
+    ).toEqual(['Laptops', 'Audio']));
+  });
+
+  it('sin servicios publicados no ofrece un botón de taller', () => {
+    inStore(<Hero />);
+    expect(screen.queryByRole('link', { name: 'Servicio técnico' })).not.toBeInTheDocument();
+  });
+
+  it('con servicios publicados el segundo botón lleva al taller', () => {
+    inStore(<Hero />, {
+      ...OTHER_STORE,
+      services: [{ title: 'Cambio de pantalla', description: '', devices_text: '', estimated_time_text: '', highlight: '' }],
+    });
+    expect(screen.getByRole('link', { name: 'Servicio técnico' })).toHaveAttribute('href', '/services');
   });
 
   it('sin campaña usa el texto de la tienda y no pinta ninguna imagen de producto', async () => {

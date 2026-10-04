@@ -16,7 +16,7 @@ export default function LogoutPage() {
       <div className="w-full max-w-md rounded-2xl border border-bd-border bg-surface p-7 text-center" role="status" aria-live="polite">
         <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
         <span className="section-label mt-5">Cuenta</span>
-        <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+        <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight text-foreground">
           Cerrando sesión
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted">

@@ -84,30 +84,32 @@ for (const viewport of VIEWPORTS) {
 
 test.describe("el logotipo se elige por la superficie real", () => {
   for (const theme of ["light", "dark"] as const) {
-    test(`el hero es una losa oscura en tema ${theme}`, async ({ page }) => {
+    test(`la firma de marca sigue al tema en tema ${theme}`, async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await withTheme(page, theme);
       await page.goto("/", { waitUntil: "networkidle" });
 
-      // LA SUPERFICIE MANDA, Y ESTA SUPERFICIE NO CAMBIA.
-      //
-      // M12F.2 devolvió al hero su condición de losa de marca: oscura en los
-      // dos temas, a propósito. Antes de eso M12F la había convertido en
-      // `bg-background` y en tema claro salía crema — la marca desaparecía de
-      // su propia portada.
-      //
-      // Por tanto su logotipo es SIEMPRE la variante para fondo oscuro. Que
-      // siguiera al tema sería el defecto contrario al que M12E cerró.
-      const hero = page.locator("section").first();
-      const bg = await hero.evaluate((el) => getComputedStyle(el).backgroundColor);
-      const luminance = (() => {
+      // LA SUPERFICIE MANDA. En la V3 la portada no abre con una losa oscura
+      // fija: el hero y la firma de marca se pintan con `bg-background`, así
+      // que su contraste es el del tema. El isotipo de la firma tiene que ser
+      // la variante para ESA superficie: oscuro sobre claro, claro sobre oscuro.
+      const hero = page.locator("section[data-hero]");
+      const signature = page.getByTestId("brand-statement");
+      for (const [name, surface] of [["el hero", hero], ["la firma de marca", signature]] as const) {
+        const bg = await surface.evaluate((el) => getComputedStyle(el).backgroundColor);
         const [r, g, b] = bg.match(/\d+/g)!.slice(0, 3).map(Number);
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      })();
-      expect(luminance, `el hero no es oscuro en tema ${theme}: ${bg}`).toBeLessThan(90);
+        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (theme === "dark") expect(luminance, `${name} no es oscuro en tema dark: ${bg}`).toBeLessThan(90);
+        else expect(luminance, `${name} no es claro en tema light: ${bg}`).toBeGreaterThan(160);
+      }
 
-      const src = await hero.locator("img").first().getAttribute("src");
-      expect(src, `el hero pinta ${src} sobre una losa oscura`).toContain("on-dark");
+      const src = await signature.locator("img").first().getAttribute("src");
+      expect(src, `la firma pinta ${src} en tema ${theme}`).toContain(theme === "dark" ? "on-dark" : "on-light");
+
+      // Marca de agua: decorativa y tenue, igual en los dos temas.
+      const watermark = signature.locator(".v3-brand-watermark");
+      await expect(watermark).toHaveAttribute("aria-hidden", "true");
+      expect(await watermark.evaluate((el) => getComputedStyle(el).opacity)).toBe("0.13");
     });
   }
 

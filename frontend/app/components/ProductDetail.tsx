@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Image from "next/image";
+import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
@@ -192,10 +192,9 @@ export default function ProductDetail({ product }: { product: Product }) {
           <div className="relative overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface">
             {product.image_url ? (
               <div className="relative aspect-[4/3] min-h-80 lg:min-h-[520px]">
-                <Image
+                <ProductImage
                   src={product.image_url}
                   alt={product.name}
-                  fill
                   className="object-contain p-6 sm:p-10"
                   sizes="(max-width: 1024px) 100vw, 58vw"
                   priority
@@ -220,7 +219,7 @@ export default function ProductDetail({ product }: { product: Product }) {
               </Link>
             ) : null}
 
-            <h1 className="mt-3 font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.045em] text-foreground sm:text-5xl">
+            <h1 className="mt-3 font-display text-4xl font-semibold leading-[1.08] tracking-tight text-foreground sm:text-5xl">
               {product.name}
             </h1>
 
@@ -288,7 +287,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 type="button"
                 onClick={handleAddToCart}
                 disabled={loading || !inStock}
-                className="mt-5 w-full rounded-xl bg-primary px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                className="mt-5 w-full rounded-full bg-foreground px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {loading ? "Agregando…" : !inStock ? "Sin stock" : "Agregar al carrito"}
               </button>
@@ -320,7 +319,7 @@ export default function ProductDetail({ product }: { product: Product }) {
           <div className="flex items-end justify-between gap-4">
             <div>
               <span className="section-label">Opiniones</span>
-              <h2 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+              <h2 className="mt-2 font-display text-3xl font-semibold tracking-tight text-foreground">
                 Reseñas
               </h2>
             </div>
@@ -380,7 +379,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 <button
                   type="submit"
                   disabled={reviewSubmitting}
-                  className="rounded-xl bg-primary px-5 py-3 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:opacity-50"
+                  className="rounded-full bg-foreground px-5 py-3 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:opacity-50"
                 >
                   {reviewSubmitting ? "Enviando…" : "Publicar reseña"}
                 </button>
@@ -393,7 +392,7 @@ export default function ProductDetail({ product }: { product: Product }) {
           <section className="mb-8 mt-16 border-t border-bd-border pt-10 sm:mt-20 sm:pt-12">
             <span className="section-label">Explorar</span>
             {/* A 320 px «RELACIONADOS» no cabía a 1.875rem y desbordaba la página. */}
-            <h2 className="mt-2 font-display text-[min(1.875rem,8vw)] font-black italic uppercase leading-9 tracking-[-0.035em] text-foreground">
+            <h2 className="mt-2 font-display text-[min(1.875rem,8vw)] font-semibold leading-9 tracking-tight text-foreground">
               Productos relacionados
             </h2>
             <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">

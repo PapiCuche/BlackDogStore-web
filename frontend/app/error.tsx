@@ -12,7 +12,7 @@ export default function GlobalError({
     <main className="min-h-[65vh] bg-background px-6 py-16 text-foreground">
       <div className="mx-auto max-w-3xl rounded-2xl border border-danger-border bg-surface p-6 sm:p-8">
         <span className="section-label">Algo salió mal</span>
-        <h1 className="mt-3 font-display text-3xl font-black italic uppercase tracking-[-0.035em] sm:text-5xl">
+        <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight sm:text-5xl">
           No pudimos cargar esta vista
         </h1>
         <p className="mt-4 max-w-xl text-sm leading-7 text-muted">
@@ -22,7 +22,7 @@ export default function GlobalError({
           <button
             type="button"
             onClick={reset}
-            className="min-h-12 rounded-xl bg-primary px-6 py-3 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90"
+            className="min-h-12 rounded-full bg-foreground px-6 py-3 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90"
           >
             Reintentar
           </button>

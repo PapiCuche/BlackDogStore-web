@@ -46,8 +46,8 @@ export function ServicesContent() {
         <div className="relative mx-auto max-w-7xl px-6 py-20 lg:px-8 lg:py-28">
           <span className="section-label">Servicio Técnico</span>
           <h1
-            className="font-display mt-4 max-w-3xl font-black uppercase leading-[0.9] tracking-tight text-foreground text-balance break-words"
-            style={{ fontSize: "clamp(1.75rem, 8vw, 6rem)" }}
+            className="font-display mt-4 max-w-3xl font-semibold uppercase leading-[0.9] tracking-tight text-foreground text-balance break-words"
+            style={{ fontSize: "clamp(2rem, 4vw, 3.5rem)" }}
           >
             {titleLines.map((line, i) => (
               <span key={i} className="block">{line}</span>
@@ -65,16 +65,21 @@ export function ServicesContent() {
             */}
             <ServicesCta
               label="Hablar con un técnico"
-              className="inline-flex min-h-11 items-center gap-2.5 rounded-full bg-foreground px-8 py-4 text-sm font-black uppercase tracking-widest text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              className="inline-flex min-h-11 items-center gap-2.5 rounded-full bg-foreground px-8 py-4 text-sm font-semibold uppercase tracking-wide text-background transition-colors hover:bg-foreground/85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             />
             <Link
               href="/product"
-              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-bd-border bg-surface px-8 py-4 text-sm font-bold uppercase tracking-widest text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-bd-border bg-surface px-8 py-4 text-sm font-bold uppercase tracking-wide text-foreground transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
               Ver catálogo
             </Link>
           </div>
         </div>
+      </section>
+
+      <section className="v3-container grid gap-10 py-16 lg:grid-cols-2">
+        <div><p className="section-label">Cómo funciona</p><h2 className="v3-heading mt-4">Un proceso claro,<br />de principio a fin.</h2><p className="mt-5 max-w-lg leading-7 text-muted">Antes de comenzar, revisamos tu equipo y te explicamos las opciones. El alcance, el costo y la garantía dependen del diagnóstico y del servicio elegido.</p></div>
+        <ol className="divide-y divide-bd-border">{["Cuéntanos qué ocurre", "Revisamos el equipo", "Explicamos las opciones", "Realizamos el servicio"].map((step, index) => <li key={step} className="flex min-h-20 items-center gap-6 py-5"><span className="text-xs font-semibold tabular-nums text-primary">{String(index + 1).padStart(2, "0")}</span><span className="text-lg">{step}</span></li>)}</ol>
       </section>
 
       {/* Métricas — sólo si el taller ha publicado alguna. */}
@@ -83,10 +88,10 @@ export function ServicesContent() {
           <div className="mx-auto grid max-w-7xl grid-cols-2 divide-x divide-bd-border lg:grid-cols-4">
             {metrics.map((m) => (
               <div key={`${m.value}-${m.label}`} className="px-8 py-8 text-center">
-                <p className="font-display text-4xl font-black tracking-tight text-foreground lg:text-5xl">
+                <p className="font-display text-4xl font-semibold tracking-tight text-foreground lg:text-5xl">
                   {m.value}
                 </p>
-                <p className="mt-1.5 text-xs uppercase tracking-widest text-muted">
+                <p className="mt-1.5 text-xs uppercase tracking-wide text-muted">
                   {m.label}
                 </p>
               </div>
@@ -101,7 +106,7 @@ export function ServicesContent() {
         {services.length > 0 ? (
           <section>
             <span className="section-label">Servicios disponibles</span>
-            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-black uppercase tracking-tight text-foreground break-words">
+            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-semibold uppercase tracking-tight text-foreground break-words">
               ¿Qué podemos reparar?
             </h2>
 
@@ -111,7 +116,7 @@ export function ServicesContent() {
                   key={service.title}
                   className="group flex flex-col gap-4 py-8 sm:flex-row sm:items-start sm:gap-8 lg:items-center"
                 >
-                  <p className="font-display shrink-0 text-4xl font-black text-muted lg:text-5xl">
+                  <p className="font-display shrink-0 text-4xl font-semibold text-muted lg:text-5xl">
                     {String(i + 1).padStart(2, "0")}
                   </p>
 
@@ -119,11 +124,11 @@ export function ServicesContent() {
                       de empujar el tiempo fuera de la pantalla. */}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-3">
-                      <h3 className="font-display text-2xl font-black uppercase text-foreground">
+                      <h3 className="font-display text-2xl font-semibold uppercase text-foreground">
                         {service.title}
                       </h3>
                       {service.highlight ? (
-                        <span className="rounded-full border border-bd-border bg-surface-2 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-muted">
+                        <span className="rounded-full border border-bd-border bg-surface-2 px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-muted">
                           {service.highlight}
                         </span>
                       ) : null}
@@ -134,7 +139,7 @@ export function ServicesContent() {
                       </p>
                     ) : null}
                     {service.devices_text ? (
-                      <p className="mt-3 text-[10px] font-semibold uppercase tracking-widest text-muted">
+                      <p className="mt-3 text-[10px] font-semibold uppercase tracking-wide text-muted">
                         {service.devices_text}
                       </p>
                     ) : null}
@@ -155,7 +160,7 @@ export function ServicesContent() {
                     <ServicesCta
                       label="Consultar"
                       withIcon={false}
-                      className="min-h-11 rounded-full border border-bd-border bg-surface px-5 py-2 text-xs font-bold uppercase tracking-widest text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      className="min-h-11 rounded-full border border-bd-border bg-surface px-5 py-2 text-xs font-bold uppercase tracking-wide text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                     />
                   </div>
                 </div>
@@ -166,7 +171,7 @@ export function ServicesContent() {
 
         {/* Garantía — la del taller, no una inventada. */}
         {page.services_warranty_note ? (
-          <section className="mt-20 rounded-3xl border border-bd-border bg-surface px-8 py-10 sm:px-12">
+          <section className="mt-20 rounded-xl border border-bd-border bg-surface px-8 py-10 sm:px-12">
             <span className="section-label">Garantía</span>
             <p className="mt-3 max-w-3xl text-base leading-7 text-foreground/85 text-pretty">
               {page.services_warranty_note}
@@ -178,13 +183,13 @@ export function ServicesContent() {
         {faqs.length > 0 ? (
           <section className="mt-20">
             <span className="section-label">FAQ</span>
-            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-black uppercase tracking-tight text-foreground break-words">
+            <h2 className="font-display mt-3 text-[clamp(1.6rem,7vw,3rem)] font-semibold uppercase tracking-tight text-foreground break-words">
               Preguntas<br />Frecuentes
             </h2>
             <div className="mt-10 divide-y divide-bd-border">
               {faqs.map((faq) => (
                 <div key={faq.question} className="py-7">
-                  <h3 className="font-display text-lg font-black uppercase text-foreground">
+                  <h3 className="font-display text-lg font-semibold uppercase text-foreground">
                     {faq.question}
                   </h3>
                   <p className="mt-2 text-sm leading-6 text-muted text-pretty">
@@ -198,9 +203,9 @@ export function ServicesContent() {
 
         {/* Llamada final — se pinta con el color del texto, así que su
             contraste es el contrario al de la página. */}
-        <section className="my-20 overflow-hidden rounded-3xl bg-foreground text-center">
+        <section className="my-20 overflow-hidden rounded-xl bg-foreground text-center">
           <div className="relative px-8 py-16 sm:px-12">
-            <p className="font-display text-[clamp(1.75rem,8vw,3.75rem)] font-black uppercase leading-none tracking-tight text-background break-words">
+            <p className="font-display text-[clamp(1.75rem,8vw,3.75rem)] font-semibold uppercase leading-none tracking-tight text-background break-words">
               ¿Listo para<br />reparar tu Apple?
             </p>
             <p className="mt-4 text-sm text-background/70">
@@ -208,7 +213,7 @@ export function ServicesContent() {
             </p>
             <ServicesCta
               label="Hablar con un técnico"
-              className="mt-8 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-background px-8 py-4 text-sm font-black uppercase tracking-widest text-foreground transition-opacity hover:opacity-85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              className="mt-8 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-background px-8 py-4 text-sm font-semibold uppercase tracking-wide text-foreground transition-opacity hover:opacity-85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             />
           </div>
         </section>

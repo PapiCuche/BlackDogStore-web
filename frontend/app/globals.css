@@ -242,6 +242,32 @@
   --font-display: var(--font-display);
 }
 
+/* -------------------------------------------------------------------- */
+/* MOVIMIENTO — una sola fuente para curvas y tiempos.                    */
+/*                                                                       */
+/* Las curvas de serie de CSS y de Tailwind son demasiado suaves: un      */
+/* `ease-out` flojo no se distingue de un `linear`, y la interfaz parece  */
+/* responder tarde. Éstas arrancan rápido —que es el momento en que el    */
+/* usuario está mirando— y frenan largo.                                  */
+/*                                                                       */
+/* Van en `@theme` y no en `:root` para que las utilidades `ease-out` /   */
+/* `ease-in-out` de Tailwind usen exactamente las mismas, y para que       */
+/* `transition` sin más herede la curva por defecto. No hay `ease-in`:    */
+/* empieza lento, y lo lento al principio se lee como lag.                */
+/* -------------------------------------------------------------------- */
+@theme {
+  /* Entradas, salidas y respuesta a una pulsación. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Algo que ya está en pantalla y se desplaza o cambia de forma. */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  /* Paneles laterales: la curva de las hojas de iOS. */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --default-transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Un indicador de carga que gira más rápido hace que la misma espera se
+     perciba más corta. 1 s por vuelta —el valor de serie— se lee como lento. */
+  --animate-spin: spin 0.6s linear infinite;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -261,31 +287,11 @@ body {
   background-size: 18px 18px;
 }
 
-.dot-grid-dark {
-  background-image: radial-gradient(circle, rgba(0,0,0,0.18) 1.5px, transparent 1.5px);
-  background-size: 18px 18px;
-}
-
 /* Topographic contour line texture (very subtle background) */
 .topo-bg {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='0.7' opacity='0.045'%3E%3Cpath d='M0 300 Q150 200 300 300 Q450 400 600 300'/%3E%3Cpath d='M0 260 Q150 160 300 260 Q450 360 600 260'/%3E%3Cpath d='M0 340 Q150 240 300 340 Q450 440 600 340'/%3E%3Cpath d='M0 220 Q150 120 300 220 Q450 320 600 220'/%3E%3Cpath d='M0 380 Q150 280 300 380 Q450 480 600 380'/%3E%3Cpath d='M0 180 Q150 80 300 180 Q450 280 600 180'/%3E%3Cpath d='M0 420 Q150 320 300 420 Q450 520 600 420'/%3E%3Cpath d='M0 140 Q150 40 300 140 Q450 240 600 140'/%3E%3Cpath d='M0 460 Q150 360 300 460 Q450 560 600 460'/%3E%3Cpath d='M0 500 Q150 400 300 500 Q450 600 600 500'/%3E%3Cpath d='M0 100 Q150 0 300 100 Q450 200 600 100'/%3E%3C/g%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 600px 600px;
-}
-
-/* Badge / pill labels */
-.bd-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.75rem;
-  border-radius: 9999px;
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
 }
 
 /* Black section label (like "REPARACIONES" labels in the flyers) */
@@ -325,15 +331,109 @@ body {
 
 img { display: block; max-width: 100%; }
 
-/* Marquee animation for the products strip */
-@keyframes marquee {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-33.333%); }
+/*
+  AQUÍ HABÍA un `*, *::before, *::after { transition-timing-function: … }`.
+  Al estar fuera de toda capa ganaba a CUALQUIER utilidad de Tailwind: un
+  `ease-out` escrito en un componente no hacía nada. La curva por defecto vive
+  ahora en `--default-transition-timing-function`, que las utilidades sí pueden
+  sobrescribir.
+*/
+
+/* -------------------------------------------------------------------- */
+/* RESPUESTA A LA PULSACIÓN                                               */
+/*                                                                       */
+/* Un botón que no se mueve al pulsarlo deja la duda de si la interfaz    */
+/* escuchó. Hay 201 `<button>` repartidos en 64 archivos y ningún         */
+/* componente común, así que la regla vive aquí y no en cada uno.         */
+/*                                                                       */
+/* Está en capas (`base` y `components`) para que cualquier utilidad la   */
+/* pueda sobrescribir: `active:scale-95` en un elemento sigue ganando.    */
+/* -------------------------------------------------------------------- */
+@layer base {
+  /* Un botón sin clase `transition` también anima la pulsación. Los que usan
+     `transition` de Tailwind ya incluyen `scale` en su lista. */
+  :where(button, [role="button"]) {
+    transition: scale 160ms var(--ease-out);
+  }
 }
 
-/* Smooth transitions globally */
-*, *::before, *::after {
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+@layer components {
+  /*
+    NO SE ENCOGE TODO. Quedan fuera:
+    · `.text-left` — un botón con el texto a la izquierda es una fila: cabecera
+      de acordeón, opción de una lista. El 3 % de una fila de 1000 px son 30 px
+      de movimiento, y eso ya no es una confirmación sino un salto.
+    · `[data-no-press]` — la salida explícita, p. ej. el velo de un panel, que
+      es un botón a pantalla completa.
+
+    Y entra `a.rounded-full`: un enlace con forma de píldora («Ingresar», «Ver
+    carrito») es un botón para quien lo pulsa, aunque en el HTML sea un enlace.
+  */
+  :where(button, [role="button"], .v3-button, a.rounded-full):where(:not(:disabled, [aria-disabled="true"], [data-no-press], .text-left)):active {
+    scale: 0.97;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* ENTRADAS                                                            */
+  /*                                                                     */
+  /* Menús y paneles se montan con `{open && …}`: aparecían de golpe.     */
+  /* `@starting-style` anima la entrada sin estado ni efecto en React. La */
+  /* salida sigue siendo inmediata, a propósito: quien cierra un menú ya  */
+  /* terminó con él, y hacerle esperar una animación es lo contrario de   */
+  /* responder. Un navegador sin `@starting-style` lo muestra sin animar. */
+  /*                                                                     */
+  /* Nada entra desde `scale(0)`: nada real aparece de la nada. Y el      */
+  /* origen lo pone cada uso (`origin-top-right`…) para que el panel      */
+  /* crezca desde su disparador y no desde su centro.                     */
+  /* ------------------------------------------------------------------ */
+  .v3-pop {
+    transition: opacity 150ms var(--ease-out), scale 150ms var(--ease-out);
+  }
+  @starting-style {
+    .v3-pop { opacity: 0; scale: 0.96; }
+  }
+
+  /* Un bloque que se despliega bajo su disparador (el menú móvil). */
+  .v3-reveal {
+    transition: opacity 180ms var(--ease-out), translate 180ms var(--ease-out);
+  }
+  @starting-style {
+    .v3-reveal { opacity: 0; translate: 0 -6px; }
+  }
+
+  /* Panel lateral. El porcentaje es relativo al propio panel, así que entra
+     desde fuera sea cual sea su ancho. */
+  .v3-drawer {
+    transition: translate 260ms var(--ease-drawer);
+  }
+  @starting-style {
+    .v3-drawer { translate: -100% 0; }
+  }
+
+  .v3-backdrop {
+    transition: opacity 200ms var(--ease-out);
+  }
+  @starting-style {
+    .v3-backdrop { opacity: 0; }
+  }
+
+  /* Una rejilla que llega del servidor entra en cascada en vez de de golpe.
+     Es decoración: 40 ms entre piezas y tope en la séptima, para que una
+     rejilla larga no tarde más que una corta. `backwards` y no `forwards`:
+     al terminar no deja nada puesto, y el `hover` de la tarjeta sigue suyo. */
+  .v3-stagger > * {
+    animation: v3-rise 320ms var(--ease-out) backwards;
+  }
+  .v3-stagger > :nth-child(2) { animation-delay: 40ms; }
+  .v3-stagger > :nth-child(3) { animation-delay: 80ms; }
+  .v3-stagger > :nth-child(4) { animation-delay: 120ms; }
+  .v3-stagger > :nth-child(5) { animation-delay: 160ms; }
+  .v3-stagger > :nth-child(6) { animation-delay: 200ms; }
+  .v3-stagger > :nth-child(n + 7) { animation-delay: 240ms; }
+}
+
+@keyframes v3-rise {
+  from { opacity: 0; translate: 0 8px; }
 }
 
 /* -------------------------------------------------------------------- */
@@ -356,93 +456,80 @@ img { display: block; max-width: 100%; }
     scroll-behavior: auto !important;
   }
 
-  /* La marquesina queda quieta en su posición inicial en vez de saltar al
-     final del recorrido, que es donde la dejaría una animación de 0.01 ms. */
-  .animate-\[marquee_25s_linear_infinite\] {
+  /* La cascada conserva su `animation-delay` aunque la duración sea ~0: cada
+     pieza esperaría invisible y aparecería de golpe. Sin animación, están. */
+  .v3-stagger > * {
     animation: none !important;
-    transform: translateX(0);
   }
 }
 
-/* -------------------------------------------------------------------- */
-/* STOREFRONT V3 — lenguaje visual de la TIENDA.                          */
-/*                                                                       */
-/* TODO lo de aquí es una clase `v3-*`. No hay un solo selector de        */
-/* elemento (`table`, `h1`, `input`, `button`): una regla así alcanzaría  */
-/* el control interno, que tiene su propio diseño. Lo que la tienda       */
-/* quiera cambiar lo pide con una clase, y `/admin` no se entera.         */
-/*                                                                       */
-/* No toca tokens de tema, ni tipografías, ni la losa de marca.           */
-/* -------------------------------------------------------------------- */
-:root {
-  /* Arranca rápido —cuando se está mirando— y frena largo. */
-  --v3-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+/* V3: a shared visual language for the shop and operational workspace. */
+.shop-surface, .internal-surface { font-family: var(--font-body), Arial, sans-serif; }
+.shop-surface .font-display, .internal-surface .font-display {
+  font-family: var(--font-body), Arial, sans-serif;
+  font-weight: 600;
+  letter-spacing: -.035em;
+  text-transform: none;
 }
-
 .v3-container { width: min(1248px, calc(100% - 48px)); margin-inline: auto; }
-.v3-heading { font-size: clamp(1.8rem, 3.1vw, 2.75rem); line-height: 1.1; }
-.v3-text-link {
-  display: inline-flex; align-items: center; gap: .5rem; min-height: 44px;
-  font-size: .875rem; font-weight: 600;
+.v3-hero-title { font-size: clamp(2.2rem, 4.4vw, 3.875rem); font-weight: 600; line-height: 1.06; letter-spacing: -.045em; text-transform: uppercase; }
+.v3-heading { font-size: clamp(1.8rem, 3.1vw, 2.75rem); font-weight: 600; line-height: 1.12; letter-spacing: -.035em; }
+.v3-button { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px; padding: 12px 24px; border: 1px solid transparent; border-radius: 999px; background: var(--foreground); color: var(--background); font-size: .875rem; font-weight: 600; transition: opacity 160ms var(--ease-out), scale 160ms var(--ease-out); }
+.v3-button-outline { background: transparent; border-color: var(--border); color: var(--foreground); }
+.v3-button-light { background: var(--slab-foreground); color: var(--slab); }
+.v3-category { border: 1px solid var(--border); border-radius: 8px; padding: 24px; background: var(--background); transition: translate 200ms var(--ease-out), box-shadow 200ms var(--ease-out); }
+/* Un dispositivo táctil dispara `:hover` al tocar y lo deja pegado hasta el
+   siguiente toque: una tarjeta levantada que nadie está señalando. Las
+   utilidades `hover:` de Tailwind ya vienen con esta condición; el CSS escrito
+   a mano tiene que ponérsela. */
+@media (hover: hover) and (pointer: fine) {
+  .v3-button:hover { opacity: .82; }
+  .v3-category:hover { translate: 0 -3px; box-shadow: 0 12px 30px #0000000b; }
+  .admin-workspace table:not(.sr-only) tbody tr:hover { background: var(--surface); }
 }
-.v3-category {
-  border: 1px solid var(--border); border-radius: 12px; padding: 24px;
-  background: var(--background);
-  transition: translate 200ms var(--v3-ease-out), box-shadow 200ms var(--v3-ease-out);
-}
-
-/* ENTRADAS. Menús y paneles se montan con `{open && …}` y aparecían de golpe.
-   `@starting-style` anima la entrada sin estado en React; la salida sigue
-   siendo inmediata, a propósito. Sin soporte, se muestra sin animar. */
-.v3-pop { transition: opacity 150ms var(--v3-ease-out), scale 150ms var(--v3-ease-out); }
-.v3-reveal { transition: opacity 180ms var(--v3-ease-out), translate 180ms var(--v3-ease-out); }
-@starting-style {
-  .v3-pop { opacity: 0; scale: 0.96; }
-  .v3-reveal { opacity: 0; translate: 0 -6px; }
-}
-
-/* CARRUSEL. Scroll nativo: conserva la inercia del dedo, los enlaces y el
-   foco del navegador. */
-.v3-carousel { min-width: 0; }
-.v3-carousel-track {
-  display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory;
-  overscroll-behavior-x: contain; scrollbar-width: none; padding: 4px 0 12px;
-}
-.v3-carousel-track::-webkit-scrollbar { display: none; }
-.v3-carousel-item { flex: 0 0 31%; min-width: 0; scroll-snap-align: start; }
-.v3-carousel-item > * { height: 100%; }
-.v3-carousel-control {
-  display: grid; place-items: center; width: 44px; height: 44px;
-  border: 1px solid var(--border); border-radius: 50%;
-  background: var(--background); color: var(--foreground); cursor: pointer;
-  transition: transform 160ms var(--v3-ease-out), opacity 160ms var(--v3-ease-out);
-}
-.v3-carousel-control:disabled { opacity: .3; cursor: default; }
-.v3-carousel-control:focus-visible,
-.v3-carousel-track:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
-
-@media (max-width: 1023px) { .v3-carousel-item { flex-basis: 46%; } }
+.v3-text-link { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; font-size: .875rem; font-weight: 600; }
+.shop-surface h1:not(.v3-hero-title) { font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.1; }
+.shop-surface :is(input, select, textarea):not([type=checkbox]):not([type=radio]) { min-height: 44px; }
+:is(.shop-surface, .internal-surface) :is(a, button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.admin-workspace { min-height: 100vh; }
+.admin-workspace main { padding-block: 32px 64px; }
+.admin-workspace main h1 { font-size: clamp(1.6rem, 2.5vw, 2rem); line-height: 1.2; letter-spacing: -.035em; }
+.admin-workspace main h2 { letter-spacing: -.02em; }
+.admin-workspace table:not(.sr-only) { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+.admin-workspace table:not(.sr-only) th { padding: 14px 16px; background: var(--surface); font-weight: 600; letter-spacing: .01em; text-transform: none; white-space: nowrap; }
+.admin-workspace table:not(.sr-only) td { padding: 16px; border-bottom: 1px solid var(--border); }
+.admin-workspace :is(input, select):not([type=checkbox]):not([type=radio]) { min-height: 42px; }
+.admin-workspace .dot-grid { display: none; }
 @media (max-width: 639px) {
   .v3-container { width: calc(100% - 32px); }
   .v3-category { padding: 16px; }
-  .v3-carousel-item { flex-basis: 86%; }
+  .admin-workspace main { padding-block: 24px 48px; }
 }
-
-/* Un dispositivo táctil dispara `:hover` al tocar y lo deja pegado. */
-@media (hover: hover) and (pointer: fine) {
-  .v3-category:hover { translate: 0 -3px; box-shadow: 0 12px 30px rgb(0 0 0 / .06); }
-}
-
+.shop-surface :is(.topo-bg, .dot-grid) { display: none; }
+.shop-surface .v3-account-page h1 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.2; letter-spacing: -.03em; }
+.v3-account-page input { background: var(--background); }
+/* Emil Kowalski: restrained depth, interruptible controls and native gestures. */
+.v3-brand-watermark { opacity: .13; }
+.v3-carousel { min-width: 0; }
+.v3-carousel-track { display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; padding: 4px 0 12px; }
+.v3-carousel-track::-webkit-scrollbar { display: none; }
+.v3-carousel-item { flex: 0 0 42%; min-width: 0; scroll-snap-align: start; }
+.v3-carousel-item > a { height: 100%; }
+.v3-carousel-control { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 50%; background: var(--background); color: var(--foreground); cursor: pointer; transition: transform 160ms var(--ease-out), opacity 160ms var(--ease-out); }
+.v3-carousel-control:disabled { opacity: .3; cursor: default; }
+.v3-carousel-control:focus-visible, .v3-carousel-track:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+@media (max-width: 640px) { .v3-carousel-item { flex-basis: 86%; } }
 @media (prefers-reduced-motion: no-preference) {
-  .v3-hero-art { animation: v3-hero-enter 850ms var(--v3-ease-out) 80ms backwards; }
+  .v3-hero-copy { animation: v3-hero-enter 650ms var(--ease-out) backwards; }
+  .v3-hero-art { animation: v3-hero-enter 850ms var(--ease-out) 80ms backwards; }
+  @media (hover: hover) and (pointer: fine) {
+    .v3-hero-art img, .v3-promo img { transition: transform 280ms var(--ease-out); }
+    .v3-hero-art:hover img { transform: translateY(-5px) scale(1.015); }
+    .v3-promo:hover img { transform: translateY(-4px); }
+    .v3-product-card { transition: transform 240ms var(--ease-out), box-shadow 240ms var(--ease-out); }
+    .v3-product-card:hover { transform: translateY(-4px); }
+    .v3-carousel-control:active:not(:disabled):not(:focus-visible) { transform: scale(.96); }
+  }
 }
-@keyframes v3-hero-enter {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Quien pidió menos movimiento no ve avance automático, ni su botón. */
-@media (prefers-reduced-motion: reduce) {
-  .v3-autoplay-control { display: none; }
-  .v3-pop, .v3-reveal, .v3-category { transition: none; }
-}
+@keyframes v3-hero-enter { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .v3-autoplay-control { display: none; } }

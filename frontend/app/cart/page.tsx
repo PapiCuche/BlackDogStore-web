@@ -124,7 +124,7 @@ export default function CartPage() {
         <div className="mb-8 flex flex-col gap-3 border-b border-bd-border pb-7 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <span className="section-label">Compras</span>
-            <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+            <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
               Mi carrito
             </h1>
           </div>
@@ -153,7 +153,7 @@ export default function CartPage() {
             </p>
             <Link
               href="/product"
-              className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+              className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
             >
               Ver catálogo
             </Link>
@@ -247,7 +247,7 @@ export default function CartPage() {
 
               <Link
                 href="/checkout"
-                className="mt-6 block w-full rounded-xl bg-primary py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+                className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
               >
                 Continuar al checkout
               </Link>

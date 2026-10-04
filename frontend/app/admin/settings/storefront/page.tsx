@@ -492,31 +492,10 @@ function PageForm({
 
   return (
     <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
-      {/*
-        CÓMO SE VE EL HERO lo decide la tienda. El oscuro es la losa con el
-        isotipo; el claro deja sitio a una imagen junto al texto. La imagen es
-        opcional en los dos: sin ella el hero se compone sólo con el texto.
-      */}
-      <label htmlFor="f-hero_variant" className="block">
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-          Estilo del hero
-        </span>
-        <select
-          id="f-hero_variant"
-          name="hero_variant"
-          value={draft.hero_variant}
-          disabled={readOnly}
-          onChange={(e) => set("hero_variant", e.target.value)}
-          className={FIELD_CLASS}
-        >
-          <option value="dark">Oscuro, con el isotipo de fondo</option>
-          <option value="light">Claro, con imagen al lado</option>
-        </select>
-      </label>
       <ImageUploadField
         label="Imagen del hero" name="hero_image_url" value={draft.hero_image_url}
         companyId={companyId} onChange={set} errors={errors} readOnly={readOnly}
-        hint="Opcional. Un PNG sin fondo se apoya sobre el color del hero. Se guarda con «Guardar portada»."
+        hint="Opcional. Un PNG sin fondo se apoya sobre el fondo de la portada, junto al texto. Se guarda con «Guardar portada»."
       />
       <Field label="Línea superior" name="hero_eyebrow" value={draft.hero_eyebrow}
         onChange={set} errors={errors} maxLength={80}

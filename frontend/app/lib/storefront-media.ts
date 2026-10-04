@@ -17,10 +17,24 @@ import type { CSSProperties } from "react";
  * External URLs are left untouched: only files served by our own storefront
  * image pipeline receive this treatment.
  */
-const MANAGED_STOREFRONT_IMAGE = /^\/api\/storefront\/images\/[0-9a-f]{32}\/?(?:\?.*)?$/i;
+const MANAGED_STOREFRONT_IMAGE = /^\/api\/storefront\/images\/[0-9a-f]{32}\/?$/i;
 
+/**
+ * ¿Es una imagen subida desde el panel?
+ *
+ * Se reconoce por su ruta. Vale relativa —como se guarda en los huecos de la
+ * portada— y también absoluta: la foto de un producto se guarda como URL
+ * completa aunque apunte a esta misma tubería.
+ */
 export function isManagedStorefrontImage(src: string): boolean {
-  return MANAGED_STOREFRONT_IMAGE.test(src || "");
+  const value = (src || "").trim();
+  if (!value) return false;
+  if (value.startsWith("/")) return MANAGED_STOREFRONT_IMAGE.test(value.split("?")[0]);
+  try {
+    return MANAGED_STOREFRONT_IMAGE.test(new URL(value).pathname);
+  } catch {
+    return false;
+  }
 }
 
 /** `page`: the section background. `slab`: the dark slab, in either theme. */

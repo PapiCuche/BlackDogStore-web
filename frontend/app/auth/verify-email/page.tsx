@@ -30,15 +30,15 @@ function VerifyEmailContent() {
   }, [token]);
 
   return (
-    <div className="min-h-[70vh] bg-background px-6 py-12">
-      <div className="mx-auto max-w-md rounded-2xl border border-bd-border bg-surface p-7 sm:p-8">
+    <div className="v3-account-page min-h-[65vh] bg-surface px-4 py-12 sm:px-6 sm:py-16">
+      <div className="mx-auto max-w-md rounded-xl border border-bd-border bg-background p-6 text-center sm:p-10">
         {state === "loading" ? (
           <div role="status">
             <span className="section-label">Cuenta</span>
-            <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+            <h1 className="mt-2 text-2xl font-semibold text-foreground">
               Verificando correo
             </h1>
-            <div className="mt-6 flex items-center gap-3 text-sm text-muted">
+            <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
               Comprobando el enlace…
             </div>
@@ -46,22 +46,22 @@ function VerifyEmailContent() {
         ) : state === "success" ? (
           <div>
             <span className="section-label">Verificación</span>
-            <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+            <h1 className="mt-2 text-2xl font-semibold text-foreground">
               Correo verificado
             </h1>
             <p className="mt-4 text-sm leading-6 text-muted">{message}</p>
-            <Link href="/auth" className="mt-6 inline-flex rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+            <Link href="/auth" className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90">
               Iniciar sesión
             </Link>
           </div>
         ) : (
           <div>
             <span className="section-label">Verificación</span>
-            <h1 className="mt-2 font-display text-3xl font-black italic uppercase tracking-[-0.035em] text-foreground">
+            <h1 className="mt-2 text-2xl font-semibold text-foreground">
               No se pudo verificar
             </h1>
             <p className="mt-4 text-sm leading-6 text-muted">{message}</p>
-            <Link href="/auth" className="mt-6 inline-flex rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
+            <Link href="/auth" className="mt-6 inline-flex rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface">
               Volver al inicio de sesión
             </Link>
           </div>

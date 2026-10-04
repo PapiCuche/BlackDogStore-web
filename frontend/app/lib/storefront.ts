@@ -68,8 +68,8 @@ export type StorefrontCampaign = {
 
 export type StorefrontPage = {
   /**
-   * Cómo se ve el hero, elegido por la tienda. `dark` es la losa de marca con
-   * el isotipo; `light` es un hero claro con sitio para una imagen.
+   * HEREDADO. La portada V3 tiene un solo hero y no lee este campo; la API lo
+   * sigue enviando y el panel lo devuelve tal cual al guardar.
    */
   hero_variant: "dark" | "light";
   /** Imagen subida desde el panel. Vacía = el hero se compone sin imagen. */

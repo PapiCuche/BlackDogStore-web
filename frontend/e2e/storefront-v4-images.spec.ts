@@ -4,13 +4,14 @@ import { expect, test, type Page } from "@playwright/test";
  * V4 — la tienda coloca sus imágenes desde el panel.
  *
  * De punta a punta y con un navegador de verdad: se sube un PNG sin fondo en el
- * panel, se elige el hero claro, se guarda, y la portada pública lo muestra SIN
- * fondo. Es lo que pidió el propietario: «cuando se sube así, que no aparezca
- * el fondo».
+ * panel, se guarda, y la portada pública lo muestra SIN fondo. Es lo que pidió
+ * el propietario: «cuando se sube así, que no aparezca el fondo».
  *
- * LA PRUEBA DEJA LA TIENDA COMO LA ENCONTRÓ. El resto de la suite mide la losa
- * oscura, que es lo que esta base tiene por defecto; aquí se cambia a claro y
- * se devuelve a oscuro al terminar, pase lo que pase.
+ * La portada tiene un solo hero, que sigue al tema: la misma imagen lleva
+ * sombra oscura en el tema claro y halo claro en el oscuro.
+ *
+ * LA PRUEBA DEJA LA TIENDA COMO LA ENCONTRÓ: quita la imagen al terminar, pase
+ * lo que pase.
  */
 
 // 40 × 30, rojo opaco en el centro y transparente en las esquinas.
@@ -29,12 +30,14 @@ async function signIn(page: Page) {
 
 async function openHeroForm(page: Page) {
   await page.goto("/admin/settings/storefront", { waitUntil: "networkidle" });
-  await expect(page.getByLabel("Estilo del hero")).toBeVisible({ timeout: 20_000 });
+  // «Subir imagen» sin imagen colocada, «Cambiar imagen» con ella.
+  await expect(page.getByLabel(/^(Subir|Cambiar) imagen: Imagen del hero$/)).toBeAttached({ timeout: 20_000 });
+  // El diseño anterior ya no es una opción del panel.
+  await expect(page.getByLabel("Estilo del hero")).toHaveCount(0);
 }
 
-async function restoreDarkHero(page: Page) {
+async function removeHeroImage(page: Page) {
   await openHeroForm(page);
-  await page.getByLabel("Estilo del hero").selectOption("dark");
   const remove = page.getByRole("button", { name: "Quitar Imagen del hero" });
   if (await remove.count()) await remove.click();
   await page.getByRole("button", { name: "Guardar portada" }).click();
@@ -55,14 +58,16 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
     await expect(preview).toHaveAttribute("src", /^\/api\/storefront\/images\/[0-9a-f]{32}$/);
     const address = (await preview.getAttribute("src"))!;
 
-    await page.getByLabel("Estilo del hero").selectOption("light");
     await page.getByRole("button", { name: "Guardar portada" }).click();
     await expect(page.getByText("Portada actualizada.")).toBeVisible();
 
     // --- la portada pública ------------------------------------------------
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto("/", { waitUntil: "networkidle" });
-    const hero = page.locator('section[data-hero-variant="light"]');
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.evaluate(() => localStorage.setItem("ui-theme", "light"));
+    await page.reload({ waitUntil: "networkidle" });
+    const hero = page.locator("section[data-hero]");
     await expect(hero).toBeVisible();
     const art = hero.locator("[data-hero-art] img");
     await expect(art).toHaveAttribute("src", address);
@@ -101,7 +106,7 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
       await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
       const fit = await page.evaluate(() => {
         const doc = document.documentElement;
-        const h1 = document.querySelector("section[data-hero-variant] h1")!.getBoundingClientRect();
+        const h1 = document.querySelector("section[data-hero] h1")!.getBoundingClientRect();
         const img = document.querySelector("[data-hero-art] img")!.getBoundingClientRect();
         return {
           overflow: doc.scrollWidth - doc.clientWidth,
@@ -114,25 +119,25 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
       expect.soft(fit.imageRight, `la imagen se sale a ${width}px`).toBeLessThanOrEqual(fit.vw);
       expect.soft(fit.imageLeft).toBeGreaterThanOrEqual(0);
     }
-    // --- la misma imagen sobre la losa oscura -------------------------------
-    // Una sombra negra sobre negro no se ve: en la losa la profundidad es un
-    // halo claro. Antes el estilo en línea pisaba ese halo.
+    // --- la misma imagen en el tema oscuro ----------------------------------
+    // Una sombra negra sobre negro no se ve: en el tema oscuro la profundidad
+    // es un halo claro, por la misma variable.
     await page.setViewportSize({ width: 1280, height: 900 });
-    await openHeroForm(page);
-    await page.getByLabel("Estilo del hero").selectOption("dark");
-    await page.getByRole("button", { name: "Guardar portada" }).click();
-    await expect(page.getByText("Portada actualizada.")).toBeVisible();
-    await page.goto("/", { waitUntil: "networkidle" });
-    const onSlab = page.locator('section[data-hero-variant="dark"] [data-hero-art] img');
-    await expect(onSlab).toHaveAttribute("src", address);
-    const halo = await onSlab.evaluate((img) => getComputedStyle(img).filter);
+    await page.evaluate(() => localStorage.setItem("ui-theme", "dark"));
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    const inDark = page.locator("section[data-hero] [data-hero-art] img");
+    await expect(inDark).toHaveAttribute("src", address);
+    const halo = await inDark.evaluate((img) => getComputedStyle(img).filter);
     expect(halo).toMatch(/rgba\(255, 255, 255/);
     expect(halo).not.toMatch(/rgba\(0, 0, 0/);
   } finally {
     await page.setViewportSize({ width: 1280, height: 900 });
-    await restoreDarkHero(page);
+    await page.evaluate(() => localStorage.removeItem("ui-theme")).catch(() => {});
+    await removeHeroImage(page);
   }
 
   await page.goto("/", { waitUntil: "networkidle" });
-  await expect(page.locator('section[data-hero-variant="dark"]')).toBeVisible();
+  await expect(page.locator("section[data-hero]")).toBeVisible();
+  await expect(page.locator("section[data-hero] [data-hero-art]")).toHaveCount(0);
 });

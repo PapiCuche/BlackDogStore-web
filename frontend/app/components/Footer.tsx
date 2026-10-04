@@ -33,41 +33,33 @@ export function Footer() {
   return (
     <footer className="relative border-t border-bd-border bg-background">
       {/*
-        BANDA DE CIERRE (V4).
-
-        Se pinta con el color del texto, así que su contraste es el CONTRARIO al
-        de la página: clara en tema oscuro, oscura en tema claro.
-
-        Ya no lleva el logotipo: el pie lo pinta justo debajo, y dos marcas una
-        encima de otra son la misma marca dos veces. Aquí va el nombre de la
-        tienda en texto, que es lo que el diseño pide.
+        BANDA DE CIERRE (V3). Sobre la losa de marca, oscura en ambos temas, con
+        el nombre de la tienda como antetítulo. No lleva el logotipo: el pie lo
+        pinta justo debajo, y dos marcas una encima de otra son la misma marca
+        dos veces.
       */}
-      <div className="bg-inverse px-6 py-14 text-center sm:py-16">
+      <div className="bg-slab px-6 py-16 text-center text-slab-foreground">
         <div className="mx-auto max-w-2xl">
-          {storeName ? (
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-inverse-muted">{storeName}</p>
-          ) : null}
-          <p className="mt-3 text-[clamp(1.75rem,4.2vw,2.75rem)] font-semibold uppercase leading-[1.08] tracking-tight text-inverse-foreground text-balance break-words">
-            ¿Necesitas ayuda?
-          </p>
-          <p className="mt-3 text-sm leading-6 text-inverse-muted">
-            Escríbenos y te respondemos lo antes posible.
+          {storeName ? <p className="section-label text-accent">{storeName}</p> : null}
+          <h2 className="v3-heading mt-4 text-balance">
+            {/* «Repara» sólo si la tienda publicó servicios: una que no repara no lo dice. */}
+            {services.length > 0 ? "Compra. Repara. Sigue." : "¿Necesitas ayuda?"}
+          </h2>
+          <p className="mt-4 text-sm text-slab-muted">
+            Cuéntanos qué necesitas. Te ayudamos a dar el siguiente paso.
           </p>
           {contact.whatsapp_link ? (
             <a
               href={contact.whatsapp_link}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-6 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-inverse-foreground px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-inverse transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-inverse-foreground"
+              className="v3-button v3-button-light mt-7"
             >
               {WHATSAPP_SVG}
               Escribir al WhatsApp
             </a>
           ) : contact.email ? (
-            <a
-              href={`mailto:${contact.email}`}
-              className="mt-6 inline-flex min-h-11 items-center gap-2.5 rounded-full bg-inverse-foreground px-8 py-3.5 text-sm font-bold uppercase tracking-widest text-inverse transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-inverse-foreground"
-            >
+            <a href={`mailto:${contact.email}`} className="v3-button v3-button-light mt-7">
               Escríbenos
             </a>
           ) : null}

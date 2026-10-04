@@ -139,6 +139,7 @@ export function ProductCarousel({ products }: { products: Product[] }) {
       <div
         ref={track}
         id={id}
+        data-carousel-track
         className="v3-carousel-track"
         tabIndex={0}
         role="group"
