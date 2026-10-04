@@ -294,6 +294,24 @@ tocar nada guarda una copia de lo que hay.
 **Prueba la restauración una vez** antes de necesitarla: una copia que nunca se ha
 restaurado no se sabe si sirve.
 
+## 6.5 Impresoras de la tienda
+
+El servidor no imprime: deja el ticket en una cola y un programa pequeño dentro de la
+red de cada local —el agente— lo entrega a la térmica. El agente llama al servidor por
+HTTPS; **no se abre ningún puerto del local**.
+
+1. En el panel, **Administración › Impresoras**: da de alta la térmica con su dirección
+   en la red del local (por ejemplo `192.168.1.50`, puerto 9100) y crea un agente para
+   esa sucursal. Su token se muestra una sola vez.
+2. En un equipo del local que quede encendido, copia `backend/print_agent/agent.py` y
+   `config.example.json`, pon la dirección de la tienda y el token en `config.json` y
+   ejecuta `python3 agent.py --config config.json`. Sólo necesita Python 3.9.
+3. Desde ese momento cada venta confirmada de ese local sale sola por la impresora,
+   también las cobradas desde un teléfono.
+
+El detalle —garantías, límites y cómo dejarlo como servicio— está en
+`backend/print_agent/README.md`. Un agente perdido se revoca en el panel.
+
 ## 7. Actualizar la web
 
 ```sh

@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — PAYMENT-FISCAL-PRINT-01
+
+- Izipay falso para pruebas (token y notificaciones) y corrección de una repetición
+  contradictoria que reescribía un pago autorizado. Sandbox real: BLOCKED/CREDENTIALS.
+- Comprobante impreso: etiqueta del documento del adquirente por su tipo, leyenda, unidad
+  de medida, precio unitario, importe en letras y forma de pago (Anexos I y II, RS 114-2019).
+- Logotipo de la tienda en sus comprobantes, congelado con cada uno y sin sombra.
+- Impresión en tienda: cola por sucursal, agente local para térmicas de 80 mm en red,
+  ticket automático tras la confirmación de la venta e idempotencia de extremo a extremo.
+- Panel: Administración › Impresoras y Configuración › Comprobantes.
+- Migraciones `0098` y `0099`.
+
 ## 2026-10-04 — Infraestructura de producción: ensayo final
 
 - `deploy/rehearsal.sh`: ensayo completo y repetible. Última pasada: `ENSAYO: OK` (83 + 26).

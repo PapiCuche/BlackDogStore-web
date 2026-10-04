@@ -14,6 +14,78 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-PAY-01 · Izipay se prueba contra un Izipay falso, y lo que el falso no puede probar se dice
+
+- La petición del token no la ejercitaba ninguna prueba: se sustituía entera.
+  `store/payments/fake_izipay.py` se pone en el socket, comprueba el contrato que el
+  adaptador declara (POST, HTTPS, URL configurada, `Authorization` con la clave sin
+  esquema, cabecera `transactionId` igual a la del cuerpo, comercio, orden, moneda,
+  importe con dos decimales, tiempo de espera) y responde como la pasarela.
+- El falso firma las notificaciones con su propio HMAC, no con el del adaptador, y sabe
+  enviar lo que enviaría un atacante: editado después de firmar, firmado con otra clave,
+  repetido y repetido con otro contenido.
+- Es un arnés de pruebas. No tiene interruptor en la configuración ni ruta: no es una
+  forma de marcar pedidos como pagados.
+- **Lo que no se pudo verificar.** La referencia pública de `Token/Generate` es una
+  aplicación de cliente y no se pudo leer. El arnés no exige nada sobre el resto del
+  cuerpo: exigir una suposición haría que la suite certificara la suposición. Queda
+  abierto IZIPAY-TOKEN-CONTRACT y sólo lo cierra el sandbox real:
+  `IzipaySandboxSmokeTest`, que se omite sin credenciales (**BLOCKED/CREDENTIALS**).
+- Sólo un intento que sigue esperando su respuesta puede marcarse como «fallo de
+  integridad». Un mensaje contradictorio que llega después de autorizar se rechaza y no
+  reescribe el registro del pago bueno.
+
+### DEC-FISC-PRINT-01 · La representación impresa sigue los Anexos I y II de la RS 114-2019
+
+- Fuente: los anexos oficiales de SUNAT (RS 114-2019, que sustituyen a los Anexos 1 y 2
+  de la RS 097-2012), columna «Representación impresa – información mínima». No se
+  encontró ningún «Anexo B» vigente que regule el papel; si existe otro documento, la
+  auditoría se repite contra él.
+- La etiqueta del documento del adquirente sale del catálogo 06 (RUC, DNI, carné de
+  extranjería, pasaporte). Sin documento —la boleta a consumidor final— no se imprime
+  ninguna etiqueta de documento.
+- La leyenda nombra el comprobante. Cada ítem lleva su unidad de medida. El ticket de
+  80 mm imprime el precio de venta unitario y el valor resumen. El importe en letras y
+  la forma de pago se leen del XML firmado.
+- Todo sigue saliendo del XML firmado o de la fila congelada, nunca de tablas vivas.
+- Pendiente (FISCAL-PRINT-EXO): los totales de operaciones exoneradas e inafectas y los
+  descuentos no se imprimen por separado; hoy el dominio sólo emite operaciones gravadas.
+
+### DEC-FISC-LOGO-01 · El logotipo se congela con cada comprobante
+
+- La tienda elige un logotipo para sus comprobantes: una imagen subida por ella
+  (`CompanySettings.document_logo_url`). No vale una URL externa ni una ruta del
+  frontend: el servidor necesita los bytes.
+- Al emitir se guarda una copia propia bajo una clave que depende de su contenido
+  (`companies/<id>/fiscal/logos/<sha256>.png`) y el comprobante la recuerda. Una
+  reimpresión lleva el logotipo con el que se emitió aunque la tienda lo cambie o lo
+  borre. Las notas heredan el del comprobante que modifican.
+- La copia se aplana sobre blanco y se dibuja una vez, tal cual. Sin sombra, ni en el
+  papel ni en la vista previa del panel: la sombra de la portada es para la portada.
+- Un logotipo ilegible nunca detiene una emisión ni una reimpresión.
+
+### DEC-PRINT-01 · El ticket lo imprime la tienda, no el navegador
+
+- **Cola por sucursal.** `Printer`, `PrintAgent` y `PrintJob` pertenecen a una
+  sucursal. El servidor nunca abre una conexión hacia una impresora.
+- **El agente tira, el servidor no empuja.** Un programa de un solo archivo
+  (`backend/print_agent/`) corre en la red del local, pregunta por HTTPS si hay trabajo
+  para su sucursal y lo entrega a la térmica por el puerto 9100. No se abre ningún
+  puerto del local. Su token vale para una sucursal y sólo para la cola.
+- **Texto nativo, no PDF.** La térmica recibe ESC/POS: letra nítida, QR dibujado por
+  la impresora y logotipo de un bit. El contenido sale del mismo contexto que el PDF
+  de 80 mm, así que dicen lo mismo.
+- **Sólo tras una confirmación autoritativa.** El trabajo se crea cuando un comprobante
+  queda firmado o una nota de venta se crea, sobre un pedido pagado. Ni el navegador ni
+  el agente pueden pedir el ticket de algo que no se cobró.
+- **Idempotente en sus dos mitades.** La clave del trabajo sale del documento: confirmar
+  la venta dos veces no crea dos. Cada entrega lleva un token nuevo: confirmar dos veces
+  no cambia nada y una confirmación antigua se rechaza. El papel no sale dos veces
+  porque el agente lleva un diario de lo impreso.
+- **Sólo la red del local.** La dirección de una impresora tiene que ser privada o
+  `.local`; lo comprueban el servidor al guardarla y el agente antes de conectar.
+- **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera.
+
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda
 
 Sustituye a la parte de DEC-SF-01 que decía «el hero es una losa oscura para todas

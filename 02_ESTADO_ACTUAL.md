@@ -3,6 +3,61 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — PAYMENT-FISCAL-PRINT-01: pago, comprobante impreso e impresión en tienda
+
+Rama `feat/payment-fiscal-print`. Migraciones `0098` (logotipo) y `0099` (impresión).
+Decisiones: DEC-PAY-01, DEC-FISC-PRINT-01, DEC-FISC-LOGO-01 y DEC-PRINT-01.
+
+**Izipay.** Auditoría de la integración y un Izipay falso para pruebas
+(`payments/fake_izipay.py`): el checkout corre hasta el socket y el falso comprueba el
+contrato del token; firma, manipula y repite notificaciones. Ninguna prueba necesita
+credenciales. Encontrado y corregido: una notificación contradictoria, bien firmada,
+que llegaba después de autorizar marcaba el intento como «fallo de integridad» con el
+pedido ya pagado (IZIPAY-REPLAY-INTEGRITY).
+
+- **BLOCKED/CREDENTIALS**: la prueba contra el sandbox real (`IzipaySandboxSmokeTest`).
+  La forma exacta del cuerpo de `Token/Generate` no se pudo leer en la referencia
+  pública de Izipay; el arnés no la exige y sólo el sandbox la confirma
+  (IZIPAY-TOKEN-CONTRACT).
+
+**Representación impresa.** Auditada contra los Anexos I y II de la RS 114-2019/SUNAT.
+No se encontró un «Anexo B» vigente sobre el papel.
+
+- La etiqueta del documento del adquirente sigue su tipo (RUC, DNI, carné de
+  extranjería, pasaporte). Antes decía «RUC» también en una boleta a un DNI.
+- La leyenda nombra el comprobante; cada ítem lleva su unidad de medida; el ticket de
+  80 mm imprime el precio de venta unitario y el valor resumen; el importe en letras y
+  la forma de pago llegan al papel.
+- Pendiente: totales exonerado/inafecto y descuentos por separado (FISCAL-PRINT-EXO).
+
+**Logotipo.** La tienda elige el de sus comprobantes en Configuración › Comprobantes
+(una imagen subida por ella). Cada comprobante congela el logotipo con el que se emitió:
+una reimpresión lo conserva aunque la tienda lo cambie o lo borre. Se dibuja tal cual,
+sin sombra, en el papel y en la vista previa.
+
+**Impresión en tienda.** Cola por sucursal (`Printer`, `PrintAgent`, `PrintJob`) y un
+agente local de un solo archivo (`backend/print_agent/`) para térmicas de 80 mm en red.
+
+- El ticket se encola solo cuando un comprobante queda firmado o una nota de venta se
+  crea, sobre un pedido pagado, en un local con impresora automática.
+- Un trabajo por documento; cada entrega con su token; el agente no imprime dos veces
+  lo que ya imprimió. Tras cinco intentos, una persona lo reenvía.
+- Un agente sólo ve los trabajos de su sucursal. Las direcciones de impresora tienen
+  que ser de una red local.
+- La venta en caja responde con el trabajo que encoló: cobrar desde un teléfono no abre
+  ningún diálogo de impresión. Pantalla nueva: Administración › Impresoras.
+
+**De la tienda en línea al papel**, con las piezas de verdad y sin credenciales
+(`test_payment_to_print.py`): carrito → checkout → Izipay falso firma → pagado →
+comprobante firmado → PDF A4 y ticket → trabajo → el agente lo entrega a una impresora
+simulada. Un pago rechazado, manipulado o repetido no deja ni un comprobante ni un
+ticket de más.
+
+Validación local: 99 pruebas nuevas de backend (pago 21, papel 10, logotipo 10, cola 23,
+API 22, agente 10, extremo a extremo 3) más las clases de pago, fiscal y caja existentes;
+Jest 601/601 (64 suites), typecheck, lint 0 errores / 23 avisos, build. La suite completa
+corre en la CI del PR.
+
 ## 2026-10-04 — Infraestructura de producción: ensayo final
 
 Rama `deploy/production-vps` con `master` `1b748b1` incorporado. No se ha publicado nada en
