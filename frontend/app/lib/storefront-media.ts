@@ -8,6 +8,12 @@ import type { CSSProperties } from "react";
  * turning the image into a card. The same rule is harmless on an opaque upload
  * and, importantly, also applies to images uploaded before this rule existed.
  *
+ * THE VALUE LIVES IN CSS (`--cutout-shadow`, `--cutout-shadow-on-slab` in
+ * globals.css), not here. A dark shadow cannot be seen on a dark surface, and
+ * there are two of those: the hero slab, and the whole page in the dark theme.
+ * The component only says which surface the image sits on; the theme decides
+ * what depth looks like there.
+ *
  * External URLs are left untouched: only files served by our own storefront
  * image pipeline receive this treatment.
  */
@@ -17,9 +23,15 @@ export function isManagedStorefrontImage(src: string): boolean {
   return MANAGED_STOREFRONT_IMAGE.test(src || "");
 }
 
-export function storefrontMediaStyle(src: string): CSSProperties | undefined {
+/** `page`: the section background. `slab`: the dark slab, in either theme. */
+export type StorefrontMediaSurface = "page" | "slab";
+
+export function storefrontMediaStyle(
+  src: string,
+  surface: StorefrontMediaSurface = "page",
+): CSSProperties | undefined {
   if (!isManagedStorefrontImage(src)) return undefined;
   return {
-    filter: "drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))",
+    filter: surface === "slab" ? "var(--cutout-shadow-on-slab)" : "var(--cutout-shadow)",
   };
 }

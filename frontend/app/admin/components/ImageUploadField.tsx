@@ -91,7 +91,9 @@ export function ImageUploadField({
                 id={inputId}
                 type="file"
                 accept={STOREFRONT_IMAGE_ACCEPT}
-                aria-label={`Subir ${label}`}
+                // Empieza por el texto visible del botón: quien lo dicta a un
+                // control por voz dice lo que lee (WCAG 2.5.3).
+                aria-label={`${value ? "Cambiar imagen" : "Subir imagen"}: ${label}`}
                 disabled={uploading}
                 onChange={handleFile}
                 className="sr-only"

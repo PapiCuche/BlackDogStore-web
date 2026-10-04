@@ -116,8 +116,33 @@ describe('hero · estilo que elige la tienda', () => {
     expect(art.getAttribute('src')).toBe(IMAGE);
     // Sin recorte ni relleno: un PNG sin fondo se ve entero y sin caja.
     expect(art.className).toContain('object-contain');
-    expect(art).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
+    // La profundidad depende de la superficie: una sombra negra no se ve sobre
+    // la losa oscura, así que allí va un halo claro.
+    expect(art.style.filter).toBe(
+      variant === 'dark' ? 'var(--cutout-shadow-on-slab)' : 'var(--cutout-shadow)',
+    );
+    // Una sola regla: ninguna clase compite con el estilo en línea.
+    expect(art.className).not.toMatch(/v3-cutout/);
   });
+
+  it.each(['dark', 'light'] as const)(
+    'en el estilo %s, la imagen propia de la portada no toma el título de una campaña sin imagen',
+    (variant) => {
+      const campaign = {
+        slot: 'home_hero', badge: '', title: 'Semana del estudiante', subtitle: '', body: '',
+        image_url: '', cta_label: '', cta_url: '', secondary_cta_label: '',
+        secondary_cta_url: '', product: null,
+      };
+      const { container } = inStore(<Hero />, store({
+        page: { ...OTHER_STORE.page, hero_variant: variant, hero_image_url: IMAGE },
+        campaigns: { ...OTHER_STORE.campaigns, home_hero: campaign },
+      }));
+      const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
+
+      expect(art.getAttribute('src')).toBe(IMAGE);
+      expect(art.getAttribute('alt')).toBe('');
+    },
+  );
 
   it.each(['dark', 'light'] as const)('en el estilo %s, sin imagen no deja un hueco roto', (variant) => {
     const { container } = inStore(<Hero />, store({ page: { ...OTHER_STORE.page, hero_variant: variant } }));
@@ -168,7 +193,7 @@ describe('portada · categorías con imagen', () => {
     const img = withImage.querySelector('img') as HTMLImageElement;
     expect(img.getAttribute('src')).toBe(IMAGE);
     expect(img.className).toContain('object-contain');
-    expect(img).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
+    expect(img.style.filter).toBe('var(--cutout-shadow)');
     expect(withImage.querySelector('[data-image-slot="filled"]')).not.toBeNull();
 
     expect(without.querySelector('img')).toBeNull();
@@ -226,8 +251,16 @@ describe('portada · bloques de la tienda', () => {
     expect(locationImage).not.toBeNull();
     expect(serviceImage.getAttribute('src')).toBe(IMAGE);
     expect(locationImage.getAttribute('src')).toBe(IMAGE);
-    expect(serviceImage).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
-    expect(locationImage).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
+    // El título de servicio lo escribe la tienda: una palabra larga se parte
+    // antes que salirse de un teléfono.
+    expect(screen.getByRole('heading', { level: 2, name: /tu equipo no funciona/i }).className)
+      .toContain('break-words');
+    expect(serviceImage.style.filter).toBe('var(--cutout-shadow)');
+    expect(locationImage.style.filter).toBe('var(--cutout-shadow)');
+    // Sin azulejo detrás: un recorte se apoya sobre el color de la sección.
+    for (const image of [serviceImage, locationImage]) {
+      expect(image.parentElement!.className).not.toMatch(/\bbg-/);
+    }
   });
 
   it('«Cerca de ti» aparece con la dirección de la tienda y no sin ella', async () => {

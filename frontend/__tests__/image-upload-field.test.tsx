@@ -34,7 +34,7 @@ function setup(props: Partial<React.ComponentProps<typeof ImageUploadField>> = {
       onChange={onChange} {...props}
     />,
   );
-  return { onChange, input: screen.getByLabelText('Subir Imagen del hero') as HTMLInputElement };
+  return { onChange, input: screen.getByLabelText(/imagen: Imagen del hero$/) as HTMLInputElement };
 }
 
 beforeEach(() => mockFetch.mockReset());
@@ -73,12 +73,24 @@ describe('hueco de imagen', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it.each([['', 'Subir imagen'], [URL_, 'Cambiar imagen']])(
+    'el nombre accesible del campo empieza por lo que se lee en el botón (%#)',
+    (value, visible) => {
+      // Quien dicta «pulsa Cambiar imagen» a un control por voz necesita que el
+      // nombre del control contenga esas palabras (WCAG 2.5.3).
+      const { input } = setup({ value });
+
+      expect(screen.getByText(visible)).toBeInTheDocument();
+      expect(input).toHaveAccessibleName(`${visible}: Imagen del hero`);
+    },
+  );
+
   it('muestra la imagen colocada sobre un fondo que deja ver la transparencia', () => {
     setup({ value: URL_ });
 
     const preview = screen.getByRole('img', { name: 'Imagen del hero' });
     expect(preview).toHaveAttribute('src', URL_);
-    expect(preview).toHaveStyle({ filter: 'drop-shadow(0 8px 10px rgba(0, 0, 0, 0.18))' });
+    expect(preview.style.filter).toBe('var(--cutout-shadow)');
     expect(preview.closest('[data-transparency-grid]')).not.toBeNull();
   });
 
@@ -105,7 +117,7 @@ describe('hueco de imagen', () => {
       />,
     );
 
-    expect(screen.queryByLabelText('Subir Imagen del hero')).toBeNull();
+    expect(screen.queryByLabelText(/imagen: Imagen del hero$/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Quitar Imagen del hero' })).toBeNull();
   });
 });

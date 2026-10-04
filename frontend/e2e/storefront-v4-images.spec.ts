@@ -47,7 +47,7 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
 
   try {
     await openHeroForm(page);
-    await page.getByLabel("Subir Imagen del hero").setInputFiles({
+    await page.getByLabel("Subir imagen: Imagen del hero").setInputFiles({
       name: "recorte.png", mimeType: "image/png", buffer: CUTOUT,
     });
     // La vista previa aparece cuando el servidor devolvió la dirección.
@@ -91,6 +91,10 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
     });
     expect(backgrounds.every((c) => c === "rgba(0, 0, 0, 0)")).toBe(true);
 
+    // La profundidad sigue la silueta y se ve: sombra oscura sobre claro.
+    const depth = (locator: typeof art) => locator.evaluate((img) => getComputedStyle(img).filter);
+    expect(await depth(art)).toMatch(/drop-shadow\(rgba\(0, 0, 0, 0\.18\)/);
+
     // --- y cabe en un teléfono ---------------------------------------------
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: 844 });
@@ -110,6 +114,20 @@ test("un PNG sin fondo subido en el panel llega a la portada sin fondo", async (
       expect.soft(fit.imageRight, `la imagen se sale a ${width}px`).toBeLessThanOrEqual(fit.vw);
       expect.soft(fit.imageLeft).toBeGreaterThanOrEqual(0);
     }
+    // --- la misma imagen sobre la losa oscura -------------------------------
+    // Una sombra negra sobre negro no se ve: en la losa la profundidad es un
+    // halo claro. Antes el estilo en línea pisaba ese halo.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openHeroForm(page);
+    await page.getByLabel("Estilo del hero").selectOption("dark");
+    await page.getByRole("button", { name: "Guardar portada" }).click();
+    await expect(page.getByText("Portada actualizada.")).toBeVisible();
+    await page.goto("/", { waitUntil: "networkidle" });
+    const onSlab = page.locator('section[data-hero-variant="dark"] [data-hero-art] img');
+    await expect(onSlab).toHaveAttribute("src", address);
+    const halo = await onSlab.evaluate((img) => getComputedStyle(img).filter);
+    expect(halo).toMatch(/rgba\(255, 255, 255/);
+    expect(halo).not.toMatch(/rgba\(0, 0, 0/);
   } finally {
     await page.setViewportSize({ width: 1280, height: 900 });
     await restoreDarkHero(page);
