@@ -71,7 +71,11 @@ class StorefrontImageView(APIView):
     def get(self, request, public_id):
         image = None
         if _PUBLIC_ID.match(public_id or ''):
-            image = StorefrontImage.objects.filter(public_id=public_id).first()
+            # Sólo de empresas activas: una tienda desactivada deja de existir
+            # para el público, y sus imágenes con ella.
+            image = StorefrontImage.objects.filter(
+                public_id=public_id, company__is_active=True,
+            ).first()
         if image is None:
             return Response({'detail': 'Imagen no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
         try:

@@ -20,15 +20,18 @@ LO QUE SÍ SE HACE CON CADA ARCHIVO:
 from __future__ import annotations
 
 import io
+import re
 import uuid
 from dataclasses import dataclass
 
+from django.apps import apps
 from django.conf import settings
-from django.db import transaction
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import evidence_storage as storage
-from .models import AdminAuditLog, StorefrontImage
+from .models import AdminAuditLog, StorefrontImage, validate_asset_url
 
 #: formato del decodificador -> (formato de salida, tipo, extensión)
 _FORMATS = {
@@ -117,9 +120,9 @@ def _open(raw: bytes) -> Image.Image:
 
 
 def _carries_transparency(image: Image.Image) -> bool:
-    return image.mode in ('RGBA', 'LA', 'PA') or (
-        image.mode == 'P' and 'transparency' in image.info
-    )
+    # Con canal alfa, o declarando un color como transparente (tRNS), que PNG
+    # admite también en RGB y en escala de grises, no sólo con paleta.
+    return image.mode in ('RGBA', 'LA', 'PA') or 'transparency' in image.info
 
 
 def process(raw: bytes) -> ProcessedImage:
@@ -212,3 +215,160 @@ def payload(image: StorefrontImage) -> dict:
         'height': image.height,
         'has_alpha': image.has_alpha,
     }
+
+
+# ---------------------------------------------------------------------------
+# STOREFRONT-IMAGE-CLEANUP — retirar lo que ya nadie muestra
+# ---------------------------------------------------------------------------
+#
+# Una imagen subida ocupa almacenamiento para siempre si nadie la retira. Hay
+# dos formas de que una quede sin uso:
+#
+#   1. un hueco deja de apuntar a ella (se sustituye o se quita);
+#   2. se subió y nunca se colocó (se cerró el formulario sin guardar).
+#
+# LA REGLA ES LA MISMA EN LAS DOS: se borra sólo si NO QUEDA NINGUNA REFERENCIA
+# en toda la plataforma. Las referencias no son claves foráneas, son direcciones
+# escritas en campos de texto, así que se cuentan buscando el identificador en
+# TODOS los campos que pueden llevar una dirección, de todas las empresas. Es
+# deliberadamente amplio: una imagen que alguien todavía muestra no se toca.
+#
+# Y PARA QUE EL RECUENTO VALGA, lo que se coloca en un hueco tiene que existir
+# (`claim`). `claim` y `release` bloquean la misma fila, así que no pueden
+# cruzarse: o el borrado ve la referencia nueva, o quien coloca ve que la imagen
+# ya no existe y se lo dice a quien guarda.
+
+#: Una dirección de esta tubería, relativa o absoluta, con o sin barra final.
+_MANAGED_ADDRESS = re.compile(r'/api/storefront/images/([0-9a-f]{32})(?:/|$|[?#])')
+
+_NO_LONGER_EXISTS = 'Esa imagen ya no existe. Súbela de nuevo.'
+
+
+def managed_public_id(value) -> str | None:
+    """El identificador, si `value` es la dirección de una imagen subida aquí."""
+    match = _MANAGED_ADDRESS.search(str(value or ''))
+    return match.group(1) if match else None
+
+
+def reference_fields() -> list[tuple[type[models.Model], str]]:
+    """
+    Todos los campos de la plataforma que pueden llevar una dirección.
+
+    SE CALCULA, NO SE ESCRIBE A MANO. Una lista escrita a mano se queda corta el
+    día que alguien añade un hueco nuevo, y un recuento al que le falta un campo
+    borra una imagen en uso. Entra cualquier campo de texto que valide una
+    dirección de imagen o cuyo nombre diga que lleva una dirección: de más no
+    hace daño —sólo se busca un identificador de 32 caracteres—; de menos, sí.
+    """
+    found = []
+    for model in apps.get_app_config('store').get_models():
+        for field in model._meta.get_fields():
+            if not isinstance(field, (models.CharField, models.TextField)):
+                continue
+            name = field.name.lower()
+            if (
+                validate_asset_url in field.validators
+                or name.endswith('_url') or 'image' in name or 'logo' in name
+            ):
+                found.append((model, field.name))
+    return found
+
+
+def reference_count(public_id: str) -> int:
+    """Cuántas filas, de cualquier empresa, llevan esta imagen en algún campo."""
+    return sum(
+        model._default_manager.filter(**{f'{field}__contains': public_id}).count()
+        for model, field in reference_fields()
+    )
+
+
+def claim(value, *, company, field: str) -> None:
+    """
+    Comprueba que lo que se va a colocar en un hueco existe y es de la tienda.
+
+    Se llama DENTRO de la transacción que guarda el hueco y bloquea la fila de
+    la imagen hasta que esa transacción termina: un borrado simultáneo espera, y
+    al reanudarse ya ve la referencia nueva.
+
+    Una dirección que no es de esta tubería —un recurso del sitio, una URL
+    externa— no se comprueba: no es nuestra para seguirle la pista.
+
+    La imagen de OTRA tienda responde igual que una que no existe: confirmar que
+    existe ya sería decir algo de otra empresa.
+    """
+    public_id = managed_public_id(value)
+    if public_id is None:
+        return
+    image = (
+        StorefrontImage.objects.select_for_update()
+        .filter(public_id=public_id, company=company).first()
+    )
+    if image is None:
+        raise ValidationError({field: [_NO_LONGER_EXISTS]})
+
+
+def _delete_if_unreferenced(image_id: int, *, actor=None, request=None, reason: str) -> bool:
+    """
+    Borra la imagen si no queda NINGUNA referencia. Devuelve si la borró.
+
+    El orden importa: primero el bloqueo de la fila, después el recuento. Así el
+    recuento se hace cuando ya nadie puede estar colocándola (`claim` espera a
+    este mismo bloqueo). El archivo se borra al confirmarse la transacción: si
+    ésta se deshace, la fila vuelve y el archivo nunca se fue.
+    """
+    with transaction.atomic():
+        image = StorefrontImage.objects.select_for_update().filter(pk=image_id).first()
+        if image is None or reference_count(image.public_id) > 0:
+            return False
+        key, company, public_id = image.storage_key, image.company, image.public_id
+        byte_size, pk = image.byte_size, image.pk
+        image.delete()
+        AdminAuditLog.log(
+            actor=actor, action='storefront_image_deleted',
+            target_type='storefront_image', target_id=pk,
+            metadata={'public_id': public_id, 'byte_size': byte_size, 'reason': reason},
+            request=request, company=company,
+        )
+        transaction.on_commit(lambda: storage.delete_quietly(key))
+    return True
+
+
+def release(values, *, company, actor=None, request=None) -> int:
+    """
+    Un hueco de `company` dejó de apuntar a estas direcciones.
+
+    Se llama después de guardar, dentro de la misma transacción: el recuento ya
+    ve el hueco con su valor nuevo. Sólo se consideran imágenes de la propia
+    empresa; la de otra nunca se borra desde aquí, aunque un dato antiguo
+    apuntara a ella.
+    """
+    deleted = 0
+    for public_id in {managed_public_id(value) for value in values} - {None}:
+        image = StorefrontImage.objects.filter(public_id=public_id, company=company).first()
+        if image is not None and _delete_if_unreferenced(
+            image.pk, actor=actor, request=request, reason='replaced',
+        ):
+            deleted += 1
+    return deleted
+
+
+def unplaced(older_than_hours: int):
+    """
+    Imágenes que nadie muestra y que llevan subidas más del plazo.
+
+    El plazo existe porque subir no coloca: una imagen recién subida puede estar
+    en un formulario abierto, a punto de guardarse. El recuento aquí es sólo una
+    primera criba; quien borra vuelve a contar con la fila bloqueada.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+
+    cutoff = timezone.now() - timedelta(hours=older_than_hours)
+    return [
+        image for image in StorefrontImage.objects.filter(created_at__lt=cutoff).order_by('pk')
+        if reference_count(image.public_id) == 0
+    ]
+
+
+def delete_unplaced(image: StorefrontImage) -> bool:
+    return _delete_if_unreferenced(image.pk, reason='never_placed')

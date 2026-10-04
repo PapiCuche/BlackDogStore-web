@@ -116,6 +116,26 @@ class StorefrontImageUploadTest(StorefrontMediaBase):
         self.assertEqual(image.getpixel((0, 0))[3], 0, 'la esquina dejó de ser transparente')
         self.assertEqual(image.getpixel((60, 40)), (200, 30, 30, 255))
 
+    def test_a_png_that_marks_one_colour_as_transparent_stays_transparent(self):
+        # PNG permite declarar «este color es transparente» sin canal alfa
+        # (tRNS en modo RGB o en escala de grises). Es lo que exportan algunos
+        # editores al recortar un fondo, y se aplanaba a un rectángulo opaco.
+        for mode, key, ink in (('RGB', (255, 0, 255), (10, 20, 30)), ('L', 255, 40)):
+            with self.subTest(mode=mode):
+                source = Image.new(mode, (60, 40), key)
+                source.paste(ink, (20, 10, 40, 30))
+                buffer = io.BytesIO()
+                source.save(buffer, 'PNG', transparency=key)
+
+                res = self._upload(self.manager, buffer.getvalue())
+                self.assertEqual(res.status_code, 201, res.data)
+                self.assertTrue(res.data['has_alpha'])
+                _res, body = self._fetch(res.data['url'])
+                stored = Image.open(io.BytesIO(body))
+                self.assertEqual(stored.mode, 'RGBA')
+                self.assertEqual(stored.getpixel((0, 0))[3], 0)
+                self.assertEqual(stored.getpixel((30, 20))[3], 255)
+
     def test_a_jpeg_is_served_as_jpeg_without_its_metadata(self):
         exif = Image.Exif()
         exif[0x010F] = 'Cámara del dueño'   # Make
@@ -222,6 +242,17 @@ class StorefrontImageServingTest(StorefrontMediaBase):
         self.assertIn('public', res['Cache-Control'])
         self.assertIn('immutable', res['Cache-Control'])
         self.assertEqual(res['X-Content-Type-Options'], 'nosniff')
+
+    def test_the_images_of_a_deactivated_company_are_no_longer_served(self):
+        # La tienda de una empresa desactivada deja de existir para el público;
+        # sus imágenes no pueden seguir saliendo por una dirección conocida.
+        url = self._upload(self.manager, png_with_transparency()).data['url']
+        self.company.is_active = False
+        self.company.save(update_fields=['is_active'])
+
+        res, _body = self._fetch(url)
+        self.assertEqual(res.status_code, 404)
+        self.assertNotIn('immutable', res.get('Cache-Control', ''))
 
     def test_an_unknown_image_is_not_found(self):
         self.assertEqual(APIClient().get('/api/storefront/images/' + '0' * 32 + '/').status_code, 404)
