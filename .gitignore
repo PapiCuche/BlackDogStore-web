@@ -27,3 +27,6 @@ coverage/
 .env.production
 deploy/.env.production
 backups/
+# Stored files: service evidence photos and shop images. They are data, some of
+# it private, and must never be committed.
+backend/private-media/

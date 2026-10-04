@@ -57,8 +57,14 @@ PAGE_FIELDS = (
     'hero_eyebrow', 'hero_title', 'hero_subtitle',
     'hero_primary_cta_label', 'hero_primary_cta_url',
     'hero_secondary_cta_label', 'hero_secondary_cta_url',
+    'hero_variant', 'hero_image_url',
+    'services_image_url', 'location_image_url',
     'services_hero_title', 'services_hero_subtitle', 'services_warranty_note',
 )
+
+#: Lo que vale un campo que la tienda nunca escribió. Casi todos, vacío; la
+#: variante del hero no puede serlo: una tienda sin fila sigue teniendo hero.
+PAGE_FIELD_DEFAULTS = {'hero_variant': 'dark'}
 
 PUBLIC_CAMPAIGN_FIELDS = (
     'slot', 'badge', 'title', 'subtitle', 'body',
@@ -155,7 +161,7 @@ def public_page_settings(company) -> dict:
     """
     row = getattr(company, 'storefront_page', None) if company is not None else None
     return {
-        f: (getattr(row, f, '') or '') if row is not None else ''
+        f: (getattr(row, f, '') or '') if row is not None else PAGE_FIELD_DEFAULTS.get(f, '')
         for f in PAGE_FIELDS
     }
 
@@ -292,7 +298,7 @@ def update_page_settings(*, company, actor, data, request=None):
     row, _ = StorefrontPageSettings.objects.get_or_create(company=company)
     for field in PAGE_FIELDS:
         if field in data:
-            setattr(row, field, data[field] or '')
+            setattr(row, field, data[field] or PAGE_FIELD_DEFAULTS.get(field, ''))
     row.updated_by = actor
     row.full_clean()
     row.save()

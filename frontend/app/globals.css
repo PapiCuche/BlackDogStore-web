@@ -40,6 +40,12 @@
   /* ------------------------------------------------------------------ */
   --background: var(--brand-light-background, #ffffff);
   --surface: var(--brand-light-surface, #f4f4f5);
+  /* PROFUNDIDAD DE UN RECORTE. La sombra sigue la silueta de la imagen, no
+     dibuja una caja. Sobre una superficie oscura una sombra negra no se ve,
+     así que allí es un halo claro: en la losa siempre, y en toda la página
+     cuando el tema es oscuro. La aplica `storefrontMediaStyle`. */
+  --cutout-shadow: drop-shadow(0 8px 10px rgb(0 0 0 / .18));
+  --cutout-shadow-on-slab: drop-shadow(0 0 1px rgb(255 255 255 / .5)) drop-shadow(0 6px 18px rgb(255 255 255 / .12));
   /* El texto y el borde se DERIVAN del fondo con contraste garantizado, en
      vez de ser dos columnas más que alguien tiene que rellenar bien. Un
      tenant que eligiera mal su texto claro produciría una página ilegible
@@ -142,6 +148,7 @@
 /* tema oscuro, exactamente igual que antes.                            */
 /* ------------------------------------------------------------------- */
 :root[data-theme="dark"] {
+  --cutout-shadow: var(--cutout-shadow-on-slab);
   --background: var(--brand-background, #0a0a0a);
   --foreground: var(--brand-text, #fafafa);
   --surface: var(--brand-surface, #141414);
@@ -392,13 +399,6 @@ img { display: block; max-width: 100%; }
 @starting-style {
   .v3-pop { opacity: 0; scale: 0.96; }
   .v3-reveal { opacity: 0; translate: 0 -6px; }
-}
-
-/* Un recorte con transparencia conserva sus colores; sólo la sombra sigue a
-   la superficie. Sobre la losa oscura, un halo claro en vez de una sombra. */
-.v3-cutout { filter: drop-shadow(0 8px 12px rgb(0 0 0 / .18)); }
-.v3-cutout-on-slab {
-  filter: drop-shadow(0 0 1px rgb(255 255 255 / .5)) drop-shadow(0 6px 18px rgb(255 255 255 / .12));
 }
 
 /* CARRUSEL. Scroll nativo: conserva la inercia del dedo, los enlaces y el

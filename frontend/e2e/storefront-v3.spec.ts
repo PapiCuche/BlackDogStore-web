@@ -132,3 +132,29 @@ test("una línea del carrito vuelve a la ficha de su producto", async ({ page, r
   await page.getByRole("button", { name: "Eliminar" }).first().click();
   await expect(page.getByRole("link", { name: product!.name, exact: true })).toHaveCount(0);
 });
+
+test("las categorías de la cabecera se abren y se cierran con el teclado", async ({ page, request }) => {
+  const categories = (await (await request.get(`${API}/categories/`)).json()) as { name: string; slug: string }[];
+  test.skip(categories.length === 0, "el catálogo no tiene categorías");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/", { waitUntil: "networkidle" });
+
+  const toggle = page.getByRole("button", { name: "Categorías del catálogo" });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+  const menu = page.locator("#store-catalog-menu");
+  await expect(menu.getByRole("link", { name: categories[0].name, exact: true }))
+    .toHaveAttribute("href", `/product?category=${categories[0].slug}`);
+
+  // El tabulador entra en el menú: sus enlaces siguen al botón en el orden de lectura.
+  await page.keyboard.press("Tab");
+  expect(await page.evaluate(() => Boolean(document.activeElement?.closest("#store-catalog-menu")))).toBe(true);
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(toggle).toBeFocused();
+});

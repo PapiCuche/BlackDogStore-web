@@ -3,6 +3,53 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Cabecera y pie V4
+
+- Categorías de la cabecera accesibles con teclado y lector de pantalla.
+- Carrito móvil con nombre accesible; Escape cierra el menú; objetivos táctiles de 44 px.
+- Pie: una sola marca, banda de cierre V4, navegaciones con nombre.
+- Lint: de 25 a 23 avisos. Next 16.3.8, React 19.3.0, Playwright 1.63.0.
+
+## 2026-10-04 — Profundidad de los recortes (revisión de #60)
+
+- La sombra de un recorte se ve sobre superficies oscuras (hero oscuro, promoción, tema
+  oscuro): dos variables de CSS, una sola regla.
+- Sin azulejo detrás de las imágenes de servicio y ubicación.
+- `alt` correcto en la imagen de la portada; nombre accesible del campo de subida (WCAG 2.5.3).
+
+## 2026-10-04 — Actualización de dependencias (CI-03)
+
+- Dependabot semanal para `pip`, `npm` y GitHub Actions, sin merge automático.
+
+## 2026-10-04 — Sistema de agentes
+
+- Se incorpora política persistente de agentes y eficiencia de contexto.
+
+## 2026-10-03 — Portada V4 · Imágenes subidas desde el panel
+
+- La tienda sube sus imágenes desde «Escaparate»: hero, campaña, categorías,
+  servicio técnico y ubicación. PNG/WebP conservan transparencia y las imágenes
+  gestionadas por el panel reciben una sombra suave de profundidad.
+- El hero tiene estilo oscuro o claro, elegido por la tienda (`9c39716`).
+- Portada V4: tarjetas de categoría con imagen, franja de marca, servicios de la
+  tienda y «Cerca de ti» (`9c39716`).
+- Migraciones `0096_storefront_images` (tubería/hero/categorías) y
+  `0097_storefront_section_images` (servicio/ubicación).
+- Corregido: la importación de productos y stock respondía 415 (`b5de287`).
+- `backend/private-media/` pasa a `.gitignore` (`3fa9b42`).
+- Frontend 563 pruebas, typecheck, lint 0/25; Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
+
+## 2026-10-02 — F-TENANT-01
+
+- Seguridad multiempresa: un administrador de empresa ya no puede vincular una
+  cuenta global arbitraria por id mediante `POST /api/admin/memberships/`.
+- El alta directa queda reservada a `User.is_superuser` / administrador de
+  plataforma para bootstrap y migración.
+- El onboarding normal de personal usa el flujo existente de
+  `StaffInvitation` + aceptación.
+- GET/PATCH de membresías mantienen su alcance tenant/branch actual.
+- Sin migraciones.
+- Cobertura nueva: `backend/store/test_membership_consent.py`.
 ## 2026-10-03 — DEPLOY-PREP · Infraestructura de producción
 
 - Imágenes de producción de backend y frontend, `docker-compose.prod.yml`, Caddy

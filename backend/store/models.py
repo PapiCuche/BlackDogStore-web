@@ -83,6 +83,40 @@ class PaymentMethod(models.TextChoices):
     OTHER = 'other', 'Otro'
 
 
+def validate_asset_url(value):
+    """
+    Una ruta del propio sitio, o una URL absoluta http(s). Nada más.
+
+    M12E amplió `logo_url` de `URLField` a `CharField` porque estas rutas son
+    SERVIDAS POR EL FRONTEND —`/assets/branding/logo.png`— y un `URLField` las
+    rechaza: una URL absoluta convertiría un cambio de host en un logo roto.
+
+    Pero ampliar el tipo se llevó por delante toda la validación, y eso fue una
+    regresión de seguridad que la suite atrapó: el valor acaba en el `src` de una
+    imagen, así que `javascript:` y `data:` tienen que seguir siendo imposibles.
+    Un esquema que el navegador pueda interpretar como código no es una ruta de
+    logotipo por mucho que quepa en una columna de texto.
+
+    Vacío se acepta: significa «no tengo esta variante».
+    """
+    import re
+
+    from django.core.exceptions import ValidationError
+
+    if not value:
+        return
+    text = str(value).strip()
+    # Relativa del propio sitio. `//` queda fuera a propósito: `//evil.example`
+    # es una URL absoluta de protocolo relativo disfrazada de ruta.
+    if text.startswith('/') and not text.startswith('//'):
+        return
+    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
+        return
+    raise ValidationError(
+        'Usa una ruta del sitio que empiece por «/» o una URL http(s).'
+    )
+
+
 class Category(models.Model):
     """
     A catalogue category owned by one Company.
@@ -97,6 +131,13 @@ class Category(models.Model):
     )
     name = models.CharField(max_length=200)
     slug = models.SlugField()
+    #: La imagen con la que la tienda presenta la categoría en su portada.
+    #: Vacía es un estado válido: la portada muestra el hueco, no una imagen
+    #: de otra empresa. Una ruta del sitio o una URL http(s), como los logotipos.
+    image_url = models.CharField(
+        max_length=500, blank=True, default='',
+        validators=[validate_asset_url],
+    )
 
     class Meta:
         constraints = [
@@ -2346,40 +2387,6 @@ class InventoryCountItem(models.Model):
 # ---------------------------------------------------------------------------
 # SaaS Phase 3 — company configuration and branding
 # ---------------------------------------------------------------------------
-
-def validate_asset_url(value):
-    """
-    Una ruta del propio sitio, o una URL absoluta http(s). Nada más.
-
-    M12E amplió `logo_url` de `URLField` a `CharField` porque estas rutas son
-    SERVIDAS POR EL FRONTEND —`/assets/branding/logo.png`— y un `URLField` las
-    rechaza: una URL absoluta convertiría un cambio de host en un logo roto.
-
-    Pero ampliar el tipo se llevó por delante toda la validación, y eso fue una
-    regresión de seguridad que la suite atrapó: el valor acaba en el `src` de una
-    imagen, así que `javascript:` y `data:` tienen que seguir siendo imposibles.
-    Un esquema que el navegador pueda interpretar como código no es una ruta de
-    logotipo por mucho que quepa en una columna de texto.
-
-    Vacío se acepta: significa «no tengo esta variante».
-    """
-    import re
-
-    from django.core.exceptions import ValidationError
-
-    if not value:
-        return
-    text = str(value).strip()
-    # Relativa del propio sitio. `//` queda fuera a propósito: `//evil.example`
-    # es una URL absoluta de protocolo relativo disfrazada de ruta.
-    if text.startswith('/') and not text.startswith('//'):
-        return
-    if re.match(r'^https?://[^\s]+$', text, re.IGNORECASE):
-        return
-    raise ValidationError(
-        'Usa una ruta del sitio que empiece por «/» o una URL http(s).'
-    )
-
 
 def validate_hex_color(value):
     """
@@ -6906,6 +6913,38 @@ class StorefrontPageSettings(models.Model):
         max_length=500, blank=True, validators=[validate_cta_url],
     )
 
+    #: CÓMO SE VE EL HERO, decidido por la tienda y no por la plataforma.
+    #:
+    #: `dark` es la losa oscura con el isotipo, lo que todas las tiendas tenían.
+    #: `light` es un hero claro pensado para llevar una imagen al lado del
+    #: texto. Es contenido del tenant: el piloto quiere el claro, y otra tienda
+    #: puede preferir el oscuro sin que nadie toque el código.
+    class HeroVariant(models.TextChoices):
+        DARK = 'dark', 'Oscuro'
+        LIGHT = 'light', 'Claro'
+
+    hero_variant = models.CharField(
+        max_length=8, choices=HeroVariant.choices, default=HeroVariant.DARK,
+    )
+    #: La imagen del hero. Vacía es válido: el hero se compone sin ella. Un PNG
+    #: con transparencia se muestra sin fondo sobre el color del hero.
+    hero_image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
+
+    #: Imagen editorial opcional del bloque de servicio técnico en la portada.
+    #: Es contenido del tenant: una tienda puede mostrar su banco de trabajo,
+    #: una reparación o un recorte de producto; otra puede dejarla vacía.
+    services_image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
+    #: Imagen opcional de la tienda/local para el bloque «Cerca de ti».
+    #: No se deriva de mapas ni de terceros: la empresa sube la que tiene
+    #: autorización para publicar.
+    location_image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
+
     # --- M12F.1 — la página de servicios ----------------------------------
     #
     # Se amplía ESTE modelo en vez de crear un segundo singleton: sigue siendo
@@ -6943,6 +6982,56 @@ class StorefrontPageSettings(models.Model):
 
     def __str__(self):
         return f'Portada de {self.company.name}'
+
+
+class StorefrontImage(models.Model):
+    """
+    Una imagen que la tienda subió desde su panel para mostrarla al público.
+
+    ES PÚBLICA POR NATURALEZA: va en la portada. Por eso no es una evidencia —
+    que es privada y se sirve tras comprobar permiso— aunque use el mismo
+    almacenamiento. Lo que se guarda aquí es dónde está el objeto y de quién es;
+    los campos de la tienda (hero, categoría, campaña) guardan su dirección.
+
+    `public_id` es lo que aparece en la URL. Es aleatorio, no secuencial: no
+    hay nada que proteger tras él, pero un contador dejaría enumerar cuántas
+    imágenes ha subido cada tienda.
+    """
+
+    company = models.ForeignKey(
+        'Company', on_delete=models.CASCADE, related_name='storefront_images',
+    )
+    public_id = models.CharField(max_length=32, unique=True, editable=False)
+    storage_key = models.CharField(max_length=255, unique=True, editable=False)
+    mime_type = models.CharField(max_length=32)
+    byte_size = models.PositiveIntegerField()
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    has_alpha = models.BooleanField(default=False)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='uploaded_storefront_images',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'imagen de la tienda'
+        verbose_name_plural = 'imágenes de la tienda'
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'{self.company.slug}:{self.public_id}'
+
+    @property
+    def url(self) -> str:
+        """
+        Ruta del propio sitio: no cambia si la tienda cambia de dominio.
+
+        SIN barra final. El frontend quita la barra final de toda URL con una
+        redirección, así que con ella cada imagen costaba dos peticiones. Quien
+        reenvía a Django (Caddy, o el proxy de Next) la añade.
+        """
+        return f'/api/storefront/images/{self.public_id}'
 
     def clean(self):
         from django.core.exceptions import ValidationError

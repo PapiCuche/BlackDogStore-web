@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { apiUrl, fetcher } from "./api";
 
-export type CatalogCategory = { id: number; name: string; slug: string };
+export type CatalogCategory = {
+  id: number;
+  name: string;
+  slug: string;
+  /** La imagen que la tienda colocó desde su panel. Vacía o ausente = sin imagen. */
+  image_url?: string;
+};
 
 /**
  * The categories of THIS store's catalogue — the only list of categories the

@@ -3,6 +3,152 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Cabecera y pie V4
+
+La cabecera y el pie ya salían enteros de la configuración de la tienda; no cambia qué
+muestran. Se corrigen los defectos reales del armazón:
+
+- **Categorías sin ratón.** Sólo se abrían al pasar el puntero. Ahora «Catálogo» es un
+  enlace y a su lado hay un botón («Categorías del catálogo») con `aria-expanded` y
+  `aria-controls`. Se abre con teclado, Escape lo cierra y devuelve el foco, y se cierra
+  cuando el foco sale. Una tienda sin categorías no muestra el botón.
+- **Móvil.** El carrito era un icono sin nombre accesible; ahora dice «Carrito» y cuántos
+  artículos lleva. Escape cierra el menú y devuelve el foco. Carrito y menú miden 44 px.
+- **Pie.** La banda de cierre ya no repite el logotipo que el pie pinta debajo; usa la
+  tipografía de V4. Las columnas «Tienda» y «Servicios» son navegaciones con nombre. Las
+  redes miden 44 px y sólo aparecen si la tienda las publicó.
+- **Cierre de sesión.** Sigue siendo una carga completa (tira lo que la sesión tenía en
+  memoria) y ya no deja la página anterior en el historial.
+
+Dependencias: Next 16.3.8, React 19.3.0, Playwright 1.63.0 (#68, Dependabot).
+
+Validación: Jest 587/587 (62 suites), typecheck OK, lint 0 errores/23 avisos (los 23 son
+`react-hooks/set-state-in-effect`; ver LINT-EFFECT-01). Playwright de tienda y sesión:
+112/112, con una prueba nueva que abre y cierra las categorías con el teclado.
+
+**LINT-EFFECT-01 (P4, propuesta).** Los 23 avisos restantes señalan pantallas que cargan
+datos con `setState` dentro de un efecto. No hay un defecto asociado; quitarlos exige
+cambiar el patrón de carga de 20 pantallas del panel. No se silencian.
+
+## 2026-10-04 — Profundidad de los recortes (revisión de #60)
+
+La revisión de Storefront V4 no dejó hallazgos P0 ni P1. Corregido en el frontend:
+
+- **Sombra sobre superficies oscuras (P2).** En el hero oscuro el estilo en línea
+  pisaba el halo claro y el recorte quedaba sin profundidad; lo mismo en la promoción
+  inferior y en todo el tema oscuro. El valor vive ahora en dos variables de CSS
+  (`--cutout-shadow`, `--cutout-shadow-on-slab`); el tema oscuro apunta la primera a la
+  segunda. `storefrontMediaStyle(src, "page" | "slab")` sólo dice sobre qué superficie
+  está la imagen. La regla duplicada `.v3-cutout` desaparece.
+- Las imágenes de servicio y de ubicación ya no pintan un azulejo detrás del recorte.
+- La imagen propia de la portada es decorativa: no toma el título de una campaña sin imagen.
+- El nombre accesible del campo de subida empieza por el texto visible del botón
+  («Subir imagen: …», «Cambiar imagen: …») — WCAG 2.5.3.
+- Los títulos de sección parten una palabra larga antes que desbordar.
+
+Validación: Jest 575/575 (61 suites), typecheck OK, lint 0 errores/25 avisos. Playwright
+de la tienda (imágenes V4, contraste, hero, ajuste de texto, tienda V3, enlace de salto):
+116 pruebas OK; una falló en la pasada conjunta por el límite del carrito y pasó sola.
+
+Las dos correcciones de backend de la misma revisión (transparencia por color clave,
+imágenes de una empresa desactivada) van con la limpieza de imágenes en el PR #73.
+
+## 2026-10-04 — Actualización de dependencias (CI-03)
+
+`.github/dependabot.yml`: una vez por semana (lunes 06:00, Lima) Dependabot abre pull
+requests para `pip` (`/backend`), `npm` (`/frontend`) y GitHub Actions. Las versiones
+menores y de parche llegan agrupadas por ecosistema; las mayores, por separado. Django se
+queda en su línea LTS 5.2 y Next/React en su versión mayor: moverlos es una migración
+planificada. Nada se mergea solo: cada PR pasa la misma CI que cualquier cambio.
+
+Pendiente del propietario en la configuración del repositorio: activar las alertas de
+vulnerabilidad, el escaneo de secretos y la protección de push (hoy apagados).
+
+## 2026-10-04 — Sistema de agentes
+
+Se incorpora política persistente de agentes y eficiencia de contexto: `AGENTS.md`,
+`docs/NEXT_ACTION.md`, `docs/AGENT_TOKEN_POLICY.md`, `docs/AGENT_BOOTSTRAP.md` y
+`docs/CODEBASE_MAP.md`. Sin cambios de código. PR #60 (Storefront V4) ya está en
+`master` por merge `e40e440`.
+
+## 2026-10-03 — Portada V4: imágenes que la tienda sube desde su panel
+
+Rama `feat/storefront-v4-images`, desde `master` `833fdec`. Código en `3fa9b42`.
+Estado: **IMPLEMENTADO en esta rama**, pendiente de revisión y merge.
+
+El propietario pidió la portada del diseño V4 con los huecos de imagen listos
+para llenarlos desde el panel, y que un PNG sin fondo se vea sin fondo.
+
+Qué hay ahora:
+
+- **Subida de imágenes (`0e9db9d`).** `POST /api/admin/storefront/images/`
+  (`company.manage`). Acepta PNG, JPEG y WebP; el tipo lo decide el
+  decodificador, no el nombre del archivo. La imagen se vuelve a codificar desde
+  sus píxeles, así que no sale ningún metadato, y se reduce si pasa de 2400 px.
+  **PNG y WebP conservan la transparencia.** La dirección pública es
+  `/api/storefront/images/<id>`, con un identificador aleatorio.
+- **Huecos de imagen tenant-aware.** Hero, una imagen por categoría, una imagen
+  opcional del bloque de servicio y una de «Cerca de ti». `0096` introduce la
+  tubería de imágenes y `0097` añade los dos huecos editoriales sin reescribir la
+  migración ya aplicada en entornos locales.
+- **Panel (`57ed321` + seguimiento V4).** En «Escaparate» hay huecos de imagen
+  para hero, campaña, categorías, servicio técnico y ubicación. La vista previa
+  usa cuadrícula para comprobar transparencia. Toda imagen servida por la tubería
+  propia del escaparate recibe una sombra `drop-shadow` suave; en PNG/WebP
+  transparentes sigue el contorno del recorte en vez de dibujar una caja.
+- **Portada V4 (`9c39716`).** El hero tiene dos estilos y lo elige la tienda; el
+  oscuro sigue siendo el de quien no eligió. Las categorías son tarjetas con su
+  imagen; una sin imagen muestra un hueco tranquilo, no una imagen rota. Con el
+  hero claro sigue una franja de marca oscura con el isotipo. El bloque de
+  servicio lista los servicios de la tienda. «Cerca de ti» sólo aparece con una
+  dirección publicada.
+
+Lo que no cambia: ninguna imagen, categoría ni texto del piloto está en el
+código. Las imágenes de la propuesta de Figma siguen fuera del repositorio; la
+tienda sube las suyas (STOREFRONT-IMAGES-LICENSE sigue BLOQUEADO para subirlas
+al repositorio, y ya no hace falta que estén en él).
+
+Decisiones que esto cambia:
+
+- STOREFRONT-HERO-VARIANT = IMPLEMENTADO. Sustituye a «el hero es una losa
+  oscura para todas las tiendas»: la losa es el valor por defecto, no la única.
+  Las pruebas que protegen la losa siguen midiéndola tal cual.
+- STOREFRONT-EDITORIAL-CMS = PARCIAL. Hay imagen por categoría e imagen de hero;
+  no hay más material editorial.
+
+Dónde se guardan: en el mismo almacenamiento que las evidencias, bajo
+`companies/<id>/storefront/`, y se sirven por la API. En el despliegue preparado
+eso es el volumen `evidence`, que ya entra en la copia de seguridad.
+
+Encontrado y corregido por el camino:
+
+- **IMPORT-UPLOAD-415 (`b5de287`).** Importar productos o stock desde el panel
+  respondía 415: el archivo salía con una cabecera `Content-Type` vacía. Ya estaba
+  roto en `master`. Confirmado en navegador antes y después.
+- **`backend/private-media/` no estaba en `.gitignore` (`3fa9b42`).** Ahí viven
+  las evidencias de servicio. Un `git add -A` en una copia usada podía publicarlas.
+  Nunca llegó a ocurrir: no hay ningún archivo de esa carpeta en el historial.
+
+Pruebas nuevas: `test_storefront_media` (26, backend), `image-upload-field` (7),
+`category-images-editor` (3), `storefront-v4-home` (12), tres casos en
+`fetch-with-auth`, y `e2e/storefront-v4-images.spec.ts`, que sube un recorte en el
+panel con un navegador real y comprueba en la portada pública que sus esquinas
+siguen transparentes y que nada pinta un fondo detrás.
+
+Validación sobre `3fa9b42`: backend, 26 pruebas propias y 161 vecinas en
+PostgreSQL, `makemigrations --check` sin cambios; la suite completa la da el CI.
+Frontend 563 pruebas en 60 suites, OK; typecheck OK; lint 0 errores y 25
+advertencias; build OK (52 páginas); Playwright 170 de 170, sin fallos, omitidas ni reintentos, 10,5 min.
+
+Una pasada anterior de Playwright no cuenta: el equipo se suspendió veinte
+minutos a mitad de la ejecución y dos pruebas agotaron su tiempo. Se repitió
+entera.
+
+Deuda nueva:
+
+- STOREFRONT-IMAGE-CLEANUP. Una imagen subida y luego sustituida queda guardada.
+  No hay listado ni borrado.
+- La cabecera y el pie siguen con el diseño anterior; el diseño V4 los simplifica.
 ## 2026-10-03 — DEPLOY-PREP: la infraestructura de producción, sobre el master actual
 
 Rama `deploy/production-vps`, con `master` `833fdec` incorporado. Estado:
@@ -176,17 +322,34 @@ Playwright completo: 164 de 164.
 
 Queda abierto, con el motivo:
 
-- **F-TENANT-01 = BLOQUEADO (decisión de producto).** Un administrador de empresa
-  puede añadir por identificador a cualquier usuario de la plataforma y ver su
-  nombre de usuario. La invitación con aceptación ya existe y es lo único que usa
-  la interfaz. Cerrar el alta directa a los administradores de empresa cambia un
-  contrato que 27 pruebas ejercen. Falta decidir: ¿el alta directa queda sólo para
-  el administrador de la plataforma?
+- **F-TENANT-01 = CORREGIDO en rama, pendiente de CI/merge.** El alta directa
+  por `POST /api/admin/memberships/` queda reservada al administrador de
+  plataforma. Un administrador de empresa incorpora personal mediante
+  `StaffInvitation` + aceptación, que ya es el flujo de la interfaz. Así no
+  puede vincular por id a una cuenta global que nunca aceptó entrar al tenant.
 - **THROTTLE-CACHE-01 = PENDIENTE.** Los límites se cuentan en la memoria de cada
   proceso. Con un proceso (lo que usa el despliegue preparado) son exactos; con
   varios, cada uno cuenta por su lado. Compartirlos necesita una caché común.
 - **TOKEN-HYGIENE-01 = PENDIENTE.** Las filas de token caducadas no se purgan
   solas; falta programar `flushexpiredtokens` en el servidor.
+
+## 2026-10-02 — F-TENANT-01: alta de personal con consentimiento
+
+Rama `security/f-tenant-01-consent-based-membership`, desde `master`
+`833fdec`. Estado: **PARCIAL / pendiente de CI y merge**.
+
+El endpoint de bajo nivel `POST /api/admin/memberships/` deja de aceptar altas
+directas hechas por administradores de empresa. Se conserva para el administrador
+de plataforma como herramienta de bootstrap/migración. El flujo normal de empresa
+es la invitación existente: la persona recibe la invitación y su aceptación crea
+la membresía.
+
+No hay migraciones. GET/PATCH de membresías siguen tenant-scoped; no se cambia
+RBAC, branch scope ni la interfaz de Personal.
+
+Cobertura nueva: `test_membership_consent.py` comprueba que un admin de empresa
+recibe 403 sin crear la membresía ni obtener el username y que un platform admin
+conserva el alta directa.
 
 ## 2026-10-02 — Backend CI sobre PostgreSQL
 

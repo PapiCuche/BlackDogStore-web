@@ -39,6 +39,7 @@ from .auth_views import (
 from .admin_views import (
     AdminUserListView, AdminUserRoleView, AdminAuditLogListView,
     AdminProductListView, AdminProductDetailView, AdminProductInventoryAdjustView,
+    AdminCategoryDetailView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
@@ -95,6 +96,7 @@ from .customer_views import (
     AdminCustomerListView,
 )
 from .dev_accounts_views import DevDemoAccountsView
+from .storefront_media_views import AdminStorefrontImageUploadView, StorefrontImageView
 from .storefront_content_views import (
     AdminStorefrontListContentDetailView,
     AdminStorefrontListContentView,
@@ -165,6 +167,7 @@ urlpatterns = [
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/inventory-adjust/', AdminProductInventoryAdjustView.as_view(), name='admin-product-inventory-adjust'),
     path('admin/categories/', AdminCategoryListView.as_view(), name='admin-categories'),
+    path('admin/categories/<int:pk>/', AdminCategoryDetailView.as_view(), name='admin-category'),
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
@@ -253,6 +256,14 @@ urlpatterns = [
 
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
+    path(
+        'storefront/images/<str:public_id>/',
+        StorefrontImageView.as_view(), name='storefront-image',
+    ),
+    path(
+        'admin/storefront/images/',
+        AdminStorefrontImageUploadView.as_view(), name='admin-storefront-images',
+    ),
     path('admin/company-settings/', AdminCompanySettingsView.as_view(), name='admin-company-settings'),
     # M12F — contenido comercial del escaparate.
     path(
