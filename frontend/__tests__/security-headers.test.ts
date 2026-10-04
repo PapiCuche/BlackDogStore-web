@@ -44,6 +44,19 @@ describe('cabeceras de seguridad del frontend', () => {
     expect(valueFor(all, '/:path*', 'Referrer-Policy')).toBe('strict-origin-when-cross-origin');
   });
 
+  it('todas las rutas renuncian a la cámara, el micrófono y la ubicación', async () => {
+    // La aplicación no usa ninguna de las tres. Renunciar a ellas impide que
+    // un script de terceros —el SDK de pago, por ejemplo— las pida en nombre
+    // de la tienda. Las fotos de evidencia se eligen con un campo de archivo,
+    // que no depende de este permiso.
+    const policy = valueFor(await rules(), '/:path*', 'Permissions-Policy') ?? '';
+    const features = policy.split(',').map((f) => f.trim());
+
+    expect(features).toEqual(expect.arrayContaining(['camera=()', 'microphone=()', 'geolocation=()']));
+    // El pago no se toca: el SDK de la pasarela puede necesitarlo.
+    expect(policy).not.toMatch(/payment/);
+  });
+
   it('la política de contenido no rompe la aplicación: sólo restringe marcos y base', async () => {
     const csp = valueFor(await rules(), '/:path*', 'Content-Security-Policy') ?? '';
     const directives = csp.split(';').map((d) => d.trim().split(' ')[0]).filter(Boolean).sort();
