@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Playwright completo y aislamiento de tres pruebas
+
+La pasada completa tras subir Playwright a 1.63 y reconstruir el entorno local encontró tres
+pruebas que dependían de algo ajeno a la propia pasada. Ninguna era un defecto del producto.
+
+- `demo-accounts`: comparaba la tarjeta de accesos con un backend en una dirección escrita a
+  mano (`127.0.0.1:8000`). Pasaba sólo mientras ese otro servidor estuviera encendido y
+  sembrado igual. Ahora pregunta al backend de la pasada (`E2E_API_BASE`).
+- `pos-ticket`: leía el cuerpo del PDF de la respuesta que la página consume como blob. Desde
+  Playwright 1.63 ese cuerpo llega vacío al arnés aunque el navegador lo recibe entero
+  (comprobado: 2628 bytes, `%PDF`). El PDF se pide otra vez con la misma sesión, y la respuesta
+  de la página se comprueba por estado, tipo y tamaño.
+- `skip-link`: iniciaba sesión sin respetar el límite de 5 por minuto y fallaba cuando las
+  pruebas anteriores habían gastado la ventana. Espera y reintenta, como el resto.
+
+La base de E2E se pierde con `/tmp`; `AGENTS.md` §6 dice ahora cómo se reconstruye. Una base
+sembrada desde cero omite las 9 pruebas de `fiscal-invoice` (no tiene un pedido pagado con
+factura), y la copia de la base de desarrollo apunta sus fotos a un host externo que
+`next/image` rechaza. Una prueba omitida no cuenta como verde.
+
+Validación sobre `master` `a46b5d3` más estas tres correcciones: **Playwright 171/171, 0
+omitidas, 10,2 min.** Jest 590/590, typecheck y lint sin cambios.
+
+Dependabot: mergeados #63 (`actions/checkout` 7) y #66 (DRF 3.18.1, gunicorn 26.2.0,
+pillow-heif 1.8.0, urllib3 2.8.0; CI 4744 pruebas). #64 (`actions/setup-python` 7) tiene la CI
+verde pero GitHub rechaza el merge con el token de esta sesión («sin permiso `workflow`»):
+lo mergea el propietario. #67 (`reportlab` 5) queda abierta como DEP-REPORTLAB5: es la
+librería de los PDF y pide comparar un ticket y un A4 a la vista.
+
 ## 2026-10-04 — Limpieza de imágenes de la tienda (STOREFRONT-IMAGE-CLEANUP)
 
 Una imagen subida se quedaba para siempre en el almacén: reemplazar la del hero dejaba la

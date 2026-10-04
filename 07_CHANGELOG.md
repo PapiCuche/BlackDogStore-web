@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Playwright completo y aislamiento de pruebas
+
+- Tres pruebas E2E dejan de depender de otro servidor, de un detalle de Playwright y del orden.
+- Playwright 171/171, 0 omitidas.
+- Dependabot: #63 y #66 mergeados; #64 pendiente del propietario; #67 (`reportlab` 5) abierta.
+
 ## 2026-10-04 — Limpieza de imágenes de la tienda
 
 - Una imagen reemplazada o nunca colocada se borra cuando nadie la usa; nunca una en uso.
