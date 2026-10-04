@@ -46,12 +46,24 @@ for (const route of ["/", "/product", "/services", "/cart"]) {
 }
 
 test("en el panel el enlace de salto lleva al área principal", async ({ page }) => {
+  test.setTimeout(240_000);
   await page.goto("/auth", { waitUntil: "networkidle" });
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
   test.skip((await card.count()) === 0, "no hay tarjeta de accesos de desarrollo en este entorno");
   await card.locator("li").filter({ hasText: "dev_admin" }).getByRole("button", { name: "Usar cuenta" }).click();
-  await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
-  await page.waitForURL((url) => !url.pathname.startsWith("/auth"), { timeout: 20_000 });
+  // El inicio de sesión se limita a 5 por minuto y por dirección, y en la
+  // pasada completa las pruebas anteriores pueden haber gastado la ventana.
+  // Se respeta el límite: se espera y se reintenta.
+  for (let attempt = 0; ; attempt += 1) {
+    await page.getByRole("button", { name: /iniciar sesión/i }).first().click();
+    try {
+      await page.waitForURL((url) => !url.pathname.startsWith("/auth"), { timeout: 12_000 });
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await page.waitForTimeout(62_000);
+    }
+  }
 
   await page.goto("/admin", { waitUntil: "networkidle" });
   await expect(page.locator("#admin-main-content")).toBeVisible({ timeout: 20_000 });

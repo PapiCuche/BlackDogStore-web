@@ -9,6 +9,11 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Imágenes de la tienda públicas y evidencias privadas en el mismo volumen, sin rutas de archivo.
 - Persistencia tras reinicio, reconstrucción y restauración de copia.
 - PostgreSQL 16 en producción; limpieza diaria de imágenes sin uso; Dependabot para imágenes base.
+## 2026-10-04 — Playwright completo y aislamiento de pruebas
+
+- Tres pruebas E2E dejan de depender de otro servidor, de un detalle de Playwright y del orden.
+- Playwright 171/171, 0 omitidas.
+- Dependabot: #63 y #66 mergeados; #64 pendiente del propietario; #67 (`reportlab` 5) abierta.
 
 ## 2026-10-04 — Limpieza de imágenes de la tienda
 

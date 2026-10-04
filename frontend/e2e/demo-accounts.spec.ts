@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
+const API = process.env.E2E_API_BASE ?? "http://127.0.0.1:8000/api";
+
 /**
  * Los siete accesos de desarrollo, probados de extremo a extremo.
  *
@@ -178,7 +180,10 @@ test.describe("la tarjeta no promete lo que no existe", () => {
     // El defecto original: seis botones para seis cuentas inexistentes. La
     // tarjeta ahora pregunta al backend qué hay de verdad.
     await page.goto("/auth", { waitUntil: "networkidle" });
-    const res = await page.request.get("http://127.0.0.1:8000/api/dev/demo-accounts/");
+    // El backend de ESTA pasada, no uno fijo: con la dirección escrita a mano
+    // la prueba comparaba la tarjeta con otro servidor, y sólo pasaba mientras
+    // ese otro estuviera encendido y sembrado igual.
+    const res = await page.request.get(`${API}/dev/demo-accounts/`);
     expect(res.ok()).toBe(true);
     const data = await res.json();
 
