@@ -57,6 +57,23 @@ class FakePrinter:
         self._server.close()
 
 
+def port_where_nothing_listens() -> int:
+    """
+    Un puerto de este equipo en el que NADIE escucha.
+
+    Se pide uno libre al sistema y se suelta sin llegar a escuchar. No vale
+    cerrar la impresora simulada y reutilizar su puerto: en Linux, cerrar un
+    socket mientras otro hilo espera en `accept()` no rechaza la conexión
+    siguiente, y la prueba «la impresora no responde» veía una impresora que sí
+    respondía.
+    """
+    probe = socket.socket()
+    probe.bind(('127.0.0.1', 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
 class FakeServer:
     """El servidor, visto desde el agente: una cola y las confirmaciones que recibe."""
 
@@ -127,8 +144,7 @@ class PrintAgentTest(SimpleTestCase):
         self.assertEqual((body['ok'], body['claim_token']), (True, 'entrega-7-0'))
 
     def test_a_printer_that_does_not_answer_is_reported_and_nothing_is_recorded(self):
-        self.printer.close()
-        self.server.job(8, port=self.printer.port)
+        self.server.job(8, port=port_where_nothing_listens())
 
         outcome = self.agent.run_once()
 
@@ -137,6 +153,7 @@ class PrintAgentTest(SimpleTestCase):
         self.assertFalse(body['ok'])
         self.assertTrue(body['error'])
         self.assertEqual(Journal(self.journal_path).printed, [])
+        self.assertEqual(self.printer.received, [])
 
     def test_a_lost_confirmation_does_not_print_the_ticket_twice(self):
         self.server.job(9, port=self.printer.port, claim_token='primera')
@@ -206,8 +223,7 @@ class PrintAgentTest(SimpleTestCase):
             'https://tienda.example')
 
     def test_the_token_goes_to_the_server_and_never_to_the_log(self):
-        self.printer.close()
-        self.server.job(13, port=self.printer.port)
+        self.server.job(13, port=port_where_nothing_listens())
 
         with self.assertLogs('print_agent', level='INFO') as logs:
             self.agent.run_once()
