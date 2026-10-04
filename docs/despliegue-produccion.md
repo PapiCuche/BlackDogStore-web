@@ -367,7 +367,7 @@ Docker, unos puertos y un dominio reservados (`bds-rehearsal`, 18080/18443,
 `tienda.test`) y un certificado interno de Caddy. No sale a Internet, no envía
 correo y no cobra. Termina con `ENSAYO: OK` o con el número de fallos.
 
-Última pasada: 2026-10-04, sobre `9f8b7cb` con `master` `69bda12` incorporado.
+Última pasada: 2026-10-04, sobre `9043c89` con `master` `1b748b1` incorporado.
 Resultado: `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de
 navegador, 0 fallos.
 

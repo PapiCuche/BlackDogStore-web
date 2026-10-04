@@ -5,13 +5,13 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-04 — Infraestructura de producción: ensayo final
 
-Rama `deploy/production-vps` con `master` `69bda12` incorporado. No se ha publicado nada en
+Rama `deploy/production-vps` con `master` `1b748b1` incorporado. No se ha publicado nada en
 Internet.
 
 **El ensayo es un guion.** `sh deploy/rehearsal.sh` construye la pila de producción sin
 caché, arranca PostgreSQL vacío, la recorre a través de Caddy como un cliente y la desmonta.
 Proyecto, puertos y dominio reservados; certificado interno; sin correo ni cobros. Resultado
-sobre `9f8b7cb`: `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de navegador, 0 fallos.
+sobre `9043c89` (con gunicorn 26.2.0 y DRF 3.18.1): `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de navegador, 0 fallos.
 La tabla completa está en `docs/despliegue-produccion.md` §9.
 
 **Imágenes públicas y evidencias privadas.** Comparten volumen y almacén, no autorización:
