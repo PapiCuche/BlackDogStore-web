@@ -79,7 +79,9 @@ RED antes que GREEN: el test falla por el motivo correcto antes de escribir el c
 | Frontend | `npm test -- --runInBand` · `npx tsc --noEmit` · `npm run lint` · `npm run build` | Parar `next dev` antes del build: comparten `.next`. |
 | E2E | `E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3002 E2E_API_BASE=http://127.0.0.1:8100/api npx playwright test` | Ver abajo. |
 
-Playwright: backend en `:8100` y `next dev` en `:3002` (el único origen que el backend acepta), sobre una
+Playwright: `next dev` se arranca con `NEXT_PUBLIC_API_URL=http://127.0.0.1:8100/api`; sin esa variable su
+proxy apunta a `:8000`, que es el servidor del propietario. La URL base es `localhost`, no `127.0.0.1`:
+Next dev no hidrata desde otro origen. Backend en `:8100` y `next dev` en `:3002` (el único origen que el backend acepta), sobre una
 **copia** de base sembrada con `seed_demo_users --company-slug black-dog-store --e2e-fixtures --fiscal-beta`.
 Una pasada sólo vale si el equipo no se suspendió (`pmset -g log`), si no hubo login manual justo antes
 (límite 5/min) y si queda stock (cada pasada vende; reponer por `inventory-adjust`). Un fallo por límite de
