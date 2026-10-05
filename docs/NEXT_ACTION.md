@@ -55,7 +55,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - SERIAL-PICK (lo primero tras publicar): la caja vende el equipo más antiguo; hay que
   entregar el que nombra la nota. SERIAL-TRANSFER, SERIAL-COUNT.
 - PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda
-  esperando; `healthcheck.sh` lo avisa, no lo resuelve.
+  esperando; `healthcheck.sh` lo anota (sin alarma), no lo resuelve.
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
 - NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.

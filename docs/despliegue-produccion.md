@@ -537,8 +537,9 @@ Pendiente, y conviene saberlo:
   (nunca la contraseña). Sirve para investigar un ataque; quien escriba su
   contraseña en la casilla del usuario la deja ahí.
 - Si un cliente paga y la notificación de la pasarela no llega, el pedido queda
-  esperando (PAY-RECONCILE). `deploy/healthcheck.sh` lo avisa a los 45 minutos;
-  comprobarlo en el panel de la pasarela es manual.
+  esperando (PAY-RECONCILE). `deploy/healthcheck.sh` anota cuántos pagos siguen sin
+  respuesta, sin dar la alarma: no se distingue de una compra abandonada. Si un cliente
+  dice que pagó, se comprueba en el panel de la pasarela.
 - La caja no deja elegir qué equipo con serie se vende: asigna el más antiguo y
   hay que entregar el que nombra la nota (SERIAL-PICK,
   [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5).

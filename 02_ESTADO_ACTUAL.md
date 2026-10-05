@@ -93,7 +93,7 @@ tenían corrección en el código (`f500342`, `e033aee`, `d14a1cd`).
 | SERIAL-PICK | La caja no deja elegir el equipo: vende el más antiguo de la sucursal | Entregar el equipo cuya serie imprime la nota. Con varios equipos del mismo modelo es la regla a seguir; es lo primero a hacer tras publicar |
 | SERIAL-TRANSFER | Un equipo con serie no se transfiere entre sucursales | No afecta a una empresa con una sucursal |
 | SERIAL-COUNT | No hay recuento por lectura de series | La lista de Inventario › Equipos sirve de hoja de comprobación |
-| PAY-RECONCILE | Si la notificación de la pasarela no llega, el pedido cobrado queda esperando | `healthcheck.sh` avisa a los 45 minutos; se comprueba en el panel de la pasarela |
+| PAY-RECONCILE | Si la notificación de la pasarela no llega, el pedido cobrado queda esperando | La comprobación de estado anota cuántos pagos siguen sin respuesta (sin alarma: no se distingue de una compra abandonada); si un cliente dice que pagó, se comprueba en el panel de la pasarela |
 | PAY-UNCONFIGURED-500 | Sin credenciales de Izipay, la notificación y el inicio de un pago responden 500 con «la pasarela no está configurada» | Es el estado «sin Izipay»: el catálogo, el carrito y la caja funcionan |
 | LOGIN-IDENTIFIER-LOG | Un inicio de sesión fallido deja en el registro lo escrito como usuario | — |
 
