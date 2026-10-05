@@ -46449,7 +46449,7 @@ class M12DModelTest(M12DEvidenceBase):
 
     def test_an_unknown_stage_is_refused(self):
         with self.assertRaises(_ev_svc.EvidenceError):
-            self.upload(stage='warranty')
+            self.upload(stage='sin-etapa')
 
     def test_void_keeps_the_row_and_needs_a_reason(self):
         e = self.upload()
@@ -46760,7 +46760,7 @@ class M12DStageAuthorityTest(M12DEvidenceBase):
         self.assertIn(self.client.get(self._url()).status_code, (403, 404))
 
     def test_an_unknown_stage_is_rejected_before_any_authority_check(self):
-        self.assertEqual(self._post('warranty').status_code, 400)
+        self.assertEqual(self._post('sin-etapa').status_code, 400)
 
 
 class M12DCustomerPrivacyTest(M12DEvidenceBase):
@@ -46813,8 +46813,10 @@ class M12DCustomerPrivacyTest(M12DEvidenceBase):
         que alguien añada arriba apareciera aquí sin que nadie lo decidiera.
         """
         row = self.cclient.get(self._curl()).json()['results'][0]
+        # `caption` entró a propósito (DEC-EVIDENCE-01): compartir una foto es
+        # un acto explícito, y la nota es lo que la foto quiere decir.
         self.assertEqual(
-            set(row), {'id', 'stage', 'width', 'height', 'created_at'},
+            set(row), {'id', 'stage', 'caption', 'width', 'height', 'created_at'},
         )
         for forbidden in ('storage_key', 'uploaded_by', 'void_reason',
                           'sha256', 'idempotency_key', 'visibility'):

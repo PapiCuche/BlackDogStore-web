@@ -58,10 +58,45 @@ STAGE_CAPABILITY = {
     RepairEvidence.Stage.REPAIR_BEFORE: 'service.repair.manage',
     RepairEvidence.Stage.REPAIR_DURING: 'service.repair.manage',
     RepairEvidence.Stage.REPAIR_AFTER: 'service.repair.manage',
+    # El repuesto lo monta quien repara.
+    RepairEvidence.Stage.PARTS: 'service.repair.manage',
     RepairEvidence.Stage.QUALITY: 'service.quality.manage',
+    # Dejar el equipo listo y entregarlo son la misma mesa.
+    RepairEvidence.Stage.READY: 'service.delivery.manage',
     RepairEvidence.Stage.DELIVERY: 'service.delivery.manage',
+    # Un reingreso se RECIBE: es la autoridad de quien abre órdenes.
+    RepairEvidence.Stage.WARRANTY: 'service.orders.create',
     RepairEvidence.Stage.OTHER: 'service.orders.manage',
 }
+
+CAPTION_MAX = 300
+
+
+def clean_caption(value) -> str:
+    text = ' '.join(str(value or '').split())
+    if len(text) > CAPTION_MAX:
+        raise EvidenceError(f'La nota admite hasta {CAPTION_MAX} caracteres.')
+    return text
+
+
+def stage_catalogue() -> list[dict]:
+    """Las etapas en el orden del ciclo, con la capacidad que pide cada una."""
+    return [
+        {'value': value, 'label': label, 'capability': STAGE_CAPABILITY[value]}
+        for value, label in RepairEvidence.Stage.choices
+    ]
+
+
+def stage_counts(repair_order) -> dict:
+    """Cuántas evidencias EN VIGOR hay por etapa. Las anuladas no cuentan."""
+    from django.db.models import Count
+    rows = (
+        RepairEvidence.objects
+        .filter(company_id=repair_order.company_id, repair_order=repair_order,
+                voided_at__isnull=True)
+        .values('stage').annotate(total=Count('pk'))
+    )
+    return {row['stage']: row['total'] for row in rows}
 
 #: Ver la galería es leer la orden. Publicar o anular es otra cosa: son actos
 #: sobre lo que el cliente verá y sobre el registro, así que piden la autoridad
@@ -127,7 +162,7 @@ def _fingerprint(*, repair_order_id: int, stage: str, source_sha256: str) -> str
 
 
 def upload_evidence(*, repair_order, stage: str, content: bytes, actor,
-                    idempotency_key: str = '', request=None):
+                    idempotency_key: str = '', request=None, caption: str = ''):
     """
     Normalizar la foto, guardarla y registrarla. En ese orden.
 
@@ -144,6 +179,8 @@ def upload_evidence(*, repair_order, stage: str, content: bytes, actor,
     """
     if stage not in RepairEvidence.Stage.values:
         raise EvidenceError('Etapa de evidencia desconocida.')
+    # Antes de procesar la imagen: una nota inválida no merece ese trabajo.
+    caption = clean_caption(caption)
 
     key = (idempotency_key or '').strip()[:120]
     processed = images.process(content)
@@ -178,6 +215,7 @@ def upload_evidence(*, repair_order, stage: str, content: bytes, actor,
                 company_id=repair_order.company_id,
                 repair_order=repair_order,
                 stage=stage,
+                caption=caption,
                 # INTERNA. No hay parámetro para nacer de otra forma.
                 visibility=RepairEvidence.Visibility.INTERNAL,
                 storage_key=stored.key,
@@ -226,6 +264,35 @@ def upload_evidence(*, repair_order, stage: str, content: bytes, actor,
         request=request, company=repair_order.company,
     )
     return evidence
+
+
+def update_caption(*, evidence, caption, actor, request=None):
+    """
+    Corregir la nota de una foto. La foto no cambia; la nota anterior queda en
+    el registro.
+
+    Una evidencia anulada conserva la nota que tenía: ya está fuera de
+    circulación, y reescribir lo que decía sería retocar el pasado.
+    """
+    caption = clean_caption(caption)
+    with transaction.atomic():
+        locked = RepairEvidence.objects.select_for_update().get(pk=evidence.pk)
+        if locked.is_voided:
+            raise EvidenceError('Una evidencia anulada no se puede modificar.')
+        if locked.caption == caption:
+            return locked
+        before, locked.caption = locked.caption, caption
+        locked.save(update_fields=['caption'])
+        AdminAuditLog.log(
+            actor=actor, action='service_evidence_caption_changed',
+            target_type='repair_evidence', target_id=locked.pk,
+            metadata={
+                'repair_order_id': locked.repair_order_id, 'stage': locked.stage,
+                'caption': {'old': before, 'new': caption},
+            },
+            request=request, company=locked.company,
+        )
+    return locked
 
 
 def publish_to_customer(*, evidence, actor, request=None):

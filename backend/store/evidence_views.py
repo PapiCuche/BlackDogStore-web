@@ -45,6 +45,7 @@ def _internal(evidence) -> dict:
     return {
         'id': evidence.pk,
         'stage': evidence.stage,
+        'caption': evidence.caption,
         'visibility': evidence.visibility,
         'mime_type': evidence.mime_type,
         'byte_size': evidence.byte_size,
@@ -65,10 +66,14 @@ def _customer(evidence) -> dict:
     próximo campo que alguien añada arriba aparezca aquí sin que nadie lo
     decida. Esto es una lista de lo que SÍ sale: ni quién la subió, ni el motivo
     de una anulación, ni nada del storage, ni la idempotencia.
+
+    La NOTA sí sale: compartir una foto es un acto explícito, y la nota es lo
+    que la foto quiere decir. Quien comparte ve la nota junto al botón.
     """
     return {
         'id': evidence.pk,
         'stage': evidence.stage,
+        'caption': evidence.caption,
         'width': evidence.width,
         'height': evidence.height,
         'created_at': evidence.created_at,
@@ -126,9 +131,16 @@ class InternalEvidenceListView(_InternalEvidenceMixin, APIView):
 
     def get(self, request, company_slug=None, pk=None):
         _company, order = self.scope(company_slug, pk)
-        rows = svc.evidence_for_order(order)
+        rows = list(svc.evidence_for_order(order))
+        counts = svc.stage_counts(order)
         return Response({
-            'count': rows.count(),
+            'count': len(rows),
+            # Las que están en vigor, por etapa: «Ingreso · 6 fotos».
+            'stage_counts': counts,
+            'in_force': sum(counts.values()),
+            # Las etapas las dice el servidor, con lo que pide cada una: el
+            # panel no mantiene una segunda lista que pueda quedarse atrás.
+            'stages': svc.stage_catalogue(),
             'results': [_internal(e) for e in rows],
         })
 
@@ -155,7 +167,7 @@ class InternalEvidenceListView(_InternalEvidenceMixin, APIView):
                 repair_order=order, stage=stage, content=upload.read(),
                 actor=request.user,
                 idempotency_key=request.headers.get('Idempotency-Key', ''),
-                request=request,
+                request=request, caption=request.data.get('caption', ''),
             )
         except svc.EvidenceConflict as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
@@ -170,6 +182,24 @@ class InternalEvidenceDetailView(_InternalEvidenceMixin, APIView):
     def get(self, request, company_slug=None, pk=None, evidence_id=None):
         _company, order = self.scope(company_slug, pk)
         return Response(_internal(self.owned(order, evidence_id)))
+
+    def patch(self, request, company_slug=None, pk=None, evidence_id=None):
+        """Corregir la nota. Es lo único de una evidencia que se puede editar."""
+        company, order = self.scope(company_slug, pk)
+        evidence = self.owned(order, evidence_id)
+        self.require_stage(company, order, evidence.stage)
+        caption = request.data.get('caption')
+        if not isinstance(caption, str):
+            return Response({'detail': 'Indica la nota de la evidencia.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            updated = svc.update_caption(
+                evidence=evidence, caption=caption, actor=request.user, request=request,
+            )
+        except svc.EvidenceError as exc:
+            return Response({'detail': str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response(_internal(updated))
 
 
 class InternalEvidenceContentView(_InternalEvidenceMixin, APIView):

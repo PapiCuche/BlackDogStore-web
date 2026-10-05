@@ -6579,8 +6579,15 @@ class RepairEvidence(models.Model):
         REPAIR_BEFORE = 'repair_before', 'Antes de reparar'
         REPAIR_DURING = 'repair_during', 'Durante la reparación'
         REPAIR_AFTER = 'repair_after', 'Después de reparar'
+        #: El repuesto: la pieza retirada, la instalada, su serie o lote.
+        PARTS = 'parts', 'Repuestos'
         QUALITY = 'quality', 'Control de calidad'
+        #: El estado final del equipo, antes de que el cliente llegue.
+        READY = 'ready', 'Listo para entrega'
         DELIVERY = 'delivery', 'Entrega'
+        #: Un equipo que vuelve: cómo llegó en el reingreso y qué se reclamó.
+        #: Son fotos NUEVAS; las del servicio original no se tocan.
+        WARRANTY = 'warranty', 'Garantía / reingreso'
         OTHER = 'other', 'Otra'
 
     class Visibility(models.TextChoices):
@@ -6598,6 +6605,11 @@ class RepairEvidence(models.Model):
     )
 
     stage = models.CharField(max_length=20, choices=Stage.choices, db_index=True)
+    #: Lo que la foto muestra, dicho por quien la tomó: «golpe en la esquina
+    #: inferior derecha al recibirlo». Es contexto de la evidencia, no el
+    #: diagnóstico. Se puede corregir —queda registrado el texto anterior—; la
+    #: foto no.
+    caption = models.CharField(max_length=300, blank=True, default='')
     #: SIEMPRE interna al nacer. Que una foto llegue al cliente es una decisión
     #: que alguien toma, no un efecto secundario de subirla.
     visibility = models.CharField(
