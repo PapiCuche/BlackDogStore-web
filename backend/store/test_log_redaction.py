@@ -82,6 +82,10 @@ class DjangoLogFilterTest(SimpleTestCase):
         self.assertEqual(text, f'Too Many Requests: /api/v1/tracking/{MASK}/')
         self.assertNotIn(TOKEN, text)
 
+    def test_an_address_inside_a_sentence_loses_its_query_values(self):
+        text = self._format('Error handling request %s', f'/api/admin/customers/?search={IMEI}&page=2')
+        self.assertEqual(text, f'Error handling request /api/admin/customers/?search={MASK}&page=2')
+
     def test_other_messages_are_left_alone(self):
         self.assertEqual(self._format('login_failed channel=%s ip=%s', 'web', '10.0.0.1'),
                          'login_failed channel=web ip=10.0.0.1')
@@ -126,6 +130,20 @@ class AccessLogTest(SimpleTestCase):
         atoms = self._atoms('/api/products/?page=2')
         self.assertEqual(atoms['r'], 'GET /api/products/?page=2 HTTP/1.1')
         self.assertEqual(atoms['s'], '200')
+
+    def test_the_error_log_of_the_server_is_filtered_too(self):
+        """gunicorn names the address of a request it failed to handle, on its error log."""
+        from gunicorn.config import Config
+
+        from backend.gunicorn_logging import RedactingLogger
+
+        logger = RedactingLogger(Config())
+        with self.assertLogs('gunicorn.error', level='ERROR') as captured:
+            logger.exception('Error handling request %s', f'/api/v1/tracking/{TOKEN}/evidence/3/content/?imei={IMEI}')
+        line = captured.output[0]
+        self.assertNotIn(TOKEN, line)
+        self.assertNotIn(IMEI, line)
+        self.assertIn(f'/api/v1/tracking/{MASK}/evidence/3/content/?imei={MASK}', line)
 
     def test_production_starts_gunicorn_with_this_logger_and_no_control_socket(self):
         dockerfile = (Path(settings.BASE_DIR) / 'Dockerfile.prod').read_text(encoding='utf-8')

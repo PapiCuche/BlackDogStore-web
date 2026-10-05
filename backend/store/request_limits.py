@@ -51,6 +51,11 @@ class Tier:
     #: because the proxy matches before it adds one.
     pattern: str
     max_bytes: int
+    #: The view reads the body before anybody has proved who they are (a call
+    #: from a gateway). The proxy must then read it whole first: see SLOW-BODY
+    #: in deploy/Caddyfile. Uploads are the opposite case — large, and not read
+    #: until the session, the CSRF header and the permission have been checked.
+    read_without_session: bool = False
 
 
 def tiers() -> tuple:
@@ -65,10 +70,10 @@ def tiers() -> tuple:
     return (
         Tier('payment_notification',
              r'^/api/payments/(izipay|micuentaweb)/notification/?$',
-             PAYMENT_NOTIFICATION_BYTES),
+             PAYMENT_NOTIFICATION_BYTES, read_without_session=True),
         Tier('whatsapp_webhook',
              r'^/api/v1/webhooks/whatsapp/[^/]+/?$',
-             WHATSAPP_WEBHOOK_BYTES),
+             WHATSAPP_WEBHOOK_BYTES, read_without_session=True),
         Tier('image',
              r'^/api/admin/(storefront/images|products/[0-9]+/images)/?$',
              image),

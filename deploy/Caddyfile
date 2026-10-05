@@ -17,12 +17,26 @@
 #   read_body    lo que puede tardar su cuerpo: una carga masiva de 111 MiB por
 #                una conexión doméstica lenta cabe; un cuerpo que no avanza, no;
 #   idle         una conexión abierta sin ninguna petición.
+#
+# LO QUE CADDY ESCRIBE EN SU PROPIO REGISTRO (LOG-REDACT). No lleva registro de
+# acceso, pero cuando no alcanza a una aplicación anota la petición que estaba
+# atendiendo, con su dirección entera y su referente: el enlace de seguimiento
+# de una reparación, o lo que alguien escribió en un buscador. Se quitan esos
+# dos campos; el método, el host y el error siguen ahí.
 {
 	servers {
 		timeouts {
 			read_header 15s
 			read_body 15m
 			idle 2m
+		}
+	}
+	log default {
+		format filter {
+			fields {
+				request>uri delete
+				request>headers>Referer delete
+			}
 		}
 	}
 }
@@ -77,7 +91,9 @@
 			request_body {
 				max_size 128KiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				request_buffers 128KiB
+			}
 		}
 
 		@limit_whatsapp_webhook path_regexp ^/api/v1/webhooks/whatsapp/[^/]+/?$
@@ -85,7 +101,9 @@
 			request_body {
 				max_size 3MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				request_buffers 3MiB
+			}
 		}
 
 		@limit_image path_regexp ^/api/admin/(storefront/images|products/[0-9]+/images)/?$
@@ -123,9 +141,13 @@
 		# El resto de la API. Además del tope, Caddy LEE EL CUERPO ENTERO antes
 		# de pasar la petición (SLOW-BODY): Django atiende con ocho hilos, y un
 		# cuerpo que llega a cuentagotas ocuparía uno mientras dure. Con nueve
-		# peticiones así, sin sesión, la API dejaba de responder. Sólo aquí: en
-		# las rutas de archivos el cuerpo es grande y Django no lo lee hasta
-		# haber comprobado la sesión.
+		# peticiones así, sin sesión, la API dejaba de responder.
+		#
+		# Lo mismo en las dos rutas de arriba que reciben llamadas de fuera —la
+		# notificación de pago y el webhook de WhatsApp—, cuya vista lee el
+		# cuerpo sin que nadie haya probado quién es. En las de archivos no: el
+		# cuerpo es grande, y Django no lo lee hasta haber comprobado la sesión,
+		# la cabecera CSRF y el permiso.
 		handle {
 			request_body {
 				max_size 1MiB

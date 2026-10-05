@@ -234,16 +234,51 @@ class ProxyAgreesTest(SimpleTestCase):
         for name in ('read_header', 'read_body', 'idle'):
             self.assertRegex(block.group(1), rf'\b{name} \d+[sm]\b')
 
-    def test_the_proxy_reads_a_small_body_whole_before_the_application_sees_it(self):
+    def _proxy_blocks(self):
+        """{matcher name or 'default': the text of its handle block}, API side only."""
+        text = CADDYFILE.read_text(encoding='utf-8')
+        api = text[text.index('handle @api {'):text.index('www.{$SITE_DOMAIN}')]
+        blocks = dict(re.findall(r'handle @(limit_\w+) \{(.*?)\n\t\t\}', api, re.S))
+        blocks['default'] = re.search(r'\n\t\thandle \{(.*?)\n\t\t\}', api, re.S).group(1)
+        return blocks
+
+    def test_the_proxy_reads_a_body_whole_wherever_django_would_read_it_without_a_session(self):
         """
         SLOW-BODY. Django answers with eight threads. A body that trickles in
-        holds one of them for as long as it lasts, and eight such requests to any
-        open endpoint leave the API without threads. For the routes whose body
-        is at most the default, the proxy reads it first: the application only
-        ever receives a request that has finished arriving.
+        holds one of them for as long as it lasts, and eight such requests leave
+        the API without threads. Wherever a body is read before anybody has
+        proved who they are — every ordinary route, and the two that take calls
+        from outside: the payment notification and the WhatsApp webhook — the
+        proxy reads it first, so the application only ever receives a request
+        that has finished arriving.
+        """
+        blocks = self._proxy_blocks()
+        sizes = {1024: 'KiB', 1024 * 1024: 'MiB'}
+
+        def written(max_bytes):
+            unit = 1024 * 1024 if max_bytes % (1024 * 1024) == 0 else 1024
+            return f'{max_bytes // unit}{sizes[unit]}'
+
+        self.assertRegex(blocks['default'], r'\brequest_buffers 1MiB\b')
+        open_to_anyone = {tier.name for tier in request_limits.tiers() if tier.read_without_session}
+        self.assertEqual(open_to_anyone, {'payment_notification', 'whatsapp_webhook'})
+        for tier in request_limits.tiers():
+            block = blocks[f'limit_{tier.name}']
+            if tier.read_without_session:
+                self.assertRegex(block, rf'\brequest_buffers {written(tier.max_bytes)}\b', tier.name)
+            else:
+                # An upload is large; Django does not read it until the session,
+                # the CSRF header and the permission have been checked.
+                self.assertNotIn('request_buffers', block, tier.name)
+
+    def test_what_the_proxy_itself_logs_carries_no_address(self):
+        """
+        LOG-REDACT, at the edge. When Caddy cannot reach an application it logs
+        the request it was serving, with its full address and its referer: the
+        tracking link, or what somebody typed into a search box.
         """
         text = CADDYFILE.read_text(encoding='utf-8')
-        fallback = re.search(
-            r'handle \{\s*request_body \{\s*max_size 1MiB\s*\}\s*reverse_proxy backend:8000 \{(.*?)\}', text, re.S)
-        self.assertIsNotNone(fallback, 'the default API route does not configure its proxy')
-        self.assertRegex(fallback.group(1), r'\brequest_buffers 1MiB\b')
+        log = re.search(r'\n\tlog default \{(.*?)\n\t\}', text, re.S)
+        self.assertIsNotNone(log, 'the proxy file does not configure its log')
+        self.assertRegex(log.group(1), r'request>uri\s+delete')
+        self.assertRegex(log.group(1), r'request>headers>Referer\s+delete')

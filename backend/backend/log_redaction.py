@@ -63,10 +63,20 @@ def redact_request_line(line: str) -> str:
     return redact_path(line)
 
 
+#: An address written inside a sentence ("Error handling request /x?imei=…").
+_URI_IN_TEXT = re.compile(r'''(?:https?://|/)[^\s"']*\?[^\s"']*''')
+
+
+def redact_text(text: str) -> str:
+    """A log line: tokens out of every path, values out of every query string."""
+    return _URI_IN_TEXT.sub(lambda match: redact_uri(match.group(0)), redact_path(text))
+
+
 class RedactingFilter(logging.Filter):
     """
-    For the application's own log lines. Django names the path of every request
-    it refuses; a rate-limited read of a tracking link would write the link.
+    For the lines the application and the server write themselves. Django names
+    the path of every request it refuses — a rate-limited read of a tracking link
+    would write the link — and gunicorn the address of one it failed to handle.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -74,7 +84,7 @@ class RedactingFilter(logging.Filter):
             message = record.getMessage()
         except Exception:  # a malformed record is the handler's problem, not ours
             return True
-        cleaned = redact_path(message)
+        cleaned = redact_text(message)
         if cleaned != message:
             record.msg, record.args = cleaned, ()
         return True
