@@ -14,6 +14,71 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-MEDIA-01 · Una sola tubería de imágenes públicas; la galería sólo dice quién muestra qué
+
+- **No hay un segundo almacén.** Las imágenes de producto pasan por
+  `storefront_media`, la tubería del hero y de las categorías: recodifica desde los
+  píxeles (ningún metadato sobrevive), genera la ruta en el servidor, pertenece a una
+  empresa y borra lo que nadie muestra. El almacenamiento sigue detrás de
+  `evidence_storage` (disco hoy, S3/R2 cuando haga falta) sin que el dominio lo sepa.
+- **`ProductImage` no guarda archivos.** Guarda la DIRECCIÓN de la imagen
+  (`/api/storefront/images/<id>`), el orden, el texto alternativo y cuál es la
+  principal. Por ser una dirección en un campo de texto, el recuento de referencias que
+  ya existía la ve sin conocer el modelo: una imagen de galería nunca se limpia.
+- **`Product.image_url` se queda.** Lo leen el catálogo, el carrito, las líneas de
+  pedido y la caja desde la fase 0. Es la dirección de la principal, mantenida por
+  `product_media` en la misma transacción; un producto sin galería conserva la
+  dirección que tuviera. Pasa de `URLField` a `CharField` validado, como la de las
+  categorías, porque una ruta del propio sitio es un valor legítimo.
+- **Una imagen subida no se coloca escribiendo su dirección.** Sólo la galería la
+  coloca, y comprueba que es de la empresa. Así no hay forma de citar la imagen de otra.
+- **Sin sucursal.** El catálogo es de la empresa, no de una sucursal; la autoridad es
+  `products.view` / `products.manage`.
+- **El contrato público crece sin romper.** `images` se añade al producto;
+  `image_url` no cambia de significado.
+
+### DEC-IMPORT-MEDIA-01 · Las imágenes de una carga masiva viajan con el libro y esperan sin almacén propio
+
+- **Nombres de archivo, no direcciones.** «Imagen principal» e «Imágenes» (separadas
+  por `|`) citan archivos que llegan en la misma petición, sueltos o en un ZIP, y se
+  casan por nombre.
+- **Inspeccionar → previsualizar → aplicar no cambia.** Lo que está mal con una imagen
+  es un error de SU fila, con el archivo nombrado. Un trabajo con errores no se aplica.
+- **Sin almacén temporal.** Entre previsualizar y aplicar, las imágenes que alguna
+  fila usará esperan como imágenes «sin colocar» de la empresa del trabajo, en la
+  tubería de siempre. Aplicar las coloca; la limpieza diaria (24 h) retira las de una
+  previsualización abandonada. Un trabajo con errores no deja ninguna.
+- **Aplicar no confía en la fila guardada.** Vuelve a comprobar la autoridad y coloca
+  cada imagen con `claim`: tiene que existir todavía y ser de la empresa del trabajo.
+  Si no, se deshace la importación entera.
+- **El ZIP no se extrae.** Se revisa su índice antes de leer nada (rutas que salen,
+  enlaces simbólicos, cifrado, número de entradas, tamaño expandido) y se lee entrada
+  por entrada en memoria, con tope. Una entrada hostil rechaza el archivo completo.
+- **Importar dos veces no duplica.** La huella del archivo original reconoce, dentro
+  del mismo producto, una imagen que ya está en su galería. Nunca se compara entre
+  productos ni entre empresas.
+- **El Excel dentro del ZIP no se admite.** El libro se inspecciona antes de adjuntar
+  nada; meterlo en el ZIP habría obligado a rehacer ese paso.
+
+### DEC-EVIDENCE-01 · La evidencia de servicio se describe a sí misma y nunca se reescribe
+
+- **Se extiende lo que había.** `RepairEvidence` ya era privada, por etapa, interna al
+  nacer, anulable y nunca borrada. Se le añade una nota y tres etapas (repuestos, listo
+  para entrega, garantía/reingreso); no hay un modelo nuevo ni una tabla por etapa.
+- **La etapa no es un estado.** Subir una foto no mueve la orden. Por eso la evidencia
+  no cuelga de `RepairStatusHistory`: explica qué pasó con su etapa, su autor y su hora,
+  no con una transición.
+- **La autoridad es la de producir la etapa.** Repuestos: quien repara. Listo para
+  entrega: quien entrega. Garantía/reingreso: quien abre órdenes. No se creó ninguna
+  capacidad de «evidencias».
+- **La foto no cambia; la nota sí, con registro.** Corregir una nota deja el texto
+  anterior en la auditoría. Una evidencia anulada conserva la nota que tenía.
+- **El cliente lee la nota de lo que se le comparte.** Compartir es un acto explícito y
+  el panel lo avisa. La lista de campos del cliente sigue siendo una lista cerrada.
+- **Una petición por foto.** Subir varias a la vez son varias peticiones, cada una con
+  su clave de idempotencia: la que falla se reintenta sin duplicar y las demás no
+  dependen de ella.
+
 ### DEC-PAY-01 · Izipay se prueba contra un Izipay falso, y lo que el falso no puede probar se dice
 
 - La petición del token no la ejercitaba ninguna prueba: se sustituía entera.

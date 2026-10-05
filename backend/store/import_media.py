@@ -61,15 +61,15 @@ def _setting(name: str, default: int) -> int:
 
 
 def max_files() -> int:
-    return _setting('IMPORT_IMAGES_MAX_FILES', 300)
+    return _setting('IMPORT_IMAGES_MAX_FILES', 200)
 
 
 def max_total_bytes() -> int:
-    return _setting('IMPORT_IMAGES_MAX_TOTAL_BYTES', 200 * 1024 * 1024)
+    return _setting('IMPORT_IMAGES_MAX_TOTAL_BYTES', 100 * 1024 * 1024)
 
 
 def zip_max_entries() -> int:
-    return _setting('IMPORT_IMAGES_ZIP_MAX_ENTRIES', 600)
+    return _setting('IMPORT_IMAGES_ZIP_MAX_ENTRIES', 400)
 
 
 def zip_max_ratio() -> int:
