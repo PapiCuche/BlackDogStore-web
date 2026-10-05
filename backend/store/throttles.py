@@ -324,3 +324,8 @@ class AccountRepairsThrottle(UserRateThrottle):
 class WhatsAppWebhookThrottle(AnonRateThrottle):
     """El proveedor informa aquí de cada mensaje. La firma decide; esto acota."""
     scope = 'whatsapp_webhook'
+
+
+class GoogleSignInThrottle(AnonRateThrottle):
+    """Entrar con Google, por dirección. Su propio cupo: no gasta el del login con contraseña."""
+    scope = 'google_sign_in'

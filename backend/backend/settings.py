@@ -100,6 +100,8 @@ REST_FRAMEWORK = {
     # Rates apply per IP for AnonRateThrottle (login, register, etc.).
     'DEFAULT_THROTTLE_RATES': {
         'login': '5/min',
+        # GOOGLE-AUTH. Pedir la configuración, entrar y vincular comparten cupo.
+        'google_sign_in': '20/min',
         # SEC-SET-04-A. Renovar la sesión, por dirección: web y app comparten cubo.
         'token_refresh': '30/min',
         'register': '5/min',
@@ -462,6 +464,13 @@ EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.
 # CompanySettings). The DISPLAY identity inside each message is per tenant.
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='no-reply@localhost')
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+
+# GOOGLE-AUTH. The OAuth client id of «Continuar con Google» (Google Identity
+# Services). It is public — it travels to every browser — and it is what the
+# backend requires as the audience of every ID token. Empty = the button is not
+# offered and the endpoints do not exist. There is no client secret: the ID
+# token flow has none.
+GOOGLE_OAUTH_CLIENT_ID = env('GOOGLE_OAUTH_CLIENT_ID', default='')
 
 # WHATSAPP-NOTIFY. Which provider carries customer notices:
 #   cloud_api  the official WhatsApp Business Cloud API (Meta) — the default

@@ -124,6 +124,7 @@ from .tenant_views import (
     MyMembershipsView,
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
+from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitListView,
@@ -154,6 +155,9 @@ urlpatterns = [
         'dev/demo-accounts/',
         DevDemoAccountsView.as_view(), name='dev-demo-accounts',
     ),
+    path('auth/google/config/', GoogleConfigView.as_view(), name='auth-google-config'),
+    path('auth/google/', GoogleSignInView.as_view(), name='auth-google'),
+    path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),

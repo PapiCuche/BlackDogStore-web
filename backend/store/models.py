@@ -8850,3 +8850,46 @@ class StockUnit(models.Model):
     def __str__(self):
         return f'{self.serial_number} ({self.get_status_display()})'
 
+
+class ExternalIdentity(models.Model):
+    """
+    "This account can also be entered with that Google account." GOOGLE-AUTH.
+
+        THE IDENTITY IS `subject`, NOT THE E-MAIL.
+
+    An e-mail address can be reassigned by whoever runs the domain; the
+    provider's subject identifier cannot. `email_at_link` is kept for a person
+    reading the record, and nothing authenticates against it.
+
+    NOTHING ELSE FROM THE PROVIDER IS STORED. No access token, no refresh
+    token, no ID token, no picture: this platform never calls Google on the
+    user's behalf, so it has no use for a credential that could.
+    """
+
+    PROVIDER_GOOGLE = 'google'
+    PROVIDER_CHOICES = [(PROVIDER_GOOGLE, 'Google')]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='external_identities',
+    )
+    provider = models.CharField(max_length=16, choices=PROVIDER_CHOICES)
+    subject = models.CharField(max_length=255)
+    email_at_link = models.EmailField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_login_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One provider account opens exactly one account here…
+            models.UniqueConstraint(
+                fields=['provider', 'subject'], name='unique_external_identity_subject',
+            ),
+            # …and an account here has at most one identity per provider.
+            models.UniqueConstraint(
+                fields=['user', 'provider'], name='unique_external_identity_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.provider}:{self.user_id}'
+
