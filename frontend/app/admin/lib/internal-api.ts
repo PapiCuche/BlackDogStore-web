@@ -1338,6 +1338,23 @@ export type ImportRow = {
   warnings: string[];
 };
 
+/** Lo que el servidor casó entre las filas y los archivos de imagen adjuntos. */
+export type ImportMediaSummary = {
+  attached: number;
+  referenced: number;
+  valid: number;
+  invalid: number;
+  missing: number;
+  duplicates: number;
+  orphans: number;
+  orphan_names: string[];
+  ignored: number;
+  ignored_names: string[];
+  already_present: number;
+  staged: number;
+  separator: string;
+};
+
 export type ImportJob = {
   id: number;
   import_type: "products" | "stock";
@@ -1363,6 +1380,7 @@ export type ImportJob = {
     branches?: { column: string; branch_id: number; branch_name: string }[];
     sheets?: string[];
     applied?: Record<string, number>;
+    media?: ImportMediaSummary;
   };
   created_at: string;
   applied_at: string | null;
@@ -1406,7 +1424,10 @@ export type InspectResult = {
 async function postForm<T>(path: string, form: FormData, fallback: string): Promise<T> {
   const res = await fetchWithAuth(`${API_BASE}${path}`, { method: "POST", body: form });
   if (res.ok) return res.json();
-  throw new Error(await readDetail(res, fallback));
+  // Un 413 puede venir de un servidor intermedio, sin cuerpo que leer.
+  throw new Error(await readDetail(
+    res, res.status === 413 ? "El envío es demasiado grande. Adjunta menos imágenes o divídelas en varias importaciones." : fallback,
+  ));
 }
 
 export function inspectImportFile(
@@ -1429,6 +1450,10 @@ export function previewProductImport(
     headerRow?: number;
     mapping?: Record<string, number>;
     options?: Record<string, unknown>;
+    /** BULK-MEDIA: los archivos de imagen que las filas citan por nombre. */
+    images?: File[];
+    /** O un ZIP con ellas. Se pueden enviar las dos cosas. */
+    imagesZip?: File | null;
   } = {},
 ): Promise<ImportJob> {
   const form = new FormData();
@@ -1437,6 +1462,8 @@ export function previewProductImport(
   if (opts.headerRow) form.append("header_row", String(opts.headerRow));
   if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
   if (opts.options) form.append("options", JSON.stringify(opts.options));
+  for (const image of opts.images ?? []) form.append("images", image);
+  if (opts.imagesZip) form.append("images_zip", opts.imagesZip);
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   return postForm(
     `/admin/products/import/preview/${qs}`, form,

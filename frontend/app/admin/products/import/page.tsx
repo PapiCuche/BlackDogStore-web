@@ -30,10 +30,13 @@ import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../
 import {
   CountsBar,
   HistoryTable,
+  ImportImagesField,
+  MediaSummary,
   Notices,
   PreviewTable,
   STEP_LABELS_PRODUCTS,
   Stepper,
+  rowImagesLabel,
 } from "../../components/ImportWizard";
 import {
   applyImport,
@@ -65,6 +68,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const [headerRow, setHeaderRow] = useState(1);
   const [createCategories, setCreateCategories] = useState(false);
   const [mode, setMode] = useState<"upsert" | "create_only">("upsert");
+  const [images, setImages] = useState<File[]>([]);
+  const [imagesZip, setImagesZip] = useState<File | null>(null);
   const [job, setJob] = useState<ImportJob | null>(null);
   const [history, setHistory] = useState<ImportJob[]>([]);
   const [busy, setBusy] = useState(false);
@@ -83,6 +88,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
     setInspection(null);
     setSheet(null);
     setMapping({});
+    setImages([]);
+    setImagesZip(null);
     setJob(null);
     setError(null);
     if (inputRef.current) inputRef.current.value = "";
@@ -118,6 +125,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
         headerRow,
         mapping,
         options: { mode, create_missing_categories: createCategories },
+        images,
+        imagesZip,
       });
       setJob(result);
       setStep(3);
@@ -243,7 +252,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
 
       {step === 2 && inspection && sheet && (
         <DashboardSection
-          title="3 · Asigna las columnas"
+          title="3 · Asigna las columnas y adjunta las imágenes"
           description="Sólo se escriben los campos que asignes aquí. El resto del archivo se ignora."
         >
           <div className="space-y-4">
@@ -313,6 +322,16 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               </p>
             </div>
 
+            <ImportImagesField
+              images={images}
+              zip={imagesZip}
+              disabled={busy}
+              onChange={(nextImages, nextZip) => {
+                setImages(nextImages);
+                setImagesZip(nextZip);
+              }}
+            />
+
             <div className="flex gap-2">
               <button className={GHOST} type="button" onClick={() => setStep(1)}>
                 Atrás
@@ -323,7 +342,9 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 disabled={busy || mapping.name === undefined}
                 onClick={() => void runPreview()}
               >
-                {busy ? "Leyendo…" : "Previsualizar"}
+                {busy
+                  ? images.length || imagesZip ? "Enviando imágenes y leyendo…" : "Leyendo…"
+                  : "Previsualizar"}
               </button>
             </div>
           </div>
@@ -340,12 +361,14 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           }
         >
           <CountsBar job={job} />
+          <MediaSummary job={job} />
           <Notices job={job} />
 
           {job.counts.error > 0 && (
             <div className="mb-4 rounded-lg border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
               Hay {job.counts.error} fila(s) con error. No se aplica una
-              importación a medias: corrige el archivo y vuelve a subirlo.{" "}
+              importación a medias: corrige el archivo o adjunta las imágenes que
+              falten, y vuelve a previsualizar.{" "}
               <a
                 className="underline"
                 href={importErrorReportUrl(companyId, job.id)}
@@ -364,12 +387,23 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               { key: "name", label: "Nombre", get: (r) => text(r, "name") },
               { key: "category", label: "Categoría", get: (r) => text(r, "category") },
               { key: "price", label: "Precio", get: (r) => text(r, "price") },
+              { key: "images", label: "Imágenes", get: (r) => rowImagesLabel(r) },
             ]}
           />
 
           <div className="mt-4 flex flex-wrap gap-2">
             <button className={GHOST} type="button" onClick={reset}>
               Empezar de nuevo
+            </button>
+            {/* Vuelve a las columnas CON el archivo y las imágenes ya elegidas:
+                corregir un error no obliga a adjuntarlo todo otra vez. */}
+            <button
+              className={GHOST}
+              type="button"
+              disabled={busy}
+              onClick={() => { setJob(null); setStep(2); }}
+            >
+              Volver a columnas e imágenes
             </button>
             {step === 3 ? (
               <button
@@ -398,7 +432,10 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
         <DashboardSection title="6 · Resultado">
           <p className="mb-4 rounded-lg border border-success-border bg-success-surface px-4 py-3 text-sm text-success">
             Importación aplicada. Se crearon {job.summary?.applied?.created ?? 0} y
-            se actualizaron {job.summary?.applied?.updated ?? 0} producto(s).
+            se actualizaron {job.summary?.applied?.updated ?? 0} producto(s)
+            {job.summary?.applied?.images_added
+              ? `, con ${job.summary.applied.images_added} imagen(es) en sus galerías`
+              : ""}.
           </p>
           <div className="flex flex-wrap gap-2">
             <Link className={GHOST} href="/admin/products">
