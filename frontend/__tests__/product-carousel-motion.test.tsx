@@ -141,6 +141,33 @@ describe('avance automático', () => {
   });
 });
 
+describe('pausar y reanudar', () => {
+  it('reanudar enseguida no deja que el ajuste a tarjeta vuelva a mitad del avance', () => {
+    // El asentamiento de la pausa termina DESPUÉS de reanudar. Si entonces
+    // devolviera el ajuste, cada paso del avance volvería a la tarjeta y la
+    // fila no se movería nunca (así se veía en desarrollo, donde React monta
+    // dos veces).
+    jest.useFakeTimers();
+    try {
+      render(<ProductCarousel products={three} />);
+      const node = track();
+      measure(node);
+      intersect(true);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pausar avance automático' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Reanudar avance automático' }));
+      expect(node.style.scrollSnapType).toBe('none');
+
+      act(() => { node.dispatchEvent(new Event('scrollend')); });
+      act(() => { jest.advanceTimersByTime(1000); });
+
+      expect(node.style.scrollSnapType).toBe('none');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
 describe('arrastre con ratón', () => {
   function pointer(type: string, target: Element, init: Record<string, unknown>) {
     act(() => {

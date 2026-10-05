@@ -49,6 +49,32 @@ export function ProductCarousel({ products }: { products: Product[] }) {
   const drag = useRef<{ id: number; x: number; left: number; time: number; lastX: number; active: boolean } | null>(null);
   const suppressClick = useRef(false);
   const [dragging, setDragging] = useState(false);
+  /** Cancela la devolución pendiente del ajuste a tarjeta, si hay una. */
+  const cancelSettle = useRef<(() => void) | null>(null);
+
+  /**
+   * Lleva la fila hasta `left` y devuelve el ajuste a tarjeta CUANDO LLEGA.
+   *
+   * Devolverlo de golpe la haría saltar. Y devolverlo tarde es peor: si para
+   * entonces el avance o un arrastre ya volvieron a empezar, el ajuste pelearía
+   * con ellos. Por eso quien empieza a mover la fila cancela lo pendiente.
+   */
+  function settle(node: HTMLElement, left: number) {
+    cancelSettle.current?.();
+    const finish = () => {
+      cancel();
+      node.style.scrollSnapType = "";
+    };
+    const fallback = window.setTimeout(finish, 600);
+    const cancel = () => {
+      node.removeEventListener("scrollend", finish);
+      window.clearTimeout(fallback);
+      if (cancelSettle.current === cancel) cancelSettle.current = null;
+    };
+    cancelSettle.current = cancel;
+    node.addEventListener("scrollend", finish);
+    node.scrollTo({ left, behavior: prefersReducedMotion() ? "instant" : "smooth" });
+  }
 
   function cardWidth(node: HTMLElement): number {
     return (node.firstElementChild?.getBoundingClientRect().width || node.clientWidth) + GAP;
@@ -105,29 +131,18 @@ export function ProductCarousel({ products }: { products: Product[] }) {
     }, { threshold: 0.5 });
     observer.observe(node);
     document.addEventListener("visibilitychange", start);
-    // El ajuste a tarjeta pelearía con un desplazamiento continuo.
+    // El ajuste a tarjeta pelearía con un desplazamiento continuo — y también
+    // el que una pausa reciente dejó pendiente de devolver.
+    cancelSettle.current?.();
     node.style.scrollSnapType = "none";
 
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
       document.removeEventListener("visibilitychange", start);
-      // Devolver el ajuste de golpe haría saltar la fila hasta la tarjeta más
-      // cercana. Se la lleva hasta allí con suavidad, y el ajuste vuelve
-      // cuando ha llegado (o enseguida, si el navegador no avisa).
       const width = cardWidth(node);
       const max = Math.max(0, node.scrollWidth - node.clientWidth);
-      const nearest = Math.max(0, Math.min(max || Infinity, Math.round(node.scrollLeft / width) * width));
-      const restore = () => {
-        node.removeEventListener("scrollend", restore);
-        window.clearTimeout(fallback);
-        // Si entretanto empezó un arrastre, el ajuste lo devuelve el arrastre
-        // al terminar: devolverlo ahora lo haría tropezar.
-        if (!drag.current?.active) node.style.scrollSnapType = "";
-      };
-      const fallback = window.setTimeout(restore, 600);
-      node.addEventListener("scrollend", restore);
-      node.scrollTo({ left: nearest, behavior: prefersReducedMotion() ? "instant" : "smooth" });
+      settle(node, Math.max(0, Math.min(max || Infinity, Math.round(node.scrollLeft / width) * width)));
     };
   }, [playing, several]);
 
@@ -200,6 +215,7 @@ export function ProductCarousel({ products }: { products: Product[] }) {
       state.active = true;
       // A partir de aquí el arrastre es de la fila aunque el cursor salga.
       node.setPointerCapture?.(state.id);
+      cancelSettle.current?.();
       node.style.scrollSnapType = "none";
       setDragging(true);
     }
@@ -222,15 +238,7 @@ export function ProductCarousel({ products }: { products: Product[] }) {
     const elapsed = Math.max(1, event.timeStamp - state.time);
     const velocity = (event.clientX - state.lastX) / elapsed;
     const flick = Math.abs(velocity) > FLICK ? -Math.sign(velocity) : 0;
-    const target = (Math.round(node.scrollLeft / width) + flick) * width;
-    const restore = () => {
-      node.removeEventListener("scrollend", restore);
-      window.clearTimeout(fallback);
-      node.style.scrollSnapType = "";
-    };
-    const fallback = window.setTimeout(restore, 600);
-    node.addEventListener("scrollend", restore);
-    node.scrollTo({ left: Math.max(0, target), behavior: prefersReducedMotion() ? "instant" : "smooth" });
+    settle(node, Math.max(0, (Math.round(node.scrollLeft / width) + flick) * width));
   }
 
   if (products.length === 0) return null;
