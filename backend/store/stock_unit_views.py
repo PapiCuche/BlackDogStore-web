@@ -13,7 +13,7 @@ are masked.
 """
 from __future__ import annotations
 
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,7 +25,7 @@ from .inventory_views import (
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
     _scoped_product,
 )
-from .models import Product, StockUnit
+from .models import BranchStock, Product, StockUnit
 from .tenancy import (
     BranchAccessError, NoBranchError, resolve_branch_for_user, visible_branches,
 )
@@ -60,9 +60,10 @@ def unit_payload(unit) -> dict:
 
 def _refusal(exc) -> Response:
     body = {'detail': str(exc)}
-    line = getattr(exc, 'line', None)
-    if line is not None:
-        body['line'] = line
+    for name in ('line', 'field'):
+        value = getattr(exc, name, None)
+        if value is not None:
+            body[name] = value
     return Response(body, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -168,7 +169,15 @@ class StockUnitListView(APIView):
 
 
 class SerializedProductListView(APIView):
-    """GET — the products that are counted by unit, for the reception form."""
+    """
+    GET — the products that are counted by unit, for the filter and the form.
+
+    `?scope=all` lists EVERY active product of the company with how it is
+    counted, how much stock it holds and whether that can still be changed.
+    The reception form needs it: choosing a product that is not tracked by
+    serial has to produce an explanation (and, with stock at zero, the way to
+    turn tracking on), not a form whose fields quietly do nothing.
+    """
 
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminInventoryReportsThrottle]
@@ -177,11 +186,33 @@ class SerializedProductListView(APIView):
         company, error = _company_context(request, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES)
         if error:
             return error
-        rows = Product.objects.filter(
-            company=company, is_serialized=True, is_active=True,
-        ).order_by('name')
+        rows = Product.objects.filter(company=company, is_active=True).order_by('name')
+        if (request.query_params.get('scope') or '') != 'all':
+            return Response({'results': [
+                {'id': p.pk, 'name': p.name, 'requires_imei': p.requires_imei, 'price': str(p.price)}
+                for p in rows.filter(is_serialized=True)
+            ]})
+
+        # Two aggregates, two queries: summing shelves and counting devices in one
+        # statement multiplies one by the other through the join.
+        stock = dict(
+            BranchStock.objects.filter(product__company=company)
+            .values_list('product_id').annotate(total=Sum('quantity'))
+        )
+        live = dict(
+            StockUnit.objects.filter(
+                company=company,
+                status__in=(StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED),
+            ).values_list('product_id').annotate(total=Count('id'))
+        )
         return Response({'results': [
-            {'id': p.pk, 'name': p.name, 'requires_imei': p.requires_imei, 'price': str(p.price)}
+            {
+                'id': p.pk, 'name': p.name, 'price': str(p.price),
+                'is_serialized': p.is_serialized, 'requires_imei': p.requires_imei,
+                'stock': stock.get(p.pk) or 0,
+                # The rule of `set_serialized`, told in advance: only with an empty shelf.
+                'can_change_tracking': (stock.get(p.pk) or 0) <= 0 and not live.get(p.pk),
+            }
             for p in rows
         ]})
 

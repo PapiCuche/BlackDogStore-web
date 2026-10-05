@@ -37,87 +37,110 @@ MAX_REASON = 300
 
 
 class StockUnitError(InventoryError):
-    """A rule about units was broken. Views render it as 400. `line` is 1-based."""
+    """
+    A rule about units was broken. Views render it as 400.
 
-    def __init__(self, message: str, *, line: int | None = None):
+    `line` is the 1-based device of a batch; `field` names the input that is
+    wrong (`serial_number`, `imei`, `imei2`, `condition`, `cost`,
+    `price_override`, `reason`) so a form can say it next to that input instead
+    of in a banner the person has to map back by reading.
+    """
+
+    def __init__(self, message: str, *, line: int | None = None, field: str | None = None):
         super().__init__(message)
         self.line = line
+        self.field = field
 
 
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
-def _money(value, label: str) -> Decimal | None:
+def _money(value, label: str, field: str) -> Decimal | None:
     if value is None or value == '':
         return None
     try:
         amount = Decimal(str(value)).quantize(Decimal('0.01'))
     except (InvalidOperation, ValueError):
-        raise StockUnitError(f'{label} no es un importe válido.')
+        raise StockUnitError(f'{label} no es un importe válido.', field=field)
     if amount < 0 or amount >= Decimal('100000000'):
-        raise StockUnitError(f'{label} no es un importe válido.')
+        raise StockUnitError(f'{label} no es un importe válido.', field=field)
     return amount
 
 
 def _condition(value) -> str:
     condition = str(value or StockUnit.Condition.NEW)
     if condition not in StockUnit.Condition.values:
-        raise StockUnitError('Estado físico desconocido.')
+        raise StockUnitError('Condición desconocida.', field='condition')
     return condition
 
 
 def _reason(value, *, required: bool = True) -> str:
     reason = ' '.join(str(value or '').split())
     if required and not reason:
-        raise StockUnitError('Indica el motivo.')
+        raise StockUnitError('Indica el motivo.', field='reason')
     if len(reason) > MAX_REASON:
-        raise StockUnitError(f'El motivo admite hasta {MAX_REASON} caracteres.')
+        raise StockUnitError(f'El motivo admite hasta {MAX_REASON} caracteres.', field='reason')
     return reason
+
+
+def _identifier(cleaner, value, field: str) -> str:
+    try:
+        return cleaner(value)
+    except device_identity.DeviceIdentityError as exc:
+        raise StockUnitError(str(exc), field=field) from None
 
 
 def _clean_row(product, row: dict) -> dict:
     """One unit's identifiers and details, cleaned. Absent identifiers are None."""
     row = row if isinstance(row, dict) else {}
-    try:
-        serial = device_identity.clean_serial(row.get('serial_number'))
-        imei = device_identity.clean_imei(row.get('imei'))
-        imei2 = device_identity.clean_imei(row.get('imei2'), label='El segundo IMEI')
-    except device_identity.DeviceIdentityError as exc:
-        raise StockUnitError(str(exc))
+    serial = _identifier(device_identity.clean_serial, row.get('serial_number'), 'serial_number')
+    imei = _identifier(device_identity.clean_imei, row.get('imei'), 'imei')
+    imei2 = _identifier(
+        lambda value: device_identity.clean_imei(value, label='El segundo IMEI'),
+        row.get('imei2'), 'imei2',
+    )
 
     if not serial:
-        raise StockUnitError('Cada equipo lleva su número de serie.')
+        raise StockUnitError('Cada equipo lleva su número de serie.', field='serial_number')
     if product.requires_imei and not imei:
-        raise StockUnitError(f'"{product.name}" lleva IMEI: indícalo para cada equipo.')
+        raise StockUnitError(
+            f'"{product.name}" lleva IMEI: indícalo para cada equipo.', field='imei',
+        )
     if imei2 and not imei:
-        raise StockUnitError('El segundo IMEI acompaña al primero: indica primero el IMEI principal.')
+        raise StockUnitError(
+            'El segundo IMEI acompaña al primero: indica primero el IMEI principal.', field='imei',
+        )
     if imei2 and imei2 == imei:
-        raise StockUnitError('El segundo IMEI es distinto del primero.')
+        raise StockUnitError('El segundo IMEI es distinto del primero.', field='imei2')
 
     return {
         'serial_number': serial,
         'imei': imei or None,
         'imei2': imei2 or None,
         'condition': _condition(row.get('condition')),
-        'cost': _money(row.get('cost'), 'El costo'),
-        'price_override': _money(row.get('price_override'), 'El precio del equipo'),
+        'cost': _money(row.get('cost'), 'El costo', 'cost'),
+        'price_override': _money(row.get('price_override'), 'El precio del equipo', 'price_override'),
         'notes': ' '.join(str(row.get('notes') or '').split())[:300],
     }
 
 
-def _already_in_stock(company, product, cleaned: dict) -> str:
-    """Why this unit cannot enter, or ''. Either IMEI column counts for both."""
+def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
+    """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
     if StockUnit.objects.filter(
         company=company, product=product, serial_number=cleaned['serial_number'],
     ).exists():
-        return f'El número de serie {cleaned["serial_number"]} ya está registrado para este producto.'
-    imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
-    if imeis and StockUnit.objects.filter(company=company).filter(
-        Q(imei__in=imeis) | Q(imei2__in=imeis),
-    ).exists():
-        return 'Ese IMEI ya está registrado en otro equipo de la empresa.'
-    return ''
+        return (
+            f'El número de serie {cleaned["serial_number"]} ya está registrado para este producto.',
+            'serial_number',
+        )
+    for field in ('imei', 'imei2'):
+        value = cleaned[field]
+        if value and StockUnit.objects.filter(company=company).filter(
+            Q(imei=value) | Q(imei2=value),
+        ).exists():
+            return 'Ese IMEI ya está registrado en otro equipo de la empresa.', field
+    return '', ''
 
 
 # ---------------------------------------------------------------------------
@@ -193,13 +216,17 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         try:
             cleaned = _clean_row(product, row)
             imeis = [value for value in (cleaned['imei'], cleaned['imei2']) if value]
-            if cleaned['serial_number'] in seen_serials or seen_imeis.intersection(imeis):
-                raise StockUnitError('Este equipo está repetido en la misma carga.')
-            duplicate = _already_in_stock(branch.company, product, cleaned)
+            if cleaned['serial_number'] in seen_serials:
+                raise StockUnitError(
+                    'Este número de serie está repetido en la misma carga.', field='serial_number',
+                )
+            if seen_imeis.intersection(imeis):
+                raise StockUnitError('Este IMEI está repetido en la misma carga.', field='imei')
+            duplicate, where = _already_in_stock(branch.company, product, cleaned)
             if duplicate:
-                raise StockUnitError(duplicate)
+                raise StockUnitError(duplicate, field=where)
         except StockUnitError as exc:
-            raise StockUnitError(str(exc), line=index) from None
+            raise StockUnitError(str(exc), line=index, field=exc.field) from None
         seen_serials.add(cleaned['serial_number'])
         seen_imeis.update(imeis)
         cleaned_rows.append(cleaned)
@@ -310,10 +337,10 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
         locked.condition = _condition(fields['condition'])
         changed.append('condition')
     if 'cost' in fields:
-        locked.cost = _money(fields['cost'], 'El costo')
+        locked.cost = _money(fields['cost'], 'El costo', 'cost')
         changed.append('cost')
     if 'price_override' in fields:
-        locked.price_override = _money(fields['price_override'], 'El precio del equipo')
+        locked.price_override = _money(fields['price_override'], 'El precio del equipo', 'price_override')
         changed.append('price_override')
     if 'notes' in fields:
         locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]

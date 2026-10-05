@@ -576,6 +576,60 @@ class UnitsApiTest(UnitsBase):
         only_a = self.api.get(f'/api/admin/inventory/summary/?branch={self.branch_a.pk}').json()
         self.assertEqual(only_a['equipment_available'], 1)
 
+    def test_a_refused_unit_names_the_field_that_is_wrong(self):
+        """El formulario pinta el error debajo del campo: el servidor dice cuál es."""
+        def refused(**row):
+            res = self.api.post(self.LIST, {
+                'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
+                'units': [{'serial_number': 'SERIE00090', 'imei': IMEI_D, **row}],
+            }, format='json')
+            self.assertEqual(res.status_code, 400, res.content)
+            return res.json()
+
+        self.assertEqual(refused(serial_number='')['field'], 'serial_number')
+        self.assertEqual(refused(serial_number='N/A')['field'], 'serial_number')
+        self.assertEqual(refused(serial_number='SERIE00001')['field'], 'serial_number')   # ya existe
+        self.assertEqual(refused(imei='')['field'], 'imei')
+        self.assertEqual(refused(imei='356938035643800')['field'], 'imei')                # Luhn
+        self.assertEqual(refused(imei=IMEI_A)['field'], 'imei')                           # ya existe
+        self.assertEqual(refused(imei2=IMEI_D)['field'], 'imei2')                         # igual al primero
+        self.assertEqual(refused(imei2='123')['field'], 'imei2')
+        self.assertEqual(refused(cost='-1')['field'], 'cost')
+        self.assertEqual(refused(price_override='caro')['field'], 'price_override')
+        self.assertEqual(refused(condition='inventada')['field'], 'condition')
+        missing_reason = self.api.post(self.LIST, {
+            'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': '',
+            'units': [{'serial_number': 'SERIE00091', 'imei': IMEI_D}],
+        }, format='json').json()
+        self.assertEqual(missing_reason['field'], 'reason')
+        self.assertEqual(self.quantity(), 2)
+
+    def test_the_form_can_list_every_product_and_say_how_each_is_counted(self):
+        """
+        Elegir un producto que no lleva serie no puede acabar en un formulario
+        mudo: la pantalla necesita saber que no la lleva, cuánto stock tiene y
+        si se le puede activar.
+        """
+        _m7_stock(self.branch_a, self.laptop, 0)
+        loose_empty = _prod(self.company, 'Tablet sin serie', 'tablet-sin-serie', inventory=0)
+
+        rows = {r['name']: r for r in self.api.get(f'{self.LIST}products/?scope=all').json()['results']}
+
+        self.assertEqual(rows['iPhone 16'], {
+            'id': self.phone.pk, 'name': 'iPhone 16', 'price': '4500.00',
+            'is_serialized': True, 'requires_imei': True, 'stock': 3, 'can_change_tracking': False,
+        })
+        # Tiene unidades sueltas: no se le puede activar la serie hasta dejarlo en cero.
+        self.assertFalse(rows['iPhone 15']['is_serialized'])
+        self.assertEqual(rows['iPhone 15']['stock'], 13)
+        self.assertFalse(rows['iPhone 15']['can_change_tracking'])
+        self.assertTrue(rows[loose_empty.name]['can_change_tracking'])
+        self.assertNotIn('Teléfono ajeno', rows)
+        self.assertNotIn('Ajeno', rows)
+        # Sin el parámetro, lo de siempre: sólo los que llevan serie.
+        default = [r['name'] for r in self.api.get(f'{self.LIST}products/').json()['results']]
+        self.assertEqual(sorted(default), ['MacBook Air', 'iPhone 16'])
+
     def test_products_say_whether_they_are_serialized(self):
         res = self.api.get(f'{self.LIST}products/')
         self.assertEqual(res.status_code, 200, res.content)
