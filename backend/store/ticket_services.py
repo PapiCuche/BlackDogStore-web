@@ -32,6 +32,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from . import document_style as style
 from .models import Order, SalesNote
 from .sales_note_services import (
     SALES_NOTE_DISCLAIMER, SalesNoteError, build_sales_note_context,
@@ -218,16 +219,12 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     tax = ctx['tax']
     money = tax['symbol']
 
-    # --- Quién vende ---
-    cur.line(ctx['store_name'] or ctx['store_legal_name'], size=10, bold=True, align='center')
-    if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:
-        cur.line(ctx['store_legal_name'], size=6.5, align='center')
-    if ctx['store_ruc']:
-        cur.line(f"RUC {ctx['store_ruc']}", size=6.5, align='center')
-    if ctx['store_address']:
-        cur.line(ctx['store_address'], size=6.5, align='center')
-    if ctx['store_phone']:
-        cur.line(f"WhatsApp {ctx['store_phone']}", size=6.5, align='center')
+    # --- Quién vende --- (la misma cabecera que el ticket de cotización)
+    style.ticket_header(
+        cur, logo_png=ctx.get('logo_png'), name=ctx['store_name'], legal_name=ctx['store_legal_name'],
+        tax_id=ctx['store_ruc'], address=ctx['store_address'], branch=ctx.get('branch_name', ''),
+        phone=ctx['store_phone'],
+    )
 
     cur.rule()
 
@@ -247,6 +244,10 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     # sólo la petición del cliente. El A4 ya lo rotulaba bien y el ticket no,
     # así que el mismo dato afirmaba dos cosas distintas según el formato.
     cur.row('Comprobante solicitado:', ctx['receipt_label'], size=6.5)
+    if ctx.get('payment_label'):
+        cur.row('Tipo de pago:', ctx['payment_label'], size=6.5)
+    if ctx.get('seller_name'):
+        cur.row('Atendido por:', ctx['seller_name'], size=6.5)
 
     cur.rule()
 
@@ -265,6 +266,12 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     # columnas sin partir los nombres en pedazos ilegibles.
     for item in ctx['items']:
         cur.line(str(item['name']), size=7)
+        if item.get('code'):
+            cur.line(f"Cód. {item['code']}", size=6)
+        # El equipo REAL que salió del stock en esta venta: una línea por dato.
+        for unit in item.get('units') or []:
+            for identifier in style.unit_identifiers(unit):
+                cur.line(identifier, size=6.5)
         cur.row(
             f"  {item['quantity']} x {money} {item['unit_price']:.2f}",
             f"{money} {item['subtotal']:.2f}",
@@ -282,6 +289,10 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
         cur.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}", size=7)
     cur.gap(1)
     cur.row('TOTAL', f"{money} {tax['total']:.2f}", size=10, bold=True)
+    if ctx.get('amount_in_words'):
+        cur.line(f"SON: {ctx['amount_in_words']}", size=6)
+    if ctx.get('product_count'):
+        cur.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}", size=6.5)
 
     if ctx['notes']:
         cur.rule()

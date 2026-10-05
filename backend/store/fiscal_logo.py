@@ -126,7 +126,11 @@ def current_png(company) -> bytes | None:
 
 def load(document) -> bytes | None:
     """La imagen congelada de `document`, o None si no tiene o no se puede leer."""
-    key = getattr(document, 'logo_storage_key', '') or ''
+    return load_key(getattr(document, 'logo_storage_key', '') or '')
+
+
+def load_key(key: str) -> bytes | None:
+    """La imagen congelada bajo `key` (la que devolvió `snapshot`), o None."""
     if not key:
         return None
     try:

@@ -89,6 +89,7 @@ def build_context(quote) -> dict:
         'store_tax_id': identity.tax_id,
         'store_address': identity.legal_address,
         'store_phone': identity.whatsapp_number or identity.phone,
+        'branch_name': getattr(getattr(order, 'branch', None), 'name', '') or '',
         'number': order.number,
         'revision': quote.revision,
         'customer_name': name,
@@ -126,35 +127,18 @@ def _quantity(value) -> str:
 
 
 def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) -> float:
-    from reportlab.lib.units import mm
-
-    from .fiscal_pdf_services import _fit
+    from . import document_style as style
     from .ticket_services import _Cursor
 
     cur = _Cursor(pdf, margin, page_height - margin, content)
     money = ctx['symbol']
 
-    if ctx['logo_png']:
-        logo_w, logo_h = _fit(ctx['logo_png'], 42 * mm, 16 * mm)
-        if pdf is not None:
-            from reportlab.lib.utils import ImageReader
-
-            pdf.drawImage(
-                ImageReader(io.BytesIO(ctx['logo_png'])),
-                margin + (content - logo_w) / 2, cur.y - logo_h,
-                width=logo_w, height=logo_h,
-            )
-        cur.gap(logo_h + 3)
-
-    cur.line(ctx['store_name'] or ctx['store_legal_name'], size=10, bold=True, align='center')
-    if ctx['store_legal_name'] and ctx['store_legal_name'] != ctx['store_name']:
-        cur.line(ctx['store_legal_name'], size=6.5, align='center')
-    if ctx['store_tax_id']:
-        cur.line(f"RUC {ctx['store_tax_id']}", size=6.5, align='center')
-    if ctx['store_address']:
-        cur.line(ctx['store_address'], size=6.5, align='center')
-    if ctx['store_phone']:
-        cur.line(f"Tel. {ctx['store_phone']}", size=6.5, align='center')
+    # La misma cabecera que el ticket de venta: logotipo e identidad de la tienda.
+    style.ticket_header(
+        cur, logo_png=ctx['logo_png'], name=ctx['store_name'], legal_name=ctx['store_legal_name'],
+        tax_id=ctx['store_tax_id'], address=ctx['store_address'], branch=ctx.get('branch_name', ''),
+        phone=ctx['store_phone'],
+    )
 
     cur.rule()
 
@@ -199,6 +183,9 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
 
     if ctx['customer_notes']:
         cur.rule()
+        # Lo que la tienda escribió PARA EL CLIENTE al cotizar. El diagnóstico
+        # del técnico y las notas internas no se imprimen: son de la tienda.
+        cur.line('Detalle del trabajo', size=6.5, bold=True)
         cur.line(str(ctx['customer_notes']), size=6.5)
 
     cur.rule()
