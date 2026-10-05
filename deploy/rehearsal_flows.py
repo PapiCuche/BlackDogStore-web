@@ -90,26 +90,37 @@ def declared(path, length, sent=64 * KB, content_type='application/json', cookie
     Anuncia un cuerpo de `length` bytes y envía sólo `sent`. Devuelve el estado
     con el que la tienda contesta SIN haber recibido el resto, o 0 si se queda
     esperándolo.
+
+    Quien rechaza un cuerpo cierra la conexión con datos sin leer, y el sistema
+    puede entonces descartar la respuesta antes de que esta prueba la lea. Eso
+    es una carrera de la red, no una respuesta: se vuelve a preguntar. Quedarse
+    esperando (20 s sin contestar) sí es una respuesta, y no se repite.
     """
-    sock = CTX.wrap_socket(socket.create_connection((ADDR, PORT), 20), server_hostname=DOMAIN)
-    sock.settimeout(20)
     head = (f'POST {path} HTTP/1.1\r\nHost: {DOMAIN}\r\nOrigin: https://{DOMAIN}\r\n'
             f'Content-Type: {content_type}\r\nContent-Length: {length}\r\nConnection: close\r\n')
     if cookies:
         head += 'Cookie: ' + '; '.join(f'{k}={v}' for k, v in cookies.items()) + '\r\n'
         if 'csrftoken' in cookies:
             head += f"X-CSRFToken: {cookies['csrftoken']}\r\nReferer: https://{DOMAIN}/\r\n"
-    try:
+    for _attempt in range(4):
+        sock = CTX.wrap_socket(socket.create_connection((ADDR, PORT), 20), server_hostname=DOMAIN)
+        sock.settimeout(20)
         try:
-            sock.sendall(head.encode() + b'\r\n' + b'x' * min(sent, length))
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # contestó y cerró antes de que terminara de enviar: se lee lo que dijo
-        line = sock.recv(64).split(b'\r\n', 1)[0].split()
-        return int(line[1]) if len(line) > 1 else 0
-    except (OSError, ValueError):
-        return 0
-    finally:
-        sock.close()
+            try:
+                sock.sendall(head.encode() + b'\r\n' + b'x' * min(sent, length))
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # contestó y cerró antes de que terminara de enviar: se lee lo que dijo
+            line = sock.recv(64).split(b'\r\n', 1)[0].split()
+            if len(line) > 1:
+                return int(line[1])
+        except socket.timeout:
+            return 0
+        except (OSError, ValueError):
+            pass
+        finally:
+            sock.close()
+        time.sleep(0.5)
+    return 0
 
 
 def pdf_text(pdf: bytes) -> str:
@@ -138,19 +149,22 @@ def pdf_text(pdf: bytes) -> str:
 
 def limits(admin, company):
     anonymous = Client()
-    # En las rutas del tope general Caddy lee el cuerpo antes de pasarlo: corta
-    # al llegar a 1 MiB, se anuncie lo que se anuncie.
-    over = MB + 64 * KB
-    check('límite · un JSON de 2 MiB al inicio de sesión se corta al pasar de 1 MiB',
-          declared('/api/auth/login', 2 * MB, sent=over) == 413)
-    check('límite · 300 MiB anunciados a una ruta cualquiera, sin sesión: cortado al pasar de 1 MiB',
-          declared('/api/cart/add', 300 * MB, sent=over) == 413)
+    # Caddy compara lo que la petición anuncia con el tope de su ruta y contesta
+    # sin esperar el cuerpo ni llamar a ninguna aplicación.
+    check('límite · un JSON de 2 MiB al inicio de sesión se rechaza por lo que anuncia',
+          declared('/api/auth/login', 2 * MB) == 413)
+    check('límite · 300 MiB anunciados a una ruta cualquiera, sin sesión',
+          declared('/api/cart/add', 300 * MB) == 413)
+    check('límite · 2 MiB anunciados a una página de la tienda', declared('/', 2 * MB) == 413)
     check('límite · 300 MiB anunciados a la carga masiva de productos',
           declared(f'/api/admin/products/import/preview?company={company}', 300 * MB,
                    content_type='multipart/form-data; boundary=x', cookies=admin.cookies) == 413)
-    # También aquí Caddy lee antes de pasar: corta al llegar a los 128 KiB de esa ruta.
-    check('límite · una notificación de pago de 200 KiB se corta al pasar de 128 KiB',
-          declared('/api/payments/izipay/notification', 200 * KB, sent=200 * KB) == 413)
+    check('límite · una notificación de pago de 200 KiB',
+          declared('/api/payments/izipay/notification', 200 * KB) == 413)
+    # Lo que no se anuncia tampoco pasa: un cuerpo real mayor que el tope se corta.
+    res, body = anonymous.request('POST', '/api/cart/add', b'x' * (2 * MB), {'Content-Type': 'application/json'})
+    check('límite · un cuerpo real de 2 MiB recibe 413 y una respuesta que la pantalla entiende',
+          res.status == 413 and b'demasiado grande' in body, res.status)
     res, _ = anonymous.request('POST', '/api/auth/login', b'{"username": "nadie", "password": "x"}',
                                {'Content-Type': 'application/json'})
     check('límite · una petición normal sigue pasando', res.status in (400, 401), res.status)
