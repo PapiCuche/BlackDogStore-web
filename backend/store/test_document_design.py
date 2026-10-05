@@ -403,6 +403,15 @@ class DocumentDatesTest(DocumentBase):
 
 
 class SharedDesignTest(SimpleTestCase):
+    def test_a_stamp_takes_whatever_the_models_hold(self):
+        from datetime import date, datetime
+
+        from store.document_style import local_stamp
+
+        self.assertEqual(local_stamp(None), '—')
+        self.assertEqual(local_stamp(date(2026, 3, 9), '%d/%m/%Y'), '09/03/2026')
+        self.assertEqual(local_stamp(datetime(2026, 3, 9, 21, 30)), '09/03/2026 21:30')
+
     def test_amounts_are_spelled_the_way_a_peruvian_document_spells_them(self):
         from store.document_style import amount_in_words
 

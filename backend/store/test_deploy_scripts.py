@@ -34,7 +34,8 @@ STUB = r'''#!/bin/sh
 echo "$*" >> "$STUB_LOG"
 case "$*" in
   *"postgres sh -c"*pg_dump*)
-    printf -- '-- data\n--\n-- PostgreSQL database dump complete\n--\n' ;;
+    printf -- '-- data\n--\n-- PostgreSQL database dump complete\n--\n'
+    n=0; while [ "$n" -lt "${STUB_TRAILER:-0}" ]; do printf '\\unrestrict x\n'; n=$((n + 1)); done ;;
   *"ps --format"*)
     printf 'postgres running healthy\nbackend running %s\nfrontend running healthy\ncaddy running \n' "${STUB_BACKEND:-healthy}" ;;
   *pg_isready*)
@@ -116,6 +117,16 @@ class DeployScriptsTest(_Scripts):
         marker = self.dest / 'LAST_OK'
         self.assertTrue(marker.exists(), 'a successful backup must leave backups/LAST_OK')
         self.assertRegex(marker.read_text().strip(), r'^\d{8}-\d{6}$')
+
+    def test_a_dump_with_a_longer_trailer_is_still_a_complete_dump(self):
+        """
+        pg_dump ends with its "dump complete" mark and then some lines of its
+        own; how many depends on the version. Looking only at the very last ones
+        would throw away every good dump the day a version adds one.
+        """
+        result = self.run_script(BACKUP, STUB_TRAILER='12')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.kept('db-*.sql.gz')), 1)
 
     def test_an_archive_of_files_that_was_cut_short_is_not_kept(self):
         result = self.run_script(BACKUP, files='cut')
@@ -218,6 +229,13 @@ class HealthCheckTest(_Scripts):
         self.assertEqual(result.returncode, 1)
         self.assertIn('ATENCIÓN la aplicación no pudo informar de su estado', result.stdout)
 
+    def test_the_domain_is_read_from_the_environment_file_whatever_its_quotes(self):
+        env_file = self.work / 'env.production'
+        for line in ('SITE_DOMAIN="tienda.example"', "SITE_DOMAIN='tienda.example'", 'SITE_DOMAIN=tienda.example\r'):
+            env_file.write_text(f'POSTGRES_USER=x\n{line}\n')
+            result = self.healthy(SITE_DOMAIN='', ENV_FILE=str(env_file))
+            self.assertIn('OK    https://tienda.example/api/categories', result.stdout, line)
+
     def test_no_backup_at_all_is_reported(self):
         result = self.run_script(HEALTH)
         self.assertEqual(result.returncode, 1)
@@ -253,3 +271,19 @@ class ComposeFileTest(SimpleTestCase):
         names = re.findall(r'(?m)^  (\w+):\n', services)
         self.assertEqual(sorted(names), ['backend', 'caddy', 'frontend', 'postgres'])
         self.assertEqual(services.count(f'logging: *{anchor.group(1)}'), len(names))
+
+
+@skipUnless(BACKUP.exists(), 'deploy/ is not part of this checkout')
+class CrontabExampleTest(SimpleTestCase):
+    def test_every_job_can_write_its_log_on_a_server_that_never_ran_a_backup(self):
+        """
+        The shell opens a job's log before it runs the job. On a new server
+        `backups/` does not exist until the first backup: every job failed on
+        its redirect, the health check that would have said so included.
+        """
+        lines = [line for line in (ROOT / 'deploy' / 'crontab.example').read_text(encoding='utf-8').splitlines()
+                 if line and not line.startswith('#') and 'cd $REPO' in line]
+        self.assertEqual(len(lines), 5)
+        for line in lines:
+            self.assertIn('cd $REPO && mkdir -p backups && ', line)
+            self.assertNotIn('%', line, 'cron reads % as a newline')

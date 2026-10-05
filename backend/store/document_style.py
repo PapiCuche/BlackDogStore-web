@@ -55,11 +55,13 @@ def local_stamp(moment, fmt: str = '%d/%m/%Y %H:%M') -> str:
     stored, a sale at 21:30 in Lima is dated 02:30 of the next day
     (DOC-TIMEZONE). Every date a document shows to a person goes through here.
     """
+    from datetime import datetime
+
     from django.utils import timezone
 
     if moment is None:
         return '—'
-    if timezone.is_aware(moment):
+    if isinstance(moment, datetime) and timezone.is_aware(moment):
         moment = timezone.localtime(moment)
     return moment.strftime(fmt)
 

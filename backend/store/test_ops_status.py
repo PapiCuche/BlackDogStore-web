@@ -72,32 +72,70 @@ class OpsStatusTest(WhatsAppBase):
             status=PaymentTransaction.Status.INTEGRITY_FAILED, created_at=timezone.now() - timedelta(days=3))
         self.assertEqual(run()[0], 0)
 
-    def test_a_payment_left_waiting_is_reported_and_a_fresh_one_is_not(self):
+    def test_a_payment_nobody_finished_is_a_note_not_an_alarm(self):
+        """
+        Every checkout opens a payment, and a buyer who closes the card form
+        leaves it waiting for ever: that is an ordinary day. It cannot be told
+        apart from a notification that never arrived, so it is said — for the day
+        a customer claims to have paid — and it does not fail the check.
+        """
         attempt = _pay_attempt(_order(self.company, total='50.00'))
-        self.assertEqual(run()[0], 0, 'a payment opened a moment ago is a buyer typing a card')
+        self.assertNotIn('NOTA', run()[1], 'a payment opened a moment ago is a buyer typing a card')
         PaymentTransaction.objects.filter(pk=attempt.pk).update(created_at=timezone.now() - timedelta(hours=2))
         code, text = run()
-        self.assertEqual(code, 1)
-        self.assertIn('ATENCIÓN pagos: 1 pago', text)
+        self.assertEqual(code, 0, text)
+        self.assertIn('NOTA  pagos: 1 pago', text)
         self.assertIn('sin respuesta de la pasarela', text)
+        self.assertNotIn('ATENCIÓN', text)
 
-    def test_a_whatsapp_message_that_failed_for_good_is_reported(self):
-        delivery = self.delivery(self.new_order())
-        NotificationDelivery.objects.filter(pk=delivery.pk).update(
-            status=NotificationDelivery.Status.FAILED, next_attempt_at=None)
+    def _deliveries(self, count):
+        return [self.delivery(self.new_order()) for _ in range(count)]
+
+    def _fail_for_good(self, deliveries):
+        NotificationDelivery.objects.filter(pk__in=[d.pk for d in deliveries]).update(
+            status=NotificationDelivery.Status.FAILED, next_attempt_at=None, failure_reason='131026')
+
+    def test_one_message_that_could_not_be_delivered_is_a_note(self):
+        """A number that is not on WhatsApp is a fact about that customer, shown in the order."""
+        first, *others = self._deliveries(3)
+        self._fail_for_good([first])
+        code, text = run()
+        self.assertEqual(code, 0, text)
+        self.assertIn('NOTA  WhatsApp: 1 mensaje', text)
+
+    def test_messages_failing_while_none_gets_through_is_an_alarm(self):
+        """Three failures and not one success: a token that expired, a template that was rejected."""
+        self._fail_for_good(self._deliveries(3))
         code, text = run()
         self.assertEqual(code, 1)
-        self.assertIn('ATENCIÓN WhatsApp: 1 mensaje', text)
+        self.assertIn('ATENCIÓN WhatsApp: 3 mensajes', text)
+        self.assertIn('ninguno', text)
 
-    def test_whatsapp_messages_that_nobody_is_sending_are_reported(self):
+    def test_a_message_that_was_never_sent_is_reported(self):
+        """
+        Exactly as the application leaves it when nobody sends: PENDING, with no
+        next attempt scheduled. The sender finds these by their age.
+        """
         delivery = self.delivery(self.new_order())
         NotificationDelivery.objects.filter(pk=delivery.pk).update(
-            status=NotificationDelivery.Status.PENDING, next_attempt_at=timezone.now() - timedelta(hours=1),
+            status=NotificationDelivery.Status.PENDING, next_attempt_at=None,
             created_at=timezone.now() - timedelta(hours=1))
         code, text = run()
         self.assertEqual(code, 1)
         self.assertIn('sin enviar', text)
         self.assertIn('send_pending_notifications', text)
+
+    def test_a_retry_that_is_overdue_is_reported(self):
+        delivery = self.delivery(self.new_order())
+        NotificationDelivery.objects.filter(pk=delivery.pk).update(
+            status=NotificationDelivery.Status.FAILED, next_attempt_at=timezone.now() - timedelta(hours=1))
+        code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('sin enviar', text)
+
+    def test_a_message_sent_a_moment_ago_is_not_overdue(self):
+        self.delivery(self.new_order())
+        self.assertEqual(run()[0], 0)
 
     def test_no_line_names_a_customer_a_phone_or_a_token(self):
         NotificationDelivery.objects.filter(pk=self.delivery(self.new_order()).pk).update(

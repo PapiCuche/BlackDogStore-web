@@ -26,7 +26,8 @@ ENV_FILE="${ENV_FILE:-deploy/.env.production}"
 DEST="${BACKUP_DIR:-backups}"
 MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
 DISK_MAX_PERCENT="${DISK_MAX_PERCENT:-90}"
-DOMAIN="${SITE_DOMAIN:-$(grep '^SITE_DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)}"
+# El valor puede venir entre comillas en el archivo de variables: Compose las quita, y aquí también.
+DOMAIN="${SITE_DOMAIN:-$(grep '^SITE_DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d "\"'\r ")}"
 CURL="${HEALTH_CURL:-curl -s --max-time 15}"
 
 FAILS=0
@@ -55,7 +56,7 @@ fi
 
 # La aplicación informa de lo suyo, una línea por asunto. Lo que diga se copia tal cual.
 REPORT=$($COMPOSE exec -T backend python manage.py ops_status 2>&1); rc=$?
-LINES=$(printf '%s\n' "$REPORT" | grep -E '^(OK|ATENCIÓN) ')
+LINES=$(printf '%s\n' "$REPORT" | grep -E '^(OK|NOTA|ATENCIÓN) ')
 [ -n "$LINES" ] && printf '%s\n' "$LINES"
 ATTENTION=$(printf '%s\n' "$LINES" | grep -c '^ATENCIÓN ')
 FAILS=$((FAILS + ATTENTION))

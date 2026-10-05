@@ -36,8 +36,9 @@ umask 077
 # archivo `db-*.sql.gz` en la carpeta es siempre un volcado completo.
 TMP="$DEST/.db-$STAMP.sql.gz.partial"
 $COMPOSE exec -T postgres sh -c 'pg_dump --no-owner --no-privileges -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > "$TMP"
-# Un volcado válido termina con esta marca. Sin ella, pg_dump se cortó.
-if ! gzip -dc "$TMP" | tail -n 5 | grep -q "PostgreSQL database dump complete"; then
+# Un volcado válido termina con esta marca. Sin ella, pg_dump se cortó. Tras la
+# marca pg_dump escribe unas líneas propias, y cuántas depende de su versión.
+if ! gzip -dc "$TMP" | tail -n 20 | grep -q "PostgreSQL database dump complete"; then
   rm -f "$TMP"
   echo "ERROR: el volcado de la base de datos quedó incompleto. No se guardó." >&2
   exit 1
