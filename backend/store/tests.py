@@ -52193,6 +52193,28 @@ class H41InvitationTest(TestCase):
         self.assertEqual(Membership.objects.filter(company=self.company).count(), 0)
         self.assertIsNone(invitation.membership)
 
+    def test_the_email_names_the_expiry_day_as_the_shop_reads_it(self):
+        """
+        DOC-TIMEZONE. La fecha se guarda en UTC. Una invitación que caduca el día 9
+        a las 21:30 de Lima se anunciaba como «caduca el 10».
+        """
+        from datetime import datetime, timezone as dt_timezone
+
+        from django.core import mail
+
+        from store.staff_views import _send_invitation_email
+
+        invitation, raw, _ = self._invite()
+        StaffInvitation.objects.filter(pk=invitation.pk).update(
+            expires_at=datetime(2026, 3, 10, 2, 30, tzinfo=dt_timezone.utc))
+        invitation.refresh_from_db()
+        mail.outbox.clear()
+
+        _send_invitation_email(invitation, raw)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('caduca el 09/03/2026', mail.outbox[0].body)
+
     def test_the_raw_token_is_never_stored(self):
         """
         Quien comprometa la base de datos no debe poder aceptar invitaciones sin

@@ -230,8 +230,10 @@ def build_order_pdf_context(order) -> dict:
     else:
         title = "Constancia de pedido"
 
-    paid_at_str = order.paid_at.strftime("%d/%m/%Y %H:%M") if order.paid_at else "—"
-    created_at_str = order.created_at.strftime("%d/%m/%Y %H:%M") if order.created_at else "—"
+    from .document_style import local_stamp
+
+    paid_at_str = local_stamp(order.paid_at)
+    created_at_str = local_stamp(order.created_at)
 
     pickup = _company_settings.order_pickup_location(order)
 

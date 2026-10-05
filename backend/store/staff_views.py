@@ -22,6 +22,7 @@ import logging
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -381,7 +382,7 @@ def _send_invitation_email(invitation: StaffInvitation, raw_token: str) -> None:
                 f'Te han invitado a formar parte del equipo de {empresa}.\n\n'
                 f'Configura tu acceso aquí:\n{link}\n\n'
                 f'El enlace caduca el '
-                f'{invitation.expires_at.strftime("%d/%m/%Y")}.\n\n'
+                f'{timezone.localtime(invitation.expires_at).strftime("%d/%m/%Y")}.\n\n'
                 f'Si no esperabas este correo, puedes ignorarlo.\n'
             ),
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', None),

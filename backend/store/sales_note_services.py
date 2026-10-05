@@ -180,7 +180,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
     pickup = _company_settings.order_pickup_location(order)
     tax = _tax_context(order)
 
-    from .document_style import amount_in_words
+    from .document_style import amount_in_words, local_stamp
 
     return {
         # Branch, payment, seller and the logotype frozen with this note. A
@@ -195,9 +195,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'title': _TITLE,
         'disclaimer': SALES_NOTE_DISCLAIMER,
         'number': sales_note.number,
-        'issued_at': (
-            sales_note.issued_at.strftime('%d/%m/%Y %H:%M') if sales_note.issued_at else '—'
-        ),
+        'issued_at': local_stamp(sales_note.issued_at),
         'order_id': order.pk,
         'customer_name': order.customer_name or '—',
         'customer_phone': order.customer_phone or '—',
