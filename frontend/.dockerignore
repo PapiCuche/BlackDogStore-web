@@ -7,3 +7,6 @@ playwright-report/
 coverage/
 e2e/
 __tests__/
+*.pem
+*.key
+.audit/

@@ -9,3 +9,21 @@ __pycache__/
 .pytest_cache/
 venv/
 .venv/
+# Lo que puede acabar junto al código en el servidor y no debe viajar en la
+# imagen: certificados y claves, la configuración real del agente de impresión
+# (lleva su token), copias y volcados.
+*.p12
+*.pfx
+*.pem
+*.key
+sunat.env
+print_agent/config.json
+print-agent-journal.json*
+backups/
+*.log
+*.sql
+*.sql.gz
+*.dump
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal

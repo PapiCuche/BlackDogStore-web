@@ -4,6 +4,11 @@ venv/
 __pycache__/
 *.pyc
 .env
+# Any variant of an environment file (.env.local, .env.staging, .env.production.bak).
+# The examples are the only ones that belong in the repository.
+.env.*
+!.env.example
+!.env.production.example
 # Fiscal secrets: certificate containers and the local SUNAT env live OUTSIDE
 # the repo (~/.blackdog-secrets/). These are defensive so a stray copy in the
 # tree is never committed. NOT a global *.pem: legitimate public certs/fixtures
@@ -20,8 +25,16 @@ env.local
 coverage/
 .pytest_cache/
 
-# Local databases
+# Local databases, their write-ahead files, and dumps taken by hand.
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.sql
+*.sql.gz
+*.dump
+# Private keys. (*.pem stays versionable: see the note above.)
+*.key
 
 # Production secrets and local backups never enter the repo.
 .env.production
