@@ -92,13 +92,22 @@ def resolve(token) -> RepairTrackingLink | None:
     )
 
 
-def link_for(repair_order, *, actor=None) -> RepairTrackingLink:
-    """El enlace vivo de la orden; se crea si no tiene."""
+def link_for(repair_order, *, actor=None) -> RepairTrackingLink | None:
+    """
+    El enlace vivo de la orden. Se crea si la orden NUNCA tuvo uno.
+
+    UN ENLACE REVOCADO NO RESUCITA SOLO. Si alguien lo apagó, la orden se queda
+    sin seguimiento público hasta que alguien con permiso cree otro (`rotate`).
+    Crear uno aquí haría que listar las reparaciones o mandar un aviso
+    deshiciera, sin decirlo, una decisión que se tomó a propósito.
+    """
     link = RepairTrackingLink.objects.filter(
         repair_order=repair_order, revoked_at__isnull=True,
     ).first()
     if link is not None:
         return link
+    if RepairTrackingLink.objects.filter(repair_order=repair_order).exists():
+        return None
     try:
         with transaction.atomic():
             return RepairTrackingLink.objects.create(
@@ -116,18 +125,21 @@ def active_link(repair_order) -> RepairTrackingLink | None:
     ).first()
 
 
-def token_for(repair_order) -> str:
-    return _token(link_for(repair_order).uid)
+def token_for(repair_order) -> str | None:
+    link = link_for(repair_order)
+    return _token(link.uid) if link is not None else None
 
 
-def path_for(repair_order) -> str:
-    """La ruta del sitio: `/seguimiento/<token>`."""
-    return f'/seguimiento/{token_for(repair_order)}'
+def path_for(repair_order) -> str | None:
+    """La ruta del sitio: `/seguimiento/<token>`. None si el enlace fue revocado."""
+    token = token_for(repair_order)
+    return f'/seguimiento/{token}' if token else None
 
 
-def url_for(repair_order) -> str:
+def url_for(repair_order) -> str | None:
     """La dirección completa, para un mensaje o un código QR."""
-    return f'{settings.FRONTEND_URL.rstrip("/")}{path_for(repair_order)}'
+    path = path_for(repair_order)
+    return f'{settings.FRONTEND_URL.rstrip("/")}{path}' if path else None
 
 
 def _audit(action, order, actor, request):

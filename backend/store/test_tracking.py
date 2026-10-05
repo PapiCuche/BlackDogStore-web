@@ -128,6 +128,20 @@ class TrackingLinkTest(TrackingBase):
         self.assertNotIn(new, str(list(AdminAuditLog.objects.values_list('metadata', flat=True))))
         self.assertFalse(RepairTrackingLink.objects.filter(uid=new).exists())
 
+    def test_a_revoked_link_stays_revoked_until_somebody_decides_otherwise(self):
+        """Listar las reparaciones o mandar un aviso no puede volver a abrir la orden."""
+        tracking.revoke(self.order, actor=self.staff)
+
+        self.assertIsNone(tracking.token_for(self.order))
+        self.assertIsNone(tracking.path_for(self.order))
+        self.assertIsNone(tracking.url_for(self.order))
+        client = APIClient()
+        client.force_authenticate(user=self.client_user)
+        [row] = client.get(f'/api/account/repairs/?company_slug={self.company.slug}').json()['results']
+        self.assertIsNone(row['tracking_path'])
+        self.assertFalse(RepairTrackingLink.objects.filter(
+            repair_order=self.order, revoked_at__isnull=True).exists())
+
     def test_opening_the_link_is_counted_without_identifying_anyone(self):
         self.anon.get(track(self.token))
         self.anon.get(track(self.token))
