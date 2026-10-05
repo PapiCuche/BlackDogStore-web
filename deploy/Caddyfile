@@ -10,6 +10,23 @@
 	{$CADDY_TLS_DIRECTIVE}
 }
 
+# TIEMPOS DE ESPERA (PROXY-TIMEOUTS). Sin ellos, quien abre una conexión y no
+# envía nada, o envía un byte por minuto, la conserva el tiempo que quiera.
+#
+#   read_header  lo que tarda una petición en decir qué pide;
+#   read_body    lo que puede tardar su cuerpo: una carga masiva de 111 MiB por
+#                una conexión doméstica lenta cabe; un cuerpo que no avanza, no;
+#   idle         una conexión abierta sin ninguna petición.
+{
+	servers {
+		timeouts {
+			read_header 15s
+			read_body 15m
+			idle 2m
+		}
+	}
+}
+
 {$SITE_DOMAIN} {
 	import tls_mode
 	encode zstd gzip
@@ -103,11 +120,19 @@
 			reverse_proxy backend:8000
 		}
 
+		# El resto de la API. Además del tope, Caddy LEE EL CUERPO ENTERO antes
+		# de pasar la petición (SLOW-BODY): Django atiende con ocho hilos, y un
+		# cuerpo que llega a cuentagotas ocuparía uno mientras dure. Con nueve
+		# peticiones así, sin sesión, la API dejaba de responder. Sólo aquí: en
+		# las rutas de archivos el cuerpo es grande y Django no lo lee hasta
+		# haber comprobado la sesión.
 		handle {
 			request_body {
 				max_size 1MiB
 			}
-			reverse_proxy backend:8000
+			reverse_proxy backend:8000 {
+				request_buffers 1MiB
+			}
 		}
 	}
 

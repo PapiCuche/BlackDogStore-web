@@ -26,6 +26,7 @@ ROOT = Path(settings.BASE_DIR).parent
 BACKUP = ROOT / 'deploy' / 'backup.sh'
 RESTORE = ROOT / 'deploy' / 'restore.sh'
 HEALTH = ROOT / 'deploy' / 'healthcheck.sh'
+COMPOSE_FILE = ROOT / 'docker-compose.prod.yml'
 
 #: Plays `docker compose`. Every call is appended to $STUB_LOG. The dump is a
 #: complete one; the archive of stored files is whatever $STUB_FILES says.
@@ -230,3 +231,25 @@ class HealthCheckTest(_Scripts):
         result = self.run_script(HEALTH)
         self.assertEqual(result.returncode, 1)
         self.assertIn('ATENCIÓN copia de seguridad: la última copia completa tiene más de 26 horas', result.stdout)
+
+
+@skipUnless(COMPOSE_FILE.exists(), 'docker-compose.prod.yml is not part of this checkout')
+class ComposeFileTest(SimpleTestCase):
+    def test_no_container_can_fill_the_disk_with_its_own_log(self):
+        """
+        LOG-ROTATION. Docker keeps what a container prints in one file that
+        grows without limit. The backend prints a line per request and one per
+        health check: left alone, the log is what fills the disk, and a full
+        disk is a database that stops.
+        """
+        import re
+
+        text = COMPOSE_FILE.read_text(encoding='utf-8')
+        anchor = re.search(r'x-logging: &([\w-]+)\n((?:  .*\n)+)', text)
+        self.assertIsNotNone(anchor, 'the compose file declares no shared log settings')
+        self.assertRegex(anchor.group(2), r'max-size: "\d+m"')
+        self.assertRegex(anchor.group(2), r'max-file: "\d+"')
+        services = re.search(r'\nservices:\n(.*?)\nvolumes:\n', text, re.S).group(1)
+        names = re.findall(r'(?m)^  (\w+):\n', services)
+        self.assertEqual(sorted(names), ['backend', 'caddy', 'frontend', 'postgres'])
+        self.assertEqual(services.count(f'logging: *{anchor.group(1)}'), len(names))

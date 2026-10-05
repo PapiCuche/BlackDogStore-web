@@ -222,3 +222,28 @@ class ProxyAgreesTest(SimpleTestCase):
     def test_no_request_reaches_an_application_without_a_limit(self):
         text = CADDYFILE.read_text(encoding='utf-8')
         self.assertEqual(text.count('reverse_proxy '), text.count('max_size '))
+
+    def test_the_proxy_does_not_wait_forever_for_a_request(self):
+        """
+        PROXY-TIMEOUTS. Without them a client that opens a connection and sends
+        nothing, or sends one byte a minute, keeps it for as long as it likes.
+        """
+        text = CADDYFILE.read_text(encoding='utf-8')
+        block = re.search(r'timeouts \{(.*?)\}', text, re.S)
+        self.assertIsNotNone(block, 'the proxy file sets no timeouts')
+        for name in ('read_header', 'read_body', 'idle'):
+            self.assertRegex(block.group(1), rf'\b{name} \d+[sm]\b')
+
+    def test_the_proxy_reads_a_small_body_whole_before_the_application_sees_it(self):
+        """
+        SLOW-BODY. Django answers with eight threads. A body that trickles in
+        holds one of them for as long as it lasts, and eight such requests to any
+        open endpoint leave the API without threads. For the routes whose body
+        is at most the default, the proxy reads it first: the application only
+        ever receives a request that has finished arriving.
+        """
+        text = CADDYFILE.read_text(encoding='utf-8')
+        fallback = re.search(
+            r'handle \{\s*request_body \{\s*max_size 1MiB\s*\}\s*reverse_proxy backend:8000 \{(.*?)\}', text, re.S)
+        self.assertIsNotNone(fallback, 'the default API route does not configure its proxy')
+        self.assertRegex(fallback.group(1), r'\brequest_buffers 1MiB\b')
