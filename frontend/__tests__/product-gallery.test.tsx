@@ -146,6 +146,34 @@ describe('galería guardada', () => {
     expect(api.patchProductImage).toHaveBeenCalledWith(7, 1, { alt_text: 'Vista frontal' });
   });
 
+  it('guardar el texto alternativo no se come el clic que viene después', async () => {
+    // Al pulsar un botón, el campo pierde el foco y empieza a guardarse. Si ese
+    // guardado deshabilitara los botones, el clic que lo provocó se perdería:
+    // quien escribe el texto y pulsa «Marcar como principal» no marcaría nada.
+    let finishAlt: (value: admin.AdminProductImage) => void = () => {};
+    api.patchProductImage
+      .mockImplementationOnce(() => new Promise((resolve) => { finishAlt = resolve; }))
+      .mockResolvedValueOnce(image(2, { is_primary: true, alt_text: 'Detalle' }));
+    const onChange = jest.fn();
+    render(<ProductGallery productId={7} productName="Teléfono" images={[image(1, { is_primary: true }), image(2)]} onChange={onChange} />);
+
+    const field = screen.getByLabelText('Texto alternativo de la imagen 2');
+    fireEvent.change(field, { target: { value: 'Detalle' } });
+    fireEvent.blur(field);
+    const makePrimary = screen.getByRole('button', { name: 'Marcar como principal: imagen 2' });
+    expect(makePrimary).toBeEnabled();
+    await act(async () => { fireEvent.click(makePrimary); });
+    expect(api.patchProductImage).toHaveBeenLastCalledWith(7, 2, { is_primary: true });
+
+    // La respuesta del texto llega DESPUÉS y trae el estado de antes: no
+    // puede quitar la marca de principal que ya se puso.
+    await act(async () => { finishAlt(image(2, { is_primary: false, alt_text: 'Detalle' })); });
+    expect(onChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 1, is_primary: false }),
+      expect.objectContaining({ id: 2, is_primary: true, alt_text: 'Detalle' }),
+    ]);
+  });
+
   it('quitar pide confirmación y, si era la principal, toma la que el servidor eligió', async () => {
     const onChange = jest.fn();
     api.deleteProductImage.mockResolvedValueOnce([image(2, { is_primary: true })]);

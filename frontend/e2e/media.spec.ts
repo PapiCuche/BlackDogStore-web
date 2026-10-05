@@ -82,7 +82,7 @@ test("las imágenes subidas en el panel llegan al catálogo y a la ficha", async
     ]);
     const items = page.getByRole("listitem").filter({ has: page.getByLabel(/^Texto alternativo de la imagen/) });
     await expect(items).toHaveCount(2, { timeout: 30_000 });
-    await expect(items.nth(0).getByText("Principal")).toBeVisible();
+    await expect(items.nth(0).getByText("Principal", { exact: true })).toBeVisible();
     const first = (await items.nth(0).getByRole("img").getAttribute("src"))!;
     const second = (await items.nth(1).getByRole("img").getAttribute("src"))!;
     expect(first).toMatch(MANAGED);
@@ -93,12 +93,12 @@ test("las imágenes subidas en el panel llegan al catálogo y a la ficha", async
     await alt.fill("Detalle del producto");
     await alt.blur();
     await page.getByRole("button", { name: "Marcar como principal: imagen 2" }).click();
-    await expect(items.nth(1).getByText("Principal")).toBeVisible();
+    await expect(items.nth(1).getByText("Principal", { exact: true })).toBeVisible();
 
     // --- persiste al recargar -------------------------------------------------
     await page.reload({ waitUntil: "networkidle" });
     await expect(items).toHaveCount(2);
-    await expect(items.nth(1).getByText("Principal")).toBeVisible();
+    await expect(items.nth(1).getByText("Principal", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Texto alternativo de la imagen 2")).toHaveValue("Detalle del producto");
     // Con galería, la dirección no se escribe a mano.
     await expect(page.getByLabel(/Dirección de imagen externa/)).toHaveCount(0);
@@ -227,6 +227,8 @@ test("el técnico sube varias fotos con nota y la orden las conserva", async ({ 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(String(error)));
 
+  // `api` llama desde la página: necesita estar en el sitio.
+  await page.goto("/admin", { waitUntil: "networkidle" });
   const orders = await api(page, "GET", `${INTERNAL}/service/orders/`);
   const order = (orders.data?.results ?? orders.data ?? [])[0];
   test.skip(!order, "la base de pruebas no tiene órdenes de servicio sembradas");

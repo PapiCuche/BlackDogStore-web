@@ -143,18 +143,31 @@ export function ProductGallery({ productId, productName, images, onChange, readO
     });
   }
 
-  function saveAlt(image: AdminProductImage) {
+  /**
+   * Guarda el texto alternativo al salir del campo.
+   *
+   * NO pasa por `act` y NO deshabilita nada. El campo pierde el foco justo
+   * cuando se pulsa un botón: si este guardado apagara los botones, el clic
+   * que lo provocó se perdería. Y de la respuesta sólo se toma el texto: llega
+   * con el estado de cuando salió, y lo demás pudo cambiar entretanto.
+   */
+  async function saveAlt(image: AdminProductImage) {
     const draft = drafts[image.id];
     if (draft === undefined || draft.trim() === image.alt_text) return;
-    return act(image.id, async () => {
+    setError(null);
+    try {
       const updated = await patchProductImage(productId, image.id, { alt_text: draft.trim() });
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[image.id];
         return next;
       });
-      return current.current.map((row) => (row.id === updated.id ? updated : row));
-    });
+      publish(current.current.map((row) => (
+        row.id === updated.id ? { ...row, alt_text: updated.alt_text } : row
+      )));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar el texto alternativo.");
+    }
   }
 
   function remove(image: AdminProductImage) {
@@ -261,7 +274,6 @@ export function ProductGallery({ productId, productName, images, onChange, readO
                         aria-label={`Texto alternativo de la imagen ${position}`}
                         value={drafts[image.id] ?? image.alt_text}
                         maxLength={160}
-                        disabled={working}
                         placeholder={productName}
                         onChange={(event) => setDrafts((prev) => ({ ...prev, [image.id]: event.target.value }))}
                         onBlur={() => void saveAlt(image)}
