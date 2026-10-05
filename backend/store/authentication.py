@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.http import QueryDict
 from django.middleware.csrf import CsrfViewMiddleware
 from rest_framework import exceptions
 from rest_framework.authentication import BaseAuthentication
@@ -16,6 +17,37 @@ class _CSRFCheck(CsrfViewMiddleware):
         return reason
 
 
+class _WithoutForm:
+    """
+    The request, minus its form (CSRF-BODY-READ).
+
+    Django looks for the CSRF token in the FORM before it looks at the header,
+    and looking at the form means parsing the whole body: a multipart upload is
+    written to a temporary file. Here that ran right after the cookie's signature
+    was checked and before any permission, so any signed-in account — a
+    customer's too — could make the server receive and store an upload on a
+    route it would then be refused on, and hold a thread while it arrived.
+
+    This API takes the token from the `X-CSRFToken` header only. Everything else
+    is the real request: the middleware reads and writes through.
+    """
+
+    __slots__ = ('_request',)
+
+    def __init__(self, request):
+        object.__setattr__(self, '_request', request)
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._request, name, value)
+
+    @property
+    def POST(self):
+        return QueryDict()
+
+
 def enforce_csrf(request):
     """
     Run a CSRF check on *request* and raise PermissionDenied if it fails.
@@ -23,11 +55,14 @@ def enforce_csrf(request):
     Reusable by any view that needs CSRF enforcement outside of the normal
     CookieJWTAuthentication flow (e.g. LogoutView).  Safe methods (GET, HEAD,
     OPTIONS, TRACE) are automatically skipped by the underlying middleware.
+
+    The token is read from the header and never from the body: see `_WithoutForm`.
     """
     def dummy_get_response(req):  # pragma: no cover
         return None
 
     check = _CSRFCheck(dummy_get_response)
+    request = _WithoutForm(request)
     check.process_request(request)
     reason = check.process_view(request, None, (), {})
     if reason:
