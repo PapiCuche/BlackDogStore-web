@@ -100,7 +100,9 @@ test("un equipo sin cuenta se sigue por su enlace y la cotización se aprueba de
   await page.goto("/admin");
   const { order, device, path } = await orderWithPublishedQuote(page, "ENLACE");
   expect(path).toMatch(/^\/seguimiento\/[A-Za-z0-9_-]{43}$/);
-  expect(path).not.toContain(String(order.id));
+  // El código no se deriva de la orden. Se compara con su NÚMERO, que es un texto entero:
+  // buscar el id («24») dentro de 43 caracteres al azar falla sola una de cada cien veces.
+  expect(path).not.toContain(String(order.number));
 
   // El cliente: un navegador sin ninguna sesión.
   const guest = await browser.newContext({ baseURL });
