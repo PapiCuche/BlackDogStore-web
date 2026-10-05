@@ -79,6 +79,10 @@ PRODUCT_FIELDS = {
     'description': {'label': 'Descripción',         'required': False},
     'category':    {'label': 'Categoría',           'required': False},
     'image_url':   {'label': 'URL de imagen',       'required': False},
+    # BULK-MEDIA: nombres de ARCHIVO, no direcciones. Los archivos viajan con
+    # el libro (sueltos o en un ZIP) y se casan por nombre.
+    'image_main':  {'label': 'Imagen principal (archivo)', 'required': False},
+    'image_files': {'label': 'Imágenes (archivos, separados por |)', 'required': False},
     'slug':        {'label': 'Slug',                'required': False},
     'is_active':   {'label': 'Activo',              'required': False},
 }
@@ -172,6 +176,38 @@ def _preset_products_sunat_pos():
     }
 
 
+def _preset_products_platform():
+    """
+    The platform's own product template (`import_exports.product_template_bytes`).
+
+    It had no preset: whoever downloaded the template had to map its columns by
+    hand before importing it back. Matched on the two columns no product file
+    can do without, so a template with columns removed or reordered still fits.
+    Listed AFTER the POS preset, which is the more specific of the two.
+    """
+    return {
+        'key': 'products_platform',
+        'import_type': BulkImportJob.PRODUCTS,
+        'label': 'Productos — plantilla de la plataforma',
+        'sheet_name': '',
+        'header_row': 1,
+        'headers': [],
+        'match_headers': ['nombre', 'precio de venta'],
+        'mapping': {
+            'barcode': 'codigo de barras',
+            'code': 'codigo',
+            'name': 'nombre',
+            'description': 'descripcion',
+            'price': 'precio de venta',
+            'category': 'categoria',
+            'image_url': 'url de imagen',
+            'image_main': 'imagen principal',
+            'image_files': 'imagenes',
+        },
+        'notes': [],
+    }
+
+
 def _preset_stock_sunat_pos():
     """
     The 5-column inventory export: `ID · CODIGO · CODIGO EAN · NOMBRE · ALMACEN …`.
@@ -209,7 +245,7 @@ def _preset_stock_sunat_pos():
     }
 
 
-PRESETS = [_preset_products_sunat_pos(), _preset_stock_sunat_pos()]
+PRESETS = [_preset_products_sunat_pos(), _preset_products_platform(), _preset_stock_sunat_pos()]
 
 
 def warehouse_columns(headers, *, pattern=r'^(almacen|deposito|sucursal|tienda|stock)\b'):
