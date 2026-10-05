@@ -25,6 +25,7 @@ export default function RepairsPage() {
   const [repairs, setRepairs] = useState<AccountRepair[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState("");
+  const [documentNumber, setDocumentNumber] = useState("");
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
 
@@ -56,8 +57,9 @@ export default function RepairsPage() {
     setClaiming(true);
     setClaimError(null);
     try {
-      await claimRepair(tokenFromInput(link));
+      await claimRepair(tokenFromInput(link), documentNumber.trim());
       setLink("");
+      setDocumentNumber("");
       await load();
     } catch (err) {
       setClaimError(err instanceof Error ? err.message : "No se pudo agregar la orden a tu cuenta.");
@@ -88,8 +90,8 @@ export default function RepairsPage() {
 
       {repairs !== null && repairs.length === 0 ? (
         <p className="rounded-2xl border border-bd-border bg-surface p-6 text-sm text-muted">
-          Todavía no hay reparaciones en tu cuenta. Si dejaste un equipo en la tienda, agrega aquí
-          el enlace de seguimiento que te entregaron.
+          Todavía no hay reparaciones en tu cuenta. Si dejaste un equipo en la tienda, agrégalo
+          abajo con el enlace de seguimiento que te entregaron y tu documento.
         </p>
       ) : null}
 
@@ -124,7 +126,8 @@ export default function RepairsPage() {
       <form onSubmit={claim} className="rounded-2xl border border-bd-border bg-surface p-5">
         <h2 className="text-sm font-semibold text-foreground">Agregar una orden</h2>
         <p className="mt-1 text-xs text-muted">
-          Pega el enlace de seguimiento que te dio la tienda para verla siempre desde tu cuenta.
+          Pega el enlace de seguimiento que te dio la tienda y escribe el documento con el que
+          dejaste el equipo. Desde entonces verás aquí todas tus reparaciones en esta tienda.
         </p>
         <label className="mt-3 block text-xs text-muted">
           Enlace de seguimiento
@@ -136,10 +139,20 @@ export default function RepairsPage() {
             className="mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/25"
           />
         </label>
+        <label className="mt-3 block text-xs text-muted">
+          Número de documento
+          <input
+            value={documentNumber}
+            onChange={(e) => setDocumentNumber(e.target.value)}
+            autoComplete="off"
+            inputMode="text"
+            className="mt-1.5 w-full rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/25"
+          />
+        </label>
         {claimError ? <p role="alert" className="mt-2 text-xs text-danger">{claimError}</p> : null}
         <button
           type="submit"
-          disabled={claiming || !link.trim()}
+          disabled={claiming || !link.trim() || !documentNumber.trim()}
           className="mt-3 rounded-xl border border-primary bg-primary px-4 py-2.5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"
         >
           Agregar a mi cuenta

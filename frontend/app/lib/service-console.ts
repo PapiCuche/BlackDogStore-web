@@ -610,16 +610,28 @@ export const setWhatsAppConsent = (slug: string, customerId: number, optIn: bool
 export const retryWhatsAppNotice = (slug: string, id: number, noticeId: number) =>
   post<ServiceCustomerNotice>(`${order(slug, id)}/notifications/${noticeId}/whatsapp/retry/`);
 
-/** The link reception hands to the customer. `path` is null once revoked. */
+/**
+ * What anybody who opens the order may know about its tracking link: whether it
+ * exists and whether it is used. NOT the link — see `revealTrackingLink`.
+ */
 export type ServiceTrackingLink = {
   active: boolean;
-  path: string | null;
   view_count: number;
   last_viewed_at: string | null;
+  /** Whether THIS caller may be handed the link. The server decides again on reveal. */
+  can_reveal: boolean;
 };
 
 export const fetchTrackingLink = (slug: string, id: number) =>
   get<ServiceTrackingLink>(`${order(slug, id)}/tracking-link/`);
+
+/**
+ * The link itself, to hand to the customer. An explicit, audited act: whoever
+ * holds the link can answer the quote as the customer, so the server gives it
+ * only to somebody who may already record the customer's decision.
+ */
+export const revealTrackingLink = (slug: string, id: number) =>
+  post<{ path: string; url: string }>(`${order(slug, id)}/tracking-link/reveal/`);
 
 export const rotateTrackingLink = (slug: string, id: number) =>
   post<ServiceTrackingLink>(`${order(slug, id)}/tracking-link/rotate/`);

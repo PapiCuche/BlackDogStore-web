@@ -79,10 +79,13 @@ test('pasting the whole link adds that order to the account', async () => {
   fireEvent.change(screen.getByLabelText('Enlace de seguimiento'), {
     target: { value: ` https://tienda.example/seguimiento/${TOKEN}?x=1 ` },
   });
+  // El enlace solo no basta: abre una orden, y esto entrega el historial entero.
+  expect(screen.getByRole('button', { name: 'Agregar a mi cuenta' })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Número de documento'), { target: { value: ' 45678912 ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Agregar a mi cuenta' }));
 
   expect(await screen.findByRole('link', { name: /SRV-000050/ })).toBeInTheDocument();
-  expect(posted).toEqual([{ token: TOKEN }]);
+  expect(posted).toEqual([{ token: TOKEN, document_number: '45678912' }]);
 });
 
 test('an order that belongs to another account is refused with the reason', async () => {
@@ -91,7 +94,20 @@ test('an order that belongs to another account is refused with the reason', asyn
   await screen.findByRole('link', { name: /SRV-000042/ });
 
   fireEvent.change(screen.getByLabelText('Enlace de seguimiento'), { target: { value: TOKEN } });
+  fireEvent.change(screen.getByLabelText('Número de documento'), { target: { value: '45678912' } });
   fireEvent.click(screen.getByRole('button', { name: 'Agregar a mi cuenta' }));
 
   expect(await screen.findByText('Esta orden ya pertenece a otra cuenta.')).toBeInTheDocument();
+});
+
+test('a document that does not match is refused in the server\'s words', async () => {
+  claim = { status: 403, body: { detail: 'El documento no coincide con el de esta orden.' } };
+  render(<RepairsPage />);
+  await screen.findByRole('link', { name: /SRV-000042/ });
+
+  fireEvent.change(screen.getByLabelText('Enlace de seguimiento'), { target: { value: TOKEN } });
+  fireEvent.change(screen.getByLabelText('Número de documento'), { target: { value: '99999999' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Agregar a mi cuenta' }));
+
+  expect(await screen.findByText('El documento no coincide con el de esta orden.')).toBeInTheDocument();
 });

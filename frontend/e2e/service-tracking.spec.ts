@@ -83,7 +83,11 @@ async function orderWithPublishedQuote(page: Page, label: string) {
     item_type: "labor", description: `Cambio de conector ${RUN}`, quantity: "1", unit_price: "120.00",
   });
   await must("POST", `${base}/quotes/${quote.id}/publish/`);
-  const link = await must("GET", `${base}/tracking-link/`);
+  // El estado no trae el enlace: se pide aparte, y queda registrado quién lo pidió.
+  const status = await must("GET", `${base}/tracking-link/`);
+  expect(status.active).toBe(true);
+  expect(JSON.stringify(status)).not.toContain("seguimiento");
+  const link = await must("POST", `${base}/tracking-link/reveal/`);
   return { order, quote, device, path: link.path as string };
 }
 
@@ -126,6 +130,8 @@ test("un equipo sin cuenta se sigue por su enlace y la cotización se aprueba de
   await page.goto(`/admin/service/orders/${order.id}`, { waitUntil: "networkidle" });
   await expect(page.getByText(/El cliente aprobó/)).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(/Enlace de seguimiento ·/)).toBeVisible();
+  await expect(page.getByLabel("Enlace de seguimiento")).toHaveCount(0);
+  await page.getByRole("button", { name: "Mostrar enlace" }).click();
   await expect(page.getByLabel("Enlace de seguimiento")).toHaveValue(new RegExp(`${path}$`));
 });
 

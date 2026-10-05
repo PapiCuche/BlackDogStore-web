@@ -164,10 +164,15 @@ export function tokenFromInput(value: string): string {
   return match ? match[1] : trimmed;
 }
 
-export async function claimRepair(token: string): Promise<void> {
+/**
+ * El enlace abre UNA orden; sumarla a la cuenta entrega todo el historial de ese
+ * cliente. Por eso hace falta además el documento con el que se registró en la
+ * tienda. Lo compara el servidor.
+ */
+export async function claimRepair(token: string, documentNumber: string): Promise<void> {
   const res = await fetchWithAuth(`${API_BASE}/account/repairs/claim/`, {
     method: "POST",
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, document_number: documentNumber }),
   });
   if (res.ok) return;
   const body = await res.json().catch(() => null);
