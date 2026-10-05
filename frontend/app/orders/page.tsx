@@ -84,7 +84,10 @@ export default function OrdersPage() {
             Mis pedidos
           </h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-muted">
-            Revisa las órdenes asociadas a tu cuenta y el estado de pago registrado.
+            Revisa las órdenes asociadas a tu cuenta y el estado de pago registrado.{" "}
+            <Link href="/repairs" className="font-semibold text-foreground underline underline-offset-4">
+              Ver mis reparaciones
+            </Link>
           </p>
         </header>
 

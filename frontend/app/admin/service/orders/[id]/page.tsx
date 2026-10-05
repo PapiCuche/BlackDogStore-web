@@ -29,6 +29,8 @@ import {
 } from "../../../components/InternalControlGuard";
 import { Button, Confirm, ErrorNote, Field, Panel, Pill, dateTime } from "../../components/ServiceUi";
 import { EvidenceGallery } from "../../components/EvidenceGallery";
+import { QuoteDecisionPanel } from "../../components/QuoteDecisionPanel";
+import { TrackingLinkPanel } from "../../components/TrackingLinkPanel";
 import {
   CAP_DELIVERY_MANAGE,
   CAP_PAYMENTS_MANAGE,
@@ -276,6 +278,12 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <QualitySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <PaymentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
+        <Panel
+          title="Seguimiento del cliente"
+          subtitle="El enlace con el que el cliente ve el avance, la cotización y las fotos compartidas, sin crear una cuenta. No muestra notas internas ni el IMEI completo."
+        >
+          <TrackingLinkPanel slug={slug} orderId={orderId} mayManage={may("service.orders.manage")} />
+        </Panel>
         <Panel
           title="Evidencias"
           subtitle="Fotografías de cada etapa del servicio, con su nota, su autor y su fecha. Nacen internas: compartirlas con el cliente es una acción aparte."
@@ -563,11 +571,11 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 </span>
               </div>
 
-              {q.decision ? (
-                <p className="mt-2 text-xs text-foreground/50">
-                  El cliente respondió {dateTime(q.decision.decided_at)}
-                  {q.decision.reason ? ` — “${q.decision.reason}”` : ""}
-                </p>
+              {q.decision || q.status === "sent" || q.status === "approved" ? (
+                <QuoteDecisionPanel
+                  slug={slug} orderId={orderId} quote={q} orderStatus={data.order.status}
+                  may={may} onChanged={() => void run(async () => undefined)}
+                />
               ) : null}
 
               {canManage && q.is_editable ? (
