@@ -330,6 +330,7 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 |---|---|---|---|---|
 | F-TENANT-01 | MEDIUM | TENANCY | `tenant_views.py::AdminMembershipListView.post`; `test_membership_consent.py` | CORREGIDO: alta directa sólo platform admin; administradores de empresa usan invitación + aceptación; sin oracle de username ni enrolamiento sin consentimiento |
 | THROTTLE-CACHE-01 | MEDIUM | INFRA/AUTH | `backend/backend/settings.py` (sin `CACHES`) | LocMemCache por proceso: límite ×N workers |
+| IZIPAY-PRODUCT | MEDIUM | PAYMENTS | `payments/izipay.py`, `payments/micuentaweb.py`, `checkout_services.py::require_payment_provider_configured` | BLOCKED/CREDENTIALS: Izipay tiene dos productos y los dos están integrados detrás de `PAYMENT_PROVIDER`; falta saber cuál tiene el propietario y probarlo en TEST (`MiCuentaWebSandboxSmokeTest` / `IzipaySandboxSmokeTest`) |
 | IZIPAY-TOKEN-CONTRACT | MEDIUM | PAYMENTS | `payments/izipay.py::request_session_token`, `checkout_services.py::build_payment_config` | BLOCKED/CREDENTIALS: la forma exacta del cuerpo de `Token/Generate` no se pudo leer en la referencia pública; sólo el sandbox real lo confirma (`IzipaySandboxSmokeTest`) |
 | FISCAL-PRINT-EXO | LOW | FISCAL | `fiscal_pdf_services.py`, `fiscal/representation.py` | PENDIENTE: totales exonerado/inafecto y descuentos no se imprimen por separado; el dominio sólo emite operaciones gravadas |
 | PRINT-USB | LOW | PRINTING | `backend/print_agent/agent.py` | PROPUESTA: sólo impresoras en red; USB y Bluetooth fuera |
@@ -550,6 +551,10 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
 | SVC-POS-DRAFT | FRONTEND | la recepción a medio llenar se pierde al volver a «Productos»; el modo servicio depende de que cargue el contexto de la caja | Baja | — |
 | SVC-ELIGIBLE-COST | SERVICE | la lista de candidatos resuelve capacidades y alcance por cada miembro del personal; el camino de asignar ya consulta a una sola persona | Baja | — |
+| PAY-RECONCILE | PAYMENTS | PENDIENTE: si la notificación (IPN) no llega nunca, un pedido cobrado queda en espera; no se consulta a la pasarela (`Order/Get` en «Mi Cuenta Web») ni hay tarea que lo detecte | Media | credenciales |
+| NOTE-LINE-DISCOUNT | DOCUMENTS | PENDIENTE: la venta guarda un precio por línea y el descuento del pedido; la columna «Dscto.» de la nota muestra 0.00. La atribución por línea de una promoción sólo existe en el camino fiscal | Baja | — |
+| UNIT-IMPORT-MAPPING | INVENTORY | PROPUESTA: la carga de equipos sólo lee la plantilla (cabeceras conocidas); no tiene asignación manual de columnas ni perfiles como la de stock | Baja | — |
+| DOC-FISCAL-STYLE | DOCUMENTS | PROPUESTA: las representaciones fiscales conservan su trazado propio (regulado); comparten logotipo e identidad pero no el módulo `document_style` | Baja | — |
 | WHATSAPP-CREDENTIALS | NOTIFY | BLOQUEADO: el envío real necesita número de WhatsApp Business, plantillas aprobadas y credenciales del propietario; contrato probado con `FakeProvider` y con `urlopen` simulado | Media | propietario |
 | GOOGLE-CLIENT-ID | AUTH | BLOQUEADO: falta `GOOGLE_OAUTH_CLIENT_ID` con el dominio autorizado; sin él el botón no se ofrece | Baja | propietario |
 | CUSTOMER-UNLINK-UI | SERVICE | la tienda deshace una vinculación cuenta–cliente por la API (`…/customers/<id>/unlink-account/`); sin pantalla. Tampoco hay fusión de dos registros del mismo cliente | Baja | — |
@@ -576,6 +581,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **Cierre 2026-10-04**: `master` @ `23d2603`. Infraestructura de producción (#59, `da5cca5`), `actions/setup-python` 7 (#64, `b632dca`), `reportlab` 5 (#67, `8196f6b`), PAYMENT-FISCAL-PRINT-01 (#81, `1b62f31`) y frontend V3 (#82, `23d2603`). Backend 4865; Jest 609; Playwright 176/176.
 - **MEDIA-EVIDENCE**: rama `feat/media-evidence`. Galería de producto, carga masiva con imágenes, evidencias con nota y ciclo completo. Backend 4965; Jest 659; Playwright 179/179. Decisiones DEC-MEDIA-01, DEC-IMPORT-MEDIA-01, DEC-EVIDENCE-01.
 - **SERVICE-TRACKING**: rama `feat/service-tracking-equipment`. Identidad de equipo, seguimiento por enlace, decisiones de cotización y ticket, avisos reales y WhatsApp, equipos con serie, categorías de portada, carrusel y Google. Migraciones `0102`–`0109`. Backend 5172; Jest 765; Playwright 183/183. Decisiones DEC-DEVICE-01 … DEC-GOOGLE-01. Revisión independiente: 2 P2 y 5 P3, corregidos (`fd99611`).
+- **PAYMENTS-EQUIPMENT-DOCUMENTS**: rama `feat/payments-equipment-documents`. Segundo producto de Izipay («Mi Cuenta Web») detrás de `PAYMENT_PROVIDER`; «Registrar equipo» y carga masiva «Equipos serializados.xlsx»; plantilla de productos con ayuda; trazado común de documentos con serie e IMEI por línea. Migración `0110`. Backend 5255 pruebas, 0 fallos, 5 omitidas; Jest 787/787; Playwright 184/184, 0 omitidas. Decisiones DEC-PAY-02, DEC-UNIT-IMPORT-01, DEC-DOC-01. Revisión independiente: 1 P2 y 5 P3, corregidos (`2d76298`).
 
 ---
 

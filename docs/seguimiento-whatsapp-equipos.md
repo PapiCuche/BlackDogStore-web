@@ -186,6 +186,9 @@ cantidad de equipos disponibles en ella. Por eso:
 El tablero muestra **Equipos disponibles**: es parte de las «Unidades en stock», no
 se suma a ellas.
 
+Registrar un equipo con su formulario y cargar muchos desde Excel están en
+`docs/pagos-equipos-documentos.md` §2 y §3.
+
 Todavía no: transferir equipos entre sucursales, recuento por lectura de series y
 elegir un equipo concreto al vender (hoy se asigna el más antiguo y se cobra el
 precio de catálogo; el precio propio de un equipo se guarda y se muestra).

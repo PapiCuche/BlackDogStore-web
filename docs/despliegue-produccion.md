@@ -103,7 +103,7 @@ Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria
 | Dominio | La dirección de la tienda | `SITE_DOMAIN` |
 | Servidor SMTP, usuario y contraseña | Invitar personal, recuperar contraseñas, avisos de pedido | `EMAIL_*` |
 | Correo que recibe los pedidos | Aviso de cada pedido pagado | `ORDER_NOTIFICATION_EMAIL` |
-| Credenciales de Izipay | Cobrar en línea | `IZIPAY_*` |
+| Credenciales de Izipay, y cuál de sus dos productos es | Cobrar en línea | `PAYMENT_PROVIDER` y `IZIPAY_*` o `MICUENTAWEB_*` (`docs/pagos-equipos-documentos.md` §1) |
 | Dónde se alojan las fotos de producto | Que la web pueda mostrarlas | `NEXT_PUBLIC_IMAGE_HOSTS` |
 | Número de WhatsApp Business, plantillas aprobadas, token, secreto de la aplicación y token de verificación | Avisos al cliente por WhatsApp (opcional) | `WHATSAPP_*` y `configure_whatsapp` |
 | ID de cliente OAuth de Google, con el dominio como origen autorizado | «Continuar con Google» (opcional) | `GOOGLE_OAUTH_CLIENT_ID` |

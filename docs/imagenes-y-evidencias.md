@@ -137,6 +137,12 @@ El reporte descargable (`errors.csv`) incluye los errores de imágenes.
 - **Límites de una carga:** 200 imágenes y 100 MB en total; 400 archivos dentro
   de un ZIP. Si tienes más, divide la carga en varias.
 
+### 3.6 Equipos con número de serie
+
+Los equipos con serie no se cargan con el Excel de inventario (escribe cantidades) ni
+con el de productos. Tienen su plantilla, «Equipos serializados.xlsx», una fila por
+equipo: `docs/pagos-equipos-documentos.md` §3.
+
 ## 4. Evidencias fotográficas del servicio técnico
 
 Panel › Servicio técnico › *una orden* › **Evidencias**.
