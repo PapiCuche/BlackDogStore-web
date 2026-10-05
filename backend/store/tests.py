@@ -43690,6 +43690,11 @@ class M12BServiceEventsTest(TestCase):
             company=self.company, branch=self.branch, customer=self.customer,
             device=self.device, reported_issue='No enciende.', actor=self.tech,
         )
+        # Receiving the device is itself a notice since NOTIFY-REAL-PATHS, and
+        # it is asserted where it belongs (`test_service_notifications`). These
+        # tests are about what the customer hears AFTERWARDS, so they start
+        # from an inbox that only holds what each of them provokes.
+        _Notif.objects.filter(event__event_type=_ev.SERVICE_ORDER_CREATED).delete()
 
     def _events(self, event_type=None):
         qs = _Event.objects.filter(company=self.company)

@@ -548,6 +548,10 @@ def create_repair_order(
         request=request,
         company=company,
     )
+
+    # The customer left a device: they are told it was received, and that is
+    # the notice that carries their tracking link on the channels that have one.
+    _notify(_emit_order_created, order=order)
     return order
 
 
@@ -685,6 +689,13 @@ def _apply_transition(order, *, to_status, actor, origin, comment, request=None)
         order, from_status=from_status, to_status=to_status,
         actor=actor, origin=origin, comment=comment,
     )
+
+    # NOTIFY-REAL-PATHS. The event operations are how an order actually reaches
+    # `waiting_parts`, `ready_for_pickup` and `delivered`, and they pass through
+    # here — not through `transition_repair_order`, which was the only place
+    # that told anybody. The emitter decides whether the state is worth a
+    # message; its key makes a repeat silent.
+    _notify(_emit_status_changed, order=order, to_status=to_status)
     return order
 
 
@@ -3494,6 +3505,31 @@ def _emit_assignment_created(*, order, assignment, technician):
     )
 
 
+def _emit_order_created(*, order):
+    """
+    The device was received. One notice, to the customer it belongs to.
+
+    Nothing from the intake form travels: not the reported fault, not the
+    physical condition, not the accessories. The order number is enough to
+    recognise it, and the detail lives behind the tracking link.
+    """
+    from . import notification_events as ev
+    from . import notification_services as notif
+
+    customer = _customer_of(order)
+    if customer is None:
+        return
+    notif.emit(
+        company=order.company,
+        event_type=ev.SERVICE_ORDER_CREATED,
+        event_key=ev.event_key(ev.SERVICE_ORDER_CREATED, 'repair_order', order.pk),
+        title='Recibimos tu equipo',
+        body=f'{_order_label(order)} · puedes seguir su avance cuando quieras.',
+        target_type='repair_order', target_id=order.pk,
+        customers=[customer],
+    )
+
+
 def _emit_quote_available(*, order, quote):
     from . import notification_events as ev
     from . import notification_services as notif
@@ -3524,6 +3560,10 @@ def _emit_quote_available(*, order, quote):
 #: to ignore them. Anything absent here still moves the order; it just does not
 #: interrupt anybody.
 _CUSTOMER_STATUS_MESSAGES = {
+    RepairStatusCode.IN_REPAIR: (
+        'Empezamos la reparación de tu equipo',
+        'Te avisaremos cuando esté listo.',
+    ),
     RepairStatusCode.WAITING_PARTS: (
         'Tu reparación está esperando un repuesto',
         'Te avisaremos en cuanto podamos continuar.',
