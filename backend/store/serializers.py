@@ -23,6 +23,30 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'slug', 'image_url']
 
 
+class PublicCategorySerializer(CategorySerializer):
+    """
+    The storefront's list of categories, in the shop's order.
+
+    `show_on_home` travels so ONE request serves the menu (every active
+    category) and the home page (the ones the shop chose to illustrate). It is
+    a separate class so a product's nested `category` keeps its four fields.
+    """
+
+    class Meta(CategorySerializer.Meta):
+        fields = CategorySerializer.Meta.fields + ['show_on_home']
+
+
+class AdminCategorySerializer(CategorySerializer):
+    """What the panel reads: every category, with how it is shown and how full it is."""
+
+    product_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta(CategorySerializer.Meta):
+        fields = CategorySerializer.Meta.fields + [
+            'is_active', 'show_on_home', 'home_order', 'product_count',
+        ]
+
+
 class ReviewSerializer(serializers.ModelSerializer):
     """
     Reviews, read and written — Phase 0.3 / P0-D.
@@ -552,9 +576,11 @@ class AdminCategoryUpdateSerializer(serializers.ModelSerializer):
     operation with its own consequences.
     """
 
+    home_order = serializers.IntegerField(required=False, min_value=0, max_value=999)
+
     class Meta:
         model = Category
-        fields = ['name', 'image_url']
+        fields = ['name', 'image_url', 'is_active', 'show_on_home', 'home_order']
         extra_kwargs = {'name': {'required': False}, 'image_url': {'required': False}}
 
 

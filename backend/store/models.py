@@ -140,6 +140,16 @@ class Category(models.Model):
         validators=[validate_asset_url],
     )
 
+    # STOREFRONT-CATEGORIES. How THIS shop presents the category, decided by
+    # the shop and not by a list in the frontend:
+    #   is_active     offered to the public at all (menu, catalogue filter, home).
+    #                 Retiring a category does not hide its products.
+    #   show_on_home  one of the families the home page illustrates.
+    #   home_order    ascending; ties go by name.
+    is_active = models.BooleanField(default=True)
+    show_on_home = models.BooleanField(default=True)
+    home_order = models.PositiveSmallIntegerField(default=0)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(

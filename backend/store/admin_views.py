@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.http import HttpResponse
-from django.db.models import F, Q
+from django.db.models import Count, F, Max, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -36,6 +36,7 @@ from .serializers import (
     AdminCategoryUpdateSerializer, AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
     AdminOrderDetailSerializer, AdminOrderFulfillmentSerializer, AdminOrderListSerializer,
     AdminProductDetailSerializer, AdminProductSerializer, AdminProductWriteSerializer,
+    AdminCategorySerializer,
     CategorySerializer,
 )
 from .throttles import (
@@ -796,8 +797,12 @@ class AdminCategoryListView(APIView):
         company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
         if error:
             return error
-        categories = Category.objects.filter(company=company).order_by('name')
-        return Response(CategorySerializer(categories, many=True).data)
+        categories = (
+            Category.objects.filter(company=company)
+            .annotate(product_count=Count('product'))
+            .order_by('home_order', 'name')
+        )
+        return Response(AdminCategorySerializer(categories, many=True).data)
 
     def post(self, request):
         company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
@@ -807,7 +812,10 @@ class AdminCategoryListView(APIView):
             data=request.data, context={'company': company},
         )
         ser.is_valid(raise_exception=True)
-        category = ser.save(company=company)
+        # A new category goes LAST: it never jumps ahead of an order somebody
+        # already arranged.
+        last = Category.objects.filter(company=company).aggregate(top=Max('home_order'))['top']
+        category = ser.save(company=company, home_order=min(999, (last or 0) + 1))
         AdminAuditLog.log(
             actor=request.user,
             action='category_created',
@@ -841,7 +849,11 @@ class AdminCategoryDetailView(APIView):
         if category is None:
             return Response({'detail': 'Categoría no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
 
-        before = {'name': category.name, 'image_url': category.image_url}
+        before = {
+            'name': category.name, 'image_url': category.image_url,
+            'is_active': category.is_active, 'show_on_home': category.show_on_home,
+            'home_order': category.home_order,
+        }
         ser = AdminCategoryUpdateSerializer(category, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         # Una sola transacción: lo que se coloca se comprueba, se guarda, y lo
@@ -874,7 +886,8 @@ class AdminCategoryDetailView(APIView):
                     [before['image_url']], company=company,
                     actor=request.user, request=request,
                 )
-        return Response(CategorySerializer(category).data)
+        category.product_count = category.product_set.count()
+        return Response(AdminCategorySerializer(category).data)
 
 
 # ---------------------------------------------------------------------------

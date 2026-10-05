@@ -848,7 +848,9 @@ def company_storefront_categories(company):
 
     if company is None:
         return Category.objects.none()
-    return Category.objects.filter(company=company)
+    # What the PUBLIC is offered: a retired category is not in the menu, the
+    # filter or the home. Its products are untouched — see `Category.is_active`.
+    return Category.objects.filter(company=company, is_active=True)
 
 
 def customer_owned_orders(user, company):

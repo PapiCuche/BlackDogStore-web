@@ -88,7 +88,7 @@ class V1StorefrontCategoryViewSet(V1PublicStorefrontMixin, viewsets.ReadOnlyMode
     lookup_field = 'slug'
 
     def get_queryset(self):
-        return company_storefront_categories(self.get_storefront_company()).order_by('name')
+        return company_storefront_categories(self.get_storefront_company()).order_by('home_order', 'name')
 
 
 class V1StorefrontProductViewSet(V1PublicStorefrontMixin, viewsets.ReadOnlyModelViewSet):

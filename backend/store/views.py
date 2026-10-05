@@ -31,6 +31,7 @@ from .email_services import send_order_emails_after_payment
 from .commerce_notifications import emit_payment_confirmed
 from .serializers import (
     CategorySerializer,
+    PublicCategorySerializer,
     ProductSerializer,
     OrderSerializer,
     CartItemSerializer,
@@ -60,10 +61,11 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     ordering long before it reaches a serializer.
     """
 
-    serializer_class = CategorySerializer
+    serializer_class = PublicCategorySerializer
 
     def get_queryset(self):
-        return storefront_categories(self.request).order_by('name')
+        # The order is the shop's (`home_order`), then alphabetical.
+        return storefront_categories(self.request).order_by('home_order', 'name')
 
 
 _PRODUCT_ORDERING_WHITELIST = {
