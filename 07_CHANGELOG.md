@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — Frontend V3 y cierre
+
+- La V3 es el único diseño de la tienda, las páginas de cuenta y el panel (#82). El
+  frontend anterior queda en la etiqueta `frontend-anterior-2026-10-04`.
+- Un solo hero, que sigue al tema; se retira la opción «Estilo del hero» del panel.
+- CART-CSRF-01: el carrito de un cliente con sesión iniciada vuelve a aceptar cambios.
+- Integrados #81 (PAYMENT-FISCAL-PRINT-01), #67 (`reportlab` 5, validado a la vista),
+  #64 (`actions/setup-python` 7) y #59 (infraestructura de producción).
+- Backend 4865 pruebas; Jest 609/609; Playwright 176/176, 0 omitidas.
+- Abierta: #80 (TypeScript 6, DEP-TS6).
+
 ## 2026-10-04 — PAYMENT-FISCAL-PRINT-01
 
 - Izipay falso para pruebas (token y notificaciones) y corrección de una repetición
