@@ -115,8 +115,28 @@ export type ServiceOrderRow = {
 
 export type ServiceTransition = { code: string; label: string };
 
+/**
+ * One notice to the customer, and what happened to it on each channel. READ
+ * from the server: "sent" means a provider took it. The recipient is masked.
+ */
+export type ServiceCustomerNotice = {
+  id: number;
+  title: string;
+  created_at: string;
+  email_status: string;
+  whatsapp_status: string;
+  whatsapp_detail: string | null;
+  whatsapp_recipient: string | null;
+  whatsapp_sent_at: string | null;
+  whatsapp_delivered_at: string | null;
+  whatsapp_read_at: string | null;
+};
+
 export type ServiceOrderDetail = ServiceOrderRow & {
-  customer_notifications?: { id: number; title: string; created_at: string; email_status: string }[];
+  customer_notifications?: ServiceCustomerNotice[];
+  /** Whether this company sends by WhatsApp, and whether THIS customer agreed. */
+  whatsapp?: { enabled: boolean; customer_opt_in: boolean };
+  customer: number;
   reported_issue: string;
   physical_condition: string;
   received_accessories: string;
@@ -579,6 +599,16 @@ export async function printQuoteTicket(slug: string, id: number, quoteId: number
   }
   return printPdfResponse(res, `cotizacion-${id}-ticket80.pdf`);
 }
+
+/** The customer told somebody they do (or no longer do) want WhatsApp notices. */
+export const setWhatsAppConsent = (slug: string, customerId: number, optIn: boolean) =>
+  post<{ whatsapp_opt_in: boolean }>(
+    `${base(slug)}/customers/${customerId}/whatsapp-consent/`, { opt_in: optIn },
+  );
+
+/** Try again a message that did not go out. One that already left is left alone. */
+export const retryWhatsAppNotice = (slug: string, id: number, noticeId: number) =>
+  post<ServiceCustomerNotice>(`${order(slug, id)}/notifications/${noticeId}/whatsapp/retry/`);
 
 /** The link reception hands to the customer. `path` is null once revoked. */
 export type ServiceTrackingLink = {

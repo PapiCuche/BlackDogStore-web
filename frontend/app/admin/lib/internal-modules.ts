@@ -410,6 +410,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "admin.messaging",
+    group: "administration",
+    label: "Mensajería",
+    description: "Avisos al cliente por WhatsApp: plantillas, activación y estado.",
+    href: "/admin/settings/messaging",
+    // `settings.view` para llegar; cambiar exige `settings.manage`, que el
+    // servidor comprueba. Las credenciales no se gestionan desde aquí.
+    requiredCapabilities: ["settings.view"],
+    status: "implemented",
+  },
+  {
     id: "admin.storefront",
     group: "administration",
     label: "Escaparate",
