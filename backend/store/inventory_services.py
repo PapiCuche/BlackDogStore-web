@@ -314,6 +314,19 @@ def create_stock_movement(
         # product concurrently add up instead of overwriting each other.
         Product.objects.filter(pk=product.pk).update(inventory=F('inventory') + delta)
 
+        # That UPDATE holds the product row until this transaction ends, and
+        # `stock_unit_services.set_serialized` takes the same row before it
+        # changes how the product is counted. So from here the answer is
+        # stable — and if it is not the one this movement was validated
+        # against, the movement is undone: a number written to a product that
+        # became serialized meanwhile would have no devices behind it.
+        if Product.objects.filter(pk=product.pk).values_list('is_serialized', flat=True).get() \
+                != product.is_serialized:
+            raise InvalidMovementError(
+                f'"{product.name}" cambió su forma de control mientras se registraba el '
+                'movimiento. Vuelve a intentarlo.'
+            )
+
         return StockMovement.objects.create(
             company_id=branch.company_id,
             branch=branch,

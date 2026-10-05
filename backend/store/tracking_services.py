@@ -51,9 +51,10 @@ TOKEN_LENGTH = 43
 class TrackingError(Exception):
     """No se puede hacer lo pedido con este enlace. `conflict` -> 409."""
 
-    def __init__(self, message: str, *, conflict: bool = False):
+    def __init__(self, message: str, *, conflict: bool = False, forbidden: bool = False):
         super().__init__(message)
         self.conflict = conflict
+        self.forbidden = forbidden
 
 
 def _key() -> bytes:
@@ -87,7 +88,7 @@ def resolve(token) -> RepairTrackingLink | None:
     # UNA SOLA ESCRITURA. Los 32 bytes dejan dos bits sin usar en el último
     # carácter, así que otros tres caracteres decodifican igual. Sólo vale el
     # enlace tal como se emitió.
-    if not hmac.compare_digest(_token(uid), text):
+    if not hmac.compare_digest(_token(uid).encode(), text.encode()):
         return None
     return (
         RepairTrackingLink.objects
@@ -188,26 +189,44 @@ def record_view(link: RepairTrackingLink) -> None:
     )
 
 
-def staff_payload(repair_order) -> dict:
+def staff_payload(repair_order, *, can_reveal: bool = False) -> dict:
     """
-    Lo que el personal necesita para entregar el enlace.
+    Lo que cualquiera que abre la orden puede saber del enlace: SI EXISTE Y SI
+    SE USA. El enlace mismo no va aquí — ver `reveal`.
 
     Una orden anterior a los enlaces recibe el suyo aquí, la primera vez que
-    alguien lo pide. Una orden cuyo enlace fue REVOCADO sigue sin enlace: eso
+    alguien pregunta. Una orden cuyo enlace fue REVOCADO sigue sin enlace: eso
     no lo deshace una lectura (ver `link_for`).
     """
     link = link_for(repair_order)
+    return {
+        'active': link is not None,
+        'view_count': link.view_count if link is not None else 0,
+        'last_viewed_at': link.last_viewed_at if link is not None else None,
+        'can_reveal': bool(can_reveal),
+    }
+
+
+def reveal(repair_order, *, actor, request=None) -> dict:
+    """
+    El enlace, para entregárselo al cliente. UN ACTO, CON SU REGISTRO.
+
+    QUIEN TIENE EL ENLACE PUEDE RESPONDER LA COTIZACIÓN COMO EL CLIENTE. Por eso
+    no se entrega a quien sólo puede abrir la orden: lo pide quien ya puede
+    anotar la decisión del cliente, y queda escrito quién lo pidió. El registro
+    no guarda el enlace.
+    """
+    link = link_for(repair_order)
     if link is None:
-        return {'active': False, 'path': None, 'url': None, 'created_at': None,
-                'view_count': 0, 'last_viewed_at': None}
+        raise TrackingError(
+            'Esta orden no tiene un enlace activo. Crea uno nuevo para entregarlo.',
+            conflict=True,
+        )
+    _audit('service_tracking_link_revealed', repair_order, actor, request)
     token = _token(link.uid)
     return {
-        'active': True,
         'path': f'/seguimiento/{token}',
         'url': f'{settings.FRONTEND_URL.rstrip("/")}/seguimiento/{token}',
-        'created_at': link.created_at,
-        'view_count': link.view_count,
-        'last_viewed_at': link.last_viewed_at,
     }
 
 
@@ -317,20 +336,45 @@ def account_rows(user, company) -> list[dict]:
     return rows
 
 
+CLAIM_ATTEMPTS = 5
+CLAIM_WINDOW_SECONDS = 3600
+
+
+def _claim_key(customer_id) -> str:
+    return f'tracking-claim-attempts:{customer_id}'
+
+
 @transaction.atomic
-def claim(token, *, user, request=None) -> Customer:
+def claim(token, *, user, document_number='', request=None) -> Customer:
     """
     Suma a la cuenta de `user` el cliente de la orden cuyo enlace presenta.
 
-    LA PRUEBA ES EL ENLACE. No el correo, no el teléfono, no el nombre: esos los
-    escribió cualquiera en un mostrador, y vincular por ellos entregaría el
-    historial de una persona a quien usara su dirección. El enlace se le dio al
-    cliente en mano o a su número; tenerlo es lo que se acepta.
+        EL ENLACE ABRE UNA ORDEN. VINCULAR ENTREGA UN CLIENTE ENTERO.
 
-    Lo que NO hace, y por eso no puede usarse para quedarse con una cuenta:
-      * no toca a un cliente que ya tiene cuenta (aunque sea la misma);
-      * no deja a una cuenta ser dos clientes de la misma empresa.
+    Todas sus reparaciones, sus compras y el derecho a responder sus
+    cotizaciones, para siempre. Un enlace se reenvía, se queda en un teléfono
+    prestado, lo ve quien lo entregó: por sí solo no puede comprar eso. Hace
+    falta además el DOCUMENTO con el que el cliente se registró en la tienda,
+    que el enlace no muestra en ninguna parte.
+
+    No se vincula por correo, teléfono o nombre: esos los escribe cualquiera.
+
+    Lo que NO hace, y por eso no sirve para quedarse con una cuenta:
+      * no toca a un cliente que ya tiene cuenta;
+      * no deja a una cuenta ser dos clientes de la misma empresa;
+      * no deja probar documentos sin fin: cinco fallos y ese cliente queda sin
+        vinculación por formulario durante una hora;
+      * un cliente sin documento registrado se vincula en la tienda, no aquí.
     """
+    import re
+
+    from django.core.cache import cache
+
+    def normalize_document_number(value) -> str:
+        # Sólo letras y números: «4567-8912», «4567 8912» y «45678912» son el
+        # mismo documento dictado de tres maneras.
+        return re.sub(r'[^0-9A-Za-z]', '', str(value or '')).upper()
+
     link = resolve(token)
     if link is None:
         raise TrackingError('No encontrado.')
@@ -347,6 +391,29 @@ def claim(token, *, user, request=None) -> Customer:
             'Pide en la tienda que unan los dos.', conflict=True,
         )
 
+    on_file = normalize_document_number(customer.document_number)
+    if not on_file:
+        raise TrackingError(
+            'Esta orden no tiene un documento registrado con el que comprobar que es tuya. '
+            'Pide en la tienda que la vinculen a tu cuenta.', conflict=True,
+        )
+    key = _claim_key(customer.pk)
+    if (cache.get(key) or 0) >= CLAIM_ATTEMPTS:
+        raise TrackingError(
+            'Demasiados intentos. Pide en la tienda que vinculen la orden a tu cuenta.',
+            forbidden=True,
+        )
+    given = normalize_document_number(document_number)
+    if not given or not hmac.compare_digest(given.encode(), on_file.encode()):
+        cache.add(key, 0, CLAIM_WINDOW_SECONDS)
+        try:
+            cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, CLAIM_WINDOW_SECONDS)
+        raise TrackingError(
+            'El documento no coincide con el de esta orden.', forbidden=True,
+        )
+
     customer.user = user
     customer.save(update_fields=['user', 'updated_at'])
     AdminAuditLog.log(
@@ -357,3 +424,31 @@ def claim(token, *, user, request=None) -> Customer:
         request=request, company=order.company,
     )
     return customer
+
+
+@transaction.atomic
+def unlink_account(customer, *, actor, reason: str, request=None) -> Customer:
+    """
+    La tienda deshace una vinculación. Con motivo y con registro.
+
+    Es la salida para la cuenta equivocada: sin ella, el cliente de verdad se
+    encontraría un «ya pertenece a otra cuenta» sin nadie que pudiera arreglarlo.
+    """
+    reason = ' '.join(str(reason or '').split())
+    if not reason:
+        raise TrackingError('Indica por qué se desvincula la cuenta.')
+    if len(reason) > 300:
+        raise TrackingError('El motivo admite hasta 300 caracteres.')
+    locked = Customer.objects.select_for_update().get(pk=customer.pk)
+    previous = locked.user_id
+    if previous is None:
+        return locked
+    locked.user = None
+    locked.save(update_fields=['user', 'updated_at'])
+    AdminAuditLog.log(
+        actor=actor, action='customer_account_unlinked', target_type='customer',
+        target_id=locked.pk,
+        metadata={'customer_id': locked.pk, 'previous_user_id': previous, 'reason': reason},
+        request=request, company=locked.company,
+    )
+    return locked

@@ -110,7 +110,16 @@ class V1ServiceDeviceMatchSerializer(V1ServiceDeviceSerializer):
 
     def _orders(self, obj):
         # `.all()` reads the prefetch the views set up: no query per device.
-        return sorted(obj.repair_orders.all(), key=lambda o: (o.received_at, o.pk), reverse=True)
+        #
+        # ONLY THE BRANCHES THE CALLER REACHES. A device is the company's, but
+        # an order sits in a branch, and one from a branch this person cannot
+        # open must not be counted or named here either. Without the context
+        # nothing is shown: forgetting to pass it must not widen anything.
+        visible = self.context.get('visible_branch_ids') or ()
+        return sorted(
+            (order for order in obj.repair_orders.all() if order.branch_id in visible),
+            key=lambda o: (o.received_at, o.pk), reverse=True,
+        )
 
     def get_repair_orders_count(self, obj) -> int:
         return len(self._orders(obj))

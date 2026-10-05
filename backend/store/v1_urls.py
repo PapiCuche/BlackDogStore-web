@@ -75,6 +75,7 @@ from .v1_service_views import (
     V1ServiceQuoteRecordDecisionView,
     V1ServiceQuoteReopenView,
     V1ServiceQuoteTicketView,
+    V1ServiceCustomerUnlinkAccountView,
     V1ServiceTrackingLinkView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
@@ -373,6 +374,16 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/',
         V1ServiceTrackingLinkView.as_view(), name='v1-internal-service-tracking-link',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/reveal/',
+        V1ServiceTrackingLinkView.as_view(action='reveal'),
+        name='v1-internal-service-tracking-link-reveal',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/customers/<int:pk>/unlink-account/',
+        V1ServiceCustomerUnlinkAccountView.as_view(),
+        name='v1-internal-service-customer-unlink-account',
     ),
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/rotate/',

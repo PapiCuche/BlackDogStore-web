@@ -428,12 +428,14 @@ def signature_is_valid(config, body: bytes, header: str) -> bool:
     if not secret or not header or not header.startswith('sha256='):
         return False
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(header[len('sha256='):].strip(), expected)
+    # Bytes on both sides: `compare_digest` raises on a non-ASCII str, and a
+    # 500 here would tell a stranger this company has the channel configured.
+    return hmac.compare_digest(header[len('sha256='):].strip().encode(), expected.encode())
 
 
 def verify_token_matches(config, presented: str) -> bool:
     expected = messaging.credential(config, 'verify_token')
-    return bool(expected) and hmac.compare_digest(str(presented or ''), expected)
+    return bool(expected) and hmac.compare_digest(str(presented or '').encode(), expected.encode())
 
 
 _RANK = {Status.SENT: 1, Status.DELIVERED: 2, Status.READ: 3}

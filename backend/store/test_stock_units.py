@@ -19,6 +19,7 @@ Lo que estas pruebas fijan:
 """
 from decimal import Decimal
 from threading import Barrier, Thread
+from unittest import mock
 
 from django.db import connection
 from django.test import TransactionTestCase
@@ -228,6 +229,28 @@ class QuantityIsNeverTypedTest(UnitsBase):
             inventory.apply_initial_stock(
                 branch=self.branch_b, product=self.phone, quantity=4, actor=self.staff)
         self.assertEqual(self.quantity(branch=self.branch_b), 0)
+
+    def test_a_movement_that_raced_a_change_of_mode_is_undone(self):
+        """
+        Entre leer el producto y escribir el stock, alguien lo pasa a «con
+        serie». El movimiento por cantidad no puede quedar escrito: dejaría un
+        producto con serie, cinco unidades y ningún equipo.
+        """
+        loose = _prod(self.company, 'Reloj', 'reloj-carrera-serie', inventory=0)
+        real = inventory._locked_branch_stocks
+
+        def flip_then_lock(branch, products):
+            Product.objects.filter(pk=loose.pk).update(is_serialized=True)
+            return real(branch, products)
+
+        with mock.patch.object(inventory, '_locked_branch_stocks', side_effect=flip_then_lock):
+            with self.assertRaises(inventory.InvalidMovementError):
+                inventory.create_stock_movement(
+                    branch=self.branch_a, product_id=loose.pk,
+                    movement_type=StockMovement.MANUAL_ENTRY, quantity=5, reason='x', actor=self.staff)
+
+        self.assertEqual(self.quantity(product=loose), 0)
+        self.assertFalse(StockMovement.objects.filter(product=loose).exists())
 
     def test_a_product_with_stock_cannot_change_how_it_is_counted(self):
         with self.assertRaises(units.StockUnitError):

@@ -123,7 +123,8 @@ def verify(credential, *, browser_nonce: str) -> GoogleIdentity:
     nonce = claims.get('nonce')
     if (
         not isinstance(nonce, str) or not browser_nonce
-        or not hmac.compare_digest(nonce, browser_nonce) or not _nonce_is_ours(nonce)
+        or not hmac.compare_digest(nonce.encode(), str(browser_nonce).encode())
+        or not _nonce_is_ours(nonce)
     ):
         raise GoogleIdentityError()
 

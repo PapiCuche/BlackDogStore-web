@@ -262,20 +262,65 @@ class TrackingQuoteTest(TrackingBase):
 
 
 class StaffTrackingLinkTest(TrackingBase):
+    """
+    QUIEN TIENE EL ENLACE PUEDE RESPONDER LA COTIZACIÓN COMO EL CLIENTE.
+
+    Por eso verlo no es de quien puede abrir la orden: es de quien ya puede
+    anotar la decisión del cliente (`service.quotes.record_decision`). Los
+    demás saben que existe y cuántas veces se abrió, y nada más.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from store.models import MembershipRoleAssignment
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        self.client = self.with_capabilities(
+            'service.orders.view', 'service.orders.manage', 'service.quotes.record_decision',
+            slug='entrega-enlace')
+
     def url(self, tail=''):
         return _m8_url('m8-taller', f'orders/{self.order.pk}/tracking-link/{tail}')
 
-    def test_staff_reads_the_link_to_hand_it_over(self):
-        res = self.client.get(self.url())
-        self.assertEqual(res.status_code, 200, res.content)
-        self.assertEqual(res.json()['path'], f'/seguimiento/{self.token}')
-        self.assertTrue(res.json()['active'])
-        self.assertEqual(res.json()['view_count'], 0)
-
-    def test_rotating_and_revoking_need_authority_over_the_order(self):
+    def narrowed(self, *capabilities, slug):
         from store.models import MembershipRoleAssignment
         MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
-        viewer = self.with_capabilities('service.orders.view', slug='solo-ver')
+        return self.with_capabilities(*capabilities, slug=slug)
+
+    def test_the_status_never_carries_the_link(self):
+        res = self.client.get(self.url())
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(sorted(res.json()), ['active', 'can_reveal', 'last_viewed_at', 'view_count'])
+        self.assertTrue(res.json()['active'])
+        self.assertTrue(res.json()['can_reveal'])
+        self.assertNotIn(self.token, res.content.decode())
+
+    def test_revealing_the_link_is_an_act_with_its_own_authority_and_its_record(self):
+        res = self.client.post(self.url('reveal/'))
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['path'], f'/seguimiento/{self.token}')
+        row = AdminAuditLog.objects.filter(action='service_tracking_link_revealed').get()
+        self.assertEqual(row.actor, self.staff)
+        self.assertEqual(row.company, self.company)
+        self.assertNotIn(self.token, str(row.metadata))
+
+    def test_someone_who_quotes_cannot_take_the_link_and_approve_their_own_quote(self):
+        """El hueco: ver la orden daba el enlace, y el enlace aprueba."""
+        technician = self.narrowed(
+            'service.orders.view', 'service.orders.manage', 'service.diagnostic.manage',
+            slug='cotiza-sin-decidir')
+
+        status = technician.get(self.url())
+        self.assertEqual(status.status_code, 200)
+        self.assertFalse(status.json()['can_reveal'])
+        self.assertEqual(technician.post(self.url('reveal/')).status_code, 403)
+        for tail in ('rotate/', 'revoke/'):
+            self.assertNotIn('seguimiento', technician.post(self.url(tail)).content.decode())
+        self.assertFalse(AdminAuditLog.objects.filter(action='service_tracking_link_revealed').exists())
+
+    def test_rotating_and_revoking_need_authority_over_the_order(self):
+        viewer = self.narrowed('service.orders.view', slug='solo-ver')
 
         self.assertEqual(viewer.get(self.url()).status_code, 200)
         self.assertEqual(viewer.post(self.url('rotate/')).status_code, 403)
@@ -285,38 +330,39 @@ class StaffTrackingLinkTest(TrackingBase):
     def test_staff_rotates_and_revokes(self):
         rotated = self.client.post(self.url('rotate/'))
         self.assertEqual(rotated.status_code, 200, rotated.content)
-        self.assertNotEqual(rotated.json()['path'], f'/seguimiento/{self.token}')
+        self.assertTrue(rotated.json()['active'])
+        self.assertNotIn('path', rotated.json())
+        self.assertNotEqual(self.client.post(self.url('reveal/')).json()['path'], f'/seguimiento/{self.token}')
 
         revoked = self.client.post(self.url('revoke/'))
         self.assertEqual(revoked.status_code, 200)
         self.assertFalse(revoked.json()['active'])
-        self.assertIsNone(revoked.json()['path'])
+        self.assertEqual(self.client.post(self.url('reveal/')).status_code, 409)
 
     def test_an_order_has_its_link_from_the_moment_it_is_received(self):
         """Recepción lo copia nada más crear la orden: no hay un paso de «generar»."""
         fresh = self.make_order()
         self.assertEqual(RepairTrackingLink.objects.filter(repair_order=fresh).count(), 1)
 
-        body = self.client.get(_m8_url('m8-taller', f'orders/{fresh.pk}/tracking-link/')).json()
-        self.assertTrue(body['active'])
+        body = self.client.post(_m8_url('m8-taller', f'orders/{fresh.pk}/tracking-link/reveal/')).json()
         self.assertEqual(body['path'], f'/seguimiento/{tracking.token_for(fresh)}')
 
     def test_an_order_from_before_links_existed_gets_one_when_staff_ask(self):
         RepairTrackingLink.objects.filter(repair_order=self.order).delete()
 
-        body = self.client.get(self.url()).json()
-
-        self.assertTrue(body['active'])
-        self.assertTrue(body['path'].startswith('/seguimiento/'))
+        self.assertTrue(self.client.get(self.url()).json()['active'])
+        self.assertTrue(self.client.post(self.url('reveal/')).json()['path'].startswith('/seguimiento/'))
 
     def test_another_branch_or_company_does_not_reach_the_link(self):
         self.order.branch = self.branch_b
         self.order.save(update_fields=['branch'])
         restricted = self.restrict_to_branch_a()
         self.assertEqual(restricted.get(self.url()).status_code, 404)
+        self.assertEqual(restricted.post(self.url('reveal/')).status_code, 404)
 
         foreign = _m8_url('m8-otra', f'orders/{self.order.pk}/tracking-link/')
         self.assertIn(self.client.get(foreign).status_code, (403, 404))
+        self.assertIn(self.client.post(foreign + 'reveal/').status_code, (403, 404))
 
 
 class AccountRepairsTest(TrackingBase):
@@ -354,13 +400,22 @@ class AccountRepairsTest(TrackingBase):
         body = self.as_user(self.client_user).get(self.LIST + self.query()).content.decode()
         self.assertNotIn(other_order.number, body)
 
-    def test_holding_the_link_lets_a_signed_in_person_add_the_order_to_their_account(self):
-        walk_in = _v1_customer(self.company, None, first_name='Elena', last_name='SinCuenta')
-        device = Device.objects.create(company=self.company, customer=walk_in, brand='G', model='W')
-        order = self.make_order(customer=walk_in, device=device)
+    def walk_in(self, name, document='45678912'):
+        customer = _v1_customer(
+            self.company, None, first_name=name, last_name='SinCuenta',
+            document_type='dni' if document else '', document_number=document)
+        device = Device.objects.create(company=self.company, customer=customer, brand='G', model=name)
+        return customer, self.make_order(customer=customer, device=device)
+
+    def claim(self, user, order, **extra):
+        return self.as_user(user).post(
+            self.CLAIM, {'token': tracking.token_for(order), **extra}, format='json')
+
+    def test_the_link_and_the_document_add_the_customer_to_the_account(self):
+        walk_in, order = self.walk_in('Elena')
         user = _m7_user('elena_registrada')
 
-        res = self.as_user(user).post(self.CLAIM, {'token': tracking.token_for(order)}, format='json')
+        res = self.claim(user, order, document_number=' 4567-8912 ')
 
         self.assertEqual(res.status_code, 200, res.content)
         walk_in.refresh_from_db()
@@ -371,24 +426,80 @@ class AccountRepairsTest(TrackingBase):
         self.assertEqual(row.company, self.company)
         self.assertEqual(row.metadata['via'], 'tracking_link')
 
+    def test_the_link_alone_does_not_hand_over_a_customer(self):
+        """
+        El enlace abre UNA orden y se reenvía con facilidad. Quedarse con el
+        cliente entero —todas sus reparaciones, sus compras, el derecho a
+        responder sus cotizaciones— pide además algo que el enlace no trae.
+        """
+        walk_in, order = self.walk_in('Gabi')
+        stranger = _m7_user('reenviado')
+
+        for extra in ({}, {'document_number': ''}, {'document_number': '99999999'}):
+            with self.subTest(extra):
+                res = self.claim(stranger, order, **extra)
+                self.assertEqual(res.status_code, 403, res.content)
+        walk_in.refresh_from_db()
+        self.assertIsNone(walk_in.user)
+        self.assertFalse(AdminAuditLog.objects.filter(action='customer_account_linked').exists())
+
+    def test_a_customer_without_a_document_on_file_is_linked_by_the_shop_not_by_a_form(self):
+        walk_in, order = self.walk_in('Hugo', document='')
+
+        res = self.claim(_m7_user('hugo_registrado'), order, document_number='45678912')
+
+        self.assertEqual(res.status_code, 409)
+        self.assertIn('tienda', res.json()['detail'])
+        walk_in.refresh_from_db()
+        self.assertIsNone(walk_in.user)
+
+    def test_guessing_the_document_runs_out_of_attempts(self):
+        walk_in, order = self.walk_in('Iris')
+        guesser = _m7_user('adivina')
+        for guess in range(5):
+            self.assertEqual(self.claim(guesser, order, document_number=f'1000000{guess}').status_code, 403)
+
+        res = self.claim(guesser, order, document_number='45678912')
+
+        self.assertEqual(res.status_code, 403)
+        walk_in.refresh_from_db()
+        self.assertIsNone(walk_in.user)
+
     def test_a_customer_that_already_has_an_account_is_not_taken_over(self):
         thief = _m7_user('ladron_seguimiento')
-        res = self.as_user(thief).post(self.CLAIM, {'token': self.token}, format='json')
+        res = self.as_user(thief).post(
+            self.CLAIM, {'token': self.token, 'document_number': '40404040'}, format='json')
         self.assertEqual(res.status_code, 409)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.user, self.client_user)
 
     def test_one_account_is_one_customer_per_company(self):
-        walk_in = _v1_customer(self.company, None, first_name='Fede', last_name='Otro')
-        device = Device.objects.create(company=self.company, customer=walk_in, brand='G', model='V')
-        order = self.make_order(customer=walk_in, device=device)
+        walk_in, order = self.walk_in('Fede')
 
-        res = self.as_user(self.client_user).post(
-            self.CLAIM, {'token': tracking.token_for(order)}, format='json')
+        res = self.claim(self.client_user, order, document_number='45678912')
 
         self.assertEqual(res.status_code, 409)
         walk_in.refresh_from_db()
         self.assertIsNone(walk_in.user)
+
+    def test_the_shop_can_undo_a_link(self):
+        walk_in, order = self.walk_in('Juan')
+        user = _m7_user('juan_registrado')
+        self.claim(user, order, document_number='45678912')
+        url = _m8_url('m8-taller', f'customers/{walk_in.pk}/unlink-account/')
+        staff = self.with_capabilities('service.customers.manage', slug='desvincula')
+
+        res = staff.post(url, {'reason': 'Se vinculó la cuenta equivocada.'}, format='json')
+
+        self.assertEqual(res.status_code, 200, res.content)
+        walk_in.refresh_from_db()
+        self.assertIsNone(walk_in.user)
+        self.assertEqual(self.as_user(user).get(self.LIST + self.query()).json()['results'], [])
+        row = AdminAuditLog.objects.filter(action='customer_account_unlinked').get()
+        self.assertEqual(row.metadata['reason'], 'Se vinculó la cuenta equivocada.')
+        self.assertEqual(staff.post(url, {'reason': ''}, format='json').status_code, 400)
+        foreign = _m8_url('m8-taller', f'customers/{self.foreign_customer.pk}/unlink-account/')
+        self.assertEqual(staff.post(foreign, {'reason': 'x'}, format='json').status_code, 404)
 
     def test_a_bad_token_claims_nothing(self):
         user = _m7_user('sin_enlace')

@@ -189,6 +189,12 @@ class V1ServiceSurfaceMixin(V1InternalSurfaceMixin):
         self.require_capability(company, CAP_ORDERS_ASSIGN)
         self.require_capability(company, CAP_ORDERS_VIEW)
 
+    def device_history_context(self, company) -> dict:
+        """What a device serializer needs to show only the orders this caller reaches."""
+        return {'visible_branch_ids': set(
+            visible_branches(self.request.user, company).values_list('pk', flat=True),
+        )}
+
     def get_order(self, company, pk) -> RepairOrder:
         """
         One order of this company, within the member's branches.
@@ -362,7 +368,7 @@ class V1ServiceDeviceListView(V1ServiceSurfaceMixin, APIView):
             imei2=device.imei2, exclude_pk=device.pk,
         ).prefetch_related('repair_orders')
         payload['possible_duplicates'] = V1ServiceDeviceMatchSerializer(
-            duplicates, many=True,
+            duplicates, many=True, context=self.device_history_context(company),
         ).data
         return Response(payload, status=status.HTTP_201_CREATED)
 
@@ -400,7 +406,9 @@ class V1ServiceDeviceLookupView(V1ServiceSurfaceMixin, APIView):
         if not isinstance(matches, list):
             matches = matches.prefetch_related('repair_orders')
         return Response({
-            'results': V1ServiceDeviceMatchSerializer(matches, many=True).data,
+            'results': V1ServiceDeviceMatchSerializer(
+                matches, many=True, context=self.device_history_context(company),
+            ).data,
         })
 
 
@@ -411,7 +419,9 @@ class V1ServiceDeviceDetailView(V1ServiceSurfaceMixin, APIView):
         company = self.get_internal_company()
         self.require_capability(company, CAP_DEVICES_VIEW)
         device = self.get_device(company, pk)
-        return Response(V1ServiceDeviceDetailSerializer(device).data)
+        return Response(V1ServiceDeviceDetailSerializer(
+            device, context=self.device_history_context(company),
+        ).data)
 
 
 class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
@@ -1066,6 +1076,7 @@ class V1ServiceQuoteRecordDecisionView(V1ServiceQuotingMixin, APIView):
 
     def post(self, request, company_slug=None, pk=None, quote_id=None):
         company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
         self.require_capability(company, CAP_QUOTE_RECORD_DECISION)
         order = self.get_order(company, pk)
         quote = self.get_quote(company, order, quote_id)
@@ -1170,26 +1181,37 @@ class V1ServiceQuoteTicketView(V1ServiceQuotingMixin, APIView):
 
 class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
     """
-    GET — the link to hand to the customer. POST rotate/ revoke/ — replace it or
-    turn it off.
+    GET — whether the order has a link and how often it was opened.
+    POST reveal/ — the link itself. POST rotate/ · revoke/ — replace it or turn
+    it off.
 
-    Reading it needs what opening the order needs: reception copies it into a
-    message. Replacing or revoking it changes who can see the order, and takes
-    `service.orders.manage`.
+    WHOEVER HOLDS THE LINK CAN ANSWER THE QUOTE AS THE CUSTOMER. So the link is
+    not part of what "may open the order" shows: it is handed only to somebody
+    who may already record the customer's decision
+    (`service.quotes.record_decision`), by an explicit, audited act. A person
+    who quotes and cannot record decisions cannot fetch the link and approve
+    their own quote with it.
+
+    Replacing or revoking changes who can see the order and takes
+    `service.orders.manage`. Neither answers with the link.
     """
 
     throttle_classes = [AdminOrdersThrottle]
     action = None
 
-    def get(self, request, company_slug=None, pk=None):
+    def _status(self, company, order):
         from . import tracking_services as tracking
 
+        return tracking.staff_payload(order, can_reveal=has_capability(
+            self.request.user, company, CAP_QUOTE_RECORD_DECISION,
+        ))
+
+    def get(self, request, company_slug=None, pk=None):
         if self.action is not None:
             return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
         company = self.get_internal_company()
         self.require_capability(company, CAP_ORDERS_VIEW)
-        order = self.get_order(company, pk)
-        return Response(tracking.staff_payload(order))
+        return Response(self._status(company, self.get_order(company, pk)))
 
     def post(self, request, company_slug=None, pk=None):
         from . import tracking_services as tracking
@@ -1197,13 +1219,52 @@ class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
         if self.action is None:
             return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
         company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+
+        if self.action == 'reveal':
+            self.require_capability(company, CAP_QUOTE_RECORD_DECISION)
+            order = self.get_order(company, pk)
+            try:
+                return Response(tracking.reveal(order, actor=request.user, request=request))
+            except tracking.TrackingError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
         self.require_capability(company, CAP_ORDERS_MANAGE)
         order = self.get_order(company, pk)
         if self.action == 'rotate':
             tracking.rotate(order, actor=request.user, request=request)
         else:
             tracking.revoke(order, actor=request.user, request=request)
-        return Response(tracking.staff_payload(order))
+        return Response(self._status(company, order))
+
+
+class V1ServiceCustomerUnlinkAccountView(V1ServiceSurfaceMixin, APIView):
+    """
+    POST — the shop undoes the link between a customer record and an account.
+
+    The way out of a wrong link: without it the real customer would be told
+    "this already belongs to another account" with nobody able to fix it.
+    """
+
+    http_method_names = ['post']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        from . import tracking_services as tracking
+
+        company = self.get_internal_company()
+        self.require_capability(company, 'service.customers.manage')
+        customer = Customer.objects.filter(company=company, pk=pk).first()
+        if customer is None:
+            raise NotFound('No encontrado.')
+        try:
+            updated = tracking.unlink_account(
+                customer, actor=request.user,
+                reason=request.data.get('reason') or '', request=request,
+            )
+        except tracking.TrackingError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'id': updated.pk, 'has_account': updated.user_id is not None})
 
 
 # ---------------------------------------------------------------------------

@@ -185,6 +185,11 @@ class RefusedTokenTest(GoogleBase):
         self.refused(self.sign_in(sub=None))
         self.refused(self.sign_in(email=None))
 
+    def test_a_cookie_with_odd_bytes_is_a_refusal_not_a_crash(self):
+        credential = self.token()
+        with self.assertRaises(google_identity.GoogleIdentityError):
+            google_identity.verify(credential, browser_nonce='ñandú')
+
     def test_garbage(self):
         for credential in ('', 'no-es-un-token', None, 12345):
             with self.subTest(credential):

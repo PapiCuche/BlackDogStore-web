@@ -353,6 +353,17 @@ class WebhookTest(WhatsAppBase):
                 'hub.mode': 'subscribe', 'hub.verify_token': token, 'hub.challenge': '1'})
             self.assertEqual(bad.status_code, 403)
 
+    def test_odd_bytes_in_the_token_or_the_signature_are_refused_like_anything_else(self):
+        """Un carácter no ASCII hacía fallar la comparación con un 500: un oráculo."""
+        res = self.anon.get(self.URL, {
+            'hub.mode': 'subscribe', 'hub.verify_token': 'ñandú', 'hub.challenge': '1'})
+        self.assertEqual(res.status_code, 403)
+
+        body = json.dumps(self.statuses(self.status('delivered')))
+        res = self.anon.post(self.URL, body, content_type='application/json',
+                             HTTP_X_HUB_SIGNATURE_256='sha256=ñandú')
+        self.assertEqual(res.status_code, 403)
+
     def test_an_unsigned_or_wrongly_signed_report_changes_nothing(self):
         payload = self.statuses(self.status('delivered'))
 
@@ -617,11 +628,23 @@ class CloudApiProviderTest(SimpleTestCase):
                 # Lo que diga el proveedor no puede devolver el token a un registro.
                 self.assertNotIn('TOKEN-REAL', str(raised.exception))
 
-    def test_a_network_failure_can_be_retried(self):
-        with mock.patch('urllib.request.urlopen', side_effect=urllib.error.URLError('timed out')):
+    def test_a_request_that_never_left_can_be_retried(self):
+        refused = urllib.error.URLError(ConnectionRefusedError(61, 'Connection refused'))
+        with mock.patch('urllib.request.urlopen', side_effect=refused):
             with self.assertRaises(ProviderError) as raised:
                 self.send()
         self.assertTrue(raised.exception.retryable)
+
+    def test_a_request_that_got_no_answer_is_not_sent_again_by_itself(self):
+        """
+        Sin respuesta no se sabe si el proveedor lo aceptó. Reenviarlo solo es
+        como el cliente recibe el mismo mensaje dos veces: lo decide una persona.
+        """
+        for silence in (TimeoutError('timed out'), urllib.error.URLError(TimeoutError('timed out'))):
+            with self.subTest(silence), mock.patch('urllib.request.urlopen', side_effect=silence):
+                with self.assertRaises(ProviderError) as raised:
+                    self.send()
+            self.assertFalse(raised.exception.retryable)
 
     def test_an_answer_without_a_message_id_is_a_failure_not_a_success(self):
         response = mock.MagicMock()

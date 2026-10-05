@@ -63,8 +63,19 @@ class CloudApiProvider:
         except urllib.error.HTTPError as exc:
             raise self._refusal(exc) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, 'reason', exc)
+            if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError):
+                # NO ANSWER IS NOT A REFUSAL. The request may have been written
+                # and accepted before the silence, and sending it again by
+                # itself is how a customer gets the same message twice. A
+                # person decides whether to retry.
+                raise ProviderError(
+                    'El proveedor no respondió: el mensaje pudo haberse enviado. '
+                    'Reinténtalo sólo si el cliente no lo recibió.', retryable=False,
+                ) from None
+            # Refused, unreachable, no DNS: it never left.
             raise ProviderError(
-                f'Sin conexión con el proveedor ({type(exc).__name__}).', retryable=True,
+                f'Sin conexión con el proveedor ({type(reason).__name__}).', retryable=True,
             ) from None
         except ValueError:
             raise ProviderError('Respuesta ilegible del proveedor.', retryable=False) from None

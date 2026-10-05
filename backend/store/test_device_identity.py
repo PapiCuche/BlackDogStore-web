@@ -191,6 +191,22 @@ class DeviceLookupTest(_Base):
     def _lookup(self, client=None, **query):
         return (client or self.client).get(_m8_url('m8-taller', 'devices/lookup/'), query)
 
+    def test_history_from_a_branch_the_caller_cannot_see_is_not_counted_or_named(self):
+        elsewhere = self.make_order(device=self.known, branch=self.branch_b)
+        # Quien alcanza las dos sucursales ve las dos órdenes.
+        [whole] = self._lookup(imei=IMEI_A).json()['results']
+        self.assertEqual(whole['repair_orders_count'], 2)
+
+        restricted = self.restrict_to_branch_a()
+
+        [found] = self._lookup(client=restricted, imei=IMEI_A).json()['results']
+        self.assertEqual(found['repair_orders_count'], 1)
+        self.assertEqual(found['last_repair_order']['number'], self.order.number)
+
+        detail = restricted.get(_m8_url('m8-taller', f'devices/{self.known.pk}/')).json()
+        self.assertEqual([o['number'] for o in detail['repair_orders']], [self.order.number])
+        self.assertNotIn(elsewhere.number, str(detail))
+
     def test_it_finds_the_device_by_any_of_its_identifiers(self):
         for query in ({'serial_number': 'f2lxk1abh1'}, {'imei': IMEI_A}, {'imei': IMEI_B},
                       {'imei2': IMEI_A}):

@@ -81,6 +81,14 @@ class StaffRecordedDecisionTest(QuoteDecisionBase):
                 res = self.record(channel=bad)
                 self.assertEqual(res.status_code, 400)
 
+    def test_recording_needs_to_be_able_to_open_the_order_too(self):
+        from store.models import MembershipRoleAssignment
+        MembershipRoleAssignment.objects.filter(membership=self.membership).delete()
+        blind = self.with_capabilities(CAP, slug='decide-sin-ver')
+
+        self.assertEqual(self.record(client=blind).status_code, 403)
+        self.assertFalse(RepairQuoteDecision.objects.exists())
+
     def test_a_rejection_is_recorded_the_same_way(self):
         res = self.record(decision='reject', channel='in_person', note='Prefiere no repararlo.')
         self.assertEqual(res.status_code, 200, res.content)

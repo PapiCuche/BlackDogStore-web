@@ -146,10 +146,13 @@ class AccountRepairClaimView(APIView):
     def post(self, request):
         try:
             customer = tracking.claim(
-                request.data.get('token'), user=request.user, request=request,
+                request.data.get('token'), user=request.user,
+                document_number=request.data.get('document_number') or '', request=request,
             )
         except tracking.TrackingError as exc:
             if exc.conflict:
                 return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+            if exc.forbidden:
+                return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
             raise NotFound(NOT_FOUND)
         return _no_store(Response({'linked': True, 'company_slug': customer.company.slug}))
