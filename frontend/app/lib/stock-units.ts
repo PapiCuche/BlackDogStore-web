@@ -44,18 +44,41 @@ export type StockUnitPage = {
 
 export type SerializedProduct = { id: number; name: string; requires_imei: boolean; price: string };
 
-export type NewUnit = { serial_number: string; imei: string; imei2: string; condition: string; cost: string };
+/**
+ * Any active product, with how it is counted. `can_change_tracking` is the
+ * server's own rule told in advance: tracking by serial can only be switched
+ * while the product has no stock.
+ */
+export type UnitProduct = SerializedProduct & {
+  is_serialized: boolean;
+  stock: number;
+  can_change_tracking: boolean;
+};
 
-/** A refusal. `line` is the 1-based device of a batch the server turned down. */
+/** ONE physical device. There is no quantity: a second device is a second one of these. */
+export type NewUnit = {
+  serial_number: string; imei: string; imei2: string; condition: string; cost: string;
+  price_override?: string;
+};
+
+/** The inputs of a device the server can point at. */
+export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "price_override" | "reason";
+
+/**
+ * A refusal. `line` is the 1-based device of a batch the server turned down and
+ * `field` the input that is wrong, so the form says it next to that input.
+ */
 export class StockUnitApiError extends Error {
   readonly status: number;
   readonly line: number | null;
+  readonly field: UnitField | null;
 
-  constructor(message: string, status: number, line: number | null = null) {
+  constructor(message: string, status: number, line: number | null = null, field: UnitField | null = null) {
     super(message);
     this.name = "StockUnitApiError";
     this.status = status;
     this.line = line;
+    this.field = field;
   }
 }
 
@@ -67,10 +90,12 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
     const line = body && typeof body === "object" && typeof body.line === "number" ? body.line : null;
+    const field = body && typeof body === "object" && typeof body.field === "string" ? (body.field as UnitField) : null;
     throw new StockUnitApiError(
       detail || (res.status === 403 ? "No tienes permisos sobre el inventario." : "No se pudo completar la operación."),
       res.status,
       line,
+      field,
     );
   }
   return body as T;
@@ -100,6 +125,16 @@ export function fetchStockUnits(params: {
 
 export const fetchSerializedProducts = () =>
   call<{ results: SerializedProduct[] }>("/products/");
+
+/** Every active product and how each is counted — for the registration form. */
+export const fetchUnitProducts = () =>
+  call<{ results: UnitProduct[] }>("/products/?scope=all");
+
+/** Switch a product to (or from) tracking by serial. Refused while it has stock. */
+export const setProductTracking = (productId: number, body: { is_serialized: boolean; requires_imei: boolean }) =>
+  post<{ id: number; is_serialized: boolean; requires_imei: boolean }>(
+    `/products/${productId}/serialization/`, body,
+  );
 
 export const receiveStockUnits = (body: {
   product_id: number; branch: number; reason: string; units: NewUnit[];

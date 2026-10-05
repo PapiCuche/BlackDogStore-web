@@ -51,7 +51,9 @@ beforeEach(() => {
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
-    if (method === 'GET' && path.startsWith('/products/')) return reply(200, { results: PRODUCTS });
+    if (method === 'GET' && path.startsWith('/products/')) {
+      return reply(200, { results: PRODUCTS.map((p) => ({ ...p, is_serialized: true, stock: 1, can_change_tracking: false })) });
+    }
     if (method === 'GET') {
       return reply(200, {
         results: rows, count: rows.length, page: 1, page_size: 25,
@@ -99,74 +101,28 @@ test('filters are answered by the server, not by hiding rows', async () => {
   }
 });
 
-test('receiving a batch sends every device with the product, the branch and the reason', async () => {
+test('"+ Registrar equipo" is the way in, and saving one refreshes the table', async () => {
   mount();
   await screen.findByText('F2LXK1ABC1');
+  const before = gets().length;
 
-  fireEvent.click(screen.getByRole('button', { name: 'Registrar equipos' }));
-  fireEvent.change(screen.getByLabelText('Producto a recibir'), { target: { value: '10' } });
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Compra a proveedor' } });
-  fireEvent.change(screen.getByLabelText('Serie del equipo 1'), { target: { value: 'NUEVO00001' } });
-  fireEvent.change(screen.getByLabelText('IMEI del equipo 1'), { target: { value: '356938035643825' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Añadir otro equipo' }));
-  fireEvent.change(screen.getByLabelText('Serie del equipo 2'), { target: { value: 'NUEVO00002' } });
-  fireEvent.change(screen.getByLabelText('IMEI del equipo 2'), { target: { value: '356938035643833' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Ingresar 2 equipos' }));
+  fireEvent.click(screen.getByRole('button', { name: '+ Registrar equipo' }));
+  // El formulario pide la identidad del equipo desde el primer momento.
+  expect(await screen.findByLabelText(/^Número de serie/)).toBeInTheDocument();
+  expect(screen.getByLabelText(/^IMEI \*/)).toBeInTheDocument();
+  expect(screen.getByLabelText(/^IMEI 2/)).toBeInTheDocument();
 
-  await waitFor(() => expect(writes()).toHaveLength(1));
-  expect(writes()[0]).toEqual({
-    method: 'POST', path: '/',
-    body: {
-      product_id: 10, branch: 1, reason: 'Compra a proveedor',
-      units: [
-        { serial_number: 'NUEVO00001', imei: '356938035643825', imei2: '', condition: 'new', cost: '' },
-        { serial_number: 'NUEVO00002', imei: '356938035643833', imei2: '', condition: 'new', cost: '' },
-      ],
-    },
-  });
-  expect(await screen.findByText(/1 equipo ingresado/)).toBeInTheDocument();
-});
+  await screen.findByRole('option', { name: /iPhone 16/ });
+  fireEvent.change(screen.getByLabelText('Producto / modelo'), { target: { value: '10' } });
+  fireEvent.change(screen.getByLabelText(/^Número de serie/), { target: { value: 'NUEVO00001' } });
+  fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: '356938035643825' } });
+  fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Factura F001-1' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));
 
-test('a product without IMEI does not ask for one', async () => {
-  mount();
-  await screen.findByText('F2LXK1ABC1');
-  fireEvent.click(screen.getByRole('button', { name: 'Registrar equipos' }));
-
-  fireEvent.change(screen.getByLabelText('Producto a recibir'), { target: { value: '11' } });
-
-  expect(screen.getByLabelText('Serie del equipo 1')).toBeInTheDocument();
-  expect(screen.queryByLabelText('IMEI del equipo 1')).toBeNull();
-});
-
-test('a refused batch names the line the server refused and keeps what was typed', async () => {
-  receiveReply = { status: 400, body: { detail: 'Ese IMEI ya está registrado en otro equipo de la empresa.', line: 1 } };
-  mount();
-  await screen.findByText('F2LXK1ABC1');
-
-  fireEvent.click(screen.getByRole('button', { name: 'Registrar equipos' }));
-  fireEvent.change(screen.getByLabelText('Producto a recibir'), { target: { value: '10' } });
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Compra' } });
-  fireEvent.change(screen.getByLabelText('Serie del equipo 1'), { target: { value: 'NUEVO00001' } });
-  fireEvent.change(screen.getByLabelText('IMEI del equipo 1'), { target: { value: '356938035643809' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Ingresar 1 equipo' }));
-
-  expect(await screen.findByText(/Equipo 1: Ese IMEI ya está registrado/)).toBeInTheDocument();
-  expect((screen.getByLabelText('Serie del equipo 1') as HTMLInputElement).value).toBe('NUEVO00001');
-});
-
-test('with every branch in view, receiving asks which branch the devices enter', async () => {
-  mount({ branch: 'all' });
-  await screen.findByText('F2LXK1ABC1');
-  fireEvent.click(screen.getByRole('button', { name: 'Registrar equipos' }));
-
-  fireEvent.change(screen.getByLabelText('Sucursal de ingreso'), { target: { value: '2' } });
-  fireEvent.change(screen.getByLabelText('Producto a recibir'), { target: { value: '11' } });
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Compra' } });
-  fireEvent.change(screen.getByLabelText('Serie del equipo 1'), { target: { value: 'C02LAPTOP01' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Ingresar 1 equipo' }));
-
-  await waitFor(() => expect(writes()).toHaveLength(1));
-  expect((writes()[0].body as { branch: number }).branch).toBe(2);
+  expect(await screen.findByText(/Equipo registrado: iPhone 16 · Serie NUEVO00001 · IMEI 356938035643825/)).toBeInTheDocument();
+  await waitFor(() => expect(gets().length).toBeGreaterThan(before));
+  expect(writes()[0].path).toBe('/');
+  expect(screen.queryByLabelText(/^Número de serie/)).toBeNull();
 });
 
 test('an available device can be set aside or written off, each with its reason', async () => {
@@ -209,7 +165,7 @@ test('someone who can only look gets the table and nothing to press', async () =
   mount({ canAdjust: false });
   await screen.findByText('F2LXK1ABC1');
 
-  expect(screen.queryByRole('button', { name: 'Registrar equipos' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '+ Registrar equipo' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Apartar' })).toBeNull();
 });
 

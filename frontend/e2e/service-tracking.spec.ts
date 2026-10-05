@@ -164,45 +164,73 @@ test("el personal anota una aprobación por teléfono y el ticket queda disponib
   expect((await ticket.body()).subarray(0, 4).toString()).toBe("%PDF");
 });
 
-test("dos equipos entran con su serie y el tablero los cuenta", async ({ page }) => {
+test("«Registrar equipo»: cada equipo entra con su serie y su IMEI, y el stock y el tablero lo cuentan", async ({ page }) => {
   test.setTimeout(180_000);
   await page.goto("/admin");
+  // Un producto nuevo, todavía SIN seguimiento por serie y con stock cero.
   const created = await api(page, "POST", "/api/admin/products/", {
     name: `${MARK} Equipo serializado ${RUN}`, price: "999.00", description: "", is_active: true,
   });
   expect(created.status, JSON.stringify(created.data)).toBe(201);
   const productId = created.data.id as number;
-  const serialized = await api(page, "POST", `/api/admin/inventory/units/products/${productId}/serialization/`, {
-    is_serialized: true, requires_imei: true,
-  });
-  expect(serialized.status, JSON.stringify(serialized.data)).toBe(200);
   const before = await api(page, "GET", "/api/me/internal-dashboard/");
   const availableBefore = before.data.inventory.equipment_available as number;
   const serials = [`E2E${RUN}A`.toUpperCase(), `E2E${RUN}B`.toUpperCase()];
+  const imeis = [imei(1), imei(2)];
 
   try {
     await page.goto("/admin/inventory/units", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Registrar equipos" }).click();
-    const branch = page.getByLabel("Sucursal de ingreso");
-    if (await branch.count()) await branch.selectOption({ index: 1 });
-    await page.getByLabel("Producto a recibir").selectOption(String(productId));
-    await page.getByLabel("Motivo").fill(`${MARK} compra de ${RUN}`);
-    await page.getByLabel("Serie del equipo 1").fill(serials[0]);
-    await page.getByLabel("IMEI del equipo 1").fill(imei(1));
-    await page.getByRole("button", { name: "Añadir otro equipo" }).click();
-    await page.getByLabel("Serie del equipo 2").fill(serials[1]);
-    // Un IMEI que no supera su dígito de control: el servidor dice cuál es.
-    await page.getByLabel("IMEI del equipo 2").fill("356938035643800");
-    await page.getByRole("button", { name: "Ingresar 2 equipos" }).click();
-    await expect(page.getByText(/^Equipo 2: /)).toBeVisible();
+    await page.getByRole("button", { name: "+ Registrar equipo" }).click();
 
-    await page.getByLabel("IMEI del equipo 2").fill(imei(2));
-    await page.getByRole("button", { name: "Ingresar 2 equipos" }).click();
-    await expect(page.getByText("2 equipos ingresados al inventario.")).toBeVisible();
-    for (const serial of serials) {
-      await expect(page.getByRole("cell", { name: serial })).toBeVisible();
+    // Los campos que identifican al equipo están a la vista ANTES de elegir producto.
+    await expect(page.getByLabel(/^Número de serie/)).toBeVisible();
+    await expect(page.getByLabel(/^IMEI \*/)).toBeVisible();
+    await expect(page.getByLabel(/^IMEI 2/)).toBeVisible();
+
+    const branch = page.getByLabel("Sucursal");
+    if ((await branch.inputValue()) === "") await branch.selectOption({ index: 1 });
+    await page.getByLabel("Producto / modelo").selectOption(String(productId));
+
+    // El producto no lleva serie todavía: la pantalla lo dice y ofrece activarlo.
+    await expect(page.getByRole("note")).toContainText("se controla por cantidad");
+    await expect(page.getByRole("button", { name: "Guardar equipo" })).toBeDisabled();
+    await page.getByLabel("Es un equipo con línea celular (lleva IMEI)").check();
+    await page.getByRole("button", { name: "Activar seguimiento por serie" }).click();
+    await expect(page.getByRole("note")).toHaveCount(0);
+
+    // --- equipo 1: con un IMEI mal copiado primero ---------------------------
+    await page.getByLabel(/^Motivo o documento de ingreso/).fill(`${MARK} compra de ${RUN}`);
+    await page.getByLabel(/^Número de serie/).fill(serials[0]);
+    await page.getByLabel(/^IMEI \*/).fill("356938035643800");
+    await page.getByRole("button", { name: "Guardar y añadir otro" }).click();
+    // El error aparece en SU campo, y lo escrito no se pierde.
+    await expect(page.getByLabel(/^IMEI \*/)).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByLabel(/^Número de serie/)).toHaveValue(serials[0]);
+
+    await page.getByLabel(/^IMEI \*/).fill(imeis[0]);
+    await page.getByRole("button", { name: "Guardar y añadir otro" }).click();
+    const done = page.getByRole("list", { name: "Equipos registrados ahora" });
+    await expect(done.getByRole("listitem")).toHaveCount(1);
+    await expect(done).toContainText(serials[0]);
+    await expect(page.getByLabel(/^Número de serie/)).toHaveValue("");
+
+    // --- equipo 2: el mismo modelo es OTRO registro --------------------------
+    await page.getByLabel(/^Número de serie/).fill(serials[1]);
+    await page.getByLabel(/^IMEI \*/).fill(imeis[1]);
+    await page.getByRole("button", { name: "Guardar equipo" }).click();
+
+    // La tabla: una fila por equipo, cada una con su serie y su IMEI.
+    for (const [index, serial] of serials.entries()) {
+      const row = page.getByRole("row").filter({ has: page.getByRole("cell", { name: serial }) });
+      await expect(row).toHaveCount(1);
+      await expect(row).toContainText(imeis[index]);
+      await expect(row).toContainText("Disponible");
     }
 
+    // El stock del producto ES la cantidad de equipos, y el tablero los cuenta.
+    const stock = await api(page, "GET", `/api/admin/inventory/stock/?branch=all&product=${productId}`);
+    const total = (stock.data.results as Array<{ quantity: number }>).reduce((sum, r) => sum + r.quantity, 0);
+    expect(total).toBe(2);
     const after = await api(page, "GET", "/api/me/internal-dashboard/");
     expect(after.data.inventory.equipment_available).toBe(availableBefore + 2);
     await page.goto("/admin", { waitUntil: "networkidle" });
