@@ -37,6 +37,7 @@ import os
 import re
 import socket
 import sys
+import time
 import uuid
 import zlib
 
@@ -99,7 +100,10 @@ def declared(path, length, sent=64 * KB, content_type='application/json', cookie
         if 'csrftoken' in cookies:
             head += f"X-CSRFToken: {cookies['csrftoken']}\r\nReferer: https://{DOMAIN}/\r\n"
     try:
-        sock.sendall(head.encode() + b'\r\n' + b'x' * min(sent, length))
+        try:
+            sock.sendall(head.encode() + b'\r\n' + b'x' * min(sent, length))
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # contestó y cerró antes de que terminara de enviar: se lee lo que dijo
         line = sock.recv(64).split(b'\r\n', 1)[0].split()
         return int(line[1]) if len(line) > 1 else 0
     except (OSError, ValueError):
@@ -134,10 +138,13 @@ def pdf_text(pdf: bytes) -> str:
 
 def limits(admin, company):
     anonymous = Client()
-    check('límite · un JSON de 2 MiB al inicio de sesión se rechaza por lo que anuncia',
-          declared('/api/auth/login', 2 * MB) == 413)
-    check('límite · 300 MiB anunciados a una ruta cualquiera, sin sesión',
-          declared('/api/cart/add', 300 * MB) == 413)
+    # En las rutas del tope general Caddy lee el cuerpo antes de pasarlo: corta
+    # al llegar a 1 MiB, se anuncie lo que se anuncie.
+    over = MB + 64 * KB
+    check('límite · un JSON de 2 MiB al inicio de sesión se corta al pasar de 1 MiB',
+          declared('/api/auth/login', 2 * MB, sent=over) == 413)
+    check('límite · 300 MiB anunciados a una ruta cualquiera, sin sesión: cortado al pasar de 1 MiB',
+          declared('/api/cart/add', 300 * MB, sent=over) == 413)
     check('límite · 300 MiB anunciados a la carga masiva de productos',
           declared(f'/api/admin/products/import/preview?company={company}', 300 * MB,
                    content_type='multipart/form-data; boundary=x', cookies=admin.cookies) == 413)
@@ -163,6 +170,40 @@ def limits(admin, company):
           f'{res.status} {str(body)[:120]}')
     check('límite · una evidencia de 30 MiB no',
           declared(base, 30 * MB, content_type='multipart/form-data; boundary=x', cookies=admin.cookies) == 413)
+
+
+def slow_bodies():
+    """
+    Nueve peticiones que anuncian un cuerpo y no terminan de enviarlo. Django
+    atiende con ocho hilos: si cada una ocupara el suyo esperando, la novena
+    —y cualquier cliente de verdad— se quedaría sin respuesta.
+    """
+    held = []
+    try:
+        for _ in range(9):
+            sock = CTX.wrap_socket(socket.create_connection((ADDR, PORT), 10), server_hostname=DOMAIN)
+            sock.sendall((f'POST /api/cart/add HTTP/1.1\r\nHost: {DOMAIN}\r\nOrigin: https://{DOMAIN}\r\n'
+                          'Content-Type: application/json\r\nContent-Length: 2000\r\n\r\n'
+                          '{"session_key": "').encode())
+            held.append(sock)
+        time.sleep(2)
+        started = time.monotonic()
+        try:
+            conn = rehearsal_media.Conn(DOMAIN, timeout=8)
+            conn.request('GET', '/api/categories')
+            status = conn.getresponse().status
+            conn.close()
+        except OSError:
+            status = 0
+        elapsed = time.monotonic() - started
+        check('límite · nueve cuerpos que no terminan de llegar no dejan a la API sin hilos',
+              status == 200 and elapsed < 5, f'{status} en {elapsed:.1f} s')
+    finally:
+        for sock in held:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 # --- pagos --------------------------------------------------------------------
@@ -414,6 +455,7 @@ def main():
         state = {}
         for name, flow in (
             ('límites', lambda: limits(admin, company)),
+            ('cuerpos lentos', slow_bodies),
             ('pagos', lambda: payments(admin, company)),
             ('equipos', lambda: state.update(equipment(admin, company))),
             ('seguimiento', lambda: state.update(tracking(admin, company))),

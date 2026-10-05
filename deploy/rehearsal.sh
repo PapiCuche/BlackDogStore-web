@@ -152,6 +152,8 @@ expect "un solo proceso de aplicación (maestro + 1 worker)" "$(docker top "$PRO
 expect "el backend arranca sin errores en su registro" "$($C logs backend 2>&1 | grep -c '\[ERROR\]')" 0
 # El tope de tamaño está en la configuración que Caddy cargó, en cada ruta hacia una aplicación.
 ADAPTED=$($C exec -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null)
+expect "Caddy no espera sin límite: cabeceras, cuerpo y conexión sin uso" "$(printf '%s' "$ADAPTED" | grep -oE '"(read_header_timeout|read_timeout|idle_timeout)":[0-9]+' | wc -l | tr -d ' ')" 3
+expect "los cuatro contenedores rotan su registro" "$(docker inspect -f '{{index .HostConfig.LogConfig.Config "max-size"}}/{{index .HostConfig.LogConfig.Config "max-file"}}' "$PROJECT-backend-1" "$PROJECT-frontend-1" "$PROJECT-caddy-1" "$PROJECT-postgres-1" 2>/dev/null | grep -c '^10m/5$')" 4
 expect "cada ruta hacia una aplicación tiene tope de tamaño (8 de 8)" "$(printf '%s' "$ADAPTED" | grep -o '"max_size"' | wc -l | tr -d ' ') $(printf '%s' "$ADAPTED" | grep -o '"handler":"reverse_proxy"' | wc -l | tr -d ' ')" "8 8"
 
 step "5 ajustes efectivos de Django"
