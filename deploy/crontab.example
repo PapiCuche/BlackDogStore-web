@@ -1,0 +1,37 @@
+# Black Dog Store — tareas programadas de PRODUCCIÓN.
+#
+# Se instalan en el `crontab` del usuario que administra el servidor:
+#
+#   sed "s|/ruta/al/repositorio|$(pwd)|g" deploy/crontab.example | crontab -
+#
+# (ese comando REEMPLAZA el crontab de ese usuario; si ya tiene otras tareas,
+# añade estas líneas a mano con `crontab -e`).
+#
+# No hace falta ningún servicio más: las ejecuta el contenedor `backend`, que ya
+# está encendido. Cada tarea escribe en su archivo dentro de `backups/`.
+# Qué hace cada una y cómo comprobarla: docs/despliegue-produccion.md §6.
+
+# Si el servidor puede enviar correo, cron manda aquí lo que imprima una tarea
+# que falla. Sin correo, los avisos quedan en backups/healthcheck.log.
+# MAILTO=alguien@example.com
+
+REPO=/ruta/al/repositorio
+C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
+
+# Copia de seguridad: base de datos y archivos subidos. Cada noche.
+15 3 * * *   cd $REPO && sh deploy/backup.sh >> backups/backup.log 2>&1
+
+# Sesiones caducadas. Cada noche, después de la copia.
+45 3 * * *   cd $REPO && $C exec -T backend python manage.py flushexpiredtokens >> backups/flushexpiredtokens.log 2>&1
+
+# Imágenes subidas que nadie llegó a usar (incluye las de una carga masiva sin aplicar).
+55 3 * * *   cd $REPO && $C exec -T backend python manage.py cleanup_storefront_images >> backups/cleanup_storefront_images.log 2>&1
+
+# Avisos por WhatsApp pendientes o por reintentar. Cada minuto. Con
+# WHATSAPP_PROVIDER=disabled no hay nada que enviar y la línea puede quitarse.
+* * * * *    cd $REPO && $C exec -T backend python manage.py send_pending_notifications >> backups/send_pending_notifications.log 2>&1
+
+# Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
+# minutos. No imprime nada si todo está bien; si algo necesita atención lo
+# escribe (y cron lo envía a MAILTO). El registro completo queda en el archivo.
+*/15 * * * * cd $REPO && sh deploy/healthcheck.sh > backups/healthcheck.last 2>&1; rc=$?; cat backups/healthcheck.last >> backups/healthcheck.log; [ $rc -eq 0 ] || grep '^ATENCIÓN' backups/healthcheck.last
