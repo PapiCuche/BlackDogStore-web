@@ -148,8 +148,9 @@ def limits(admin, company):
     check('límite · 300 MiB anunciados a la carga masiva de productos',
           declared(f'/api/admin/products/import/preview?company={company}', 300 * MB,
                    content_type='multipart/form-data; boundary=x', cookies=admin.cookies) == 413)
-    check('límite · una notificación de pago de 200 KiB',
-          declared('/api/payments/izipay/notification', 200 * KB) == 413)
+    # También aquí Caddy lee antes de pasar: corta al llegar a los 128 KiB de esa ruta.
+    check('límite · una notificación de pago de 200 KiB se corta al pasar de 128 KiB',
+          declared('/api/payments/izipay/notification', 200 * KB, sent=200 * KB) == 413)
     res, _ = anonymous.request('POST', '/api/auth/login', b'{"username": "nadie", "password": "x"}',
                                {'Content-Type': 'application/json'})
     check('límite · una petición normal sigue pasando', res.status in (400, 401), res.status)
