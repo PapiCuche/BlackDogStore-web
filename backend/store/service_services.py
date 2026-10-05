@@ -549,6 +549,11 @@ def create_repair_order(
         company=company,
     )
 
+    # TRACKING. The order is born with its link: reception copies it the moment
+    # the order exists, and there is no "generate" step somebody can forget.
+    from . import tracking_services
+    tracking_services.link_for(order, actor=actor)
+
     # The customer left a device: they are told it was received, and that is
     # the notice that carries their tracking link on the channels that have one.
     _notify(_emit_order_created, order=order)

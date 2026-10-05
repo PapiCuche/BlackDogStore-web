@@ -99,6 +99,21 @@ class TrackingLinkTest(TrackingBase):
                 self.assertEqual(res.status_code, 404)
                 self.assertEqual(res.json(), {'detail': 'No encontrado.'})
 
+    def test_a_link_has_exactly_one_spelling(self):
+        """
+        32 bytes en base64 dejan dos bits sin usar en el último carácter, así
+        que otros tres caracteres decodifican a los mismos bytes. Sólo vale el
+        que se emitió: un enlace «parecido» no abre nada.
+        """
+        alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+        last = alphabet.index(self.token[-1])
+        twins = [alphabet[(last & ~3) | low] for low in range(4) if (last & ~3) | low != last]
+        self.assertEqual(len(twins), 3)
+        for twin in twins:
+            with self.subTest(twin):
+                self.assertEqual(self.anon.get(track(self.token[:-1] + twin)).status_code, 404)
+        self.assertEqual(self.anon.get(track(self.token)).status_code, 200)
+
     def test_a_link_from_another_company_never_opens_this_order(self):
         foreign_order = _m8_service.create_repair_order(
             company=self.other, branch=self.foreign_branch, customer=self.foreign_customer,
@@ -276,6 +291,23 @@ class StaffTrackingLinkTest(TrackingBase):
         self.assertEqual(revoked.status_code, 200)
         self.assertFalse(revoked.json()['active'])
         self.assertIsNone(revoked.json()['path'])
+
+    def test_an_order_has_its_link_from_the_moment_it_is_received(self):
+        """Recepción lo copia nada más crear la orden: no hay un paso de «generar»."""
+        fresh = self.make_order()
+        self.assertEqual(RepairTrackingLink.objects.filter(repair_order=fresh).count(), 1)
+
+        body = self.client.get(_m8_url('m8-taller', f'orders/{fresh.pk}/tracking-link/')).json()
+        self.assertTrue(body['active'])
+        self.assertEqual(body['path'], f'/seguimiento/{tracking.token_for(fresh)}')
+
+    def test_an_order_from_before_links_existed_gets_one_when_staff_ask(self):
+        RepairTrackingLink.objects.filter(repair_order=self.order).delete()
+
+        body = self.client.get(self.url()).json()
+
+        self.assertTrue(body['active'])
+        self.assertTrue(body['path'].startswith('/seguimiento/'))
 
     def test_another_branch_or_company_does_not_reach_the_link(self):
         self.order.branch = self.branch_b

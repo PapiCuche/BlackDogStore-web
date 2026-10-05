@@ -84,6 +84,11 @@ def resolve(token) -> RepairTrackingLink | None:
     # Primero la firma: un token inventado no llega a preguntar a la base.
     if not hmac.compare_digest(raw[_UID_BYTES:], _mac(uid)):
         return None
+    # UNA SOLA ESCRITURA. Los 32 bytes dejan dos bits sin usar en el último
+    # carácter, así que otros tres caracteres decodifican igual. Sólo vale el
+    # enlace tal como se emitió.
+    if not hmac.compare_digest(_token(uid), text):
+        return None
     return (
         RepairTrackingLink.objects
         .filter(uid=uid, revoked_at__isnull=True, company__is_active=True)
@@ -184,8 +189,14 @@ def record_view(link: RepairTrackingLink) -> None:
 
 
 def staff_payload(repair_order) -> dict:
-    """Lo que el personal necesita para entregar el enlace."""
-    link = active_link(repair_order)
+    """
+    Lo que el personal necesita para entregar el enlace.
+
+    Una orden anterior a los enlaces recibe el suyo aquí, la primera vez que
+    alguien lo pide. Una orden cuyo enlace fue REVOCADO sigue sin enlace: eso
+    no lo deshace una lectura (ver `link_for`).
+    """
+    link = link_for(repair_order)
     if link is None:
         return {'active': False, 'path': None, 'url': None, 'created_at': None,
                 'view_count': 0, 'last_viewed_at': None}
