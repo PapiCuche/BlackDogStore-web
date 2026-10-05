@@ -168,6 +168,61 @@ describe('pausar y reanudar', () => {
   });
 });
 
+describe('Inicio y Fin', () => {
+  it('saltar al inicio gana a un desplazamiento suave que seguía en marcha', () => {
+    // Medido en Chromium: un `scrollTo` instantáneo dado a mitad de uno suave
+    // no lo cancela. La fila llega al inicio y la animación la vuelve a mover
+    // lo que le faltaba: se queda entre dos tarjetas. El salto se reafirma en
+    // los fotogramas siguientes hasta que la fila se queda donde se pidió.
+    render(<ProductCarousel products={three} />);
+    const node = track();
+    measure(node);
+    node.scrollLeft = 300;
+    scrollTo.mockClear();
+
+    fireEvent.keyDown(node, { key: 'Home' });
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 0, behavior: 'instant' });
+
+    node.scrollLeft = 46;                         // lo que deja la animación que seguía viva
+    scrollTo.mockClear();
+    runFrame(16);
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 0, behavior: 'instant' });
+
+    node.scrollLeft = 0;
+    scrollTo.mockClear();
+    for (let i = 0; i < 6; i += 1) runFrame(32 + i * 16);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(0);               // y deja de vigilar
+  });
+
+  it('otra intención de quien navega suelta la vigilancia del salto', () => {
+    render(<ProductCarousel products={three} />);
+    const node = track();
+    measure(node);
+    node.scrollLeft = 300;
+    act(() => { node.dispatchEvent(new Event('scroll')); });   // la flecha «siguientes» queda habilitada
+
+    fireEvent.keyDown(node, { key: 'Home' });
+    fireEvent.click(screen.getByRole('button', { name: 'Productos siguientes' }), { detail: 1 });
+    node.scrollLeft = 120;                        // el desplazamiento nuevo, en marcha
+    scrollTo.mockClear();
+    for (let i = 0; i < 4; i += 1) runFrame(16 + i * 16);
+
+    expect(scrollTo).not.toHaveBeenCalledWith({ left: 0, behavior: 'instant' });
+  });
+
+  it('Fin salta al último tramo, no más allá', () => {
+    render(<ProductCarousel products={three} />);
+    const node = track();
+    measure(node);                                // 1200 de contenido, 400 a la vista
+    scrollTo.mockClear();
+
+    fireEvent.keyDown(node, { key: 'End' });
+
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 800, behavior: 'instant' });
+  });
+});
+
 describe('arrastre con ratón', () => {
   function pointer(type: string, target: Element, init: Record<string, unknown>) {
     act(() => {

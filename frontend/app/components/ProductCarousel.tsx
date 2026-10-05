@@ -51,6 +51,38 @@ export function ProductCarousel({ products }: { products: Product[] }) {
   const [dragging, setDragging] = useState(false);
   /** Cancela la devolución pendiente del ajuste a tarjeta, si hay una. */
   const cancelSettle = useRef<(() => void) | null>(null);
+  /** Cambia con cada intención nueva; un salto que vigila la suya se suelta. */
+  const intent = useRef(0);
+
+  /**
+   * Salta a `left` y SE QUEDA AHÍ.
+   *
+   * Medido en Chromium: un `scrollTo` instantáneo dado a mitad de uno suave no
+   * lo cancela. La fila llega al destino y la animación que seguía viva la
+   * mueve lo que le faltaba, así que «Inicio» justo después de una flecha la
+   * dejaba entre dos tarjetas. Ni asignar `scrollLeft` ni empezar otro
+   * desplazamiento lo evitan; reafirmar el destino en los fotogramas
+   * siguientes, sí. Se vigila hasta que la fila lleva tres fotogramas quieta
+   * (con un tope), y se suelta en cuanto la persona pide otra cosa.
+   */
+  function jumpTo(node: HTMLElement, left: number) {
+    const mine = ++intent.current;
+    node.scrollTo({ left, behavior: "instant" });
+    let still = 0;
+    let budget = 45;
+    const watch = () => {
+      if (intent.current !== mine || !node.isConnected) return;
+      if (Math.abs(node.scrollLeft - left) > 1) {
+        node.scrollTo({ left, behavior: "instant" });
+        still = 0;
+      } else {
+        still += 1;
+      }
+      budget -= 1;
+      if (still < 3 && budget > 0) requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+  }
 
   /**
    * Lleva la fila hasta `left` y devuelve el ajuste a tarjeta CUANDO LLEGA.
@@ -82,6 +114,11 @@ export function ProductCarousel({ products }: { products: Product[] }) {
 
   function takeControl() {
     setPlaying(false);
+  }
+
+  /** La persona pidió otra cosa: nada de lo anterior sigue mandando. */
+  function newIntent() {
+    intent.current += 1;
   }
 
   // Avance automático: sólo con varios productos, a la vista, sin cursor
@@ -180,16 +217,20 @@ export function ProductCarousel({ products }: { products: Product[] }) {
   function navigate(step: number, instant = false) {
     const node = track.current;
     if (!node) return;
-    node.scrollTo({
-      left: node.scrollLeft + step * cardWidth(node),
-      behavior: instant || prefersReducedMotion() ? "instant" : "smooth",
-    });
+    const max = Math.max(0, node.scrollWidth - node.clientWidth);
+    const left = Math.max(0, Math.min(max || Infinity, node.scrollLeft + step * cardWidth(node)));
+    if (instant || prefersReducedMotion()) {
+      jumpTo(node, left);
+      return;
+    }
+    newIntent();
+    node.scrollTo({ left, behavior: "smooth" });
   }
 
   function jump(to: "start" | "end") {
     const node = track.current;
     if (!node) return;
-    node.scrollTo({ left: to === "start" ? 0 : node.scrollWidth, behavior: "instant" });
+    jumpTo(node, to === "start" ? 0 : Math.max(0, node.scrollWidth - node.clientWidth));
   }
 
   // Arrastre con RATÓN. El dedo y el lápiz no pasan por aquí: su scroll es el
@@ -215,6 +256,7 @@ export function ProductCarousel({ products }: { products: Product[] }) {
       state.active = true;
       // A partir de aquí el arrastre es de la fila aunque el cursor salga.
       node.setPointerCapture?.(state.id);
+      newIntent();
       cancelSettle.current?.();
       node.style.scrollSnapType = "none";
       setDragging(true);
@@ -252,10 +294,19 @@ export function ProductCarousel({ products }: { products: Product[] }) {
       aria-roledescription="carrusel"
       onPointerEnter={() => { hovered.current = true; }}
       onPointerLeave={() => { hovered.current = false; }}
-      onPointerDownCapture={(event) => { if (!fromControl(event.target)) takeControl(); }}
+      onPointerDownCapture={(event) => {
+        if (fromControl(event.target)) return;
+        // Un dedo o un clic sobre la fila es una intención nueva.
+        if ((event.target as HTMLElement).closest?.("[data-carousel-track]")) newIntent();
+        takeControl();
+      }}
       // Sólo el gesto HORIZONTAL es de la fila. La rueda vertical es de la
       // página: no se retiene (aquí no hay `preventDefault`) ni detiene nada.
-      onWheelCapture={(event) => { if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) takeControl(); }}
+      onWheelCapture={(event) => {
+        if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+        newIntent();
+        takeControl();
+      }}
       onFocusCapture={(event) => { if (!fromControl(event.target)) takeControl(); }}
     >
       <div
