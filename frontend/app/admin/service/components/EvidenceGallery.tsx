@@ -178,7 +178,6 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
   // y al desmontar. Sin esto una sesión larga retiene cada imagen en memoria.
   const previews = useRef(new Set<string>());
   useEffect(() => () => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     for (const url of previews.current) URL.revokeObjectURL(url);
   }, []);
 
