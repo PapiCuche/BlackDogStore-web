@@ -9,7 +9,7 @@ import { BrandLogo } from "./components/BrandLogo";
 import { StoreLink } from "./components/StoreLink";
 import Hero from "./components/Hero";
 import { fetcher, apiUrl } from "./lib/api";
-import { categoryHref, useCatalogCategories } from "./lib/catalog-categories";
+import { categoryHref, homeCategories, useCatalogCategories } from "./lib/catalog-categories";
 import { storefrontMediaStyle } from "./lib/storefront-media";
 
 /**
@@ -39,7 +39,9 @@ const STEPS = [
 
 export default function Home() {
   const { company, contact, services, faqs, policies, campaigns, page } = useStorefront();
-  const categories = useCatalogCategories();
+  // Las familias de la portada las elige la tienda (`show_on_home`) y las
+  // ordena el servidor. El menú y el catálogo siguen ofreciendo todas.
+  const categories = homeCategories(useCatalogCategories());
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

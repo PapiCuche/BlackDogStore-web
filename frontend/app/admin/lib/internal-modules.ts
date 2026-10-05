@@ -232,7 +232,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["products.manage"],
     status: "implemented",
   },
-  { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
+  {
+    id: "products.categories",
+    group: "products",
+    label: "Categorías",
+    description: "Familias del catálogo: cuáles se ofrecen, cuáles van en la portada y en qué orden.",
+    href: "/admin/products/categories",
+    // `products.view` para llegar; cambiar exige `products.manage`, que el
+    // servidor comprueba en cada guardado.
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
 
   // ── Inventario ───────────────────────────────────────────────────────────
   // Phase 2D: `legacyRoles` is gone from every inventory module. Stock belongs

@@ -9,7 +9,17 @@ export type CatalogCategory = {
   slug: string;
   /** La imagen que la tienda colocó desde su panel. Vacía o ausente = sin imagen. */
   image_url?: string;
+  /**
+   * Si la tienda la ilustra en la portada. La decide la tienda desde su panel;
+   * ausente se lee como «sí», nunca como oculta.
+   */
+  show_on_home?: boolean;
 };
+
+/** Las familias que la portada ilustra, en el orden en que el servidor las da. */
+export function homeCategories(categories: CatalogCategory[]): CatalogCategory[] {
+  return categories.filter((category) => category.show_on_home !== false);
+}
 
 /**
  * The categories of THIS store's catalogue — the only list of categories the
