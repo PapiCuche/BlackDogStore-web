@@ -32,12 +32,19 @@ export class ServiceApiError extends Error {
   readonly status: number;
   /** The machine-readable discriminator the server attaches to a 409. */
   readonly code: string;
+  /**
+   * What the server sent with the refusal. A field-by-field rejection
+   * (`{imei: [...]}`) and a 409 that names the row to use instead both live
+   * here; `message` is only the sentence.
+   */
+  readonly data: unknown;
 
-  constructor(message: string, status: number, code = "") {
+  constructor(message: string, status: number, code = "", data: unknown = null) {
     super(message);
     this.name = "ServiceApiError";
     this.status = status;
     this.code = code;
+    this.data = data;
   }
 
   /** The capability is gone. The caller should refresh its context, not retry. */
@@ -63,7 +70,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       body && typeof body === "object" && "code" in body
         ? String((body as { code?: unknown }).code ?? "")
         : "";
-    throw new ServiceApiError(detail, res.status, code);
+    throw new ServiceApiError(detail, res.status, code, body);
   }
   return body as T;
 }
@@ -329,9 +336,42 @@ export const searchServiceCustomers = (slug: string, search: string) =>
 export const fetchCustomerDevices = (slug: string, customerId: number) =>
   get<Rows<{ id: number; display_name: string }>>(`${base(slug)}/devices/?customer_id=${customerId}`);
 
+/** A device that may be the one on the counter, with how often it has been here. */
+export type ServiceDeviceMatch = {
+  id: number;
+  customer: number;
+  customer_name: string;
+  display_name: string;
+  serial_number: string;
+  imei: string;
+  repair_orders_count: number;
+  last_repair_order: { id: number; number: string; status: string; received_at: string } | null;
+};
+
+export type ServiceDeviceCreated = {
+  id: number;
+  display_name: string;
+  possible_duplicates?: ServiceDeviceMatch[];
+};
+
+/**
+ * The identifiers go as typed. What each kind of device needs, the IMEI check
+ * digit and the normalisation are the server's: a second copy of the rule here
+ * would accept what the server refuses, or the other way round.
+ */
 export const createServiceDevice = (slug: string, body: {
   customer_id: number; device_type: string; brand: string; model: string;
-}) => post<{ id: number; display_name: string }>(`${base(slug)}/devices/`, body);
+  serial_number?: string; imei?: string; imei2?: string; identifiers_pending_reason?: string;
+}) => post<ServiceDeviceCreated>(`${base(slug)}/devices/`, body);
+
+/** Has this device been here before? Exact match, inside this company only. */
+export const lookupServiceDevice = (slug: string, query: {
+  serial_number?: string; imei?: string; imei2?: string;
+}) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value) params.set(key, value);
+  return get<{ results: ServiceDeviceMatch[] }>(`${base(slug)}/devices/lookup/?${params.toString()}`);
+};
 
 /**
  * With `technician_id` the order is created AND assigned in one transaction on

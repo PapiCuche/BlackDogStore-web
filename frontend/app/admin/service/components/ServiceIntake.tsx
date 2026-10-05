@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { Button, ErrorNote, Field, Panel } from './ServiceUi';
-import { createServiceDevice, createServiceOrder, fetchCustomerDevices, fetchServiceTechnicians,
+import { DeviceRegistration } from './DeviceRegistration';
+import { createServiceOrder, fetchCustomerDevices, fetchServiceTechnicians,
   mayAssignTechnician, searchServiceCustomers, type ServiceAssignmentCandidate,
   type ServiceContext, type ServiceOrderDetail } from '../../../lib/service-console';
 
@@ -34,9 +35,6 @@ export function ServiceIntake({ slug, context, may, onCreated, requireTechnician
   const [issue, setIssue] = useState('');
   const [condition, setCondition] = useState('');
   const [accessories, setAccessories] = useState('');
-  const [brand, setBrand] = useState('');
-  const [model, setModel] = useState('');
-  const [deviceType, setDeviceType] = useState('');
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<ServiceOrderDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -98,17 +96,19 @@ export function ServiceIntake({ slug, context, may, onCreated, requireTechnician
         </label>
         {customer && may('service.devices.manage') ? <details>
           <summary className="cursor-pointer text-sm">Registrar otro equipo</summary>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-xs text-muted">Tipo de equipo<select className={selectStyle} value={deviceType} onChange={(event) => setDeviceType(event.target.value)}>
-              <option value="">Selecciona tipo</option>{context.device_types?.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
-            </select></label>
-            <Field label="Marca" value={brand} onChange={setBrand} />
-            <Field label="Modelo" value={model} onChange={setModel} />
-            <Button disabled={busy || !deviceType || !brand.trim() || !model.trim()} onClick={() => void run(async () => {
-              const row = await createServiceDevice(slug, { customer_id: Number(customer), device_type: deviceType, brand, model });
-              setDevices((previous) => [...previous, row]); setDevice(String(row.id));
-            })}>Guardar equipo</Button>
-          </div>
+          {/* `key`: otro cliente, otro formulario. Lo escrito para uno no se
+              arrastra al siguiente. */}
+          <DeviceRegistration
+            key={customer}
+            slug={slug}
+            customerId={Number(customer)}
+            deviceTypes={context.device_types ?? []}
+            disabled={busy}
+            onRegistered={(row) => {
+              setDevices((previous) => (previous.some((item) => item.id === row.id) ? previous : [...previous, row]));
+              setDevice(String(row.id));
+            }}
+          />
         </details> : null}
         <label className="block text-xs text-muted">Sucursal<select className={selectStyle} value={branch} disabled={busy} onChange={(event) => { setBranch(event.target.value); setTechnician(''); setTechnicians(null); }}>
           <option value="">Selecciona sucursal</option>{context.available_branches.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
