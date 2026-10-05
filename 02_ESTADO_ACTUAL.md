@@ -3,6 +3,57 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — Cierre: frontend V3 como único diseño
+
+`master` en `23d2603`. PR #82 (V3), #81 (PAYMENT-FISCAL-PRINT-01), #67 (`reportlab` 5),
+#64 (`actions/setup-python` 7) y #59 (infraestructura de producción) están integrados.
+Nada está publicado en Internet.
+
+**Frontend V3.** La presentación V3 del propietario es el único diseño de la tienda, las
+páginas de cuenta y el panel, sobre la lógica que ya tenía `master`. Cada archivo se
+comparó a tres bandas; no se copió ninguna carpeta encima.
+
+- Portada en la composición V3: hero partido, firma de marca con el isotipo como marca de
+  agua al 13 % en ambos temas, categorías ilustradas, proceso de servicio, carrusel,
+  soluciones, cercanía, preguntas y campaña.
+- Todo sale del backend. Los rótulos del hero son las categorías de la tienda y el taller
+  sólo se nombra si hay servicios publicados. Ninguna imagen está compilada: son las que
+  la tienda sube desde su panel.
+- Un solo hero, que sigue al tema. Desaparecen la losa oscura y la opción «Estilo del
+  hero» del panel. La API sigue enviando `hero_variant`; el frontend lo ignora
+  (HERO-VARIANT-LEGACY).
+- El carrusel avanza despacio y de forma continua, cede el control al tocar, enfocar o
+  desplazar, y se reanuda con su botón. Con «reducir movimiento» no avanza.
+- El frontend anterior queda en la etiqueta `frontend-anterior-2026-10-04`.
+
+**Corregido al verificar — CART-CSRF-01.** Con la sesión iniciada, agregar al carrito,
+cambiar una cantidad, quitar una línea o validar un cupón respondían «CSRF token missing».
+Esas peticiones salían sin el token y la cookie de acceso hace que el servidor lo exija.
+Un visitante anónimo no lo sufría. Ahora salen por `fetchWithAuth`.
+
+**Dependencias.** #67 se integró tras comparar a la vista los PDF con `reportlab` 4.4.10 y
+5.0.1: nota de venta A4, ticket y recibo idénticos; factura A4 y ticket fiscal sólo
+difieren en hora, resumen y QR. #64 se integró. #80 (TypeScript 6) queda abierta como
+DEP-TS6: su CI pasa, no hace falta para el lanzamiento y se decide con calma.
+
+| Medida | Resultado |
+|---|---|
+| Backend | 4865 pruebas en PostgreSQL 16, 0 fallos, 4 omitidas (CI de `1b62f31`) |
+| Jest | 609/609 |
+| Tipos · lint · build | limpio · 0 errores, 23 avisos · correcto |
+| Playwright | 176/176, 0 omitidas |
+| Ensayo de producción | `ENSAYO: OK` (83 + 26) sobre `9043c89`; hay que repetirlo sobre el commit que se despliegue |
+
+**Pendiente real**
+
+| ID | Estado | Qué falta |
+|---|---|---|
+| PRODUCT-PHOTO-UPLOAD | PENDIENTE | La foto de un producto sólo admite una dirección absoluta; no se puede subir desde el panel como las del hero y las categorías |
+| DEV-PROXY-UPLOAD | PENDIENTE | En desarrollo, el proxy de Next rechaza subidas de más de ~1 MB. Producción no pasa por ese proxy |
+| HERO-VARIANT-LEGACY | PROPUESTA | Retirar `hero_variant` del modelo y de la API |
+| DEP-TS6 | PROPUESTA | TypeScript 6 (#80) |
+| Texto de marca | DECISIÓN DEL PROPIETARIO | La V3 nombra a Apple en sus textos; no se compiló. El titular es el que la tienda escribe en su panel |
+
 ## 2026-10-04 — PAYMENT-FISCAL-PRINT-01: pago, comprobante impreso e impresión en tienda
 
 Rama `feat/payment-fiscal-print`. Migraciones `0098` (logotipo) y `0099` (impresión).
