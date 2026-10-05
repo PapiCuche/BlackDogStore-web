@@ -3,6 +3,74 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-05 — SERVICE-TRACKING: seguimiento, cotizaciones, WhatsApp, equipos con serie, portada y Google
+
+Rama `feat/service-tracking-equipment`. Migraciones `0102`–`0109`. Decisiones:
+DEC-DEVICE-01, DEC-TRACKING-01, DEC-QUOTE-01, DEC-WHATSAPP-01, DEC-SERIAL-01,
+DEC-CUSTOMER-01, DEC-STOREFRONT-CAT-01, DEC-GOOGLE-01. Guía de uso y operación:
+[docs/seguimiento-whatsapp-equipos.md](docs/seguimiento-whatsapp-equipos.md).
+Nada está publicado en Internet.
+
+| Funcionalidad | Antes | Ahora |
+|---|---|---|
+| Serie e IMEI según el tipo de equipo, con dígito de control; segundo IMEI; «este equipo ya estuvo aquí» | PARCIAL (texto libre) | IMPLEMENTADO |
+| Seguimiento del cliente por enlace seguro, sin cuenta | PENDIENTE | IMPLEMENTADO |
+| «Mis reparaciones» en la web, con cuenta | PENDIENTE (EVIDENCE-CUSTOMER-WEB) | IMPLEMENTADO |
+| Fotos compartidas visibles para el cliente en la web | PENDIENTE | IMPLEMENTADO (en el enlace de seguimiento) |
+| Aprobación de cotización por el cliente | IMPLEMENTADO (sólo app) | IMPLEMENTADO (app y enlace) |
+| Aprobación anotada por el personal, con canal y autor | PENDIENTE | IMPLEMENTADO |
+| Reabrir una cotización aprobada (anula la aprobación) | PENDIENTE | IMPLEMENTADO |
+| Ticket de 80 mm de la cotización aprobada | PENDIENTE | IMPLEMENTADO |
+| Avisos al cliente en los pasos reales del servicio | PARCIAL (defecto: no se emitían) | IMPLEMENTADO |
+| Avisos por WhatsApp (API oficial): consentimiento, plantillas, reintentos, webhook, estados | PENDIENTE | IMPLEMENTADO con proveedor falso · BLOCKED/CREDENTIALS para el envío real |
+| Inventario › Equipos (productos con número de serie) | PENDIENTE | IMPLEMENTADO |
+| KPI «Equipos disponibles» | PENDIENTE | IMPLEMENTADO |
+| Categorías de la portada configurables por tienda; pantalla de categorías | PARCIAL (lista completa por nombre; sin pantalla) | IMPLEMENTADO |
+| Carrusel de productos: arrastre, reposo fuera de pantalla, sin retener la rueda | PARCIAL | IMPLEMENTADO |
+| «Continuar con Google» | PENDIENTE | IMPLEMENTADO · BLOCKED/CREDENTIALS (falta el ID de cliente) |
+| Transferir equipos con serie entre sucursales; recuento por series; elegir el equipo al vender | — | PENDIENTE |
+| Pantalla para deshacer la vinculación cuenta–cliente (CUSTOMER-UNLINK-UI) | — | PENDIENTE (la API existe) |
+| `hero_variant` | OBSOLETO | OBSOLETO (sin cambios) |
+
+**Equipo.** Qué identificadores pide cada tipo lo decide el servidor. El IMEI se valida
+con su dígito de control; lo ausente es vacío, nunca un marcador. La recepción ve si
+el equipo ya estuvo en el taller.
+
+**Seguimiento.** Cada orden nace con un enlace opaco (`/seguimiento/<código>`): estado,
+avance, cotización, pagos, fotos compartidas y garantía, con serie e IMEI
+enmascarados. Quien tiene cuenta lista sus reparaciones en `/repairs`.
+
+**Cotizaciones.** El registro dice quién decidió y por dónde. El personal anota lo que
+el cliente le dijo con una capacidad propia. Reabrir anula la aprobación. El ticket
+sólo existe para una aprobación vigente.
+
+**WhatsApp.** Proveedor oficial detrás de una interfaz; configuración por empresa sin
+secretos en la base; consentimiento; bandeja de salida con reintentos; webhook
+firmado. Un fallo no deshace el trabajo.
+
+**Equipos con serie.** Son parte del stock: la cantidad del producto es la de equipos
+disponibles, impuesto en el escritor único del Kardex.
+
+**Corregido en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| NOTIFY-REAL-PATHS | «Listo para recoger», «entregado» y «esperando repuesto» nunca se avisaban: los pasos reales no pasaban por el único punto que avisaba |
+| TRACKING-REVOKE | Un enlace revocado se recreaba al listar las reparaciones |
+| TRACKING-BORN | Una orden recién creada no mostraba su enlace (hallado por la prueba de navegador) |
+| TRACKING-SPELLING | Tres variantes del último carácter del enlace abrían la misma orden |
+| SERVICE-REVIEW | 2 P2 y 5 P3 de una revisión independiente (ver `07_CHANGELOG.md`) |
+| CAROUSEL-JUMP | «Inicio» o «Fin» justo después de una flecha dejaban la fila entre dos tarjetas: en Chromium un salto no cancela un desplazamiento suave en marcha |
+| CAROUSEL-RESUME | Reanudar el carrusel enseguida de pausarlo lo dejaba inmóvil |
+| READ-ONLY-GET | Consultar el estado del enlace o imprimir el ticket escribían en la base; en la superficie interna una lectura no escribe |
+
+| Medida | Resultado |
+|---|---|
+| Backend | 5172 pruebas en PostgreSQL, 0 fallos, 4 omitidas (suite completa local) |
+| Jest | 765/765 |
+| Tipos · lint · build | limpio · 0 errores, 22 avisos · correcto |
+| Playwright | 183/183, 0 omitidas |
+
 ## 2026-10-04 — MEDIA-EVIDENCE: imágenes de producto, carga masiva con imágenes y evidencias de servicio
 
 Rama `feat/media-evidence`. Migraciones `0100` (galería de producto) y `0101` (nota y

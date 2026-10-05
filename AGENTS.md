@@ -76,7 +76,7 @@ RED antes que GREEN: el test falla por el motivo correcto antes de escribir el c
 
 | Compuerta | Comando | Notas |
 |---|---|---|
-| Backend focal | `DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog python3 manage.py test <módulo> --noinput` | Sólo PostgreSQL. **Un proceso a la vez**: dos comparten `test_blackdog` y se destruyen. |
+| Backend focal | `DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog python3 manage.py test <módulo> --noinput` | Sólo PostgreSQL. **Un proceso a la vez por nombre de base**: dos comparten `test_blackdog` y se destruyen. Para correr un módulo mientras la suite completa trabaja, otro nombre (`…/blackdog_focal` crea `test_blackdog_focal`). |
 | Backend completo | el CI del PR (`Backend PostgreSQL Validation`) | ~70 min. Sólo corre si el PR toca `backend/**`. |
 | Frontend | `npm test -- --runInBand` · `npx tsc --noEmit` · `npm run lint` · `npm run build` | Parar `next dev` antes del build: comparten `.next`. |
 | E2E | `E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:3002 E2E_API_BASE=http://127.0.0.1:8100/api npx playwright test` | Ver abajo. |
@@ -89,7 +89,7 @@ Next dev no hidrata desde otro origen. Backend en `:8100` y `next dev` en `:3002
 no sirve: le falta el pedido pagado con factura y `fiscal-invoice` omite sus 9 pruebas. En la copia, y sólo
 en ella, se vacían las fotos de producto que apuntan a un host externo y se archivan las campañas publicadas
 (`next/image` rechaza un host que no está en `NEXT_PUBLIC_IMAGE_HOSTS` y la portada cae). Una prueba omitida
-no cuenta como verde: la pasada completa son 179 y 0 omitidas.
+no cuenta como verde: la pasada completa son 183 y 0 omitidas.
 Una pasada sólo vale si el equipo no se suspendió (`pmset -g log`), si no hubo login manual justo antes
 (límite 5/min) y si queda stock (cada pasada vende; reponer por `inventory-adjust`). Un fallo por límite de
 peticiones o stock se arregla aislando el test, no ignorando la pasada.

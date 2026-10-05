@@ -458,6 +458,18 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | SVC-TX-01 | MEDIUM | `1928b05` | `assign_technician` sin transacción propia (decorador desplazado a `_notify` en `108a904`) | `SvcAssignOutsideATransactionTest` | CORREGIDO |
 | SVC-PAY-01 | MEDIUM | `d62fa30` | `V1ServicePaymentView.post`, `PaymentSection` (`canCollect` / `canReverse`), migración 0095 | `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `service-authority-console.test.tsx` | IMPLEMENTADO |
 | POS-SVC-01 | — | `6caa88c` | `PosModeSwitch`, `PosServiceIntake`, `ServiceIntake` (técnico obligatorio en caja) | `pos-service-intake.test.tsx`, `SvcIntakeWithAssignmentTest`, E2E `service-pos` (`1d35b7d`) | IMPLEMENTADO |
+| DEVICE-IDENTITY | — | `c066ba6`, `a71ccb4` | `device_identity.py`, `service_services.py::create_device`, `V1ServiceDeviceLookupView`, migración `0102`; `DeviceRegistration.tsx` | `test_device_identity.py`, `device-registration.test.tsx` | IMPLEMENTADO: serie/IMEI por tipo, Luhn, NULL en vez de marcadores, historial por equipo acotado a las sucursales visibles |
+| TRACKING | — | `a0fe1d4`, `13caf3f`, `1f02a7b` | `tracking_services.py`, `tracking_views.py`, `RepairTrackingLink`, migración `0103`; `app/seguimiento/[token]`, `app/repairs` | `test_tracking.py`, `tracking-view.test.tsx`, `account-repairs.test.tsx`, E2E `service-tracking` | IMPLEMENTADO: enlace opaco con HMAC, una sola escritura, revocable; vista pública por lista de lo permitido |
+| QUOTE-DECISION · QUOTE-TICKET | — | `a0fe1d4`, `962697a` | `service_services.py::record_staff_quote_decision`, `reopen_approved_quote`, `quote_ticket.py`, capacidad `service.quotes.record_decision`, migración `0104` | `test_quote_decisions.py`, `test_quote_ticket.py`, `quote-decision-panel.test.tsx` | IMPLEMENTADO |
+| NOTIFY-REAL-PATHS | HIGH | `1479cb9` | `service_services.py::_apply_transition` (emite), `_emit_order_created` | `test_service_notifications.py` | CORREGIDO: listo/entregado/repuesto no se avisaban por los pasos reales; las pruebas llamaban al emisor directamente |
+| WHATSAPP-NOTIFY | — | `10d9322`, `0fc108c` | `messaging/`, `whatsapp_services.py`, `whatsapp_views.py`, `CompanyMessagingSettings`, `send_pending_notifications`, `configure_whatsapp`, migración `0105` | `test_whatsapp.py`, `customer-notices-panel.test.tsx`, `whatsapp-settings.test.tsx` | IMPLEMENTADO con proveedor falso; envío real BLOQUEADO por credenciales |
+| SERIALIZED-STOCK | — | `214c3ef`, `059a8e0` | `stock_unit_services.py`, `stock_unit_views.py`, `inventory_services.py::_units_for_movement`, `StockUnit`, migración `0106`; `StockUnitsPanel.tsx` | `test_stock_units.py`, `stock-units-panel.test.tsx`, `dashboard-equipment.test.tsx` | IMPLEMENTADO: cantidad == equipos disponibles, impuesto en el escritor único |
+| STOREFRONT-CATEGORIES · CAROUSEL-MOTION | — | `35f9594`, `b3597f7`, `571ebf9` | `Category.is_active/show_on_home/home_order`, migración `0107`; `CategoriesManager.tsx`, `ProductCarousel.tsx` | `test_storefront_categories.py`, `categories-manager.test.tsx`, `product-carousel-motion.test.tsx` | IMPLEMENTADO |
+| GOOGLE-AUTH | — | `697437f`, `7271b3c` | `google_identity.py`, `google_views.py`, `ExternalIdentity`, migración `0108`; `GoogleSignIn.tsx` | `test_google_auth.py`, `google-sign-in.test.tsx` | IMPLEMENTADO; el botón aparece sólo con `GOOGLE_OAUTH_CLIENT_ID` (BLOQUEADO por credenciales) |
+| TRACKING-REVOKE · TRACKING-BORN · TRACKING-SPELLING | MEDIUM | `493d1e2`, `1f02a7b` | `tracking_services.py::link_for`, `resolve` | `test_tracking.py` | CORREGIDO |
+| CAROUSEL-JUMP · CAROUSEL-RESUME | MEDIUM | `f1de9c4`, `38a50c9` | `ProductCarousel.tsx::jumpTo` (reafirma el destino por fotogramas), `settle` (cancelable) | `product-carousel-motion.test.tsx`, E2E `motion-carousel` | CORREGIDO: un `scrollTo` instantáneo no cancela uno suave en marcha (medido en Chromium); se veía como fallo intermitente del E2E con la máquina cargada |
+| READ-ONLY-GET | LOW | `31592f2` | `tracking_services.py::staff_payload` (lectura pura), migración `0109`, `V1ServiceQuoteTicketView` (sin auditoría), `V1ServiceTrackingLinkActionView` | `H411SafeMethodsAreReadOnlyTest`, `test_tracking.py` | CORREGIDO |
+| SERVICE-REVIEW | MEDIUM→LOW | `fd99611`, `a718fc0` | `V1ServiceTrackingLinkView` (`reveal/` con `service.quotes.record_decision`), `tracking_services.py::claim` (documento, intentos), `unlink_account`, comparaciones en bytes, `_orders` por sucursal, relectura del modo en `create_stock_movement`, `whatsapp_cloud.py` (sin respuesta no se reenvía) | `test_tracking.py`, `test_whatsapp.py`, `test_google_auth.py`, `test_device_identity.py`, `test_stock_units.py` | CORREGIDO: 2 P2 y 5 P3 de la revisión independiente |
 | IDOR-01 | — | — | `admin_views.py::AdminOrderResendEmailView.post` | — | REFUTADO (deuda de limpieza: `order.save(update_fields=…)`) |
 | DEV-DEMO-01 | — | — | `dev_accounts_views.py` | — | REFUTADO (fail-closed por `DEBUG`) |
 
@@ -528,7 +540,6 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | Lint 33 warnings | FRONTEND | 24 `set-state-in-effect` y otras | Baja | — |
 | STOREFRONT-EDITORIAL-CMS | STOREFRONT | PARCIAL: hay imagen de hero y por categoría, subidas desde el panel; sin más material editorial | Baja | decisión de producto |
 | STOREFRONT-IMAGE-CLEANUP | STOREFRONT | una imagen sustituida queda guardada; sin listado ni borrado | Baja | — |
-| STOREFRONT-FEATURED-CATEGORIES | STOREFRONT | PROPUESTA: destacar y ordenar categorías en la portada; hoy, las seis primeras en el orden del servidor | Baja | — |
 | TENANT-TYPOGRAPHY | BRANDING | PROPUESTA: tipografía por tienda (el manual del piloto pide Montserrat; la plataforma usa Inter + Unbounded) | Baja | — |
 | INTERNAL-UI-V3 | FRONTEND | PENDIENTE: el trabajo paralelo V3 sólo cambia piezas compartidas del panel (`AdminShell`, menú lateral con diálogo móvil, barra superior, selectores, campana, gráficos, `.admin-workspace`), ninguna página; alcanza a todas las rutas a la vez y 6 de 9 archivos chocan con master | Media | fase propia |
 | STOREFRONT-IMAGES-LICENSE | STOREFRONT | BLOQUEADO para el repositorio: las imágenes de la propuesta de Figma no tienen licencia demostrada y no se versionan. Ya no bloquea la portada: la tienda sube las suyas desde el panel | Baja | decisión legal |
@@ -537,9 +548,15 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | STOREFRONT-PILLARS-CMS | STOREFRONT | PROPUESTA: los pilares (sólo con el hero oscuro) y la frase de la franja de marca (hero claro) están compilados; sin campo en el CMS | Baja | — |
 | POS-CUSTOM-PRODUCT | POS | PROPUESTA: vender en caja un artículo que no está en el catálogo. No se implementa con productos falsos ni con `OrderItem.product` nulo | Por decidir | decisión de producto |
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
-| SVC-QUOTE-INSHOP | SERVICE | PENDIENTE: la cotización sólo se aprueba desde la cuenta del cliente; no hay aprobación en tienda | Media | decisión de producto |
 | SVC-POS-DRAFT | FRONTEND | la recepción a medio llenar se pierde al volver a «Productos»; el modo servicio depende de que cargue el contexto de la caja | Baja | — |
 | SVC-ELIGIBLE-COST | SERVICE | la lista de candidatos resuelve capacidades y alcance por cada miembro del personal; el camino de asignar ya consulta a una sola persona | Baja | — |
+| WHATSAPP-CREDENTIALS | NOTIFY | BLOQUEADO: el envío real necesita número de WhatsApp Business, plantillas aprobadas y credenciales del propietario; contrato probado con `FakeProvider` y con `urlopen` simulado | Media | propietario |
+| GOOGLE-CLIENT-ID | AUTH | BLOQUEADO: falta `GOOGLE_OAUTH_CLIENT_ID` con el dominio autorizado; sin él el botón no se ofrece | Baja | propietario |
+| CUSTOMER-UNLINK-UI | SERVICE | la tienda deshace una vinculación cuenta–cliente por la API (`…/customers/<id>/unlink-account/`); sin pantalla. Tampoco hay fusión de dos registros del mismo cliente | Baja | — |
+| SERIAL-TRANSFER · SERIAL-COUNT · SERIAL-PICK | INVENTORY | PENDIENTE: transferir equipos con serie entre sucursales, recuento por lectura de series y elegir un equipo concreto al vender (hoy el más antiguo, al precio de catálogo) | Media | decisión de producto |
+| GOOGLE-NONCE-CACHE | AUTH | el uso único del intento de Google y el bloqueo de intentos al vincular una orden viven en la caché del proceso; comparte condición con THROTTLE-CACHE-01. La cookie HttpOnly del intento no depende de ella | Baja | THROTTLE-CACHE-01 |
+| WHATSAPP-INLINE-SEND | NOTIFY | el primer intento ocurre en la petición (hasta 8 s si el proveedor tarda); con `WHATSAPP_SEND_INLINE=0` lo hace sólo la tarea programada | Baja | — |
+| TRACKING-LINK-UI-COPY | SERVICE | el aviso al personal sin la capacidad dice a quién pedir el enlace; no hay flujo para solicitarlo desde la pantalla | Baja | — |
 | MIG-ADMIN-LIVE | RBAC | 13 migraciones anteriores (0033…0082) comparan el rol Administrador contra el catálogo vivo; una base atrasada que cruce varias en un solo `migrate` puede dejarlo sin ampliar. 0094 y 0095 usan conjuntos congelados | Media | — |
 
 ---
@@ -558,6 +575,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **Cierre 2026-10-04**: `master` @ `23d2603`. Infraestructura de producción (#59, `da5cca5`), `actions/setup-python` 7 (#64, `b632dca`), `reportlab` 5 (#67, `8196f6b`), PAYMENT-FISCAL-PRINT-01 (#81, `1b62f31`) y frontend V3 (#82, `23d2603`). Backend 4865; Jest 609; Playwright 176/176.
 - **MEDIA-EVIDENCE**: rama `feat/media-evidence`. Galería de producto, carga masiva con imágenes, evidencias con nota y ciclo completo. Backend 4965; Jest 659; Playwright 179/179. Decisiones DEC-MEDIA-01, DEC-IMPORT-MEDIA-01, DEC-EVIDENCE-01.
+- **SERVICE-TRACKING**: rama `feat/service-tracking-equipment`. Identidad de equipo, seguimiento por enlace, decisiones de cotización y ticket, avisos reales y WhatsApp, equipos con serie, categorías de portada, carrusel y Google. Migraciones `0102`–`0109`. Backend 5172; Jest 765; Playwright 183/183. Decisiones DEC-DEVICE-01 … DEC-GOOGLE-01. Revisión independiente: 2 P2 y 5 P3, corregidos (`fd99611`).
 
 ---
 

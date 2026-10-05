@@ -3,6 +3,58 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-05 — SERVICE-TRACKING
+
+**Added**
+- Identificación de equipos: serie e IMEI según el tipo, dígito de control, segundo
+  IMEI, motivo cuando no se puede leer, búsqueda «ya estuvo aquí».
+- Enlace de seguimiento por orden (`/seguimiento/<código>`) y «Mis reparaciones»
+  (`/repairs`); el cliente aprueba o rechaza la cotización desde el enlace.
+- Decisión de cotización anotada por el personal (capacidad
+  `service.quotes.record_decision`), reapertura de una cotización aprobada y ticket de
+  80 mm de la cotización aprobada.
+- Avisos por WhatsApp por la API oficial: proveedor intercambiable, configuración por
+  empresa, consentimiento, plantillas, bandeja de salida con reintentos
+  (`send_pending_notifications`), webhook firmado, estados entregado/leído, pantalla
+  Administración › Mensajería, `configure_whatsapp`.
+- Inventario › Equipos: productos con número de serie como parte del stock; KPI
+  «Equipos disponibles».
+- Productos › Categorías: activa, en la portada y orden, por tienda.
+- «Continuar con Google», verificado en el servidor.
+- Guía `docs/seguimiento-whatsapp-equipos.md`.
+
+**Changed**
+- La orden de servicio emite sus avisos desde los pasos reales, y avisa también al
+  recibir el equipo y al empezar la reparación.
+- La lista pública de categorías sale en el orden de la tienda y sin las retiradas;
+  la portada ilustra sólo las marcadas.
+- El carrusel de productos se arrastra con ratón, se asienta sin saltos, no trabaja
+  fuera de pantalla y no retiene la rueda vertical.
+- El stock de un producto con serie no se mueve por cantidad en ningún camino.
+- `PyJWT` se declara en `requirements.txt` (ya se instalaba como dependencia).
+
+**Fixed**
+- NOTIFY-REAL-PATHS, TRACKING-REVOKE, TRACKING-BORN, TRACKING-SPELLING.
+- CAROUSEL-JUMP: «Inicio»/«Fin» tras una flecha dejaban la fila entre tarjetas; el salto
+  se reafirma hasta que la fila se queda donde se pidió. CAROUSEL-RESUME: reanudar
+  enseguida de pausar ya no la inmoviliza.
+- READ-ONLY-GET: el estado del enlace y el ticket son lecturas puras; la migración
+  `0109` da su enlace a las órdenes anteriores.
+- De la revisión: el enlace se entregaba a quien sólo podía abrir la orden; tener un
+  enlace bastaba para quedarse con un cliente entero; un carácter no ASCII en el
+  webhook daba 500; el historial de un equipo nombraba órdenes de otra sucursal; un
+  movimiento por cantidad podía cruzarse con el cambio a «con serie»; una petición sin
+  respuesta a WhatsApp se reenviaba sola.
+
+**Security**
+- Aislamiento por empresa y por sucursal probado en equipos, enlaces, cotizaciones,
+  avisos, webhook, unidades con serie y categorías.
+- El enlace de seguimiento no es enumerable, tiene una sola escritura y se revela al
+  personal sólo con capacidad y con registro.
+- Ninguna credencial de WhatsApp en la base de datos, en la API ni en los registros.
+- Google: sólo RS256, audiencia, emisor, caducidad, correo verificado, intento ligado
+  al navegador y de un solo uso; ningún enlace automático por correo.
+
 ## 2026-10-04 — MEDIA-EVIDENCE
 
 **Added**
