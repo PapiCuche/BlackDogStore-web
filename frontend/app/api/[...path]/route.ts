@@ -31,6 +31,10 @@ const HOP_BY_HOP = new Set([
   "trailers",
   "transfer-encoding",
   "upgrade",
+  // `Expect: 100-continue` es un acuerdo entre el cliente y ESTE servidor. El
+  // `fetch` de Node no lo admite y falla antes de conectar: reenviarlo
+  // convertía una subida de más de 1 MiB hecha con curl en un 502.
+  "expect",
 ]);
 
 /**
