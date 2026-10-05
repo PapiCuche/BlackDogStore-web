@@ -197,7 +197,7 @@ class ProxyAgreesTest(SimpleTestCase):
         matchers = dict(re.findall(r'^\s*@(limit_\w+) path_regexp (\S+)\s*$', text, re.M))
         sizes = {}
         for name, amount, unit in re.findall(
-            r'handle @(limit_\w+) \{\s*request_body \{\s*max_size (\d+)(KiB|MiB)', text,
+            r'handle @(limit_\w+) \{\s*import too_large \w+ \d+\s*request_body \{\s*max_size (\d+)(KiB|MiB)', text,
         ):
             sizes[name] = int(amount) * self.UNITS[unit]
         return matchers, sizes
@@ -213,11 +213,29 @@ class ProxyAgreesTest(SimpleTestCase):
 
     def test_everything_else_gets_the_default_on_both_applications(self):
         text = CADDYFILE.read_text(encoding='utf-8')
-        fallbacks = re.findall(r'handle \{\s*request_body \{\s*max_size (\d+)(KiB|MiB)', text)
+        fallbacks = re.findall(r'handle \{\s*import too_large \w+ \d+\s*request_body \{\s*max_size (\d+)(KiB|MiB)', text)
         # One fallback for the API, one for the pages served by Next.
         self.assertEqual(len(fallbacks), 2)
         for amount, unit in fallbacks:
             self.assertEqual(int(amount) * self.UNITS[unit], request_limits.default_max_bytes())
+
+    def test_the_proxy_refuses_on_the_announced_length_itself(self):
+        """
+        BODY-LIMIT-502. Django refuses an oversized request on its declared
+        length and closes without reading it; the proxy, still sending the body,
+        then answered 502 instead of 413 about one time in ten. The proxy now
+        compares the announced length itself, with the same numbers, and never
+        calls an application for a request it can already refuse.
+        """
+        text = CADDYFILE.read_text(encoding='utf-8')
+        declared = {name: int(size) for name, size in re.findall(r'(?m)^\s*import too_large (\w+) (\d+)\s*$', text)}
+        expected = {tier.name: tier.max_bytes for tier in request_limits.tiers()}
+        expected['api'] = expected['pages'] = request_limits.default_max_bytes()
+        self.assertEqual(declared, expected)
+        self.assertEqual(len(declared), text.count('reverse_proxy '))
+        snippet = re.search(r'\(too_large\) \{(.*?)\n\}', text, re.S).group(1)
+        self.assertIn('int({header.Content-Length}) > {args[1]}', snippet)
+        self.assertRegex(snippet, r'respond @over_\{args\[0\]\} .* 413')
 
     def test_no_request_reaches_an_application_without_a_limit(self):
         text = CADDYFILE.read_text(encoding='utf-8')
