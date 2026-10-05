@@ -1363,7 +1363,7 @@ export type ImportMediaSummary = {
 
 export type ImportJob = {
   id: number;
-  import_type: "products" | "stock";
+  import_type: "products" | "stock" | "units";
   status: "previewed" | "applied" | "failed";
   stock_mode: string;
   original_filename: string;

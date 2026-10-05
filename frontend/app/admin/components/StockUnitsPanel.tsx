@@ -10,6 +10,7 @@
  * server, and a refusal is shown in the server's words.
  */
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
@@ -134,9 +135,14 @@ export function StockUnitsPanel({
         description="Cada fila es un equipo físico. Busca por la serie o por los últimos dígitos del IMEI."
         action={
           canAdjust && !registering ? (
-            <button type="button" className={internalPrimaryButtonClass} onClick={() => { setRegistering(true); setNotice(null); }}>
-              + Registrar equipo
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link className={internalButtonClass} href="/admin/inventory/units/import">
+                Cargar desde Excel
+              </Link>
+              <button type="button" className={internalPrimaryButtonClass} onClick={() => { setRegistering(true); setNotice(null); }}>
+                + Registrar equipo
+              </button>
+            </div>
           ) : null
         }
       >

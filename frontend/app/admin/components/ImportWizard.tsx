@@ -251,7 +251,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                 {new Date(job.created_at).toLocaleString("es-PE")}
               </td>
               <td className="px-3 py-2 text-foreground">
-                {job.import_type === "products" ? "Productos" : "Inventario"}
+                {job.import_type === "products" ? "Productos" : job.import_type === "units" ? "Equipos con serie" : "Inventario"}
               </td>
               <td className="px-3 py-2 text-muted">{job.original_filename}</td>
               <td className="px-3 py-2 text-muted">{job.created_by || "—"}</td>

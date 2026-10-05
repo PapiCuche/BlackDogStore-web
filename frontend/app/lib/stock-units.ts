@@ -144,3 +144,66 @@ export type UnitAction = "reserve" | "release" | "write-off" | "return";
 
 export const actOnStockUnit = (id: number, action: UnitAction, reason = "") =>
   post<StockUnit>(`/${id}/${action}/`, { reason });
+
+// ---------------------------------------------------------------------------
+// UNIT-IMPORT — «Equipos serializados.xlsx»: one row, one device
+// ---------------------------------------------------------------------------
+
+export type UnitImportRow = {
+  sheet: string;
+  row: number;
+  action: "create" | "skip" | "error";
+  match_key: string;
+  errors: string[];
+  warnings: string[];
+  data: {
+    name?: string;
+    branch?: string;
+    serial_number?: string;
+    imei?: string;
+    imei2?: string;
+    condition?: string;
+    cost?: string;
+    reason?: string;
+  };
+};
+
+/** A staged upload, as the server describes it. Nothing here is computed in the browser. */
+export type UnitImportJob = {
+  id: number;
+  import_type: "units";
+  status: "previewed" | "applied" | "failed";
+  original_filename: string;
+  counts: { total: number; create: number; skip: number; error: number };
+  summary: { units?: number; applied?: { units: number; movements: number } };
+  is_applicable: boolean;
+  rows?: UnitImportRow[];
+  rows_truncated?: boolean;
+};
+
+export function unitImportTemplateUrl(): string {
+  return `${BASE}/import/template/`;
+}
+
+/** The rows that failed, as a file to read next to the original. */
+export function unitImportErrorsUrl(jobId: number): string {
+  return `${API_BASE}/admin/imports/${jobId}/errors.csv/`;
+}
+
+/** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */
+export function previewUnitImport(
+  file: File,
+  defaults: { branch?: number | null; reason?: string } = {},
+): Promise<UnitImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  if (defaults.branch) form.append("branch", String(defaults.branch));
+  if (defaults.reason?.trim()) form.append("reason", defaults.reason.trim());
+  // No Content-Type: the browser writes the multipart boundary itself.
+  return call<UnitImportJob>("/import/preview/", { method: "POST", body: form });
+}
+
+/** Register every staged device — all of the file or none of it. */
+export function applyUnitImport(jobId: number): Promise<UnitImportJob> {
+  return post<UnitImportJob>(`/import/${jobId}/apply/`);
+}

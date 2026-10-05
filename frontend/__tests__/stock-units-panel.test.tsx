@@ -112,7 +112,8 @@ test('"+ Registrar equipo" is the way in, and saving one refreshes the table', a
   expect(screen.getByLabelText(/^IMEI \*/)).toBeInTheDocument();
   expect(screen.getByLabelText(/^IMEI 2/)).toBeInTheDocument();
 
-  await screen.findByRole('option', { name: /iPhone 16/ });
+  // La opción del FORMULARIO: el filtro de la tabla lista los mismos productos.
+  await within(screen.getByLabelText('Producto / modelo')).findByRole('option', { name: /iPhone 16/ });
   fireEvent.change(screen.getByLabelText('Producto / modelo'), { target: { value: '10' } });
   fireEvent.change(screen.getByLabelText(/^Número de serie/), { target: { value: 'NUEVO00001' } });
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: '356938035643825' } });
