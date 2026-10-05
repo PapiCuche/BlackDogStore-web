@@ -321,6 +321,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 branch = None
         if branch is not None:
             data.update(branch_id=branch.pk, branch=branch.name)
+            # Counted even if the row ends in error: an error row still carries
+            # the serial and the IMEI, and they belong to this branch.
+            branch_ids.add(branch.pk)
 
         # -- the device itself ------------------------------------------------
         condition = ''
@@ -378,7 +381,6 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             stage(row_number, BulkImportRow.ERROR, key=fields['serial_number'], data=data,
                   errors=errors, warnings=warnings)
             continue
-        branch_ids.add(branch.pk)
         stage(row_number, BulkImportRow.CREATE, key=cleaned['serial_number'], data=data, warnings=warnings)
 
     BulkImportRow.objects.bulk_create(staged, batch_size=500)

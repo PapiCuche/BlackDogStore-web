@@ -5,6 +5,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
+from django.http import QueryDict
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets, mixins, permissions, status
@@ -309,6 +310,11 @@ def _payment_session_payload(order, payment) -> dict:
     return {'order_id': order.id, **checkout.payment_session_payload(payment)}
 
 
+#: A gateway notification is a few kilobytes. These endpoints take no session and
+#: no throttle, so the size of what they will hold in memory is their own limit.
+MAX_NOTIFICATION_BYTES = 128 * 1024
+
+
 class _SignedNotificationMixin:
     """
     What happens AFTER a gateway notification has proved who sent it.
@@ -334,6 +340,29 @@ class _SignedNotificationMixin:
 
     def _not_here(self) -> Response:
         return Response({'detail': 'No encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+    def _body(self, request):
+        """
+        `(raw bytes, None)`, or `(None, refusal)` for a body too large to be a
+        notification. Refused on the DECLARED length, before a byte is read.
+        """
+        too_large = Response(
+            {'detail': 'Notificación demasiado grande.'},
+            status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+        try:
+            declared = int(request.META.get('CONTENT_LENGTH') or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        if declared > MAX_NOTIFICATION_BYTES:
+            return None, too_large
+        try:
+            body = request.body
+        except Exception:  # noqa: BLE001 - an unreadable body is not a notification
+            return None, Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(body) > MAX_NOTIFICATION_BYTES:
+            return None, too_large
+        return body, None
 
     def _settle(self, result, credentials) -> Response:
         """Everything here reads ONLY from the signed payload."""
@@ -600,8 +629,11 @@ class IzipayNotificationView(_SignedNotificationMixin, APIView):
         # would give the same string here, but reading the body directly makes
         # it impossible for a parser or renderer setting to quietly reshape the
         # bytes the signature covers.
+        raw, refusal = self._body(request)
+        if refusal is not None:
+            return refusal
         try:
-            body = json.loads(request.body.decode('utf-8'))
+            body = json.loads(raw.decode('utf-8'))
         except (ValueError, UnicodeDecodeError):
             return Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -652,8 +684,23 @@ class MiCuentaWebNotificationView(_SignedNotificationMixin, APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        # The RAW body, parsed here as UTF-8. Not `request.POST`: that goes
+        # through a parser with no size limit and decodes with whatever charset
+        # the caller names in its Content-Type — both chosen by a stranger.
+        raw, refusal = self._body(request)
+        if refusal is not None:
+            return refusal
         try:
-            result = micuentaweb.parse_notification(request.POST, credentials)
+            if (request.content_type or '').lower().startswith('multipart/'):
+                # Already bounded above; Django's own parser applies its limits.
+                form = request._request.POST
+            else:
+                form = QueryDict(raw, encoding='utf-8')
+        except Exception:  # noqa: BLE001 - too many fields, a made-up charset, not a form
+            return Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = micuentaweb.parse_notification(form, credentials)
         except micuentaweb.MiCuentaWebError as exc:
             logger.warning('IPN rechazado: %s', exc)
             return Response({'detail': 'Notificación rechazada.'}, status=status.HTTP_400_BAD_REQUEST)

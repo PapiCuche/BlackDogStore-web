@@ -180,9 +180,12 @@ def verify_signature(kr_answer: str, kr_hash: str, key: str) -> bool:
     """
     if not key or not kr_hash or not kr_answer:
         return False
-    return hmac.compare_digest(
-        sign(kr_answer, key).encode('ascii'), str(kr_hash).strip().lower().encode('utf-8'),
-    )
+    try:
+        expected = sign(kr_answer, key).encode('ascii')
+        received = str(kr_hash).strip().lower().encode('utf-8')
+    except UnicodeError:
+        return False
+    return hmac.compare_digest(expected, received)
 
 
 def create_payment(*, credentials: MiCuentaWebCredentials, order_id: str, amount: Decimal,

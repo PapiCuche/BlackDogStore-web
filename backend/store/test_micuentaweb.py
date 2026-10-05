@@ -100,7 +100,10 @@ class McwBase(TestCase):
         return PaymentTransaction.objects.select_related('order').get()
 
     def notify(self, form):
-        return self.client.post(IPN_URL, form)          # application/x-www-form-urlencoded
+        """Como lo envía la pasarela: un formulario `application/x-www-form-urlencoded`, sin sesión."""
+        from urllib.parse import urlencode
+        return self.client.post(
+            IPN_URL, data=urlencode(form), content_type='application/x-www-form-urlencoded')
 
     def stock(self):
         self.product.refresh_from_db()
@@ -254,6 +257,33 @@ class NotificationTest(McwBase):
             with self.subTest(sorted(form)):
                 self.assertEqual(self.notify(form).status_code, 400)
         self.assert_nothing_paid()
+
+    def test_the_same_form_sent_as_multipart_is_read_the_same(self):
+        response = self.client.post(IPN_URL, self.fake.ipn(self.answer()), format='multipart')
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+
+    def test_an_oversized_notification_is_refused_before_it_is_read(self):
+        """Sin sesión y sin límite de peticiones: lo que protege la memoria es el tope del cuerpo."""
+        huge = 'kr-answer=' + 'A' * (300 * 1024) + '&kr-hash=x&kr-hash-algorithm=sha256_hmac&kr-hash-key=password'
+        response = self.client.post(IPN_URL, data=huge, content_type='application/x-www-form-urlencoded')
+
+        self.assertEqual(response.status_code, 413)
+        self.assert_nothing_paid()
+
+    def test_a_crafted_charset_is_a_refusal_not_a_crash(self):
+        from urllib.parse import urlencode
+        body = urlencode(self.fake.ipn(self.answer()))
+        for charset in ('hex', 'rot13', 'utf-16'):
+            with self.subTest(charset):
+                response = self.client.post(
+                    IPN_URL, data=body, content_type=f'application/x-www-form-urlencoded; charset={charset}')
+                self.assertIn(response.status_code, (200, 400))
+        # La firma cubre los bytes recibidos: leídos como UTF-8, el mensaje bueno paga.
+        self.refresh()
+        self.assertTrue(self.order.paid)
 
     def test_a_well_signed_answer_that_contradicts_the_order_is_an_integrity_failure(self):
         cases = {

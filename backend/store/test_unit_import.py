@@ -20,14 +20,13 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APIClient
 
-from store import inventory_services as inventory
 from store import unit_import_services as unit_import
 from store.models import (
     AdminAuditLog, BulkImportJob, BulkImportRow, Membership, Product, ProductBarcode,
     StockMovement, StockUnit,
 )
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, IMEI_D, UnitsBase
-from store.tests import _m7_login, _m7_user
+from store.tests import _m7_user
 
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 TEMPLATE_URL = '/api/admin/inventory/units/import/template/'
@@ -176,6 +175,12 @@ class PreviewTest(ImportBase):
         self.assertFalse(payload['is_applicable'])
         self.assertEqual(StockUnit.objects.count(), 1)
 
+    def test_a_cost_that_is_not_a_number_is_a_row_error_not_a_crash(self):
+        for cost in ('NaN', 'Infinity', '-Infinity', 'sNaN'):
+            with self.subTest(cost):
+                payload = self.staged([self.phone_row('F2LXK1ABC1', IMEI_A, **{'Costo': cost})])
+                self.assertIn('costo', self.errors(payload)[2].lower())
+
     def test_the_same_device_twice_in_one_file_is_an_error_on_the_second_row(self):
         payload = self.staged([
             self.phone_row('F2LXK1ABC1', IMEI_A),
@@ -319,6 +324,21 @@ class ScopeTest(ImportBase):
         self.assertIn(self.api.post(apply_url(job['id'])).status_code, (403, 404))
         self.assertEqual(self.api.get(f'/api/admin/imports/{job["id"]}/').status_code, 404)
         self.assertFalse(StockUnit.objects.exists())
+
+    def test_a_job_whose_only_rows_for_a_branch_are_errors_still_belongs_to_that_branch(self):
+        """Una fila con error también lleva la serie y el IMEI: cuenta para saber quién puede leerla."""
+        self.receive(self.row('YAESTABA01', IMEI_D), branch=self.branch_b)
+        job = self.staged([
+            self.phone_row('F2LXK1ABC1', IMEI_A),                                   # Centro, entra
+            self.phone_row('F2LXK1ABC2', IMEI_D, **{'Sucursal': 'Sucursal Norte'}), # Norte, error
+        ])
+        self.assertEqual(self.errors(job).keys(), {3})
+        self.restrict_to_branch_a()
+
+        self.assertEqual(self.api.get(f'/api/admin/imports/{job["id"]}/').status_code, 404)
+        self.assertEqual(self.api.get(f'/api/admin/imports/{job["id"]}/errors.csv/').status_code, 404)
+        self.assertEqual(self.api.get('/api/admin/imports/?type=units').json()['results'], [])
+        self.assertEqual(self.api.post(apply_url(job['id'])).status_code, 404)
 
     def test_it_needs_the_capability_to_adjust_inventory(self):
         viewer = _m7_user('solo-mira')

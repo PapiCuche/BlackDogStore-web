@@ -63,7 +63,8 @@ def _money(value, label: str, field: str) -> Decimal | None:
         amount = Decimal(str(value)).quantize(Decimal('0.01'))
     except (InvalidOperation, ValueError):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)
-    if amount < 0 or amount >= Decimal('100000000'):
+    # NaN survives `quantize` and then cannot be compared: it is not an amount.
+    if not amount.is_finite() or amount < 0 or amount >= Decimal('100000000'):
         raise StockUnitError(f'{label} no es un importe válido.', field=field)
     return amount
 

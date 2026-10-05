@@ -604,6 +604,19 @@ class UnitsApiTest(UnitsBase):
         self.assertEqual(missing_reason['field'], 'reason')
         self.assertEqual(self.quantity(), 2)
 
+    def test_the_product_list_counts_only_the_branches_the_caller_reaches(self):
+        """Quien sólo opera en una sucursal no aprende el stock de las otras por la lista del formulario."""
+        self.receive(self.row('NORTE00001', imei('35693803564377')), branch=self.branch_b)
+        everywhere = self.quantity() + self.quantity(branch=self.branch_b)
+        self.restrict_to_branch_a()
+
+        rows = {r['id']: r for r in self.api.get(f'{self.LIST}products/?scope=all').json()['results']}
+
+        self.assertGreater(everywhere, self.quantity())
+        self.assertEqual(rows[self.phone.pk]['stock'], self.quantity())
+        # Lo que NO cambia: con equipos en CUALQUIER sucursal, el modo no se puede cambiar.
+        self.assertFalse(rows[self.phone.pk]['can_change_tracking'])
+
     def test_the_form_can_list_every_product_and_say_how_each_is_counted(self):
         """
         Elegir un producto que no lleva serie no puede acabar en un formulario

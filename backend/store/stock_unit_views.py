@@ -195,10 +195,17 @@ class SerializedProductListView(APIView):
 
         # Two aggregates, two queries: summing shelves and counting devices in one
         # statement multiplies one by the other through the join.
-        stock = dict(
-            BranchStock.objects.filter(product__company=company)
+        #
+        # WHAT IS SHOWN is the stock of the branches the caller operates in, like
+        # every other inventory figure. WHAT DECIDES whether tracking can change
+        # is the whole company's shelf, because that is the rule of
+        # `set_serialized`; it is told as a yes or no, never as a number.
+        totals = BranchStock.objects.filter(product__company=company)
+        shown = dict(
+            totals.filter(branch__in=visible_branches(request.user, company))
             .values_list('product_id').annotate(total=Sum('quantity'))
         )
+        held = dict(totals.values_list('product_id').annotate(total=Sum('quantity')))
         live = dict(
             StockUnit.objects.filter(
                 company=company,
@@ -209,9 +216,9 @@ class SerializedProductListView(APIView):
             {
                 'id': p.pk, 'name': p.name, 'price': str(p.price),
                 'is_serialized': p.is_serialized, 'requires_imei': p.requires_imei,
-                'stock': stock.get(p.pk) or 0,
+                'stock': shown.get(p.pk) or 0,
                 # The rule of `set_serialized`, told in advance: only with an empty shelf.
-                'can_change_tracking': (stock.get(p.pk) or 0) <= 0 and not live.get(p.pk),
+                'can_change_tracking': (held.get(p.pk) or 0) <= 0 and not live.get(p.pk),
             }
             for p in rows
         ]})

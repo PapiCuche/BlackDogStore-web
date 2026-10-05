@@ -28,7 +28,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase, override_settings
 
-from store import fiscal_logo, inventory_services as inventory
+from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store.models import CompanySettings, Order, OrderItem, Product, ProductBarcode
 from store.pdf_services import generate_order_receipt_pdf
@@ -38,7 +38,7 @@ from store.sales_note_services import (
 )
 from store.test_fiscal_logo import _ROOT as LOGO_ROOT, embedded_images, logo_png
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, UnitsBase
-from store.tests import _prod, _saas_branch, _saas_company
+from store.tests import _prod
 from store.ticket_services import generate_sales_note_ticket_pdf
 
 A4 = (595.3, 841.9)
