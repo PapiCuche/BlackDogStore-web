@@ -337,6 +337,9 @@ class AdminProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'description', 'price', 'inventory',
             'image_url', 'category_id', 'category_name', 'is_active',
+            # Read-only here. How a product is counted changes only through
+            # `stock_unit_services.set_serialized`, which checks the shelf.
+            'is_serialized', 'requires_imei',
             'created_at', 'updated_at',
         ]
 

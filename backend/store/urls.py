@@ -124,6 +124,10 @@ from .tenant_views import (
     MyMembershipsView,
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
+from .stock_unit_views import (
+    ProductSerializationView, SerializedProductListView, StockUnitActionView,
+    StockUnitDetailView, StockUnitListView,
+)
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
     AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
@@ -347,6 +351,16 @@ urlpatterns = [
     path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
     path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
     path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    # --- SERIALIZED-STOCK: Inventario › Equipos ---
+    # `products/` before `<int:pk>/`, so the literal is not read as an id.
+    path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
+    path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
+    path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
+    path('admin/inventory/units/<int:pk>/', StockUnitDetailView.as_view(), name='admin-inventory-unit-detail'),
+    path('admin/inventory/units/<int:pk>/write-off/', StockUnitActionView.as_view(action='write-off'), name='admin-inventory-unit-write-off'),
+    path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
+    path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
+    path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),

@@ -201,6 +201,13 @@ class Product(models.Model):
     )
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     is_active = models.BooleanField(default=True, db_index=True)
+    # SERIALIZED-STOCK. Each unit of this product is tracked by its own serial
+    # number (`StockUnit`). Its `BranchStock.quantity` is then never typed: it is
+    # always the number of AVAILABLE units in that branch. Changed only through
+    # `stock_unit_services.set_serialized`, and only while there is no stock.
+    is_serialized = models.BooleanField(default=False)
+    # A cellular device: every unit must also carry a valid IMEI.
+    requires_imei = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -8731,4 +8738,105 @@ class CompanyMessagingSettings(models.Model):
 
     def __str__(self):
         return f'Mensajería de {self.company_id}'
+
+
+class StockUnit(models.Model):
+    """
+    ONE physical device of a serialized product. SERIALIZED-STOCK.
+
+        A UNIT IS STOCK, NOT A SECOND INVENTORY.
+
+    `BranchStock.quantity` remains the only number that decides whether
+    something can be sold. For a serialized product that number equals, at all
+    times, the count of AVAILABLE units of that branch — every change goes
+    through `stock_unit_services`, which moves the unit and writes the Kardex
+    line through the same single writer as any other stock.
+
+    Never written directly. A row created or edited outside the service breaks
+    the equality above, and nothing would notice until a sale failed.
+
+    IDENTIFIERS ARE NULL WHEN ABSENT, never "N/A": a placeholder is a value,
+    and two units with the same placeholder would collide on the constraints
+    that exist precisely to stop the same device from entering twice.
+
+    A SOLD UNIT STAYS. Its row is the record that this IMEI left in that sale,
+    and a device that comes back returns as the SAME row.
+    """
+
+    class Status(models.TextChoices):
+        AVAILABLE = 'available', 'Disponible'
+        RESERVED = 'reserved', 'Apartado'
+        SOLD = 'sold', 'Vendido'
+        WRITTEN_OFF = 'written_off', 'Dado de baja'
+
+    class Condition(models.TextChoices):
+        NEW = 'new', 'Nuevo'
+        OPEN_BOX = 'open_box', 'Caja abierta'
+        REFURBISHED = 'refurbished', 'Reacondicionado'
+        USED = 'used', 'Usado'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='stock_units')
+    branch = models.ForeignKey('store.Branch', on_delete=models.PROTECT, related_name='stock_units')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='stock_units')
+
+    serial_number = models.CharField(max_length=40)
+    imei = models.CharField(max_length=15, null=True, blank=True)
+    imei2 = models.CharField(max_length=15, null=True, blank=True)
+
+    condition = models.CharField(max_length=16, choices=Condition.choices, default=Condition.NEW)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.AVAILABLE, db_index=True,
+    )
+
+    # What this unit cost, when known. Informative: there is no cost model yet.
+    cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # A price for THIS unit (an open box, a used one). Recorded and shown; the
+    # catalogue price is still what checkout charges until a sale can name a unit.
+    price_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    received_at = models.DateTimeField(default=timezone.now)
+    sold_at = models.DateTimeField(null=True, blank=True)
+    # The sale it left in. PROTECT: an order that sold a unit is its history.
+    order = models.ForeignKey(
+        'store.Order', null=True, blank=True, on_delete=models.PROTECT, related_name='stock_units',
+    )
+
+    notes = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-received_at', '-pk']
+        constraints = [
+            # The same device cannot be in a company's stock twice — in any
+            # state, because "sold" is exactly the state that must not be
+            # forgotten when somebody tries to receive it again.
+            models.UniqueConstraint(
+                fields=['company', 'product', 'serial_number'],
+                name='unique_stock_unit_serial_per_product',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'imei'], condition=models.Q(imei__isnull=False),
+                name='unique_stock_unit_imei_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'imei2'], condition=models.Q(imei2__isnull=False),
+                name='unique_stock_unit_imei2_per_company',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),
+                name='stock_unit_identifiers_null_not_blank',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'branch', 'product', 'status'], name='stock_unit_scope_idx'),
+            models.Index(fields=['company', 'serial_number'], name='stock_unit_serial_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.serial_number} ({self.get_status_display()})'
 

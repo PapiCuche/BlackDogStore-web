@@ -1173,6 +1173,8 @@ class InternalDashboardView(APIView):
                 'value_basis': 'sale_price',
                 'transfers_in_transit': 0,
                 'pending_counts': 0,
+                'equipment_available': 0,
+                'equipment_reserved': 0,
                 'stock_by_branch': [],
                 'low_stock_by_branch': [],
             }
@@ -1192,6 +1194,10 @@ class InternalDashboardView(APIView):
             'value_basis': 'sale_price',
             'transfers_in_transit': get_transfers_in_transit_count(branches),
             'pending_counts': get_pending_counts_count(branches),
+            # Devices tracked by serial. A SUBSET of `total_units`, not more
+            # stock on top of it: an available device is one of those units.
+            'equipment_available': summary['equipment_available'],
+            'equipment_reserved': summary['equipment_reserved'],
             'stock_by_branch': get_stock_by_branch(branches),
             'low_stock_by_branch': get_low_stock_by_branch(branches),
         }

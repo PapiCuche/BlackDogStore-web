@@ -229,9 +229,23 @@ def create_stock_movement(
     reference_type: str = '',
     reference_id: str = '',
     metadata: dict | None = None,
+    units=None,
+    expected_unit_status: str | None = None,
+    assign_units_for_sale: bool = False,
 ) -> StockMovement:
     """
     Apply one stock movement to one branch atomically and return the Kardex row.
+
+    SERIALIZED PRODUCTS MOVE BY UNIT, AND THIS IS WHERE THAT IS ENFORCED. For a
+    product with `is_serialized`, the quantity is not the caller's to state: it
+    has to arrive with the `StockUnit`s it is about (`units`, exactly
+    `quantity` of them, of this branch and product) — or, for a sale, with
+    `assign_units_for_sale`, in which case the oldest AVAILABLE units are taken
+    here, under the shelf lock, and marked sold. A bare number is refused.
+    Because every stock change in the system passes through this function,
+    that one refusal is what stops a manual adjustment, an import, a transfer
+    or a count from making the quantity disagree with the devices on the shelf.
+    See `stock_unit_services`.
 
     MUST be called inside (or will open) a transaction. The BranchStock row is
     locked with select_for_update() so concurrent movements on the same
@@ -273,6 +287,15 @@ def create_stock_movement(
 
         stock = _locked_branch_stocks(branch, [product])[product.pk]
 
+        # Units are locked AFTER the shelf row — the module's one lock order.
+        unit_ids = _units_for_movement(
+            branch=branch, product=product, quantity=quantity, units=units,
+            expected_status=expected_unit_status, assign_for_sale=assign_units_for_sale,
+            order=order,
+        )
+        if unit_ids is not None:
+            metadata = {**(metadata or {}), 'unit_ids': unit_ids}
+
         stock_before = stock.quantity
         is_entry = movement_type in StockMovement.ENTRY_TYPES
         delta = quantity if is_entry else -quantity
@@ -308,6 +331,62 @@ def create_stock_movement(
             actor=actor,
             metadata=metadata or {},
         )
+
+
+def _units_for_movement(*, branch, product, quantity, units, expected_status,
+                        assign_for_sale, order):
+    """
+    The ids of the units a movement of a serialized product is about, locked.
+    None for an ordinary product. Called with the `BranchStock` row locked.
+    """
+    from .models import StockUnit
+
+    if not product.is_serialized:
+        if units:
+            raise InvalidMovementError(
+                f'"{product.name}" no se controla por número de serie.'
+            )
+        return None
+
+    if assign_for_sale:
+        picked = list(
+            StockUnit.objects.select_for_update()
+            .filter(company_id=branch.company_id, branch=branch, product=product,
+                    status=StockUnit.Status.AVAILABLE)
+            .order_by('received_at', 'pk')[:quantity]
+        )
+        if len(picked) < quantity:
+            raise InsufficientStockError(
+                f'Stock insuficiente para "{product.name}" en {branch.name}. '
+                f'Equipos disponibles: {len(picked)}, salida solicitada: {quantity}.'
+            )
+        ids = [unit.pk for unit in picked]
+        StockUnit.objects.filter(pk__in=ids).update(
+            status=StockUnit.Status.SOLD, sold_at=timezone.now(), order=order,
+            updated_at=timezone.now(),
+        )
+        return ids
+
+    wanted = [getattr(unit, 'pk', unit) for unit in (units or [])]
+    if len(wanted) != quantity or len(set(wanted)) != quantity:
+        raise InvalidMovementError(
+            f'"{product.name}" se controla por número de serie: su stock no se mueve por '
+            'cantidad. Usa Inventario › Equipos para registrar cada equipo.'
+        )
+    locked = list(
+        StockUnit.objects.select_for_update()
+        .filter(pk__in=wanted, company_id=branch.company_id, branch=branch, product=product)
+    )
+    if len(locked) != quantity:
+        raise InvalidMovementError('Alguno de los equipos no pertenece a esta sucursal y producto.')
+    if expected_status is not None:
+        for unit in locked:
+            if unit.status != expected_status:
+                raise InvalidMovementError(
+                    f'El equipo {unit.serial_number} está {unit.get_status_display().lower()}: '
+                    'no admite esta operación.'
+                )
+    return sorted(unit.pk for unit in locked)
 
 
 def apply_manual_stock_movement(
@@ -512,6 +591,10 @@ def record_sale_stock_movements(
                         'branch_id': branch.pk,
                         'unit_price': str(item.price),
                     },
+                    # SERIALIZED-STOCK: a device is sold as a device. The
+                    # writer takes the oldest available units of this branch
+                    # and marks them sold in this same transaction.
+                    assign_units_for_sale=item.product.is_serialized,
                 )
             except InsufficientStockError as exc:
                 if strict:
@@ -820,6 +903,13 @@ def set_transfer_item(transfer: StockTransfer, *, product, quantity: int) -> Sto
     """
     if product.company_id != transfer.company_id:
         raise TransferError('El producto no pertenece a la empresa de esta transferencia.')
+    if product.is_serialized:
+        # Refused when the line is written, not when the van is loaded: a
+        # transfer of devices has to say WHICH devices, and it cannot yet.
+        raise TransferError(
+            f'"{product.name}" se controla por número de serie y todavía no se transfiere '
+            'entre sucursales desde aquí.'
+        )
 
     try:
         quantity = int(quantity)
@@ -1091,6 +1181,11 @@ def set_count_item(
         raise InventoryCountError('Este recuento ya no admite cambios.')
     if product.company_id != count.company_id:
         raise InventoryCountError('El producto no pertenece a la empresa de este recuento.')
+    if product.is_serialized:
+        raise InventoryCountError(
+            f'"{product.name}" se controla por número de serie: se revisa equipo por equipo '
+            'en Inventario › Equipos, no por cantidad.'
+        )
 
     if physical_quantity is not None:
         try:
@@ -1509,6 +1604,33 @@ def get_inventory_summary(
         'inventory_value_basis': 'sale_price',
         'low_stock_threshold': low_stock_threshold,
         'best_selling_product': best[0] if best else None,
+        **_equipment_counts(company, branches),
+    }
+
+
+def _equipment_counts(company, branches) -> dict:
+    """
+    Serialized devices on the shelf, for the same scope as the rest.
+
+    A SUBSET OF `total_units`, NEVER AN ADDITION TO IT. An available device is
+    already one of the units counted above — that is the invariant of
+    serialized stock — so these figures say how many of those units are
+    devices tracked by serial, not how many more there are.
+    """
+    from .models import StockUnit
+
+    rows = StockUnit.objects.filter(product__is_active=True)
+    if branches is not None:
+        rows = rows.filter(branch_id__in=_branch_ids(branches))
+    elif company is not None:
+        rows = rows.filter(company=company)
+    counts = rows.aggregate(
+        available=Count('id', filter=Q(status=StockUnit.Status.AVAILABLE)),
+        reserved=Count('id', filter=Q(status=StockUnit.Status.RESERVED)),
+    )
+    return {
+        'equipment_available': counts['available'],
+        'equipment_reserved': counts['reserved'],
     }
 
 
