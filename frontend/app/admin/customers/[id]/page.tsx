@@ -32,6 +32,7 @@ import {
 import { DashboardSection } from "../../components/dashboard-ui";
 import { PageHeader, TableShell, internalButtonClass } from "../../components/internal-ui";
 import { CustomerForm } from "../../components/CustomerForm";
+import { CustomerAccountLink } from "../../components/CustomerAccountLink";
 import {
   fetchCustomer,
   updateCustomer,
@@ -237,9 +238,12 @@ function CustomerDetailContent({
                     : ""
                 }
               />
-              <Field
-                label="Cuenta"
-                value={customer.has_account ? "Tiene cuenta en la plataforma" : "Sin cuenta"}
+              <CustomerAccountLink
+                slug={ctx.dashboard?.company?.slug ?? null}
+                customerId={customer.id}
+                hasAccount={customer.has_account}
+                canUnlink={(ctx.dashboard?.access.capabilities ?? []).includes("service.customers.manage")}
+                onChanged={() => void load()}
               />
               <Field label="Teléfono" value={customer.phone} />
               <Field label="Email" value={customer.email} />

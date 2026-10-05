@@ -606,6 +606,15 @@ export const setWhatsAppConsent = (slug: string, customerId: number, optIn: bool
     `${base(slug)}/customers/${customerId}/whatsapp-consent/`, { opt_in: optIn },
   );
 
+/**
+ * The shop undoes the link between a customer record and an account. Removes
+ * access, grants none; the server requires the reason and records who did it.
+ */
+export const unlinkCustomerAccount = (slug: string, customerId: number, reason: string) =>
+  post<{ id: number; has_account: boolean }>(
+    `${base(slug)}/customers/${customerId}/unlink-account/`, { reason },
+  );
+
 /** Try again a message that did not go out. One that already left is left alone. */
 export const retryWhatsAppNotice = (slug: string, id: number, noticeId: number) =>
   post<ServiceCustomerNotice>(`${order(slug, id)}/notifications/${noticeId}/whatsapp/retry/`);
