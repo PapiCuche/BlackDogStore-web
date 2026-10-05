@@ -71,6 +71,7 @@ from .v1_service_views import (
     V1ServiceQuoteCancelView,
     V1ServiceQuoteRecordDecisionView,
     V1ServiceQuoteReopenView,
+    V1ServiceQuoteTicketView,
     V1ServiceTrackingLinkView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
@@ -357,6 +358,10 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/decision/',
         V1ServiceQuoteRecordDecisionView.as_view(), name='v1-internal-service-quote-decision',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/ticket/',
+        V1ServiceQuoteTicketView.as_view(), name='v1-internal-service-quote-ticket',
     ),
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/reopen/',

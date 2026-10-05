@@ -32,6 +32,7 @@ from rest_framework.views import APIView
 
 from . import service_services as service
 from .models import (
+    AdminAuditLog,
     Branch,
     Customer,
     Device,
@@ -1116,6 +1117,55 @@ class V1ServiceQuoteReopenView(V1ServiceQuotingMixin, APIView):
             {'quote': V1ServiceQuoteSerializer(self.get_quote(company, order, fresh.pk)).data},
             status=status.HTTP_201_CREATED,
         )
+
+
+class V1ServiceQuoteTicketView(V1ServiceQuotingMixin, APIView):
+    """
+    GET — the 80 mm ticket of an APPROVED quote, as a PDF to print.
+
+    Whoever may open the order may print what was agreed on it. The server
+    decides whether there is anything to print: a quote that is not approved —
+    or whose approval was superseded — answers 400, whatever the screen showed.
+
+    `?formato=ticket80` is the only format, and an unknown one is refused
+    rather than guessed (the convention of the sales note and fiscal tickets).
+    """
+
+    FORMATS = ('ticket80',)
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None, quote_id=None):
+        from django.http import HttpResponse
+
+        from . import quote_ticket
+
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        wanted = (request.query_params.get('formato') or 'ticket80').strip().lower()
+        if wanted not in self.FORMATS:
+            return Response(
+                {'detail': f'Formato no reconocido. Use: {", ".join(self.FORMATS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            content = quote_ticket.generate_pdf(quote)
+        except quote_ticket.QuoteTicketError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        AdminAuditLog.log(
+            actor=request.user, action='service_quote_ticket_printed',
+            target_type='repair_quote', target_id=quote.pk,
+            metadata={'repair_order_id': order.pk, 'number': order.number,
+                      'revision': quote.revision, 'formato': wanted},
+            request=request, company=company,
+        )
+        response = HttpResponse(content, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{quote_ticket.filename(quote)}"'
+        response['Cache-Control'] = 'private, max-age=0, no-store'
+        return response
 
 
 class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
