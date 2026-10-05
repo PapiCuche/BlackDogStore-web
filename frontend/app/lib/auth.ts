@@ -356,9 +356,14 @@ export async function register(data: {
   first_name?: string;
   last_name?: string;
 }): Promise<{ detail: string; requires_verification: boolean; user?: AuthUser }> {
+  // Con una sesión abierta en otra pestaña la cookie de acceso viaja sola, y
+  // con ella el servidor exige el token CSRF también aquí.
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
   const res = await fetch(`${API_BASE}/auth/register/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     credentials: "include",
     body: JSON.stringify(data),
   });
