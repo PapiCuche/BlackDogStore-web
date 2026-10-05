@@ -97,6 +97,9 @@ from .customer_views import (
 )
 from .dev_accounts_views import DevDemoAccountsView
 from .storefront_media_views import AdminStorefrontImageUploadView, StorefrontImageView
+from .product_media_views import (
+    AdminProductImageDetailView, AdminProductImageListView, AdminProductImageOrderView,
+)
 from .storefront_content_views import (
     AdminStorefrontListContentDetailView,
     AdminStorefrontListContentView,
@@ -169,6 +172,9 @@ urlpatterns = [
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     path('admin/products/', AdminProductListView.as_view(), name='admin-products'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
+    path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
+    path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
+    path('admin/products/<int:pk>/images/<int:image_id>/', AdminProductImageDetailView.as_view(), name='admin-product-image'),
     path('admin/products/<int:pk>/inventory-adjust/', AdminProductInventoryAdjustView.as_view(), name='admin-product-inventory-adjust'),
     path('admin/categories/', AdminCategoryListView.as_view(), name='admin-categories'),
     path('admin/categories/<int:pk>/', AdminCategoryDetailView.as_view(), name='admin-category'),

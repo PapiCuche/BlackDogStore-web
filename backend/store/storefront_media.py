@@ -169,7 +169,19 @@ def process(raw: bytes) -> ProcessedImage:
 
 def upload(*, company, actor, uploaded, request=None) -> StorefrontImage:
     """Procesa, guarda y registra una imagen de la tienda de `company`."""
-    processed = process(read_upload(uploaded))
+    return store(company=company, actor=actor, raw=read_upload(uploaded), request=request)
+
+
+def store(*, company, actor, raw: bytes, request=None, audit: bool = True) -> StorefrontImage:
+    """
+    Lo mismo que `upload`, a partir de los bytes ya leídos.
+
+    Para quien ya tiene el archivo en la mano —la galería de producto, que
+    calcula su huella; la carga masiva, que lo saca de un ZIP—. `audit=False`
+    es para la carga masiva: registra una fila por importación, no una por
+    imagen.
+    """
+    processed = process(raw)
 
     public_id = uuid.uuid4().hex
     # La ruta la genera el servidor: un identificador aleatorio y nada del
@@ -188,16 +200,17 @@ def upload(*, company, actor, uploaded, request=None) -> StorefrontImage:
                 width=processed.width, height=processed.height,
                 has_alpha=processed.has_alpha, uploaded_by=actor,
             )
-            AdminAuditLog.log(
-                actor=actor, action='storefront_image_uploaded',
-                target_type='storefront_image', target_id=image.pk,
-                metadata={
-                    'public_id': public_id, 'mime_type': processed.mime_type,
-                    'byte_size': stored.byte_size,
-                    'width': processed.width, 'height': processed.height,
-                },
-                request=request, company=company,
-            )
+            if audit:
+                AdminAuditLog.log(
+                    actor=actor, action='storefront_image_uploaded',
+                    target_type='storefront_image', target_id=image.pk,
+                    metadata={
+                        'public_id': public_id, 'mime_type': processed.mime_type,
+                        'byte_size': stored.byte_size,
+                        'width': processed.width, 'height': processed.height,
+                    },
+                    request=request, company=company,
+                )
     except Exception:
         # Sin fila no hay forma de llegar al objeto: no se deja huérfano.
         storage.delete_quietly(stored.key)
@@ -333,7 +346,7 @@ def _delete_if_unreferenced(image_id: int, *, actor=None, request=None, reason: 
     return True
 
 
-def release(values, *, company, actor=None, request=None) -> int:
+def release(values, *, company, actor=None, request=None, reason: str = 'replaced') -> int:
     """
     Un hueco de `company` dejó de apuntar a estas direcciones.
 
@@ -346,7 +359,7 @@ def release(values, *, company, actor=None, request=None) -> int:
     for public_id in {managed_public_id(value) for value in values} - {None}:
         image = StorefrontImage.objects.filter(public_id=public_id, company=company).first()
         if image is not None and _delete_if_unreferenced(
-            image.pk, actor=actor, request=request, reason='replaced',
+            image.pk, actor=actor, request=request, reason=reason,
         ):
             deleted += 1
     return deleted

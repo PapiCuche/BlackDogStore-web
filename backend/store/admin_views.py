@@ -35,7 +35,7 @@ from .permissions import (
 from .serializers import (
     AdminCategoryUpdateSerializer, AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
     AdminOrderDetailSerializer, AdminOrderFulfillmentSerializer, AdminOrderListSerializer,
-    AdminProductSerializer, AdminProductWriteSerializer,
+    AdminProductDetailSerializer, AdminProductSerializer, AdminProductWriteSerializer,
     CategorySerializer,
 )
 from .throttles import (
@@ -609,7 +609,7 @@ class AdminProductDetailView(APIView):
         product = get_object_or_404(
             Product.objects.select_related('category').filter(company=company), pk=pk,
         )
-        return Response(AdminProductSerializer(product).data)
+        return Response(AdminProductDetailSerializer(product).data)
 
     def patch(self, request, pk):
         company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
@@ -675,7 +675,7 @@ class AdminProductDetailView(APIView):
                 company=company,
             )
 
-        return Response(AdminProductSerializer(product).data)
+        return Response(AdminProductDetailSerializer(product).data)
 
 
 class AdminProductInventoryAdjustView(APIView):

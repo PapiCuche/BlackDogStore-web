@@ -84,7 +84,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = (
             storefront_products(self.request)
             .select_related('category', 'company')
-            .prefetch_related('reviews')
+            .prefetch_related('reviews', 'images')
         )
         slug = self.request.query_params.get('slug')
         category = self.request.query_params.get('category')

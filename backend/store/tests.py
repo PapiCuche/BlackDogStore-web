@@ -18663,6 +18663,9 @@ class V1PublicContractTest(TestCase):
             {
                 'id', 'name', 'slug', 'description', 'price',
                 'inventory', 'category', 'image_url', 'average_rating', 'review_count',
+                # PRODUCT-MEDIA (DEC-MEDIA-01): additive. `image_url` is still
+                # the primary picture; `images` is the whole gallery.
+                'images',
             },
         )
 
