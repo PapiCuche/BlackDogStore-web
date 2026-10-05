@@ -3,6 +3,73 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-04 — MEDIA-EVIDENCE: imágenes de producto, carga masiva con imágenes y evidencias de servicio
+
+Rama `feat/media-evidence`. Migraciones `0100` (galería de producto) y `0101` (nota y
+etapas de evidencia). Decisiones: DEC-MEDIA-01, DEC-IMPORT-MEDIA-01, DEC-EVIDENCE-01.
+Guía de uso y de operación: [docs/imagenes-y-evidencias.md](docs/imagenes-y-evidencias.md).
+Nada está publicado en Internet.
+
+| Funcionalidad | Antes | Ahora |
+|---|---|---|
+| Imagen de producto subida desde el panel | PENDIENTE (sólo una URL absoluta) | IMPLEMENTADO |
+| Galería por producto: varias, principal, orden, texto alternativo | PENDIENTE | IMPLEMENTADO |
+| Carga masiva de productos (inspeccionar → previsualizar → aplicar) | IMPLEMENTADO | IMPLEMENTADO, sin cambios de contrato |
+| Carga masiva con imágenes (archivos sueltos o ZIP) | PENDIENTE | IMPLEMENTADO |
+| Evidencias de servicio: privadas, por etapa, anulables | IMPLEMENTADO | IMPLEMENTADO |
+| Nota por foto; etapas de repuestos, listo para entrega y garantía | PENDIENTE | IMPLEMENTADO |
+| Varias fotos a la vez, cámara del teléfono, visor, antes/después | PARCIAL (una foto por vez) | IMPLEMENTADO |
+| Galería de evidencias para el cliente en la web | PENDIENTE | PENDIENTE (el contrato existe; no hay pantalla) |
+| Requerir evidencia por etapa, plantillas de evidencia, ZIP de evidencias, miniaturas en el PDF de recepción | — | PROPUESTA |
+| `hero_variant` | en uso hasta la V3 | OBSOLETO (la V3 no lo lee; sin migración en esta fase) |
+
+**Imágenes de producto.** Una tubería, no dos: los píxeles pasan por la de las imágenes
+de la tienda (recodifica, aísla por empresa, limpia lo que nadie muestra). `ProductImage`
+sólo dice qué producto muestra qué imagen. `Product.image_url` sigue siendo lo que leen el
+catálogo, el carrito, los pedidos y la caja: ahora es la dirección de la principal. El
+producto público gana `images`.
+
+**Carga masiva con imágenes.** Dos columnas nuevas con nombres de archivo («Imagen
+principal», «Imágenes» separadas por `|`). Los archivos viajan con el Excel, sueltos o
+en un ZIP. La previsualización dice, por fila y con el archivo nombrado, qué falta o qué
+está mal; con un error no se aplica. Entre previsualizar y aplicar las imágenes esperan
+como imágenes sin colocar de la empresa (24 h). Aplicar es todo o nada.
+
+**Evidencias de servicio.** Lo que había se extiende: nota por foto (corregible, con el
+texto anterior en la auditoría), etapas de repuestos, listo para entrega y
+garantía/reingreso, conteo por etapa. En el panel: varias fotos a la vez, cámara del
+teléfono, visor a pantalla completa y antes/después. Una foto no se reemplaza ni se
+borra; no mueve el estado de la orden.
+
+**Corregido en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| IMPORT-ERRORS-404 | El reporte de errores de una importación respondía 404 desde el navegador |
+| AUTH-REGISTER-CSRF | Registrarse con una sesión abierta en otra pestaña respondía «CSRF Failed» |
+| DEV-PROXY-UPLOAD | El proxy de desarrollo reenviaba `Expect` y convertía una subida en 502 (sólo con curl; el panel no lo sufría) |
+| EVIDENCE-THROTTLE | La galería de evidencias gastaba el cupo de «cambios de estado»: con muchas fotos no se podía subir |
+| IMPORT-TEMPLATE | La plantilla de la plataforma no se reconocía y su fila de ayuda se importaba como producto |
+| MEDIA-REVIEW | 12 hallazgos de una revisión independiente (ver `07_CHANGELOG.md`) |
+
+| Medida | Resultado |
+|---|---|
+| Backend | 4965 pruebas en PostgreSQL 16, 0 fallos, 4 omitidas (suite completa local) |
+| Jest | 659/659 |
+| Tipos · lint · build | limpio · 0 errores, 22 avisos · correcto |
+| Playwright | 179/179, 0 omitidas |
+| Ensayo de producción | NO repetido: el último (`9043c89`) es anterior a #81, #82 y a esta fase |
+
+**Pendiente real**
+
+| ID | Estado | Qué falta |
+|---|---|---|
+| IMPORT-BODY-LIMIT | PENDIENTE | Caddy no pone tope al cuerpo de una petición; el de 100 MB se comprueba cuando el servidor ya la recibió |
+| EVIDENCE-CUSTOMER-WEB | PENDIENTE | El cliente no tiene pantalla web para ver las evidencias que se le comparten |
+| TEST-ORDER-C15 | PENDIENTE | `C15InitialRaceTest` falla si es la primera clase en ejecutarse (ya ocurría en `master`) |
+| HERO-VARIANT-LEGACY | OBSOLETO | Retirar `hero_variant` del modelo y de la API |
+| DEP-TS6 | PROPUESTA | TypeScript 6 (#80) |
+
 ## 2026-10-04 — Cierre: frontend V3 como único diseño
 
 `master` en `23d2603`. PR #82 (V3), #81 (PAYMENT-FISCAL-PRINT-01), #67 (`reportlab` 5),

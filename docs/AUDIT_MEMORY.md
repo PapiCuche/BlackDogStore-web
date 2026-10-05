@@ -344,9 +344,10 @@ Detalle y reproducción: checkpoint «AUDIT F1» (sección 11).
 | INTERNAL-UI-KIT | LOW | FRONTEND | `admin/components/internal-ui.tsx`, `InventoryUi.tsx`, `service/components/ServiceUi.tsx` | PROPUESTA: `Panel`, `Field`, `Button`, `StatCard` definidos en tres sitios. La rama `uxui/phase-03-internal-ui` (578 commits detrás) es OBSOLETA: no se mergea |
 | DEP-TS7 · DEP-ESLINT10 | LOW | INFRA | `frontend/package.json` | PROPUESTA: TypeScript 7 y ESLint 10 rompen la CI (#71, #72 cerrados); migración planificada |
 | DEP-TS6 | LOW | INFRA | `frontend/package.json` | PROPUESTA: TypeScript 6 (#80, abierta). Su CI pasa; es una versión mayor que el lanzamiento no necesita |
-| PRODUCT-PHOTO-UPLOAD | LOW | STOREFRONT | `models.py::Product.image_url` (`URLField`), `frontend/app/components/ProductImage.tsx` | PENDIENTE: la foto de producto sólo admite una dirección absoluta; no se sube desde el panel como las del hero y las categorías |
-| DEV-PROXY-UPLOAD | LOW | FRONTEND | `frontend/app/api/[...path]/route.ts` | PENDIENTE: en `next dev` el proxy responde 502 a una subida de más de ~1 MB. Producción no pasa por él (Caddy enruta `/api` a Django) |
-| HERO-VARIANT-LEGACY | LOW | STOREFRONT | `StorefrontPageSettings.hero_variant`, `frontend/app/lib/storefront.ts` | PROPUESTA: la V3 tiene un solo hero y no lee el campo; retirarlo del modelo y de la API |
+| HERO-VARIANT-LEGACY | LOW | STOREFRONT | `StorefrontPageSettings.hero_variant`, `frontend/app/lib/storefront.ts` | OBSOLETO: la V3 tiene un solo hero y no lee el campo; retirarlo del modelo y de la API en una fase de limpieza |
+| IMPORT-BODY-LIMIT | LOW | INFRA | `deploy/Caddyfile`, `import_views.py::AdminProductImportPreviewView` | PENDIENTE: Caddy no limita el cuerpo; los 100 MB de una carga se comprueban cuando Django ya recibió la petición. Hay límite de 30/min por persona |
+| EVIDENCE-CUSTOMER-WEB | LOW | SERVICE | `evidence_views.py::CustomerEvidenceListView` | PENDIENTE: el contrato del cliente existe (sólo lo compartido, con su nota); la web no tiene pantalla que lo use |
+| TEST-ORDER-C15 | LOW | TESTS | `tests.py::C15InitialRaceTest` (`TransactionTestCase`, `reset_sequences`) | PENDIENTE: falla con «duplicate key store_company_pkey» si es la primera clase en ejecutarse; pasa en la suite completa. Anterior a esta fase |
 | CI-03 | MEDIUM | INFRA | `.github/dependabot.yml` | CORREGIDO: PR semanales para pip, npm y Actions, sin merge automático. Pendiente del propietario: alertas de vulnerabilidad, escaneo de secretos y protección de push en la configuración del repositorio |
 | INV-LEGACY-V1-F1 | LOW | INVENTORY | `serializers.py` movimientos legacy | |
 | Sweep LOW/INFO | LOW/INFO | varios | SEC-SET-01/07/08, SEC-SET-04-B, REFRESH-CSRF-01, ENUM-01, COOKIE-PATH-01, ENV-01/03, DEP-04/06…08, CI-02 | ver checkpoint |
@@ -437,6 +438,14 @@ llamador, sin datos del tenant. Evaluado en RBAC-01 y aceptado.
 | STOREFRONT-HERO-VARIANT | — | `0e9db9d`, `9c39716` | `StorefrontPageSettings.hero_variant` / `hero_image_url`, `Hero.tsx` (`HeroLight`) | `store/test_storefront_media.py`, `storefront-v4-home.test.tsx`, E2E `storefront-v4-images` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-UPLOAD | — | `0e9db9d`, `57ed321` | `storefront_media.py` (PNG/WebP conservan alfa), `StorefrontImage`, `ImageUploadField.tsx`, migración 0096 | `store/test_storefront_media.py`, `image-upload-field.test.tsx` | IMPLEMENTADO |
 | STOREFRONT-IMAGE-CLEANUP | — | `634a6e8`, `6f29193` | `storefront_media.py` (`reference_fields`, `reference_count`, `claim`, `release`, `unplaced`), `cleanup_storefront_images` | `store/test_storefront_image_cleanup.py` (23), `test_storefront_media.py` | CORREGIDO: una imagen reemplazada o nunca colocada se borra sólo con cero referencias en toda la plataforma; contar y colocar bloquean la misma fila |
+| PRODUCT-MEDIA | — | `1f12e26`, `8165640` | `product_media.py`, `product_media_views.py`, `ProductImage`, migración `0100`; `ProductGallery.tsx` | `test_product_images.py`, `product-gallery.test.tsx`, `e2e/media.spec.ts` | IMPLEMENTADO: galería subida desde el panel; cierra PRODUCT-PHOTO-UPLOAD |
+| BULK-MEDIA | — | `4a1d096`, `860e700` | `import_media.py`, `import_services.py::_place_row_images`, `ImportWizard.tsx` | `test_import_media.py`, `product-import-media.test.tsx`, `e2e/media.spec.ts` | IMPLEMENTADO: imágenes y ZIP en la carga masiva; imágenes en espera = sin colocar de la empresa |
+| SERVICE-EVIDENCE-CONTEXT | — | `77baf36`, `17c4f5f` | `evidence_services.py`, `evidence_views.py`, migración `0101`; `EvidenceGallery.tsx` | `test_evidence_context.py`, `evidence-workflow.test.tsx`, `e2e/media.spec.ts` | IMPLEMENTADO: nota, tres etapas, conteo; varias fotos, visor |
+| EVIDENCE-THROTTLE | MEDIUM | `3354cd6` | `evidence_views.py::_InternalEvidenceMixin.get_throttles`, `throttles.py` | `test_evidence_context.py::EvidenceThrottleTest` | CORREGIDO: la galería compartía el cupo de 60/min de cambios de estado |
+| IMPORT-ERRORS-404 | MEDIUM | `c38c037` | `urls.py` (`errors.csv/`) | `tests.py::C14ImportApiTest` | CORREGIDO: Caddy y el proxy añaden barra final; la ruta no la tenía |
+| AUTH-REGISTER-CSRF | LOW | `755e98e` | `frontend/app/lib/auth.ts::register` | `register-csrf.test.ts` | CORREGIDO |
+| DEV-PROXY-UPLOAD | LOW | `7382918` | `frontend/app/api/[...path]/route.ts` (`expect`) | `api-proxy-expect.test.ts` | CORREGIDO: se reenviaba `Expect: 100-continue`; sólo fallaba con curl |
+| MEDIA-REVIEW | MEDIUM→LOW | `50598c5`, `608beb7`, `3fd55f2` | `settings.py` (`DATA_UPLOAD_MAX_NUMBER_FILES`), `import_media.py::_check_end_record`, `admin_views.py::AdminProductDetailView.patch` (bloqueo), `import_services.py` (URL gestionada) | `ReviewHardeningTest` en `test_import_media.py` y `test_product_images.py` | CORREGIDO: 12 hallazgos de la revisión independiente, ninguno entre empresas |
 | CART-CSRF-01 | MEDIUM | `78eee09` | `frontend/app/components/ProductDetail.tsx`, `frontend/app/cart/page.tsx` (escrituras por `fetchWithAuth`) | `__tests__/cart-session-csrf.test.tsx` | CORREGIDO: con sesión iniciada el carrito respondía «CSRF token missing» al agregar, cambiar, quitar o validar un cupón |
 | FRONTEND-V3 | — | `5d46635`, `288dd8d` | `frontend/app/page.tsx`, `components/Hero.tsx`, `components/ProductImage.tsx`, `globals.css`, `admin/components/*` | Jest 609, Playwright 176 (`motion-carousel`, `storefront`, `hero-mobile-clip`, `storefront-v4-images`) | IMPLEMENTADO: la V3 es el único diseño; el anterior queda en la etiqueta `frontend-anterior-2026-10-04` |
 | DEP-REPORTLAB5 | LOW | `8196f6b` | `backend/requirements.txt` | comparación visual 4.4.10 / 5.0.1 de nota de venta, ticket, recibo y comprobante fiscal | CORREGIDO: integrada tras validar los PDF a la vista |
@@ -484,6 +493,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - FISCAL: `C22B*`, `Fiscal5a*`, `Fiscal5b*`, `Fiscal6*`.
 - SERVICE: `M8*`, `M9*`, `M10CapabilitySeparationTest`, `P0CServiceTransitionIsolationTest`, `SvcQueueStatusFilterTest`, `SvcAssignCapabilityTest`, `SvcAssignVisibilityTest`, `SvcUnassignAuthorityTest`, `SvcTechnicianEligibilityTest`, `SvcIntakeWithAssignmentTest`, `SvcAssignOutsideATransactionTest`, `SvcAssignPresetTest`, `SvcPaymentCollectTest`, `SvcCollectPresetTest`, `SvcCustomServiceLineTest`, `SvcE2eServiceFixtureSeedTest`.
 - STAFF: `H41Staff*`.
+- MEDIA: `test_product_images.py`, `test_import_media.py` (incluye `ZipSafetyTest`), `test_evidence_context.py`, `test_storefront_media.py`, `M12D*`.
 - FRONTEND: `api-proxy-scope.test.ts`, `service-assignment-contract.test.tsx`, `admin-write-scope.test.tsx`, `branch-authority.test.ts`, `service-navigation.test.tsx`, `service-authority-console.test.tsx`, `pos-service-intake.test.tsx`.
 - E2E: `h411-auth-interop`, `pos-ticket`, `pos-receipt-options`, `staff-personnel`, `fiscal-invoice`, `service-pos` (requieren `seed_demo_users --company-slug <slug> --e2e-fixtures --fiscal-beta` y los dev servers :3000/:8000).
 
@@ -502,6 +512,8 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | 0084 | revocación de tokens | AUTH |
 | 0094 | `service.orders.assign` para Ventas y Administrador sin modificar (conjuntos congelados) | SVC-ASSIGN-01 |
 | 0095 | `service.payments.collect` para Servicio Técnico, Supervisor Técnico y Administrador sin modificar; parte de donde termina 0094 | SVC-PAY-01 |
+| 0100 | `ProductImage`; `Product.image_url` de `URLField` a `CharField` validado | PRODUCT-MEDIA |
+| 0101 | `RepairEvidence.caption`; etapas `parts`, `ready`, `warranty` | SERVICE-EVIDENCE-CONTEXT |
 
 ---
 
@@ -545,6 +557,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **Integración**: ERP + F1/F2 en `master` por PR #42 (merge `ef9890f`, árbol `44cfffd` idéntico al validado). Reconciliación UX/UI de #39: merge `1fea6b9` en `reconcile/uxui-after-f2` (75 archivos en conflicto, 0 backend, 0 migraciones), PARCIAL, pendiente de merge.
 
 - **Cierre 2026-10-04**: `master` @ `23d2603`. Infraestructura de producción (#59, `da5cca5`), `actions/setup-python` 7 (#64, `b632dca`), `reportlab` 5 (#67, `8196f6b`), PAYMENT-FISCAL-PRINT-01 (#81, `1b62f31`) y frontend V3 (#82, `23d2603`). Backend 4865; Jest 609; Playwright 176/176.
+- **MEDIA-EVIDENCE**: rama `feat/media-evidence`. Galería de producto, carga masiva con imágenes, evidencias con nota y ciclo completo. Backend 4965; Jest 659; Playwright 179/179. Decisiones DEC-MEDIA-01, DEC-IMPORT-MEDIA-01, DEC-EVIDENCE-01.
 
 ---
 
