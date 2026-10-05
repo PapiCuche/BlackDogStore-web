@@ -177,33 +177,42 @@ def slow_bodies():
     Nueve peticiones que anuncian un cuerpo y no terminan de enviarlo. Django
     atiende con ocho hilos: si cada una ocupara el suyo esperando, la novena
     —y cualquier cliente de verdad— se quedaría sin respuesta.
+
+    Se prueba en cada ruta cuya vista lee el cuerpo sin que nadie haya probado
+    quién es: una cualquiera de la API, la notificación de pago y el webhook de
+    WhatsApp.
     """
-    held = []
-    try:
-        for _ in range(9):
-            sock = CTX.wrap_socket(socket.create_connection((ADDR, PORT), 10), server_hostname=DOMAIN)
-            sock.sendall((f'POST /api/cart/add HTTP/1.1\r\nHost: {DOMAIN}\r\nOrigin: https://{DOMAIN}\r\n'
-                          'Content-Type: application/json\r\nContent-Length: 2000\r\n\r\n'
-                          '{"session_key": "').encode())
-            held.append(sock)
-        time.sleep(2)
-        started = time.monotonic()
+    for label, path in (
+        ('una ruta cualquiera', '/api/cart/add'),
+        ('la notificación de pago', '/api/payments/izipay/notification'),
+        ('el webhook de WhatsApp', f'/api/v1/webhooks/whatsapp/{SLUG}'),
+    ):
+        held = []
         try:
-            conn = rehearsal_media.Conn(DOMAIN, timeout=8)
-            conn.request('GET', '/api/categories')
-            status = conn.getresponse().status
-            conn.close()
-        except OSError:
-            status = 0
-        elapsed = time.monotonic() - started
-        check('límite · nueve cuerpos que no terminan de llegar no dejan a la API sin hilos',
-              status == 200 and elapsed < 5, f'{status} en {elapsed:.1f} s')
-    finally:
-        for sock in held:
+            for _ in range(9):
+                sock = CTX.wrap_socket(socket.create_connection((ADDR, PORT), 10), server_hostname=DOMAIN)
+                sock.sendall((f'POST {path} HTTP/1.1\r\nHost: {DOMAIN}\r\nOrigin: https://{DOMAIN}\r\n'
+                              'Content-Type: application/json\r\nContent-Length: 2000\r\n\r\n'
+                              '{"session_key": "').encode())
+                held.append(sock)
+            time.sleep(2)
+            started = time.monotonic()
             try:
-                sock.close()
+                conn = rehearsal_media.Conn(DOMAIN, timeout=8)
+                conn.request('GET', '/api/categories')
+                status = conn.getresponse().status
+                conn.close()
             except OSError:
-                pass
+                status = 0
+            elapsed = time.monotonic() - started
+            check(f'cuerpos lentos · nueve a medio enviar a {label} no dejan a la API sin hilos',
+                  status == 200 and elapsed < 5, f'{status} en {elapsed:.1f} s')
+        finally:
+            for sock in held:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
 
 
 # --- pagos --------------------------------------------------------------------
@@ -427,7 +436,8 @@ def logs(state, path):
     """Lo que la tienda escribió en sus registros durante el recorrido."""
     with open(path, encoding='utf-8', errors='replace') as handle:
         text = handle.read()
-    check('registros · hay registro de acceso que revisar', '/api/v1/tracking/' in text and 'login_' in text)
+    if len(sys.argv) < 4:
+        check('registros · hay registro de acceso que revisar', '/api/v1/tracking/' in text and 'login_' in text)
     for label, needle in (
         ('el enlace de seguimiento', state.get('tracking_token')),
         ('el IMEI de la orden', state.get('tracking_imei')),

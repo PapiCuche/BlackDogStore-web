@@ -351,6 +351,12 @@ expect "la copia recién hecha cuenta como reciente" "$(grep -c '^OK    copia de
 $C stop backend >/dev/null 2>&1
 expect "con el backend detenido, termina con error" "$(health)" 1
 expect "y dice qué pasa: el contenedor y la API" "$(grep -cE '^ATENCIÓN (contenedor backend|https://.*/api/categories)' "$WORK/health.out")" 2
+# Con el backend caído Caddy anota en su registro la petición que no pudo entregar.
+TRACK=$(python3 -c "import json; print(json.load(open('$WORK/media.json.flows'))['tracking_token'])")
+expect "sin backend, el enlace de seguimiento responde 502 o 503" "$(code "$BASE/api/v1/tracking/$TRACK/?imei=356938035643809")" "502|503"
+$C logs caddy > "$WORK/caddy.txt" 2>&1
+expect "Caddy anotó el fallo" "$(grep -c '"status":50[23]\|dial tcp\|no upstreams\|lookup backend' "$WORK/caddy.txt" | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
+flows "lo que Caddy anota de una petición fallida no lleva su dirección" logs "$WORK/caddy.txt" proxy
 $C start backend >/dev/null 2>&1
 expect "backend" "$(healthy backend)" healthy; pause 5
 expect "de nuevo sano" "$(health)" 0
