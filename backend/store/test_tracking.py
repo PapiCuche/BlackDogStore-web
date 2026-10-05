@@ -68,6 +68,9 @@ class TrackingLinkTest(TrackingBase):
         self.assertEqual(body['order']['status'], 'diagnosing')
         self.assertTrue(body['order']['status_label'])
         self.assertEqual(body['company']['name'], 'Taller')
+        self.assertEqual(
+            sorted(body['company']),
+            ['logo_url', 'name', 'phone', 'warranty_policy_text', 'warranty_policy_url', 'whatsapp_link'])
         self.assertEqual([step['status'] for step in body['timeline']], ['received', 'diagnosing'])
         self.assertEqual(res['Cache-Control'], 'private, max-age=0, no-store')
 

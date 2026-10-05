@@ -244,6 +244,10 @@ def public_view(repair_order) -> dict:
             'phone': identity.phone,
             'whatsapp_link': identity.whatsapp_link,
             'logo_url': identity.logo_url,
+            # La política de garantía ya es pública en la tienda; aquí acompaña
+            # a la orden entregada, que es cuando el cliente la busca.
+            'warranty_policy_text': identity.warranty_policy_text,
+            'warranty_policy_url': identity.warranty_policy_url,
         },
         'order': order,
         'device': {
