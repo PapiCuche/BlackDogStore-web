@@ -48,7 +48,7 @@ function StatusShell({
           <div className={`mb-7 inline-flex rounded-xl border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] ${indicator}`}>
             {eyebrow}
           </div>
-          <h1 className="font-display text-4xl font-black italic uppercase leading-[0.92] tracking-[-0.04em] text-foreground sm:text-5xl">
+          <h1 className="font-display text-4xl font-semibold leading-[1.08] tracking-tight text-foreground sm:text-5xl">
             {title}
           </h1>
           <div className="mt-5 text-sm leading-7 text-muted">{description}</div>
@@ -146,7 +146,7 @@ export default function CheckoutSuccessPage() {
   if (error) {
     return (
       <StatusShell eyebrow="No verificado" title="No pudimos confirmar el pago" description={error} tone="danger">
-        <Link href="/checkout" className="inline-flex rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+        <Link href="/checkout" className="inline-flex rounded-full bg-foreground px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
           Volver al checkout
         </Link>
       </StatusShell>
@@ -167,7 +167,7 @@ export default function CheckoutSuccessPage() {
         tone="success"
       >
         <div className="flex flex-col gap-3 sm:flex-row">
-          <Link href="/orders" className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+          <Link href="/orders" className="inline-flex min-h-12 items-center justify-center rounded-full bg-foreground px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
             Ver mis pedidos
           </Link>
           <Link href="/product" className="inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">
@@ -197,7 +197,7 @@ export default function CheckoutSuccessPage() {
             setLoading(true);
             setRetryCount(0);
           }}
-          className="rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+          className="rounded-full bg-foreground px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
         >
           Verificar de nuevo
         </button>
@@ -224,7 +224,7 @@ export default function CheckoutSuccessPage() {
       tone="danger"
     >
       <div className="flex flex-col gap-3 sm:flex-row">
-        <Link href="/checkout" className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+        <Link href="/checkout" className="inline-flex min-h-12 items-center justify-center rounded-full bg-foreground px-5 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
           Intentar de nuevo
         </Link>
         <Link href="/cart" className="inline-flex min-h-12 items-center justify-center rounded-xl border border-bd-border px-5 py-3 text-xs font-bold uppercase tracking-[0.06em] text-foreground transition hover:border-foreground/25">

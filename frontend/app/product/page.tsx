@@ -130,7 +130,7 @@ function CatalogContent() {
             el sobrante: el titular salía cortado hasta 390 px. Por debajo de
             `sm` el tamaño encoge con la pantalla; de `sm` arriba no cambia.
           */}
-          <h1 className="mt-3 max-w-3xl font-display text-[min(3rem,10.5vw)] font-black italic uppercase leading-[0.88] tracking-[-0.05em] text-foreground sm:text-7xl">
+          <h1 className="mt-3 max-w-3xl font-display text-[min(3rem,10.5vw)] font-semibold leading-[1.08] tracking-tight text-foreground sm:text-7xl">
             Productos para elegir con claridad.
           </h1>
           <p className="mt-5 max-w-xl text-sm leading-7 text-muted sm:text-base">
@@ -148,7 +148,7 @@ function CatalogContent() {
               aria-pressed={!selectedCategory}
               className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                 !selectedCategory
-                  ? "border-primary bg-primary text-background"
+                  ? "border-foreground bg-foreground text-background"
                   : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
               }`}
             >
@@ -162,7 +162,7 @@ function CatalogContent() {
                 aria-pressed={selectedCategory === cat.slug}
                 className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                   selectedCategory === cat.slug
-                    ? "border-primary bg-primary text-background"
+                    ? "border-foreground bg-foreground text-background"
                     : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
                 }`}
               >
@@ -198,7 +198,7 @@ function CatalogContent() {
               aria-pressed={inStock}
               className={`rounded-xl border px-4 py-3 text-xs font-bold uppercase tracking-[0.06em] transition ${
                 inStock
-                  ? "border-primary bg-primary text-background"
+                  ? "border-foreground bg-foreground text-background"
                   : "border-bd-border bg-surface text-muted hover:border-foreground/25 hover:text-foreground"
               }`}
             >
@@ -290,7 +290,7 @@ function CatalogContent() {
                 href={whatsappLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex min-h-12 items-center justify-center rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+                className="inline-flex min-h-12 items-center justify-center rounded-full bg-foreground px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
               >
                 Consultar por WhatsApp
               </a>

@@ -85,7 +85,7 @@ export function AdminShell({ user, dashboard, onSelectCompany, children }: Props
   const access = buildAccessContext(user, effective);
 
   return (
-    <div className="internal-ui-fonts min-h-screen bg-background">
+    <div className="admin-workspace internal-ui-fonts min-h-screen bg-background">
       <div className="flex">
         <InternalSidebar access={access} companyName={effective?.company?.name} />
         <MobileSidebar

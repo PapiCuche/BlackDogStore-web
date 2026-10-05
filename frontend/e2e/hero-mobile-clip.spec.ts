@@ -102,9 +102,12 @@ for (const theme of THEMES) {
       // 3. El titular sigue siendo un titular.
       expect(hero.fontSize, "el titular quedó demasiado pequeño para leerse como titular").toBeGreaterThanOrEqual(20);
 
-      // 4. La losa sigue siendo oscura y la página no desborda.
+      // 4. El hero sigue al tema —claro en el claro, oscuro en el oscuro— y
+      //    la página no desborda.
       const [r, g, b] = hero.background.match(/[\d.]+/g)!.slice(0, 3).map(Number);
-      expect(0.2126 * r + 0.7152 * g + 0.0722 * b, `la losa dejó de ser oscura: ${hero.background}`).toBeLessThan(90);
+      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (theme === "dark") expect(luminance, `el hero no es oscuro en tema dark: ${hero.background}`).toBeLessThan(90);
+      else expect(luminance, `el hero no es claro en tema light: ${hero.background}`).toBeGreaterThan(160);
       expect(hero.pageOverflow).toBeLessThanOrEqual(1);
     });
   }
@@ -116,8 +119,8 @@ for (const theme of THEMES) {
       await page.goto("/", { waitUntil: "networkidle" });
       const hero = await heroText(page);
 
-      // El tamaño de escritorio es el que ya estaba: clamp(2.25rem, 4.2vw, 4rem).
-      const expected = Math.min(64, Math.max(36, width * 0.042));
+      // El tamaño de escritorio es el de la V3: clamp(2.2rem, 4.4vw, 3.875rem).
+      const expected = Math.min(62, Math.max(35.2, width * 0.044));
       expect(Math.abs(hero.fontSize - expected), `titular a ${width}px: ${hero.fontSize}px`).toBeLessThan(0.5);
 
       const clipped = hero.pieces.filter((piece) => piece.right > hero.visibleRight + 0.5);

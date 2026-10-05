@@ -102,8 +102,8 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b border-bd-border bg-background/95 backdrop-blur-md">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
+    <header className="v3-store-header sticky top-0 z-50 border-b border-bd-border bg-background/95 backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-2">
 
         {/*
           M12E — el logotipo LO ELIGE `BrandLogo`, no esta cabecera.
@@ -140,7 +140,7 @@ export function Header() {
         </Link>
 
         {/* Desktop nav */}
-        <nav aria-label="Principal" className="hidden items-center gap-0.5 text-sm font-medium text-muted lg:flex">
+        <nav aria-label="Principal" className="hidden items-center gap-0.5 text-xs font-medium text-muted lg:flex">
 
           {/*
             CATÁLOGO Y SUS CATEGORÍAS.
@@ -167,7 +167,7 @@ export function Header() {
           >
             <Link
               href="/product"
-              className="rounded-lg py-2 pl-3.5 pr-1.5 transition hover:bg-surface-2 hover:text-foreground"
+              className="rounded-lg py-2 pl-2.5 pr-1 transition hover:bg-surface-2 hover:text-foreground"
             >
               Catálogo
             </Link>
@@ -222,15 +222,15 @@ export function Header() {
             )}
           </div>
 
-          <Link href="/contact" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
-            Contacto
-          </Link>
-          <Link href="/services" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+          <Link href="/services" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
             Servicios
+          </Link>
+          <Link href="/contact" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+            Contacto
           </Link>
 
           {/* Cart */}
-          <Link href="/cart" className="relative rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+          <Link href="/cart" className="relative rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
             <span className="flex items-center gap-1.5">
               {CART_ICON}
               <span>Carrito</span>
@@ -245,11 +245,11 @@ export function Header() {
           {/* Auth */}
           {userLoggedIn ? (
             <>
-              <Link href="/orders" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+              <Link href="/orders" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                 Pedidos
               </Link>
               {internalAccess && (
-                <Link href="/admin" className="rounded-lg px-3.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+                <Link href="/admin" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                   Control interno
                 </Link>
               )}

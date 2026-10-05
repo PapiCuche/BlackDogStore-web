@@ -121,8 +121,11 @@ export function HorizontalBarChart({
               </div>
               <div className="h-2 w-full overflow-hidden rounded-full bg-surface">
                 <div
-                  className="h-full rounded-full bg-foreground transition-[width] duration-500"
-                  style={{ width: `${pct}%`, opacity: rampAt(index) }}
+                  // La barra mide siempre el 100 % y se DESPLAZA: `translate`
+                  // no recalcula el layout como `width`, y el extremo redondo
+                  // no se deforma como lo haría con `scaleX`.
+                  className="h-full w-full rounded-full bg-foreground transition-transform duration-500 ease-out"
+                  style={{ transform: `translateX(-${100 - pct}%)`, opacity: rampAt(index) }}
                 />
               </div>
             </li>
@@ -170,12 +173,12 @@ export function VerticalBarChart({
           const height = max > 0 ? Math.max((point.value / max) * 100, 2) : 2;
           const isPeak = max > 0 && point.value === max;
           return (
-            <div key={point.label + index} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+            <div key={point.label + index} className="flex h-full min-w-0 flex-1 flex-col items-center gap-2">
               <div className="flex w-full flex-1 items-end">
                 <div
-                  className="w-full rounded-t-sm bg-foreground transition-[height] duration-500"
+                  className="h-full w-full origin-bottom rounded-t-sm bg-foreground transition-transform duration-500 ease-out"
                   style={{
-                    height: `${height}%`,
+                    transform: `scaleY(${height / 100})`,
                     opacity: isPeak ? 0.92 : 0.45,
                   }}
                   title={`${point.label}: ${format(point.value)}`}
@@ -244,7 +247,7 @@ export function DonutChart({
     <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-7">
       <svg
         viewBox={`0 0 ${size} ${size}`}
-        className="h-[168px] w-[168px] shrink-0 -rotate-90"
+        className="h-[168px] w-[168px] shrink-0 -rotate-90 text-foreground"
         role="img"
         aria-label={`Gráfico de anillo: ${series
           .map((p) => `${p.label}, ${p.value} ${unit}`)
@@ -255,7 +258,8 @@ export function DonutChart({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(255,255,255,0.05)"
+          stroke="currentColor"
+          strokeOpacity={0.08}
           strokeWidth={stroke}
         />
         {arcs.map((arc) => (
@@ -265,7 +269,7 @@ export function DonutChart({
             cy={size / 2}
             r={radius}
             fill="none"
-            stroke="white"
+            stroke="currentColor"
             strokeOpacity={arc.opacity}
             strokeWidth={stroke}
             strokeDasharray={arc.dash}
@@ -278,7 +282,8 @@ export function DonutChart({
             x="50%"
             y="47%"
             textAnchor="middle"
-            className="fill-white text-[26px] font-semibold tabular-nums"
+            fill="currentColor"
+            className="text-[26px] font-semibold tabular-nums"
           >
             {centerValue}
           </text>
@@ -286,7 +291,8 @@ export function DonutChart({
             x="50%"
             y="60%"
             textAnchor="middle"
-            className="fill-zinc-500 text-[10px] uppercase tracking-widest"
+            fill="var(--muted)"
+            className="text-[10px] uppercase tracking-widest"
           >
             {centerLabel}
           </text>

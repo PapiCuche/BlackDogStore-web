@@ -23,6 +23,7 @@ import { MOBILE_SIDEBAR_ID } from "./InternalSidebar";
 import type { BranchScope, InternalDashboard } from "../lib/internal-api";
 import { roleLabel, type AuthUser } from "../../lib/auth";
 
+import { ThemeToggle } from "../../components/ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 
 type Props = {
@@ -123,6 +124,7 @@ export function InternalTopbar({
           {/* M12B — la bandeja usa SIEMPRE la empresa resuelta ahora, nunca un
               id recordado: un slug guardado sería una autorización guardada. */}
           <NotificationBell slug={dashboard?.company?.slug ?? null} />
+          <ThemeToggle className="hidden sm:block" />
           {isMaster && (
             <span
               title="Administrador de plataforma (User.is_superuser)"

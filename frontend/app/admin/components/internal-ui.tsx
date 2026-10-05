@@ -85,14 +85,14 @@ export function MetricCard({
   icon?: IconComponent;
 }) {
   return (
-    <div className="rounded-xl border border-bd-border bg-surface p-5">
+    <div className="rounded-xl border border-bd-border bg-surface p-6">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
           {label}
         </p>
         {Icon ? <Icon className="h-4 w-4 shrink-0 text-muted" /> : null}
       </div>
-      <p className="mt-2 text-2xl font-semibold tabular-nums text-foreground">{value}</p>
+      <p className="mt-2 text-3xl font-semibold tabular-nums text-foreground">{value}</p>
       {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
     </div>
   );
@@ -116,7 +116,7 @@ export function QuickActionCard({
   return (
     <Link
       href={href}
-      className="group flex items-start gap-3 rounded-xl border border-bd-border bg-surface p-5 transition hover:border-foreground/20 hover:bg-foreground/[0.04]"
+      className="group flex items-start gap-3 rounded-xl border border-bd-border bg-surface p-6 transition hover:border-bd-border hover:bg-surface"
     >
       <span className="mt-0.5 rounded-lg border border-bd-border bg-background p-2 text-muted transition group-hover:text-foreground">
         <Icon />

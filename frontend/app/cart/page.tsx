@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { API_BASE, fetcher } from "../lib/api";
-import { getCurrentUser } from "../lib/auth";
+import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, writeStoredCoupon } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { CartItemCard } from "../components/CartItemCard";
@@ -55,11 +55,13 @@ export default function CartPage() {
 
   async function updateItem(id: number, quantity: number) {
     try {
-      await fetch(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, {
+      // Las escrituras salen con `fetchWithAuth`: con sesión iniciada el
+      // servidor exige el token CSRF, y un `fetch` a secas no lo lleva.
+      const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quantity }),
       });
+      if (!res.ok) throw new Error("No se pudo actualizar.");
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -69,7 +71,8 @@ export default function CartPage() {
 
   async function removeItem(id: number) {
     try {
-      await fetch(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
+      const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("No se pudo eliminar.");
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -82,9 +85,8 @@ export default function CartPage() {
     setCouponLoading(true);
     setCouponError(null);
     try {
-      const res = await fetch(`${API_BASE}/coupons/validate/`, {
+      const res = await fetchWithAuth(`${API_BASE}/coupons/validate/`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: couponInput }),
       });
       const data = await res.json();
@@ -122,7 +124,7 @@ export default function CartPage() {
         <div className="mb-8 flex flex-col gap-3 border-b border-bd-border pb-7 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <span className="section-label">Compras</span>
-            <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+            <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
               Mi carrito
             </h1>
           </div>
@@ -151,7 +153,7 @@ export default function CartPage() {
             </p>
             <Link
               href="/product"
-              className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+              className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
             >
               Ver catálogo
             </Link>
@@ -245,7 +247,7 @@ export default function CartPage() {
 
               <Link
                 href="/checkout"
-                className="mt-6 block w-full rounded-xl bg-primary py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+                className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
               >
                 Continuar al checkout
               </Link>

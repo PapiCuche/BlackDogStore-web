@@ -1,4 +1,4 @@
-import Image from "next/image";
+import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
 
@@ -29,13 +29,7 @@ export function CartItemCard({ quantity, product, onQuantityChange, onRemove }: 
         <div className="flex min-w-0 items-center gap-4">
           <div className="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-bd-border bg-background">
             {product.image_url ? (
-              <Image
-                src={product.image_url}
-                alt=""
-                fill
-                sizes="64px"
-                className="object-cover"
-              />
+              <ProductImage src={product.image_url} alt="" sizes="64px" className="object-contain p-1" />
             ) : (
               <span className="font-display text-xl font-black text-foreground/[0.12]" aria-hidden="true">
                 {product.name.trim().charAt(0).toUpperCase() || "·"}

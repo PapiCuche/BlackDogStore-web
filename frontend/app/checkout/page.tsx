@@ -365,7 +365,7 @@ export default function CheckoutPage() {
 
         <div className="mb-8 border-b border-bd-border pb-7">
           <span className="section-label">Compra</span>
-          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+          <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
             Checkout
           </h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-muted">
@@ -758,7 +758,7 @@ export default function CheckoutPage() {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-primary px-6 py-3.5 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={loading}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}

@@ -86,29 +86,24 @@ function store(overrides: Partial<StorefrontConfig> = {}): StorefrontConfig {
   return { ...OTHER_STORE, ...overrides };
 }
 
-describe('hero · estilo que elige la tienda', () => {
-  it('quien no eligió conserva la losa oscura', () => {
-    const { container } = inStore(<Hero />);
+describe('hero · uno solo', () => {
+  // La portada V3 tiene un único hero. `hero_variant` es un campo heredado que
+  // la API todavía envía: valga lo que valga, el hero es el mismo.
+  it.each(['dark', 'light'] as const)('con el campo heredado en %s el hero es el mismo', (variant) => {
+    const { container } = inStore(<Hero />, store({ page: { ...OTHER_STORE.page, hero_variant: variant } }));
     const hero = container.querySelector('section') as HTMLElement;
 
-    expect(hero).toHaveAttribute('data-hero-variant', 'dark');
-    expect(hero.className).toContain('bg-slab');
-  });
-
-  it('el estilo claro no usa la losa y lleva el mismo contenido', () => {
-    const { container } = inStore(<Hero />, store({ page: { ...OTHER_STORE.page, hero_variant: 'light' } }));
-    const hero = container.querySelector('section') as HTMLElement;
-
-    expect(hero).toHaveAttribute('data-hero-variant', 'light');
+    expect(hero).not.toHaveAttribute('data-hero-variant');
+    expect(hero.className).toContain('bg-background');
     expect(hero.className).not.toContain('bg-slab');
     expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent('Tecnología');
     expect(within(hero).getByText('Equipos revisados.')).toBeInTheDocument();
     expect(within(hero).getByRole('link', { name: 'Ver catálogo' })).toHaveAttribute('href', '/product');
   });
 
-  it.each(['dark', 'light'] as const)('en el estilo %s muestra la imagen que la tienda colocó', (variant) => {
+  it('muestra la imagen que la tienda colocó', () => {
     const { container } = inStore(
-      <Hero />, store({ page: { ...OTHER_STORE.page, hero_variant: variant, hero_image_url: IMAGE } }),
+      <Hero />, store({ page: { ...OTHER_STORE.page, hero_image_url: IMAGE } }),
     );
     const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
 
@@ -116,36 +111,31 @@ describe('hero · estilo que elige la tienda', () => {
     expect(art.getAttribute('src')).toBe(IMAGE);
     // Sin recorte ni relleno: un PNG sin fondo se ve entero y sin caja.
     expect(art.className).toContain('object-contain');
-    // La profundidad depende de la superficie: una sombra negra no se ve sobre
-    // la losa oscura, así que allí va un halo claro.
-    expect(art.style.filter).toBe(
-      variant === 'dark' ? 'var(--cutout-shadow-on-slab)' : 'var(--cutout-shadow)',
-    );
+    // El hero sigue al tema, así que la profundidad es la del tema: sombra
+    // oscura en el claro y halo claro en el oscuro, por la misma variable.
+    expect(art.style.filter).toBe('var(--cutout-shadow)');
     // Una sola regla: ninguna clase compite con el estilo en línea.
     expect(art.className).not.toMatch(/v3-cutout/);
   });
 
-  it.each(['dark', 'light'] as const)(
-    'en el estilo %s, la imagen propia de la portada no toma el título de una campaña sin imagen',
-    (variant) => {
-      const campaign = {
-        slot: 'home_hero', badge: '', title: 'Semana del estudiante', subtitle: '', body: '',
-        image_url: '', cta_label: '', cta_url: '', secondary_cta_label: '',
-        secondary_cta_url: '', product: null,
-      };
-      const { container } = inStore(<Hero />, store({
-        page: { ...OTHER_STORE.page, hero_variant: variant, hero_image_url: IMAGE },
-        campaigns: { ...OTHER_STORE.campaigns, home_hero: campaign },
-      }));
-      const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
+  it('la imagen propia de la portada no toma el título de una campaña sin imagen', () => {
+    const campaign = {
+      slot: 'home_hero', badge: '', title: 'Semana del estudiante', subtitle: '', body: '',
+      image_url: '', cta_label: '', cta_url: '', secondary_cta_label: '',
+      secondary_cta_url: '', product: null,
+    };
+    const { container } = inStore(<Hero />, store({
+      page: { ...OTHER_STORE.page, hero_image_url: IMAGE },
+      campaigns: { ...OTHER_STORE.campaigns, home_hero: campaign },
+    }));
+    const art = container.querySelector('[data-hero-art] img') as HTMLImageElement;
 
-      expect(art.getAttribute('src')).toBe(IMAGE);
-      expect(art.getAttribute('alt')).toBe('');
-    },
-  );
+    expect(art.getAttribute('src')).toBe(IMAGE);
+    expect(art.getAttribute('alt')).toBe('');
+  });
 
-  it.each(['dark', 'light'] as const)('en el estilo %s, sin imagen no deja un hueco roto', (variant) => {
-    const { container } = inStore(<Hero />, store({ page: { ...OTHER_STORE.page, hero_variant: variant } }));
+  it('sin imagen no deja un hueco roto', () => {
+    const { container } = inStore(<Hero />);
 
     expect(container.querySelector('[data-hero-art]')).toBeNull();
     expect(container.querySelector('section img[src=""]')).toBeNull();
@@ -158,7 +148,7 @@ describe('hero · estilo que elige la tienda', () => {
       secondary_cta_url: '', product: null,
     };
     const { container } = inStore(<Hero />, store({
-      page: { ...OTHER_STORE.page, hero_variant: 'light', hero_image_url: IMAGE },
+      page: { ...OTHER_STORE.page, hero_image_url: IMAGE },
       campaigns: { ...OTHER_STORE.campaigns, home_hero: campaign },
     }));
 
@@ -202,14 +192,16 @@ describe('portada · categorías con imagen', () => {
 });
 
 describe('portada · bloques de la tienda', () => {
-  it('con la losa oscura no se apila una segunda franja negra', async () => {
+  it('la firma de marca va sobre el fondo del tema, con el isotipo como marca de agua', async () => {
     inStore(<Home />);
-    await screen.findByRole('region', { name: 'Productos destacados' });
-    expect(screen.queryByTestId('brand-statement')).toBeNull();
+    const statement = await screen.findByTestId('brand-statement');
+    expect(statement.className).toContain('bg-background');
+    expect(statement.className).not.toContain('bg-slab');
+    expect(statement.querySelector('.v3-brand-watermark')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('la franja de marca nombra a la tienda y sólo habla de reparar si repara', async () => {
-    const light = { ...OTHER_STORE.page, hero_variant: 'light' as const };
+    const light = OTHER_STORE.page;
     const { rerender } = inStore(<Home />, store({ page: light }));
     const statement = await screen.findByTestId('brand-statement');
     expect(statement.querySelector('p')).toHaveTextContent('Tienda Norte');

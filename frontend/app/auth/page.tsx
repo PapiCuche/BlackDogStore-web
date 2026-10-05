@@ -90,7 +90,7 @@ export default function AuthPage() {
 
   const inputClass =
     "mt-2 w-full rounded-xl border border-bd-border bg-surface px-4 py-3 text-sm text-foreground placeholder-muted focus:border-bd-border focus:outline-none";
-  const labelClass = "block text-xs font-bold uppercase tracking-widest text-muted";
+  const labelClass = "block text-xs font-bold uppercase tracking-wide text-muted";
 
   if (loading) {
     return (
@@ -104,16 +104,16 @@ export default function AuthPage() {
     return (
       <div className="min-h-screen bg-background px-6 py-12">
         <div className="mx-auto max-w-xl">
-          <div className="rounded-2xl border border-bd-border bg-surface p-8">
+          <div className="rounded-xl border border-bd-border bg-surface p-8">
             <div className="flex items-start justify-between">
               <div>
                 <span className="section-label">Cuenta</span>
-                <h1 className="font-display mt-2 text-4xl font-black uppercase text-foreground">Mi perfil</h1>
+                <h1 className="font-display mt-2 text-4xl font-semibold uppercase text-foreground">Mi perfil</h1>
               </div>
               <button
                 type="button"
                 onClick={handleLogout}
-                className="rounded-full border border-bd-border bg-surface px-5 py-2.5 text-xs font-bold uppercase tracking-widest text-muted transition hover:border-bd-border hover:text-foreground"
+                className="rounded-full border border-bd-border bg-surface px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-muted transition hover:border-bd-border hover:text-foreground"
               >
                 Cerrar sesión
               </button>
@@ -127,7 +127,7 @@ export default function AuthPage() {
                 { label: "Apellido", value: user.last_name || "—" },
               ].map((field) => (
                 <div key={field.label} className="rounded-xl border border-bd-border bg-surface px-4 py-3">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted">{field.label}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted">{field.label}</span>
                   <p className="mt-0.5 text-sm font-medium text-foreground">{field.value}</p>
                 </div>
               ))}
@@ -162,7 +162,7 @@ export default function AuthPage() {
               placement="header"
               surface="theme"
               className="h-11 w-auto object-contain"
-              wordmarkClassName="font-display text-lg font-black uppercase tracking-tight text-foreground"
+              wordmarkClassName="font-display text-lg font-semibold uppercase tracking-tight text-foreground"
             />
             <div>
               {contact.city ? (
@@ -176,7 +176,7 @@ export default function AuthPage() {
           {/* Main copy */}
           <div className="relative">
             <span className="section-label">{contact.city}</span>
-            <h2 className="font-display mt-3 text-6xl font-black uppercase leading-none tracking-tight text-foreground">
+            <h2 className="font-display mt-3 text-6xl font-semibold uppercase leading-none tracking-tight text-foreground">
               Equipos<br />Apple<br />Originales
             </h2>
             <p className="mt-5 max-w-sm text-sm leading-7 text-muted">
@@ -206,13 +206,13 @@ export default function AuthPage() {
                 placement="compact"
                 surface="theme"
                 className="h-10 w-auto object-contain"
-                wordmarkClassName="font-display text-base font-black uppercase tracking-tight text-foreground"
+                wordmarkClassName="font-display text-base font-semibold uppercase tracking-tight text-foreground"
               />
             </div>
 
             <div className="mb-8">
               <span className="section-label">{isLogin ? "Bienvenido" : "Nuevo usuario"}</span>
-              <h1 className="font-display mt-2 text-4xl font-black uppercase text-foreground">
+              <h1 className="font-display mt-2 text-4xl font-semibold uppercase text-foreground">
                 {isLogin ? "Iniciar sesión" : "Crear cuenta"}
               </h1>
             </div>
@@ -284,7 +284,7 @@ export default function AuthPage() {
                 </div>
               )}
 
-              <button className="mt-2 w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-black uppercase tracking-widest text-background transition hover:bg-foreground/90">
+              <button className="mt-2 w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-semibold uppercase tracking-wide text-background transition hover:bg-foreground/90">
                 {isLogin ? "Iniciar sesión" : "Registrarme"}
               </button>
             </form>

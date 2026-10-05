@@ -76,7 +76,7 @@ export function CompanySwitcher({ current, available, onSelect }: Props) {
           id="company-switcher-options"
           role="listbox"
           aria-label="Seleccionar empresa"
-          className="absolute right-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-bd-border bg-surface p-1.5"
+          className="v3-pop absolute right-0 z-50 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] origin-top-right overflow-y-auto rounded-xl border border-bd-border bg-background p-1.5 shadow-2xl"
         >
           {available.map((company) => {
             const isCurrent = current?.id === company.id;

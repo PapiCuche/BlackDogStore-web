@@ -34,3 +34,7 @@ backend/private-media/
 backend/print_agent/config.json
 print-agent-journal.json
 print-agent-journal.json.tmp
+
+# The previous frontend, archived on disk before the V3 integration. The durable
+# copy is the tag `frontend-anterior-2026-10-04`; the folder is local.
+/archives/

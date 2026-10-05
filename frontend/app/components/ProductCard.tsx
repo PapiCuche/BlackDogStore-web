@@ -1,6 +1,6 @@
 import Link from "next/link";
-import Image from "next/image";
 import { formatMoney } from "../lib/format";
+import { ProductImage } from "./ProductImage";
 
 type ProductCardProps = {
   id: number;
@@ -17,25 +17,22 @@ type ProductCardProps = {
 
 function StockBadge({ inventory }: { inventory?: number }) {
   if (inventory === undefined) return null;
-
   if (inventory === 0) {
     return (
-      <span className="rounded-full border border-danger-border bg-danger-surface px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-danger">
+      <span className="rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger">
         Sin stock
       </span>
     );
   }
-
   if (inventory <= 3) {
     return (
-      <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-warning">
+      <span className="rounded-full border border-warning-border bg-warning-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning">
         Últimas {inventory}
       </span>
     );
   }
-
   return (
-    <span className="rounded-full border border-bd-border bg-background/70 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">
+    <span className="rounded-full border border-bd-border bg-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-muted">
       En stock
     </span>
   );
@@ -57,63 +54,66 @@ export function ProductCard({
   return (
     <Link
       href={`/product/${slug}`}
-      className="group flex min-h-full flex-col overflow-hidden rounded-2xl border border-bd-border bg-surface transition hover:border-foreground/20 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+      className="v3-product-card group flex flex-col overflow-hidden rounded-lg bg-background transition-shadow duration-300 hover:shadow-lg focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
     >
-      <div className="relative aspect-[4/3] overflow-hidden border-b border-bd-border bg-background">
+      {/* Image */}
+      <div className="relative aspect-[4/3] overflow-hidden bg-background">
         {image_url ? (
-          <Image
+          <ProductImage
             src={image_url}
             alt={name}
-            fill
-            className={`object-cover transition-transform duration-500 group-hover:scale-[1.025] ${outOfStock ? "opacity-55" : ""}`}
             sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
+            className={`object-contain p-6 transition-transform duration-300 ease-out group-hover:scale-105 ${outOfStock ? "opacity-50" : ""}`}
           />
         ) : (
           <div className="flex h-full items-center justify-center">
-            <div className="flex h-20 w-20 items-center justify-center rounded-full border border-bd-border text-2xl font-black text-foreground/[0.12]" aria-hidden="true">
+            <div className="flex h-20 w-20 items-center justify-center rounded-full border border-bd-border text-2xl font-semibold text-foreground/[0.12]" aria-hidden="true">
               {name.trim().charAt(0).toUpperCase() || "·"}
             </div>
           </div>
         )}
 
-        <div className="absolute left-4 top-4">
+
+        {/* Stock badge overlay */}
+        <div className="absolute left-3 top-3">
           <StockBadge inventory={inventory} />
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col p-5 sm:p-6">
-        <div className="flex min-h-5 items-center justify-between gap-3">
-          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">
-            {category?.name || "Producto"}
-          </span>
+      {/* Content */}
+      <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
+        {/* Category + rating row */}
+        <div className="mb-2 flex items-center justify-between gap-2">
+          {category ? (
+            <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-muted">
+              {category.name}
+            </span>
+          ) : (
+            <span />
+          )}
           {average_rating !== null && average_rating !== undefined && review_count ? (
-            <span className="text-[11px] tabular-nums text-muted">
-              ★ {average_rating.toFixed(1)} · {review_count}
+            <span className="text-[9px] text-muted">
+              ★ {average_rating.toFixed(1)} ({review_count})
             </span>
           ) : null}
         </div>
 
-        <h2 className="mt-3 line-clamp-2 font-display text-xl font-extrabold uppercase leading-[1.05] tracking-[-0.025em] text-foreground">
-          {name}
-        </h2>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="font-display text-xl font-semibold leading-tight text-foreground transition group-hover:text-foreground line-clamp-2">
+            {name}
+          </h2>
+          <span className="shrink-0 text-sm font-semibold text-foreground">
+            S/ {formatMoney(price)}
+          </span>
+        </div>
 
-        <p className="mt-3 line-clamp-2 flex-1 text-sm leading-6 text-muted">
-          {description || "Revisa el detalle del producto, su disponibilidad y condiciones de compra."}
+        <p className="mt-2 flex-1 text-sm leading-6 text-muted line-clamp-2">
+          {description || "Consulta las características y condiciones de este producto."}
         </p>
 
-        <div className="mt-6 flex items-end justify-between gap-4 border-t border-bd-border pt-5">
-          <div>
-            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
-              Precio
-            </span>
-            <span className="mt-1 block text-lg font-extrabold tabular-nums text-foreground">
-              S/ {formatMoney(price)}
-            </span>
-          </div>
-          <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.08em] text-foreground">
-            {outOfStock ? "Ver producto" : "Ver detalle"}
-            <span className="transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
-          </span>
+        <div className="mt-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-muted transition group-hover:text-foreground">
+          {outOfStock ? "Ver producto" : "Ver detalles"}
+          <span className="transition-transform group-hover:translate-x-1">→</span>
         </div>
       </div>
     </Link>

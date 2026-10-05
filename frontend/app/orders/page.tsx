@@ -80,7 +80,7 @@ export default function OrdersPage() {
       <div className="mx-auto max-w-5xl">
         <header className="mb-8 border-b border-bd-border pb-7">
           <span className="section-label">Cuenta</span>
-          <h1 className="mt-2 font-display text-4xl font-black italic uppercase tracking-[-0.04em] text-foreground sm:text-5xl">
+          <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
             Mis pedidos
           </h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-muted">
@@ -101,7 +101,7 @@ export default function OrdersPage() {
           <div className="rounded-2xl border border-dashed border-bd-border px-6 py-14 text-center">
             <p className="font-display text-2xl font-extrabold uppercase text-foreground">Todavía no tienes pedidos</p>
             <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Cuando completes una compra, su orden aparecerá aquí.</p>
-            <Link href="/product" className="mt-6 inline-flex rounded-xl bg-primary px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
+            <Link href="/product" className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90">
               Explorar catálogo
             </Link>
           </div>

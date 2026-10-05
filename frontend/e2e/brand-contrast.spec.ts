@@ -109,41 +109,19 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-test("la losa del hero no cambia con el tema", async ({ page }) => {
-  // Aquí estuvo el defecto que el propietario vio: el hero era una losa negra
-  // deliberada, la traducción de paleta de M12F lo volvió crema en tema claro,
-  // y el lockup negro quedó invisible sobre él.
-  //
-  // NO se mide el contraste de la imagen del hero, y el motivo importa: tras
-  // M12F.3 esa imagen es una MARCA DE AGUA al 5 % — textura de marca, no
-  // contenido. Exigirle 3:1 sería exigir que la textura deje de ser textura.
-  // Lo que sí es invariante es que la losa siga siendo oscura en los dos temas.
+test("el isotipo decorativo se adapta y mantiene intensidad baja en ambos temas", async ({ page }) => {
   for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 1440, height: 900 });
     await withTheme(page, theme);
     await page.goto("/", { waitUntil: "networkidle" });
-
-    const bg = await page
-      .locator("section")
-      .first()
-      .evaluate((el) => getComputedStyle(el).backgroundColor);
-    const [r, g, b] = bg.match(/[\d.]+/g)!.slice(0, 3).map(Number);
-    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    expect(
-      luminance,
-      `el hero dejó de ser una losa oscura en tema ${theme}: ${bg}`,
-    ).toBeLessThan(90);
-
-    // Y la marca de agua sigue siendo marca de agua: presente, pero tenue.
-    const mark = page.locator("section").first().locator("img").first();
-    if (await mark.count()) {
-      const opacity = await mark.evaluate((el) => {
-        let n: HTMLElement | null = el as HTMLElement, acc = 1;
-        while (n) { acc *= +getComputedStyle(n).opacity; n = n.parentElement; }
-        return acc;
-      });
-      expect(opacity).toBeLessThan(0.25);
-      expect(opacity).toBeGreaterThan(0);
-    }
+    const mark = page.locator(".v3-brand-signature img").first();
+    await expect(mark).toHaveAttribute("src", new RegExp(theme === "dark" ? "on-dark" : "on-light"));
+    const opacity = await mark.evaluate((el) => {
+      let n: HTMLElement | null = el as HTMLElement, value = 1;
+      while (n) { value *= +getComputedStyle(n).opacity; n = n.parentElement; }
+      return value;
+    });
+    expect(opacity).toBeGreaterThan(0.05);
+    expect(opacity).toBeLessThanOrEqual(0.2);
   }
 });
