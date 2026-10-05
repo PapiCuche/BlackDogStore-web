@@ -26,6 +26,7 @@ function ev(partial: Partial<Evidence>): Evidence {
     height: 1200,
     created_at: '2026-09-03T10:00:00Z',
     uploaded_by: 'tecnico',
+    caption: '',
     voided_at: null,
     void_reason: null,
     ...partial,
@@ -33,15 +34,18 @@ function ev(partial: Partial<Evidence>): Evidence {
 }
 
 describe('las etapas', () => {
-  it('cubren exactamente las ocho del backend', () => {
+  it('cubren exactamente las once del backend, en el orden del ciclo', () => {
     expect(EVIDENCE_STAGES.map((s) => s.value)).toEqual([
       'intake',
       'diagnosis',
       'repair_before',
       'repair_during',
       'repair_after',
+      'parts',
       'quality',
+      'ready',
       'delivery',
+      'warranty',
       'other',
     ]);
   });
@@ -53,10 +57,13 @@ describe('las etapas', () => {
     expect(stageCapability('delivery')).toBe('service.delivery.manage');
     expect(stageCapability('repair_during')).toBe('service.repair.manage');
     expect(stageCapability('other')).toBe('service.orders.manage');
+    expect(stageCapability('parts')).toBe('service.repair.manage');
+    expect(stageCapability('ready')).toBe('service.delivery.manage');
+    expect(stageCapability('warranty')).toBe('service.orders.create');
   });
 
   it('no inventa una capacidad para una etapa desconocida', () => {
-    expect(stageCapability('warranty')).toBeNull();
+    expect(stageCapability('sin-etapa')).toBeNull();
   });
 
   it('ninguna etapa pide una capability de evidencias', () => {

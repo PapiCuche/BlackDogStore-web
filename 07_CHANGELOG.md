@@ -3,6 +3,56 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-04 — MEDIA-EVIDENCE
+
+**Added**
+- Galería de producto subida desde el panel: varias imágenes, principal, orden, texto
+  alternativo; `images` en el producto público; miniatura en la lista del panel.
+- Carga masiva de productos con imágenes: columnas «Imagen principal» e «Imágenes»,
+  archivos sueltos o ZIP, resumen de coincidencias en la previsualización.
+- Evidencias de servicio: nota por foto, etapas de repuestos, listo para entrega y
+  garantía/reingreso, conteo por etapa; varias fotos a la vez, cámara del teléfono, visor
+  y antes/después.
+- Guía `docs/imagenes-y-evidencias.md`.
+
+**Changed**
+- `Product.image_url` pasa a `CharField` validado y es la dirección de la principal.
+- La plantilla de productos lleva las dos columnas de imagen y se reconoce al subirla.
+- El cliente lee la nota de la evidencia que se le comparte.
+- Límites propios para evidencias (lectura 600/min, escritura 120/min) y para cargas
+  masivas (30/min).
+
+**Fixed**
+- IMPORT-ERRORS-404, AUTH-REGISTER-CSRF, DEV-PROXY-UPLOAD, EVIDENCE-THROTTLE.
+- Guardar el texto alternativo se comía el clic siguiente.
+- De la revisión: tope de 100 archivos de Django por debajo del nuestro; un flujo
+  comprimido dañado daba 500; guardar el producto podía pisar la imagen de la galería; una
+  imagen quitada por otra persona daba 500; archivos huérfanos tras descartar una
+  previsualización; consultas por línea en carrito y pedidos; etapa de una foto en cola;
+  reemplazo de una imagen con el mismo nombre; zona de soltar deshabilitada.
+
+**Security**
+- Aislamiento por empresa probado en galería, trabajos de importación, imágenes en
+  espera y evidencias; por sucursal en evidencias.
+- ZIP sin extraer: rutas que salen, enlaces simbólicos, cifrado, índice desproporcionado,
+  tamaño expandido y entradas que mienten sobre su tamaño.
+- Una imagen subida no se coloca escribiendo su dirección, ni en el panel ni en el Excel.
+
+**Database**
+- `0100_product_images`: `ProductImage`; `Product.image_url` a `CharField(500)`.
+- `0101_evidence_caption_and_stages`: `RepairEvidence.caption`; etapas nuevas.
+
+**Tests**
+- Backend 4965 (4 omitidas); Jest 659/659; Playwright 179/179.
+- Nuevos: `test_product_images.py`, `test_import_media.py`, `test_evidence_context.py`,
+  `product-gallery`, `product-import-media`, `evidence-workflow`, `register-csrf`,
+  `api-proxy-expect` (Jest), `e2e/media.spec.ts`.
+
+**Decisions** DEC-MEDIA-01, DEC-IMPORT-MEDIA-01, DEC-EVIDENCE-01.
+
+**Pending** IMPORT-BODY-LIMIT, EVIDENCE-CUSTOMER-WEB, TEST-ORDER-C15; repetir el ensayo de
+producción.
+
 ## 2026-10-04 — Frontend V3 y cierre
 
 - La V3 es el único diseño de la tienda, las páginas de cuenta y el panel (#82). El

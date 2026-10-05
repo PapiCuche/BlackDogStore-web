@@ -53,13 +53,30 @@ export function ProductsTable({ products, canManage, onChanged }: Props) {
                 className="border-b border-bd-border/70 transition last:border-0 hover:bg-foreground/[0.025]"
               >
                 <td className="px-4 py-3">
-                  <Link
-                    href={`/admin/products/${product.id}`}
-                    className="font-medium text-foreground transition hover:underline"
-                  >
-                    {product.name}
-                  </Link>
-                  <div className="mt-1 text-xs text-muted">{product.slug}</div>
+                  <div className="flex items-center gap-3">
+                    {/* La principal de su galería (o su dirección de siempre).
+                        Decorativa: el nombre está al lado. */}
+                    {product.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={product.image_url}
+                        alt=""
+                        loading="lazy"
+                        className="h-10 w-10 shrink-0 rounded-md border border-bd-border bg-background object-contain"
+                      />
+                    ) : (
+                      <span data-thumb="empty" aria-hidden="true" className="h-10 w-10 shrink-0 rounded-md border border-dashed border-bd-border bg-background" />
+                    )}
+                    <div className="min-w-0">
+                      <Link
+                        href={`/admin/products/${product.id}`}
+                        className="font-medium text-foreground transition hover:underline"
+                      >
+                        {product.name}
+                      </Link>
+                      <div className="mt-1 text-xs text-muted">{product.slug}</div>
+                    </div>
+                  </div>
                 </td>
                 <td className="hidden px-4 py-3 text-muted md:table-cell">{product.category_name ?? "—"}</td>
                 <td className="px-4 py-3 text-right font-medium tabular-nums text-foreground">

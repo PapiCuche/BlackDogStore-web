@@ -281,8 +281,9 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
       return canvas.toDataURL("image/png").split(",")[1];
     });
 
-    await page.locator("select").filter({ has: page.locator('option[value="intake"]') }).selectOption("intake");
-    await page.locator('input[type="file"][accept*="image/"]').setInputFiles({
+    await page.getByLabel("Etapa de las fotos").selectOption("intake");
+    // «Elegir fotos», no «Tomar foto»: la galería ofrece los dos.
+    await page.getByLabel("Elegir fotos").setInputFiles({
       name: `h411-${RUN}.png`,
       mimeType: "image/png",
       buffer: Buffer.from(png, "base64"),
@@ -291,7 +292,7 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
     const uploaded = page.waitForResponse(
       finalResponse(`/service/orders/${shared.orderId}/evidence`, "POST"),
     );
-    await page.getByRole("button", { name: "Subir" }).click();
+    await page.getByRole("button", { name: "Subir 1 foto" }).click();
     const response = await uploaded;
     expect(response.status(), await response.text()).toBe(201);
     // EL DEFECTO DE FORMDATA: con `application/json` forzado no había boundary
@@ -301,7 +302,8 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
     const sent = await response.request().allHeaders();
     expect(sent["content-type"] ?? "").toMatch(/^multipart\/form-data; boundary=/);
 
-    await expect(page.getByText(/Ingreso · 1/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("list", { name: "Evidencias por etapa" }).getByText("Ingreso · 1 foto"))
+      .toBeVisible({ timeout: 20_000 });
   });
 
   test("H · notificaciones: contador, bandeja y marcar leída por cookie", async ({ page, context }) => {

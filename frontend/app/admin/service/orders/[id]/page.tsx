@@ -278,7 +278,7 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <Panel
           title="Evidencias"
-          subtitle="Fotografías del estado del equipo. Nacen internas: compartirlas con el cliente es una acción aparte."
+          subtitle="Fotografías de cada etapa del servicio, con su nota, su autor y su fecha. Nacen internas: compartirlas con el cliente es una acción aparte."
         >
           <EvidenceGallery slug={slug} orderId={orderId} may={may} />
         </Panel>

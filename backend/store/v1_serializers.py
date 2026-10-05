@@ -35,6 +35,7 @@ class V1CategorySerializer(serializers.ModelSerializer):
 
 class V1ProductSerializer(serializers.ModelSerializer):
     category = V1CategorySerializer(read_only=True)
+    images = serializers.SerializerMethodField()
     inventory = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
@@ -43,8 +44,14 @@ class V1ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price',
-            'inventory', 'category', 'image_url', 'average_rating', 'review_count',
+            'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
         ]
+
+    def get_images(self, obj):
+        # `image_url` is still the primary one; this is the whole gallery.
+        # `.all()` reads the prefetch set up by the viewset.
+        from .product_media import public_payload
+        return [public_payload(image) for image in obj.images.all()]
 
     def get_inventory(self, obj):
         """

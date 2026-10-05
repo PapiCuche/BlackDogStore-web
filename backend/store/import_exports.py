@@ -39,6 +39,8 @@ PRODUCT_TEMPLATE_HEADERS = [
     'Descripción',
     'Precio de venta',
     'Categoría',
+    'Imagen principal',
+    'Imágenes',
 ]
 
 PRODUCT_TEMPLATE_HELP = [
@@ -48,7 +50,17 @@ PRODUCT_TEMPLATE_HELP = [
     'Opcional. Si se deja vacío no se borra la descripción existente.',
     'Obligatorio para productos nuevos. Usa punto decimal: 149.90',
     'Debe existir, salvo que se active «crear las que falten».',
+    'Opcional. Nombre del archivo que verá el catálogo: telefono-frontal.webp',
+    'Opcional. Nombres de archivo separados por | : frontal.webp|trasera.webp',
 ]
+
+#: What the help row says under «Nombre». A file that still carries the help
+#: row is the template being used as intended; that row is not a product.
+_HELP_UNDER_NAME = 'Obligatorio.'
+
+
+def is_template_help_row(fields: dict) -> bool:
+    return (fields.get('name') or '').strip() == _HELP_UNDER_NAME
 
 
 def _workbook():
@@ -100,7 +112,7 @@ def product_template_bytes() -> bytes:
     sheet.cell(row=3, column=6, value='Accesorios')
 
     sheet.freeze_panes = 'A3'
-    _autosize(sheet, [20, 16, 42, 40, 16, 20])
+    _autosize(sheet, [20, 16, 42, 40, 16, 20, 34, 40])
 
     buffer = io.BytesIO()
     workbook.save(buffer)

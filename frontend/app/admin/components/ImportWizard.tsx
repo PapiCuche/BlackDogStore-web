@@ -15,10 +15,12 @@
  * and the apply button is disabled while a single row is in error.
  */
 
+import { useState } from "react";
 import type { ImportJob, ImportRow } from "../lib/internal-api";
+import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
-  "Archivo", "Hoja", "Columnas", "Previsualización", "Confirmación", "Resultado",
+  "Archivo", "Hoja", "Columnas e imágenes", "Previsualización", "Confirmación", "Resultado",
 ];
 export const STEP_LABELS_STOCK = [
   "Archivo", "Almacenes", "Modo", "Previsualización", "Confirmación", "Resultado",
@@ -288,4 +290,201 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
       </table>
     </div>
   );
+}
+
+
+// ---------------------------------------------------------------------------
+// BULK-MEDIA — las imágenes que acompañan a una carga masiva de productos
+// ---------------------------------------------------------------------------
+
+const IMPORT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+const IMAGE_NAME = /\.(png|jpe?g|webp)$/i;
+
+function megabytes(bytes: number) {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/**
+ * Adjuntar las imágenes de la importación: archivos sueltos, un ZIP, o ambos.
+ *
+ * NO SUBE NADA. Los archivos viajan con el libro al previsualizar, y es el
+ * servidor quien los casa con las filas por su nombre. Aquí sólo se descarta lo
+ * que por su nombre no es una imagen, para no enviar lo que se va a ignorar.
+ */
+export function ImportImagesField({
+  images, zip, onChange, disabled = false,
+}: {
+  images: File[];
+  zip: File | null;
+  onChange: (images: File[], zip: File | null) => void;
+  disabled?: boolean;
+}) {
+  const [notice, setNotice] = useState<string | null>(null);
+
+  function addImages(files: File[]) {
+    const next = [...images];
+    const skipped: string[] = [];
+    const replaced: string[] = [];
+    for (const file of files) {
+      if (!IMAGE_NAME.test(file.name)) {
+        skipped.push(file.name);
+        continue;
+      }
+      // El mismo nombre SUSTITUYE: quien corrige una imagen la vuelve a
+      // adjuntar con su nombre, y tiene que viajar la nueva.
+      const at = next.findIndex((entry) => entry.name.toLowerCase() === file.name.toLowerCase());
+      if (at >= 0) {
+        next[at] = file;
+        replaced.push(file.name);
+      } else {
+        next.push(file);
+      }
+    }
+    const notes = [
+      replaced.length ? `Se reemplazó: ${replaced.join(", ")}.` : "",
+      skipped.length ? `No son imágenes PNG, JPEG o WebP y no se adjuntan: ${skipped.join(", ")}.` : "",
+    ].filter(Boolean);
+    setNotice(notes.length ? notes.join(" ") : null);
+    onChange(next, zip);
+  }
+
+  const total = images.reduce((sum, file) => sum + file.size, 0) + (zip?.size ?? 0);
+
+  return (
+    <div className="space-y-3 rounded-xl border border-bd-border bg-surface px-4 py-4">
+      <div>
+        <p className="text-sm font-semibold text-foreground">Imágenes de los productos (opcional)</p>
+        <p className="mt-1 text-xs text-muted">
+          En el Excel, la columna «Imagen principal» lleva el nombre de un archivo y «Imágenes» varios
+          separados por <code>|</code>. Adjunta aquí esos archivos: se casan por su nombre, sin mirar
+          mayúsculas ni carpetas.
+        </p>
+      </div>
+
+      <ImageDropzone
+        label="Elegir imágenes"
+        accept={IMPORT_IMAGE_ACCEPT}
+        onFiles={addImages}
+        disabled={disabled}
+        hint="PNG, JPEG o WebP, hasta 8 MB cada una. También puedes arrastrarlas hasta aquí."
+      />
+
+      <label className="block text-xs text-muted">
+        <span className="font-semibold text-foreground">Elegir un ZIP</span> con las imágenes, si son muchas
+        <input
+          type="file"
+          accept=".zip,application/zip"
+          disabled={disabled}
+          onChange={(event) => {
+            const selected = event.target.files?.[0] ?? null;
+            event.target.value = "";
+            if (selected) onChange(images, selected);
+          }}
+          className="mt-1.5 block w-full text-sm text-muted file:mr-4 file:rounded-full file:border file:border-bd-border file:bg-background file:px-4 file:py-2 file:text-sm file:font-semibold file:text-foreground"
+        />
+      </label>
+
+      {notice ? <p role="status" className="text-xs text-warning">{notice}</p> : null}
+
+      {images.length || zip ? (
+        <div className="rounded-lg border border-bd-border bg-background p-3 text-xs">
+          <p className="font-semibold text-foreground">
+            {images.length === 1 ? "1 imagen" : `${images.length} imágenes`}
+            {zip ? " y un ZIP" : ""} · {megabytes(total)}
+          </p>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+            {zip ? (
+              <li className="flex items-center justify-between gap-3">
+                <span className="min-w-0 break-all text-foreground">{zip.name}</span>
+                <button type="button" aria-label={`Quitar ${zip.name}`} disabled={disabled} onClick={() => onChange(images, null)} className="shrink-0 text-muted underline underline-offset-4 hover:text-danger">
+                  Quitar
+                </button>
+              </li>
+            ) : null}
+            {images.map((file) => (
+              <li key={file.name} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 break-all text-foreground">{file.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Quitar ${file.name}`}
+                  disabled={disabled}
+                  onClick={() => onChange(images.filter((entry) => entry !== file), zip)}
+                  className="shrink-0 text-muted underline underline-offset-4 hover:text-danger"
+                >
+                  Quitar
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Lo que el servidor casó entre filas e imágenes. Vacío si el archivo no habla de imágenes. */
+export function MediaSummary({ job }: { job: ImportJob }) {
+  const media = job.summary?.media;
+  if (!media || (media.attached === 0 && media.referenced === 0 && media.ignored === 0)) return null;
+
+  const items: [string, number, string][] = [
+    ["Adjuntas", media.attached, "text-foreground"],
+    ["Válidas", media.valid, "text-success"],
+    ["Faltantes", media.missing, media.missing ? "text-danger" : "text-muted"],
+    ["Inválidas", media.invalid, media.invalid ? "text-danger" : "text-muted"],
+    ["Duplicadas", media.duplicates, "text-muted"],
+    ["Sin usar", media.orphans, media.orphans ? "text-warning" : "text-muted"],
+  ];
+  const nothingAttached = media.attached === 0 && media.referenced > 0;
+
+  return (
+    <section aria-label="Imágenes de la importación" className="mb-4 rounded-xl border border-bd-border bg-surface px-4 py-3">
+      <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Imágenes</h3>
+      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+        {items.map(([label, value, tone]) => (
+          <div key={label} className="rounded-lg border border-bd-border bg-background px-3 py-2">
+            <p className="text-[10px] uppercase tracking-widest text-muted">{label}</p>
+            <p className={`text-lg font-semibold tabular-nums ${tone}`}>{value}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 space-y-1 text-xs text-muted">
+        {nothingAttached ? (
+          <p className="text-danger">
+            Las filas citan {media.referenced} imagen(es) y no se adjuntó ninguna. Adjunta las imágenes en el paso
+            anterior y vuelve a previsualizar.
+          </p>
+        ) : null}
+        {media.already_present ? (
+          <p>
+            {media.already_present === 1
+              ? "1 ya estaba en la galería de su producto y no se duplica."
+              : `${media.already_present} ya estaban en la galería de su producto y no se duplican.`}
+          </p>
+        ) : null}
+        {media.orphans ? (
+          <p>
+            Adjuntas que ninguna fila cita (no se guardan): {media.orphan_names.join(", ")}
+            {media.orphans > media.orphan_names.length ? "…" : ""}
+          </p>
+        ) : null}
+        {media.ignored ? (
+          <p>
+            Archivos que no son imágenes (se ignoran): {media.ignored_names.join(", ")}
+            {media.ignored > media.ignored_names.length ? "…" : ""}
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** «★ principal.png + 2»: la principal por su nombre y cuántas más lleva la fila. */
+export function rowImagesLabel(row: { data: Record<string, unknown> }): string {
+  const images = (row.data?.images as { name: string; primary: boolean }[] | undefined) ?? [];
+  if (!images.length) return "";
+  const primary = images.find((image) => image.primary);
+  const first = primary ?? images[0];
+  const rest = images.length - 1;
+  return `${primary ? "★ " : ""}${first.name}${rest ? ` + ${rest}` : ""}`;
 }

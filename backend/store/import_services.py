@@ -29,13 +29,16 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
 
-from . import import_formats, xlsx_reader
+from . import (
+    import_exports, import_formats, import_media, product_media, storefront_media, xlsx_reader,
+)
 from .models import (
     BulkImportJob,
     BulkImportRow,
     Category,
     Product,
     ProductBarcode,
+    ProductImage,
     normalize_barcode,
 )
 
@@ -346,12 +349,51 @@ def _row_values(values, mapping, headers):
     return out, formulas
 
 
-@transaction.atomic
 def preview_products(*, company, actor, upload, filename, sheet_name=None,
-                     header_row=None, mapping=None, options=None):
+                     header_row=None, mapping=None, options=None, images=None):
     """
     Parse, resolve and stage a product workbook. Writes NOTHING commercial.
+
+    `images` is the `import_media.Bundle` of picture files that came with the
+    workbook, or None. The pictures some row will use are stored now, as
+    unplaced images of `company`, so that apply finds them; nothing is placed
+    in any gallery until apply.
     """
+    stager = import_media.Stager(company=company, actor=actor, bundle=images)
+    try:
+        return _preview_products(
+            company=company, actor=actor, upload=upload, filename=filename,
+            sheet_name=sheet_name, header_row=header_row, mapping=mapping,
+            options=options, stager=stager,
+        )
+    except BaseException:
+        # The transaction took the rows back; the files it had already written
+        # to storage are still there, with nothing pointing at them.
+        stager.abandon()
+        raise
+
+
+class _GalleryIndex:
+    """What each product already shows, read once per product."""
+
+    def __init__(self, company):
+        self.company = company
+        self._cache: dict[int, dict] = {}
+
+    def of(self, product_id) -> dict:
+        if not product_id:
+            return {'count': 0, 'hashes': set()}
+        if product_id not in self._cache:
+            rows = list(ProductImage.objects.filter(
+                company=self.company, product_id=product_id,
+            ).values_list('source_sha256', flat=True))
+            self._cache[product_id] = {'count': len(rows), 'hashes': {h for h in rows if h}}
+        return self._cache[product_id]
+
+
+@transaction.atomic
+def _preview_products(*, company, actor, upload, filename, sheet_name, header_row,
+                      mapping, options, stager):
     options = {**DEFAULT_OPTIONS, **(options or {})}
     data = xlsx_reader.check_upload(upload, filename=filename)
     sha256 = _sha256(data)
@@ -411,6 +453,8 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
     )
 
     index = CatalogueIndex(company)
+    galleries = _GalleryIndex(company)
+    already_present = 0
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_barcodes: dict[str, int] = {}
@@ -427,6 +471,14 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
             continue
 
         fields, formulas = _row_values(values, mapping, headers)
+        if import_exports.is_template_help_row(fields):
+            staged.append(BulkImportRow(
+                job=job, sheet_name=sheet_name, row_number=row_number,
+                action=BulkImportRow.SKIP, normalized_data={},
+                warnings=['Fila de ayuda de la plantilla.'],
+            ))
+            counts['skip'] += 1
+            continue
         errors, warnings = [], []
         if formulas:
             errors.append(
@@ -518,12 +570,76 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
             else:
                 seen_names[key] = row_number
 
+        # BULK-MEDIA — the picture FILES this row names.
+        #
+        # A file name is matched against what came with the workbook; what is
+        # wrong with a picture (missing, unreadable, two files with that name)
+        # is an error of THIS row, with the file named, because that is where
+        # the operator will fix it.
+        image_url = fields.get('image_url', '')
+        if image_url and storefront_media.managed_public_id(image_url):
+            # Una imagen subida a la plataforma no se cita por su dirección: se
+            # coloca con las columnas de archivo, que comprueban de quién es.
+            # Escrita aquí, una empresa podía apuntar a la imagen de otra, y la
+            # otra ya no podía borrarla porque quedaba «en uso».
+            errors.append(
+                'URL de imagen: una imagen subida a la plataforma no se cita por su '
+                'dirección. Adjunta el archivo y usa «Imagen principal» o «Imágenes».'
+            )
+            image_url = ''
+        main_name = import_media.normalize_name(fields.get('image_main', ''))
+        row_images = []
+        references = import_media.split_references(
+            fields.get('image_main', ''), fields.get('image_files', ''),
+        )
+        gallery = galleries.of(product_id)
+        if references:
+            row_hashes: set[str] = set()
+            for reference in references:
+                found = stager.resolve(reference)
+                if 'error' in found:
+                    errors.append(f'Imagen «{reference}»: {found["error"]}')
+                    continue
+                if found['sha256'] in row_hashes:
+                    warnings.append(
+                        f'«{reference}» es la misma imagen que otra de esta fila; se usa una vez.'
+                    )
+                    continue
+                row_hashes.add(found['sha256'])
+                # The same picture already in THIS product's gallery: a file
+                # imported twice must not double the gallery.
+                existing = found['sha256'] in gallery['hashes']
+                already_present += 1 if existing else 0
+                row_images.append({
+                    'name': reference, 'address': found['address'],
+                    'sha256': found['sha256'],
+                    'primary': import_media.normalize_name(reference) == main_name,
+                    'existing': existing,
+                })
+            total = gallery['count'] + sum(1 for item in row_images if not item['existing'])
+            if total > product_media.max_per_product():
+                errors.append(
+                    f'Un producto admite hasta {product_media.max_per_product()} imágenes; '
+                    f'esta fila lo dejaría con {total}.'
+                )
+            if image_url:
+                warnings.append(
+                    'La fila trae archivos de imagen; la «URL de imagen» se ignora.'
+                )
+                image_url = ''
+        elif image_url and gallery['count']:
+            warnings.append(
+                'El producto ya tiene galería; la «URL de imagen» se ignora.'
+            )
+            image_url = ''
+
         normalized = {
             'name': name, 'code': code, 'barcode': barcode,
             'category': category_name, 'category_id': category_id,
             'price': str(price) if price is not None else '',
             'description': fields.get('description', ''),
-            'image_url': fields.get('image_url', ''),
+            'image_url': image_url,
+            'images': row_images,
             'slug': fields.get('slug', ''),
             'product_id': product_id, 'matched_by': matched_by,
         }
@@ -553,6 +669,16 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
             normalized_data=normalized, errors=errors, warnings=warnings,
         ))
 
+    if counts['error']:
+        # A job with errors cannot be applied (`is_applicable`), so the pictures
+        # stored for it have no future. Removed now rather than left for the
+        # daily sweep.
+        stager.discard()
+        for row in staged:
+            for item in (row.normalized_data or {}).get('images', []):
+                item['address'] = None
+    media_summary = {**stager.summary(), 'already_present': already_present}
+
     BulkImportRow.objects.bulk_create(staged, batch_size=500)
 
     job.rows_total = len(staged)
@@ -567,6 +693,7 @@ def preview_products(*, company, actor, upload, filename, sheet_name=None,
         'format_notes': (detected or {}).get('notes', []),
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
+        'media': media_summary,
     }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
@@ -602,7 +729,7 @@ def apply_products(*, job, actor):
     company = job.company
     index = CatalogueIndex(company)
     taken_slugs: set[str] = set()
-    created = updated = 0
+    created = updated = images_added = 0
 
     rows = list(
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
@@ -680,8 +807,13 @@ def apply_products(*, job, actor):
             # §37 — a blank cell means "leave it alone", never "erase it".
             # Wiping a description because a column was empty destroys work
             # nobody asked to destroy.
+            # With a gallery —its own, or the one this row brings— the picture
+            # address is the gallery's primary and is not typed over.
+            owns_address = bool(data.get('images')) or product.images.exists()
             for field in ('description', 'image_url'):
                 value = data.get(field, '')
+                if field == 'image_url' and owns_address:
+                    continue
                 if value and getattr(product, field) != value:
                     setattr(product, field, value)
                     changes.append(field)
@@ -695,7 +827,9 @@ def apply_products(*, job, actor):
                 product.full_clean(exclude=['slug'])
                 product.save(update_fields=[*changes, 'updated_at'])
                 updated += 1
+            counted = bool(changes)
         else:
+            counted = True
             product = Product(
                 company=company, name=name,
                 slug=unique_slug(company, data.get('slug') or name, taken=taken_slugs),
@@ -725,14 +859,60 @@ def apply_products(*, job, actor):
             )
             index.by_barcode[key] = product.pk
 
+        placed = _place_row_images(row, product, data.get('images') or [], actor)
+        images_added += placed
+        if placed and not counted:
+            updated += 1
+
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
     job.summary = {**(job.summary or {}), 'applied': {
-        'created': created, 'updated': updated,
+        'created': created, 'updated': updated, 'images_added': images_added,
     }}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     return job, True
+
+
+def _place_row_images(row, product, images, actor) -> int:
+    """
+    Put the pictures a row approved into its product's gallery.
+
+    Same transaction as the rest of apply, so a picture that cannot be placed
+    takes the whole import back with it — a product created without the
+    picture its row promised is the silent half-result this importer refuses.
+
+    `claim` (inside `place`) is what makes the address in the staged row
+    harmless: it must be an image that still exists AND belongs to the job's
+    company. One that the daily sweep removed, or one of another company, stops
+    the import with the file named.
+    """
+    from django.core.exceptions import ValidationError
+
+    added = 0
+    for item in images:
+        name = item.get('name', '')
+        if item.get('existing'):
+            if item.get('primary'):
+                current = product.images.filter(source_sha256=item.get('sha256', '')).first()
+                if current is not None and not current.is_primary:
+                    product_media.update_image(image=current, actor=actor, is_primary=True)
+            continue
+        try:
+            product_media.place(
+                product=product, address=item.get('address') or '', actor=actor,
+                make_primary=bool(item.get('primary')), source='import',
+                source_sha256=item.get('sha256', ''),
+            )
+        except ValidationError:
+            raise ImportError_(
+                f'Fila {row.row_number}: la imagen «{name}» ya no está disponible. '
+                f'Vuelve a previsualizar con las imágenes adjuntas antes de aplicar.'
+            ) from None
+        except product_media.ProductMediaError as exc:
+            raise ImportError_(f'Fila {row.row_number}: {exc}') from None
+        added += 1
+    return added
 
 
 def _barcode_shape_errors(code: str, label: str) -> list[str]:

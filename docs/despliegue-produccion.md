@@ -263,6 +263,15 @@ Sólo borra imágenes con cero referencias en toda la plataforma y con más de 2
 horas (`--older-than-hours`). `--dry-run` las lista sin borrar. Cada borrado
 queda en el registro de auditoría de su empresa.
 
+Esta misma limpieza retira las imágenes de una **carga masiva de productos** que
+se previsualizó y no se aplicó: por eso entre previsualizar y aplicar hay, como
+mucho, esas 24 horas. Sin la tarea programada esas imágenes no se borran nunca.
+Las evidencias del servicio técnico no pasan por aquí: no se limpian.
+
+Los límites de imágenes (por archivo, por producto, por carga masiva) y lo que
+hay que comprobar antes de publicar una versión con imágenes están en
+[imagenes-y-evidencias.md](imagenes-y-evidencias.md) §5.
+
 ### 6.2 Copia externa
 
 Una copia en el mismo servidor no protege si se pierde el servidor. Lleva la

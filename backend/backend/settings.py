@@ -134,6 +134,13 @@ REST_FRAMEWORK = {
         'admin_categories': '120/min',
         'admin_orders': '120/min',
         'admin_order_status_change': '60/min',
+        # Una galería pide una imagen por miniatura; subir varias fotos son
+        # varias peticiones. Cada cosa con su cupo (EVIDENCE-THROTTLE).
+        'service_evidence_read': '600/min',
+        'service_evidence_write': '120/min',
+        # Inspeccionar, previsualizar y aplicar una carga masiva. Cada
+        # previsualización puede recodificar cientos de imágenes.
+        'admin_import': '30/min',
         'admin_order_email_resend': '10/min',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
@@ -273,6 +280,23 @@ STOREFRONT_IMAGE_MAX_UPLOAD_BYTES = env.int(
 )
 STOREFRONT_IMAGE_MAX_EDGE = env.int('STOREFRONT_IMAGE_MAX_EDGE', default=2400)
 STOREFRONT_IMAGE_MAX_PIXELS = env.int('STOREFRONT_IMAGE_MAX_PIXELS', default=40_000_000)
+
+# PRODUCT-MEDIA / BULK-MEDIA. Las imágenes de producto pasan por la misma
+# tubería que las de la tienda, así que comparten los límites de arriba por
+# archivo. Éstos son los suyos: cuántas por producto y cuánto admite UNA carga
+# masiva. El total de una carga es lo que viaja en una sola petición.
+PRODUCT_IMAGE_MAX_PER_PRODUCT = env.int('PRODUCT_IMAGE_MAX_PER_PRODUCT', default=12)
+IMPORT_IMAGES_MAX_FILES = env.int('IMPORT_IMAGES_MAX_FILES', default=200)
+IMPORT_IMAGES_MAX_TOTAL_BYTES = env.int(
+    'IMPORT_IMAGES_MAX_TOTAL_BYTES', default=100 * 1024 * 1024
+)
+IMPORT_IMAGES_ZIP_MAX_ENTRIES = env.int('IMPORT_IMAGES_ZIP_MAX_ENTRIES', default=400)
+IMPORT_IMAGES_ZIP_MAX_RATIO = env.int('IMPORT_IMAGES_ZIP_MAX_RATIO', default=200)
+# Django corta en 100 archivos por petición, y lo hace con una página HTML antes
+# de que ninguna vista opine. Una carga masiva lleva el libro y sus imágenes en
+# la misma petición: el tope de Django tiene que quedar por encima del nuestro,
+# que es el que sabe explicarse.
+DATA_UPLOAD_MAX_NUMBER_FILES = IMPORT_IMAGES_MAX_FILES + 20
 
 SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
     'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024

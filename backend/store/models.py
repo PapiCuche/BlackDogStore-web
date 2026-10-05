@@ -187,7 +187,18 @@ class Product(models.Model):
     description = models.TextField(blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     inventory = models.IntegerField(default=0)
-    image_url = models.URLField(blank=True, default='')
+    #: THE ADDRESS THE STOREFRONT SHOWS. Read by the catalogue, the cart, order
+    #: lines and the POS since Phase 0, so it stays. Two sources:
+    #:   * the product has a gallery (`ProductImage`) -> the address of its
+    #:     primary image, written by `store.product_media` and by nobody else;
+    #:   * it has none yet -> whatever was typed or imported: an absolute
+    #:     http(s) URL or a path of the site itself.
+    #: A `CharField` and not a `URLField` for the reason `Category.image_url`
+    #: is one: an uploaded image is addressed by a path of the site, and a
+    #: `URLField` rejects it.
+    image_url = models.CharField(
+        max_length=500, blank=True, default='', validators=[validate_asset_url],
+    )
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -226,6 +237,78 @@ class Product(models.Model):
         ):
             raise ValidationError(
                 {'category': 'La categoría no pertenece a la empresa de este producto.'}
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class ProductImage(models.Model):
+    """
+    One picture in a product's gallery, uploaded from the panel.
+
+    THE ROW IS NOT THE FILE. The pixels are a `StorefrontImage`: the same
+    pipeline the hero and the categories use (re-encoded from pixels, owned by
+    one company, public because the catalogue is public, swept when nothing
+    shows it). This row says which product shows it, in what position, with
+    what alternative text, and whether it is the primary one.
+
+    `image_url` holds the image's ADDRESS (`/api/storefront/images/<id>`), like
+    every other slot of the storefront. That is deliberate: the sweep counts
+    references by looking for the identifier in every address field of the
+    platform, so a gallery image is "in use" without that code knowing this
+    model exists.
+
+    `company` is explicit and always equal to `product.company`. It is what
+    lets a gallery be listed and guarded by tenant without a join.
+    """
+
+    company = models.ForeignKey(
+        'store.Company', on_delete=models.CASCADE, related_name='product_images',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='images',
+    )
+    image_url = models.CharField(max_length=255, validators=[validate_asset_url])
+    #: For people who do not see the picture. Empty means "the product name".
+    alt_text = models.CharField(max_length=160, blank=True, default='')
+    #: Copied from the stored image when it is placed. The image never changes
+    #: under its address, so neither do these; having them here lets a product
+    #: list reserve the space without one lookup per picture.
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+    #: Of the file as it was UPLOADED, before re-encoding. Only to recognise
+    #: the same picture arriving again for the SAME product (a bulk import run
+    #: twice). Never compared across products or companies.
+    source_sha256 = models.CharField(max_length=64, blank=True, default='')
+    sort_order = models.PositiveIntegerField(default=0)
+    is_primary = models.BooleanField(default=False)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='uploaded_product_images',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'product'])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['product'], condition=models.Q(is_primary=True),
+                name='one_primary_image_per_product',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.product_id}:{self.sort_order}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.product_id and self.company_id and self.product.company_id != self.company_id:
+            raise ValidationError(
+                {'product': 'La imagen y el producto son de empresas distintas.'}
             )
 
     def save(self, *args, **kwargs):
@@ -6496,8 +6579,15 @@ class RepairEvidence(models.Model):
         REPAIR_BEFORE = 'repair_before', 'Antes de reparar'
         REPAIR_DURING = 'repair_during', 'Durante la reparación'
         REPAIR_AFTER = 'repair_after', 'Después de reparar'
+        #: El repuesto: la pieza retirada, la instalada, su serie o lote.
+        PARTS = 'parts', 'Repuestos'
         QUALITY = 'quality', 'Control de calidad'
+        #: El estado final del equipo, antes de que el cliente llegue.
+        READY = 'ready', 'Listo para entrega'
         DELIVERY = 'delivery', 'Entrega'
+        #: Un equipo que vuelve: cómo llegó en el reingreso y qué se reclamó.
+        #: Son fotos NUEVAS; las del servicio original no se tocan.
+        WARRANTY = 'warranty', 'Garantía / reingreso'
         OTHER = 'other', 'Otra'
 
     class Visibility(models.TextChoices):
@@ -6515,6 +6605,11 @@ class RepairEvidence(models.Model):
     )
 
     stage = models.CharField(max_length=20, choices=Stage.choices, db_index=True)
+    #: Lo que la foto muestra, dicho por quien la tomó: «golpe en la esquina
+    #: inferior derecha al recibirlo». Es contexto de la evidencia, no el
+    #: diagnóstico. Se puede corregir —queda registrado el texto anterior—; la
+    #: foto no.
+    caption = models.CharField(max_length=300, blank=True, default='')
     #: SIEMPRE interna al nacer. Que una foto llegue al cliente es una decisión
     #: que alguien toma, no un efecto secundario de subirla.
     visibility = models.CharField(

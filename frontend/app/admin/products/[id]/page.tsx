@@ -8,6 +8,7 @@ import type { InternalAccess } from "../../lib/internal-access";
 import { AdminShell } from "../../components/AdminShell";
 import { PageHeader } from "../../components/internal-ui";
 import { ProductForm } from "../../components/ProductForm";
+import { ProductGallery } from "../../components/ProductGallery";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
 import { ProductStatusBadge } from "../../components/ProductStatusBadge";
 import {
@@ -127,6 +128,27 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
             />
           </section>
         ) : null}
+
+        <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+          <h2 className="text-sm font-semibold text-foreground">Imágenes</h2>
+          <p className="mt-1 mb-4 text-xs text-muted">
+            {canManage
+              ? "La principal es la que muestra la tienda en el catálogo. Cada cambio se guarda al hacerlo."
+              : "La principal es la que muestra la tienda en el catálogo."}
+          </p>
+          <ProductGallery
+            productId={product.id}
+            productName={product.name}
+            images={product.images ?? []}
+            readOnly={!canManage}
+            onChange={(images) => setProduct((prev) => prev ? {
+              ...prev,
+              images,
+              // Con galería, la dirección del producto es la de su principal.
+              image_url: images.find((image) => image.is_primary)?.url ?? (images.length ? prev.image_url : ""),
+            } : prev)}
+          />
+        </section>
 
         {canManage ? (
           <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">

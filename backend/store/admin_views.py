@@ -35,7 +35,7 @@ from .permissions import (
 from .serializers import (
     AdminCategoryUpdateSerializer, AdminCategoryWriteSerializer, AdminInventoryAdjustSerializer,
     AdminOrderDetailSerializer, AdminOrderFulfillmentSerializer, AdminOrderListSerializer,
-    AdminProductSerializer, AdminProductWriteSerializer,
+    AdminProductDetailSerializer, AdminProductSerializer, AdminProductWriteSerializer,
     CategorySerializer,
 )
 from .throttles import (
@@ -609,14 +609,21 @@ class AdminProductDetailView(APIView):
         product = get_object_or_404(
             Product.objects.select_related('category').filter(company=company), pk=pk,
         )
-        return Response(AdminProductSerializer(product).data)
+        return Response(AdminProductDetailSerializer(product).data)
 
+    @transaction.atomic
     def patch(self, request, pk):
         company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
         if error:
             return error
+        # LOCKED, and that is not optional. The serializer writes the WHOLE row,
+        # so a save that started before a gallery change finished would put the
+        # old `image_url` back: the gallery would have a primary picture and the
+        # catalogue none. The gallery locks this same row for every change, so
+        # one waits for the other and each sees what the other left.
         product = get_object_or_404(
-            Product.objects.select_related('category').filter(company=company), pk=pk,
+            Product.objects.select_for_update(of=('self',))
+            .select_related('category').filter(company=company), pk=pk,
         )
 
         # PHASE 2D — STOCK IS NOT AN EDITABLE PRODUCT FIELD.
@@ -675,7 +682,7 @@ class AdminProductDetailView(APIView):
                 company=company,
             )
 
-        return Response(AdminProductSerializer(product).data)
+        return Response(AdminProductDetailSerializer(product).data)
 
 
 class AdminProductInventoryAdjustView(APIView):

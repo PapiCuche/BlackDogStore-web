@@ -111,7 +111,7 @@ class V1StorefrontProductViewSet(V1PublicStorefrontMixin, viewsets.ReadOnlyModel
         queryset = (
             company_storefront_products(self.get_storefront_company())
             .select_related('category')
-            .prefetch_related('reviews')
+            .prefetch_related('reviews', 'images')
         )
 
         params = self.request.query_params

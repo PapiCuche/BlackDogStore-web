@@ -84,7 +84,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = (
             storefront_products(self.request)
             .select_related('category', 'company')
-            .prefetch_related('reviews')
+            .prefetch_related('reviews', 'images')
         )
         slug = self.request.query_params.get('slug')
         category = self.request.query_params.get('category')
@@ -183,7 +183,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         would now expose every tenant's orders to any staff user.
         """
         return storefront_orders(self.request, self.request.user).prefetch_related(
-            'items__product',
+            'items__product', 'items__product__images',
         )
 
 
@@ -666,7 +666,12 @@ class CartViewSet(
         tenants at once; each storefront sees only its own.
         """
         session_key = self.request.query_params.get('session_key')
-        return storefront_cart_items(self.request, session_key).select_related('product')
+        return (
+            storefront_cart_items(self.request, session_key)
+            .select_related('product')
+            # El producto anidado lleva su galería: una consulta, no una por línea.
+            .prefetch_related('product__images')
+        )
 
     def get_serializer_context(self):
         """

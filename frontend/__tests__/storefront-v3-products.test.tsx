@@ -85,6 +85,60 @@ describe('ficha de producto', () => {
   });
 });
 
+describe('ficha de producto · galería', () => {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const ProductDetail = require('@/app/components/ProductDetail').default;
+  const A = '/api/storefront/images/' + 'a'.repeat(32);
+  const B = '/api/storefront/images/' + 'b'.repeat(32);
+
+  beforeEach(() => {
+    global.fetch = jest.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })) as unknown as typeof fetch;
+  });
+
+  async function show(images: unknown[]) {
+    await act(async () => {
+      render(<ProductDetail product={{ ...product(7), image_url: A, images }} />);
+    });
+  }
+
+  it('con varias imágenes muestra la principal y deja elegir las demás', async () => {
+    await show([
+      { url: A, alt_text: 'Vista frontal', is_primary: true, width: 120, height: 80 },
+      { url: B, alt_text: '', is_primary: false, width: 120, height: 80 },
+    ]);
+
+    const main = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
+    expect(main.getAttribute('src')).toBe(A);
+    expect(main).toHaveAttribute('alt', 'Vista frontal');
+
+    const thumbs = within(screen.getByRole('group', { name: 'Imágenes del producto' })).getAllByRole('button');
+    expect(thumbs).toHaveLength(2);
+    expect(thumbs[0]).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(thumbs[1]);
+
+    const swapped = screen.getByTestId('product-main-image').querySelector('img') as HTMLImageElement;
+    expect(swapped.getAttribute('src')).toBe(B);
+    // Sin texto alternativo, la imagen se describe con el nombre del producto.
+    expect(swapped).toHaveAttribute('alt', 'Producto 7');
+    expect(thumbs[1]).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('con una sola imagen no hay miniaturas', async () => {
+    await show([{ url: A, alt_text: '', is_primary: true, width: 120, height: 80 }]);
+    expect(screen.queryByRole('group', { name: 'Imágenes del producto' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('product-main-image').querySelector('img')).not.toBeNull();
+  });
+
+  it('un producto sin galería sigue mostrando su dirección de siempre', async () => {
+    await act(async () => {
+      render(<ProductDetail product={{ ...product(7), image_url: 'http://localhost/foto.png' }} />);
+    });
+    expect(screen.getByRole('img', { name: 'Producto 7' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Imágenes del producto' })).not.toBeInTheDocument();
+  });
+});
+
 describe('carrusel de productos', () => {
   const track = () => screen.getByRole('group', { name: /Lista de productos/ });
 

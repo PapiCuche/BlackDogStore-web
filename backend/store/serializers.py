@@ -13,6 +13,7 @@ from .models import (
     Customer, normalize_customer_phone, normalize_document_number,
     StockTransfer, StockTransferItem,
     CompanySettings, InternalSequence,
+ validate_asset_url,
 )
 
 
@@ -98,6 +99,7 @@ class ReviewSerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
+    images = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
     inventory = serializers.SerializerMethodField()
@@ -106,8 +108,14 @@ class ProductSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price',
-            'inventory', 'category', 'image_url', 'average_rating', 'review_count',
+            'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
         ]
+
+    def get_images(self, obj):
+        # `image_url` sigue siendo la principal; esto es la galería completa.
+        # `.all()` usa el prefetch de las vistas de catálogo.
+        from .product_media import public_payload
+        return [public_payload(image) for image in obj.images.all()]
 
     def get_inventory(self, obj):
         """
@@ -333,6 +341,18 @@ class AdminProductSerializer(serializers.ModelSerializer):
         ]
 
 
+class AdminProductDetailSerializer(AdminProductSerializer):
+    """El producto con su galería. Sólo en el detalle: una lista no la necesita."""
+    images = serializers.SerializerMethodField()
+
+    class Meta(AdminProductSerializer.Meta):
+        fields = AdminProductSerializer.Meta.fields + ['images']
+
+    def get_images(self, obj):
+        from .product_media import gallery, payload
+        return [payload(image) for image in gallery(obj)]
+
+
 class AdminProductWriteSerializer(serializers.ModelSerializer):
     """
     Write serializer for product create/update.
@@ -348,7 +368,10 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
     """
 
     slug = serializers.SlugField(required=False, allow_blank=True, max_length=50)
-    image_url = serializers.URLField(required=False, allow_blank=True, max_length=500, default='')
+    image_url = serializers.CharField(
+        required=False, allow_blank=True, max_length=500, default='',
+        validators=[validate_asset_url],
+    )
     description = serializers.CharField(required=False, allow_blank=True, default='')
     category = serializers.PrimaryKeyRelatedField(
         queryset=Category.objects.all(), required=False, allow_null=True, default=None
@@ -376,6 +399,31 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
     def validate_price(self, value):
         if value <= Decimal('0'):
             raise serializers.ValidationError('El precio debe ser mayor que 0.')
+        return value
+
+    def validate_image_url(self, value):
+        """
+        Lo que se puede ESCRIBIR A MANO en la dirección de la imagen.
+
+        Una URL http(s) o una ruta del sitio, para un producto sin galería. Una
+        imagen subida no se coloca escribiendo su dirección: se coloca desde la
+        galería, que comprueba de quién es y lleva la cuenta de quién la usa.
+        Y con galería, la dirección es la de la principal y no se toca aquí.
+        """
+        from .storefront_media import managed_public_id
+
+        value = (value or '').strip()
+        current = self.instance.image_url if self.instance is not None else ''
+        if value == current:
+            return value
+        if managed_public_id(value):
+            raise serializers.ValidationError(
+                'Una imagen subida se coloca desde la galería del producto.'
+            )
+        if self.instance is not None and self.instance.images.exists():
+            raise serializers.ValidationError(
+                'La imagen principal se elige en la galería del producto.'
+            )
         return value
 
     def validate_inventory(self, value):

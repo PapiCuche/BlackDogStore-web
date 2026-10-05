@@ -19,6 +19,8 @@ type Product = {
   price: number | string;
   inventory: number;
   image_url?: string;
+  /** La galería que la tienda subió. `image_url` es su principal. */
+  images?: { url: string; alt_text: string; is_primary: boolean; width: number; height: number }[];
   average_rating?: number | null;
   review_count?: number;
   category?: Category;
@@ -69,6 +71,14 @@ function StarPicker({ rating, onChange, labelledBy }: { rating: number; onChange
 
 export default function ProductDetail({ product }: { product: Product }) {
   const [quantity, setQuantity] = useState(1);
+  // La galería que la tienda subió; sin ella, la dirección de siempre.
+  const gallery = product.images?.length
+    ? product.images
+    : product.image_url
+      ? [{ url: product.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
+      : [];
+  const [selected, setSelected] = useState(() => Math.max(0, gallery.findIndex((image) => image.is_primary)));
+  const shown = gallery[selected] ?? gallery[0] ?? null;
   const [status, setStatus] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(false);
@@ -189,12 +199,14 @@ export default function ProductDetail({ product }: { product: Product }) {
         </nav>
 
         <div className="grid gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
+          <div className="min-w-0">
           <div className="relative overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface">
-            {product.image_url ? (
-              <div className="relative aspect-[4/3] min-h-80 lg:min-h-[520px]">
+            {shown ? (
+              <div data-testid="product-main-image" className="relative aspect-[4/3] min-h-80 lg:min-h-[520px]">
                 <ProductImage
-                  src={product.image_url}
-                  alt={product.name}
+                  key={shown.url}
+                  src={shown.url}
+                  alt={shown.alt_text || product.name}
                   className="object-contain p-6 sm:p-10"
                   sizes="(max-width: 1024px) 100vw, 58vw"
                   priority
@@ -207,6 +219,25 @@ export default function ProductDetail({ product }: { product: Product }) {
                 </div>
               </div>
             )}
+          </div>
+          {gallery.length > 1 ? (
+            <div role="group" aria-label="Imágenes del producto" className="mt-3 flex gap-2 overflow-x-auto pb-1">
+              {gallery.map((image, index) => (
+                <button
+                  key={image.url}
+                  type="button"
+                  aria-label={`Ver imagen ${index + 1} de ${gallery.length}`}
+                  aria-pressed={index === selected}
+                  onClick={() => setSelected(index)}
+                  className={`relative h-20 w-20 shrink-0 overflow-hidden rounded-xl border bg-surface transition-colors ${
+                    index === selected ? "border-foreground" : "border-bd-border hover:border-foreground/40"
+                  }`}
+                >
+                  <ProductImage src={image.url} alt="" sizes="80px" className="object-contain p-1.5" />
+                </button>
+              ))}
+            </div>
+          ) : null}
           </div>
 
           <div className="flex flex-col">

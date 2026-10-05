@@ -35,6 +35,7 @@ from rest_framework.views import APIView
 from . import (
     import_exports,
     import_formats,
+    import_media,
     import_services,
     stock_import_services,
     xlsx_reader,
@@ -47,6 +48,7 @@ from .models import (
     ImportMappingProfile,
 )
 from .pos_views import _NOT_FOUND, _context
+from .throttles import AdminImportThrottle
 from .tenancy import (
     CrossTenantError,
     NoTenantError,
@@ -174,6 +176,7 @@ class AdminImportInspectView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -256,6 +259,7 @@ class AdminImportInspectView(APIView):
 
 class AdminProductImportPreviewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -269,14 +273,30 @@ class AdminProductImportPreviewView(APIView):
         mapping = _json_field(request.data.get('mapping'))
         options = _json_field(request.data.get('options')) or {}
         header_row = _int_or_none(request.data.get('header_row'))
+        # BULK-MEDIA — the pictures travel WITH the workbook: several `images`
+        # parts, an `images_zip`, or both. Their envelope is checked before the
+        # workbook is read, so an archive that should not have arrived leaves
+        # no job behind.
+        try:
+            images = import_media.collect(
+                request.FILES.getlist('images'), request.FILES.get('images_zip'),
+            )
+        except import_media.ImportMediaError as exc:
+            return _error(
+                exc, status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if exc.too_large
+                else status.HTTP_400_BAD_REQUEST,
+            )
         try:
             job = import_services.preview_products(
                 company=company, actor=request.user, upload=upload,
                 filename=upload.name,
                 sheet_name=request.data.get('sheet_name') or None,
                 header_row=header_row, mapping=mapping, options=options,
+                images=images,
             )
         except (xlsx_reader.XlsxError, import_services.ImportError_) as exc:
+            return _error(exc)
+        except import_media.ImportMediaError as exc:
             return _error(exc)
 
         _remember_profile(company, request.user, job, BulkImportJob.PRODUCTS)
@@ -285,6 +305,7 @@ class AdminProductImportPreviewView(APIView):
 
 class AdminProductImportApplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
 
     def post(self, request, pk):
         company, error = _context(request, CAP_PRODUCTS)
@@ -310,6 +331,7 @@ class AdminProductImportApplyView(APIView):
                     'rows_total': job.rows_total, 'rows_create': job.rows_create,
                     'rows_update': job.rows_update,
                     'file_sha256': job.file_sha256,
+                    'images_added': (job.summary or {}).get('applied', {}).get('images_added', 0),
                 },
                 request=request, company=company,
             )
@@ -322,6 +344,7 @@ class AdminProductImportApplyView(APIView):
 
 class AdminStockImportPreviewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -355,6 +378,7 @@ class AdminStockImportPreviewView(APIView):
 
 class AdminStockImportApplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
 
     def post(self, request, pk):
         company, error = _context(request, CAP_STOCK)
