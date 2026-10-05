@@ -61,7 +61,26 @@ Ejemplo de filas:
 | CAB-USBC-1M | Cable USB-C 1 m | 49.90 | Accesorios | | cable-usbc.webp |
 
 - La plantilla descargable ya trae las dos columnas y se reconoce sola al
-  subirla. Su fila de ayuda (la segunda) no se importa.
+  subirla.
+
+**La plantilla (`plantilla-productos.xlsx`) tiene tres hojas, y sólo la primera es
+datos:**
+
+| Hoja | Para qué | ¿Se importa? |
+|---|---|---|
+| `Productos` | Las columnas reales. Fila 2: ayuda por columna. Fila 3: un ejemplo en gris | Sólo las filas que escribas tú |
+| `Instrucciones` | Diez puntos: las imágenes no se pegan en Excel, Excel guarda nombres, cómo separar varias, qué se adjunta después, formatos y límites | No |
+| `Ejemplo` | Tres productos llenos y la lista de archivos que habría que adjuntar | No |
+
+- Subir la plantilla tal cual se descarga no crea nada: la fila de ayuda y la de
+  ejemplo se saltan (lo dice la previsualización), y las hojas `Instrucciones` y
+  `Ejemplo` aparecen marcadas como hojas de ayuda y no se pueden elegir.
+- Sólo se salta la fila de ejemplo EXACTA (mismo nombre y mismo código). Una tienda
+  que vende ese producto con su propio código lo importa con normalidad.
+- Los formatos y los límites que dice la hoja `Instrucciones` se escriben, al
+  descargarla, con los valores que aplica el servidor.
+- En la pantalla, «¿Cómo preparo las imágenes?» muestra lo mismo en corto, antes de
+  elegir el archivo y otra vez al adjuntar las imágenes.
 - Un Excel sin estas columnas se importa exactamente como antes.
 - La columna `URL de imagen` sigue existiendo para imágenes alojadas fuera. Si
   una fila trae archivos y además una URL, se usan los archivos.

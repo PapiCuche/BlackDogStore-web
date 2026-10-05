@@ -197,6 +197,11 @@ class AdminImportInspectView(APIView):
 
         sheets = []
         for name in workbook.sheetnames:
+            # The template's own «Instrucciones» / «Ejemplo»: listed, so the
+            # screen can say what they are, and never offered as data.
+            is_help = (
+                import_type == BulkImportJob.PRODUCTS and import_exports.is_help_sheet(name)
+            )
             for header_row in (1, 2):
                 # SAMPLE, deliberately: this endpoint answers "what does this
                 # file look like", so stopping after a handful of rows is the
@@ -208,11 +213,12 @@ class AdminImportInspectView(APIView):
                     workbook, name, header_row=header_row,
                     limit=xlsx_reader.SAMPLE_ROWS, mode=xlsx_reader.SAMPLE,
                 )
-                detected = import_formats.detect(import_type, name, headers)
-                if detected:
+                detected = None if is_help else import_formats.detect(import_type, name, headers)
+                if detected or is_help:
                     break
             sheets.append({
                 'name': name,
+                'help': is_help,
                 'header_row': (detected or {}).get('header_row', 1),
                 'headers': [str(h) for h in headers],
                 'sample_rows': len(rows),
@@ -250,6 +256,10 @@ class AdminImportInspectView(APIView):
                 {'id': b.pk, 'name': b.name}
                 for b in visible_branches(request.user, company)
             ],
+            # How images travel, from the limits this server applies.
+            'image_rules': (
+                import_exports.image_rules() if import_type == BulkImportJob.PRODUCTS else None
+            ),
         })
 
 

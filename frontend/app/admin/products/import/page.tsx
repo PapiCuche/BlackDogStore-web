@@ -30,7 +30,9 @@ import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../
 import {
   CountsBar,
   HistoryTable,
+  ImageHelp,
   ImportImagesField,
+  SheetPicker,
   MediaSummary,
   Notices,
   PreviewTable,
@@ -102,8 +104,9 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       const result = await inspectImportFile(companyId, selected, "products");
       setFile(selected);
       setInspection(result);
-      const preferred =
-        result.sheets.find((entry) => entry.detected) ?? result.sheets[0];
+      // Never a help sheet of the template («Instrucciones», «Ejemplo»).
+      const candidates = result.sheets.filter((entry) => !entry.help);
+      const preferred = candidates.find((entry) => entry.detected) ?? candidates[0];
       setSheet(preferred ?? null);
       setMapping(preferred?.profile?.mapping ?? preferred?.mapping ?? {});
       setHeaderRow(preferred?.header_row ?? 1);
@@ -188,6 +191,11 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
             <a className={GHOST} href={productTemplateUrl(companyId)}>
               Descargar plantilla
             </a>
+            <p className="text-xs text-muted">
+              La plantilla trae una hoja de instrucciones y un ejemplo completo. Las imágenes no van
+              dentro del Excel: se adjuntan en el paso 3.
+            </p>
+            <ImageHelp rules={null} />
           </div>
         </DashboardSection>
       )}
@@ -198,41 +206,15 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
           description="Un libro puede traer hojas de catálogo (unidades, marcas) que no son productos."
         >
           <div className="space-y-2">
-            {inspection.sheets.map((entry) => (
-              <button
-                key={entry.name}
-                type="button"
-                onClick={() => {
-                  setSheet(entry);
-                  setMapping(entry.profile?.mapping ?? entry.mapping ?? {});
-                  setHeaderRow(entry.header_row);
-                }}
-                className={
-                  "w-full rounded-xl border px-4 py-3 text-left transition " +
-                  (sheet?.name === entry.name
-                    ? "border-foreground/30 bg-foreground/[0.06]"
-                    : "border-bd-border hover:bg-foreground/[0.03]")
-                }
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-foreground">{entry.name}</span>
-                  {entry.detected && (
-                    <span className="rounded-full bg-success-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
-                      Formato reconocido
-                    </span>
-                  )}
-                  {entry.profile && (
-                    <span className="rounded-full bg-info-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-info">
-                      Mapeo recordado
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted">
-                  {entry.detected || "Sin formato conocido"} · encabezados en la fila{" "}
-                  {entry.header_row} · {entry.headers.length} columna(s)
-                </p>
-              </button>
-            ))}
+            <SheetPicker
+              sheets={inspection.sheets}
+              selected={sheet}
+              onChoose={(entry) => {
+                setSheet(entry);
+                setMapping(entry.profile?.mapping ?? entry.mapping ?? {});
+                setHeaderRow(entry.header_row);
+              }}
+            />
             <div className="flex gap-2 pt-2">
               <button className={GHOST} type="button" onClick={reset}>
                 Cambiar archivo
@@ -321,6 +303,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                 Una celda vacía nunca borra lo que ya está guardado.
               </p>
             </div>
+
+            <ImageHelp rules={inspection.image_rules ?? null} />
 
             <ImportImagesField
               images={images}

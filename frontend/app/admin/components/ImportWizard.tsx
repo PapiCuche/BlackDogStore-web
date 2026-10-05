@@ -16,7 +16,7 @@
  */
 
 import { useState } from "react";
-import type { ImportJob, ImportRow } from "../lib/internal-api";
+import type { ImageRules, ImportJob, ImportRow, InspectedSheet } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
@@ -311,6 +311,127 @@ function megabytes(bytes: number) {
  * servidor quien los casa con las filas por su nombre. Aquí sólo se descarta lo
  * que por su nombre no es una imagen, para no enviar lo que se va a ignorar.
  */
+/**
+ * «¿Cómo preparo las imágenes?» — the question everybody has, answered before
+ * anything is attached.
+ *
+ * The mechanism is always the same (names in the sheet, files attached after);
+ * the LIMITS are the server's and are shown only when it has reported them.
+ */
+export function ImageHelp({ rules, defaultOpen = false }: { rules: ImageRules | null; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const separator = rules?.separator ?? "|";
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="import-image-help"
+        onClick={() => setOpen(!open)}
+        className="text-sm font-semibold text-foreground underline underline-offset-4"
+      >
+        ¿Cómo preparo las imágenes?
+      </button>
+      {open ? (
+        <section
+          id="import-image-help"
+          aria-label="Cómo preparar las imágenes"
+          className="mt-3 space-y-3 rounded-xl border border-bd-border bg-surface px-4 py-4 text-sm text-foreground"
+        >
+          <ol className="list-decimal space-y-1.5 pl-5">
+            <li>Las imágenes <strong>no se pegan dentro de Excel</strong>.</li>
+            <li>En el Excel se escriben <strong>sólo los nombres</strong> de los archivos, con su extensión.</li>
+            <li>La columna «Imagen principal» lleva un nombre: la foto que verá el catálogo.</li>
+            <li>La columna «Imágenes» lleva varios, <strong>separados por {separator}</strong>, en el orden en que deben verse.</li>
+            <li>Después de elegir el Excel se adjuntan los archivos de imagen: sueltos, o todos dentro de un ZIP.</li>
+            <li>Los nombres escritos y los de los archivos <strong>deben coincidir</strong>; no importan las mayúsculas.</li>
+          </ol>
+          <table className="w-full table-fixed border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-bd-border text-muted">
+                <th className="w-2/5 py-1.5 pr-3 font-semibold">Imagen principal</th>
+                <th className="py-1.5 font-semibold">Imágenes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="py-1.5 pr-3 font-mono [overflow-wrap:anywhere]">iphone16-front.webp</td>
+                <td className="py-1.5 font-mono [overflow-wrap:anywhere]">
+                  {["iphone16-front.webp", "iphone16-back.webp", "iphone16-side.webp"].join(separator)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="text-xs text-muted">
+            Con esa fila se adjuntarían tres archivos: iphone16-front.webp, iphone16-back.webp e
+            iphone16-side.webp. La plantilla trae estas instrucciones y un ejemplo completo en sus
+            hojas «Instrucciones» y «Ejemplo».
+          </p>
+          {rules ? (
+            <ul className="space-y-1 text-xs text-muted">
+              <li>Formatos: {rules.formats.join(", ")}.</li>
+              <li>Hasta {rules.max_per_product} imágenes por producto.</li>
+              <li>Hasta {rules.max_file_mb} MB por imagen.</li>
+              <li>En una carga, hasta {rules.max_files} archivos y {rules.max_total_mb} MB en total.</li>
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The sheets of the uploaded workbook. The template's own help sheets are
+ * listed — so nobody wonders where they went — and cannot be chosen: an
+ * example must not become catalogue because somebody picked the wrong tab.
+ */
+export function SheetPicker({
+  sheets, selected, onChoose,
+}: {
+  sheets: InspectedSheet[];
+  selected: InspectedSheet | null;
+  onChoose: (sheet: InspectedSheet) => void;
+}) {
+  return (
+    <>
+      {sheets.map((entry) => (
+        <button
+          key={entry.name}
+          type="button"
+          disabled={Boolean(entry.help)}
+          onClick={() => onChoose(entry)}
+          className={
+            "w-full rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 " +
+            (selected?.name === entry.name
+              ? "border-foreground/30 bg-foreground/[0.06]"
+              : "border-bd-border enabled:hover:bg-foreground/[0.03]")
+          }
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-foreground">{entry.name}</span>
+            {entry.detected && (
+              <span className="rounded-full bg-success-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
+                Formato reconocido
+              </span>
+            )}
+            {entry.profile && (
+              <span className="rounded-full bg-info-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-info">
+                Mapeo recordado
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted">
+            {entry.help
+              ? "Hoja de ayuda de la plantilla · no se importa"
+              : <>{entry.detected || "Sin formato conocido"} · encabezados en la fila{" "}{entry.header_row} · {entry.headers.length} columna(s)</>}
+          </p>
+        </button>
+      ))}
+    </>
+  );
+}
+
 export function ImportImagesField({
   images, zip, onChange, disabled = false,
 }: {
