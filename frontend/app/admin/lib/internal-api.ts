@@ -128,6 +128,12 @@ export type InventorySnapshot = {
   value_basis: "sale_price";
   transfers_in_transit: number;
   pending_counts: number;
+  /**
+   * Devices tracked by serial that can be sold now. A SUBSET of `total_units`,
+   * never more stock on top of it.
+   */
+  equipment_available: number;
+  equipment_reserved: number;
   stock_by_branch: SeriesPoint[];
   low_stock_by_branch: SeriesPoint[];
 };

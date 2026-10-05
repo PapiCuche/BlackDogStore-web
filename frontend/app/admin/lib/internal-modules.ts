@@ -302,7 +302,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.reports"],
     status: "implemented",
   },
-  { id: "inventory.serial", group: "inventory", label: "Serial / IMEI", description: "Trazabilidad por unidad.", status: "pending" },
+  {
+    id: "inventory.serial",
+    group: "inventory",
+    label: "Equipos",
+    description: "Equipos con número de serie e IMEI, como parte del stock.",
+    href: "/admin/inventory/units",
+    // Ver exige `inventory.view`; registrar o dar de baja, `inventory.adjust`.
+    // El servidor comprueba las dos en cada operación.
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
 
   // ── Servicio Técnico ─────────────────────────────────────────────────────
   // SVC-NAV-01. Each stage has its own route. They all used to point at
