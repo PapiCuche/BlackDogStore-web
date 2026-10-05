@@ -44,10 +44,77 @@
 		# hace el proxy de Next: añadirla antes de reenviar.
 		@noslash not path */
 		rewrite @noslash {path}/
-		reverse_proxy backend:8000
+
+		# TAMAÑO MÁXIMO DEL CUERPO, POR RUTA (BODY-LIMIT).
+		#
+		# Ninguna petición cruza sin tope. Cada ruta que recibe archivos admite
+		# lo que su pantalla acepta más el sobre del formulario; el resto, 1 MiB.
+		# Lo que exceda se corta aquí con 413 y no llega entero a Django.
+		#
+		# ESTA TABLA ES LA DE `backend/store/request_limits.py`, escrita dos
+		# veces porque este archivo no puede leer Python. La prueba
+		# `store.test_request_limits` falla si dejan de coincidir: quien suba un
+		# límite en un sitio tiene que subirlo en el otro.
+		@limit_payment_notification path_regexp ^/api/payments/(izipay|micuentaweb)/notification/?$
+		handle @limit_payment_notification {
+			request_body {
+				max_size 128KiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_whatsapp_webhook path_regexp ^/api/v1/webhooks/whatsapp/[^/]+/?$
+		handle @limit_whatsapp_webhook {
+			request_body {
+				max_size 3MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_image path_regexp ^/api/admin/(storefront/images|products/[0-9]+/images)/?$
+		handle @limit_image {
+			request_body {
+				max_size 9MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_evidence path_regexp ^/api/v1/internal/[^/]+/service/orders/[0-9]+/evidence/?$
+		handle @limit_evidence {
+			request_body {
+				max_size 26MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview)/?$
+		handle @limit_workbook {
+			request_body {
+				max_size 11MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_product_import path_regexp ^/api/admin/products/import/preview/?$
+		handle @limit_product_import {
+			request_body {
+				max_size 111MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		handle {
+			request_body {
+				max_size 1MiB
+			}
+			reverse_proxy backend:8000
+		}
 	}
 
 	handle {
+		request_body {
+			max_size 1MiB
+		}
 		reverse_proxy frontend:3000
 	}
 }

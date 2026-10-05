@@ -176,6 +176,10 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    # BODY-LIMIT. Antes que nada que pueda leer el cuerpo: rechaza por la
+    # longitud declarada. La tabla vive en store/request_limits.py y el proxy
+    # (deploy/Caddyfile) repite los mismos números.
+    'store.request_limits.RequestBodyLimitMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -305,6 +309,10 @@ IMPORT_IMAGES_ZIP_MAX_RATIO = env.int('IMPORT_IMAGES_ZIP_MAX_RATIO', default=200
 # la misma petición: el tope de Django tiene que quedar por encima del nuestro,
 # que es el que sabe explicarse.
 DATA_UPLOAD_MAX_NUMBER_FILES = IMPORT_IMAGES_MAX_FILES + 20
+# Lo que Django acepta tener en memoria de un cuerpo que no es un archivo. El
+# tope por ruta lo pone store/request_limits.py; éste sólo no debe quedar por
+# debajo del mayor cuerpo sin archivos que se lee entero: el webhook de WhatsApp.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 3 * 1024 * 1024
 
 SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
     'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024
