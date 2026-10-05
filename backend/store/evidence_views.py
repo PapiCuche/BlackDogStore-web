@@ -29,7 +29,7 @@ from . import evidence_services as svc
 from . import evidence_storage as storage
 from . import service_services
 from .models import RepairEvidence
-from .throttles import AdminOrderStatusChangeThrottle
+from .throttles import ServiceEvidenceReadThrottle, ServiceEvidenceWriteThrottle
 from .v1_customer_views import V1CustomerSurfaceMixin
 from .v1_service_views import V1ServiceSurfaceMixin
 
@@ -104,7 +104,13 @@ def _serve(evidence):
 
 
 class _InternalEvidenceMixin(V1ServiceSurfaceMixin):
-    throttle_classes = [AdminOrderStatusChangeThrottle]
+    def get_throttles(self):
+        # Leer y escribir no comparten cupo: abrir una galería son tantas
+        # peticiones como fotos tiene, y eso no puede gastar el de subir.
+        method = getattr(getattr(self, 'request', None), 'method', 'GET')
+        if method in ('GET', 'HEAD', 'OPTIONS'):
+            return [ServiceEvidenceReadThrottle()]
+        return [ServiceEvidenceWriteThrottle()]
 
     def scope(self, company_slug, pk):
         """Empresa, orden y sucursal, resueltas por el camino que ya existía."""

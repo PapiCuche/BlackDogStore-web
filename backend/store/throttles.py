@@ -172,6 +172,22 @@ class AdminOrderStatusChangeThrottle(UserRateThrottle):
     scope = 'admin_order_status_change'
 
 
+class ServiceEvidenceReadThrottle(UserRateThrottle):
+    """
+    Mirar la galería de una orden: la lista y cada imagen.
+
+    Cupo propio y amplio. Cada miniatura es una petición, así que una galería
+    de cuarenta fotos son cuarenta y una al abrirse; compartir cupo con los
+    cambios de estado dejaba al técnico sin poder subir tras recargar.
+    """
+    scope = 'service_evidence_read'
+
+
+class ServiceEvidenceWriteThrottle(UserRateThrottle):
+    """Subir, anotar, compartir, ocultar o anular una evidencia."""
+    scope = 'service_evidence_write'
+
+
 class AdminOrderEmailResendThrottle(UserRateThrottle):
     """10/min per authenticated user — prevents email spam from admin panel."""
     scope = 'admin_order_email_resend'

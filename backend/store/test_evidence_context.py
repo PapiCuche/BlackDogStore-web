@@ -235,3 +235,85 @@ class EvidenceCustomerNoteTest(EvidenceContextBase):
     def test_hiding_takes_the_note_away_with_the_photo(self):
         svc.hide_from_customer(evidence=self.shared, actor=self.staff)
         self.assertEqual(self.cclient.get(self._curl()).json()['results'], [])
+
+
+class EvidenceBranchScopeTest(EvidenceContextBase):
+    """
+    DÓNDE, además de QUÉ. Tener la capacidad de una etapa no da acceso a la
+    orden de una sucursal a la que la persona no pertenece: ni a su galería, ni
+    a una foto suya, ni a subirle o corregirle nada.
+
+    Esto ya lo garantizaba el camino por el que se resuelve la orden; se fija
+    aquí para que una galería que algún día se resuelva de otra forma no lo
+    pierda sin que una prueba lo diga.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.evidence = self.upload(caption='De la otra sucursal')
+        self.order.branch = self.branch_b
+        self.order.save(update_fields=['branch'])
+        self.client = self.restrict_to_branch_a()
+
+    def test_the_gallery_of_another_branch_is_not_found(self):
+        self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_a_photo_of_another_branch_is_not_served(self):
+        for tail in (f'{self.evidence.pk}/', f'{self.evidence.pk}/content/'):
+            with self.subTest(tail):
+                self.assertEqual(self.client.get(self._url(tail)).status_code, 404)
+
+    def test_nothing_can_be_added_or_changed_in_another_branch(self):
+        self.assertEqual(self._post(content=_photo(800, 600)).status_code, 404)
+        self.assertEqual(
+            self.client.patch(self._url(f'{self.evidence.pk}/'), {'caption': 'x'}, format='json').status_code,
+            404,
+        )
+        for action in ('publish-to-customer', 'hide-from-customer', 'void'):
+            with self.subTest(action):
+                res = self.client.post(
+                    self._url(f'{self.evidence.pk}/{action}/'), {'reason': 'x'}, format='json',
+                )
+                self.assertEqual(res.status_code, 404)
+        self.evidence.refresh_from_db()
+        self.assertEqual(self.evidence.caption, 'De la otra sucursal')
+        self.assertEqual(self.evidence.visibility, 'internal')
+        self.assertIsNone(self.evidence.voided_at)
+        self.assertEqual(RepairEvidence.objects.filter(repair_order=self.order).count(), 1)
+
+
+class EvidenceThrottleTest(EvidenceContextBase):
+    """
+    EVIDENCE-THROTTLE. Mirar una galería no es cambiar el estado de una orden.
+
+    Toda la superficie de evidencias —la lista, cada miniatura, cada subida—
+    compartía el cupo de «cambios de estado de pedido»: 60 por minuto y por
+    persona. Una galería de veinte fotos gastaba veintiuna peticiones sólo al
+    abrirse; recargarla tres veces dejaba al técnico sin poder subir nada, y
+    con miniaturas rotas.
+    """
+
+    def test_looking_at_a_gallery_does_not_spend_the_allowance_to_upload(self):
+        evidence = self.upload()
+        for _ in range(35):
+            self.assertEqual(self.client.get(self._url()).status_code, 200)
+            self.assertEqual(self.client.get(self._url(f'{evidence.pk}/content/')).status_code, 200)
+
+        res = self._post(content=_photo(800, 600), caption='Después de mirar mucho')
+
+        self.assertEqual(res.status_code, 201, res.content)
+
+    def test_reading_and_writing_are_limited_separately_and_both_are_limited(self):
+        from store import evidence_views as views
+
+        reads = {t.scope for t in views.InternalEvidenceContentView().get_throttles()}
+        list_view = views.InternalEvidenceListView()
+        list_view.request = type('R', (), {'method': 'GET'})()
+        listing = {t.scope for t in list_view.get_throttles()}
+        list_view.request = type('R', (), {'method': 'POST'})()
+        uploading = {t.scope for t in list_view.get_throttles()}
+
+        self.assertEqual(reads, {'service_evidence_read'})
+        self.assertEqual(listing, {'service_evidence_read'})
+        self.assertEqual(uploading, {'service_evidence_write'})
+        self.assertNotIn('admin_order_status_change', reads | uploading)
