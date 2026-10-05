@@ -79,7 +79,12 @@ class Client:
         if method not in ('GET', 'HEAD') and 'csrftoken' in self.cookies:
             headers['X-CSRFToken'] = self.cookies['csrftoken']
         conn = Conn(DOMAIN, timeout=60)
-        conn.request(method, path, body=body, headers=headers)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+        except (BrokenPipeError, ConnectionResetError):
+            # La tienda contestó y cerró sin esperar el resto del cuerpo: es lo
+            # que hace con uno que excede su tope. La respuesta ya está escrita.
+            pass
         res = conn.getresponse()
         data = res.read()
         for value in res.headers.get_all('Set-Cookie') or []:
@@ -279,7 +284,10 @@ def upload():
         ('HTML disfrazado de PNG', 'pagina.png', b'<html><script>alert(1)</script></html>', 'image/png'),
         ('GIF', 'animado.gif', gif, 'image/gif'),
         ('PNG truncado', 'roto.png', png()[:60], 'image/png'),
-        ('archivo de 9 MB', 'grande.png', png() + b'\x00' * (9 * 1024 * 1024), 'image/png'),
+        # Más de lo que la pantalla acepta (8 MB) y menos que el tope del borde
+        # (9 MiB): llega a la vista, y es ella quien lo rechaza y lo explica. Lo
+        # que excede el tope del borde lo recorre `rehearsal_flows.py`.
+        ('archivo de 8,5 MB', 'grande.png', png() + b'\x00' * (8 * 1024 * 1024 + 512 * 1024), 'image/png'),
     ):
         res, _ = admin.upload(target, 'file', name, content, kind)
         check(f'rechazo · {label}', res.status in (400, 413), res.status)

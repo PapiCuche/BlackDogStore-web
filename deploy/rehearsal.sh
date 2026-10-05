@@ -341,6 +341,19 @@ DB=$(ls "$BK"/db-*.sql.gz 2>/dev/null | head -1); EV=$(ls "$BK"/evidence-*.tar.g
 expect "la copia de archivos lleva imágenes de tienda" "$(tar -tzf "$EV" 2>/dev/null | grep -c '/storefront/.*\.png$' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 expect "la copia de archivos lleva evidencias" "$(tar -tzf "$EV" 2>/dev/null | grep -v '/storefront/' | grep -cE '\.(jpe?g|png|webp)$' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 
+step "18b estado (deploy/healthcheck.sh): lo detecta todo sano, y un backend caído"
+health() { COMPOSE="$C" BACKUP_DIR="$BK" SITE_DOMAIN="$DOMAIN" HEALTH_CURL="$K" sh deploy/healthcheck.sh > "$WORK/health.out" 2>&1; echo $?; }
+expect "todo sano" "$(health)" 0
+grep -E "^ATENCIÓN" "$WORK/health.out" | cut -c1-200
+expect "la copia recién hecha cuenta como reciente" "$(grep -c '^OK    copia de seguridad' "$WORK/health.out")" 1
+$C stop backend >/dev/null 2>&1
+expect "con el backend detenido, termina con error" "$(health)" 1
+expect "y dice qué pasa: el contenedor y la API" "$(grep -cE '^ATENCIÓN (contenedor backend|https://.*/api/categories)' "$WORK/health.out")" 2
+$C start backend >/dev/null 2>&1
+expect "backend" "$(healthy backend)" healthy; pause 5
+expect "de nuevo sano" "$(health)" 0
+expect "ops_status dentro del contenedor" "$($C exec -T backend python manage.py ops_status >/dev/null 2>&1; echo $?)" 0
+
 step "19 daño posterior y restauración (deploy/restore.sh)"
 $C exec -T -e DJANGO_SUPERUSER_PASSWORD="$ADMIN_PW" backend python manage.py createsuperuser --noinput --username intruso_posterior --email posterior@example.invalid 2>&1 | tail -1
 $C exec -T backend sh -c 'find /app/private-media -type f -delete'
