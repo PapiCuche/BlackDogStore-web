@@ -10,10 +10,11 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     await carousel.scrollIntoViewIfNeeded();
     const track = carousel.locator('[data-carousel-track]');
     if (reducedMotion === 'no-preference') {
-      // El avance ya pudo mover la fila unos píxeles: se pausa y se vuelve al inicio.
-      await carousel.getByRole('button', { name: 'Pausar avance automático' }).click();
+      // Tomar el control detiene el avance —pulsar «pausar» lo ALTERNA, y no
+      // se sabe de antemano en qué estado está— y se vuelve al inicio.
       await track.focus();
       await page.keyboard.press('Home');
+      await expect(carousel.getByRole('button', { name: 'Reanudar avance automático' })).toBeVisible();
     }
     await expect(carousel.getByRole('button', { name: 'Productos anteriores' })).toBeDisabled();
     await carousel.getByRole('button', { name: 'Productos siguientes' }).click();

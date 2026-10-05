@@ -42,6 +42,10 @@ async function signIn(page: Page) {
 }
 
 test.beforeAll(async ({ browser, baseURL }) => {
+  // `signIn` espera 62 s si el límite de entradas (5 por minuto) está agotado.
+  // Con el tiempo de hook por defecto, 60 s, esa espera no cabía y la suite
+  // entera de Personal caía por una entrada que sólo había que reintentar.
+  test.setTimeout(240_000);
   // `baseURL` explícito: un contexto creado a mano no hereda la configuración
   // del proyecto, y sin él la entrada falla saltando la suite entera.
   const context = await browser.newContext({ baseURL });
