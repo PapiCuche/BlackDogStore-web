@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { AdminProduct, AdminCategory, createAdminProduct, patchAdminProduct } from "../../lib/admin";
+import {
+  AdminProduct, AdminCategory, PRODUCT_IMAGE_ACCEPT, createAdminProduct, patchAdminProduct,
+  uploadProductImage,
+} from "../../lib/admin";
+import { ImageDropzone } from "./ImageDropzone";
+import { rejectReason } from "./ProductGallery";
 import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type FormData = {
@@ -29,12 +34,33 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     description: product?.description ?? "",
     price: product?.price ?? "",
     inventory: product ? String(product.inventory) : "0",
-    image_url: product?.image_url ?? "",
+    // Con galería la dirección es de la principal: no se edita ni se guarda aquí.
+    image_url: product?.images?.length ? "" : product?.image_url ?? "",
     category: product?.category_id ? String(product.category_id) : "",
     is_active: product?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // PRODUCT-MEDIA. Con galería, la dirección de la imagen es la de la
+  // principal y la mantiene el servidor: aquí ni se muestra ni se envía.
+  const hasGallery = Boolean(product?.images?.length);
+  // Al CREAR todavía no hay producto donde colgar imágenes: se eligen aquí y
+  // se suben en cuanto existe.
+  const [queued, setQueued] = useState<File[]>([]);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ id: number; failures: string[] } | null>(null);
+
+  function queueFiles(files: File[]) {
+    const problems: string[] = [];
+    const accepted: File[] = [];
+    for (const file of files) {
+      const reason = rejectReason(file);
+      if (reason) problems.push(`${file.name}: ${reason}.`);
+      else accepted.push(file);
+    }
+    setQueueNotice(problems.length ? `No se añadieron: ${problems.join(" ")}` : null);
+    if (accepted.length) setQueued((prev) => [...prev, ...accepted]);
+  }
 
   function set(field: keyof FormData, value: string | boolean) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -62,21 +88,39 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     // REJECTS it: stock is a derived aggregate over BranchStock now, and typing
     // a new number into a product form would change stock with no branch, no
     // Kardex line, no actor and no reason. Editing stock is a movement.
+    const typesAddress = !hasGallery && queued.length === 0;
     const editable = {
       name: form.name.trim(),
       slug: form.slug.trim() || undefined,
       description: form.description.trim(),
       price: priceNum.toFixed(2),
-      image_url: form.image_url.trim(),
+      ...(typesAddress ? { image_url: form.image_url.trim() } : {}),
       category: form.category ? parseInt(form.category, 10) : null,
       is_active: form.is_active,
     };
 
     setSaving(true);
     try {
-      const saved = product
-        ? await patchAdminProduct(product.id, editable)
-        : await createAdminProduct({ ...editable, inventory: inventoryNum });
+      if (product) {
+        onSaved(await patchAdminProduct(product.id, editable));
+        return;
+      }
+      const saved = await createAdminProduct({ ...editable, inventory: inventoryNum });
+      // El producto ya existe. Lo que falle a partir de aquí se dice tal cual:
+      // no se finge que no se creó ni que las imágenes subieron.
+      const failures: string[] = [];
+      for (const file of queued) {
+        try {
+          await uploadProductImage(saved.id, file);
+        } catch (err) {
+          failures.push(`${file.name}: ${err instanceof Error ? err.message : "no se pudo subir."}`);
+        }
+      }
+      if (failures.length) {
+        setQueued([]);
+        setCreated({ id: saved.id, failures });
+        return;
+      }
       onSaved(saved);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al guardar.");
@@ -86,6 +130,22 @@ export function ProductForm({ product, categories, onSaved }: Props) {
   }
 
   const inputCls = internalInputClass;
+
+  if (created) {
+    return (
+      <div role="alert" className="rounded-xl border border-warning-border bg-warning-surface px-5 py-4 text-sm text-warning">
+        <p className="font-semibold">
+          El producto se creó, pero {created.failures.length === 1 ? "una imagen no se pudo subir" : `${created.failures.length} imágenes no se pudieron subir`}.
+        </p>
+        <ul className="mt-2 list-disc pl-5 text-xs">
+          {created.failures.map((line) => <li key={line}>{line}</li>)}
+        </ul>
+        <Link href={`/admin/products/${created.id}`} className="mt-3 inline-flex font-semibold underline underline-offset-4">
+          Abrir el producto
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
@@ -192,18 +252,31 @@ export function ProductForm({ product, categories, onSaved }: Props) {
             ))}
           </select>
         </div>
-        <div>
-          <label htmlFor="product-image-url" className="block text-xs text-muted mb-1.5">URL de imagen</label>
-          <input
-            id="product-image-url"
-            name="image_url"
-            type="url"
-            value={form.image_url}
-            onChange={(e) => set("image_url", e.target.value)}
-            disabled={saving}
-            className={inputCls}
-          />
-        </div>
+        {!hasGallery && queued.length === 0 ? (
+          <div>
+            <label htmlFor="product-image-url" className="block text-xs text-muted mb-1.5">
+              Dirección de imagen externa (opcional)
+            </label>
+            {/* `text` y no `url`: una ruta del propio sitio es válida y un
+                campo `url` la rechaza en el navegador. Valida el servidor. */}
+            <input
+              id="product-image-url"
+              name="image_url"
+              type="text"
+              inputMode="url"
+              value={form.image_url}
+              onChange={(e) => set("image_url", e.target.value)}
+              disabled={saving}
+              placeholder="https://…"
+              className={inputCls}
+            />
+            <p className="mt-1 text-xs text-muted">
+              {product
+                ? "Sólo si la imagen está alojada fuera. Para subir archivos usa la galería."
+                : "Sólo si la imagen está alojada fuera. Para subir archivos, elígelos abajo."}
+            </p>
+          </div>
+        ) : null}
       </div>
       <div>
         <label htmlFor="product-description" className="block text-xs text-muted mb-1.5">Descripción</label>
@@ -233,12 +306,47 @@ export function ProductForm({ product, categories, onSaved }: Props) {
 
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
 
+      {!product ? (
+        <div>
+          <p className="mb-1.5 text-xs text-muted">Imágenes</p>
+          <ImageDropzone
+            label="Elegir imágenes"
+            accept={PRODUCT_IMAGE_ACCEPT}
+            onFiles={queueFiles}
+            disabled={saving}
+            hint="PNG, JPEG o WebP, hasta 8 MB cada una. Se suben al crear el producto; la primera queda como principal."
+          />
+          {queueNotice ? <p role="status" className="mt-2 text-xs text-warning">{queueNotice}</p> : null}
+          {queued.length ? (
+            <ul className="mt-3 space-y-1.5">
+              {queued.map((file, index) => (
+                <li key={`${index}-${file.name}`} className="flex items-center justify-between gap-3 rounded-lg border border-bd-border bg-background px-3 py-2 text-xs">
+                  <span className="min-w-0 break-all text-foreground">{file.name}</span>
+                  <span className="flex shrink-0 items-center gap-3">
+                    {index === 0 ? <span className="text-muted">Principal</span> : null}
+                    <button
+                      type="button"
+                      aria-label={`Quitar ${file.name}`}
+                      disabled={saving}
+                      onClick={() => setQueued((prev) => prev.filter((_, i) => i !== index))}
+                      className="text-muted underline underline-offset-4 hover:text-danger"
+                    >
+                      Quitar
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       <button
         type="submit"
         disabled={saving}
         className={internalPrimaryButtonClass}
       >
-        {saving ? "Guardando…" : product ? "Guardar cambios" : "Crear producto"}
+        {saving ? (product ? "Guardando…" : queued.length ? "Creando y subiendo imágenes…" : "Creando…") : product ? "Guardar cambios" : "Crear producto"}
       </button>
     </form>
   );

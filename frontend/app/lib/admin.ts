@@ -106,7 +106,83 @@ export type AdminProduct = {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
+  images?: AdminProductImage[];
 };
+
+/** Una imagen de la galería de un producto. */
+export type AdminProductImage = {
+  id: number;
+  url: string;
+  alt_text: string;
+  is_primary: boolean;
+  sort_order: number;
+  width: number;
+  height: number;
+};
+
+/** Lo que el servidor acepta. Aquí sólo evita un viaje que acabaría en rechazo. */
+export const PRODUCT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+export const PRODUCT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+
+async function galleryError(res: Response, fallback: string): Promise<Error> {
+  const body = await res.json().catch(() => null);
+  if (body?.detail) return new Error(String(body.detail));
+  if (res.status === 413) return new Error("La imagen pesa más de 8 MB.");
+  if (res.status === 403) return new Error("No tienes permiso para cambiar las imágenes de este producto.");
+  return new Error(fallback);
+}
+
+export async function fetchProductImages(productId: number): Promise<AdminProductImage[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/`);
+  if (!res.ok) throw await galleryError(res, "No se pudo cargar la galería.");
+  return (await res.json()).results;
+}
+
+export async function uploadProductImage(
+  productId: number, file: File, altText = "",
+): Promise<AdminProductImage> {
+  const form = new FormData();
+  form.append("file", file);
+  if (altText) form.append("alt_text", altText);
+  // Sin `Content-Type`: con un `FormData` lo escribe el navegador, con el boundary.
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/`, {
+    method: "POST", body: form,
+  });
+  if (!res.ok) throw await galleryError(res, "No se pudo subir la imagen.");
+  return res.json();
+}
+
+export async function patchProductImage(
+  productId: number, imageId: number, data: { alt_text?: string; is_primary?: true },
+): Promise<AdminProductImage> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/`, {
+    method: "PATCH", body: JSON.stringify(data),
+  });
+  if (!res.ok) throw await galleryError(res, "No se pudo guardar el cambio.");
+  return res.json();
+}
+
+/** Quita la imagen y devuelve la galería como quedó (el servidor elige la nueva principal). */
+export async function deleteProductImage(
+  productId: number, imageId: number,
+): Promise<AdminProductImage[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw await galleryError(res, "No se pudo quitar la imagen.");
+  return fetchProductImages(productId);
+}
+
+export async function reorderProductImages(
+  productId: number, order: number[],
+): Promise<AdminProductImage[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/order/`, {
+    method: "POST", body: JSON.stringify({ order }),
+  });
+  if (!res.ok) throw await galleryError(res, "No se pudo guardar el orden.");
+  return (await res.json()).results;
+}
 
 export type AdminCategory = {
   id: number;
