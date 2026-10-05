@@ -26,6 +26,7 @@ from .views import (
     CartViewSet,
     CreateCheckoutSessionView,
     IzipayNotificationView,
+    MiCuentaWebNotificationView,
     PaymentStatusView,
     ReviewViewSet,
     CouponValidateView,
@@ -171,6 +172,13 @@ urlpatterns = [
         'payments/izipay/notification/',
         IzipayNotificationView.as_view(),
         name='izipay-notification',
+    ),
+    # Izipay's other product. Only ONE of the two answers: the one named by
+    # PAYMENT_PROVIDER. The other is a 404.
+    path(
+        'payments/micuentaweb/notification/',
+        MiCuentaWebNotificationView.as_view(),
+        name='micuentaweb-notification',
     ),
     path('payments/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('coupons/validate/', CouponValidateView.as_view(), name='coupon-validate'),

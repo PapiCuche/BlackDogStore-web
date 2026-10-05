@@ -18,7 +18,7 @@ from .models import (
     Review, Coupon, UserProfile, assert_items_match_order,
 )
 from . import checkout_services as checkout
-from .payments import izipay
+from .payments import izipay, micuentaweb
 from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
 from .tenancy import (
@@ -301,92 +301,44 @@ def _payment_session_payload(order, payment) -> dict:
     """
     The checkout response.
 
-    PUBLIC VALUES ONLY. The merchant code and the RSA public key are documented
-    as browser-safe; the session token authorises exactly one transaction. The
-    API key and the hash key are not here, are not in `config`, and have no path
-    to any response in this project.
+    PUBLIC VALUES ONLY, shaped for the ONE product that is configured. The
+    merchant code and the public key are documented as browser-safe; the session
+    token (or `formToken`) authorises exactly one payment. No API key, hash key
+    or password is here, and none has a path to any response in this project.
     """
-    return {
-        'order_id': order.id,
-        'provider': izipay.PROVIDER,
-        'environment': payment.environment,
-        'transaction_id': payment.transaction_id,
-        'authorization': payment.authorization,
-        'merchant_code': payment.merchant_code,
-        'public_key': payment.public_key,
-        'config': payment.config,
-    }
+    return {'order_id': order.id, **checkout.payment_session_payload(payment)}
 
 
-class IzipayNotificationView(APIView):
+class _SignedNotificationMixin:
     """
-    POST /api/payments/izipay/notification/ — the gateway's own word on a payment.
+    What happens AFTER a gateway notification has proved who sent it.
 
-    THIS IS THE ONLY THING IN THE PROJECT THAT CAN MARK AN ORDER PAID.
+    Izipay sells two products and each signs its notifications its own way; each
+    has its own view below, which does exactly one thing of its own: verify the
+    signature and reduce the message to a result. From there on there is ONE
+    piece of code — this one — that decides whether an order may be paid, so the
+    two cannot drift into two different ideas of "paid".
 
-    It takes no session, no login and no CSRF token, and that is not a gap: the
-    caller is Izipay, not a browser, and the message authenticates itself
-    cryptographically. A signature made with a key only the two parties hold is
-    a stronger statement about who sent this than any cookie, and unlike a
-    cookie it also proves the CONTENT was not edited in transit.
-
-    Source IP is deliberately NOT a gate. Izipay does not publish stable ranges,
-    and an allowlist built on guesses either rejects real payments after an
-    infrastructure change or lulls us into treating the signature as optional.
-
-    WHAT IS CHECKED, IN ORDER, AND WHY EACH ONE MATTERS
-    ---------------------------------------------------
-      signature        the message is genuinely Izipay's and unmodified
-      transaction id   it refers to an attempt this database actually started
-      order number     that attempt's own number, not another order's
-      merchant         our merchant account, not someone else's
-      currency         the currency we asked to be paid in
-      amount           EXACTLY `Order.total` — not more, not less
-      response code    the gateway actually authorised it
-
-    Only then, under a row lock, does anything change.
-
-    NO THROTTLE, DELIBERATELY. Every other public endpoint here declares one;
-    this must not. A rate limit on the gateway's notifications is a rate limit
-    on hearing that customers paid — the dropped message is a real payment that
-    silently never confirms, and the retry it triggers arrives into the same
-    limit. What protects this endpoint is that an unsigned message costs an
-    attacker a 400 and changes nothing.
+    ONE PROVIDER PER INSTALLATION. A view whose product is not the configured
+    `PAYMENT_PROVIDER` answers 404 before reading anything: its credentials are
+    not this installation's, and an endpoint that would verify against whatever
+    happens to be in the environment is an endpoint somebody can aim at.
     """
 
-    permission_classes = [permissions.AllowAny]
+    provider = ''
+    #: Whether a message that names no merchant is refused outright.
+    merchant_required = False
 
-    def post(self, request):
-        try:
-            credentials = izipay.load_credentials()
-        except izipay.IzipayError as exc:
-            logger.error('IPN recibido con la pasarela mal configurada: %s', exc)
-            return Response(
-                {'detail': 'Pasarela no configurada.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+    def _is_active(self) -> bool:
+        return checkout.active_payment_provider() == self.provider
 
-        # Parsed from the RAW body rather than `request.data` so the exact
-        # `payloadHttp` string Izipay signed is the one that gets verified. DRF
-        # would give the same string here, but reading the body directly makes
-        # it impossible for a parser or renderer setting to quietly reshape the
-        # bytes the signature covers.
-        try:
-            body = json.loads(request.body.decode('utf-8'))
-        except (ValueError, UnicodeDecodeError):
-            return Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+    def _not_here(self) -> Response:
+        return Response({'detail': 'No encontrado.'}, status=status.HTTP_404_NOT_FOUND)
 
-        try:
-            result = izipay.parse_notification(body, credentials)
-        except izipay.IzipayError as exc:
-            # No order is touched, no stock moves, no cart is cleared. 400 and
-            # nothing else: an unverified message has told us nothing.
-            logger.warning('IPN rechazado: %s', exc)
-            return Response({'detail': 'Notificación rechazada.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # --- everything below reads ONLY from the signed payload -------------
+    def _settle(self, result, credentials) -> Response:
+        """Everything here reads ONLY from the signed payload."""
         attempt = PaymentTransaction.objects.filter(
-            provider=izipay.PROVIDER, transaction_id=result.transaction_id,
+            provider=self.provider, transaction_id=result.transaction_id,
         ).select_related('order').first()
         if attempt is None:
             # Correctly signed but unknown to us. It does NOT create an order and
@@ -406,7 +358,10 @@ class IzipayNotificationView(APIView):
             return Response({'detail': 'Datos inconsistentes.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if not result.authorized:
-            self._record_rejection(attempt, result)
+            # News that the payment is still open is not a decline: the attempt
+            # keeps waiting for the answer that settles it.
+            if getattr(result, 'settled', True):
+                self._record_rejection(attempt, result)
             # A decline is a normal outcome and a well-formed message: 200, so
             # the gateway does not retry it forever.
             return Response({'status': 'received'})
@@ -430,6 +385,11 @@ class IzipayNotificationView(APIView):
             # A valid transaction paired with someone else's order number. There
             # is no way to tell which half is the truth, so neither is believed.
             return 'order_number mismatch'
+
+        if self.merchant_required and not result.merchant_code:
+            # This product always names the shop. An answer that does not is not
+            # one of its answers.
+            return 'merchant missing'
 
         if result.merchant_code and result.merchant_code != credentials.merchant_code:
             # Another merchant's authorisation cannot pay our order.
@@ -478,9 +438,9 @@ class IzipayNotificationView(APIView):
         )
         if not updated:
             logger.warning(
-                'Izipay: notificación contradictoria sobre un intento ya resuelto '
+                'Pago (%s): notificación contradictoria sobre un intento ya resuelto '
                 '(intento=%s, motivo=%s); se rechaza y el registro no cambia.',
-                attempt.pk, reason,
+                self.provider, attempt.pk, reason,
             )
 
     def _record_rejection(self, attempt, result) -> None:
@@ -582,6 +542,123 @@ class IzipayNotificationView(APIView):
             _order_pk = order.pk
             transaction.on_commit(lambda: send_order_emails_after_payment(_order_pk))
 
+
+class IzipayNotificationView(_SignedNotificationMixin, APIView):
+    """
+    POST /api/payments/izipay/notification/ — the gateway's own word on a payment.
+
+    THIS IS THE ONLY THING IN THE PROJECT THAT CAN MARK AN ORDER PAID.
+
+    It takes no session, no login and no CSRF token, and that is not a gap: the
+    caller is Izipay, not a browser, and the message authenticates itself
+    cryptographically. A signature made with a key only the two parties hold is
+    a stronger statement about who sent this than any cookie, and unlike a
+    cookie it also proves the CONTENT was not edited in transit.
+
+    Source IP is deliberately NOT a gate. Izipay does not publish stable ranges,
+    and an allowlist built on guesses either rejects real payments after an
+    infrastructure change or lulls us into treating the signature as optional.
+
+    WHAT IS CHECKED, IN ORDER, AND WHY EACH ONE MATTERS
+    ---------------------------------------------------
+      signature        the message is genuinely Izipay's and unmodified
+      transaction id   it refers to an attempt this database actually started
+      order number     that attempt's own number, not another order's
+      merchant         our merchant account, not someone else's
+      currency         the currency we asked to be paid in
+      amount           EXACTLY `Order.total` — not more, not less
+      response code    the gateway actually authorised it
+
+    Only then, under a row lock, does anything change.
+
+    NO THROTTLE, DELIBERATELY. Every other public endpoint here declares one;
+    this must not. A rate limit on the gateway's notifications is a rate limit
+    on hearing that customers paid — the dropped message is a real payment that
+    silently never confirms, and the retry it triggers arrives into the same
+    limit. What protects this endpoint is that an unsigned message costs an
+    attacker a 400 and changes nothing.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    provider = izipay.PROVIDER
+
+    def post(self, request):
+        if not self._is_active():
+            return self._not_here()
+
+        try:
+            credentials = izipay.load_credentials()
+        except izipay.IzipayError as exc:
+            logger.error('IPN recibido con la pasarela mal configurada: %s', exc)
+            return Response(
+                {'detail': 'Pasarela no configurada.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # Parsed from the RAW body rather than `request.data` so the exact
+        # `payloadHttp` string Izipay signed is the one that gets verified. DRF
+        # would give the same string here, but reading the body directly makes
+        # it impossible for a parser or renderer setting to quietly reshape the
+        # bytes the signature covers.
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return Response({'detail': 'Payload inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = izipay.parse_notification(body, credentials)
+        except izipay.IzipayError as exc:
+            # No order is touched, no stock moves, no cart is cleared. 400 and
+            # nothing else: an unverified message has told us nothing.
+            logger.warning('IPN rechazado: %s', exc)
+            return Response({'detail': 'Notificación rechazada.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return self._settle(result, credentials)
+
+
+class MiCuentaWebNotificationView(_SignedNotificationMixin, APIView):
+    """
+    POST /api/payments/micuentaweb/notification/ — the IPN of «Mi Cuenta Web».
+
+    The same role as the view above for Izipay's other product, and the same
+    rules: no session, no CSRF token, no throttle, and nothing believed until
+    the signature verifies. The message is a FORM (`kr-answer`, `kr-hash`,
+    `kr-hash-algorithm`, `kr-hash-key`) and `kr-hash` is the hex HMAC-SHA256 of
+    `kr-answer` keyed with the shop's PASSWORD.
+
+    THE BROWSER'S COPY IS NOT A NOTIFICATION. After paying, the buyer's page is
+    handed the same answer signed with a different key. Posted here it is
+    refused: `kr-hash-key` must say `password`, and the hash must be the
+    password's.
+
+    The source address is not a gate here either. The documentation publishes
+    a range to ALLOW through a firewall; it does not replace the signature.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    provider = micuentaweb.PROVIDER
+    merchant_required = True
+
+    def post(self, request):
+        if not self._is_active():
+            return self._not_here()
+
+        try:
+            credentials = micuentaweb.load_credentials()
+        except micuentaweb.MiCuentaWebError as exc:
+            logger.error('IPN recibido con la pasarela mal configurada: %s', exc)
+            return Response(
+                {'detail': 'Pasarela no configurada.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            result = micuentaweb.parse_notification(request.POST, credentials)
+        except micuentaweb.MiCuentaWebError as exc:
+            logger.warning('IPN rechazado: %s', exc)
+            return Response({'detail': 'Notificación rechazada.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return self._settle(result, credentials)
 
 class PaymentStatusView(APIView):
     """

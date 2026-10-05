@@ -36,7 +36,7 @@ from .models import (
     BranchStock, Coupon, Order, OrderItem, PaymentTransaction, Product,
     assert_items_match_order,
 )
-from .payments import izipay
+from .payments import izipay, micuentaweb
 from .tenancy import company_fulfillment_branch
 
 logger = logging.getLogger(__name__)
@@ -475,9 +475,19 @@ class PaymentSession:
     merchant_code: str
     public_key: str
     config: dict
+    # Which of the two official products opened this payment. The browser
+    # draws ONE form, the one this names.
+    provider: str = izipay.PROVIDER
+    # Mi Cuenta Web only: the `formToken` of this one payment.
+    form_token: str = ''
 
 
-def require_payment_provider_configured() -> izipay.IzipayCredentials:
+def active_payment_provider() -> str:
+    """The ONE gateway product this installation is configured for."""
+    return (getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower()
+
+
+def require_payment_provider_configured():
     """
     Load the gateway credentials, or refuse the checkout before creating an order.
 
@@ -485,9 +495,19 @@ def require_payment_provider_configured() -> izipay.IzipayCredentials:
     out there is no gateway leaves a row nobody can pay and a buyer looking at an
     error, every single time, until someone sets the variable.
     """
+    provider = active_payment_provider()
+    if provider not in (izipay.PROVIDER, micuentaweb.PROVIDER):
+        # A typo here must not fall back to «the usual one»: the operator said
+        # which gateway holds the money, and it is not one this code knows.
+        logger.error('PAYMENT_PROVIDER no es un proveedor conocido: %r', provider[:32])
+        raise CheckoutError(
+            'La pasarela de pago no está configurada.', status_code=500,
+        )
     try:
+        if provider == micuentaweb.PROVIDER:
+            return micuentaweb.load_credentials()
         return izipay.load_credentials()
-    except izipay.IzipayError as exc:
+    except (izipay.IzipayError, micuentaweb.MiCuentaWebError) as exc:
         # The operator needs the detail; it names variables, never values.
         logger.error('Pasarela de pago mal configurada: %s', exc)
         raise CheckoutError(
@@ -559,9 +579,7 @@ def build_payment_config(
     return config
 
 
-def start_payment_attempt(
-    order: Order, *, credentials: izipay.IzipayCredentials,
-) -> PaymentSession:
+def start_payment_attempt(order: Order, *, credentials) -> PaymentSession:
     """
     Open ONE attempt to charge this order.
 
@@ -577,7 +595,13 @@ def start_payment_attempt(
     A NEW `order_number` EVERY TIME. Izipay rejects a repeated one (P69), so a
     buyer retrying after a decline needs a fresh one, and the previous attempt
     keeps its own record of having been declined.
+
+    WHICH GATEWAY is decided by the credentials that were loaded, and those by
+    `PAYMENT_PROVIDER`: one product per installation, never a mix.
     """
+    if isinstance(credentials, micuentaweb.MiCuentaWebCredentials):
+        return _start_micuentaweb_attempt(order, credentials)
+
     transaction_id = izipay.new_transaction_id()
     order_number = izipay.new_order_number()
 
@@ -621,6 +645,86 @@ def start_payment_attempt(
         public_key=credentials.public_key,
         config=config,
     )
+
+
+def _start_micuentaweb_attempt(
+    order: Order, credentials: micuentaweb.MiCuentaWebCredentials,
+) -> PaymentSession:
+    """
+    The same step for «Mi Cuenta Web»: a row first, then `Charge/CreatePayment`.
+
+    ONE identifier, the `orderId`. It is what the gateway echoes inside the
+    signed notification, so it is what the attempt is found by; it is new for
+    every attempt, so a retry after a decline never reuses a closed one.
+
+    The amount sent is `Order.total`. The buyer's e-mail goes with it because
+    the gateway asks for it; no card data exists on this side to send.
+    """
+    order_id = micuentaweb.new_order_id()
+
+    attempt = PaymentTransaction.objects.create(
+        order=order,
+        provider=micuentaweb.PROVIDER,
+        transaction_id=order_id,
+        order_number=order_id,
+        amount=_cents(order.total),
+        currency=credentials.currency,
+        status=PaymentTransaction.Status.PENDING,
+    )
+
+    try:
+        form_token = micuentaweb.create_payment(
+            credentials=credentials,
+            order_id=order_id,
+            amount=attempt.amount,
+            customer_email=order.customer_email or '',
+        )
+    except micuentaweb.MiCuentaWebError as exc:
+        attempt.status = PaymentTransaction.Status.REJECTED
+        attempt.failure_reason = str(exc)[:200]
+        attempt.save(update_fields=['status', 'failure_reason'])
+        raise CheckoutError(
+            'No pudimos iniciar el pago. Vuelve a intentarlo.', status_code=502,
+        )
+
+    return PaymentSession(
+        transaction_id=order_id,
+        order_number=order_id,
+        authorization='',
+        environment=credentials.environment,
+        merchant_code=credentials.shop_id,
+        public_key=credentials.public_key,
+        config={},
+        provider=micuentaweb.PROVIDER,
+        form_token=form_token,
+    )
+
+
+def payment_session_payload(payment: PaymentSession) -> dict:
+    """
+    What a client may know to draw the gateway's form. PUBLIC VALUES ONLY.
+
+    One shape per product, never the union: a browser told `provider:
+    micuentaweb` gets a `form_token` and a public key, and none of the fields
+    of the other SDK to be tempted to load it with.
+    """
+    if payment.provider == micuentaweb.PROVIDER:
+        return {
+            'provider': payment.provider,
+            'environment': payment.environment,
+            'transaction_id': payment.transaction_id,
+            'form_token': payment.form_token,
+            'public_key': payment.public_key,
+        }
+    return {
+        'provider': payment.provider,
+        'environment': payment.environment,
+        'transaction_id': payment.transaction_id,
+        'authorization': payment.authorization,
+        'merchant_code': payment.merchant_code,
+        'public_key': payment.public_key,
+        'config': payment.config,
+    }
 
 
 def mark_payment_failure(order: Order, message: str) -> None:

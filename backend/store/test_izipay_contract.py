@@ -238,6 +238,14 @@ class IzipayNotificationContractTest(TestCase):
             self._state(),
             (Order.Status.PENDING_PAYMENT, False, PaymentTransaction.Status.REJECTED))
 
+    def test_a_signature_with_odd_bytes_is_refused_not_a_crash(self):
+        """Un carácter no ASCII en la firma hacía fallar la comparación: 500 sin autenticar."""
+        body = self.fake.notification(self.attempt)
+        body['signature'] = 'ñandú'
+        response = self.fake.deliver(self.client, body)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._state()[1], False)
+
     def test_a_signature_made_with_another_key_is_refused(self):
         forged = self.fake.signed_by_someone_else(self.fake.notification(self.attempt))
 

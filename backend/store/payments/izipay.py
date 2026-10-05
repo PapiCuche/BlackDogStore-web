@@ -230,7 +230,12 @@ def verify_signature(payload_http: str, signature: str, hash_key: str) -> bool:
     """
     if not hash_key or not signature or not payload_http:
         return False
-    return hmac.compare_digest(sign(payload_http, hash_key), signature)
+    # On BYTES. `compare_digest` on two `str` raises TypeError as soon as one of
+    # them holds a non-ASCII character, and the signature is whatever a stranger
+    # chose to send: that was an unauthenticated 500 on the payment webhook.
+    return hmac.compare_digest(
+        sign(payload_http, hash_key).encode('ascii'), str(signature).encode('utf-8'),
+    )
 
 
 @dataclass(frozen=True)
