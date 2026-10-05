@@ -50,9 +50,20 @@ EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
 REQUIRE_EMAIL_VERIFICATION=1
 PAYMENT_PROVIDER=izipay
 IZIPAY_ENV=sandbox
+IZIPAY_MERCHANT_CODE=9{secrets.randbelow(10**6):06d}
+IZIPAY_PUBLIC_KEY=ensayo-{secrets.token_hex(8)}
+IZIPAY_API_KEY={secrets.token_urlsafe(24)}
+IZIPAY_HASH_KEY={secrets.token_urlsafe(32)}
+IZIPAY_TOKEN_URL=https://pasarela.invalid/token
+WHATSAPP_PROVIDER=disabled
 EVIDENCE_STORAGE_BACKEND=filesystem
 FISCAL_ENABLED=0""")
 PY
+# Las claves de la pasarela son del ensayo: se generan aquí, la pasarela a la que
+# apuntan no existe (`.invalid`) y sirven para una sola cosa, comprobar que la
+# notificación de pago sólo acepta lo que viene firmado. No son de Izipay.
+# WhatsApp va apagado y Google sin ID de cliente: así llega una instalación nueva.
+envval() { grep "^$1=" "$ENVF" | cut -d= -f2-; }
 
 C="docker compose -p $PROJECT -f docker-compose.prod.yml --env-file $ENVF"
 K="curl -sk --connect-to $DOMAIN:443:127.0.0.1:$PORT"
@@ -91,6 +102,14 @@ cleanup() {
 trap cleanup EXIT
 export R_DOMAIN="$DOMAIN" R_PORT="$PORT" R_SLUG="$SLUG" R_STATE="$WORK/media.json"
 export R_USER=ensayo_admin R_PASSWORD="$ADMIN_PW" R_OUTSIDER=ensayo_ajeno R_OUTSIDER_PASSWORD="$OUTSIDER_PW"
+export R_IZIPAY_HASH_KEY="$(envval IZIPAY_HASH_KEY)" R_IZIPAY_MERCHANT="$(envval IZIPAY_MERCHANT_CODE)"
+# flows <descripción> <modo> [archivo]: corre rehearsal_flows.py y enseña sólo lo que falló.
+flows() {
+  label=$1; shift
+  (cd deploy && python3 rehearsal_flows.py "$@") > "$WORK/flows.out" 2>&1; rc=$?
+  grep -E "FALLO|Traceback|Error" "$WORK/flows.out" | cut -c1-220
+  expect "$label ($(grep -c '  OK   ' "$WORK/flows.out") comprobaciones)" "$rc" 0
+}
 
 step "0 base"
 echo "HEAD $(git rev-parse --short HEAD) · master $(git rev-parse --short origin/master 2>/dev/null) · detrás de master $(git rev-list --count HEAD..origin/master 2>/dev/null) · cambios sin confirmar $(git status --short | grep -v '^??' | wc -l | tr -d ' ')"
@@ -101,6 +120,14 @@ $C build --no-cache -q 2>&1 | tail -3
 expect "imágenes construidas" "$(docker images --filter "reference=$PROJECT-*" -q | wc -l | tr -d ' ')" 2
 echo "backend: $(docker run --rm --entrypoint sh "$PROJECT-backend" -c 'ls -a /app | grep -cE "^\.env|sqlite3$"; id -u; pip list 2>/dev/null | grep -iE "^(gunicorn|Django|pillow) " | tr "\n" " "' 2>&1 | tr '\n' ' ')(archivos .env/sqlite, uid, versiones)"
 expect "la imagen del frontend no lleva secretos en su entorno" "$(docker run --rm --entrypoint sh "$PROJECT-frontend" -c 'env | grep -cE "SECRET|PASSWORD|IZIPAY|EMAIL_"' 2>&1)" 0
+# Ni en su entorno ni en lo que compiló: ningún valor secreto del ensayo aparece en los archivos que sirve.
+LEAKED=0
+for name in SECRET_KEY POSTGRES_PASSWORD IZIPAY_API_KEY IZIPAY_HASH_KEY; do
+  hits=$(docker run --rm -e NEEDLE="$(envval $name)" --entrypoint sh "$PROJECT-frontend" -c 'grep -rlF -- "$NEEDLE" /app/.next /app/public 2>/dev/null | wc -l' | tr -d ' \r')
+  LEAKED=$((LEAKED + ${hits:-1}))
+done
+expect "ningún secreto del servidor está en los archivos del frontend" "$LEAKED" 0
+expect "la imagen del backend no lleva claves, copias ni la configuración del agente" "$(docker run --rm --entrypoint sh "$PROJECT-backend" -c 'find /app -name "*.p12" -o -name "*.pem" -o -name "*.key" -o -name "*.sql.gz" -o -name "config.json" -path "*print_agent*" | wc -l' | tr -d ' \r')" 0
 
 step "2 PostgreSQL limpio"
 $C up -d postgres 2>&1 | tail -1
@@ -122,6 +149,10 @@ $C ps --format '{{.Service}} | {{.Status}} | {{.Ports}}'
 expect "sólo Caddy publica puertos" "$($C ps --format '{{.Service}} {{.Ports}}' | grep -v '^caddy' | grep -c '0.0.0.0')" 0
 docker inspect -f '{{.Name}} user={{.Config.User}} restart={{.HostConfig.RestartPolicy.Name}}' "$PROJECT-backend-1" "$PROJECT-frontend-1" "$PROJECT-caddy-1" "$PROJECT-postgres-1"
 expect "un solo proceso de aplicación (maestro + 1 worker)" "$(docker top "$PROJECT-backend-1" 2>/dev/null | grep -c gunicorn)" 2
+expect "el backend arranca sin errores en su registro" "$($C logs backend 2>&1 | grep -c '\[ERROR\]')" 0
+# El tope de tamaño está en la configuración que Caddy cargó, en cada ruta hacia una aplicación.
+ADAPTED=$($C exec -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null)
+expect "cada ruta hacia una aplicación tiene tope de tamaño (8 de 8)" "$(printf '%s' "$ADAPTED" | grep -o '"max_size"' | wc -l | tr -d ' ') $(printf '%s' "$ADAPTED" | grep -o '"handler":"reverse_proxy"' | wc -l | tr -d ' ')" "8 8"
 
 step "5 ajustes efectivos de Django"
 shell "
@@ -215,6 +246,16 @@ media "públicas, privadas y sin rutas de archivo" verify "$KEYS"
 expect "hay imágenes de tienda en el volumen" "$($C exec -T backend sh -c 'find /app/private-media -type f -path "*/storefront/*" | wc -l' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 expect "hay evidencias en el mismo volumen" "$($C exec -T backend sh -c 'find /app/private-media -type f ! -path "*/storefront/*" | wc -l' | awk '{print ($1 > 0) ? "sí" : "no"}')" "sí"
 
+step "11b lo que la tienda hace: límites, pagos, equipos con serie, documentos, seguimiento"
+# Otra ventana de un minuto: las comprobaciones de archivos gastaron sus inicios de sesión.
+pause 62
+flows "límites, pagos, equipos, documentos, seguimiento, WhatsApp y Google apagados" run
+expect "con WhatsApp apagado no se envió ni quedó pendiente ningún mensaje" "$(shell "
+from store.models import NotificationDelivery as N
+print(N.objects.filter(channel='whatsapp', status__in=['pending', 'sent', 'delivered', 'read']).count())" | tail -1)" 0
+$C logs backend frontend caddy > "$WORK/logs.txt" 2>&1
+flows "los registros no guardan enlaces, IMEI, contraseñas ni claves" logs "$WORK/logs.txt"
+
 step "12 navegador real: tienda, imágenes, sesión y panel"
 # El límite de inicio de sesión es de 5 por minuto y por dirección: se deja
 # vaciar la ventana que gastaron las comprobaciones anteriores.
@@ -242,6 +283,7 @@ echo "registro de seguridad: $($C logs backend 2>/dev/null | grep -cE 'login_(ok
 
 step "14 tareas programadas"
 $C exec -T backend python manage.py flushexpiredtokens >/dev/null 2>&1; expect "flushexpiredtokens" "$?" 0
+$C exec -T backend python manage.py send_pending_notifications >/dev/null 2>&1; expect "send_pending_notifications (con WhatsApp apagado no hace nada y termina bien)" "$?" 0
 if $C exec -T backend python manage.py help cleanup_storefront_images >/dev/null 2>&1; then
   echo "  $($C exec -T backend python manage.py cleanup_storefront_images --dry-run 2>&1 | tail -1 | cut -c1-140)"
   expect "cleanup_storefront_images --dry-run" "$?" 0
@@ -272,7 +314,7 @@ chmod 644 "$WORK/client.py"; chmod 755 "$WORK"
 CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PROJECT-caddy-1")
 expect "otro cliente, desde otra dirección, no hereda el bloqueo" "$(docker run --rm --network "${PROJECT}_default" --add-host "$DOMAIN:$CIP" -v "$WORK/client.py:/c.py:ro" --entrypoint python "$PROJECT-backend" /c.py 2>&1 | tail -1)" "401 401|400 400"
 
-COUNTS='from store.models import *; from django.contrib.auth import get_user_model as U; print("empresas",Company.objects.count(),"sucursales",Branch.objects.count(),"usuarios",U().objects.count(),"membresías",Membership.objects.count(),"categorías",Category.objects.count(),"productos",Product.objects.count(),"stock",sum(BranchStock.objects.values_list("quantity",flat=True)),"movimientos",StockMovement.objects.count(),"pedidos",Order.objects.count(),"reparaciones",RepairOrder.objects.count(),"imágenes de tienda",StorefrontImage.objects.count(),"evidencias",RepairEvidence.objects.count(),"líneas de carrito",CartItem.objects.count())'
+COUNTS='from store.models import *; from django.contrib.auth import get_user_model as U; print("empresas",Company.objects.count(),"sucursales",Branch.objects.count(),"usuarios",U().objects.count(),"membresías",Membership.objects.count(),"categorías",Category.objects.count(),"productos",Product.objects.count(),"stock",sum(BranchStock.objects.values_list("quantity",flat=True)),"movimientos",StockMovement.objects.count(),"pedidos",Order.objects.count(),"reparaciones",RepairOrder.objects.count(),"imágenes de tienda",StorefrontImage.objects.count(),"evidencias",RepairEvidence.objects.count(),"líneas de carrito",CartItem.objects.count(),"equipos",StockUnit.objects.count(),"equipos vendidos",StockUnit.objects.filter(status="sold").count(),"notas de venta",SalesNote.objects.count(),"enlaces de seguimiento",RepairTrackingLink.objects.count())'
 count() { shell "$COUNTS" | grep empresas; }
 files() { $C exec -T backend sh -c 'find /app/private-media -type f | wc -l' | tr -d ' \r'; }
 
@@ -283,6 +325,7 @@ expect "backend" "$(healthy backend)" healthy; expect "frontend" "$(healthy fron
 expect "los datos son los mismos" "$(count)" "$BEFORE"
 expect "los archivos son los mismos" "$(files)" "$FILES"
 media "imágenes y evidencias siguen en su sitio" verify
+flows "la foto de producto y el enlace de seguimiento siguen ahí" verify
 
 step "17 persistencia: reconstruir las imágenes y recrear los contenedores"
 $C build -q 2>&1 | tail -1; $C up -d --force-recreate 2>&1 | tail -1
@@ -290,6 +333,7 @@ expect "backend" "$(healthy backend)" healthy; expect "frontend" "$(healthy fron
 expect "los datos son los mismos" "$(count)" "$BEFORE"
 expect "los archivos son los mismos" "$(files)" "$FILES"
 media "imágenes y evidencias siguen en su sitio" verify
+flows "la foto de producto y el enlace de seguimiento siguen ahí" verify
 
 step "18 copia de seguridad (deploy/backup.sh): base de datos y archivos"
 COMPOSE="$C" BACKUP_DIR="$BK" sh deploy/backup.sh 2>&1 | tail -3 | sed "s|$BK|<copias>|g"
@@ -308,6 +352,7 @@ expect "los datos vuelven a ser los de la copia" "$(count)" "$BEFORE"
 expect "los archivos vuelven a ser los de la copia" "$(files)" "$FILES"
 expect "lo creado después de la copia ya no existe" "$(shell "from django.contrib.auth import get_user_model as U; print(U().objects.filter(username='intruso_posterior').exists())")" False
 media "imágenes y evidencias siguen en su sitio" verify
+flows "la foto de producto y el enlace de seguimiento siguen ahí" verify
 expect "tienda tras restaurar" "$(code "$BASE/") $(code "$BASE/api/products")" "200 200"
 
 step "20 volúmenes"

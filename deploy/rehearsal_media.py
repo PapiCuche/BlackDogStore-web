@@ -196,8 +196,11 @@ def public_checks(urls):
           res.status == 200 and page.get('hero_image_url') == urls['hero']
           and page.get('services_image_url') == urls['servicio']
           and page.get('location_image_url') == urls['ubicación'] and page.get('hero_variant') == 'light')
+    # La portada (V3) no tiene variantes de hero: pinta la imagen que la tienda
+    # colocó. `hero_variant` sigue en la API por compatibilidad y no decide nada.
     res, html = anonymous.request('GET', '/', origin=False)
-    check('la portada se sirve con el hero claro', res.status == 200 and b'data-hero-variant="light"' in html)
+    check('la portada se sirve con la imagen del hero que la tienda colocó',
+          res.status == 200 and urls['hero'].encode() in html)
 
 
 def private_checks(state, staff=None):
