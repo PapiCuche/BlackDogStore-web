@@ -1042,6 +1042,120 @@ class V1ServiceQuoteCancelView(V1ServiceQuotingMixin, APIView):
         )
 
 
+CAP_QUOTE_RECORD_DECISION = 'service.quotes.record_decision'
+
+
+class V1ServiceQuoteRecordDecisionView(V1ServiceQuotingMixin, APIView):
+    """
+    POST — write down what the customer answered, when they answered a person.
+
+    ITS OWN CAPABILITY. Recording an approval starts a repair and commits the
+    customer to a price, so it is not something everyone who may open an order
+    may do, and it is not `service.diagnostic.manage` either: the person who
+    quotes the work should not, by that alone, be the one who says it was
+    accepted.
+
+    The body names the answer, how it arrived and an optional note. It cannot
+    name who is recording it (the session does) nor claim the customer's own
+    channels.
+    """
+
+    http_method_names = ['post']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_QUOTE_RECORD_DECISION)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            service.record_staff_quote_decision(
+                quote=quote, actor=request.user,
+                decision=request.data.get('decision'),
+                channel=request.data.get('channel'),
+                note=request.data.get('note') or '',
+                request=request,
+            )
+        except service.QuoteDecisionConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'quote': V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+        })
+
+
+class V1ServiceQuoteReopenView(V1ServiceQuotingMixin, APIView):
+    """
+    POST — the approved work changed: void the approval and quote again.
+
+    The answer is the NEW draft revision. The approved quote is left as
+    `superseded`, with its decision, for whoever asks what was agreed before.
+    """
+
+    http_method_names = ['post']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            fresh = service.reopen_approved_quote(
+                quote=quote, actor=request.user,
+                reason=request.data.get('reason') or '', request=request,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {'quote': V1ServiceQuoteSerializer(self.get_quote(company, order, fresh.pk)).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET — the link to hand to the customer. POST rotate/ revoke/ — replace it or
+    turn it off.
+
+    Reading it needs what opening the order needs: reception copies it into a
+    message. Replacing or revoking it changes who can see the order, and takes
+    `service.orders.manage`.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+    action = None
+
+    def get(self, request, company_slug=None, pk=None):
+        from . import tracking_services as tracking
+
+        if self.action is not None:
+            return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+        return Response(tracking.staff_payload(order))
+
+    def post(self, request, company_slug=None, pk=None):
+        from . import tracking_services as tracking
+
+        if self.action is None:
+            return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_MANAGE)
+        order = self.get_order(company, pk)
+        if self.action == 'rotate':
+            tracking.rotate(order, actor=request.user, request=request)
+        else:
+            tracking.revoke(order, actor=request.user, request=request)
+        return Response(tracking.staff_payload(order))
+
+
 # ---------------------------------------------------------------------------
 # M10 / BR-005C — the bench and its parts
 # ---------------------------------------------------------------------------

@@ -119,6 +119,9 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
     # records rather than a state it is trapped in.
     RepairStatusCode.APPROVED: (
         RepairStatusCode.IN_REPAIR,
+        # QUOTE-DECISION: reopening an approved quote sends the order back to
+        # be quoted again. Event-only: see EVENT_ONLY_EDGES.
+        RepairStatusCode.DIAGNOSING,
         RepairStatusCode.CANCELLED,
     ),
     # M10 — the bench. Work pauses when a part is missing and resumes when it
@@ -219,6 +222,8 @@ EVENT_ONLY_STATES: frozenset[str] = frozenset({
 #: proposal against it, which is exactly the inconsistency M9 exists to prevent.
 EVENT_ONLY_EDGES: frozenset[tuple[str, str]] = frozenset({
     (RepairStatusCode.WAITING_APPROVAL, RepairStatusCode.DIAGNOSING),
+    # Only `reopen_approved_quote` walks it: it is what voids the approval.
+    (RepairStatusCode.APPROVED, RepairStatusCode.DIAGNOSING),
 })
 
 #: States that end an order's life. Reaching one stamps `closed_at`.
@@ -1420,6 +1425,8 @@ def customer_visible_quote(repair_order):
     Only a quote that was actually sent. A draft is the shop thinking out loud,
     and a cancelled one was withdrawn — but an expired or already-decided quote
     IS returned, because hiding it would make somebody believe it never existed.
+    So is a SUPERSEDED one: the customer approved it, and what they must read
+    next is "this is being quoted again", not an older answer or nothing.
     """
     return (
         repair_order.quotes
@@ -1427,6 +1434,7 @@ def customer_visible_quote(repair_order):
             RepairQuote.STATUS_SENT,
             RepairQuote.STATUS_APPROVED,
             RepairQuote.STATUS_REJECTED,
+            RepairQuote.STATUS_SUPERSEDED,
         ))
         .order_by('-revision', '-pk')
         .first()
@@ -1442,6 +1450,9 @@ def record_quote_decision(
     decision: str,
     reason: str = '',
     request=None,
+    channel: str = RepairQuoteDecision.CHANNEL_CUSTOMER_ACCOUNT,
+    recorded_by=None,
+    note: str = '',
 ) -> RepairQuoteDecision:
     """
     Record what the customer answered, once and for all.
@@ -1457,9 +1468,15 @@ def record_quote_decision(
     the order row is locked first so two requests serialise here rather than
     both reading "no decision yet".
 
-    THE CHANNEL IS NOT A PARAMETER. A decision made through the authenticated
-    customer surface is `customer_account`. Recording "they approved by phone"
-    is a different endpoint with different authority, and it does not exist yet.
+    THE CHANNEL IS THE CALLER'S FACT, NEVER THE CLIENT'S STRING. Each door
+    passes its own: the authenticated customer surface `customer_account`, the
+    tracking link `tracking_link`, and the staff endpoint one of the `staff_*`
+    channels together with `recorded_by`. No request body can choose it for a
+    door it did not come through.
+
+    WHEN STAFF RECORD IT (`recorded_by` set), the record says so: `source` is
+    `staff`, `user` stays empty — the customer did not press anything — and the
+    history line is the shop's, signed by the employee.
 
     THE IP COMES FROM THE PLATFORM'S AUTHORITY. `client_ip.get_client_ip()`
     respects `TRUSTED_PROXY_COUNT`; reading `X-Forwarded-For` here would let the
@@ -1505,14 +1522,21 @@ def record_quote_decision(
         stamp = 'rejected_at'
     locked_quote.save(update_fields=['status', stamp, 'updated_at'])
 
+    by_staff = recorded_by is not None
     record = RepairQuoteDecision.objects.create(
         company_id=locked_order.company_id,
         repair_order=locked_order,
         quote=locked_quote,
         customer=customer,
-        user=user,
+        user=None if by_staff else user,
         decision=decision,
-        channel=RepairQuoteDecision.CHANNEL_CUSTOMER_ACCOUNT,
+        channel=channel,
+        source=(
+            RepairQuoteDecision.SOURCE_STAFF if by_staff
+            else RepairQuoteDecision.SOURCE_CUSTOMER
+        ),
+        recorded_by=recorded_by,
+        note=note or '',
         reason=reason or '',
         quoted_total=locked_quote.total,
         currency=locked_quote.currency,
@@ -1529,16 +1553,23 @@ def record_quote_decision(
         to_status=(
             RepairStatusCode.APPROVED if approving else RepairStatusCode.REJECTED
         ),
-        actor=user,
-        origin=RepairStatusHistory.ORIGIN_CUSTOMER,
-        comment='',
+        actor=recorded_by if by_staff else user,
+        origin=(
+            RepairStatusHistory.ORIGIN_INTERNAL if by_staff
+            else RepairStatusHistory.ORIGIN_CUSTOMER
+        ),
+        comment=(
+            f'Decisión del cliente registrada por el personal '
+            f'({record.get_channel_display().lower()}).' if by_staff else ''
+        ),
         request=request,
     )
 
     AdminAuditLog.log(
-        actor=user,
+        actor=recorded_by if by_staff else user,
         action=(
-            'service_quote_approved' if approving else 'service_quote_rejected'
+            'service_quote_decision_recorded' if by_staff
+            else 'service_quote_approved' if approving else 'service_quote_rejected'
         ),
         target_type='repair_quote',
         target_id=locked_quote.pk,
@@ -1549,6 +1580,8 @@ def record_quote_decision(
             'total': str(locked_quote.total),
             'currency': locked_quote.currency,
             'channel': record.channel,
+            'source': record.source,
+            'decision': record.decision,
         },
         request=request,
         company=locked_order.company,
@@ -1562,6 +1595,109 @@ def record_quote_decision(
         approved=(record.decision == RepairQuoteDecision.DECISION_APPROVE),
     )
     return record
+
+
+@transaction.atomic
+def record_staff_quote_decision(*, quote, actor, decision: str, channel: str,
+                                note: str = '', request=None) -> RepairQuoteDecision:
+    """
+    A staff member writes down what the customer told them.
+
+    The customer said "go ahead" at the counter, on the phone or in a message;
+    somebody has to record it for the repair to start. This does, and it never
+    pretends the customer pressed a button: the record carries `source=staff`,
+    the employee in `recorded_by`, and the channel the answer arrived by.
+
+    `channel` is one of `RepairQuoteDecision.STAFF_CHANNELS` (`in_person`,
+    `phone`, `whatsapp`, `other`). The customer's own channels cannot be named
+    here: a staff member cannot record a decision as if it had come from the
+    customer's account.
+
+    Same rules as any decision: one per quote, idempotent for the same answer,
+    a conflict for the opposite one, and only for a quote that is waiting.
+    """
+    stored = RepairQuoteDecision.STAFF_CHANNELS.get((channel or '').strip())
+    if stored is None:
+        raise QuoteError(
+            'Indica por dónde respondió el cliente: presencial, llamada, WhatsApp u otro.'
+        )
+    note = ' '.join(str(note or '').split())
+    if len(note) > 300:
+        raise QuoteError('La nota admite hasta 300 caracteres.')
+    order = RepairOrder.objects.select_related('customer').get(pk=quote.repair_order_id)
+    return record_quote_decision(
+        quote=quote, customer=order.customer, user=None, decision=decision,
+        request=request, channel=stored, recorded_by=actor, note=note,
+    )
+
+
+@transaction.atomic
+def reopen_approved_quote(*, quote, actor, reason: str, request=None) -> RepairQuote:
+    """
+    The work changed after the customer approved: quote it again.
+
+    AN APPROVAL IS FOR WHAT WAS APPROVED. An approved quote cannot be edited, so
+    a new price is a new revision — and the old approval must stop authorising
+    anything the moment that revision exists. This is the only way to do it:
+
+      * the approved quote becomes `superseded` (its decision stays, as history);
+      * the order goes back to `diagnosing`;
+      * a new DRAFT revision is opened with the same lines, to be changed,
+        published and answered again.
+
+    Only before the repair starts. Once work is under way the parts may already
+    be spent, and re-pricing that is a different conversation with different
+    consequences; it is refused here rather than half-supported.
+    """
+    reason = ' '.join(str(reason or '').split())
+    if not reason:
+        raise QuoteError('Indica por qué se vuelve a cotizar.')
+    if len(reason) > 300:
+        raise QuoteError('El motivo admite hasta 300 caracteres.')
+
+    locked_order = RepairOrder.objects.select_for_update().get(pk=quote.repair_order_id)
+    locked_quote = RepairQuote.objects.select_for_update().get(pk=quote.pk)
+    if locked_quote.status != RepairQuote.STATUS_APPROVED:
+        raise QuoteError('Sólo se reabre una cotización aprobada.')
+    if locked_order.status != RepairStatusCode.APPROVED:
+        raise QuoteError(
+            'La reparación ya empezó: la cotización aprobada no se puede reabrir.'
+        )
+
+    locked_quote.status = RepairQuote.STATUS_SUPERSEDED
+    locked_quote.superseded_at = timezone.now()
+    locked_quote.save(update_fields=['status', 'superseded_at', 'updated_at'])
+
+    _apply_transition(
+        locked_order, to_status=RepairStatusCode.DIAGNOSING, actor=actor,
+        origin=RepairStatusHistory.ORIGIN_INTERNAL,
+        comment=f'Cotización aprobada reabierta: {reason}', request=request,
+    )
+
+    fresh = create_quote(
+        repair_order=locked_order, diagnostic=locked_quote.diagnostic,
+        valid_until=None, customer_notes=locked_quote.customer_notes,
+        internal_notes=locked_quote.internal_notes, actor=actor, request=request,
+    )
+    for item in locked_quote.items.order_by('pk'):
+        add_quote_item(
+            quote=fresh, description=item.description, quantity=item.quantity,
+            unit_price=item.unit_price, item_type=item.item_type, product=item.product,
+        )
+    if locked_quote.discount_amount:
+        fresh = update_quote(quote=fresh, discount_amount=locked_quote.discount_amount)
+
+    AdminAuditLog.log(
+        actor=actor, action='service_quote_reopened', target_type='repair_quote',
+        target_id=locked_quote.pk,
+        metadata={
+            'repair_order_id': locked_order.pk, 'number': locked_order.number,
+            'superseded_revision': locked_quote.revision, 'new_revision': fresh.revision,
+            'previous_total': str(locked_quote.total), 'reason': reason,
+        },
+        request=request, company=locked_order.company,
+    )
+    return RepairQuote.objects.get(pk=fresh.pk)
 
 
 # ===========================================================================

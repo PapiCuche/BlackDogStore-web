@@ -589,7 +589,7 @@ class V1ServiceQuoteSerializer(serializers.ModelSerializer):
             'customer_notes', 'internal_notes',
             'items', 'decision', 'created_by_name',
             'created_at', 'updated_at', 'sent_at',
-            'approved_at', 'rejected_at', 'cancelled_at',
+            'approved_at', 'rejected_at', 'cancelled_at', 'superseded_at',
         )
         read_only_fields = fields
 
@@ -611,6 +611,12 @@ class V1ServiceQuoteSerializer(serializers.ModelSerializer):
             'decision': record.decision,
             'reason': record.reason,
             'channel': record.channel,
+            'channel_label': record.get_channel_display(),
+            # Who pressed the button: the customer, or an employee writing down
+            # what the customer told them — and then which employee, and why.
+            'source': record.source,
+            'recorded_by': getattr(record.recorded_by, 'username', '') or None,
+            'note': record.note,
             'decided_at': record.decided_at,
         }
 

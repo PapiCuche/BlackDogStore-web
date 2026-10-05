@@ -4870,12 +4870,17 @@ class RepairQuote(models.Model):
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
     STATUS_CANCELLED = 'cancelled'
+    # QUOTE-DECISION. An APPROVED quote that the shop reopened because the work
+    # changed. The approval it carried stays on record and authorises nothing:
+    # an approval is for what was approved, not for whatever the price becomes.
+    STATUS_SUPERSEDED = 'superseded'
     STATUS_CHOICES = [
         (STATUS_DRAFT, 'Borrador'),
         (STATUS_SENT, 'Enviada'),
         (STATUS_APPROVED, 'Aprobada'),
         (STATUS_REJECTED, 'Rechazada'),
         (STATUS_CANCELLED, 'Anulada'),
+        (STATUS_SUPERSEDED, 'Reemplazada'),
     ]
 
     #: Once a quote leaves DRAFT it is evidence. Nothing below may be edited.
@@ -4931,6 +4936,8 @@ class RepairQuote(models.Model):
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
+    # QUOTE-DECISION: when an approved quote was reopened and stopped authorising work.
+    superseded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-revision', '-pk']
@@ -5158,8 +5165,37 @@ class RepairQuoteDecision(models.Model):
     ]
 
     CHANNEL_CUSTOMER_ACCOUNT = 'customer_account'
+    # QUOTE-DECISION. The customer answered from the tracking link they hold.
+    CHANNEL_TRACKING_LINK = 'tracking_link'
+    # QUOTE-DECISION. STAFF wrote down what the customer told them. These are
+    # set by a different endpoint, behind its own capability, and always with
+    # `source=staff` and `recorded_by`: the record never claims the customer
+    # pressed a button they did not press.
+    CHANNEL_STAFF_IN_PERSON = 'staff_in_person'
+    CHANNEL_STAFF_PHONE = 'staff_phone'
+    CHANNEL_STAFF_WHATSAPP = 'staff_whatsapp'
+    CHANNEL_STAFF_OTHER = 'staff_other'
     CHANNEL_CHOICES = [
         (CHANNEL_CUSTOMER_ACCOUNT, 'Cuenta del cliente'),
+        (CHANNEL_TRACKING_LINK, 'Enlace de seguimiento'),
+        (CHANNEL_STAFF_IN_PERSON, 'Presencial'),
+        (CHANNEL_STAFF_PHONE, 'Llamada'),
+        (CHANNEL_STAFF_WHATSAPP, 'WhatsApp'),
+        (CHANNEL_STAFF_OTHER, 'Otro'),
+    ]
+    #: What a staff member may name, and the channel it is stored as.
+    STAFF_CHANNELS = {
+        'in_person': CHANNEL_STAFF_IN_PERSON,
+        'phone': CHANNEL_STAFF_PHONE,
+        'whatsapp': CHANNEL_STAFF_WHATSAPP,
+        'other': CHANNEL_STAFF_OTHER,
+    }
+
+    SOURCE_CUSTOMER = 'customer'
+    SOURCE_STAFF = 'staff'
+    SOURCE_CHOICES = [
+        (SOURCE_CUSTOMER, 'El cliente'),
+        (SOURCE_STAFF, 'Registrada por el personal'),
     ]
 
     company = models.ForeignKey(
@@ -5186,6 +5222,19 @@ class RepairQuoteDecision(models.Model):
         max_length=32, choices=CHANNEL_CHOICES, default=CHANNEL_CUSTOMER_ACCOUNT,
     )
 
+    # WHO ACTED, as distinct from who decided. `customer` always decided.
+    # `source=customer`: they did it themselves (`user` is their login, or empty
+    # when it came through the tracking link). `source=staff`: an employee
+    # recorded what the customer told them, and `recorded_by` is that employee.
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_CUSTOMER,
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_quote_decisions_recorded',
+    )
+    # Staff → file. "Called at 10:15 and accepted." Internal.
+    note = models.CharField(max_length=300, blank=True, default='')
     # Customer → company. Optional, never echoed to a public timeline: free text
     # from a customer is not something a future visibility policy should be able
     # to publish by accident.
@@ -5223,6 +5272,63 @@ class RepairQuoteDecision(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una decisión del cliente no se puede borrar.')
+
+
+class RepairTrackingLink(models.Model):
+    """
+    SERVICE-TRACKING — the address a customer follows their repair at.
+
+    THE TOKEN IS NOT STORED. What is stored is `uid`, a random identifier; the
+    token handed to the customer is `uid` plus a MAC of it made with the
+    server's secret (`tracking_services`). A copy of this table is therefore not
+    a list of working links, and the link can still be rebuilt whenever a
+    notification needs to carry it.
+
+    ONE LIVE LINK PER ORDER. Rotating revokes the current one and creates
+    another; revoking leaves none. Rows are kept: "this link was valid from A
+    to B" is what answers "who could have seen this".
+
+    It opens ONE order, of one company, and shows only what that order's
+    customer may see. It is not an account and grants nothing else.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='repair_tracking_links',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.CASCADE, related_name='tracking_links',
+    )
+    uid = models.CharField(max_length=32, unique=True, editable=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_tracking_links_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_tracking_links_revoked',
+    )
+    # How often it was opened. No address, no device: knowing the link is used
+    # does not require knowing by whom.
+    view_count = models.PositiveIntegerField(default=0)
+    last_viewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order'], condition=models.Q(revoked_at__isnull=True),
+                name='one_live_tracking_link_per_order',
+            ),
+        ]
+
+    def __str__(self):
+        return f'seguimiento orden {self.repair_order_id}'
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
 
 
 class RepairResultCode(models.TextChoices):

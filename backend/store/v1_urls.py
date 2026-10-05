@@ -18,6 +18,9 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .tracking_views import (
+    TrackingEvidenceContentView, TrackingQuoteDecisionView, TrackingView,
+)
 from .evidence_views import (
     CustomerEvidenceContentView, CustomerEvidenceListView,
     InternalEvidenceContentView, InternalEvidenceDetailView,
@@ -66,6 +69,9 @@ from .v1_service_views import (
     V1ServiceQualityPassView,
     V1ServiceQualityView,
     V1ServiceQuoteCancelView,
+    V1ServiceQuoteRecordDecisionView,
+    V1ServiceQuoteReopenView,
+    V1ServiceTrackingLinkView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
     V1ServiceQuoteListView,
@@ -347,6 +353,38 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/cancel/',
         V1ServiceQuoteCancelView.as_view(), name='v1-internal-service-quote-cancel',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/decision/',
+        V1ServiceQuoteRecordDecisionView.as_view(), name='v1-internal-service-quote-decision',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/reopen/',
+        V1ServiceQuoteReopenView.as_view(), name='v1-internal-service-quote-reopen',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/',
+        V1ServiceTrackingLinkView.as_view(), name='v1-internal-service-tracking-link',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/rotate/',
+        V1ServiceTrackingLinkView.as_view(action='rotate'),
+        name='v1-internal-service-tracking-link-rotate',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/revoke/',
+        V1ServiceTrackingLinkView.as_view(action='revoke'),
+        name='v1-internal-service-tracking-link-revoke',
+    ),
+    # TRACKING — public, by link. No session: the token in the path is the key.
+    path('tracking/<str:token>/', TrackingView.as_view(), name='v1-tracking'),
+    path(
+        'tracking/<str:token>/evidence/<int:evidence_id>/content/',
+        TrackingEvidenceContentView.as_view(), name='v1-tracking-evidence-content',
+    ),
+    path(
+        'tracking/<str:token>/quotes/<int:quote_id>/decision/',
+        TrackingQuoteDecisionView.as_view(), name='v1-tracking-quote-decision',
     ),
     # --- M10 / BR-005C — the bench ---
     #

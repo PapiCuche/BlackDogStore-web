@@ -142,6 +142,10 @@ REST_FRAMEWORK = {
         # previsualización puede recodificar cientos de imágenes.
         'admin_import': '30/min',
         'admin_order_email_resend': '10/min',
+        # TRACKING. Una página de seguimiento pide la orden y una imagen por foto.
+        'tracking_read': '240/min',
+        'tracking_write': '20/min',
+        'account_repairs': '60/min',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
         'admin_sales_notes': '60/min',

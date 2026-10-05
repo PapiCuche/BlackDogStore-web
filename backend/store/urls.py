@@ -123,6 +123,7 @@ from .tenant_views import (
     AdminCompanyListView, AdminMembershipDetailView, AdminMembershipListView,
     MyMembershipsView,
 )
+from .tracking_views import AccountRepairClaimView, AccountRepairsView
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
     AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
@@ -358,6 +359,10 @@ urlpatterns = [
     # about them are internal control only.
     path('admin/customers/', AdminCustomerListView.as_view(), name='admin-customers'),
     path('admin/customers/<int:pk>/', AdminCustomerDetailView.as_view(), name='admin-customer-detail'),
+
+    # --- TRACKING: the signed-in customer's own repairs ---
+    path('account/repairs/', AccountRepairsView.as_view(), name='account-repairs'),
+    path('account/repairs/claim/', AccountRepairClaimView.as_view(), name='account-repairs-claim'),
 
     # --- SaaS Phase 2E: internal document sequences ---
     # `scope/` before `<int:pk>/` so the literal segment is not swallowed by
