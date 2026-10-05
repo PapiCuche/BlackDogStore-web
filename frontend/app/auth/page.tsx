@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BrandLogo } from "../components/BrandLogo";
+import { GoogleSignIn } from "../components/GoogleSignIn";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter } from "next/navigation";
 import {
@@ -78,6 +79,16 @@ export default function AuthPage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "No se pudo completar la acción.");
     }
+  }
+
+  async function handleGoogleSignedIn(signedIn: AuthUser) {
+    // La sesión ya está en sus cookies; desde aquí es un inicio como cualquiera.
+    setUser(signedIn);
+    setError(null);
+    setSuccess("Inicio de sesión correcto.");
+    forgetInternalAccess();
+    window.dispatchEvent(new Event("authChange"));
+    router.push(await destinationAfterLogin());
   }
 
   async function handleLogout() {
@@ -288,6 +299,9 @@ export default function AuthPage() {
                 {isLogin ? "Iniciar sesión" : "Registrarme"}
               </button>
             </form>
+
+            {/* Entrar y registrarse con Google son lo mismo: la primera vez crea la cuenta. */}
+            <GoogleSignIn onSignedIn={handleGoogleSignedIn} />
 
             <div className="mt-6 space-y-3 text-center text-sm text-muted">
               <div>

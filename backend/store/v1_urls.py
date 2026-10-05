@@ -18,6 +18,12 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .whatsapp_views import (
+    WhatsAppConsentView, WhatsAppRetryView, WhatsAppSettingsView, WhatsAppWebhookView,
+)
+from .tracking_views import (
+    TrackingEvidenceContentView, TrackingQuoteDecisionView, TrackingView,
+)
 from .evidence_views import (
     CustomerEvidenceContentView, CustomerEvidenceListView,
     InternalEvidenceContentView, InternalEvidenceDetailView,
@@ -66,13 +72,19 @@ from .v1_service_views import (
     V1ServiceQualityPassView,
     V1ServiceQualityView,
     V1ServiceQuoteCancelView,
+    V1ServiceQuoteRecordDecisionView,
+    V1ServiceQuoteReopenView,
+    V1ServiceQuoteTicketView,
+    V1ServiceCustomerUnlinkAccountView,
+    V1ServiceTrackingLinkActionView,
+    V1ServiceTrackingLinkView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
     V1ServiceQuoteListView,
     V1ServiceQuotePublishView,
     V1ServiceCustomerSearchView,
     V1ServiceDeviceDetailView,
-    V1ServiceDeviceListView,
+    V1ServiceDeviceListView, V1ServiceDeviceLookupView,
     V1ServiceOrderAssignmentView,
     V1ServiceTechnicianCandidatesView,
     V1ServiceOrderDetailView,
@@ -277,6 +289,10 @@ urlpatterns = [
         V1ServiceDeviceListView.as_view(), name='v1-internal-service-devices',
     ),
     path(
+        'internal/<slug:company_slug>/service/devices/lookup/',
+        V1ServiceDeviceLookupView.as_view(), name='v1-internal-service-device-lookup',
+    ),
+    path(
         'internal/<slug:company_slug>/service/devices/<int:pk>/',
         V1ServiceDeviceDetailView.as_view(), name='v1-internal-service-device-detail',
     ),
@@ -343,6 +359,71 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/cancel/',
         V1ServiceQuoteCancelView.as_view(), name='v1-internal-service-quote-cancel',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/decision/',
+        V1ServiceQuoteRecordDecisionView.as_view(), name='v1-internal-service-quote-decision',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/ticket/',
+        V1ServiceQuoteTicketView.as_view(), name='v1-internal-service-quote-ticket',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/quotes/<int:quote_id>/reopen/',
+        V1ServiceQuoteReopenView.as_view(), name='v1-internal-service-quote-reopen',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/',
+        V1ServiceTrackingLinkView.as_view(), name='v1-internal-service-tracking-link',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/reveal/',
+        V1ServiceTrackingLinkActionView.as_view(action='reveal'),
+        name='v1-internal-service-tracking-link-reveal',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/customers/<int:pk>/unlink-account/',
+        V1ServiceCustomerUnlinkAccountView.as_view(),
+        name='v1-internal-service-customer-unlink-account',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/rotate/',
+        V1ServiceTrackingLinkActionView.as_view(action='rotate'),
+        name='v1-internal-service-tracking-link-rotate',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/revoke/',
+        V1ServiceTrackingLinkActionView.as_view(action='revoke'),
+        name='v1-internal-service-tracking-link-revoke',
+    ),
+    # WHATSAPP-NOTIFY
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/notifications/'
+        '<int:notification_id>/whatsapp/retry/',
+        WhatsAppRetryView.as_view(), name='v1-internal-service-whatsapp-retry',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/customers/<int:pk>/whatsapp-consent/',
+        WhatsAppConsentView.as_view(), name='v1-internal-service-whatsapp-consent',
+    ),
+    path(
+        'internal/<slug:company_slug>/messaging/whatsapp/',
+        WhatsAppSettingsView.as_view(), name='v1-internal-messaging-whatsapp',
+    ),
+    # Called by the provider. The signature is the credential.
+    path(
+        'webhooks/whatsapp/<slug:company_slug>/',
+        WhatsAppWebhookView.as_view(), name='v1-webhook-whatsapp',
+    ),
+    # TRACKING — public, by link. No session: the token in the path is the key.
+    path('tracking/<str:token>/', TrackingView.as_view(), name='v1-tracking'),
+    path(
+        'tracking/<str:token>/evidence/<int:evidence_id>/content/',
+        TrackingEvidenceContentView.as_view(), name='v1-tracking-evidence-content',
+    ),
+    path(
+        'tracking/<str:token>/quotes/<int:quote_id>/decision/',
+        TrackingQuoteDecisionView.as_view(), name='v1-tracking-quote-decision',
     ),
     # --- M10 / BR-005C — the bench ---
     #

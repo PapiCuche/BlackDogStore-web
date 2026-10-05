@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar MEDIA-EVIDENCE)
+master: ver `git log -1 origin/master` (este archivo se escribió al cerrar SERVICE-TRACKING)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6): CI verde. Versión mayor que el lanzamiento no necesita; se
@@ -12,20 +12,23 @@ open_prs:
 
 current_phase:
 READY FOR EXTERNAL PRODUCTION CONFIGURATION, con una condición: repetir el ensayo de
-producción. La aplicación incluye ya la V3, la impresión en tienda, las imágenes de
-producto, la carga masiva con imágenes y las evidencias de servicio completas. No hay nada
-publicado en Internet.
+producción. La aplicación incluye ya el seguimiento del cliente por enlace, las decisiones
+de cotización con su ticket, los avisos por WhatsApp (con proveedor falso), los equipos con
+número de serie, las categorías de portada configurables y «Continuar con Google». No hay
+nada publicado en Internet.
 
 current_priority:
-1. Repetir `sh deploy/rehearsal.sh` sobre `master`: el último es anterior a #81, #82 y a
-   MEDIA-EVIDENCE (migraciones `0098`–`0101`, imágenes en el volumen de archivos).
+1. Repetir `sh deploy/rehearsal.sh` sobre `master`: el último es anterior a #81, #82,
+   MEDIA-EVIDENCE y SERVICE-TRACKING (migraciones `0098`–`0109`).
 2. Esperar los datos del propietario (blocked_external).
-3. Con ellos: `docs/despliegue-produccion.md` §4, en orden.
+3. Con ellos: `docs/despliegue-produccion.md` §4, en orden; para WhatsApp,
+   `docs/seguimiento-whatsapp-equipos.md` §4.1 y la tarea de `docs/despliegue-produccion.md` §6.1.3.
 
 validated:
-- Backend: 4965 pruebas en PostgreSQL 16, 0 fallos, 4 omitidas.
-- Frontend: Jest 659/659, typecheck, lint 0 errores / 22 avisos, build.
-- Playwright completo: 179/179, 0 omitidas.
+- Backend: 5172 pruebas en PostgreSQL, 0 fallos, 4 omitidas (suite completa local).
+- Frontend: Jest 765/765, typecheck, lint 0 errores / 22 avisos, build.
+- Playwright completo: 183/183, 0 omitidas.
+- Revisión independiente de seguridad de la rama: sin P1; 2 P2 y 5 P3, corregidos.
 - Ensayo de producción: `ENSAYO: OK` (83 + 26) sobre `9043c89`. DESACTUALIZADO.
 
 blocked_external:
@@ -35,6 +38,9 @@ blocked_external:
 - Credenciales de Izipay: producción, y sandbox para `IzipaySandboxSmokeTest`
   (IZIPAY-TOKEN-CONTRACT).
 - Destino de la copia externa (ahora incluye las imágenes de producto y las evidencias).
+- WhatsApp Business: número, plantillas aprobadas por Meta, token de acceso, secreto de la
+  aplicación y token de verificación del webhook (WHATSAPP-CREDENTIALS).
+- ID de cliente OAuth de Google con el dominio como origen autorizado (GOOGLE-CLIENT-ID).
 - Licencia de las imágenes de la propuesta (Apple/Figma): no se versionan; se suben desde el panel.
 - Texto de marca de la V3 que nombra a Apple: lo decide el propietario y lo escribe en su panel.
 - Configuración del repositorio: alertas de vulnerabilidad, escaneo de secretos y protección
@@ -42,7 +48,11 @@ blocked_external:
 
 known_debt (todo P4 o propuesta; detalle en `docs/AUDIT_MEMORY.md`):
 - IMPORT-BODY-LIMIT: Caddy no pone tope al cuerpo de una petición.
-- EVIDENCE-CUSTOMER-WEB: el cliente no tiene pantalla web para sus evidencias compartidas.
+- SERIAL-TRANSFER, SERIAL-COUNT, SERIAL-PICK: transferir equipos con serie, recuento por
+  series y elegir el equipo al vender.
+- CUSTOMER-UNLINK-UI: deshacer una vinculación cuenta–cliente sólo existe en la API; no hay
+  fusión de dos registros del mismo cliente.
+- GOOGLE-NONCE-CACHE, WHATSAPP-INLINE-SEND: ver `docs/AUDIT_MEMORY.md` §10.
 - TEST-ORDER-C15: una clase de pruebas depende del orden de ejecución.
 - HERO-VARIANT-LEGACY (obsoleto): `hero_variant` sigue en el modelo y la API.
 - Propuestas de evidencias: exigir fotos por etapa, plantillas de recepción, ZIP de

@@ -189,6 +189,8 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
     const device = await api(page, "POST", `${INTERNAL}/service/devices/`, {
       customer_id: customer.data.id,
       device_type: "phone",
+      // Un teléfono lleva IMEI; éste es de prueba y no tiene uno que leer.
+      identifiers_pending_reason: "[E2E] equipo de prueba, sin IMEI que leer",
       brand: "Prueba",
       model: "H4.1.1",
       notes: `${MARK} equipo de ${RUN}`,

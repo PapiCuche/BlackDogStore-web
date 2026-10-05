@@ -14,6 +14,9 @@ djangorestframework==3.18.1
 
 # JWT authentication
 djangorestframework-simplejwt==5.5.1
+# Verifica el ID token de «Continuar con Google» (store/google_identity.py).
+# Ya llegaba como dependencia de simplejwt; se declara porque ahora se importa.
+PyJWT==2.13.0
 
 # Environment variable management
 django-environ==0.14.0

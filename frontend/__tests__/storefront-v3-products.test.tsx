@@ -40,7 +40,13 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   }
-  (window as unknown as { IntersectionObserver: unknown }).IntersectionObserver = Observer;
+  // El carrusel sólo trabaja a la vista (CAROUSEL-MOTION): aquí está a la
+  // vista desde que se observa.
+  class Visible extends Observer {
+    constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) { super(); }
+    observe() { this.callback([{ isIntersecting: true }]); }
+  }
+  (window as unknown as { IntersectionObserver: unknown }).IntersectionObserver = Visible;
   (window as unknown as { ResizeObserver: unknown }).ResizeObserver = Observer;
 });
 

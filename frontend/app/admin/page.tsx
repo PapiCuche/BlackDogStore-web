@@ -260,11 +260,21 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
         >
           {inventory.has_branch_access ? (
             <>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 <SummaryStatCard
                   label="Unidades en stock"
                   value={inventory.total_units}
                   hint="Solo productos activos"
+                  icon={IconInventory}
+                />
+                <SummaryStatCard
+                  label="Equipos disponibles"
+                  value={inventory.equipment_available}
+                  hint={
+                    inventory.equipment_reserved > 0
+                      ? `Con serie, incluidos en las unidades · ${inventory.equipment_reserved} apartados`
+                      : "Con serie, incluidos en las unidades"
+                  }
                   icon={IconInventory}
                 />
                 <SummaryStatCard

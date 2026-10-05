@@ -229,11 +229,31 @@ def emit(
             priority, target_type, target_id, customer=customer, source=source,
         ))
 
+    alive = [n for n in made if n is not None]
     if event_type in events.EMAIL_WORTHY_EVENTS:
-        alive = [n for n in made if n is not None]
         transaction.on_commit(lambda: _deliver_emails(alive))
+    _queue_whatsapp(alive)
 
     return event
+
+
+def _queue_whatsapp(notifications):
+    """
+    Write the WhatsApp outbox rows, and schedule the first attempt.
+
+    In a SAVEPOINT of its own and behind a catch-all: a company's messaging
+    configuration being wrong is not a reason for a repair order to fail.
+    """
+    from . import whatsapp_services
+
+    try:
+        with transaction.atomic():
+            pending = whatsapp_services.queue(notifications)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.exception('no se pudo encolar el aviso por WhatsApp')
+        return
+    if pending:
+        transaction.on_commit(lambda: whatsapp_services.attempt(pending))
 
 
 def _unique(items):

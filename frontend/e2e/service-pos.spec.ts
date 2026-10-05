@@ -140,6 +140,8 @@ test.describe("SVC-FUNC-01 · servicio técnico desde la caja", () => {
     const device = await api(page, "POST", `${INTERNAL}/service/devices/`, {
       customer_id: customer.data.id,
       device_type: "phone",
+      // Un teléfono lleva IMEI; éste es de prueba y no tiene uno que leer.
+      identifiers_pending_reason: "[E2E] equipo de prueba, sin IMEI que leer",
       brand: "Prueba",
       model: `SVCPOS ${RUN}`,
       notes: `${MARK} equipo de ${RUN}`,

@@ -232,7 +232,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["products.manage"],
     status: "implemented",
   },
-  { id: "products.categories", group: "products", label: "Categorías", description: "Taxonomía del catálogo. API tenant-aware, pantalla pendiente.", status: "partial" },
+  {
+    id: "products.categories",
+    group: "products",
+    label: "Categorías",
+    description: "Familias del catálogo: cuáles se ofrecen, cuáles van en la portada y en qué orden.",
+    href: "/admin/products/categories",
+    // `products.view` para llegar; cambiar exige `products.manage`, que el
+    // servidor comprueba en cada guardado.
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
 
   // ── Inventario ───────────────────────────────────────────────────────────
   // Phase 2D: `legacyRoles` is gone from every inventory module. Stock belongs
@@ -302,7 +312,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.reports"],
     status: "implemented",
   },
-  { id: "inventory.serial", group: "inventory", label: "Serial / IMEI", description: "Trazabilidad por unidad.", status: "pending" },
+  {
+    id: "inventory.serial",
+    group: "inventory",
+    label: "Equipos",
+    description: "Equipos con número de serie e IMEI, como parte del stock.",
+    href: "/admin/inventory/units",
+    // Ver exige `inventory.view`; registrar o dar de baja, `inventory.adjust`.
+    // El servidor comprueba las dos en cada operación.
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
 
   // ── Servicio Técnico ─────────────────────────────────────────────────────
   // SVC-NAV-01. Each stage has its own route. They all used to point at
@@ -407,6 +427,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     // Configurar exige `company.manage`; el servidor lo aplica. Con
     // `company.view` se llega y se ve la cola.
     requiredCapabilities: ["company.view"],
+    status: "implemented",
+  },
+  {
+    id: "admin.messaging",
+    group: "administration",
+    label: "Mensajería",
+    description: "Avisos al cliente por WhatsApp: plantillas, activación y estado.",
+    href: "/admin/settings/messaging",
+    // `settings.view` para llegar; cambiar exige `settings.manage`, que el
+    // servidor comprueba. Las credenciales no se gestionan desde aquí.
+    requiredCapabilities: ["settings.view"],
     status: "implemented",
   },
   {

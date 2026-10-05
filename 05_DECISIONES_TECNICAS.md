@@ -14,6 +14,113 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-DEVICE-01 · Un equipo se identifica por lo que su tipo lleva, y lo que no tiene es NULL
+
+- **La regla es del servidor** (`device_identity`): serie obligatoria en teléfono,
+  tablet, laptop, computadora, consola y reloj; IMEI obligatorio sólo en teléfono;
+  segundo IMEI opcional. El formulario no la repite.
+- **El IMEI se valida con su dígito de control (Luhn).** Un marcador («N/A», «0000»)
+  no es un identificador: se rechaza. Lo ausente se guarda vacío/NULL, porque dos
+  equipos con el mismo marcador chocarían en las reglas que impiden registrar el mismo
+  equipo dos veces.
+- **Lo que no se puede leer no bloquea la recepción**, pero se explica: un motivo
+  permite crear la orden con un identificador obligatorio vacío.
+- **El historial del equipo cruza órdenes dentro de la empresa** y, al mostrarse,
+  sólo cuenta las órdenes de las sucursales de quien pregunta.
+
+### DEC-TRACKING-01 · El seguimiento del cliente es por enlace, y el enlace abre una orden
+
+- **Un token opaco, no un número.** 128 bits aleatorios más un sello HMAC con clave
+  derivada; se comprueba el sello antes de tocar la base. No contiene ni permite
+  deducir el id o el número de la orden, tiene una sola escritura válida, y todo lo
+  que no resuelve responde el mismo 404. Revocable y reemplazable; un enlace vivo
+  por orden; una lectura nunca recrea uno revocado.
+- **La vista pública es una lista de lo que sí sale**, armada con los serializadores
+  de la superficie del cliente: sin notas internas, sin personal, sin sucursal, con
+  serie e IMEI enmascarados. Las fotos son las que el taller compartió.
+- **La superficie Bearer del cliente (ADR de autenticación v1) no cambia.** La web
+  lista las reparaciones de la cuenta por cookie (`/api/account/repairs/`) y el
+  detalle se lee siempre por el enlace: una sola vista del cliente.
+- **Quien tiene el enlace decide como el cliente.** Por eso el personal no lo recibe
+  por poder abrir la orden: se revela con un acto explícito y auditado que exige
+  `service.quotes.record_decision`.
+- **Sumar una orden a una cuenta entrega un cliente entero**, así que pide el enlace
+  y el documento registrado, con intentos limitados. No se vincula por correo,
+  teléfono ni nombre, y la tienda puede deshacerlo.
+
+### DEC-QUOTE-01 · Una aprobación dice quién la dio y por dónde, y vale para lo que se aprobó
+
+- **El canal lo pone la puerta, no el cuerpo de la petición**: cuenta del cliente,
+  enlace de seguimiento, o personal (presencial, llamada, WhatsApp, otro).
+- **El personal anota; no finge.** Una decisión registrada por el personal lleva
+  `source=staff`, quién la anotó y el canal; la cuenta del cliente no figura como
+  autora. Tiene capacidad propia (`service.quotes.record_decision`), separada de
+  cotizar.
+- **Una cotización aprobada no se edita.** Cambiar el trabajo es reabrirla: queda
+  `superseded`, la orden vuelve a diagnóstico y nace una revisión nueva. Sólo antes de
+  empezar la reparación.
+- **El ticket de 80 mm existe sólo para una aprobación vigente**, lo decide el
+  servidor, reutiliza el trazado de los demás tickets y no es un comprobante de pago.
+
+### DEC-WHATSAPP-01 · WhatsApp avisa por la API oficial; las credenciales son referencias
+
+- **Sólo la Cloud API de WhatsApp Business.** Nada de WhatsApp Web ni automatización
+  de navegador. El proveedor está detrás de una interfaz (`store/messaging`) con un
+  falso que no envía, como el de Izipay.
+- **Ningún secreto en la base de datos.** Por empresa se guarda el NOMBRE de la
+  variable de entorno de cada credencial; lo fija quien opera la instalación
+  (`configure_whatsapp`), nunca la API, y sólo en el espacio `WHATSAPP_`. La API
+  informa con booleanos.
+- **Consentimiento explícito.** Sin `opt-in` registrado no se escribe; darse de baja
+  gana, también por mensaje.
+- **El aviso es un resumen y un enlace.** Plantilla aprobada con tres parámetros
+  (nombre, número de orden, enlace). Nunca IMEI, notas ni importes.
+- **Bandeja de salida en la transacción.** La fila de entrega se escribe con el
+  cambio de negocio y se envía al confirmarse; lo demás lo reintenta una tarea. Un
+  fallo queda anotado y no deshace nada. Un aviso es un mensaje: fila única y
+  bloqueada mientras se envía. Una petición sin respuesta no se reenvía sola.
+- **El webhook cree lo que viene firmado** (`X-Hub-Signature-256` sobre el cuerpo
+  crudo), sólo toca lo de su empresa y los estados sólo avanzan.
+
+### DEC-SERIAL-01 · Un equipo con serie es stock, no un inventario paralelo
+
+- **`BranchStock.quantity` sigue siendo la única cifra que decide una venta.** Para
+  un producto con serie equivale siempre a los equipos DISPONIBLES de la sucursal.
+- **Se impone en el escritor único del Kardex.** `create_stock_movement` rechaza
+  mover un producto con serie sin los equipos de que se trata; como todo cambio de
+  stock pasa por ahí, ningún ajuste, carga, transferencia o recuento puede
+  desajustar la cifra.
+- **La venta asigna equipos concretos** (los más antiguos de la sucursal) bajo el
+  bloqueo de la fila de stock, en la misma transacción que la salida.
+- **Identificadores únicos por empresa, en cualquier estado.** Un equipo vendido
+  conserva su fila y, si vuelve, es la misma.
+- **El modo sólo cambia con stock cero**, y el escritor relee el modo cuando ya tiene
+  bloqueado el producto.
+- **«Equipos disponibles» es un subconjunto de «Unidades en stock»**, no un sumando.
+
+### DEC-CUSTOMER-01 · La cuenta es la identidad; no se crean fichas vacías
+
+- Registrarse (con contraseña o con Google) crea una cuenta, no un cliente del CRM.
+  El registro de cliente nace cuando hay una relación: una compra o una orden.
+- No se fusiona por nombre, correo ni teléfono. Una orden de mostrador se suma a una
+  cuenta con el enlace y el documento (DEC-TRACKING-01).
+
+### DEC-STOREFRONT-CAT-01 · Las familias de la portada las decide cada tienda
+
+- `Category.is_active`, `show_on_home` y `home_order`. La API pública devuelve ya lo
+  que la tienda debe ver y en su orden; el frontend no tiene una lista ni un orden
+  propios. Retirar una categoría no oculta sus productos.
+
+### DEC-GOOGLE-01 · «Continuar con Google» se verifica en el servidor y abre la sesión de siempre
+
+- **Flujo de ID token, sin secreto de cliente.** El servidor comprueba firma (sólo
+  RS256, con las claves publicadas), audiencia, emisor, caducidad, correo verificado y
+  un `nonce` que él firmó y además dejó en una cookie HttpOnly del navegador.
+- **La identidad es `sub`, no el correo.** Se guarda proveedor y sujeto; ningún token.
+- **Un correo que ya tiene cuenta no se enlaza solo** (`User.email` no está verificado
+  ni es único): 409 y contraseña de esa cuenta para vincular.
+- **Sin contraseña inventada**: la cuenta nueva tiene una inutilizable.
+
 ### DEC-MEDIA-01 · Una sola tubería de imágenes públicas; la galería sólo dice quién muestra qué
 
 - **No hay un segundo almacén.** Las imágenes de producto pasan por

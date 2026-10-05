@@ -32,6 +32,7 @@ from rest_framework.views import APIView
 
 from . import service_services as service
 from .models import (
+    AdminAuditLog,
     Branch,
     Customer,
     Device,
@@ -55,6 +56,7 @@ from .v1_service_serializers import (
     V1ServiceAssignmentWriteSerializer,
     V1ServiceCustomerSerializer,
     V1ServiceDeviceCreateSerializer,
+    V1ServiceDeviceDetailSerializer, V1ServiceDeviceMatchSerializer,
     V1ServiceDeviceSerializer,
     V1ServiceOrderCreateSerializer,
     V1ServiceOrderDetailSerializer,
@@ -186,6 +188,12 @@ class V1ServiceSurfaceMixin(V1InternalSurfaceMixin):
             return
         self.require_capability(company, CAP_ORDERS_ASSIGN)
         self.require_capability(company, CAP_ORDERS_VIEW)
+
+    def device_history_context(self, company) -> dict:
+        """What a device serializer needs to show only the orders this caller reaches."""
+        return {'visible_branch_ids': set(
+            visible_branches(self.request.user, company).values_list('pk', flat=True),
+        )}
 
     def get_order(self, company, pk) -> RepairOrder:
         """
@@ -337,6 +345,15 @@ class V1ServiceDeviceListView(V1ServiceSurfaceMixin, APIView):
                 company=company, customer=customer, actor=request.user,
                 request=request, **data,
             )
+        except service.DeviceIdentityInvalid as exc:
+            # Field by field, like a serializer error: the form marks the input.
+            return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
+        except service.DeviceAlreadyRegistered as exc:
+            return Response(
+                {'detail': str(exc),
+                 'existing_device': V1ServiceDeviceSerializer(exc.existing).data},
+                status=status.HTTP_409_CONFLICT,
+            )
         except service.ServiceError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -344,15 +361,55 @@ class V1ServiceDeviceListView(V1ServiceSurfaceMixin, APIView):
         # A WARNING, not a refusal. Serial numbers are transcribed by hand from
         # a sticker; a duplicate is usually a returning device and sometimes a
         # typo, and the person at the counter is better placed than a constraint
-        # to tell which.
+        # to tell which. Here it is another CUSTOMER's device: one that changed
+        # hands, which is legitimate and worth knowing.
         duplicates = service.find_possible_duplicate_devices(
             company, serial_number=device.serial_number, imei=device.imei,
-            exclude_pk=device.pk,
-        )
-        payload['possible_duplicates'] = V1ServiceDeviceSerializer(
-            duplicates, many=True,
+            imei2=device.imei2, exclude_pk=device.pk,
+        ).prefetch_related('repair_orders')
+        payload['possible_duplicates'] = V1ServiceDeviceMatchSerializer(
+            duplicates, many=True, context=self.device_history_context(company),
         ).data
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class V1ServiceDeviceLookupView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET ?serial_number=&imei=&imei2= — has this device been here before?
+
+    Asked BEFORE registering, so the person at the counter re-uses the device
+    and its history instead of creating a second one. Exact match only, inside
+    the company in the URL: what another company holds is not found, not hidden.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None):
+        from . import device_identity
+
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DEVICES_VIEW)
+
+        params = request.query_params
+        serial = (params.get('serial_number') or '').strip().upper().replace(' ', '')
+        # A number being typed is looked up as it is: validation belongs to
+        # saving, and a lookup that errors on a half-typed IMEI helps nobody.
+        numbers = [
+            ''.join(ch for ch in (params.get(name) or '') if ch.isdigit())
+            for name in ('imei', 'imei2')
+        ]
+        matches = service.find_possible_duplicate_devices(
+            company, serial_number=serial if len(serial) >= device_identity.SERIAL_MIN else '',
+            imei=numbers[0] if len(numbers[0]) == 15 else '',
+            imei2=numbers[1] if len(numbers[1]) == 15 else '',
+        )
+        if not isinstance(matches, list):
+            matches = matches.prefetch_related('repair_orders')
+        return Response({
+            'results': V1ServiceDeviceMatchSerializer(
+                matches, many=True, context=self.device_history_context(company),
+            ).data,
+        })
 
 
 class V1ServiceDeviceDetailView(V1ServiceSurfaceMixin, APIView):
@@ -361,7 +418,10 @@ class V1ServiceDeviceDetailView(V1ServiceSurfaceMixin, APIView):
     def get(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
         self.require_capability(company, CAP_DEVICES_VIEW)
-        return Response(V1ServiceDeviceSerializer(self.get_device(company, pk)).data)
+        device = self.get_device(company, pk)
+        return Response(V1ServiceDeviceDetailSerializer(
+            device, context=self.device_history_context(company),
+        ).data)
 
 
 class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):
@@ -991,6 +1051,226 @@ class V1ServiceQuoteCancelView(V1ServiceQuotingMixin, APIView):
         return Response(
             V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
         )
+
+
+CAP_QUOTE_RECORD_DECISION = 'service.quotes.record_decision'
+
+
+class V1ServiceQuoteRecordDecisionView(V1ServiceQuotingMixin, APIView):
+    """
+    POST — write down what the customer answered, when they answered a person.
+
+    ITS OWN CAPABILITY. Recording an approval starts a repair and commits the
+    customer to a price, so it is not something everyone who may open an order
+    may do, and it is not `service.diagnostic.manage` either: the person who
+    quotes the work should not, by that alone, be the one who says it was
+    accepted.
+
+    The body names the answer, how it arrived and an optional note. It cannot
+    name who is recording it (the session does) nor claim the customer's own
+    channels.
+    """
+
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        self.require_capability(company, CAP_QUOTE_RECORD_DECISION)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            service.record_staff_quote_decision(
+                quote=quote, actor=request.user,
+                decision=request.data.get('decision'),
+                channel=request.data.get('channel'),
+                note=request.data.get('note') or '',
+                request=request,
+            )
+        except service.QuoteDecisionConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'quote': V1ServiceQuoteSerializer(self.get_quote(company, order, quote_id)).data,
+        })
+
+
+class V1ServiceQuoteReopenView(V1ServiceQuotingMixin, APIView):
+    """
+    POST — the approved work changed: void the approval and quote again.
+
+    The answer is the NEW draft revision. The approved quote is left as
+    `superseded`, with its decision, for whoever asks what was agreed before.
+    """
+
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None, quote_id=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DIAGNOSTIC_MANAGE)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        try:
+            fresh = service.reopen_approved_quote(
+                quote=quote, actor=request.user,
+                reason=request.data.get('reason') or '', request=request,
+            )
+        except service.ServiceError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {'quote': V1ServiceQuoteSerializer(self.get_quote(company, order, fresh.pk)).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class V1ServiceQuoteTicketView(V1ServiceQuotingMixin, APIView):
+    """
+    GET — the 80 mm ticket of an APPROVED quote, as a PDF to print.
+
+    Whoever may open the order may print what was agreed on it. The server
+    decides whether there is anything to print: a quote that is not approved —
+    or whose approval was superseded — answers 400, whatever the screen showed.
+
+    `?formato=ticket80` is the only format, and an unknown one is refused
+    rather than guessed (the convention of the sales note and fiscal tickets).
+    """
+
+    FORMATS = ('ticket80',)
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None, pk=None, quote_id=None):
+        from django.http import HttpResponse
+
+        from . import quote_ticket
+
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = self.get_order(company, pk)
+        quote = self.get_quote(company, order, quote_id)
+
+        wanted = (request.query_params.get('formato') or 'ticket80').strip().lower()
+        if wanted not in self.FORMATS:
+            return Response(
+                {'detail': f'Formato no reconocido. Use: {", ".join(self.FORMATS)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            content = quote_ticket.generate_pdf(quote)
+        except quote_ticket.QuoteTicketError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # No audit row: this is a GET, and on the internal surface a safe method
+        # writes nothing (H4.1.1). What matters is on record already — who
+        # approved, by which channel, and who recorded it.
+        response = HttpResponse(content, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{quote_ticket.filename(quote)}"'
+        response['Cache-Control'] = 'private, max-age=0, no-store'
+        return response
+
+
+class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET — whether the order has a link and how often it was opened.
+    POST reveal/ — the link itself. POST rotate/ · revoke/ — replace it or turn
+    it off.
+
+    WHOEVER HOLDS THE LINK CAN ANSWER THE QUOTE AS THE CUSTOMER. So the link is
+    not part of what "may open the order" shows: it is handed only to somebody
+    who may already record the customer's decision
+    (`service.quotes.record_decision`), by an explicit, audited act. A person
+    who quotes and cannot record decisions cannot fetch the link and approve
+    their own quote with it.
+
+    Replacing or revoking changes who can see the order and takes
+    `service.orders.manage`. Neither answers with the link.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def _status(self, company, order):
+        from . import tracking_services as tracking
+
+        return tracking.staff_payload(order, can_reveal=has_capability(
+            self.request.user, company, CAP_QUOTE_RECORD_DECISION,
+        ))
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        return Response(self._status(company, self.get_order(company, pk)))
+
+
+class V1ServiceTrackingLinkActionView(V1ServiceTrackingLinkView):
+    """POST reveal/ · rotate/ · revoke/ — see `V1ServiceTrackingLinkView`."""
+
+    # Its own class and not a branch of the GET one: a route that declares GET
+    # has to answer GET. `options` stays (H4.1.1).
+    http_method_names = ['post', 'options']
+    action = ''
+
+    def post(self, request, company_slug=None, pk=None):
+        from . import tracking_services as tracking
+
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+
+        if self.action == 'reveal':
+            self.require_capability(company, CAP_QUOTE_RECORD_DECISION)
+            order = self.get_order(company, pk)
+            try:
+                return Response(tracking.reveal(order, actor=request.user, request=request))
+            except tracking.TrackingError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        self.require_capability(company, CAP_ORDERS_MANAGE)
+        order = self.get_order(company, pk)
+        if self.action == 'rotate':
+            tracking.rotate(order, actor=request.user, request=request)
+        else:
+            tracking.revoke(order, actor=request.user, request=request)
+        return Response(self._status(company, order))
+
+
+class V1ServiceCustomerUnlinkAccountView(V1ServiceSurfaceMixin, APIView):
+    """
+    POST — the shop undoes the link between a customer record and an account.
+
+    The way out of a wrong link: without it the real customer would be told
+    "this already belongs to another account" with nobody able to fix it.
+    """
+
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        from . import tracking_services as tracking
+
+        company = self.get_internal_company()
+        self.require_capability(company, 'service.customers.manage')
+        customer = Customer.objects.filter(company=company, pk=pk).first()
+        if customer is None:
+            raise NotFound('No encontrado.')
+        try:
+            updated = tracking.unlink_account(
+                customer, actor=request.user,
+                reason=request.data.get('reason') or '', request=request,
+            )
+        except tracking.TrackingError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'id': updated.pk, 'has_account': updated.user_id is not None})
 
 
 # ---------------------------------------------------------------------------

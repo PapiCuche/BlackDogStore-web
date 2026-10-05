@@ -150,6 +150,9 @@ _SALES_CAPS = (
     # SVC-ASSIGN-01: reception and the till name the technician at intake. NOT
     # `service.orders.manage` — the counter does not run the workshop.
     'service.orders.assign',
+    # QUOTE-DECISION: the counter is where a customer says "go ahead", in
+    # person or on the phone. Whoever hears it writes it down.
+    'service.quotes.record_decision',
     # M12B. Ventas IS the counter: the till, the sales note, and now the money a
     # customer hands over for a repair. 0054 had already given this role
     # technical RECEPTION for the same reason — the person who takes the device
@@ -251,6 +254,10 @@ _TECHNICIAN_CAPS = (
 _SERVICE_SUPERVISOR_CAPS = _TECHNICIAN_CAPS + (
     'reports.view',
     'service.customers.manage',
+    # QUOTE-DECISION: the supervisor answers for the workshop to the customer.
+    # The plain technician preset does NOT get it: composing a price and
+    # declaring it accepted are two authorities.
+    'service.quotes.record_decision',
 )
 
 # (name, slug, description, capabilities)

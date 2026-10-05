@@ -9121,9 +9121,13 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              # La matriz legacy tampoco crece aquí. Una membresía anterior al
              # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
              # porque se desplegó software.
-             'sales.fiscal.view'},
-            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio y '
-            'la consulta de comprobantes electrónicos',
+             'sales.fiscal.view',
+             # QUOTE-DECISION. El mostrador anota lo que el cliente respondió
+             # sobre su cotización. Una membresía anterior al RBAC no: decidir
+             # en nombre de un cliente no se adquiere por desplegar software.
+             'service.quotes.record_decision'},
+            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio, '
+            'la consulta de comprobantes electrónicos y anotar la decisión del cliente',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
         self.assertNotIn('service.delivery.manage', legacy_sales)
@@ -30173,7 +30177,8 @@ class M8IntakeApiTest(M8ServiceBase):
         response = self.client.post(_m8_url('m8-taller', 'devices/'), {
             'customer_id': self.other_customer.pk,
             'device_type': 'phone', 'brand': 'Genérica', 'model': 'X100',
-            'serial_number': 'sn-0001',
+            # DEVICE-IDENTITY: a phone is registered with its IMEI.
+            'serial_number': 'sn-0001', 'imei': '490154203237518',
         }, format='json')
         self.assertEqual(response.status_code, 201)
         body = response.json()
@@ -43689,6 +43694,11 @@ class M12BServiceEventsTest(TestCase):
             company=self.company, branch=self.branch, customer=self.customer,
             device=self.device, reported_issue='No enciende.', actor=self.tech,
         )
+        # Receiving the device is itself a notice since NOTIFY-REAL-PATHS, and
+        # it is asserted where it belongs (`test_service_notifications`). These
+        # tests are about what the customer hears AFTERWARDS, so they start
+        # from an inbox that only holds what each of them provokes.
+        _Notif.objects.filter(event__event_type=_ev.SERVICE_ORDER_CREATED).delete()
 
     def _events(self, event_type=None):
         qs = _Event.objects.filter(company=self.company)
@@ -53726,6 +53736,7 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'evidence_id': self.evidence.pk,
             # Sólo los alcanza OPTIONS, que no busca el objeto. Cualquier entero.
             'item_id': 999999, 'usage_id': 999999, 'payment_id': 999999,
+            'notification_id': 999999,
         }
         self.QUERY = {
             'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
@@ -54057,7 +54068,11 @@ class H411CredentialChannelTest(M8ServiceBase):
                 self.assertEqual(classes, [V1InternalAuthentication], route)
             elif V1InternalAuthentication in classes:
                 elsewhere.append(route)
-        self.assertEqual(internal, 71)
+        # 83 desde SERVICE-TRACKING: búsqueda de equipo, decisión/reapertura/ticket
+        # de cotización, enlace de seguimiento (estado, revelar, reemplazar,
+        # desactivar), desvincular cuenta, consentimiento y reintento de
+        # WhatsApp, y configuración de mensajería.
+        self.assertEqual(internal, 83)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------
@@ -55585,11 +55600,13 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'orders/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
         'orders/[id]/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
         'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/categories/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/movements/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/units/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/counts/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
@@ -62462,11 +62479,16 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             before.ADMIN_PREVIOUS | set(before.NEW_CAPABILITIES), module.ADMIN_PREVIOUS,
         )
+        # …the next one (QUOTE-DECISION) starts where this one ended…
+        after = self.migration('0104_grant_quote_decision')
+        self.assertEqual(
+            module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS,
+        )
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
         self.assertEqual(
-            module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES),
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

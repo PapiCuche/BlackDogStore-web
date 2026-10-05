@@ -190,6 +190,13 @@ export type AdminCategory = {
   slug: string;
   /** Con la que la portada presenta la categoría. Vacía = sin imagen. */
   image_url?: string;
+  /** Si se ofrece al público. Retirarla no oculta sus productos. */
+  is_active?: boolean;
+  /** Si la portada la ilustra entre sus familias. */
+  show_on_home?: boolean;
+  /** Orden ascendente en la tienda; los empates van por nombre. */
+  home_order?: number;
+  product_count?: number;
 };
 
 export async function fetchAdminProducts(params?: {
@@ -339,7 +346,10 @@ export async function createAdminCategory(data: {
 
 export async function updateAdminCategory(
   categoryId: number,
-  data: { name?: string; image_url?: string },
+  data: {
+    name?: string; image_url?: string;
+    is_active?: boolean; show_on_home?: boolean; home_order?: number;
+  },
 ): Promise<AdminCategory> {
   const res = await fetchWithAuth(`${API_BASE}/admin/categories/${categoryId}/`, {
     method: 'PATCH',

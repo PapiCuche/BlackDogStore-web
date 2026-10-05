@@ -11,6 +11,7 @@
 // All requests use fetchWithAuth: session cookies + CSRF header. No Bearer, no localStorage.
 
 import { fetchWithAuth } from "./auth";
+import { printPdfResponse, type PrintOutcome } from "./print-pdf";
 import { API_BASE } from "./api";
 
 // ---------------------------------------------------------------------------
@@ -754,82 +755,16 @@ export async function downloadSalesNotePdf(
 }
 
 /** Qué acabó pasando con el ticket. La pantalla necesita poder decirlo. */
-export type TicketOutcome = "printed" | "downloaded";
+export type TicketOutcome = PrintOutcome;
 
 /**
- * Pone el ticket delante del operador.
- *
- * EL DIÁLOGO DE IMPRESIÓN NO SIEMPRE LLEGA, Y ESO NO PUEDE BLOQUEAR EL
- * MOSTRADOR.
- *
- * La primera versión esperaba el `onload` del marco oculto para llamar a
- * imprimir. Medido en navegador: con un PDF servido como blob ese evento NO
- * dispara, así que la promesa no se resolvía nunca y los dos botones se
- * quedaban en «Preparando…» PARA SIEMPRE — con el cliente delante y sin más
- * salida que recargar a media venta. Veinticinco segundos después seguían
- * bloqueados.
- *
- * Ahora la espera está ACOTADA. Si el marco carga a tiempo se abre el diálogo
- * de impresión, que es lo que se quiere. Si no, el documento se descarga: el
- * operador lo tiene igualmente y puede imprimirlo desde el visor. Lo que no
- * ocurre en ningún caso es quedarse esperando un evento que quizá no llegue.
- *
- * Devuelve qué pasó, para que la pantalla lo diga en vez de fingir que imprimió.
+ * Pone el ticket de la nota delante del operador: lo imprime o, si el diálogo
+ * no llega a tiempo, lo descarga. La espera acotada vive en `print-pdf`.
  */
 export async function printSalesNoteTicket(
   orderId: number,
   filenameHint = "ticket",
 ): Promise<TicketOutcome> {
   const res = await fetchSalesNotePdf(orderId, "ticket80");
-  const disposition = res.headers.get("Content-Disposition") ?? "";
-  const served = /filename="([^"]+)"/.exec(disposition)?.[1];
-  const url = URL.createObjectURL(await res.blob());
-
-  const frame = document.createElement("iframe");
-  frame.style.position = "fixed";
-  frame.style.width = "0";
-  frame.style.height = "0";
-  frame.style.border = "0";
-  frame.style.visibility = "hidden";
-
-  // Carrera acotada: gana el `onload`, un fallo, o el reloj. Siempre resuelve.
-  const loaded = await new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(ok);
-    };
-    frame.onload = () => finish(true);
-    frame.onerror = () => finish(false);
-    window.setTimeout(() => finish(false), 3000);
-    frame.src = url;
-    document.body.appendChild(frame);
-  });
-
-  if (loaded) {
-    try {
-      frame.contentWindow?.focus();
-      frame.contentWindow?.print();
-      // El objeto se libera cuando el diálogo ya no lo necesita. Revocarlo
-      // mientras sigue abierto deja al navegador imprimiendo una hoja en blanco.
-      window.setTimeout(() => {
-        frame.remove();
-        URL.revokeObjectURL(url);
-      }, 60_000);
-      return "printed";
-    } catch {
-      // El navegador no deja imprimir el marco: cae a la descarga de abajo.
-    }
-  }
-
-  frame.remove();
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = served ?? `nota-venta-${filenameHint}-ticket80.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  return "downloaded";
+  return printPdfResponse(res, `nota-venta-${filenameHint}-ticket80.pdf`);
 }

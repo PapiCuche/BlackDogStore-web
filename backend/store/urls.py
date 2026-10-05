@@ -123,6 +123,12 @@ from .tenant_views import (
     AdminCompanyListView, AdminMembershipDetailView, AdminMembershipListView,
     MyMembershipsView,
 )
+from .tracking_views import AccountRepairClaimView, AccountRepairsView
+from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .stock_unit_views import (
+    ProductSerializationView, SerializedProductListView, StockUnitActionView,
+    StockUnitDetailView, StockUnitListView,
+)
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
     AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
@@ -149,6 +155,9 @@ urlpatterns = [
         'dev/demo-accounts/',
         DevDemoAccountsView.as_view(), name='dev-demo-accounts',
     ),
+    path('auth/google/config/', GoogleConfigView.as_view(), name='auth-google-config'),
+    path('auth/google/', GoogleSignInView.as_view(), name='auth-google'),
+    path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
@@ -346,6 +355,16 @@ urlpatterns = [
     path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
     path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
     path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    # --- SERIALIZED-STOCK: Inventario › Equipos ---
+    # `products/` before `<int:pk>/`, so the literal is not read as an id.
+    path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
+    path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
+    path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
+    path('admin/inventory/units/<int:pk>/', StockUnitDetailView.as_view(), name='admin-inventory-unit-detail'),
+    path('admin/inventory/units/<int:pk>/write-off/', StockUnitActionView.as_view(action='write-off'), name='admin-inventory-unit-write-off'),
+    path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
+    path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
+    path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
@@ -358,6 +377,10 @@ urlpatterns = [
     # about them are internal control only.
     path('admin/customers/', AdminCustomerListView.as_view(), name='admin-customers'),
     path('admin/customers/<int:pk>/', AdminCustomerDetailView.as_view(), name='admin-customer-detail'),
+
+    # --- TRACKING: the signed-in customer's own repairs ---
+    path('account/repairs/', AccountRepairsView.as_view(), name='account-repairs'),
+    path('account/repairs/claim/', AccountRepairClaimView.as_view(), name='account-repairs-claim'),
 
     # --- SaaS Phase 2E: internal document sequences ---
     # `scope/` before `<int:pk>/` so the literal segment is not swallowed by

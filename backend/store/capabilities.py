@@ -256,6 +256,15 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('service.diagnostic.manage', 'service', 'Diagnóstico y cotización',
          'Registrar diagnósticos y componer, publicar o anular cotizaciones.',
          STATUS_ACTIVE),
+    # QUOTE-DECISION. Writing down that a customer approved or rejected a quote
+    # —at the counter, by phone, by WhatsApp— is asserting somebody else's
+    # consent. It is NOT part of `service.diagnostic.manage`: whoever composes
+    # the price should not, by that alone, be able to declare it accepted. The
+    # record always says a staff member wrote it and which one.
+    _cap('service.quotes.record_decision', 'service', 'Registrar decisión del cliente',
+         'Registrar la aprobación o el rechazo de una cotización que el cliente '
+         'comunicó en persona, por teléfono o por mensaje.',
+         STATUS_ACTIVE),
     # M10 — BR-005C. The module exists: an execution row with the bench work on
     # it, and parts consumed out of the order's own branch through the one
     # inventory primitive that writes stock. ACTIVE on the same terms as the

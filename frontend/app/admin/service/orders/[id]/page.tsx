@@ -28,7 +28,10 @@ import {
   type InternalContext,
 } from "../../../components/InternalControlGuard";
 import { Button, Confirm, ErrorNote, Field, Panel, Pill, dateTime } from "../../components/ServiceUi";
+import { CustomerNoticesPanel } from "../../components/CustomerNoticesPanel";
 import { EvidenceGallery } from "../../components/EvidenceGallery";
+import { QuoteDecisionPanel } from "../../components/QuoteDecisionPanel";
+import { TrackingLinkPanel } from "../../components/TrackingLinkPanel";
 import {
   CAP_DELIVERY_MANAGE,
   CAP_PAYMENTS_MANAGE,
@@ -260,12 +263,16 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <ErrorNote error={error} />
 
         <OrderSummary order={order} />
-        <Panel title="Avisos al cliente" subtitle="Los cambios relevantes generan avisos automáticos. El estado del correo se registra por separado; no se envía WhatsApp ni SMS.">
-          {(order.customer_notifications ?? []).length === 0 ? <p className="text-sm text-muted">Sin avisos registrados para esta orden.</p> : (
-            <ul className="space-y-2 text-sm">{order.customer_notifications?.map((notice) => (
-              <li key={notice.id}>{notice.title} · Correo: {({ not_applicable: 'no previsto para este aviso', pending: 'pendiente', sent: 'enviado', failed: 'fallido', skipped: 'omitido (sin destinatario)' } as Record<string, string>)[notice.email_status] ?? notice.email_status}</li>
-            ))}</ul>
-          )}
+        <Panel
+          title="Avisos al cliente"
+          subtitle="Lo que se le comunicó al cliente sobre esta orden y qué pasó con cada aviso. El estado lo informa el servidor."
+        >
+          <CustomerNoticesPanel
+            slug={slug} orderId={orderId} customerId={order.customer}
+            notices={order.customer_notifications ?? []}
+            whatsapp={order.whatsapp ?? { enabled: false, customer_opt_in: false }}
+            may={may} onChanged={() => void run(async () => undefined)}
+          />
         </Panel>
         <LifecycleSection order={order} may={may} busy={busy} run={run} slug={slug} />
         <AssignmentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
@@ -276,6 +283,12 @@ function OrderContent({ ctx, orderId }: { ctx: InternalContext; orderId: number 
         <QualitySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <PaymentSection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
         <DeliverySection data={data} may={may} busy={busy} run={run} slug={slug} orderId={orderId} />
+        <Panel
+          title="Seguimiento del cliente"
+          subtitle="El enlace con el que el cliente ve el avance, la cotización y las fotos compartidas, sin crear una cuenta. No muestra notas internas ni el IMEI completo."
+        >
+          <TrackingLinkPanel slug={slug} orderId={orderId} mayManage={may("service.orders.manage")} />
+        </Panel>
         <Panel
           title="Evidencias"
           subtitle="Fotografías de cada etapa del servicio, con su nota, su autor y su fecha. Nacen internas: compartirlas con el cliente es una acción aparte."
@@ -563,11 +576,11 @@ function QuoteSection({ data, may, busy, run, slug, orderId }: SectionProps) {
                 </span>
               </div>
 
-              {q.decision ? (
-                <p className="mt-2 text-xs text-foreground/50">
-                  El cliente respondió {dateTime(q.decision.decided_at)}
-                  {q.decision.reason ? ` — “${q.decision.reason}”` : ""}
-                </p>
+              {q.decision || q.status === "sent" || q.status === "approved" ? (
+                <QuoteDecisionPanel
+                  slug={slug} orderId={orderId} quote={q} orderStatus={data.order.status}
+                  may={may} onChanged={() => void run(async () => undefined)}
+                />
               ) : null}
 
               {canManage && q.is_editable ? (

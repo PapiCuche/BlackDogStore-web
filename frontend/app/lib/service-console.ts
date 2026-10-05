@@ -22,6 +22,7 @@
 
 import { API_BASE } from "./api";
 import { fetchWithAuth } from "./auth";
+import { printPdfResponse, type PrintOutcome } from "./print-pdf";
 
 /** The service surface is slug-addressed, like the rest of `/api/v1/internal/`. */
 function base(slug: string): string {
@@ -32,12 +33,19 @@ export class ServiceApiError extends Error {
   readonly status: number;
   /** The machine-readable discriminator the server attaches to a 409. */
   readonly code: string;
+  /**
+   * What the server sent with the refusal. A field-by-field rejection
+   * (`{imei: [...]}`) and a 409 that names the row to use instead both live
+   * here; `message` is only the sentence.
+   */
+  readonly data: unknown;
 
-  constructor(message: string, status: number, code = "") {
+  constructor(message: string, status: number, code = "", data: unknown = null) {
     super(message);
     this.name = "ServiceApiError";
     this.status = status;
     this.code = code;
+    this.data = data;
   }
 
   /** The capability is gone. The caller should refresh its context, not retry. */
@@ -63,7 +71,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       body && typeof body === "object" && "code" in body
         ? String((body as { code?: unknown }).code ?? "")
         : "";
-    throw new ServiceApiError(detail, res.status, code);
+    throw new ServiceApiError(detail, res.status, code, body);
   }
   return body as T;
 }
@@ -107,8 +115,28 @@ export type ServiceOrderRow = {
 
 export type ServiceTransition = { code: string; label: string };
 
+/**
+ * One notice to the customer, and what happened to it on each channel. READ
+ * from the server: "sent" means a provider took it. The recipient is masked.
+ */
+export type ServiceCustomerNotice = {
+  id: number;
+  title: string;
+  created_at: string;
+  email_status: string;
+  whatsapp_status: string;
+  whatsapp_detail: string | null;
+  whatsapp_recipient: string | null;
+  whatsapp_sent_at: string | null;
+  whatsapp_delivered_at: string | null;
+  whatsapp_read_at: string | null;
+};
+
 export type ServiceOrderDetail = ServiceOrderRow & {
-  customer_notifications?: { id: number; title: string; created_at: string; email_status: string }[];
+  customer_notifications?: ServiceCustomerNotice[];
+  /** Whether this company sends by WhatsApp, and whether THIS customer agreed. */
+  whatsapp?: { enabled: boolean; customer_opt_in: boolean };
+  customer: number;
   reported_issue: string;
   physical_condition: string;
   received_accessories: string;
@@ -157,6 +185,22 @@ export type ServiceQuoteItem = {
   product: number | null;
 };
 
+/**
+ * What was answered, and by whom. `source` says who pressed the button: the
+ * customer, or a staff member writing down what the customer told them — and
+ * then `recorded_by` names that staff member.
+ */
+export type ServiceQuoteDecision = {
+  decision: string;
+  reason: string;
+  channel: string;
+  channel_label: string;
+  source: "customer" | "staff";
+  recorded_by: string | null;
+  note: string;
+  decided_at: string;
+};
+
 export type ServiceQuote = {
   id: number;
   revision: number;
@@ -173,7 +217,7 @@ export type ServiceQuote = {
   customer_notes: string;
   internal_notes: string;
   items: ServiceQuoteItem[];
-  decision: { decision: string; reason: string; channel: string; decided_at: string } | null;
+  decision: ServiceQuoteDecision | null;
   created_by_name: string;
   sent_at: string | null;
 };
@@ -329,9 +373,42 @@ export const searchServiceCustomers = (slug: string, search: string) =>
 export const fetchCustomerDevices = (slug: string, customerId: number) =>
   get<Rows<{ id: number; display_name: string }>>(`${base(slug)}/devices/?customer_id=${customerId}`);
 
+/** A device that may be the one on the counter, with how often it has been here. */
+export type ServiceDeviceMatch = {
+  id: number;
+  customer: number;
+  customer_name: string;
+  display_name: string;
+  serial_number: string;
+  imei: string;
+  repair_orders_count: number;
+  last_repair_order: { id: number; number: string; status: string; received_at: string } | null;
+};
+
+export type ServiceDeviceCreated = {
+  id: number;
+  display_name: string;
+  possible_duplicates?: ServiceDeviceMatch[];
+};
+
+/**
+ * The identifiers go as typed. What each kind of device needs, the IMEI check
+ * digit and the normalisation are the server's: a second copy of the rule here
+ * would accept what the server refuses, or the other way round.
+ */
 export const createServiceDevice = (slug: string, body: {
   customer_id: number; device_type: string; brand: string; model: string;
-}) => post<{ id: number; display_name: string }>(`${base(slug)}/devices/`, body);
+  serial_number?: string; imei?: string; imei2?: string; identifiers_pending_reason?: string;
+}) => post<ServiceDeviceCreated>(`${base(slug)}/devices/`, body);
+
+/** Has this device been here before? Exact match, inside this company only. */
+export const lookupServiceDevice = (slug: string, query: {
+  serial_number?: string; imei?: string; imei2?: string;
+}) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value) params.set(key, value);
+  return get<{ results: ServiceDeviceMatch[] }>(`${base(slug)}/devices/lookup/?${params.toString()}`);
+};
 
 /**
  * With `technician_id` the order is created AND assigned in one transaction on
@@ -484,6 +561,83 @@ export const publishQuote = (slug: string, id: number, quoteId: number) =>
 
 export const cancelQuote = (slug: string, id: number, quoteId: number) =>
   post<ServiceQuote>(`${order(slug, id)}/quotes/${quoteId}/cancel/`);
+
+/** How the customer's answer reached the person recording it. */
+export const QUOTE_DECISION_CHANNELS = [
+  { value: "in_person", label: "Presencial" },
+  { value: "phone", label: "Llamada" },
+  { value: "whatsapp", label: "WhatsApp" },
+  { value: "other", label: "Otro" },
+] as const;
+
+/**
+ * Write down what the customer answered. The body cannot say who records it
+ * (the session does) nor claim the customer pressed anything.
+ */
+export const recordQuoteDecision = (
+  slug: string, id: number, quoteId: number,
+  body: { decision: "approve" | "reject"; channel: string; note: string },
+) => post<{ quote: ServiceQuote }>(`${order(slug, id)}/quotes/${quoteId}/decision/`, body);
+
+/** Void an approval because the work changed. Answers with the NEW draft. */
+export const reopenQuote = (slug: string, id: number, quoteId: number, reason: string) =>
+  post<{ quote: ServiceQuote }>(`${order(slug, id)}/quotes/${quoteId}/reopen/`, { reason });
+
+/**
+ * The 80 mm ticket of an approved quote. Only the server knows whether there is
+ * one to print: it answers 400 for anything that is not an approval in force.
+ */
+export async function printQuoteTicket(slug: string, id: number, quoteId: number): Promise<PrintOutcome> {
+  const res = await fetchWithAuth(`${order(slug, id)}/quotes/${quoteId}/ticket/?formato=ticket80`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new ServiceApiError(
+      (body && typeof body === "object" && "detail" in body ? String(body.detail) : "") ||
+        "No se pudo generar el ticket.",
+      res.status,
+    );
+  }
+  return printPdfResponse(res, `cotizacion-${id}-ticket80.pdf`);
+}
+
+/** The customer told somebody they do (or no longer do) want WhatsApp notices. */
+export const setWhatsAppConsent = (slug: string, customerId: number, optIn: boolean) =>
+  post<{ whatsapp_opt_in: boolean }>(
+    `${base(slug)}/customers/${customerId}/whatsapp-consent/`, { opt_in: optIn },
+  );
+
+/** Try again a message that did not go out. One that already left is left alone. */
+export const retryWhatsAppNotice = (slug: string, id: number, noticeId: number) =>
+  post<ServiceCustomerNotice>(`${order(slug, id)}/notifications/${noticeId}/whatsapp/retry/`);
+
+/**
+ * What anybody who opens the order may know about its tracking link: whether it
+ * exists and whether it is used. NOT the link — see `revealTrackingLink`.
+ */
+export type ServiceTrackingLink = {
+  active: boolean;
+  view_count: number;
+  last_viewed_at: string | null;
+  /** Whether THIS caller may be handed the link. The server decides again on reveal. */
+  can_reveal: boolean;
+};
+
+export const fetchTrackingLink = (slug: string, id: number) =>
+  get<ServiceTrackingLink>(`${order(slug, id)}/tracking-link/`);
+
+/**
+ * The link itself, to hand to the customer. An explicit, audited act: whoever
+ * holds the link can answer the quote as the customer, so the server gives it
+ * only to somebody who may already record the customer's decision.
+ */
+export const revealTrackingLink = (slug: string, id: number) =>
+  post<{ path: string; url: string }>(`${order(slug, id)}/tracking-link/reveal/`);
+
+export const rotateTrackingLink = (slug: string, id: number) =>
+  post<ServiceTrackingLink>(`${order(slug, id)}/tracking-link/rotate/`);
+
+export const revokeTrackingLink = (slug: string, id: number) =>
+  post<ServiceTrackingLink>(`${order(slug, id)}/tracking-link/revoke/`);
 
 export const startRepair = (slug: string, id: number) =>
   post<ServiceExecution>(`${order(slug, id)}/execution/start/`);

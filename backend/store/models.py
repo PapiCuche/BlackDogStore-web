@@ -140,6 +140,16 @@ class Category(models.Model):
         validators=[validate_asset_url],
     )
 
+    # STOREFRONT-CATEGORIES. How THIS shop presents the category, decided by
+    # the shop and not by a list in the frontend:
+    #   is_active     offered to the public at all (menu, catalogue filter, home).
+    #                 Retiring a category does not hide its products.
+    #   show_on_home  one of the families the home page illustrates.
+    #   home_order    ascending; ties go by name.
+    is_active = models.BooleanField(default=True)
+    show_on_home = models.BooleanField(default=True)
+    home_order = models.PositiveSmallIntegerField(default=0)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -201,6 +211,13 @@ class Product(models.Model):
     )
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     is_active = models.BooleanField(default=True, db_index=True)
+    # SERIALIZED-STOCK. Each unit of this product is tracked by its own serial
+    # number (`StockUnit`). Its `BranchStock.quantity` is then never typed: it is
+    # always the number of AVAILABLE units in that branch. Changed only through
+    # `stock_unit_services.set_serialized`, and only while there is no stock.
+    is_serialized = models.BooleanField(default=False)
+    # A cellular device: every unit must also carry a valid IMEI.
+    requires_imei = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3132,6 +3149,20 @@ class Customer(models.Model):
     # endpoint for this model at all, which is the real guarantee.
     notes = models.TextField(max_length=2000, blank=True)
 
+    # ── WhatsApp consent (WHATSAPP-NOTIFY) ───────────────────────────────────
+    # A phone number on file is not permission to message it. The customer says
+    # yes, somebody records when and where, and saying no later wins.
+    WHATSAPP_OPT_IN_SOURCES = [
+        ('counter', 'En el mostrador'),
+        ('web', 'Desde la web'),
+        ('message', 'Por mensaje'),
+    ]
+    whatsapp_opt_in_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_opt_in_source = models.CharField(
+        max_length=16, blank=True, choices=WHATSAPP_OPT_IN_SOURCES,
+    )
+    whatsapp_opt_out_at = models.DateTimeField(null=True, blank=True)
+
     is_active = models.BooleanField(default=True, db_index=True)
 
     # Traceability only. Never consulted for permissions: who typed a record in
@@ -4227,6 +4258,14 @@ class Device(models.Model):
     # device that has legitimately been registered before.
     serial_number = models.CharField(max_length=80, blank=True)
     imei = models.CharField(max_length=32, blank=True)
+    # DEVICE-IDENTITY. A second IMEI, for dual-SIM and eSIM phones. Empty means
+    # "has none", like the two above: never "N/A", never a row of zeros.
+    imei2 = models.CharField(max_length=32, blank=True, default='')
+    # Why a serial or an IMEI that this kind of device normally carries is
+    # missing ("does not power on, no SIM tray"). The front door
+    # (`service_services.create_device`) asks for the identifier OR this; an
+    # empty field with a reason is a fact, a made-up number is not.
+    identifiers_pending_reason = models.CharField(max_length=200, blank=True, default='')
 
     color = models.CharField(max_length=40, blank=True)
     storage_capacity = models.CharField(max_length=40, blank=True)
@@ -4248,6 +4287,7 @@ class Device(models.Model):
             models.Index(fields=['company', 'customer']),
             models.Index(fields=['company', 'serial_number']),
             models.Index(fields=['company', 'imei']),
+            models.Index(fields=['company', 'imei2']),
             models.Index(fields=['company', 'brand', 'model']),
             models.Index(fields=['company', 'created_at']),
         ]
@@ -4282,6 +4322,7 @@ class Device(models.Model):
         self.model = (self.model or '').strip()
         self.serial_number = (self.serial_number or '').strip().upper()
         self.imei = (self.imei or '').strip()
+        self.imei2 = (self.imei2 or '').strip()
         self.clean()
         return super().save(*args, **kwargs)
 
@@ -4860,12 +4901,17 @@ class RepairQuote(models.Model):
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
     STATUS_CANCELLED = 'cancelled'
+    # QUOTE-DECISION. An APPROVED quote that the shop reopened because the work
+    # changed. The approval it carried stays on record and authorises nothing:
+    # an approval is for what was approved, not for whatever the price becomes.
+    STATUS_SUPERSEDED = 'superseded'
     STATUS_CHOICES = [
         (STATUS_DRAFT, 'Borrador'),
         (STATUS_SENT, 'Enviada'),
         (STATUS_APPROVED, 'Aprobada'),
         (STATUS_REJECTED, 'Rechazada'),
         (STATUS_CANCELLED, 'Anulada'),
+        (STATUS_SUPERSEDED, 'Reemplazada'),
     ]
 
     #: Once a quote leaves DRAFT it is evidence. Nothing below may be edited.
@@ -4921,6 +4967,8 @@ class RepairQuote(models.Model):
     approved_at = models.DateTimeField(null=True, blank=True)
     rejected_at = models.DateTimeField(null=True, blank=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
+    # QUOTE-DECISION: when an approved quote was reopened and stopped authorising work.
+    superseded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-revision', '-pk']
@@ -5148,8 +5196,37 @@ class RepairQuoteDecision(models.Model):
     ]
 
     CHANNEL_CUSTOMER_ACCOUNT = 'customer_account'
+    # QUOTE-DECISION. The customer answered from the tracking link they hold.
+    CHANNEL_TRACKING_LINK = 'tracking_link'
+    # QUOTE-DECISION. STAFF wrote down what the customer told them. These are
+    # set by a different endpoint, behind its own capability, and always with
+    # `source=staff` and `recorded_by`: the record never claims the customer
+    # pressed a button they did not press.
+    CHANNEL_STAFF_IN_PERSON = 'staff_in_person'
+    CHANNEL_STAFF_PHONE = 'staff_phone'
+    CHANNEL_STAFF_WHATSAPP = 'staff_whatsapp'
+    CHANNEL_STAFF_OTHER = 'staff_other'
     CHANNEL_CHOICES = [
         (CHANNEL_CUSTOMER_ACCOUNT, 'Cuenta del cliente'),
+        (CHANNEL_TRACKING_LINK, 'Enlace de seguimiento'),
+        (CHANNEL_STAFF_IN_PERSON, 'Presencial'),
+        (CHANNEL_STAFF_PHONE, 'Llamada'),
+        (CHANNEL_STAFF_WHATSAPP, 'WhatsApp'),
+        (CHANNEL_STAFF_OTHER, 'Otro'),
+    ]
+    #: What a staff member may name, and the channel it is stored as.
+    STAFF_CHANNELS = {
+        'in_person': CHANNEL_STAFF_IN_PERSON,
+        'phone': CHANNEL_STAFF_PHONE,
+        'whatsapp': CHANNEL_STAFF_WHATSAPP,
+        'other': CHANNEL_STAFF_OTHER,
+    }
+
+    SOURCE_CUSTOMER = 'customer'
+    SOURCE_STAFF = 'staff'
+    SOURCE_CHOICES = [
+        (SOURCE_CUSTOMER, 'El cliente'),
+        (SOURCE_STAFF, 'Registrada por el personal'),
     ]
 
     company = models.ForeignKey(
@@ -5176,6 +5253,19 @@ class RepairQuoteDecision(models.Model):
         max_length=32, choices=CHANNEL_CHOICES, default=CHANNEL_CUSTOMER_ACCOUNT,
     )
 
+    # WHO ACTED, as distinct from who decided. `customer` always decided.
+    # `source=customer`: they did it themselves (`user` is their login, or empty
+    # when it came through the tracking link). `source=staff`: an employee
+    # recorded what the customer told them, and `recorded_by` is that employee.
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_CUSTOMER,
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_quote_decisions_recorded',
+    )
+    # Staff → file. "Called at 10:15 and accepted." Internal.
+    note = models.CharField(max_length=300, blank=True, default='')
     # Customer → company. Optional, never echoed to a public timeline: free text
     # from a customer is not something a future visibility policy should be able
     # to publish by accident.
@@ -5213,6 +5303,63 @@ class RepairQuoteDecision(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una decisión del cliente no se puede borrar.')
+
+
+class RepairTrackingLink(models.Model):
+    """
+    SERVICE-TRACKING — the address a customer follows their repair at.
+
+    THE TOKEN IS NOT STORED. What is stored is `uid`, a random identifier; the
+    token handed to the customer is `uid` plus a MAC of it made with the
+    server's secret (`tracking_services`). A copy of this table is therefore not
+    a list of working links, and the link can still be rebuilt whenever a
+    notification needs to carry it.
+
+    ONE LIVE LINK PER ORDER. Rotating revokes the current one and creates
+    another; revoking leaves none. Rows are kept: "this link was valid from A
+    to B" is what answers "who could have seen this".
+
+    It opens ONE order, of one company, and shows only what that order's
+    customer may see. It is not an account and grants nothing else.
+    """
+
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='repair_tracking_links',
+    )
+    repair_order = models.ForeignKey(
+        RepairOrder, on_delete=models.CASCADE, related_name='tracking_links',
+    )
+    uid = models.CharField(max_length=32, unique=True, editable=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_tracking_links_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='repair_tracking_links_revoked',
+    )
+    # How often it was opened. No address, no device: knowing the link is used
+    # does not require knowing by whom.
+    view_count = models.PositiveIntegerField(default=0)
+    last_viewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['repair_order'], condition=models.Q(revoked_at__isnull=True),
+                name='one_live_tracking_link_per_order',
+            ),
+        ]
+
+    def __str__(self):
+        return f'seguimiento orden {self.repair_order_id}'
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
 
 
 class RepairResultCode(models.TextChoices):
@@ -6317,15 +6464,23 @@ class NotificationDelivery(models.Model):
 
     class Channel(models.TextChoices):
         EMAIL = 'email', 'Correo'
+        WHATSAPP = 'whatsapp', 'WhatsApp'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pendiente'
         SENT = 'sent', 'Enviada'
+        # What the provider reports back afterwards (WhatsApp does; e-mail
+        # does not). They only ever move forward: sent → delivered → read.
+        DELIVERED = 'delivered', 'Entregada'
+        READ = 'read', 'Leída'
         FAILED = 'failed', 'Fallida'
         # Nothing was wrong; there was simply nowhere to send it — a customer
         # with no e-mail, a company with no notification address configured.
         # Distinct from FAILED so a retry pass does not chase them forever.
         SKIPPED = 'skipped', 'Omitida'
+
+    #: The message left this system. It is never sent again.
+    DONE_STATUSES = ('sent', 'delivered', 'read')
 
     notification = models.ForeignKey(
         Notification, on_delete=models.CASCADE, related_name='deliveries',
@@ -6343,6 +6498,19 @@ class NotificationDelivery(models.Model):
     # request can carry credentials.
     failure_reason = models.CharField(max_length=200, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ── What a provider gives back (WHATSAPP-NOTIFY) ─────────────────────────
+    # The provider's own id for the message: what its webhook quotes when it
+    # reports delivery. Empty for e-mail.
+    provider_message_id = models.CharField(max_length=128, blank=True, db_index=True)
+    # Where it went, MASKED (`•••• 4321`). Enough for an operator to recognise
+    # the number; the full one stays on the customer.
+    recipient_masked = models.CharField(max_length=32, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    # When a failed attempt may be tried again. NULL on a failed row means
+    # "not by itself": the failure was final, or the attempts ran out.
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -8520,3 +8688,208 @@ class PrintJob(models.Model):
 
     def __str__(self):
         return f'{self.get_kind_display()} · pedido {self.order_id} · {self.get_status_display()}'
+
+
+class CompanyMessagingSettings(models.Model):
+    """
+    How ONE company sends WhatsApp notices. WHATSAPP-NOTIFY.
+
+        NO SECRET LIVES IN THIS TABLE.
+
+    The access token, the app secret and the webhook verify token are read from
+    the process environment. What is stored here is the NAME of the variable
+    that holds each one — a reference, set by whoever operates the deployment
+    (`manage.py configure_whatsapp`), never by a tenant through the API. A
+    database dump, an admin screen or an API response therefore cannot leak a
+    credential, and a tenant cannot point their configuration at somebody
+    else's variable.
+
+    What a tenant administrator DOES control: whether notices are sent, which
+    approved template is used for each event, and the calling code assumed for
+    numbers written without one.
+    """
+
+    PROVIDER_CLOUD_API = 'cloud_api'
+    PROVIDER_CHOICES = [(PROVIDER_CLOUD_API, 'WhatsApp Cloud API (Meta)')]
+
+    company = models.OneToOneField(
+        Company, on_delete=models.CASCADE, related_name='messaging_settings',
+    )
+    whatsapp_enabled = models.BooleanField(default=False)
+    whatsapp_provider = models.CharField(
+        max_length=24, choices=PROVIDER_CHOICES, default=PROVIDER_CLOUD_API,
+    )
+    # Identifiers, not secrets: they travel in every request URL.
+    whatsapp_phone_number_id = models.CharField(max_length=40, blank=True)
+    whatsapp_business_account_id = models.CharField(max_length=40, blank=True)
+
+    # NAMES of environment variables. See the class docstring.
+    whatsapp_access_token_env = models.CharField(max_length=64, blank=True)
+    whatsapp_app_secret_env = models.CharField(max_length=64, blank=True)
+    whatsapp_verify_token_env = models.CharField(max_length=64, blank=True)
+
+    # Digits only, no "+". Empty means: only numbers written with their
+    # country code can be messaged. Nothing here assumes a country.
+    default_calling_code = models.CharField(max_length=4, blank=True)
+    template_language = models.CharField(max_length=10, default='es')
+    # {event code: approved template name}. An event without a template is not
+    # sent: there is no free-text fallback outside the 24-hour window.
+    whatsapp_templates = models.JSONField(default=dict, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+    )
+
+    class Meta:
+        verbose_name = 'Configuración de mensajería'
+        verbose_name_plural = 'Configuraciones de mensajería'
+
+    def __str__(self):
+        return f'Mensajería de {self.company_id}'
+
+
+class StockUnit(models.Model):
+    """
+    ONE physical device of a serialized product. SERIALIZED-STOCK.
+
+        A UNIT IS STOCK, NOT A SECOND INVENTORY.
+
+    `BranchStock.quantity` remains the only number that decides whether
+    something can be sold. For a serialized product that number equals, at all
+    times, the count of AVAILABLE units of that branch — every change goes
+    through `stock_unit_services`, which moves the unit and writes the Kardex
+    line through the same single writer as any other stock.
+
+    Never written directly. A row created or edited outside the service breaks
+    the equality above, and nothing would notice until a sale failed.
+
+    IDENTIFIERS ARE NULL WHEN ABSENT, never "N/A": a placeholder is a value,
+    and two units with the same placeholder would collide on the constraints
+    that exist precisely to stop the same device from entering twice.
+
+    A SOLD UNIT STAYS. Its row is the record that this IMEI left in that sale,
+    and a device that comes back returns as the SAME row.
+    """
+
+    class Status(models.TextChoices):
+        AVAILABLE = 'available', 'Disponible'
+        RESERVED = 'reserved', 'Apartado'
+        SOLD = 'sold', 'Vendido'
+        WRITTEN_OFF = 'written_off', 'Dado de baja'
+
+    class Condition(models.TextChoices):
+        NEW = 'new', 'Nuevo'
+        OPEN_BOX = 'open_box', 'Caja abierta'
+        REFURBISHED = 'refurbished', 'Reacondicionado'
+        USED = 'used', 'Usado'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='stock_units')
+    branch = models.ForeignKey('store.Branch', on_delete=models.PROTECT, related_name='stock_units')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='stock_units')
+
+    serial_number = models.CharField(max_length=40)
+    imei = models.CharField(max_length=15, null=True, blank=True)
+    imei2 = models.CharField(max_length=15, null=True, blank=True)
+
+    condition = models.CharField(max_length=16, choices=Condition.choices, default=Condition.NEW)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.AVAILABLE, db_index=True,
+    )
+
+    # What this unit cost, when known. Informative: there is no cost model yet.
+    cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # A price for THIS unit (an open box, a used one). Recorded and shown; the
+    # catalogue price is still what checkout charges until a sale can name a unit.
+    price_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    received_at = models.DateTimeField(default=timezone.now)
+    sold_at = models.DateTimeField(null=True, blank=True)
+    # The sale it left in. PROTECT: an order that sold a unit is its history.
+    order = models.ForeignKey(
+        'store.Order', null=True, blank=True, on_delete=models.PROTECT, related_name='stock_units',
+    )
+
+    notes = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-received_at', '-pk']
+        constraints = [
+            # The same device cannot be in a company's stock twice — in any
+            # state, because "sold" is exactly the state that must not be
+            # forgotten when somebody tries to receive it again.
+            models.UniqueConstraint(
+                fields=['company', 'product', 'serial_number'],
+                name='unique_stock_unit_serial_per_product',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'imei'], condition=models.Q(imei__isnull=False),
+                name='unique_stock_unit_imei_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'imei2'], condition=models.Q(imei2__isnull=False),
+                name='unique_stock_unit_imei2_per_company',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),
+                name='stock_unit_identifiers_null_not_blank',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'branch', 'product', 'status'], name='stock_unit_scope_idx'),
+            models.Index(fields=['company', 'serial_number'], name='stock_unit_serial_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.serial_number} ({self.get_status_display()})'
+
+
+class ExternalIdentity(models.Model):
+    """
+    "This account can also be entered with that Google account." GOOGLE-AUTH.
+
+        THE IDENTITY IS `subject`, NOT THE E-MAIL.
+
+    An e-mail address can be reassigned by whoever runs the domain; the
+    provider's subject identifier cannot. `email_at_link` is kept for a person
+    reading the record, and nothing authenticates against it.
+
+    NOTHING ELSE FROM THE PROVIDER IS STORED. No access token, no refresh
+    token, no ID token, no picture: this platform never calls Google on the
+    user's behalf, so it has no use for a credential that could.
+    """
+
+    PROVIDER_GOOGLE = 'google'
+    PROVIDER_CHOICES = [(PROVIDER_GOOGLE, 'Google')]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='external_identities',
+    )
+    provider = models.CharField(max_length=16, choices=PROVIDER_CHOICES)
+    subject = models.CharField(max_length=255)
+    email_at_link = models.EmailField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_login_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One provider account opens exactly one account here…
+            models.UniqueConstraint(
+                fields=['provider', 'subject'], name='unique_external_identity_subject',
+            ),
+            # …and an account here has at most one identity per provider.
+            models.UniqueConstraint(
+                fields=['user', 'provider'], name='unique_external_identity_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.provider}:{self.user_id}'
+

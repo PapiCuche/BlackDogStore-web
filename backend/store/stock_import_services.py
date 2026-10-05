@@ -209,6 +209,9 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
 
     index = CatalogueIndex(company)
     current = _current_quantities(company, branches.values())
+    serialized_ids = set(
+        Product.objects.filter(company=company, is_serialized=True).values_list('pk', flat=True)
+    )
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_pairs: dict[tuple[int, int], int] = {}
@@ -277,6 +280,15 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
                 errors.append(
                     'No se encontró el producto. Impórtalo primero desde la '
                     'carga masiva de productos.'
+                )
+            elif product_id in serialized_ids:
+                # SERIALIZED-STOCK. A file states a NUMBER, and a device is not
+                # a number: its stock is the units on the shelf, each with its
+                # serial. Refused per row, here, rather than as a failure of
+                # the whole load when the Kardex writer turns it down.
+                errors.append(
+                    'Este producto se controla por número de serie: su stock no se '
+                    'carga por cantidad. Registra cada equipo en Inventario › Equipos.'
                 )
 
             if product_id:

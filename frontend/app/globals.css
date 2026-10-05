@@ -477,14 +477,18 @@ img { display: block; max-width: 100%; }
 .v3-button { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px; padding: 12px 24px; border: 1px solid transparent; border-radius: 999px; background: var(--foreground); color: var(--background); font-size: .875rem; font-weight: 600; transition: opacity 160ms var(--ease-out), scale 160ms var(--ease-out); }
 .v3-button-outline { background: transparent; border-color: var(--border); color: var(--foreground); }
 .v3-button-light { background: var(--slab-foreground); color: var(--slab); }
-.v3-category { border: 1px solid var(--border); border-radius: 8px; padding: 24px; background: var(--background); transition: translate 200ms var(--ease-out), box-shadow 200ms var(--ease-out); }
+.v3-category { position: relative; border: 1px solid var(--border); border-radius: 8px; padding: 24px; background: var(--background); transition: translate 200ms var(--ease-out); }
+/* La sombra no se anima: se pinta una vez en una capa y lo que cambia es su
+   opacidad. Animar `box-shadow` repinta la tarjeta en cada fotograma. */
+.v3-category::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 12px 30px #0000000b; opacity: 0; pointer-events: none; transition: opacity 200ms var(--ease-out); }
 /* Un dispositivo táctil dispara `:hover` al tocar y lo deja pegado hasta el
    siguiente toque: una tarjeta levantada que nadie está señalando. Las
    utilidades `hover:` de Tailwind ya vienen con esta condición; el CSS escrito
    a mano tiene que ponérsela. */
 @media (hover: hover) and (pointer: fine) {
   .v3-button:hover { opacity: .82; }
-  .v3-category:hover { translate: 0 -3px; box-shadow: 0 12px 30px #0000000b; }
+  .v3-category:hover { translate: 0 -3px; }
+  .v3-category:hover::after { opacity: 1; }
   .admin-workspace table:not(.sr-only) tbody tr:hover { background: var(--surface); }
 }
 .v3-text-link { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; font-size: .875rem; font-weight: 600; }
@@ -513,6 +517,11 @@ img { display: block; max-width: 100%; }
 .v3-carousel { min-width: 0; }
 .v3-carousel-track { display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; padding: 4px 0 12px; }
 .v3-carousel-track::-webkit-scrollbar { display: none; }
+/* Arrastre con ratón: mientras se arrastra no se selecciona texto ni se
+   arrastra la imagen, y el cursor dice lo que está pasando. */
+.v3-carousel-track[data-dragging] { cursor: grabbing; user-select: none; }
+.v3-carousel-track[data-dragging] a { pointer-events: none; }
+.v3-carousel-track img { -webkit-user-drag: none; }
 .v3-carousel-item { flex: 0 0 42%; min-width: 0; scroll-snap-align: start; }
 .v3-carousel-item > a { height: 100%; }
 .v3-carousel-control { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 50%; background: var(--background); color: var(--foreground); cursor: pointer; transition: transform 160ms var(--ease-out), opacity 160ms var(--ease-out); }
@@ -526,7 +535,8 @@ img { display: block; max-width: 100%; }
     .v3-hero-art img, .v3-promo img { transition: transform 280ms var(--ease-out); }
     .v3-hero-art:hover img { transform: translateY(-5px) scale(1.015); }
     .v3-promo:hover img { transform: translateY(-4px); }
-    .v3-product-card { transition: transform 240ms var(--ease-out), box-shadow 240ms var(--ease-out); }
+    .v3-product-card { transition: transform 240ms var(--ease-out); }
+    .v3-carousel-track { cursor: grab; }
     .v3-product-card:hover { transform: translateY(-4px); }
     .v3-carousel-control:active:not(:disabled):not(:focus-visible) { transform: scale(.96); }
   }

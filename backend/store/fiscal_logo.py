@@ -98,6 +98,32 @@ def snapshot(company) -> dict:
         return {}
 
 
+def current_png(company) -> bytes | None:
+    """
+    El logotipo de documentos de la empresa TAL COMO ESTÁ HOY, o None.
+
+    Para papeles que no se congelan (un ticket de cotización se imprime con la
+    identidad vigente). Un comprobante fiscal NO usa esto: usa `snapshot`/`load`.
+    """
+    from . import storefront_media
+
+    try:
+        row = CompanySettings.objects.filter(company=company).only('document_logo_url').first()
+        public_id = storefront_media.managed_public_id(row.document_logo_url) if row else None
+        if not public_id:
+            return None
+        image = StorefrontImage.objects.filter(public_id=public_id, company=company).first()
+        if image is None:
+            return None
+        with storage.open_stream(image.storage_key) as stream:
+            return _normalised(stream.read())
+    except Exception:  # noqa: BLE001 - un logotipo no puede impedir una impresión
+        logger.warning(
+            'No se pudo leer el logotipo de la empresa %s; el ticket sale sin él.',
+            getattr(company, 'pk', None), exc_info=True)
+        return None
+
+
 def load(document) -> bytes | None:
     """La imagen congelada de `document`, o None si no tiene o no se puede leer."""
     key = getattr(document, 'logo_storage_key', '') or ''

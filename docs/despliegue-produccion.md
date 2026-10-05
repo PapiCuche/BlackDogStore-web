@@ -105,6 +105,8 @@ Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria
 | Correo que recibe los pedidos | Aviso de cada pedido pagado | `ORDER_NOTIFICATION_EMAIL` |
 | Credenciales de Izipay | Cobrar en línea | `IZIPAY_*` |
 | Dónde se alojan las fotos de producto | Que la web pueda mostrarlas | `NEXT_PUBLIC_IMAGE_HOSTS` |
+| Número de WhatsApp Business, plantillas aprobadas, token, secreto de la aplicación y token de verificación | Avisos al cliente por WhatsApp (opcional) | `WHATSAPP_*` y `configure_whatsapp` |
+| ID de cliente OAuth de Google, con el dominio como origen autorizado | «Continuar con Google» (opcional) | `GOOGLE_OAUTH_CLIENT_ID` |
 
 Sin Izipay la tienda funciona (catálogo, carrito, panel, punto de venta) pero no
 cobra en línea. Sin SMTP el backend **no arranca** con la configuración de
@@ -272,6 +274,21 @@ Los límites de imágenes (por archivo, por producto, por carga masiva) y lo que
 hay que comprobar antes de publicar una versión con imágenes están en
 [imagenes-y-evidencias.md](imagenes-y-evidencias.md) §5.
 
+### 6.1.3 Avisos por WhatsApp pendientes
+
+El primer intento de un aviso por WhatsApp ocurre al confirmarse la operación que lo
+causa. Lo que no salió entonces —un fallo que admite reintento, o un proceso
+interrumpido— lo envía esta tarea. Una vez por minuto:
+
+```
+* * * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py send_pending_notifications >> backups/send_pending_notifications.log 2>&1
+```
+
+Es seguro ejecutarla dos veces a la vez y nunca envía un mensaje dos veces. Con
+`WHATSAPP_PROVIDER=disabled` (el valor del archivo de ejemplo) no hay nada que
+enviar y la tarea no hace falta. Cómo se enlazan las credenciales de cada empresa
+y qué registra en Meta: [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §4.1.
+
 ### 6.2 Copia externa
 
 Una copia en el mismo servidor no protege si se pierde el servidor. Lleva la
@@ -369,6 +386,14 @@ Ya resuelto por el código o por esta configuración:
   reciben un enlace de un solo uso no lo entregan a terceros.
 - Los límites de peticiones se cuentan por la dirección real del cliente. Una
   cabecera `X-Forwarded-For` falsa no los evita.
+- El enlace de seguimiento de una reparación no se puede adivinar, no revela el
+  número de orden y muestra la serie y el IMEI enmascarados. La página no se
+  indexa y no entrega su dirección a otros sitios.
+- Ninguna credencial de WhatsApp vive en la base de datos ni sale por la API: se
+  guarda el nombre de la variable, y sólo con el prefijo `WHATSAPP_`. El webhook
+  sólo acepta llamadas firmadas.
+- «Continuar con Google» se verifica en el servidor y abre la sesión de siempre; no
+  se guarda ningún token de Google.
 
 Pendiente, y conviene saberlo:
 
@@ -377,6 +402,9 @@ Pendiente, y conviene saberlo:
   tienda; crecer pide antes una caché compartida (THROTTLE-CACHE-01).
 - **Facturación electrónica apagada** (`FISCAL_ENABLED=0`). Encenderla necesita
   certificado digital y credenciales SOL, y es una fase aparte.
+- El uso único del intento de «Continuar con Google» y el bloqueo de intentos al
+  vincular una orden se cuentan en la memoria del proceso, como los límites
+  (THROTTLE-CACHE-01): valen con el proceso único de esta instalación.
 - El inicio de sesión no exige token CSRF ni rechaza por origen (LOGIN-CSRF-01,
   baja). Las operaciones con sesión sí: un origen ajeno recibe 403.
 

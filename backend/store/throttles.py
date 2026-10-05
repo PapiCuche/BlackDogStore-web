@@ -295,3 +295,37 @@ class StaffAcceptThrottle(AnonRateThrottle):
     """
 
     scope = 'staff_accept'
+
+
+class TrackingReadThrottle(AnonRateThrottle):
+    """
+    Abrir un enlace de seguimiento y pedir sus fotos. Por dirección.
+
+    El enlace no se puede adivinar (128 bits más un sello), así que este cupo
+    no es lo que lo protege: evita que la página pública sea un grifo abierto.
+    """
+    scope = 'tracking_read'
+
+
+class TrackingDecisionThrottle(AnonRateThrottle):
+    """Responder una cotización o reclamar una orden por su enlace."""
+    scope = 'tracking_write'
+
+    def get_cache_key(self, request, view):
+        # Por dirección también con sesión: `AnonRateThrottle` no cuenta a quien
+        # inició sesión, y reclamar órdenes es justo lo que se haría con una.
+        return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
+
+
+class AccountRepairsThrottle(UserRateThrottle):
+    scope = 'account_repairs'
+
+
+class WhatsAppWebhookThrottle(AnonRateThrottle):
+    """El proveedor informa aquí de cada mensaje. La firma decide; esto acota."""
+    scope = 'whatsapp_webhook'
+
+
+class GoogleSignInThrottle(AnonRateThrottle):
+    """Entrar con Google, por dirección. Su propio cupo: no gasta el del login con contraseña."""
+    scope = 'google_sign_in'
