@@ -316,7 +316,8 @@ def is_status_customer_visible(company, code: str, settings_by_code=None) -> boo
 # Devices
 # ---------------------------------------------------------------------------
 
-def find_possible_duplicate_devices(company, *, serial_number='', imei='', exclude_pk=None):
+def find_possible_duplicate_devices(company, *, serial_number='', imei='', imei2='',
+                                    exclude_pk=None):
     """
     Devices of `company` that may be the same object, by serial or IMEI.
 
@@ -329,13 +330,16 @@ def find_possible_duplicate_devices(company, *, serial_number='', imei='', exclu
     may each hold the same second-hand phone, which a global constraint would
     forbid outright.
 
-    So the database allows it and the operator is warned. If evidence later
-    shows duplicates are a real problem for a real shop, a tenant-scoped
-    partial constraint can be added then, with data to justify its shape.
+    So the database allows it and the operator is warned — except for the one
+    case that is never legitimate, which `create_device` refuses: the same
+    device registered twice for the SAME customer.
+
+    Either IMEI of a dual-SIM phone identifies it, so each given number is
+    looked for in both columns.
     """
     serial = (serial_number or '').strip().upper()
-    imei_value = (imei or '').strip()
-    if not serial and not imei_value:
+    numbers = {value for value in ((imei or '').strip(), (imei2 or '').strip()) if value}
+    if not serial and not numbers:
         return Device.objects.none()
 
     queryset = Device.objects.filter(company=company)
@@ -347,10 +351,28 @@ def find_possible_duplicate_devices(company, *, serial_number='', imei='', exclu
     criteria = Q(pk__in=[])
     if serial:
         criteria |= Q(serial_number=serial)
-    if imei_value:
-        criteria |= Q(imei=imei_value)
+    if numbers:
+        criteria |= Q(imei__in=numbers) | Q(imei2__in=numbers)
 
-    return queryset.filter(criteria).select_related('customer')[:5]
+    return queryset.filter(criteria).select_related('customer').order_by('-created_at', '-pk')[:5]
+
+
+class DeviceIdentityInvalid(ServiceError):
+    """The identifiers are not acceptable. `errors` maps field -> messages."""
+
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__(' '.join(m for messages in errors.values() for m in messages))
+
+
+class DeviceAlreadyRegistered(ServiceError):
+    """This customer already has this device on file: re-use `existing`."""
+
+    def __init__(self, existing):
+        self.existing = existing
+        super().__init__(
+            'Este cliente ya tiene registrado este equipo. Úsalo en lugar de crear otro.'
+        )
 
 
 @transaction.atomic
@@ -361,11 +383,52 @@ def create_device(*, company, customer, actor=None, request=None, **fields) -> D
     The customer is passed as an object the caller already resolved inside the
     tenant; this function re-checks the relationship anyway, because a device
     filed under the wrong client is handed to the wrong person later.
+
+    DEVICE-IDENTITY. This is the front door, and the identifiers are checked
+    here rather than in `Device.clean`: rows that predate the rule must stay
+    saveable, and the rule is about what a person may register TODAY. What a
+    kind of device needs, and the honest way out when it cannot be read, live
+    in `device_identity.validate`.
     """
+    from . import device_identity
+
     if customer.company_id != company.pk:
         raise ServiceError('El cliente no pertenece a esta empresa.')
 
-    device = Device(company=company, customer=customer, created_by=actor, **fields)
+    device_type = fields.get('device_type') or Device.TYPE_OTHER
+    try:
+        identity = device_identity.validate(
+            device_type=device_type,
+            serial_number=fields.pop('serial_number', ''),
+            imei=fields.pop('imei', ''),
+            imei2=fields.pop('imei2', ''),
+            pending_reason=fields.pop('identifiers_pending_reason', ''),
+        )
+    except device_identity.DeviceIdentityError as exc:
+        raise DeviceIdentityInvalid(exc.errors) from None
+
+    # The customer row is locked so two receptionists registering the same
+    # phone for the same person at once cannot both pass the check below.
+    Customer.objects.select_for_update().filter(pk=customer.pk).first()
+    numbers = {identity['imei'], identity['imei2']} - {''}
+    for match in find_possible_duplicate_devices(
+        company, serial_number=identity['serial_number'],
+        imei=identity['imei'], imei2=identity['imei2'],
+    ):
+        if match.customer_id != customer.pk:
+            continue
+        same_number = bool(numbers & {match.imei, match.imei2})
+        # A serial alone is proof only for the same kind of thing: a typo can
+        # make a console's serial equal a phone's.
+        same_serial = (
+            bool(identity['serial_number'])
+            and match.serial_number == identity['serial_number']
+            and match.device_type == device_type
+        )
+        if same_number or same_serial:
+            raise DeviceAlreadyRegistered(match)
+
+    device = Device(company=company, customer=customer, created_by=actor, **fields, **identity)
     device.save()
 
     AdminAuditLog.log(
@@ -378,6 +441,11 @@ def create_device(*, company, customer, actor=None, request=None, **fields) -> D
             'device_type': device.device_type,
             'brand': device.brand,
             'model': device.model,
+            # Whether, not which: an audit row is read from many places and an
+            # IMEI is not something to copy into all of them.
+            'has_serial': bool(device.serial_number),
+            'has_imei': bool(device.imei),
+            'identifiers_pending': bool(device.identifiers_pending_reason),
         },
         request=request,
         company=company,

@@ -55,6 +55,7 @@ from .v1_service_serializers import (
     V1ServiceAssignmentWriteSerializer,
     V1ServiceCustomerSerializer,
     V1ServiceDeviceCreateSerializer,
+    V1ServiceDeviceDetailSerializer, V1ServiceDeviceMatchSerializer,
     V1ServiceDeviceSerializer,
     V1ServiceOrderCreateSerializer,
     V1ServiceOrderDetailSerializer,
@@ -337,6 +338,15 @@ class V1ServiceDeviceListView(V1ServiceSurfaceMixin, APIView):
                 company=company, customer=customer, actor=request.user,
                 request=request, **data,
             )
+        except service.DeviceIdentityInvalid as exc:
+            # Field by field, like a serializer error: the form marks the input.
+            return Response(exc.errors, status=status.HTTP_400_BAD_REQUEST)
+        except service.DeviceAlreadyRegistered as exc:
+            return Response(
+                {'detail': str(exc),
+                 'existing_device': V1ServiceDeviceSerializer(exc.existing).data},
+                status=status.HTTP_409_CONFLICT,
+            )
         except service.ServiceError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -344,15 +354,53 @@ class V1ServiceDeviceListView(V1ServiceSurfaceMixin, APIView):
         # A WARNING, not a refusal. Serial numbers are transcribed by hand from
         # a sticker; a duplicate is usually a returning device and sometimes a
         # typo, and the person at the counter is better placed than a constraint
-        # to tell which.
+        # to tell which. Here it is another CUSTOMER's device: one that changed
+        # hands, which is legitimate and worth knowing.
         duplicates = service.find_possible_duplicate_devices(
             company, serial_number=device.serial_number, imei=device.imei,
-            exclude_pk=device.pk,
-        )
-        payload['possible_duplicates'] = V1ServiceDeviceSerializer(
+            imei2=device.imei2, exclude_pk=device.pk,
+        ).prefetch_related('repair_orders')
+        payload['possible_duplicates'] = V1ServiceDeviceMatchSerializer(
             duplicates, many=True,
         ).data
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class V1ServiceDeviceLookupView(V1ServiceSurfaceMixin, APIView):
+    """
+    GET ?serial_number=&imei=&imei2= — has this device been here before?
+
+    Asked BEFORE registering, so the person at the counter re-uses the device
+    and its history instead of creating a second one. Exact match only, inside
+    the company in the URL: what another company holds is not found, not hidden.
+    """
+
+    throttle_classes = [AdminOrdersThrottle]
+
+    def get(self, request, company_slug=None):
+        from . import device_identity
+
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_DEVICES_VIEW)
+
+        params = request.query_params
+        serial = (params.get('serial_number') or '').strip().upper().replace(' ', '')
+        # A number being typed is looked up as it is: validation belongs to
+        # saving, and a lookup that errors on a half-typed IMEI helps nobody.
+        numbers = [
+            ''.join(ch for ch in (params.get(name) or '') if ch.isdigit())
+            for name in ('imei', 'imei2')
+        ]
+        matches = service.find_possible_duplicate_devices(
+            company, serial_number=serial if len(serial) >= device_identity.SERIAL_MIN else '',
+            imei=numbers[0] if len(numbers[0]) == 15 else '',
+            imei2=numbers[1] if len(numbers[1]) == 15 else '',
+        )
+        if not isinstance(matches, list):
+            matches = matches.prefetch_related('repair_orders')
+        return Response({
+            'results': V1ServiceDeviceMatchSerializer(matches, many=True).data,
+        })
 
 
 class V1ServiceDeviceDetailView(V1ServiceSurfaceMixin, APIView):
@@ -361,7 +409,8 @@ class V1ServiceDeviceDetailView(V1ServiceSurfaceMixin, APIView):
     def get(self, request, company_slug=None, pk=None):
         company = self.get_internal_company()
         self.require_capability(company, CAP_DEVICES_VIEW)
-        return Response(V1ServiceDeviceSerializer(self.get_device(company, pk)).data)
+        device = self.get_device(company, pk)
+        return Response(V1ServiceDeviceDetailSerializer(device).data)
 
 
 class V1ServiceOrderListView(V1ServiceSurfaceMixin, APIView):

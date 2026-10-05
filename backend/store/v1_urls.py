@@ -72,7 +72,7 @@ from .v1_service_views import (
     V1ServiceQuotePublishView,
     V1ServiceCustomerSearchView,
     V1ServiceDeviceDetailView,
-    V1ServiceDeviceListView,
+    V1ServiceDeviceListView, V1ServiceDeviceLookupView,
     V1ServiceOrderAssignmentView,
     V1ServiceTechnicianCandidatesView,
     V1ServiceOrderDetailView,
@@ -275,6 +275,10 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/service/devices/',
         V1ServiceDeviceListView.as_view(), name='v1-internal-service-devices',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/devices/lookup/',
+        V1ServiceDeviceLookupView.as_view(), name='v1-internal-service-device-lookup',
     ),
     path(
         'internal/<slug:company_slug>/service/devices/<int:pk>/',

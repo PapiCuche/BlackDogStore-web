@@ -30173,7 +30173,8 @@ class M8IntakeApiTest(M8ServiceBase):
         response = self.client.post(_m8_url('m8-taller', 'devices/'), {
             'customer_id': self.other_customer.pk,
             'device_type': 'phone', 'brand': 'Genérica', 'model': 'X100',
-            'serial_number': 'sn-0001',
+            # DEVICE-IDENTITY: a phone is registered with its IMEI.
+            'serial_number': 'sn-0001', 'imei': '490154203237518',
         }, format='json')
         self.assertEqual(response.status_code, 201)
         body = response.json()

@@ -67,7 +67,8 @@ class V1ServiceDeviceSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'customer', 'customer_name',
             'device_type', 'device_type_label', 'brand', 'model', 'display_name',
-            'serial_number', 'imei', 'color', 'storage_capacity', 'notes',
+            'serial_number', 'imei', 'imei2', 'identifiers_pending_reason',
+            'color', 'storage_capacity', 'notes',
             'created_at', 'updated_at',
         )
         read_only_fields = fields
@@ -80,6 +81,55 @@ class V1ServiceDeviceSerializer(serializers.ModelSerializer):
     #                think it is a parameter.
     # `created_by`   who typed a record in is not information the app needs, and
     #                it is a staff member's identity travelling for no reason.
+
+
+def _order_brief(order) -> dict:
+    return {
+        'id': order.pk, 'number': order.number, 'status': order.status,
+        'received_at': order.received_at,
+    }
+
+
+class V1ServiceDeviceMatchSerializer(V1ServiceDeviceSerializer):
+    """
+    A device that may be the one on the counter, with how often it has been here.
+
+    For the lookup before registering and for the duplicate warning after: the
+    person at the counter needs to recognise the device AND see that it has a
+    history, without opening anything else. Staff only; it carries full
+    identifiers.
+    """
+    repair_orders_count = serializers.SerializerMethodField()
+    last_repair_order = serializers.SerializerMethodField()
+
+    class Meta(V1ServiceDeviceSerializer.Meta):
+        fields = V1ServiceDeviceSerializer.Meta.fields + (
+            'repair_orders_count', 'last_repair_order',
+        )
+        read_only_fields = fields
+
+    def _orders(self, obj):
+        # `.all()` reads the prefetch the views set up: no query per device.
+        return sorted(obj.repair_orders.all(), key=lambda o: (o.received_at, o.pk), reverse=True)
+
+    def get_repair_orders_count(self, obj) -> int:
+        return len(self._orders(obj))
+
+    def get_last_repair_order(self, obj):
+        orders = self._orders(obj)
+        return _order_brief(orders[0]) if orders else None
+
+
+class V1ServiceDeviceDetailSerializer(V1ServiceDeviceMatchSerializer):
+    """One device and every time it has been in the shop, newest first."""
+    repair_orders = serializers.SerializerMethodField()
+
+    class Meta(V1ServiceDeviceMatchSerializer.Meta):
+        fields = V1ServiceDeviceMatchSerializer.Meta.fields + ('repair_orders',)
+        read_only_fields = fields
+
+    def get_repair_orders(self, obj):
+        return [_order_brief(order) for order in self._orders(obj)]
 
 
 class V1ServiceCustomerSerializer(serializers.Serializer):
@@ -276,6 +326,15 @@ class V1ServiceDeviceCreateSerializer(serializers.Serializer):
     )
     imei = serializers.CharField(
         max_length=32, required=False, allow_blank=True, trim_whitespace=True,
+    )
+    imei2 = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, trim_whitespace=True,
+    )
+    # Why an identifier this kind of device normally carries is missing. What
+    # each kind needs is decided by `device_identity`, in the service: a
+    # serializer that knew it would be a second place for the rule to live.
+    identifiers_pending_reason = serializers.CharField(
+        max_length=200, required=False, allow_blank=True, trim_whitespace=True,
     )
     color = serializers.CharField(max_length=40, required=False, allow_blank=True)
     storage_capacity = serializers.CharField(max_length=40, required=False, allow_blank=True)

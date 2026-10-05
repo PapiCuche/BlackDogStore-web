@@ -4227,6 +4227,14 @@ class Device(models.Model):
     # device that has legitimately been registered before.
     serial_number = models.CharField(max_length=80, blank=True)
     imei = models.CharField(max_length=32, blank=True)
+    # DEVICE-IDENTITY. A second IMEI, for dual-SIM and eSIM phones. Empty means
+    # "has none", like the two above: never "N/A", never a row of zeros.
+    imei2 = models.CharField(max_length=32, blank=True, default='')
+    # Why a serial or an IMEI that this kind of device normally carries is
+    # missing ("does not power on, no SIM tray"). The front door
+    # (`service_services.create_device`) asks for the identifier OR this; an
+    # empty field with a reason is a fact, a made-up number is not.
+    identifiers_pending_reason = models.CharField(max_length=200, blank=True, default='')
 
     color = models.CharField(max_length=40, blank=True)
     storage_capacity = models.CharField(max_length=40, blank=True)
@@ -4248,6 +4256,7 @@ class Device(models.Model):
             models.Index(fields=['company', 'customer']),
             models.Index(fields=['company', 'serial_number']),
             models.Index(fields=['company', 'imei']),
+            models.Index(fields=['company', 'imei2']),
             models.Index(fields=['company', 'brand', 'model']),
             models.Index(fields=['company', 'created_at']),
         ]
@@ -4282,6 +4291,7 @@ class Device(models.Model):
         self.model = (self.model or '').strip()
         self.serial_number = (self.serial_number or '').strip().upper()
         self.imei = (self.imei or '').strip()
+        self.imei2 = (self.imei2 or '').strip()
         self.clean()
         return super().save(*args, **kwargs)
 
