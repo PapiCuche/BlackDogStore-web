@@ -89,14 +89,14 @@ class QuoteTicketTest(_Base):
         text = _pdf_text(self.client.get(self.url()).content)
         self.assertIn('Cuenta del cliente', text)
 
-    def test_printing_is_audited_and_needs_the_order_to_be_visible(self):
+    def test_printing_reads_and_needs_the_order_to_be_visible(self):
         self.approve()
+        before = AdminAuditLog.objects.count()
 
         self.assertEqual(self.client.get(self.url()).status_code, 200)
-        row = AdminAuditLog.objects.filter(action='service_quote_ticket_printed').get()
-        self.assertEqual(row.company, self.company)
-        self.assertEqual(row.metadata['number'], self.order.number)
-        self.assertEqual(row.metadata['revision'], self.quote.revision)
+        # Imprimir es un GET: en la superficie interna una lectura no escribe.
+        # Lo que importa ya está registrado: quién aprobó, por dónde y quién lo anotó.
+        self.assertEqual(AdminAuditLog.objects.count(), before)
 
         self.assertIn(self.client.get(self.url(slug='m8-otra')).status_code, (403, 404))
         self.order.branch = self.branch_b

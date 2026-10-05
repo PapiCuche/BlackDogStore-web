@@ -347,11 +347,33 @@ class StaffTrackingLinkTest(TrackingBase):
         body = self.client.post(_m8_url('m8-taller', f'orders/{fresh.pk}/tracking-link/reveal/')).json()
         self.assertEqual(body['path'], f'/seguimiento/{tracking.token_for(fresh)}')
 
-    def test_an_order_from_before_links_existed_gets_one_when_staff_ask(self):
+    def test_looking_at_the_status_writes_nothing(self):
+        """Un GET no crea un enlace: ni para una orden que no tuviera ninguno."""
         RepairTrackingLink.objects.filter(repair_order=self.order).delete()
 
-        self.assertTrue(self.client.get(self.url()).json()['active'])
+        self.assertFalse(self.client.get(self.url()).json()['active'])
+        self.assertFalse(RepairTrackingLink.objects.filter(repair_order=self.order).exists())
+        # Pedirlo, que es un acto, sí le da el suyo.
         self.assertTrue(self.client.post(self.url('reveal/')).json()['path'].startswith('/seguimiento/'))
+
+    def test_orders_older_than_the_feature_got_their_link_in_the_migration(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        RepairTrackingLink.objects.all().delete()
+        revoked = self.make_order()
+        tracking.revoke(revoked, actor=self.staff)
+        RepairTrackingLink.objects.filter(repair_order=self.order).delete()
+
+        import_module('store.migrations.0109_backfill_tracking_links').backfill(apps, None)
+
+        self.assertEqual(RepairTrackingLink.objects.filter(
+            repair_order=self.order, revoked_at__isnull=True).count(), 1)
+        self.assertEqual(self.anon.get(track(tracking.token_for(self.order))).status_code, 200)
+        # Una orden cuyo enlace se desactivó no recibe otro.
+        self.assertFalse(RepairTrackingLink.objects.filter(
+            repair_order=revoked, revoked_at__isnull=True).exists())
 
     def test_another_branch_or_company_does_not_reach_the_link(self):
         self.order.branch = self.branch_b

@@ -76,6 +76,7 @@ from .v1_service_views import (
     V1ServiceQuoteReopenView,
     V1ServiceQuoteTicketView,
     V1ServiceCustomerUnlinkAccountView,
+    V1ServiceTrackingLinkActionView,
     V1ServiceTrackingLinkView,
     V1ServiceQuoteDetailView,
     V1ServiceQuoteItemView,
@@ -377,7 +378,7 @@ urlpatterns = [
     ),
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/reveal/',
-        V1ServiceTrackingLinkView.as_view(action='reveal'),
+        V1ServiceTrackingLinkActionView.as_view(action='reveal'),
         name='v1-internal-service-tracking-link-reveal',
     ),
     path(
@@ -387,12 +388,12 @@ urlpatterns = [
     ),
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/rotate/',
-        V1ServiceTrackingLinkView.as_view(action='rotate'),
+        V1ServiceTrackingLinkActionView.as_view(action='rotate'),
         name='v1-internal-service-tracking-link-rotate',
     ),
     path(
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/revoke/',
-        V1ServiceTrackingLinkView.as_view(action='revoke'),
+        V1ServiceTrackingLinkActionView.as_view(action='revoke'),
         name='v1-internal-service-tracking-link-revoke',
     ),
     # WHATSAPP-NOTIFY

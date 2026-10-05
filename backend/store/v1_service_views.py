@@ -1071,7 +1071,9 @@ class V1ServiceQuoteRecordDecisionView(V1ServiceQuotingMixin, APIView):
     channels.
     """
 
-    http_method_names = ['post']
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def post(self, request, company_slug=None, pk=None, quote_id=None):
@@ -1107,7 +1109,9 @@ class V1ServiceQuoteReopenView(V1ServiceQuotingMixin, APIView):
     `superseded`, with its decision, for whoever asks what was agreed before.
     """
 
-    http_method_names = ['post']
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def post(self, request, company_slug=None, pk=None, quote_id=None):
@@ -1166,13 +1170,9 @@ class V1ServiceQuoteTicketView(V1ServiceQuotingMixin, APIView):
         except quote_ticket.QuoteTicketError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        AdminAuditLog.log(
-            actor=request.user, action='service_quote_ticket_printed',
-            target_type='repair_quote', target_id=quote.pk,
-            metadata={'repair_order_id': order.pk, 'number': order.number,
-                      'revision': quote.revision, 'formato': wanted},
-            request=request, company=company,
-        )
+        # No audit row: this is a GET, and on the internal surface a safe method
+        # writes nothing (H4.1.1). What matters is on record already — who
+        # approved, by which channel, and who recorded it.
         response = HttpResponse(content, content_type='application/pdf')
         response['Content-Disposition'] = f'inline; filename="{quote_ticket.filename(quote)}"'
         response['Cache-Control'] = 'private, max-age=0, no-store'
@@ -1197,7 +1197,6 @@ class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
     """
 
     throttle_classes = [AdminOrdersThrottle]
-    action = None
 
     def _status(self, company, order):
         from . import tracking_services as tracking
@@ -1207,17 +1206,22 @@ class V1ServiceTrackingLinkView(V1ServiceSurfaceMixin, APIView):
         ))
 
     def get(self, request, company_slug=None, pk=None):
-        if self.action is not None:
-            return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
         company = self.get_internal_company()
         self.require_capability(company, CAP_ORDERS_VIEW)
         return Response(self._status(company, self.get_order(company, pk)))
 
+
+class V1ServiceTrackingLinkActionView(V1ServiceTrackingLinkView):
+    """POST reveal/ · rotate/ · revoke/ — see `V1ServiceTrackingLinkView`."""
+
+    # Its own class and not a branch of the GET one: a route that declares GET
+    # has to answer GET. `options` stays (H4.1.1).
+    http_method_names = ['post', 'options']
+    action = ''
+
     def post(self, request, company_slug=None, pk=None):
         from . import tracking_services as tracking
 
-        if self.action is None:
-            return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
         company = self.get_internal_company()
         self.require_capability(company, CAP_ORDERS_VIEW)
 
@@ -1246,7 +1250,9 @@ class V1ServiceCustomerUnlinkAccountView(V1ServiceSurfaceMixin, APIView):
     "this already belongs to another account" with nobody able to fix it.
     """
 
-    http_method_names = ['post']
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def post(self, request, company_slug=None, pk=None):

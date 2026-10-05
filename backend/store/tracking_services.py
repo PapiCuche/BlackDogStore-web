@@ -194,11 +194,11 @@ def staff_payload(repair_order, *, can_reveal: bool = False) -> dict:
     Lo que cualquiera que abre la orden puede saber del enlace: SI EXISTE Y SI
     SE USA. El enlace mismo no va aquí — ver `reveal`.
 
-    Una orden anterior a los enlaces recibe el suyo aquí, la primera vez que
-    alguien pregunta. Una orden cuyo enlace fue REVOCADO sigue sin enlace: eso
-    no lo deshace una lectura (ver `link_for`).
+    ES UNA LECTURA, Y NO ESCRIBE NADA. Toda orden tiene su enlace desde que nace
+    (y las anteriores, desde la migración 0109); una orden sin enlace vivo es
+    una orden cuyo enlace se desactivó, y eso no lo deshace mirar.
     """
-    link = link_for(repair_order)
+    link = active_link(repair_order)
     return {
         'active': link is not None,
         'view_count': link.view_count if link is not None else 0,

@@ -118,7 +118,9 @@ class WhatsAppConsentView(V1ServiceSurfaceMixin, APIView):
     panel.
     """
 
-    http_method_names = ['post']
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def post(self, request, company_slug=None, pk=None):
@@ -142,7 +144,9 @@ class WhatsAppConsentView(V1ServiceSurfaceMixin, APIView):
 class WhatsAppRetryView(V1ServiceSurfaceMixin, APIView):
     """POST — try again a WhatsApp message of THIS order that did not go out."""
 
-    http_method_names = ['post']
+    # `options` stays: a browser asks before it posts, and the internal surface
+    # answers it on every route (H4.1.1).
+    http_method_names = ['post', 'options']
     throttle_classes = [AdminOrderStatusChangeThrottle]
 
     def post(self, request, company_slug=None, pk=None, notification_id=None):

@@ -9121,9 +9121,13 @@ class Phase2a1SeedAndRegressionTest(TestCase):
              # La matriz legacy tampoco crece aquí. Una membresía anterior al
              # RBAC no debe adquirir visibilidad sobre comprobantes electrónicos
              # porque se desplegó software.
-             'sales.fiscal.view'},
-            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio y '
-            'la consulta de comprobantes electrónicos',
+             'sales.fiscal.view',
+             # QUOTE-DECISION. El mostrador anota lo que el cliente respondió
+             # sobre su cotización. Una membresía anterior al RBAC no: decidir
+             # en nombre de un cliente no se adquiere por desplegar software.
+             'service.quotes.record_decision'},
+            'la diferencia debe ser recepción/entrega técnica, el cobro del servicio, '
+            'la consulta de comprobantes electrónicos y anotar la decisión del cliente',
         )
         self.assertNotIn('service.payments.manage', legacy_sales)
         self.assertNotIn('service.delivery.manage', legacy_sales)
@@ -53732,6 +53736,7 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'evidence_id': self.evidence.pk,
             # Sólo los alcanza OPTIONS, que no busca el objeto. Cualquier entero.
             'item_id': 999999, 'usage_id': 999999, 'payment_id': 999999,
+            'notification_id': 999999,
         }
         self.QUERY = {
             'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
@@ -54063,7 +54068,11 @@ class H411CredentialChannelTest(M8ServiceBase):
                 self.assertEqual(classes, [V1InternalAuthentication], route)
             elif V1InternalAuthentication in classes:
                 elsewhere.append(route)
-        self.assertEqual(internal, 71)
+        # 83 desde SERVICE-TRACKING: búsqueda de equipo, decisión/reapertura/ticket
+        # de cotización, enlace de seguimiento (estado, revelar, reemplazar,
+        # desactivar), desvincular cuenta, consentimiento y reintento de
+        # WhatsApp, y configuración de mensajería.
+        self.assertEqual(internal, 83)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------
@@ -55591,11 +55600,13 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'orders/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
         'orders/[id]/page.tsx': ('sales.orders.view', _LEGACY_VIEW_ORDERS_ROLES),
         'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/categories/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/movements/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/units/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/counts/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
