@@ -238,6 +238,31 @@ class IzipayNotificationContractTest(TestCase):
             self._state(),
             (Order.Status.PENDING_PAYMENT, False, PaymentTransaction.Status.REJECTED))
 
+    def test_a_signature_with_odd_bytes_is_refused_not_a_crash(self):
+        """Un carácter no ASCII en la firma hacía fallar la comparación: 500 sin autenticar."""
+        body = self.fake.notification(self.attempt)
+        body['signature'] = 'ñandú'
+        response = self.fake.deliver(self.client, body)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._state()[1], False)
+
+    def test_text_that_cannot_be_encoded_is_refused_not_a_crash(self):
+        """Un sustituto UTF-16 suelto es JSON válido y no se puede codificar: 400, no 500."""
+        for field in ('signature', 'payloadHttp'):
+            with self.subTest(field):
+                body = self.fake.notification(self.attempt)
+                body[field] = '\ud800'
+                response = self.fake.deliver(self.client, body)
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._state()[1], False)
+
+    def test_an_oversized_notification_is_refused_before_it_is_read(self):
+        import json as _json
+        huge = _json.dumps({'payloadHttp': 'A' * (300 * 1024), 'signature': 'x'})
+        response = self.client.post(
+            '/api/payments/izipay/notification/', data=huge, content_type='application/json')
+        self.assertEqual(response.status_code, 413)
+
     def test_a_signature_made_with_another_key_is_refused(self):
         forged = self.fake.signed_by_someone_else(self.fake.notification(self.attempt))
 

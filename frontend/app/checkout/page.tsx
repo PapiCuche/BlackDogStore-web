@@ -27,7 +27,9 @@ import {
   warrantyText,
 } from "../lib/business";
 import { useStorefront } from "../components/StorefrontProvider";
+import KryptonPaymentForm from "../components/KryptonPaymentForm";
 import {
+  isPaymentSession,
   openPaymentForm,
   sdkUrlFor,
   type PaymentSession,
@@ -292,8 +294,10 @@ export default function CheckoutPage() {
       // A pending order now exists and the gateway has issued a session token
       // for ONE attempt against it. Nothing has been charged: this only lets
       // the SDK draw its form.
-      const data = (await res.json()) as PaymentSession;
-      if (!sdkUrlFor(data.environment)) {
+      // WHICH form is the backend's to say (the shop holds ONE of Izipay's two
+      // products). A response this page does not recognise opens nothing.
+      const data: unknown = await res.json();
+      if (!isPaymentSession(data)) {
         throw new Error("Entorno de pago no reconocido.");
       }
       clearStoredCoupon();
@@ -341,7 +345,7 @@ export default function CheckoutPage() {
       {/* Loaded ONLY from the constant map in lib/payments, and only once the
           backend has said which environment. The response never supplies a
           script address. */}
-      {payment && (
+      {payment?.provider === "izipay" && (
         <Script
           src={sdkUrlFor(payment.environment) as string}
           strategy="afterInteractive"
@@ -395,6 +399,19 @@ export default function CheckoutPage() {
               Cambiar
             </Link>
           </div>
+        )}
+
+        {/* «Mi Cuenta Web»: el formulario de la pasarela se dibuja aquí, con
+            guiones cuya dirección es una constante de lib/payments. */}
+        {payment?.provider === "micuentaweb" && (
+          <KryptonPaymentForm
+            session={payment}
+            onSettled={handlePaymentSettled}
+            onError={(text) => {
+              setMessage(text);
+              setLoading(false);
+            }}
+          />
         )}
 
         {/*

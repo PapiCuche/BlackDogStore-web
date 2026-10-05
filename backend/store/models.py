@@ -3982,9 +3982,13 @@ class BulkImportJob(models.Model):
 
     PRODUCTS = 'products'
     STOCK = 'stock'
+    # UNIT-IMPORT: devices with a serial number, one row each. Its own kind
+    # because it writes UNITS, not quantities.
+    UNITS = 'units'
     TYPE_CHOICES = [
         (PRODUCTS, 'Productos'),
         (STOCK, 'Inventario'),
+        (UNITS, 'Equipos con serie'),
     ]
 
     PREVIEWED = 'previewed'

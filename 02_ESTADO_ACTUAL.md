@@ -3,6 +3,70 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-05 — PAYMENTS-EQUIPMENT-DOCUMENTS: Izipay, registro de equipos, plantillas y documentos
+
+Rama `feat/payments-equipment-documents`. Migración `0110` (sólo opciones de un campo).
+Decisiones: DEC-PAY-01 (actualizada), DEC-PAY-02, DEC-UNIT-IMPORT-01, DEC-DOC-01. Guía:
+[docs/pagos-equipos-documentos.md](docs/pagos-equipos-documentos.md). Nada está
+publicado en Internet.
+
+| Funcionalidad | Antes | Ahora |
+|---|---|---|
+| Izipay «SDK web / Checkout» (developers.izipay.pe) | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS | Sin cambios de contrato; corregido un 500 sin autenticar |
+| Izipay «Mi Cuenta Web», API REST V4 (la página oficial indicada) | PENDIENTE (no existía) | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS para la prueba real |
+| Un proveedor de pago por instalación (`PAYMENT_PROVIDER`) | PARCIAL (el ajuste existía y no decidía nada) | IMPLEMENTADO |
+| Consultar a la pasarela si la notificación no llega (PAY-RECONCILE) | PENDIENTE | PENDIENTE |
+| «+ Registrar equipo» con serie e IMEI a la vista | PARCIAL (la recepción iba incrustada en el panel y callaba sobre productos sin serie) | IMPLEMENTADO |
+| Plantilla de productos con instrucciones y ejemplo de imágenes | PARCIAL (una hoja, sin explicación) | IMPLEMENTADO |
+| Carga masiva de equipos con serie | PENDIENTE (el archivo de stock los rechaza) | IMPLEMENTADO («Equipos serializados.xlsx») |
+| Nota de venta A4 con logotipo, sucursal, tipo de pago, código por línea, serie e IMEI, importe en letras | PARCIAL (cuatro columnas, sin logotipo) | IMPLEMENTADO |
+| Ticket de 80 mm y salida térmica con los mismos datos | PARCIAL | IMPLEMENTADO |
+| Comprobante de pedido y ticket de cotización con el mismo diseño | PARCIAL (cada uno el suyo) | IMPLEMENTADO |
+| Descuento por línea en la nota de venta (NOTE-LINE-DISCOUNT) | — | PENDIENTE: la venta guarda el descuento del pedido entero |
+| Representaciones impresas de boleta y factura | IMPLEMENTADO | Sin cambios (formato regulado) |
+
+**Izipay.** El código implementa un producto oficial de Izipay y la página indicada
+documenta otro. Veredicto de la auditoría: B, integración oficial válida pero distinta
+de la página. Se añadió el segundo como adaptador aparte; `PAYMENT_PROVIDER` elige uno
+y la notificación del otro responde 404. La comparación punto por punto está en la guía,
+§1.1. Falta saber de cuál de los dos tiene credenciales el propietario.
+
+**Equipos.** Registrar un equipo es un formulario con su serie y su IMEI desde el primer
+momento; un producto que no lleva serie se explica y se puede activar ahí. Los errores
+del servidor nombran su campo.
+
+**Carga masiva.** La plantilla de productos explica cómo viajan las imágenes y sus hojas
+de ayuda no se importan. Los equipos con serie tienen plantilla propia: una fila es un
+equipo, se previsualiza y entra todo o nada, por el mismo escritor que el formulario.
+
+**Documentos.** Un solo trazado A4 y una sola cabecera de ticket. Serie e IMEI se leen
+de los movimientos de Kardex de la venta. El logotipo es el de la empresa y se guarda
+con cada nota.
+
+**Corregido en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| IZIPAY-SIG-ASCII | Una firma con un carácter no ASCII hacía responder 500 a la notificación de pagos, sin autenticar. No cambiaba ningún estado |
+| DOC-DELIVERY-CITY | «Delivery Arequipa» se imprimía en los documentos de cualquier empresa; ahora nombra la ciudad de cada una |
+| DOC-MARKUP | El nombre de un producto con «&» o «<» se interpretaba como formato del PDF |
+| PANEL-OPTION-AMBIGUA | Una prueba del panel de equipos pedía «una opción iPhone 16» sin decir en qué lista; pasaba por el orden de carga |
+| WEBHOOK-BODY (P2, revisión) | La notificación de «Mi Cuenta Web» leía un cuerpo de cualquier tamaño, sin sesión ni límite de peticiones. Las dos notificaciones de pago rechazan ahora más de 128 KB por la longitud declarada, antes de leer |
+| WEBHOOK-CHARSET, IZIPAY-SURROGATE (P3) | Un juego de caracteres inventado en la cabecera, o un sustituto UTF-16 suelto en la firma, daban 500 en la notificación; ahora se rechazan |
+| UNIT-IMPORT-REACH (P3) | Una carga de equipos se podía leer sin alcanzar una sucursal cuyas únicas filas eran errores; esas filas también llevan serie e IMEI |
+| UNIT-COST-NAN (P3) | Un costo «NaN» hacía fallar la previsualización y el formulario de un equipo |
+| TEST-TRACKING-RANDOM | Una prueba de navegador buscaba el id de la orden («24») dentro de un código aleatorio de 43 caracteres; fallaba sola una de cada cien veces |
+| UNIT-PRODUCTS-SCOPE (P3) | La lista de productos del formulario sumaba el stock de toda la empresa para quien sólo opera en algunas sucursales |
+
+**Revisión independiente de seguridad de la rama:** sin P1; 1 P2 y 5 P3, corregidos con
+prueba (`2d76298`).
+
+**Bloqueado por datos del propietario:** qué producto de Izipay tiene contratado y sus
+claves de TEST (`MiCuentaWebSandboxSmokeTest` o `IzipaySandboxSmokeTest`).
+
+**Medido:** backend 5255 pruebas, 0 fallos, 5 omitidas; Jest 787/787; Playwright 184/184, 0 omitidas; tipos y build
+limpios; lint 0 errores y 22 avisos (los de siempre).
+
 ## 2026-10-05 — SERVICE-TRACKING: seguimiento, cotizaciones, WhatsApp, equipos con serie, portada y Google
 
 Rama `feat/service-tracking-equipment`. Migraciones `0102`–`0109`. Decisiones:

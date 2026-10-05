@@ -1363,7 +1363,7 @@ export type ImportMediaSummary = {
 
 export type ImportJob = {
   id: number;
-  import_type: "products" | "stock";
+  import_type: "products" | "stock" | "units";
   status: "previewed" | "applied" | "failed";
   stock_mode: string;
   original_filename: string;
@@ -1409,6 +1409,18 @@ export type InspectedSheet = {
   notes: string[];
   signature: string;
   profile: { id: number; name: string; mapping: Record<string, number> } | null;
+  /** A sheet of the template that explains («Instrucciones», «Ejemplo»): never imported. */
+  help?: boolean;
+};
+
+/** How images travel with a product file, with the limits the server applies. */
+export type ImageRules = {
+  separator: string;
+  formats: string[];
+  max_per_product: number;
+  max_file_mb: number;
+  max_files: number;
+  max_total_mb: number;
 };
 
 export type InspectResult = {
@@ -1417,6 +1429,7 @@ export type InspectResult = {
   sheets: InspectedSheet[];
   fields: Record<string, { label: string; required: boolean }>;
   branches: { id: number; name: string }[];
+  image_rules?: ImageRules | null;
 };
 
 /**

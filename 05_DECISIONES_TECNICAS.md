@@ -207,6 +207,78 @@ ADR por dominio, que no se reescriben.
   integridad». Un mensaje contradictorio que llega después de autorizar se rechaza y no
   reescribe el registro del pago bueno.
 
+- **Actualización (PAYMENTS-EQUIPMENT-DOCUMENTS).** La misma disciplina vale para el
+  segundo producto: `store/payments/fake_micuentaweb.py` exige el contrato publicado de
+  `Charge/CreatePayment` y firma las notificaciones por su cuenta, incluida la copia que
+  recibe el navegador. `MiCuentaWebSandboxSmokeTest` se omite sin claves
+  (**BLOCKED/CREDENTIALS**). Una firma con caracteres no ASCII se compara como bytes: ya
+  no es un 500.
+
+### DEC-PAY-02 · Izipay son dos productos; una instalación usa uno
+
+- El código hablaba con el «SDK web / Checkout» (developers.izipay.pe). La página
+  oficial que indicó el propietario documenta «Mi Cuenta Web» (API REST V4): otras
+  credenciales, otro guion, otra firma. Las dos son integraciones oficiales válidas.
+- No se reemplazó una por otra: no se sabe de cuál tiene credenciales el propietario, y
+  borrar la primera habría tirado un contrato ya probado. Se añadió la segunda como
+  adaptador aparte (`store/payments/micuentaweb.py`).
+- **Nunca las dos a la vez.** `PAYMENT_PROVIDER` nombra una. El checkout abre el pago
+  sólo con esa, el navegador carga sólo su guion y la notificación de la otra responde
+  404 antes de leer nada. Un valor desconocido impide cobrar; no cae en «la de siempre».
+- **Una sola definición de «pagado».** Cada producto tiene su vista, que hace una cosa
+  propia: verificar la firma y reducir el mensaje a un resultado. Lo que sigue
+  (`_SignedNotificationMixin`) es común: importe, moneda, comercio y pedido contra la
+  base, bloqueo de fila, y una repetición que no paga dos veces.
+- **El navegador no es testigo.** En «Mi Cuenta Web» el navegador recibe una copia de la
+  respuesta firmada con otra clave. La notificación sólo cree lo firmado con la
+  contraseña (`kr-hash-key=password`); la copia del navegador, reenviada, se rechaza. El
+  checkout ni siquiera la lee.
+- **TEST o PRODUCCIÓN lo dicen las claves.** No hay variable de entorno para eso en este
+  producto. Un par mezclado impide cobrar y un pago de TEST no paga un pedido con claves
+  de producción.
+- Pendiente (PAY-RECONCILE): si la notificación no llega nunca, un pedido cobrado queda
+  esperando. La API tiene `Order/Get`; no se usa todavía.
+
+### DEC-UNIT-IMPORT-01 · Los equipos con serie se cargan de a uno por fila, por el escritor de siempre
+
+- La carga masiva de stock escribe cantidades. Un producto con serie no tiene una
+  cantidad que alguien escribe, así que ese archivo lo rechaza por fila. Para ellos hay
+  una plantilla propia: «Equipos serializados.xlsx», **una fila = un equipo físico**.
+- No es otro camino al stock. Cada fila termina en
+  `stock_unit_services.receive_units`, el mismo escritor que «Registrar equipo»: mismas
+  reglas de serie e IMEI, misma línea de Kardex, misma invariante.
+- Una columna «Cantidad» rechaza el archivo entero. Leerla como «dos equipos con una
+  serie» es justo lo que la plantilla existe para impedir.
+- Previsualizar no escribe. Registrar es todo o nada y vuelve a comprobar cada serie
+  contra el stock de ese momento; lo que cambió desde la previsualización nombra su fila.
+- La empresa sale de quien carga; la sucursal se busca por nombre dentro de la empresa y
+  dentro de sus sucursales. Un trabajo que toca una sucursal fuera de alcance no existe
+  para esa persona: ni se aplica ni se lee, porque sus filas llevan series e IMEI.
+- Reutiliza `BulkImportJob`/`BulkImportRow` con un tipo nuevo (`units`, migración `0110`).
+
+### DEC-DOC-01 · Los documentos de una tienda comparten un diseño, y lo que dicen sale de la venta
+
+- La nota de venta, su ticket, el comprobante de pedido y el ticket de cotización eran
+  cuatro trazados. Ahora hay un módulo de estilo (`document_style`) y una página A4
+  (`document_layout.render_a4`) que recibe el documento como datos. Un documento nuevo
+  es una descripción, no otro trazado.
+- **Ninguna tienda en el código.** Identidad, sucursal, logotipo y textos legales salen
+  de la empresa, la sucursal, la venta o la configuración. Una prueba revisa los módulos.
+- **Serie e IMEI vienen del equipo vendido.** Se leen de los movimientos de Kardex de la
+  venta (que guardan los ids de los equipos) y de los equipos asignados al pedido, dentro
+  de la empresa. Nunca de una descripción. Una devolución posterior no cambia lo que dice
+  la reimpresión de aquella venta.
+- **El logotipo se guarda con la nota**, como ya se hacía con los comprobantes fiscales.
+  Una nota anterior a esta fase no tiene copia y usa el logotipo actual.
+- **Sólo gris.** La jerarquía la dan el tamaño, el peso, las líneas y el espacio: se
+  imprime igual en una láser monocroma. Las fuentes son las incorporadas del PDF; una
+  tipografía embebida haría los documentos más pesados y sus pruebas ilegibles.
+- **Interno no es fiscal.** La nota dice enmarcada que no es un comprobante electrónico
+  y su número, que no es una serie fiscal. Las representaciones de boleta y factura no
+  se tocaron: su formato lo fija la RS 114-2019 (DEC-FISC-PRINT-01).
+- Las pruebas leen el texto y la estructura (tamaño de página, imágenes, páginas). No
+  comparan bytes. `DOCUMENT_SAMPLES_DIR` deja los PDF para revisarlos a la vista.
+
 ### DEC-FISC-PRINT-01 · La representación impresa sigue los Anexos I y II de la RS 114-2019
 
 - Fuente: los anexos oficiales de SUNAT (RS 114-2019, que sustituyen a los Anexos 1 y 2

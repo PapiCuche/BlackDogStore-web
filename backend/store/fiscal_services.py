@@ -83,57 +83,12 @@ def _amount_in_words(total: Decimal, currency: str) -> str:
     """
     El importe en letras, que es un dato obligatorio del comprobante.
 
-    Se implementa aquí y no con una dependencia porque son treinta líneas y
-    porque el castellano de Perú tiene sus reglas —«veintiuno», «cien» frente a
-    «ciento»— que una librería genérica de i18n no acierta sin configurarla.
+    La regla vive en `document_style`, que es de donde la leen también los
+    documentos internos: un mismo importe se escribe igual en todos los papeles.
     """
-    unidades = ('', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE',
-                'OCHO', 'NUEVE', 'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE',
-                'QUINCE', 'DIECISEIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE',
-                'VEINTE')
-    decenas = ('', '', 'VEINTI', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA',
-               'SETENTA', 'OCHENTA', 'NOVENTA')
-    centenas = ('', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS',
-                'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS',
-                'NOVECIENTOS')
+    from .document_style import amount_in_words
 
-    def hasta_999(n: int) -> str:
-        if n == 0:
-            return ''
-        if n == 100:
-            return 'CIEN'
-        c, resto = divmod(n, 100)
-        d, u = divmod(resto, 10)
-        partes = [centenas[c]] if c else []
-        if resto <= 20:
-            if resto:
-                partes.append(unidades[resto])
-        elif d == 2:
-            partes.append(f'VEINTI{unidades[u].lower().upper()}' if u else 'VEINTE')
-        else:
-            partes.append(decenas[d] + (f' Y {unidades[u]}' if u else ''))
-        return ' '.join(p for p in partes if p)
-
-    entero = int(total)
-    centimos = int((total - entero) * 100)
-
-    if entero == 0:
-        letras = 'CERO'
-    else:
-        millones, resto = divmod(entero, 1_000_000)
-        miles, unidad = divmod(resto, 1000)
-        trozos = []
-        if millones:
-            trozos.append('UN MILLON' if millones == 1
-                          else f'{hasta_999(millones)} MILLONES')
-        if miles:
-            trozos.append('MIL' if miles == 1 else f'{hasta_999(miles)} MIL')
-        if unidad:
-            trozos.append(hasta_999(unidad))
-        letras = ' '.join(trozos)
-
-    moneda = 'SOLES' if currency == 'PEN' else currency
-    return f'{letras} CON {centimos:02d}/100 {moneda}'
+    return amount_in_words(total, currency)
 
 
 #: `Order.DocumentType` → Catálogo N.º 06 de SUNAT.

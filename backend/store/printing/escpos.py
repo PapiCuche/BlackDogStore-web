@@ -247,6 +247,7 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
 
 def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm."""
+    from ..document_style import unit_identifiers
     from ..sales_note_services import build_sales_note_context
     from ..sales_note_services import SALES_NOTE_DISCLAIMER
 
@@ -262,8 +263,10 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         r.line(f"RUC {ctx['store_ruc']}", align='center')
     if ctx['store_address']:
         r.line(ctx['store_address'], align='center')
+    if ctx.get('branch_name'):
+        r.line(f"Sucursal: {ctx['branch_name']}", align='center')
     if ctx['store_phone']:
-        r.line(f"WhatsApp {ctx['store_phone']}", align='center')
+        r.line(f"Tel. {ctx['store_phone']}", align='center')
     r.rule()
 
     r.line(ctx['title'], align='center', bold=True)
@@ -272,6 +275,10 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     r.row('Fecha:', ctx['issued_at'])
     r.row('Pedido:', f"#{ctx['order_id']}")
     r.row('Comprobante solicitado:', ctx['receipt_label'])
+    if ctx.get('payment_label'):
+        r.row('Tipo de pago:', ctx['payment_label'])
+    if ctx.get('seller_name'):
+        r.row('Atendido por:', ctx['seller_name'])
     r.rule()
 
     r.line(f"Cliente: {ctx['customer_name']}")
@@ -284,6 +291,11 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
 
     for item in ctx['items']:
         r.line(str(item['name']))
+        if item.get('code'):
+            r.line(f"Cód. {item['code']}")
+        for unit in item.get('units') or []:
+            for identifier in unit_identifiers(unit):
+                r.line(identifier)
         r.row(f" {item['quantity']} x {money} {item['unit_price']:.2f}",
               f"{money} {item['subtotal']:.2f}")
     r.rule()
@@ -295,6 +307,10 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     if tax['shows_tax']:
         r.row(tax['tax_label'], f"{money} {tax['tax_amount']:.2f}")
     r.row('TOTAL', f"{money} {tax['total']:.2f}", bold=True, large=True)
+    if ctx.get('amount_in_words'):
+        r.line(f"SON: {ctx['amount_in_words']}")
+    if ctx.get('product_count'):
+        r.row('Productos / unidades', f"{ctx['product_count']} / {ctx['unit_count']}")
     if ctx['notes']:
         r.rule()
         r.line('Notas', bold=True)

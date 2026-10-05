@@ -44,18 +44,41 @@ export type StockUnitPage = {
 
 export type SerializedProduct = { id: number; name: string; requires_imei: boolean; price: string };
 
-export type NewUnit = { serial_number: string; imei: string; imei2: string; condition: string; cost: string };
+/**
+ * Any active product, with how it is counted. `can_change_tracking` is the
+ * server's own rule told in advance: tracking by serial can only be switched
+ * while the product has no stock.
+ */
+export type UnitProduct = SerializedProduct & {
+  is_serialized: boolean;
+  stock: number;
+  can_change_tracking: boolean;
+};
 
-/** A refusal. `line` is the 1-based device of a batch the server turned down. */
+/** ONE physical device. There is no quantity: a second device is a second one of these. */
+export type NewUnit = {
+  serial_number: string; imei: string; imei2: string; condition: string; cost: string;
+  price_override?: string;
+};
+
+/** The inputs of a device the server can point at. */
+export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "price_override" | "reason";
+
+/**
+ * A refusal. `line` is the 1-based device of a batch the server turned down and
+ * `field` the input that is wrong, so the form says it next to that input.
+ */
 export class StockUnitApiError extends Error {
   readonly status: number;
   readonly line: number | null;
+  readonly field: UnitField | null;
 
-  constructor(message: string, status: number, line: number | null = null) {
+  constructor(message: string, status: number, line: number | null = null, field: UnitField | null = null) {
     super(message);
     this.name = "StockUnitApiError";
     this.status = status;
     this.line = line;
+    this.field = field;
   }
 }
 
@@ -67,10 +90,12 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
     const line = body && typeof body === "object" && typeof body.line === "number" ? body.line : null;
+    const field = body && typeof body === "object" && typeof body.field === "string" ? (body.field as UnitField) : null;
     throw new StockUnitApiError(
       detail || (res.status === 403 ? "No tienes permisos sobre el inventario." : "No se pudo completar la operación."),
       res.status,
       line,
+      field,
     );
   }
   return body as T;
@@ -101,6 +126,16 @@ export function fetchStockUnits(params: {
 export const fetchSerializedProducts = () =>
   call<{ results: SerializedProduct[] }>("/products/");
 
+/** Every active product and how each is counted — for the registration form. */
+export const fetchUnitProducts = () =>
+  call<{ results: UnitProduct[] }>("/products/?scope=all");
+
+/** Switch a product to (or from) tracking by serial. Refused while it has stock. */
+export const setProductTracking = (productId: number, body: { is_serialized: boolean; requires_imei: boolean }) =>
+  post<{ id: number; is_serialized: boolean; requires_imei: boolean }>(
+    `/products/${productId}/serialization/`, body,
+  );
+
 export const receiveStockUnits = (body: {
   product_id: number; branch: number; reason: string; units: NewUnit[];
 }) => post<{ results: StockUnit[] }>("/", body);
@@ -109,3 +144,66 @@ export type UnitAction = "reserve" | "release" | "write-off" | "return";
 
 export const actOnStockUnit = (id: number, action: UnitAction, reason = "") =>
   post<StockUnit>(`/${id}/${action}/`, { reason });
+
+// ---------------------------------------------------------------------------
+// UNIT-IMPORT — «Equipos serializados.xlsx»: one row, one device
+// ---------------------------------------------------------------------------
+
+export type UnitImportRow = {
+  sheet: string;
+  row: number;
+  action: "create" | "skip" | "error";
+  match_key: string;
+  errors: string[];
+  warnings: string[];
+  data: {
+    name?: string;
+    branch?: string;
+    serial_number?: string;
+    imei?: string;
+    imei2?: string;
+    condition?: string;
+    cost?: string;
+    reason?: string;
+  };
+};
+
+/** A staged upload, as the server describes it. Nothing here is computed in the browser. */
+export type UnitImportJob = {
+  id: number;
+  import_type: "units";
+  status: "previewed" | "applied" | "failed";
+  original_filename: string;
+  counts: { total: number; create: number; skip: number; error: number };
+  summary: { units?: number; applied?: { units: number; movements: number } };
+  is_applicable: boolean;
+  rows?: UnitImportRow[];
+  rows_truncated?: boolean;
+};
+
+export function unitImportTemplateUrl(): string {
+  return `${BASE}/import/template/`;
+}
+
+/** The rows that failed, as a file to read next to the original. */
+export function unitImportErrorsUrl(jobId: number): string {
+  return `${API_BASE}/admin/imports/${jobId}/errors.csv/`;
+}
+
+/** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */
+export function previewUnitImport(
+  file: File,
+  defaults: { branch?: number | null; reason?: string } = {},
+): Promise<UnitImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  if (defaults.branch) form.append("branch", String(defaults.branch));
+  if (defaults.reason?.trim()) form.append("reason", defaults.reason.trim());
+  // No Content-Type: the browser writes the multipart boundary itself.
+  return call<UnitImportJob>("/import/preview/", { method: "POST", body: form });
+}
+
+/** Register every staged device — all of the file or none of it. */
+export function applyUnitImport(jobId: number): Promise<UnitImportJob> {
+  return post<UnitImportJob>(`/import/${jobId}/apply/`);
+}

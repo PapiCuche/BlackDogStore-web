@@ -301,9 +301,10 @@ class BulkMediaPreviewTest(BulkMediaBase):
         )
         self.assertEqual(res.status_code, 201, res.content)
         body = res.json()
-        # La fila de ayuda de la plantilla no es un producto.
+        # Ni la fila de ayuda ni la de ejemplo son productos: la plantilla, tal
+        # cual se descarga, no crea nada (IMPORT-TEMPLATE-HELP).
         self.assertEqual(body['counts']['error'], 0, body['rows'])
-        self.assertEqual(body['counts']['create'], 1)
+        self.assertEqual(body['counts']['create'], 0)
 
 
 class BulkMediaApplyTest(BulkMediaBase):

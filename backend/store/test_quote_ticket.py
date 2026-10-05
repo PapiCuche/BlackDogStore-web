@@ -60,6 +60,26 @@ class QuoteTicketTest(_Base):
         for leaked in (IMEI_A, 'F2LXK1ABC9', 'MARGEN', 'Aceptó por llamada'):
             self.assertNotIn(leaked, text, leaked)
 
+    def test_it_carries_the_shops_identity_like_every_other_ticket(self):
+        """La misma cabecera que el ticket de venta, y la nota escrita PARA el cliente con su rótulo."""
+        from store.models import RepairDiagnostic
+        from store.test_document_design import keep, text_of
+
+        RepairQuote.objects.filter(pk=self.quote.pk).update(
+            customer_notes='Cambio de pantalla con repuesto original.',
+            discount_amount='20.00', total=self.quote.total - 20)
+        RepairDiagnostic.objects.filter(repair_order=self.order).update(
+            description='DIAGNOSTICO-TECNICO-INTERNO', internal_notes='NOTA-INTERNA-TALLER')
+        self.approve()
+
+        text = text_of(keep('cotizacion-ticket80', self.client.get(self.url()).content))
+
+        for expected in ('Taller', f'Sucursal: {self.order.branch.name}', 'COTIZACIÓN DE SERVICIO',
+                         'Detalle del trabajo', 'Cambio de pantalla', 'Descuento', '20.00', 'Atendido por:'):
+            self.assertIn(expected, text, expected)
+        for internal in ('DIAGNOSTICO-TECNICO-INTERNO', 'NOTA-INTERNA-TALLER'):
+            self.assertNotIn(internal, text)
+
     def test_it_never_calls_itself_a_fiscal_document(self):
         self.approve()
         text = _pdf_text(self.client.get(self.url()).content).upper()

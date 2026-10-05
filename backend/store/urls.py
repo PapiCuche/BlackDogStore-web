@@ -26,6 +26,7 @@ from .views import (
     CartViewSet,
     CreateCheckoutSessionView,
     IzipayNotificationView,
+    MiCuentaWebNotificationView,
     PaymentStatusView,
     ReviewViewSet,
     CouponValidateView,
@@ -83,6 +84,9 @@ from .import_views import (
     AdminProductImportPreviewView,
     AdminProductTemplateView,
     AdminStockImportApplyView,
+    AdminUnitImportApplyView,
+    AdminUnitImportPreviewView,
+    AdminUnitImportTemplateView,
     AdminStockImportPreviewView,
 )
 from .promotion_views import (
@@ -171,6 +175,13 @@ urlpatterns = [
         'payments/izipay/notification/',
         IzipayNotificationView.as_view(),
         name='izipay-notification',
+    ),
+    # Izipay's other product. Only ONE of the two answers: the one named by
+    # PAYMENT_PROVIDER. The other is a 404.
+    path(
+        'payments/micuentaweb/notification/',
+        MiCuentaWebNotificationView.as_view(),
+        name='micuentaweb-notification',
     ),
     path('payments/status/', PaymentStatusView.as_view(), name='payment-status'),
     path('coupons/validate/', CouponValidateView.as_view(), name='coupon-validate'),
@@ -360,6 +371,10 @@ urlpatterns = [
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
+    # UNIT-IMPORT: «Equipos serializados.xlsx». One row, one device.
+    path('admin/inventory/units/import/template/', AdminUnitImportTemplateView.as_view(), name='admin-unit-import-template'),
+    path('admin/inventory/units/import/preview/', AdminUnitImportPreviewView.as_view(), name='admin-unit-import-preview'),
+    path('admin/inventory/units/import/<int:pk>/apply/', AdminUnitImportApplyView.as_view(), name='admin-unit-import-apply'),
     path('admin/inventory/units/<int:pk>/', StockUnitDetailView.as_view(), name='admin-inventory-unit-detail'),
     path('admin/inventory/units/<int:pk>/write-off/', StockUnitActionView.as_view(action='write-off'), name='admin-inventory-unit-write-off'),
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),

@@ -389,10 +389,16 @@ JWT_COOKIE_SECURE = not DEBUG
 
 # --- Payments -------------------------------------------------------------
 #
-# The gateway is Izipay. `PAYMENT_PROVIDER` is not a switch for running two of
-# them — there is one integration and it is the one below. It exists so the
-# name of the provider is a configured fact rather than something the domain
-# has to know, and so an installation with no gateway can say so.
+# The gateway is Izipay, which sells TWO products with different credentials,
+# different browser scripts and different signatures:
+#
+#   izipay        «SDK web / Checkout» (developers.izipay.pe) — IZIPAY_* below
+#   micuentaweb   «Mi Cuenta Web», REST API V4 (secure.micuentaweb.pe) — MICUENTAWEB_*
+#
+# `PAYMENT_PROVIDER` names the ONE this installation holds credentials for. It
+# is not a way to run both: the checkout opens payments with that one only, and
+# the notification endpoint of the other answers 404. Change it only while no
+# payment is waiting for its answer.
 PAYMENT_PROVIDER = env('PAYMENT_PROVIDER', default='izipay')
 
 # SANDBOX OR PRODUCTION, SAID OUT LOUD.
@@ -432,6 +438,29 @@ IZIPAY_CURRENCY = env('IZIPAY_CURRENCY', default='PEN')
 # in the merchant panel instead; payments still work, because the endpoint's
 # security is its signature and not how Izipay learned the address.
 IZIPAY_IPN_URL = env('IZIPAY_IPN_URL', default='')
+
+# --- Mi Cuenta Web (REST API V4), used when PAYMENT_PROVIDER=micuentaweb -----
+#
+# The four values of «Configuración › Tienda › Claves de API REST» in the Back
+# Office. TEST or PRODUCTION is not a variable: it is which pair of keys is
+# pasted here (`testpassword_…` + `…:testpublickey_…`, or the production pair).
+# A mixed pair refuses the checkout.
+#
+# Public — the Krypton client needs them in the browser.
+MICUENTAWEB_SHOP_ID = env('MICUENTAWEB_SHOP_ID', default='')          # «Usuario»
+MICUENTAWEB_PUBLIC_KEY = env('MICUENTAWEB_PUBLIC_KEY', default='')    # <usuario>:<clave pública>
+# SECRET — backend only. Creates payments and verifies the notification (IPN).
+MICUENTAWEB_PASSWORD = env('MICUENTAWEB_PASSWORD', default='')
+# SECRET — the «clave HMAC-SHA-256». It signs the copy of the answer the BROWSER
+# receives, which this backend never believes; nothing reads it today. Declared
+# so that it has one place to live if a signed return is ever checked.
+MICUENTAWEB_HMAC_KEY = env('MICUENTAWEB_HMAC_KEY', default='')
+# «Nombre del servidor de la API REST».
+MICUENTAWEB_API_URL = env('MICUENTAWEB_API_URL', default='https://api.micuentaweb.pe')
+MICUENTAWEB_CURRENCY = env('MICUENTAWEB_CURRENCY', default='PEN')
+# Our notification endpoint, sent per payment as `ipnTargetUrl`. Empty = the
+# URL configured in the Back Office («Reglas de notificación») is used.
+MICUENTAWEB_IPN_URL = env('MICUENTAWEB_IPN_URL', default='')
 
 # Where the buyer comes back to after paying.
 CHECKOUT_RETURN_URL = env('CHECKOUT_RETURN_URL', default='http://localhost:3000')

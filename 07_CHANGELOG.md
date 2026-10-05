@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-05 — PAYMENTS-EQUIPMENT-DOCUMENTS
+
+**Added**
+- Adaptador de pagos «Mi Cuenta Web» (API REST V4 de Izipay): creación del pago,
+  formulario Krypton en el checkout y notificación firmada en
+  `/api/payments/micuentaweb/notification/`. Variables `MICUENTAWEB_*`.
+- `PAYMENT_PROVIDER` elige el único producto de Izipay de la instalación (`izipay` o
+  `micuentaweb`).
+- Inventario › Equipos › «+ Registrar equipo»: formulario propio con «Guardar y añadir
+  otro» y activación del seguimiento por serie.
+- Inventario › Equipos › «Cargar desde Excel»: plantilla «Equipos serializados.xlsx»,
+  previsualización y registro (migración `0110`).
+- Plantilla de productos con hojas «Instrucciones» y «Ejemplo»; ayuda «¿Cómo preparo
+  las imágenes?» en la pantalla de importación.
+- Trazado común de documentos (`document_style`, `document_layout`): logotipo, caja de
+  documento, tabla con código y unidad, serie e IMEI por línea, importe en letras,
+  «Página X de Y».
+- Guía `docs/pagos-equipos-documentos.md`.
+
+**Changed**
+- La nota de venta A4, su ticket de 80 mm, la salida térmica, el comprobante de pedido y
+  el ticket de cotización usan el mismo diseño y llevan sucursal y tipo de pago.
+- La nota de venta guarda el logotipo con el que se emitió.
+- Un error al registrar un equipo nombra el campo que está mal.
+- El archivo de stock que trae un producto con serie indica la plantilla de equipos.
+
+**Fixed**
+- IZIPAY-SIG-ASCII, DOC-DELIVERY-CITY, DOC-MARKUP, PANEL-OPTION-AMBIGUA (ver
+  `02_ESTADO_ACTUAL.md`).
+- De la revisión independiente: las notificaciones de pago aceptaban un cuerpo sin tope
+  (WEBHOOK-BODY); un juego de caracteres inventado o un sustituto UTF-16 suelto daban
+  500; una carga de equipos se leía sin alcanzar todas sus sucursales; un costo «NaN»
+  rompía la previsualización; la lista de productos del formulario sumaba el stock de
+  toda la empresa.
+
+**Blocked**
+- Prueba real de cualquiera de los dos productos de Izipay: faltan las claves de TEST y
+  saber cuál tiene contratado el propietario.
+
 ## 2026-10-05 — SERVICE-TRACKING
 
 **Added**

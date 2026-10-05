@@ -27,7 +27,6 @@ from rest_framework.views import APIView
 
 from . import checkout_services as checkout
 from .models import Order
-from .payments import izipay
 from .throttles import CheckoutThrottle
 from .v1_checkout_serializers import V1CheckoutSerializer
 from .v1_customer_views import V1CustomerSurfaceMixin
@@ -72,15 +71,7 @@ def _payment_payload(order, payment) -> dict:
     return {
         'order_id': order.id,
         'status': order.status,
-        'payment': {
-            'provider': izipay.PROVIDER,
-            'environment': payment.environment,
-            'transaction_id': payment.transaction_id,
-            'authorization': payment.authorization,
-            'merchant_code': payment.merchant_code,
-            'public_key': payment.public_key,
-            'config': payment.config,
-        },
+        'payment': checkout.payment_session_payload(payment),
     }
 
 

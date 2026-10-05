@@ -400,6 +400,14 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     workbook, reader_notes = xlsx_reader.load_workbook(data)
 
     sheet_name = sheet_name or workbook.sheetnames[0]
+    if import_exports.is_help_sheet(sheet_name):
+        # The template's «Instrucciones» and «Ejemplo». Refused before anything
+        # is staged: an example must not become catalogue because somebody
+        # picked the wrong tab.
+        raise ImportError_(
+            f'«{sheet_name}» es una hoja de ayuda de la plantilla y no se importa. '
+            'Los productos van en la hoja «Productos».'
+        )
     detected = None
     if mapping is None or header_row is None:
         # SAMPLE: format detection only needs the header row. Reading the whole
@@ -476,6 +484,14 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 job=job, sheet_name=sheet_name, row_number=row_number,
                 action=BulkImportRow.SKIP, normalized_data={},
                 warnings=['Fila de ayuda de la plantilla.'],
+            ))
+            counts['skip'] += 1
+            continue
+        if import_exports.is_template_example_row(fields):
+            staged.append(BulkImportRow(
+                job=job, sheet_name=sheet_name, row_number=row_number,
+                action=BulkImportRow.SKIP, normalized_data={},
+                warnings=['Fila de ejemplo de la plantilla: no se importa. Reemplázala por tus productos.'],
             ))
             counts['skip'] += 1
             continue

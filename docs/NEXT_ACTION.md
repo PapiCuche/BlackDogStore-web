@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar SERVICE-TRACKING)
+master: ver `git log -1 origin/master` (este archivo se escribió al cerrar PAYMENTS-EQUIPMENT-DOCUMENTS)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6): CI verde. Versión mayor que el lanzamiento no necesita; se
@@ -14,29 +14,33 @@ current_phase:
 READY FOR EXTERNAL PRODUCTION CONFIGURATION, con una condición: repetir el ensayo de
 producción. La aplicación incluye ya el seguimiento del cliente por enlace, las decisiones
 de cotización con su ticket, los avisos por WhatsApp (con proveedor falso), los equipos con
-número de serie, las categorías de portada configurables y «Continuar con Google». No hay
-nada publicado en Internet.
+número de serie, las categorías de portada configurables y «Continuar con Google»; y, desde
+PAYMENTS-EQUIPMENT-DOCUMENTS, los dos productos de Izipay detrás de `PAYMENT_PROVIDER`, el
+registro y la carga masiva de equipos con serie, y los documentos de venta con un solo
+diseño. No hay nada publicado en Internet.
 
 current_priority:
 1. Repetir `sh deploy/rehearsal.sh` sobre `master`: el último es anterior a #81, #82,
-   MEDIA-EVIDENCE y SERVICE-TRACKING (migraciones `0098`–`0109`).
+   MEDIA-EVIDENCE, SERVICE-TRACKING y PAYMENTS-EQUIPMENT-DOCUMENTS (migraciones `0098`–`0110`).
 2. Esperar los datos del propietario (blocked_external).
 3. Con ellos: `docs/despliegue-produccion.md` §4, en orden; para WhatsApp,
-   `docs/seguimiento-whatsapp-equipos.md` §4.1 y la tarea de `docs/despliegue-produccion.md` §6.1.3.
+   `docs/seguimiento-whatsapp-equipos.md` §4.1 y la tarea de `docs/despliegue-produccion.md` §6.1.3;
+   para Izipay, `docs/pagos-equipos-documentos.md` §1.3 y §1.4.
 
 validated:
-- Backend: 5172 pruebas en PostgreSQL, 0 fallos, 4 omitidas (suite completa local).
-- Frontend: Jest 765/765, typecheck, lint 0 errores / 22 avisos, build.
-- Playwright completo: 183/183, 0 omitidas.
-- Revisión independiente de seguridad de la rama: sin P1; 2 P2 y 5 P3, corregidos.
+- Backend: 5255 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL).
+- Frontend: Jest 787/787, typecheck, lint 0 errores / 22 avisos, build.
+- Playwright completo: 184/184, 0 omitidas.
+- Revisión independiente de seguridad de la rama: sin P1; 1 P2 y 5 P3, corregidos.
 - Ensayo de producción: `ENSAYO: OK` (83 + 26) sobre `9043c89`. DESACTUALIZADO.
 
 blocked_external:
 - Dominio, DNS y certificado público.
 - Servidor (VPS).
 - Credenciales SMTP.
-- Credenciales de Izipay: producción, y sandbox para `IzipaySandboxSmokeTest`
-  (IZIPAY-TOKEN-CONTRACT).
+- Izipay: saber cuál de sus dos productos tiene el propietario («SDK web / Checkout» o
+  «Mi Cuenta Web»), sus claves de TEST para la prueba real (`IzipaySandboxSmokeTest` /
+  `MiCuentaWebSandboxSmokeTest`) y las de producción (IZIPAY-PRODUCT, IZIPAY-TOKEN-CONTRACT).
 - Destino de la copia externa (ahora incluye las imágenes de producto y las evidencias).
 - WhatsApp Business: número, plantillas aprobadas por Meta, token de acceso, secreto de la
   aplicación y token de verificación del webhook (WHATSAPP-CREDENTIALS).
@@ -47,6 +51,9 @@ blocked_external:
   de push (sólo el propietario).
 
 known_debt (todo P4 o propuesta; detalle en `docs/AUDIT_MEMORY.md`):
+- PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda esperando;
+  no se consulta a la pasarela.
+- NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - IMPORT-BODY-LIMIT: Caddy no pone tope al cuerpo de una petición.
 - SERIAL-TRANSFER, SERIAL-COUNT, SERIAL-PICK: transferir equipos con serie, recuento por
   series y elegir el equipo al vender.
