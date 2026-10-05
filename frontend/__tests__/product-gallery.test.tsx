@@ -242,3 +242,26 @@ describe('formulario de producto', () => {
     expect(screen.getByRole('link', { name: 'Abrir el producto' })).toHaveAttribute('href', '/admin/products/9');
   });
 });
+
+describe('lista de productos del panel', () => {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const { ProductsTable } = require('@/app/admin/components/ProductsTable');
+
+  it('enseña la imagen principal de cada producto, o un hueco neutro', () => {
+    render(<ProductsTable
+      canManage={false} onChanged={jest.fn()}
+      products={[
+        { ...product, id: 1, name: 'Con foto', image_url: image(1).url },
+        { ...product, id: 2, name: 'Sin foto', image_url: '' },
+      ]}
+    />);
+
+    const rows = screen.getAllByRole('row').slice(1);
+    // Decorativa: el nombre del producto ya está al lado.
+    const thumb = rows[0].querySelector('img') as HTMLImageElement;
+    expect(thumb.getAttribute('src')).toBe(image(1).url);
+    expect(thumb).toHaveAttribute('alt', '');
+    expect(rows[1].querySelector('img')).toBeNull();
+    expect(rows[1].querySelector('[data-thumb="empty"]')).not.toBeNull();
+  });
+});
