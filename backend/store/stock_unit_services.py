@@ -125,6 +125,16 @@ def _clean_row(product, row: dict) -> dict:
     }
 
 
+def clean_unit(product, row: dict) -> dict:
+    """The rules of ONE device, for a caller that stages before it writes (the bulk upload)."""
+    return _clean_row(product, row)
+
+
+def clean_reason(value) -> str:
+    """The reason of a reception, as `receive_units` will accept it."""
+    return _reason(value)
+
+
 def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
     """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
     if StockUnit.objects.filter(

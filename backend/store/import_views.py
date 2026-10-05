@@ -38,6 +38,7 @@ from . import (
     import_media,
     import_services,
     stock_import_services,
+    unit_import_services,
     xlsx_reader,
 )
 from .models import (
@@ -71,7 +72,7 @@ def _import_context(request):
     Resolve the company, and which KINDS of import this caller may see.
 
     Returns `(company, granted, error_response)` where `granted` is a subset of
-    `{'products', 'stock'}`.
+    `{'products', 'stock', 'units'}`.
 
     WHY THE CAPABILITY IS NOT DECIDED BY THE URL
     --------------------------------------------
@@ -110,6 +111,8 @@ def _import_context(request):
         granted.add(BulkImportJob.PRODUCTS)
     if has_capability(request.user, company, CAP_STOCK):
         granted.add(BulkImportJob.STOCK)
+        # Registering devices is the same authority as moving stock.
+        granted.add(BulkImportJob.UNITS)
     if not granted:
         return None, set(), Response(
             {'detail': 'No tienes permisos para esta operación.'},
@@ -349,6 +352,87 @@ class AdminProductImportApplyView(APIView):
 
 
 # =============================================================================
+# Devices with a serial number — one row, one unit
+# =============================================================================
+
+class AdminUnitImportTemplateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _context(request, CAP_STOCK)
+        if error:
+            return error
+        return _xlsx(unit_import_services.template_bytes(), unit_import_services.TEMPLATE_FILENAME)
+
+
+class AdminUnitImportPreviewView(APIView):
+    """
+    Stage «Equipos serializados.xlsx». Registers nothing.
+
+    The company comes from the caller; each row's branch is looked up INSIDE
+    that company and must be one the caller may operate in. Neither is taken
+    from an id in the file.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ['post', 'options']
+
+    def post(self, request):
+        company, error = _context(request, CAP_STOCK)
+        if error:
+            return error
+        upload = request.FILES.get('file')
+        if upload is None:
+            return _error('Adjunta un archivo .xlsx.')
+
+        reachable = set(visible_branches(request.user, company).values_list('pk', flat=True))
+        default_branch = None
+        if request.data.get('branch') not in (None, ''):
+            default_branch = _int_or_none(request.data.get('branch'))
+            if default_branch is None:
+                return _error('Sucursal inválida.')
+            # Not this company's, or not one of theirs: the same answer.
+            if default_branch not in reachable:
+                return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            job = unit_import_services.preview_units(
+                company=company, actor=request.user, upload=upload, filename=upload.name,
+                reachable_branch_ids=reachable, default_branch=default_branch,
+                default_reason=request.data.get('reason') or '',
+            )
+        except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
+            return _error(exc)
+        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+
+
+class AdminUnitImportApplyView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    http_method_names = ['post', 'options']
+
+    def post(self, request, pk):
+        company, error = _context(request, CAP_STOCK)
+        if error:
+            return error
+        job = BulkImportJob.objects.filter(
+            company=company, pk=pk, import_type=BulkImportJob.UNITS,
+        ).first()
+        # Re-checked at APPLY: branch access can be removed after the preview,
+        # and this is the call that registers the devices.
+        if job is None or not _job_within_reach(request.user, company, job):
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            job, _changed = unit_import_services.apply_units(job=job, actor=request.user, request=request)
+        except unit_import_services.UnitImportError as exc:
+            return _error(exc)
+        return Response(_job_payload(job))
+
+
+# =============================================================================
 # Stock
 # =============================================================================
 
@@ -465,7 +549,9 @@ class AdminImportHistoryView(APIView):
             .filter(company=company, import_type__in=sorted(visible))
             .select_related('created_by', 'applied_by')
         )
-        return Response({'results': [_job_payload(job) for job in queryset[:50]]})
+        return Response({'results': [
+            _job_payload(job) for job in queryset[:50] if _job_within_reach(request.user, company, job)
+        ]})
 
 
 class AdminImportJobView(APIView):
@@ -573,7 +659,29 @@ def _job_or_error(request, pk):
             {'detail': 'No tienes permisos para esta operación.'},
             status=status.HTTP_403_FORBIDDEN,
         )
+    if not _job_within_reach(request.user, company, job):
+        return None, None, Response(
+            {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
+        )
     return company, job, None
+
+
+def _job_within_reach(user, company, job) -> bool:
+    """
+    A job of DEVICES carries their serials and IMEIs, row by row.
+
+    Those are readable in Inventario › Equipos only inside the branches the
+    caller may operate in, so a staged file is too: a job that touches a
+    branch out of the caller's reach is not there for them. Product and
+    quantity jobs keep the rule they always had.
+    """
+    if job.import_type != BulkImportJob.UNITS:
+        return True
+    wanted = set((job.mapping_snapshot or {}).get('branch_ids') or [])
+    if not wanted:
+        return job.created_by_id == user.pk
+    reachable = set(visible_branches(user, company).values_list('pk', flat=True))
+    return wanted <= reachable
 
 
 def _xlsx(payload: bytes, filename: str) -> HttpResponse:

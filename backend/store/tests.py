@@ -55607,6 +55607,7 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/movements/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/units/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        'inventory/units/import/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/transfers/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/counts/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),

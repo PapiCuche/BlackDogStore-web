@@ -84,6 +84,9 @@ from .import_views import (
     AdminProductImportPreviewView,
     AdminProductTemplateView,
     AdminStockImportApplyView,
+    AdminUnitImportApplyView,
+    AdminUnitImportPreviewView,
+    AdminUnitImportTemplateView,
     AdminStockImportPreviewView,
 )
 from .promotion_views import (
@@ -368,6 +371,10 @@ urlpatterns = [
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
+    # UNIT-IMPORT: «Equipos serializados.xlsx». One row, one device.
+    path('admin/inventory/units/import/template/', AdminUnitImportTemplateView.as_view(), name='admin-unit-import-template'),
+    path('admin/inventory/units/import/preview/', AdminUnitImportPreviewView.as_view(), name='admin-unit-import-preview'),
+    path('admin/inventory/units/import/<int:pk>/apply/', AdminUnitImportApplyView.as_view(), name='admin-unit-import-apply'),
     path('admin/inventory/units/<int:pk>/', StockUnitDetailView.as_view(), name='admin-inventory-unit-detail'),
     path('admin/inventory/units/<int:pk>/write-off/', StockUnitActionView.as_view(action='write-off'), name='admin-inventory-unit-write-off'),
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
