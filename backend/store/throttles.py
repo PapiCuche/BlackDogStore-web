@@ -172,6 +172,17 @@ class AdminOrderStatusChangeThrottle(UserRateThrottle):
     scope = 'admin_order_status_change'
 
 
+class AdminImportThrottle(UserRateThrottle):
+    """
+    Las cargas masivas: inspeccionar, previsualizar y aplicar.
+
+    No tenían límite. Una previsualización con imágenes las recodifica todas y
+    las deja guardadas hasta la limpieza diaria: sin tope, un bucle llena el
+    almacenamiento y ocupa el único proceso del servidor.
+    """
+    scope = 'admin_import'
+
+
 class ServiceEvidenceReadThrottle(UserRateThrottle):
     """
     Mirar la galería de una orden: la lista y cada imagen.

@@ -48,6 +48,7 @@ from .models import (
     ImportMappingProfile,
 )
 from .pos_views import _NOT_FOUND, _context
+from .throttles import AdminImportThrottle
 from .tenancy import (
     CrossTenantError,
     NoTenantError,
@@ -175,6 +176,7 @@ class AdminImportInspectView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -257,6 +259,7 @@ class AdminImportInspectView(APIView):
 
 class AdminProductImportPreviewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -302,6 +305,7 @@ class AdminProductImportPreviewView(APIView):
 
 class AdminProductImportApplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
 
     def post(self, request, pk):
         company, error = _context(request, CAP_PRODUCTS)
@@ -340,6 +344,7 @@ class AdminProductImportApplyView(APIView):
 
 class AdminStockImportPreviewView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
@@ -373,6 +378,7 @@ class AdminStockImportPreviewView(APIView):
 
 class AdminStockImportApplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
 
     def post(self, request, pk):
         company, error = _context(request, CAP_STOCK)

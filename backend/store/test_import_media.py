@@ -625,3 +625,106 @@ class ZipSafetyTest(BulkMediaBase):
         res = self._preview(self.ROWS, images_zip=SimpleUploadedFile(
             'imagenes.zip', bytes(data), content_type='application/zip'))
         self.assertEqual(res.status_code, 400)
+
+
+class ReviewHardeningTest(BulkMediaBase):
+    """Lo que encontró la revisión del cambio, cada cosa con su prueba."""
+
+    ROWS = [{'Código': 'COD-A1', 'Nombre': 'Uno', 'Precio de venta': 10, 'Imágenes': 'a.png'}]
+
+    def test_more_than_a_hundred_loose_files_reach_the_importer(self):
+        """
+        Django corta en 100 archivos por petición si nadie le dice otra cosa, y
+        lo hace con una página HTML: el tope de 200 imágenes era inalcanzable y
+        quien lo rozaba no recibía ninguna explicación.
+        """
+        files = [picture('a.png')] + [
+            picture(f'extra-{n}.png', png_with_transparency((20 + n % 5, 20))) for n in range(120)
+        ]
+        res = self._preview(self.ROWS, images=files)
+        self.assertEqual(res.status_code, 201, res.content[:300])
+        self.assertEqual(res.json()['summary']['media']['attached'], 121)
+        self.assertEqual(res.json()['summary']['media']['orphans'], 120)
+
+    @override_settings(IMPORT_IMAGES_ZIP_MAX_ENTRIES=3)
+    def test_a_huge_index_is_refused_before_it_is_parsed(self):
+        from unittest import mock
+
+        bundle = archive([(f'{n}.png', b'x') for n in range(50)])
+        with mock.patch('store.import_media.zipfile.ZipFile') as opened:
+            with self.assertRaises(import_media.ImportMediaError) as caught:
+                import_media.collect([], bundle)
+        opened.assert_not_called()
+        self.assertIn('3', str(caught.exception))
+
+    def test_a_zip_that_declares_no_end_record_is_refused_before_it_is_parsed(self):
+        from unittest import mock
+
+        fake = SimpleUploadedFile('imagenes.zip', b'PK\x03\x04' + b'\x00' * 500, content_type='application/zip')
+        with mock.patch('store.import_media.zipfile.ZipFile') as opened:
+            with self.assertRaises(import_media.ImportMediaError):
+                import_media.collect([], fake)
+        opened.assert_not_called()
+
+    def test_a_member_with_damaged_data_is_an_error_of_its_row_not_a_crash(self):
+        raw = png_with_transparency((300, 200))
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr('a.png', raw + bytes(range(256)) * 40)
+        data = bytearray(out.getvalue())
+        # Se estropea el flujo comprimido, no el índice: el ZIP abre y lista bien.
+        start = data.find(b'a.png') + len(b'a.png')
+        for offset in range(start + 20, start + 60):
+            data[offset] ^= 0xFF
+        broken = SimpleUploadedFile('imagenes.zip', bytes(data), content_type='application/zip')
+
+        res = self._preview(self.ROWS, images_zip=broken)
+
+        self.assertEqual(res.status_code, 201, res.content[:300])
+        body = res.json()
+        self.assertEqual(body['counts']['error'], 1)
+        self.assertIn('«a.png»', self._row(body, 2)['errors'][0])
+
+    def test_the_address_column_cannot_cite_an_uploaded_image(self):
+        """
+        Una imagen subida se coloca desde la galería o con las columnas de
+        archivo, que comprueban de quién es. Escrita como dirección en el Excel
+        dejaba a una empresa citar la imagen de otra — y a la otra sin poder
+        borrarla nunca, porque quedaba «en uso».
+        """
+        foreign = storefront_media.upload(
+            company=self.other, actor=self.outsider, uploaded=picture('ajena.png'),
+        )
+        for address in (foreign.url, f'https://tienda.example{foreign.url}/'):
+            with self.subTest(address):
+                res = self._preview(
+                    [{'Código': 'COD-A1', 'Nombre': 'Uno', 'Precio de venta': 10, 'URL de imagen': address}],
+                    headers=['Código', 'Nombre', 'Precio de venta', 'URL de imagen'],
+                )
+                body = res.json()
+                self.assertEqual(body['counts']['error'], 1, body)
+                self.assertIn('URL de imagen', self._row(body, 2)['errors'][0])
+
+    def test_files_of_a_discarded_preview_are_removed_even_if_the_preview_then_fails(self):
+        from store import evidence_storage
+
+        stager = import_media.Stager(
+            company=self.company, actor=self.manager,
+            bundle=import_media.collect([picture('a.png')]),
+        )
+        stager.resolve('a.png')
+        key = next(iter(stager.staged.values())).storage_key
+        self.assertTrue(evidence_storage.get_storage().exists(key))
+
+        stager.discard()   # el trabajo tiene errores…
+        stager.abandon()   # …y además la transacción se deshace después.
+
+        self.assertFalse(evidence_storage.get_storage().exists(key))
+
+    def test_previewing_and_applying_are_rate_limited(self):
+        from store import import_views
+
+        for view in (import_views.AdminProductImportPreviewView, import_views.AdminProductImportApplyView,
+                     import_views.AdminImportInspectView):
+            with self.subTest(view.__name__):
+                self.assertEqual([t.scope for t in view().get_throttles()], ['admin_import'])

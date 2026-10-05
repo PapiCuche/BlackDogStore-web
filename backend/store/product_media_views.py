@@ -114,6 +114,8 @@ class AdminProductImageDetailView(_ProductGalleryView):
                 image=image, actor=request.user, alt_text=alt_text, is_primary=is_primary,
                 request=request,
             )
+        except product_media.ProductImageGone:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except product_media.ProductMediaError as exc:
             return _bad(exc)
         return Response(product_media.payload(image))
@@ -122,7 +124,11 @@ class AdminProductImageDetailView(_ProductGalleryView):
         image, error = self.image(request, pk, image_id)
         if error:
             return error
-        product_media.remove_image(image=image, actor=request.user, request=request)
+        try:
+            product_media.remove_image(image=image, actor=request.user, request=request)
+        except product_media.ProductImageGone:
+            # Dos personas quitando la misma imagen: la segunda ya no la encuentra.
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

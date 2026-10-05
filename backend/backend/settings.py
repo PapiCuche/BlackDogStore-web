@@ -138,6 +138,9 @@ REST_FRAMEWORK = {
         # varias peticiones. Cada cosa con su cupo (EVIDENCE-THROTTLE).
         'service_evidence_read': '600/min',
         'service_evidence_write': '120/min',
+        # Inspeccionar, previsualizar y aplicar una carga masiva. Cada
+        # previsualización puede recodificar cientos de imágenes.
+        'admin_import': '30/min',
         'admin_order_email_resend': '10/min',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
@@ -289,6 +292,11 @@ IMPORT_IMAGES_MAX_TOTAL_BYTES = env.int(
 )
 IMPORT_IMAGES_ZIP_MAX_ENTRIES = env.int('IMPORT_IMAGES_ZIP_MAX_ENTRIES', default=400)
 IMPORT_IMAGES_ZIP_MAX_RATIO = env.int('IMPORT_IMAGES_ZIP_MAX_RATIO', default=200)
+# Django corta en 100 archivos por petición, y lo hace con una página HTML antes
+# de que ninguna vista opine. Una carga masiva lleva el libro y sus imágenes en
+# la misma petición: el tope de Django tiene que quedar por encima del nuestro,
+# que es el que sabe explicarse.
+DATA_UPLOAD_MAX_NUMBER_FILES = IMPORT_IMAGES_MAX_FILES + 20
 
 SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
     'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024

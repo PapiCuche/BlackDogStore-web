@@ -28,8 +28,10 @@ un archivo que no debió llegar.
 from __future__ import annotations
 
 import hashlib
+import lzma
 import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -202,7 +204,10 @@ def _zip_reader(archive: zipfile.ZipFile, info: zipfile.ZipInfo):
         try:
             with archive.open(info) as member:
                 return member.read(limit)
-        except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, NotImplementedError):
+        except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, RuntimeError, OSError,
+                EOFError, NotImplementedError):
+            # `zlib.error` es lo que da un flujo comprimido dañado con el índice
+            # intacto: el ZIP abre y lista bien, y falla al leer esa entrada.
             raise ImportMediaError('no se pudo leer dentro del ZIP.') from None
     return read
 
@@ -211,12 +216,53 @@ def _megabytes(value: int) -> int:
     return max(1, value // (1024 * 1024))
 
 
+_UNREADABLE_ZIP = 'El archivo ZIP no se puede leer. Vuelve a crearlo.'
+
+
+def _check_end_record(uploaded) -> None:
+    """
+    Cuántas entradas DICE tener el ZIP, leído de sus últimos bytes.
+
+    `zipfile` construye la lista entera del índice antes de que nadie pueda
+    contarla. Un archivo de 100 MB hecho sólo de registros de índice son más de
+    dos millones de entradas: cientos de megas de memoria y decenas de segundos
+    para acabar diciendo «demasiados archivos». El registro final del ZIP ya
+    trae ese número; se lee primero y, si es desproporcionado, no se abre.
+
+    El margen (×3) deja sitio a lo que no es una imagen: carpetas y los
+    duplicados `__MACOSX/._nombre` que añade macOS.
+    """
+    size = int(getattr(uploaded, 'size', 0) or 0)
+    try:
+        uploaded.seek(max(0, size - 66_000))
+        tail = uploaded.read()
+        uploaded.seek(0)
+    except (OSError, ValueError):
+        raise ImportMediaError(_UNREADABLE_ZIP) from None
+    position = tail.rfind(b'PK\x05\x06')
+    if position < 0 or len(tail) - position < 22:
+        raise ImportMediaError(_UNREADABLE_ZIP)
+    entries = int.from_bytes(tail[position + 10:position + 12], 'little')
+    directory_bytes = int.from_bytes(tail[position + 12:position + 16], 'little')
+    allowance = zip_max_entries() * 3
+    # 0xFFFF / 0xFFFFFFFF: «mira el registro ZIP64». Con estos límites ningún
+    # archivo legítimo lo necesita.
+    if (
+        entries == 0xFFFF or directory_bytes == 0xFFFFFFFF
+        or entries > allowance or directory_bytes > allowance * 1024
+    ):
+        raise ImportMediaError(
+            f'El ZIP trae demasiados archivos; se admiten hasta {zip_max_entries()}.'
+        )
+
+
 def _add_zip(bundle: Bundle, uploaded, *, budget: int) -> int:
     """Añade las imágenes del ZIP. Devuelve los bytes expandidos que suman."""
     if (getattr(uploaded, 'size', 0) or 0) > max_total_bytes():
         raise ImportMediaError(
             f'El ZIP pesa más de {_megabytes(max_total_bytes())} MB.', too_large=True,
         )
+    _check_end_record(uploaded)
     try:
         archive = zipfile.ZipFile(uploaded)
         members = archive.infolist()
@@ -324,6 +370,9 @@ class Stager:
         self.missing: set[str] = set()
         self.invalid: dict[str, str] = {}
         self.duplicates = 0
+        #: Claves ya escritas en el almacenamiento, incluidas las descartadas:
+        #: si la transacción se deshace, ninguna fila apunta ya a ellas.
+        self._written: list[str] = []
 
     def resolve(self, name: str) -> dict:
         """`{'sha256', 'address'}` o `{'error': motivo}` para el archivo `name`."""
@@ -362,6 +411,7 @@ class Stager:
             self.invalid[key] = reason
             return {'error': reason}
         self.staged[digest] = image
+        self._written.append(image.storage_key)
         return {'sha256': digest, 'address': image.url}
 
     def discard(self) -> None:
@@ -379,8 +429,12 @@ class Stager:
     def abandon(self) -> None:
         """La previsualización falló y su transacción se deshizo: quedan los archivos."""
         from . import evidence_storage
-        for image in self.staged.values():
-            evidence_storage.delete_quietly(image.storage_key)
+        # TODO lo escrito, no sólo lo que sigue en espera: `discard` cuenta con
+        # que la transacción se confirme para borrar sus archivos, y aquí no
+        # se confirmó.
+        for key in self._written:
+            evidence_storage.delete_quietly(key)
+        self._written = []
 
     def summary(self) -> dict:
         attached = len(self.bundle) if self.bundle is not None else 0

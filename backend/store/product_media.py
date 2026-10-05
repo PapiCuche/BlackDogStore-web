@@ -35,6 +35,18 @@ class ProductMediaError(Exception):
     """Un rechazo que quien edita el producto puede leer y corregir."""
 
 
+class ProductImageGone(ProductMediaError):
+    """La imagen dejó de existir mientras se esperaba el turno: alguien la quitó."""
+
+
+def _current(row, image) -> ProductImage:
+    """La imagen, releída con el producto ya bloqueado."""
+    found = gallery(row).select_for_update().filter(pk=image.pk).first()
+    if found is None:
+        raise ProductImageGone('Esa imagen ya no está en la galería.')
+    return found
+
+
 def max_per_product() -> int:
     return int(getattr(settings, 'PRODUCT_IMAGE_MAX_PER_PRODUCT', 12))
 
@@ -168,7 +180,7 @@ def add_image(*, product, actor, uploaded, alt_text='', request=None) -> Product
 @transaction.atomic
 def update_image(*, image, actor, alt_text=None, is_primary=None, request=None) -> ProductImage:
     row = _locked(image.product)
-    image = gallery(row).select_for_update().get(pk=image.pk)
+    image = _current(row, image)
 
     if is_primary is False and image.is_primary:
         raise ProductMediaError('Para cambiar la imagen principal, elige otra como principal.')
@@ -201,7 +213,7 @@ def update_image(*, image, actor, alt_text=None, is_primary=None, request=None) 
 @transaction.atomic
 def remove_image(*, image, actor, request=None) -> None:
     row = _locked(image.product)
-    image = gallery(row).select_for_update().get(pk=image.pk)
+    image = _current(row, image)
     address, was_primary, image_id = image.image_url, image.is_primary, image.pk
     image.delete()
 

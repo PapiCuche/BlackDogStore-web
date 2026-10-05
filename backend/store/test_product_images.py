@@ -437,3 +437,73 @@ class ProductImageCleanupTest(ProductMediaBase):
             {'image_url': added['url']}, format='json',
         )
         self.assertEqual(res.status_code, 400, res.content)
+
+
+class ReviewHardeningTest(ProductMediaBase):
+    """Lo que encontró la revisión del cambio, cada cosa con su prueba."""
+
+    def test_saving_the_product_waits_for_the_gallery_instead_of_overwriting_it(self):
+        """
+        Guardar el producto leía la fila sin bloquearla y la escribía entera: si
+        una imagen se subía en medio, el guardado devolvía `image_url` al valor
+        viejo y el catálogo se quedaba sin la imagen que la galería ya tenía.
+        El guardado bloquea la misma fila que la galería.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as captured:
+            res = self._as(self.manager).patch(
+                f'/api/admin/products/{self.product.pk}/?company={self.company.pk}',
+                {'name': 'Teléfono nuevo'}, format='json',
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        locks = [q['sql'] for q in captured if 'FOR UPDATE' in q['sql'] and '"store_product"' in q['sql']]
+        self.assertTrue(locks, 'guardar el producto no bloquea su fila')
+
+    def test_a_save_that_does_not_name_the_address_keeps_the_one_the_gallery_set(self):
+        added = self._add(self.manager).json()
+        res = self._as(self.manager).patch(
+            f'/api/admin/products/{self.product.pk}/?company={self.company.pk}',
+            {'price': '150.00'}, format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.image_url, added['url'])
+
+    def test_an_image_removed_by_someone_else_meanwhile_is_not_found(self):
+        from unittest import mock
+
+        image = self._add(self.manager).json()
+        gone = product_media_gone()
+        with mock.patch('store.product_media.remove_image', side_effect=gone), \
+                mock.patch('store.product_media.update_image', side_effect=gone):
+            self.assertEqual(self._delete(self.manager, image['id']).status_code, 404)
+            self.assertEqual(self._patch(self.manager, image['id'], {'alt_text': 'x'}).status_code, 404)
+
+    def test_the_service_says_gone_when_the_row_vanished_under_the_lock(self):
+        from store import product_media
+
+        self._add(self.manager)
+        stale = ProductImage.objects.get()
+        ProductImage.objects.filter(pk=stale.pk).delete()
+        with self.assertRaises(product_media.ProductImageGone):
+            product_media.remove_image(image=stale, actor=self.manager)
+        with self.assertRaises(product_media.ProductImageGone):
+            product_media.update_image(image=stale, actor=self.manager, alt_text='x')
+
+    def test_cart_lines_bring_their_galleries_in_one_query(self):
+        """El producto anidado en una línea de carrito también lleva `images`."""
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.views import APIView
+        from store.views import CartViewSet
+
+        view = CartViewSet()
+        view.request = APIView().initialize_request(
+            APIRequestFactory().get('/api/cart/?session_key=sesion-galeria'))
+        self.assertIn('product__images', view.get_queryset()._prefetch_related_lookups)
+
+
+def product_media_gone():
+    from store import product_media
+    return product_media.ProductImageGone('La imagen ya no existe.')

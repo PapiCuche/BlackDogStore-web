@@ -29,7 +29,9 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
 
-from . import import_exports, import_formats, import_media, product_media, xlsx_reader
+from . import (
+    import_exports, import_formats, import_media, product_media, storefront_media, xlsx_reader,
+)
 from .models import (
     BulkImportJob,
     BulkImportRow,
@@ -575,6 +577,16 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # is an error of THIS row, with the file named, because that is where
         # the operator will fix it.
         image_url = fields.get('image_url', '')
+        if image_url and storefront_media.managed_public_id(image_url):
+            # Una imagen subida a la plataforma no se cita por su dirección: se
+            # coloca con las columnas de archivo, que comprueban de quién es.
+            # Escrita aquí, una empresa podía apuntar a la imagen de otra, y la
+            # otra ya no podía borrarla porque quedaba «en uso».
+            errors.append(
+                'URL de imagen: una imagen subida a la plataforma no se cita por su '
+                'dirección. Adjunta el archivo y usa «Imagen principal» o «Imágenes».'
+            )
+            image_url = ''
         main_name = import_media.normalize_name(fields.get('image_main', ''))
         row_images = []
         references = import_media.split_references(
