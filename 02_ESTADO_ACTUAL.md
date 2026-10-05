@@ -3,6 +3,108 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-05 — PRODUCTION-READINESS-01: ensayo, endurecimiento y lista de publicación
+
+Rama `chore/production-readiness-01`, desde `master` `78ad79c` (merge de #87). Sin
+migraciones. Decisiones: DEC-LIMIT-01, DEC-LOG-01. Operación:
+[docs/despliegue-produccion.md](docs/despliegue-produccion.md) (§1 límites, §6 copias y
+estado, §9 ensayo, §10 lista de publicación). Nada está publicado en Internet.
+
+**Clasificación: READY WITH CONDITIONS.** El código está listo y ensayado; publicar
+depende de infraestructura y datos que sólo puede dar el propietario (lista completa en
+la guía, §10).
+
+**Línea base, medida sobre `master` `78ad79c`:** backend 5255 pruebas, 0 fallos, 5
+omitidas (local y CI); Jest 787/787; Playwright 184/184; tipos, lint y build limpios. El
+ensayo de producción dio `ENSAYO: 7 FALLO(S)`: una sola comprobación del guion, que
+pedía a la portada una variante de hero que la V3 no tiene (REHEARSAL-HERO-V3).
+
+| Asunto | Antes | Ahora |
+|---|---|---|
+| Ensayo de producción sobre el código actual | DESACTUALIZADO (anterior a cinco fases) y en rojo sobre `master` | `ENSAYO: OK`, 107 comprobaciones y 49 pasos de navegador |
+| Lo que recorre el ensayo | Rutas, cabeceras, imágenes, evidencias, límites de acceso, copia y restauración | Además: tamaño de petición, notificación de pago, equipo con serie de punta a punta, documentos, seguimiento, WhatsApp y Google apagados, registros, estado |
+| Tope de tamaño de una petición (IMPORT-BODY-LIMIT) | PENDIENTE: ni Caddy ni Django limitaban nada | IMPLEMENTADO: por ruta, en Caddy, en Django y en la pantalla |
+| Peticiones a medio enviar (SLOW-BODY) | Nueve bastaban para dejar la API sin responder | Caddy lee el cuerpo antes; tiempos de espera |
+| Registros | Guardaban enlaces de seguimiento, tokens de invitación e IMEI buscados; crecían sin límite | Sin lo que una dirección puede llevar; rotan |
+| Copia de seguridad | Un archivo cortado quedaba como copia | Sólo se guarda entera; deja la hora de la última completa |
+| Restauración | Comprobaba un archivo después de reemplazar la base | Comprueba todo antes de tocar nada; prueba de recuperación en el ensayo |
+| Saber que algo va mal | PENDIENTE | `deploy/healthcheck.sh` y `manage.py ops_status` |
+| Tareas programadas | Cuatro líneas sueltas en la guía | `deploy/crontab.example` |
+| Deshacer una vinculación cuenta–cliente (CUSTOMER-UNLINK-UI) | Sólo por la API | En la ficha del cliente |
+| Izipay contra la pasarela real (IZIPAY-TOKEN-CONTRACT) | BLOCKED/CREDENTIALS | BLOCKED/CREDENTIALS |
+| WhatsApp real · Google real | BLOCKED/CREDENTIALS | BLOCKED/CREDENTIALS. Sin credenciales no rompen nada (ensayado) |
+| Elegir el equipo al vender, transferirlo, recuento por series | PENDIENTE | PENDIENTE POST-LAUNCH (abajo) |
+
+**Corregido en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| SLOW-BODY (P2) | Django atiende con ocho hilos y Caddy le pasaba cada cuerpo según llegaba. Nueve peticiones sin sesión que anunciaban un cuerpo y no lo terminaban dejaban la API sin responder. Reproducido en la pila de producción: sin respuesta en 8 s; corregido: 200 en 0,1 s |
+| IMPORT-BODY-LIMIT (P2) | Ningún tope de tamaño. Cualquier ruta, el inicio de sesión incluido, aceptaba un formulario con archivos de cualquier tamaño y lo escribía en disco |
+| LOG-REDACT (P2) | El registro de acceso guardaba el enlace de seguimiento de cada reparación (quien lo tiene responde la cotización como el cliente), el token de las invitaciones, el token de verificación de WhatsApp y los IMEI, documentos y teléfonos escritos en un buscador |
+| DOC-TIMEZONE (P2) | La nota de venta, su ticket, la salida térmica y el comprobante de pedido imprimían la hora en UTC: una venta de las 21:30 salía fechada a las 02:30 del día siguiente. También la fecha de caducidad en el correo de invitación |
+| RESTORE-LATE-CHECK (P2) | `restore.sh` buscaba el archivo de imágenes después de borrar y reemplazar la base. Con el nombre mal escrito dejaba la tienda detenida y los datos anteriores borrados |
+| BACKUP-FILES-PARTIAL (P3) | Un archivo de imágenes y evidencias cortado, o que no era un archivo, quedaba en la carpeta como una copia buena y el guion terminaba bien |
+| MAIL-CONSOLE-DEFAULT (P3) | Sin la línea `EMAIL_BACKEND`, producción arrancaba escribiendo cada correo —con sus enlaces de un solo uso— en el registro |
+| LOG-ROTATION (P3) | Docker guardaba el registro de cada contenedor en un archivo sin límite |
+| PROXY-TIMEOUTS (P3) | Caddy no tenía tiempos de espera |
+| TRACKING-REFERRER-HEADER (P3) | La página de seguimiento pedía «sin referente» sólo con una etiqueta del documento, no en la cabecera |
+| GUNICORN-CONTROL-SOCKET (P3) | Un `[ERROR]` en cada arranque del backend: gunicorn 26 intentaba crear su socket de control donde no puede escribir |
+| IGNORE-GAPS (P3) | Variantes de `.env`, claves `.key` y volcados SQL se podían confirmar en Git; la imagen del backend copiaba certificados, copias o la configuración del agente de impresión si estaban junto al código |
+| REHEARSAL-HERO-V3 | El ensayo fallaba sobre `master` por una comprobación de la portada anterior |
+
+**Revisión independiente de la rama:** 1 P1, 3 P2 y 7 P3; corregidos con prueba los que
+tenían corrección en el código (`f500342`, `e033aee`, `d14a1cd`).
+
+| ID | Qué pasaba |
+|---|---|
+| SLOW-BODY-WEBHOOKS (P1) | La primera corrección de SLOW-BODY cubría la ruta general y dejaba fuera las dos que reciben llamadas de fuera. Nueve peticiones a medio enviar al webhook de WhatsApp dejaban la API sin responder (reproducido: sin respuesta en 8 s; corregido: 200 en 0,1 s) |
+| CSRF-BODY-READ (P2) | La comprobación CSRF buscaba el token en el formulario antes que en la cabecera, y para eso leía el cuerpo entero: cualquier cuenta con sesión, la de un cliente incluida, podía hacer que el servidor recibiera y guardara hasta 111 MiB en una ruta que después le negaba. El token se lee ahora sólo de la cabecera |
+| OPS-FALSE-ALARM (P2) | `ops_status` daba la alarma durante un día por cada compra abandonada (cada una deja un pago esperando). Ahora es una nota; un mensaje de WhatsApp sin entregar también, y tres sin ninguno entregado es la alarma |
+| OPS-PENDING-BLIND (P2) | Un aviso de WhatsApp que nadie intentó enviar no tiene reintento programado, y la consulta que buscaba atrasados por ese campo no lo veía |
+| PROXY-ERROR-LOG · GUNICORN-ERROR-LOG (P3) | Caddy, cuando no alcanza a una aplicación, y gunicorn, cuando falla al atender una petición, anotaban su dirección entera |
+| BODY-LIMIT-502 (P2, hallado por el ensayo) | Django rechaza una petición demasiado grande y cierra sin leerla; Caddy, que aún le estaba enviando el cuerpo, respondía 502 en vez de 413 una de cada diez veces (8 de 80 en la pila de producción; hizo fallar el ensayo dos veces). Caddy compara ahora él mismo lo que la petición anuncia y responde 413 sin llamar a ninguna aplicación: 200 de 200 |
+| CRON-NO-DIR · HEALTH-QUOTED-DOMAIN · BACKUP-TRAILER (P3) | Las tareas programadas fallaban hasta que existiera `backups/`; un `SITE_DOMAIN` entre comillas rompía la comprobación de estado; la marca de volcado completo se buscaba justo en la última línea donde cabía |
+
+**Auditado sin cambios**
+
+- **Ajustes de producción** (leídos del contenedor en el ensayo): `DEBUG=False`; cookies
+  `Secure`, `HttpOnly`, `SameSite=Lax`; HSTS; `X-Frame-Options: DENY`; CORS y CSRF sólo
+  para el dominio propio; sólo JSON; sin admin de Django; un proxy de confianza.
+- **Izipay**: el entorno es explícito (`IZIPAY_ENV`, o el prefijo de las claves en «Mi
+  Cuenta Web») y no se deduce de `DEBUG`; lo que tiene el navegador no paga un pedido; la
+  notificación repetida paga una vez. Cubierto por `test_izipay_contract` y
+  `test_micuentaweb`, y por el ensayo con claves propias.
+- **Secretos**: ningún secreto real en los archivos versionados ni en el historial; ningún
+  secreto del servidor en los archivos del frontend (comprobado en la imagen). El
+  historial conserva `backend/db.sqlite3` de 2026 sin usuarios, pedidos ni sesiones.
+- **Almacén**: fotos de producto, imágenes de la tienda y evidencias sobreviven a apagar,
+  reconstruir, recrear y restaurar.
+- **Tareas**: `flushexpiredtokens`, `cleanup_storefront_images` y
+  `send_pending_notifications` corren en el contenedor. No hay tareas fiscales
+  periódicas. No hace falta ningún servicio más.
+- **Documentos**: nota de venta A4 (con serie, con descuento, con logotipo, sin él),
+  ticket de 80 mm y ticket de cotización, revisados a la vista.
+
+**PENDIENTE POST-LAUNCH** (el flujo actual opera sin ello)
+
+| ID | Qué falta | Qué hacer mientras |
+|---|---|---|
+| SERIAL-PICK | La caja no deja elegir el equipo: vende el más antiguo de la sucursal | Entregar el equipo cuya serie imprime la nota. Con varios equipos del mismo modelo es la regla a seguir; es lo primero a hacer tras publicar |
+| SERIAL-TRANSFER | Un equipo con serie no se transfiere entre sucursales | No afecta a una empresa con una sucursal |
+| SERIAL-COUNT | No hay recuento por lectura de series | La lista de Inventario › Equipos sirve de hoja de comprobación |
+| PAY-RECONCILE | Si la notificación de la pasarela no llega, el pedido cobrado queda esperando | `healthcheck.sh` avisa a los 45 minutos; se comprueba en el panel de la pasarela |
+| PAY-UNCONFIGURED-500 | Sin credenciales de Izipay, la notificación y el inicio de un pago responden 500 con «la pasarela no está configurada» | Es el estado «sin Izipay»: el catálogo, el carrito y la caja funcionan |
+| LOGIN-IDENTIFIER-LOG | Un inicio de sesión fallido deja en el registro lo escrito como usuario | — |
+
+**Medido:** backend 5332 pruebas, 0 fallos, 5 omitidas; Jest 795/795; Playwright 184/184, 0 omitidas; tipos limpio; lint 0
+errores / 22 avisos; build correcto; `manage.py check` y `makemigrations --check` sin
+incidencias; ensayo `ENSAYO: OK`.
+
+**Bloqueado por datos del propietario:** dominio, DNS y servidor; SMTP; cuál de los dos
+productos de Izipay tiene contratado y sus claves; destino de la copia externa; y,
+opcionales, WhatsApp Business, ID de cliente de Google y credenciales de SUNAT.
+
 ## 2026-10-05 — PAYMENTS-EQUIPMENT-DOCUMENTS: Izipay, registro de equipos, plantillas y documentos
 
 Rama `feat/payments-equipment-documents`. Migración `0110` (sólo opciones de un campo).

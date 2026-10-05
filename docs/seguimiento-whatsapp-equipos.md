@@ -62,8 +62,10 @@ puede depender de un enlace que se reenvía.
 - Un cliente sin documento registrado se vincula en la tienda.
 - Si la cuenta ya tiene otro registro de cliente en la tienda, se indica que la
   tienda debe unirlos.
-- La tienda puede deshacer una vinculación equivocada (con
-  `service.customers.manage`; hoy por la API, sin pantalla: CUSTOMER-UNLINK-UI).
+- La tienda puede deshacer una vinculación equivocada: en la ficha del cliente,
+  «Desvincular cuenta», con su motivo (hace falta `service.customers.manage` y queda
+  en el registro de auditoría). Quita acceso y no da ninguno: para vincular otra vez
+  hacen falta, de nuevo, el enlace y el documento.
 
 ## 3. Cotizaciones: quién aprobó y por dónde
 
@@ -189,9 +191,21 @@ se suma a ellas.
 Registrar un equipo con su formulario y cargar muchos desde Excel están en
 `docs/pagos-equipos-documentos.md` §2 y §3.
 
-Todavía no: transferir equipos entre sucursales, recuento por lectura de series y
-elegir un equipo concreto al vender (hoy se asigna el más antiguo y se cobra el
-precio de catálogo; el precio propio de un equipo se guarda y se muestra).
+**Al vender, el sistema elige el equipo: el más antiguo disponible en la sucursal.**
+La caja no deja escoger cuál. La nota de venta y el ticket imprimen la serie y el
+IMEI del equipo que quedó vendido, y **ése es el que hay que entregar**. Con un solo
+equipo de ese modelo en la tienda no hay nada que mirar; con varios, se entrega el
+que nombra la nota. Si se entrega otro, el sistema dará por vendido un equipo que
+sigue en la tienda y la garantía quedará a nombre de la serie equivocada.
+
+Todavía no (SERIAL-PICK, SERIAL-TRANSFER, SERIAL-COUNT):
+
+- elegir o leer con el lector el equipo concreto al vender. Se cobra además el precio
+  de catálogo; el precio propio de un equipo se guarda y se muestra, no se cobra;
+- transferir un equipo entre sucursales. Una empresa con más de una sucursal no puede
+  moverlo: la misma serie no entra dos veces;
+- recuento por lectura de series. La lista de Inventario › Equipos sirve de hoja de
+  comprobación.
 
 ## 6. Portada: categorías y carrusel
 

@@ -55,7 +55,8 @@ compartida**: cada proceso contaría por su lado y los límites se multiplicarí
 
 | Qué | Dónde | Quién lo ve |
 |---|---|---|
-| Fotos de producto | Una URL en cada producto; el archivo está en el host que elijas | Público |
+| Fotos de producto subidas desde el panel o en una carga masiva | Volumen `evidence`, bajo `companies/<id>/storefront/` | Público, por `/api/storefront/images/<id>` |
+| Fotos de producto que son una URL externa | En el host que elijas; tiene que figurar en `NEXT_PUBLIC_IMAGE_HOSTS` | Público |
 | Logotipos de la tienda | URL en la configuración de la empresa | Público |
 | Imágenes de la tienda (hero, categorías, servicio, ubicación, campañas) subidas desde el panel | Volumen `evidence`, bajo `companies/<id>/storefront/` | Público, por `/api/storefront/images/<id>` |
 | Evidencias del servicio técnico | El mismo volumen `evidence`, o un almacenamiento S3 privado | Sólo personal con permiso, a través de la API |
@@ -72,8 +73,44 @@ publicar la carpeta para servir las imágenes de la tienda publicaría también 
 evidencias. Todo archivo sale por la API, que es quien decide. El ensayo lo
 comprueba pidiendo las claves reales del almacén por cinco rutas de archivo.
 
-Las fotos de producto siguen siendo una URL: la aplicación guarda su dirección,
-no el archivo.
+El volumen se llama `evidence` por lo primero que guardó. Hoy es **todo el
+almacén de archivos**: fotos de producto, imágenes de la tienda, logotipos de los
+comprobantes y evidencias. Perderlo es perder todo eso; la copia de seguridad lo
+incluye entero (§6.1).
+
+### Tamaño máximo de una petición
+
+Ninguna petición entra sin tope. Lo que exceda el suyo recibe 413 y no llega
+entero a la aplicación.
+
+| Ruta | Tope | Por qué |
+|---|---|---|
+| Carga masiva de productos (libro + imágenes) | 111 MiB | 10 MB del libro y 100 MB de imágenes en una sola petición |
+| Foto de evidencia del servicio técnico | 26 MiB | La pantalla acepta fotos de hasta 25 MB |
+| Libro de stock, de equipos o a inspeccionar | 11 MiB | El libro admite 10 MB |
+| Imagen de la tienda o de un producto | 9 MiB | La pantalla acepta hasta 8 MB |
+| Webhook de WhatsApp | 3 MiB | El máximo que documenta Meta |
+| Notificación de pago | 128 KiB | Una notificación pesa unos pocos kilobytes |
+| Todo lo demás, API y páginas | 1 MiB | Ninguna petición normal se acerca |
+
+El tope se aplica tres veces: en Caddy, en Django antes de leer el cuerpo y en la
+pantalla, que es la que sabe explicarlo. Caddy compara lo que la petición anuncia
+con el tope de su ruta y responde él mismo, sin llamar a ninguna aplicación; a un
+cuerpo que no anunció su tamaño lo corta al llegar al tope. La tabla vive en
+`backend/store/request_limits.py` y `deploy/Caddyfile` la repite; una prueba
+falla si dejan de coincidir. **Quien suba un límite por variable de entorno
+(`STOREFRONT_IMAGE_MAX_UPLOAD_BYTES`, `SERVICE_EVIDENCE_MAX_UPLOAD_BYTES`,
+`IMPORT_IMAGES_MAX_TOTAL_BYTES`) tiene que subirlo también en `deploy/Caddyfile`.**
+
+Además Caddy no espera indefinidamente: 15 segundos para las cabeceras, 15
+minutos para el cuerpo (una carga masiva por una conexión lenta) y 2 minutos
+para una conexión sin uso.
+
+**Caddy lee el cuerpo entero antes de pasarlo** allí donde Django lo leería sin
+saber quién llama: la ruta general, la notificación de pago y el webhook de
+WhatsApp. Django atiende con ocho hilos, y un cuerpo que no termina de llegar
+ocuparía uno mientras dure. En las rutas de archivos no hace falta: Django no
+lee el cuerpo hasta haber comprobado la sesión, la cabecera CSRF y el permiso.
 
 **Por qué la API no pasa por el proxy interno de Next.** Ese proxy descarta a
 propósito las cabeceras que identifican al cliente. Detrás de él, Django vería a
@@ -111,7 +148,9 @@ Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria
 Sin Izipay la tienda funciona (catálogo, carrito, panel, punto de venta) pero no
 cobra en línea. Sin SMTP el backend **no arranca** con la configuración de
 ejemplo: es deliberado, porque sin correo no se puede invitar a nadie ni recuperar
-una contraseña.
+una contraseña. Tampoco arranca sin `EMAIL_BACKEND`: el valor por omisión de
+desarrollo escribe cada correo —con sus enlaces de un solo uso— en el registro
+del contenedor.
 
 ## 4. Publicar por primera vez
 
@@ -140,6 +179,12 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # POSTGRES_PASSW
 ```
 
 Ese archivo no se sube al repositorio. No reutilices los valores de desarrollo.
+
+**Guarda una copia de `deploy/.env.production` fuera del servidor**, en un gestor
+de contraseñas. La copia de seguridad no lo incluye (§6.1). Sin su `SECRET_KEY`
+no basta con restaurar la base: las sesiones abiertas caducan y **los enlaces de
+seguimiento ya enviados a los clientes dejan de abrir**. Sin su
+`POSTGRES_PASSWORD` no se puede leer el volumen de la base.
 
 ### 4.3 Arranque
 
@@ -222,11 +267,37 @@ sh deploy/backup.sh
 ```
 
 Deja en `backups/` un volcado completo de PostgreSQL y un archivo con todo el
-almacén —las evidencias del servicio técnico y las imágenes de la tienda; el
-archivo se llama `evidence-…` por el volumen—, y borra las copias con más de 14 días. El volcado sólo se guarda si
-terminó entero.
+almacén —fotos de producto, imágenes de la tienda, logotipos y evidencias del
+servicio técnico; el archivo se llama `evidence-…` por el volumen—, y borra las
+copias con más de 14 días.
 
-Para hacerla cada noche, en el `crontab` del servidor:
+| Qué | ¿Va en la copia? |
+|---|---|
+| Base de datos (productos, stock, equipos con serie, ventas, clientes, reparaciones, usuarios, configuración de cada empresa) | Sí, `db-….sql.gz` |
+| Fotos de producto, imágenes de la tienda, logotipos, evidencias | Sí, `evidence-….tar.gz` |
+| `deploy/.env.production` (claves y contraseñas) | **No.** Se guarda aparte (§4.2) |
+| Certificados de Caddy | No. Caddy los vuelve a pedir |
+| El código | No. Está en el repositorio |
+
+Cada parte se escribe con otro nombre y sólo se renombra si quedó entera y se
+puede leer: un archivo `db-…` o `evidence-…` en la carpeta es siempre una copia
+completa. Si una parte falla, el guion termina con error y no toca
+`backups/LAST_OK`, que guarda la hora de la última copia completa.
+
+### 6.1.0 Las tareas programadas, de una vez
+
+`deploy/crontab.example` trae las cinco líneas de esta sección —copia, sesiones,
+imágenes sin uso, avisos de WhatsApp y comprobación de estado—. Para instalarlas
+en el `crontab` del usuario que administra el servidor:
+
+```sh
+sed "s|/ruta/al/repositorio|$(pwd)|g" deploy/crontab.example | crontab -
+```
+
+Ese comando reemplaza el `crontab` de ese usuario. Las subsecciones siguientes
+explican cada línea.
+
+La copia, cada noche:
 
 ```
 15 3 * * * cd /ruta/al/repositorio && sh deploy/backup.sh >> backups/backup.log 2>&1
@@ -289,6 +360,47 @@ Es seguro ejecutarla dos veces a la vez y nunca envía un mensaje dos veces. Con
 enviar y la tarea no hace falta. Cómo se enlazan las credenciales de cada empresa
 y qué registra en Meta: [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §4.1.
 
+### 6.1.4 Saber que algo va mal
+
+```sh
+sh deploy/healthcheck.sh
+```
+
+Una línea por comprobación: `OK`, `NOTA` (conviene saberlo; es un día normal) o
+`ATENCIÓN`. Termina con error sólo si alguna dice `ATENCIÓN`. No cambia nada:
+sólo mira.
+
+| Qué puede ir mal | Cómo se detecta |
+|---|---|
+| Un contenedor caído o que no pasa su comprobación | `docker compose ps`, los cuatro servicios |
+| La tienda o la API no responden | Se piden `https://<dominio>/` y `/api/categories` |
+| La base de datos no responde | `pg_isready` |
+| Una actualización se quedó a medias | Migraciones sin aplicar |
+| Una notificación de pago que no coincidía con el pedido | Intentos de pago con fallo de integridad, últimas 24 h |
+| Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó, y desde la tienda no se distingue de una notificación perdida (PAY-RECONCILE) |
+| WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
+| Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
+| Las copias dejaron de hacerse | `backups/LAST_OK` con más de 26 horas |
+| El disco se llena | Más del 90 % usado |
+
+Las cuatro del medio las informa la propia aplicación
+(`python manage.py ops_status`, sólo lectura, sin datos de clientes).
+
+En el `crontab`, cada 15 minutos. No imprime nada si todo está bien; si algo
+falla, imprime las líneas `ATENCIÓN`, y cron las envía al correo de `MAILTO` si
+el servidor puede enviar correo. El registro completo queda en
+`backups/healthcheck.log`.
+
+Esto vigila desde dentro. **Si el servidor entero se cae, no avisa nadie**: para
+eso hace falta un vigilante externo (cualquier servicio de «uptime») que pida
+`https://<dominio>/api/categories` cada pocos minutos. Esa dirección consulta la
+base de datos: si responde 200, Caddy, Django y PostgreSQL están arriba.
+
+**Los registros no crecen sin límite.** Cada contenedor guarda como mucho 5
+archivos de 10 MB (`docker compose logs`). El registro de acceso no guarda lo que
+una dirección puede llevar: el enlace de seguimiento de una reparación, el token
+de una invitación, un IMEI o un documento escritos en un buscador.
+
 ### 6.2 Copia externa
 
 Una copia en el mismo servidor no protege si se pierde el servidor. Lleva la
@@ -314,8 +426,14 @@ qué cuentas son de demostración.
 sh deploy/restore.sh backups/db-AAAAMMDD-HHMMSS.sql.gz backups/evidence-AAAAMMDD-HHMMSS.tar.gz
 ```
 
-Reemplaza la base actual por la de la copia. Pide escribir `RESTAURAR`, y antes de
-tocar nada guarda una copia de lo que hay.
+Reemplaza la base actual por la de la copia. Comprueba que los dos archivos
+existen y se pueden leer, pide escribir `RESTAURAR`, y antes de tocar nada guarda
+una copia de lo que hay.
+
+En un servidor nuevo: instalar Docker, clonar el repositorio, poner el
+`deploy/.env.production` guardado (§4.2), seguir §4.3 hasta `$C up -d` —con la
+base recién creada y sus migraciones— y entonces `sh deploy/restore.sh` con los
+dos archivos.
 
 **Prueba la restauración una vez** antes de necesitarla: una copia que nunca se ha
 restaurado no se sabe si sirve.
@@ -395,6 +513,14 @@ Ya resuelto por el código o por esta configuración:
 - «Continuar con Google» se verifica en el servidor y abre la sesión de siempre; no
   se guarda ningún token de Google.
 
+- Ninguna petición entra sin tope de tamaño (§1), y un cuerpo que no termina de
+  llegar no ocupa a Django: Caddy lo lee antes.
+- Los registros no guardan enlaces de seguimiento, tokens de invitación, el token
+  de verificación de WhatsApp ni lo que se escribe en un buscador (IMEI,
+  documento, teléfono), y no crecen sin límite.
+- Una imagen de producción no lleva claves, certificados, copias ni la
+  configuración real del agente de impresión aunque estén junto al código.
+
 Pendiente, y conviene saberlo:
 
 - **Un solo proceso de Django.** Los límites se cuentan en la memoria del proceso,
@@ -407,6 +533,15 @@ Pendiente, y conviene saberlo:
   (THROTTLE-CACHE-01): valen con el proceso único de esta instalación.
 - El inicio de sesión no exige token CSRF ni rechaza por origen (LOGIN-CSRF-01,
   baja). Las operaciones con sesión sí: un origen ajeno recibe 403.
+- Un inicio de sesión fallido deja en el registro lo que se escribió como usuario
+  (nunca la contraseña). Sirve para investigar un ataque; quien escriba su
+  contraseña en la casilla del usuario la deja ahí.
+- Si un cliente paga y la notificación de la pasarela no llega, el pedido queda
+  esperando (PAY-RECONCILE). `deploy/healthcheck.sh` lo avisa a los 45 minutos;
+  comprobarlo en el panel de la pasarela es manual.
+- La caja no deja elegir qué equipo con serie se vende: asigna el más antiguo y
+  hay que entregar el que nombra la nota (SERIAL-PICK,
+  [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5).
 
 ## 9. Qué se ensayó
 
@@ -422,15 +557,19 @@ Docker, unos puertos y un dominio reservados (`bds-rehearsal`, 18080/18443,
 `tienda.test`) y un certificado interno de Caddy. No sale a Internet, no envía
 correo y no cobra. Termina con `ENSAYO: OK` o con el número de fallos.
 
-Última pasada: 2026-10-04, sobre `9043c89` con `master` `1b748b1` incorporado.
-Resultado: `ENSAYO: OK` — 83 comprobaciones del guion y 26 pasos de
-navegador, 0 fallos.
+Última pasada: 2026-10-05, sobre `81421d9` (rama `chore/production-readiness-01`,
+`master` `78ad79c` incorporado). Resultado: `ENSAYO: OK` — 107 comprobaciones del
+guion y 49 pasos de navegador, 0 fallos.
+
+La pasada anterior sobre `master` (`78ad79c`) dio `ENSAYO: 7 FALLO(S)`, los siete
+por una sola comprobación del propio guion, que seguía pidiendo a la portada una
+variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo demás.
 
 | # | Comprobación | Resultado |
 |---|---|---|
-| 1 | Construcción sin caché | Dos imágenes. Sin `.env` ni base dentro; el backend corre sin root (uid 10001); el frontend no lleva ningún secreto |
-| 2–3 | PostgreSQL 16 vacío y migraciones | 109 migraciones de `store` aplicadas, 0 pendientes; `makemigrations --check` sin cambios |
-| 4 | Arranque | Backend y frontend sanos; sólo Caddy publica puertos; un proceso de gunicorn |
+| 1 | Construcción sin caché | Dos imágenes. Sin `.env` ni base dentro; el backend corre sin root (uid 10001); el frontend no lleva ningún secreto en su entorno ni en los archivos que sirve; el backend no lleva claves ni copias |
+| 2–3 | PostgreSQL 16 vacío y migraciones | 122 migraciones de `store` aplicadas, 0 pendientes; `makemigrations --check` sin cambios |
+| 4 | Arranque | Backend y frontend sanos; sólo Caddy publica puertos; un proceso de gunicorn; ningún error en el registro de arranque; tope de tamaño y rechazo por longitud anunciada en las ocho rutas de Caddy; tiempos de espera; los cuatro contenedores rotan su registro |
 | 5 | Ajustes efectivos | `DEBUG=False`; cookies `Secure` y `HttpOnly`; un proxy de confianza; sólo JSON; sin admin de Django |
 | 6 | Datos de demostración | `seed_demo_users` se niega; ninguna cuenta `dev_`; la ruta responde 404 |
 | 7 | Rutas por Caddy | Tienda, ficha, carrito, checkout, panel y API: 200. `/admin/login/`, `/static/admin/…`, `/media/…` y `/private-media/…` no llegan a Django ni a un archivo. Host desconocido: sin respuesta |
@@ -440,14 +579,25 @@ navegador, 0 fallos.
 | 11 | **Evidencia privada, en el mismo volumen** | Sin sesión: 401. Con sesión de quien no trabaja en la empresa: no se entrega. Quien trabaja en ella: 200, sin caché pública |
 | 11 | **Sin rutas de archivo** | Las claves reales del almacén (una imagen y una evidencia) pedidas por `/media/`, `/private-media/`, `/app/private-media/`, `/api/media/` y `/static/`: ninguna se sirve |
 | 11 | Subidas rechazadas | SVG, SVG y HTML con extensión `.png`, GIF, PNG truncado y archivo de 9 MB: rechazados. Nombre con `../`: la dirección no lo conserva. Sin sesión: 401 |
-| 12 | Navegador real | Portada con el hero claro y las cinco imágenes a 320, 390, 768 y 1440 px, en claro y en oscuro: sombra por silueta, sin fondo detrás, sin desbordes. Categorías con teclado. Sesión, panel, inventario, caja, servicio y editor de portada |
+| 11b | **Límites de tamaño** | 2 MiB anunciados al inicio de sesión o a una página, 300 MiB a una ruta cualquiera o a la carga masiva, 10 MiB a una imagen, 30 MiB a una evidencia y 200 KiB a la notificación de pago: 413 sin esperar el cuerpo. Un cuerpo real de 2 MiB: 413 con un mensaje que la pantalla entiende. Una imagen de 3 MiB y una evidencia de 10 MiB: aceptadas |
+| 11b | **Cuerpos que no terminan de llegar** | Con nueve peticiones a medio enviar a una ruta cualquiera, a la notificación de pago o al webhook de WhatsApp, la API responde en menos de un segundo |
+| 11b | **Notificación de pago** (claves generadas en el ensayo) | Sin firma, con firma inventada o con el importe cambiado tras firmar: 400. Bien firmada, de un pago que la tienda no abrió: no paga nada, y repetida responde igual. La del producto de Izipay que no está configurado: 404 |
+| 11b | **Equipo con serie** | Registrar un equipo: stock +1 y tablero +1. Venderlo: queda «vendido», stock −1, tablero −1. Venderlo otra vez: «stock insuficiente». El mismo IMEI no entra dos veces. Por cantidad no se ajusta |
+| 11b | **Documentos** | Nota de venta A4 y ticket de 80 mm: PDF con la serie y el IMEI del equipo vendido. Comprobante de pedido: PDF |
+| 11b | **Seguimiento** | El enlace abre sin sesión, sin indexar y sin referente; IMEI enmascarado; alterado responde 404 |
+| 11b | **WhatsApp apagado, Google sin configurar** | La orden se crea igual y no queda ningún mensaje enviado ni pendiente; la pantalla dice qué falta. Google se anuncia apagado, su entrada responde 404 y el acceso con usuario sigue |
+| 11b | **Registros** | Tras todo lo anterior no contienen el enlace de seguimiento, ningún IMEI usado, la contraseña del administrador, la clave de la pasarela ni tokens de sesión |
+| 12 | Navegador real | Portada, catálogo, ficha, carrito, checkout, servicios, nosotros, contacto y acceso a 390 y 1440 px: sin desbordes, sin imágenes rotas y sin errores de script. Las cinco imágenes de la tienda a 320, 390, 768 y 1440 px, en claro y en oscuro. Seguimiento de una reparación sin sesión. Sin botón de Google. Categorías con teclado. Sesión, panel y catorce pantallas del panel, entre ellas equipos, cargas masivas, impresoras y mensajería |
 | 13 | CSRF | Con sesión, desde un origen ajeno o sin token: 403 |
-| 14 | Tareas programadas | `flushexpiredtokens` y `cleanup_storefront_images --dry-run` corren; la limpieza no toca nada colocado |
+| 14 | Tareas programadas | `flushexpiredtokens`, `send_pending_notifications` y `cleanup_storefront_images --dry-run` corren; la limpieza no toca nada colocado |
 | 15 | Límites | Inicio de sesión: 429 desde el sexto intento aunque cambie `X-Forwarded-For`; Django ve la dirección real. Renovación: 429 desde la número 31. Otro cliente no hereda el límite |
 | 16 | Apagar y encender | Los mismos datos y los mismos archivos; imágenes y evidencias responden igual |
 | 17 | Reconstruir y recrear contenedores | Lo mismo |
-| 18 | `deploy/backup.sh` | Volcado completo y archivo con imágenes de la tienda y evidencias |
-| 19 | Daño y `deploy/restore.sh` | Se borran todos los archivos y se crea una cuenta nueva; tras restaurar, datos y archivos son los de la copia y la cuenta posterior no existe |
+| 16–17 | Lo que más importa conservar | Tras apagar, reconstruir y recrear: la foto de producto y el enlace de seguimiento siguen funcionando; equipos, equipos vendidos y notas de venta, los mismos |
+| 18 | `deploy/backup.sh` | Volcado completo y archivo con fotos de producto, imágenes de la tienda y evidencias |
+| 18b | `deploy/healthcheck.sh` | Todo sano: 0. Con el backend detenido: error, y nombra el contenedor y la API. Al encenderlo: 0 otra vez |
+| 18b | Registro de Caddy con el backend caído | Anota el fallo (502) sin la dirección de la petición: no aparece el enlace de seguimiento pedido |
+| 19 | **Prueba de recuperación**: daño y `deploy/restore.sh` | Se borran todos los archivos y se crea una cuenta nueva; tras restaurar, datos y archivos son los de la copia —equipos, ventas, notas y enlaces de seguimiento incluidos—, la foto de producto se sirve, el enlace abre y la cuenta posterior no existe |
 | 21 | Desmontaje | No queda ningún contenedor, volumen, imagen ni archivo de variables |
 
 Observado y anotado: el inicio de sesión no rechaza por origen. Desde un origen
@@ -459,4 +609,47 @@ redirección a HTTPS la hace Caddy, que es quien termina TLS; hacerla también e
 Django rompería la comprobación de salud interna.
 
 No se puede ensayar en local: el certificado público de Let's Encrypt (necesita
-el dominio real), el envío de correo por SMTP y el cobro con Izipay.
+el dominio real), el envío de correo por SMTP, el cobro con Izipay —el ensayo
+comprueba la notificación con claves propias, no la pasarela—, el envío por
+WhatsApp y el acceso con Google.
+
+## 10. Lista de publicación
+
+Qué falta para publicar, y de quién depende.
+
+- **LISTO** (CODE READY): está en el código y pasó el ensayo.
+- **FALTAN DATOS** (BLOCKED/CREDENTIALS): sólo el propietario puede darlos.
+- **FALTA INFRAESTRUCTURA** (BLOCKED/INFRA): hay que contratarla o configurarla fuera
+  del código.
+- **OPCIONAL** (OPTIONAL): la tienda publica sin ello.
+
+| | Qué | Estado | Dónde |
+|---|---|---|---|
+| ☐ | Dominio | FALTA INFRAESTRUCTURA | §2, §4.1 |
+| ☐ | DNS (`A` del dominio y de `www` al servidor) | FALTA INFRAESTRUCTURA | §4.1 |
+| ☐ | TLS | LISTO: Caddy lo pide solo cuando el DNS responde | §4.1 |
+| ☐ | Servidor (VPS, 4 GB de RAM, puertos 22, 80 y 443) | FALTA INFRAESTRUCTURA | §2, §4.1 |
+| ☐ | PostgreSQL | LISTO: contenedor y volumen `pgdata` | §1 |
+| ☐ | Volumen de archivos (fotos de producto, tienda, evidencias) | LISTO: sobrevive a reinicio, reconstrucción y restauración | §1, §9 |
+| ☐ | Variables y secretos (`deploy/.env.production`) y su copia fuera del servidor | FALTAN DATOS | §4.2 |
+| ☐ | SMTP | FALTAN DATOS: servidor, usuario y contraseña. Sin él el backend no arranca | §3 |
+| ☐ | Migraciones | LISTO: paso explícito de cada despliegue; el estado avisa si quedan sin aplicar | §4.3, §7 |
+| ☐ | Primer administrador | LISTO: `createsuperuser` | §4.4 |
+| ☐ | Tareas programadas | LISTO: `deploy/crontab.example` | §6.1.0 |
+| ☐ | Copias de seguridad | LISTO: `deploy/backup.sh`, con prueba de recuperación | §6.1, §9 |
+| ☐ | Copia externa | FALTAN DATOS: el destino | §6.2 |
+| ☐ | Comprobación de estado | LISTO: `deploy/healthcheck.sh` | §6.1.4 |
+| ☐ | Vigilante externo y correo de avisos (`MAILTO`) | FALTA INFRAESTRUCTURA | §6.1.4 |
+| ☐ | Registros | LISTO: rotan y no guardan tokens ni datos de búsqueda | §6.1.4 |
+| ☐ | Izipay, validado en TEST | FALTAN DATOS: cuál de los dos productos y sus claves de TEST. Sin eso no hay prueba contra la pasarela real | `pagos-equipos-documentos.md` §1 |
+| ☐ | Izipay, producción | FALTAN DATOS: claves de producción, después del pago de prueba | `pagos-equipos-documentos.md` §1.3 |
+| ☐ | WhatsApp | OPCIONAL · FALTAN DATOS: número, plantillas aprobadas y credenciales. Apagado no rompe nada | `seguimiento-whatsapp-equipos.md` §4.1 |
+| ☐ | «Continuar con Google» | OPCIONAL · FALTAN DATOS: ID de cliente OAuth. Sin él el botón no aparece | `seguimiento-whatsapp-equipos.md` §7 |
+| ☐ | Facturación electrónica (SUNAT) | OPCIONAL · FALTAN DATOS: certificado y credenciales SOL. Va apagada (`FISCAL_ENABLED=0`); encenderla es una fase aparte | §8 |
+| ☐ | Impresoras de tienda | OPCIONAL: se dan de alta en el panel y se instala el agente en el local | §6.5 |
+| ☐ | Existencias, fotos y precios reales | FALTAN DATOS: una base nueva trae tres productos de ejemplo | §5 |
+| ☐ | Volver atrás | LISTO: copia antes de actualizar, `git checkout` del commit anterior y, si una migración cambió datos, `restore.sh` | §7 |
+| ☐ | Repetir `sh deploy/rehearsal.sh` sobre el commit que se publica | LISTO: es un comando | §9 |
+
+Antes de cobrar de verdad: un pago completo en TEST con la tienda ya publicada. Es
+la única forma de ver llegar una notificación real de la pasarela.
