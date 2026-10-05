@@ -340,6 +340,9 @@ urlpatterns = [
     path('admin/imports/', AdminImportHistoryView.as_view(), name='admin-import-history'),
     path('admin/imports/<int:pk>/', AdminImportJobView.as_view(), name='admin-import-job'),
     path('admin/imports/<int:pk>/errors.csv', AdminImportErrorReportView.as_view(), name='admin-import-errors'),
+    # The same report at the address Caddy and the Next proxy actually send:
+    # both add a trailing slash to every /api/ path (IMPORT-ERRORS-404).
+    path('admin/imports/<int:pk>/errors.csv/', AdminImportErrorReportView.as_view(), name='admin-import-errors-slash'),
     path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
     path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
     path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),

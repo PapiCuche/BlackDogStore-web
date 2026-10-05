@@ -26459,6 +26459,25 @@ class C14ImportApiTest(TestCase):
         self.assertIn('Precio malo', body)
         self.assertIn('attachment', res['Content-Disposition'])
 
+    def test_the_error_report_answers_the_address_the_proxies_send(self):
+        """
+        IMPORT-ERRORS-404. Caddy in production and the Next proxy in development
+        both add a trailing slash to every `/api/` path before it reaches
+        Django. The route had none, so the link in the panel was a 404 for
+        everyone who used it through a browser, while this suite, which calls
+        Django directly, stayed green.
+        """
+        upload = _c14_upload(_c14_products_workbook([{
+            'Código de barras': '7751234567892', 'Código': 'C000009',
+            'Nombre': 'Precio malo', 'Precio venta - 11834': 'gratis',
+        }]), 'malo.xlsx')
+        job_id = self._as(self.product_admin).post(
+            '/api/admin/products/import/preview/', {'file': upload}, format='multipart',
+        ).data['id']
+        res = self._as(self.product_admin).get(f'/api/admin/imports/{job_id}/errors.csv/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('Precio malo', res.content.decode('utf-8'))
+
     def test_the_product_template_downloads_and_the_importer_can_read_it(self):
         """§60 — a template the platform cannot read back is not a template."""
         res = self._as(self.product_admin).get('/api/admin/products/import/template/')
