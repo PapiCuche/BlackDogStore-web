@@ -97,11 +97,21 @@ describe('adjuntar imágenes', () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.any(Array), null);
   });
 
-  it('el mismo nombre no se adjunta dos veces', () => {
+  it('un archivo con el mismo nombre SUSTITUYE al anterior, y lo dice', () => {
+    // Quien corrige una imagen inválida vuelve a adjuntarla con su mismo
+    // nombre: tiene que viajar la nueva, no la que ya estaba mal.
     const onChange = jest.fn();
-    render(<ImportImagesField images={[file('a.png')]} zip={null} onChange={onChange} />);
-    fireEvent.change(screen.getByLabelText(/Elegir imágenes/), { target: { files: [file('A.PNG'), file('c.png')] } });
-    expect(onChange.mock.calls[0][0].map((f: File) => f.name)).toEqual(['a.png', 'c.png']);
+    const old = file('a.png', 'image/png', 10);
+    render(<ImportImagesField images={[old, file('b.png')]} zip={null} onChange={onChange} />);
+
+    const fixed = file('A.PNG', 'image/png', 99);
+    fireEvent.change(screen.getByLabelText(/Elegir imágenes/), { target: { files: [fixed, file('c.png')] } });
+
+    const next = onChange.mock.calls[0][0] as File[];
+    expect(next.map((f) => f.name)).toEqual(['A.PNG', 'b.png', 'c.png']);
+    expect(next[0]).toBe(fixed);
+    expect(screen.getByRole('status')).toHaveTextContent('Se reemplazó');
+    expect(screen.getByRole('status')).toHaveTextContent('A.PNG');
   });
 });
 

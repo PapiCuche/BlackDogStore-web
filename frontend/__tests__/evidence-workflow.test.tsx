@@ -135,6 +135,38 @@ describe('tomar y subir varias fotos', () => {
     expect(screen.getByText('Corrosión junto al conector')).toBeInTheDocument();
   });
 
+  it('cada foto se queda con la etapa que tenía elegida al añadirla', async () => {
+    // Una evidencia no se puede mover de etapa, sólo anular: si la cola se
+    // subiera entera con la etapa elegida al pulsar, una foto del ingreso que
+    // falló acabaría archivada en el diagnóstico.
+    await mount();
+    choose([photo('ingreso.jpg')]);
+    fireEvent.change(screen.getByLabelText('Etapa de las fotos'), { target: { value: 'diagnosis' } });
+    choose([photo('placa.jpg')]);
+
+    const queue = screen.getByRole('list', { name: 'Fotos por subir' });
+    const [first, second] = within(queue).getAllByRole('listitem');
+    expect(first).toHaveTextContent('Ingreso');
+    expect(second).toHaveTextContent('Diagnóstico');
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Subir 2 fotos' })); });
+    await waitFor(() => expect(sent).toHaveLength(2));
+
+    expect(sent.map((call) => [(call.form!.get('image') as File).name, call.form!.get('stage')])).toEqual([
+      ['ingreso.jpg', 'intake'], ['placa.jpg', 'diagnosis'],
+    ]);
+  });
+
+  it('una foto en cola de una etapa sin autoridad bloquea la subida aunque se cambie el selector', async () => {
+    await mount((capability) => capability !== 'service.delivery.manage');
+    fireEvent.change(screen.getByLabelText('Etapa de las fotos'), { target: { value: 'delivery' } });
+    choose([photo('a.jpg')]);
+    fireEvent.change(screen.getByLabelText('Etapa de las fotos'), { target: { value: 'intake' } });
+
+    expect(screen.getByRole('button', { name: 'Subir 1 foto' })).toBeDisabled();
+    expect(screen.getByText(/No tienes autoridad sobre la etapa «Entrega»/)).toBeInTheDocument();
+  });
+
   it('una foto se puede quitar antes de subirla', async () => {
     await mount();
     choose([photo('a.jpg'), photo('b.jpg')]);

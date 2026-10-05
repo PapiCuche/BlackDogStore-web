@@ -322,18 +322,29 @@ export function ImportImagesField({
   const [notice, setNotice] = useState<string | null>(null);
 
   function addImages(files: File[]) {
-    const known = new Set(images.map((file) => file.name.toLowerCase()));
     const next = [...images];
     const skipped: string[] = [];
+    const replaced: string[] = [];
     for (const file of files) {
       if (!IMAGE_NAME.test(file.name)) {
         skipped.push(file.name);
-      } else if (!known.has(file.name.toLowerCase())) {
-        known.add(file.name.toLowerCase());
+        continue;
+      }
+      // El mismo nombre SUSTITUYE: quien corrige una imagen la vuelve a
+      // adjuntar con su nombre, y tiene que viajar la nueva.
+      const at = next.findIndex((entry) => entry.name.toLowerCase() === file.name.toLowerCase());
+      if (at >= 0) {
+        next[at] = file;
+        replaced.push(file.name);
+      } else {
         next.push(file);
       }
     }
-    setNotice(skipped.length ? `No son imágenes PNG, JPEG o WebP y no se adjuntan: ${skipped.join(", ")}.` : null);
+    const notes = [
+      replaced.length ? `Se reemplazó: ${replaced.join(", ")}.` : "",
+      skipped.length ? `No son imágenes PNG, JPEG o WebP y no se adjuntan: ${skipped.join(", ")}.` : "",
+    ].filter(Boolean);
+    setNotice(notes.length ? notes.join(" ") : null);
     onChange(next, zip);
   }
 

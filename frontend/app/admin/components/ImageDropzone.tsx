@@ -49,7 +49,10 @@ export function ImageDropzone({
     <div
       data-testid="image-dropzone"
       data-over={over || undefined}
-      onDragOver={(event) => { if (!disabled) { event.preventDefault(); setOver(true); } }}
+      // `preventDefault` SIEMPRE, también deshabilitada: sin él la zona no es
+      // un destino y el navegador abre el archivo soltado, llevándose la
+      // página —y la subida en curso— por delante.
+      onDragOver={(event) => { event.preventDefault(); if (!disabled) setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={(event) => {
         event.preventDefault();

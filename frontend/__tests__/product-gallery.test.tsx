@@ -265,3 +265,27 @@ describe('lista de productos del panel', () => {
     expect(rows[1].querySelector('[data-thumb="empty"]')).not.toBeNull();
   });
 });
+
+
+describe('zona para soltar archivos', () => {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const { ImageDropzone } = require('@/app/admin/components/ImageDropzone');
+
+  it('deshabilitada no entrega nada, pero tampoco deja que el navegador abra el archivo', () => {
+    // Sin `preventDefault`, soltar una foto sobre la zona hace que la pestaña
+    // navegue a la imagen: se pierde la subida en curso y lo que había en cola.
+    const onFiles = jest.fn();
+    render(<ImageDropzone label="Elegir fotos" accept="image/png" onFiles={onFiles} disabled />);
+    const zone = screen.getByTestId('image-dropzone');
+
+    const over = new Event('dragover', { bubbles: true, cancelable: true });
+    zone.dispatchEvent(over);
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [file('a.png')] } });
+    zone.dispatchEvent(drop);
+
+    expect(over.defaultPrevented).toBe(true);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(onFiles).not.toHaveBeenCalled();
+  });
+});

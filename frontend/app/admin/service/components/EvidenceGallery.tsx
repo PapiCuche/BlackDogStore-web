@@ -113,6 +113,12 @@ type Queued = {
   /** También es la clave de idempotencia: un reintento no crea otra evidencia. */
   key: string;
   file: File;
+  /**
+   * La etapa elegida AL AÑADIRLA. Una evidencia no se mueve de etapa, sólo se
+   * anula: la foto viaja con la etapa en la que el técnico la puso en cola, no
+   * con la que esté en el selector al pulsar «Subir».
+   */
+  stage: string;
   preview: string;
   caption: string;
   status: "queued" | "uploading" | "failed";
@@ -197,7 +203,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
       }
       const preview = URL.createObjectURL(file);
       previews.current.add(preview);
-      added.push({ key: newKey(), file, preview, caption: "", status: "queued" });
+      added.push({ key: newKey(), file, stage, preview, caption: "", status: "queued" });
     }
     setRejected(problems);
     if (added.length) setQueue((prev) => [...prev, ...added]);
@@ -222,7 +228,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
       setQueue((prev) => prev.map((entry) => (entry.key === item.key ? { ...entry, status: "uploading", error: undefined } : entry)));
       try {
         const form = new FormData();
-        form.append("stage", stage);
+        form.append("stage", item.stage);
         form.append("image", item.file);
         form.append("caption", item.caption.trim());
         const res = await fetchWithAuth(`${base}/`, {
@@ -297,6 +303,8 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
   }
 
   const canUploadHere = may(capability(stage));
+  // Etapas con fotos en cola sobre las que esta persona no tiene autoridad.
+  const blocked = Array.from(new Set(queue.map((item) => item.stage))).filter((value) => !may(capability(value)));
   const groups = stages
     .map((entry) => ({ stage: entry, items: (rows ?? []).filter((r) => r.stage === entry.value) }))
     .filter((group) => group.items.length > 0);
@@ -327,11 +335,11 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
           </select>
         </label>
 
-        {!canUploadHere ? (
-          <p className="text-xs text-warning">
-            No tienes autoridad sobre la etapa «{label(stage)}».
+        {Array.from(new Set([...(canUploadHere ? [] : [stage]), ...blocked])).map((value) => (
+          <p key={value} className="text-xs text-warning">
+            No tienes autoridad sobre la etapa «{label(value)}».
           </p>
-        ) : null}
+        ))}
 
         <ImageDropzone
           label="Elegir fotos"
@@ -364,6 +372,7 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
                   />
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <p className="break-all text-xs text-foreground">{item.file.name}</p>
+                    <p className="text-[11px] font-semibold text-muted">{label(item.stage)}</p>
                     <input
                       type="text"
                       aria-label={`Nota de ${item.file.name}`}
@@ -401,14 +410,14 @@ export function EvidenceGallery({ slug, orderId, may }: Props) {
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                disabled={busy || !canUploadHere}
+                disabled={busy || blocked.length > 0}
                 onClick={() => void uploadAll()}
                 className="min-h-11 rounded-full bg-foreground px-5 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 Subir {photos(queue.length)}
               </button>
               <p className="text-xs text-muted" aria-live="polite">
-                {progress ? `Subiendo ${Math.min(progress.done + 1, progress.total)} de ${progress.total}…` : `Etapa: ${label(stage)}`}
+                {progress ? `Subiendo ${Math.min(progress.done + 1, progress.total)} de ${progress.total}…` : "Cada foto se sube a la etapa que indica."}
               </p>
             </div>
           </>
