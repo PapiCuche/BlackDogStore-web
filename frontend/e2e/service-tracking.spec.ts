@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+
 import { expect, test, type Cookie, type Page } from "@playwright/test";
 import { SLUG, api, signIn } from "./media-helpers";
 
@@ -242,6 +246,88 @@ test("«Registrar equipo»: cada equipo entra con su serie y su IMEI, y el stock
     });
     expect(typed.status).toBe(400);
     expect(String(typed.data.detail)).toContain("serie");
+  } finally {
+    const listed = await api(page, "GET", `/api/admin/inventory/units/?branch=all&product=${productId}&status=available`);
+    for (const unit of listed.data?.results ?? []) {
+      await api(page, "POST", `/api/admin/inventory/units/${unit.id}/write-off/`, { reason: `${MARK} limpieza de ${RUN}` });
+    }
+    await api(page, "PATCH", `/api/admin/products/${productId}/`, { is_active: false });
+  }
+});
+
+/** «Equipos serializados.xlsx» con las filas dadas. openpyxl ya es del backend: nada nuevo en el frontend. */
+function unitWorkbook(name: string, rows: Array<[string, string, string]>): string {
+  const target = path.join(os.tmpdir(), `${name}-${RUN}.xlsx`);
+  execFileSync("python3", ["-c", `
+import json, sys, openpyxl
+book = openpyxl.Workbook(); sheet = book.active; sheet.title = "Equipos"
+sheet.append(["Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia"])
+for product, serial, imei in json.loads(sys.argv[2]):
+    sheet.append(["", product, "", serial, imei, "", "Nuevo", "", ""])
+book.save(sys.argv[1])
+`, target, JSON.stringify(rows)], { cwd: process.env.E2E_BACKEND_DIR ?? path.resolve(process.cwd(), "../backend"), stdio: "pipe" });
+  return target;
+}
+
+test("«Cargar desde Excel»: una fila es un equipo, se ensaya antes y entra todo o nada", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto("/admin");
+  const name = `${MARK} Equipo Excel ${RUN}`;
+  const created = await api(page, "POST", "/api/admin/products/", { name, price: "899.00", description: "", is_active: true });
+  expect(created.status, JSON.stringify(created.data)).toBe(201);
+  const productId = created.data.id as number;
+  const tracked = await api(page, "POST", `/api/admin/inventory/units/products/${productId}/serialization/`, {
+    is_serialized: true, requires_imei: true,
+  });
+  expect(tracked.status, JSON.stringify(tracked.data)).toBe(200);
+  const serials = [`XLS${RUN}A`.toUpperCase(), `XLS${RUN}B`.toUpperCase()];
+  const imeis = [imei(11), imei(12)];
+
+  try {
+    await page.goto("/admin/inventory/units", { waitUntil: "networkidle" });
+    await page.getByRole("link", { name: "Cargar desde Excel" }).click();
+    await expect(page).toHaveURL(/\/admin\/inventory\/units\/import/);
+    // La regla está a la vista antes de adjuntar nada.
+    await expect(page.getByText("Una fila = un equipo físico.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Descargar plantilla" })).toBeVisible();
+
+    await page.getByLabel("Sucursal para las filas sin sucursal").selectOption({ index: 1 });
+    await page.getByLabel("Motivo para las filas sin motivo").fill(`${MARK} compra de ${RUN}`);
+
+    // --- un archivo con una fila mala no se puede registrar -------------------
+    await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(
+      unitWorkbook("equipos-mal", [[name, serials[0], imeis[0]], [name, serials[1], "356938035643800"]]),
+    );
+    await page.getByRole("button", { name: "Previsualizar" }).click();
+    const table = page.getByRole("table", { name: "Equipos del archivo" });
+    await expect(table.getByRole("row").filter({ hasText: serials[1] })).toContainText("control");
+    await expect(page.getByText(/1 con error/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Registrar \d+ equipo/ })).toHaveCount(0);
+    const nothing = await api(page, "GET", `/api/admin/inventory/units/?branch=all&product=${productId}`);
+    expect(nothing.data.count).toBe(0);
+
+    // --- el archivo corregido: se ensaya y luego se registra -------------------
+    await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(
+      unitWorkbook("equipos-bien", [[name, serials[0], imeis[0]], [name, serials[1], imeis[1]]]),
+    );
+    await page.getByRole("button", { name: "Previsualizar" }).click();
+    await expect(table.getByRole("row").filter({ hasText: serials[0] })).toContainText("Se registrará");
+    const staged = await api(page, "GET", `/api/admin/inventory/units/?branch=all&product=${productId}`);
+    expect(staged.data.count).toBe(0);                       // previsualizar no registra
+
+    await page.getByRole("button", { name: "Registrar 2 equipos" }).click();
+    await expect(page.getByRole("status")).toContainText("Se registraron 2 equipos");
+
+    await page.getByRole("link", { name: "Ver los equipos" }).click();
+    for (const [index, serial] of serials.entries()) {
+      const row = page.getByRole("row").filter({ has: page.getByRole("cell", { name: serial }) });
+      await expect(row).toHaveCount(1);
+      await expect(row).toContainText(imeis[index]);
+      await expect(row).toContainText("Disponible");
+    }
+    const stock = await api(page, "GET", `/api/admin/inventory/stock/?branch=all&product=${productId}`);
+    const total = (stock.data.results as Array<{ quantity: number }>).reduce((sum, r) => sum + r.quantity, 0);
+    expect(total).toBe(2);
   } finally {
     const listed = await api(page, "GET", `/api/admin/inventory/units/?branch=all&product=${productId}&status=available`);
     for (const unit of listed.data?.results ?? []) {
