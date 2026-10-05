@@ -145,6 +145,8 @@ REST_FRAMEWORK = {
         # TRACKING. Una página de seguimiento pide la orden y una imagen por foto.
         'tracking_read': '240/min',
         'tracking_write': '20/min',
+        # Meta reports every sent, delivered and read message here.
+        'whatsapp_webhook': '600/min',
         'account_repairs': '60/min',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
@@ -460,6 +462,18 @@ EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.
 # CompanySettings). The DISPLAY identity inside each message is per tenant.
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='no-reply@localhost')
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+
+# WHATSAPP-NOTIFY. Which provider carries customer notices:
+#   cloud_api  the official WhatsApp Business Cloud API (Meta) — the default
+#   fake       records what would be sent and sends nothing (tests, local review)
+#   disabled   nothing is sent from this environment
+# No credential is configured here: each company references its own variables
+# (`manage.py configure_whatsapp`), all of them in the WHATSAPP_ namespace.
+WHATSAPP_PROVIDER = env('WHATSAPP_PROVIDER', default='cloud_api')
+WHATSAPP_GRAPH_API_VERSION = env('WHATSAPP_GRAPH_API_VERSION', default='v21.0')
+# Try the send right after the transaction commits. Turn it off where a timer
+# runs `send_pending_notifications`, so a slow provider never delays a counter.
+WHATSAPP_SEND_INLINE = env.bool('WHATSAPP_SEND_INLINE', default=True)
 if not DEBUG:
     _require_public_url('FRONTEND_URL', FRONTEND_URL)
 REQUIRE_EMAIL_VERIFICATION = env.bool('REQUIRE_EMAIL_VERIFICATION', default=False)

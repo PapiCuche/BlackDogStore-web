@@ -18,6 +18,9 @@ from .v1_customer_views import (
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
 )
+from .whatsapp_views import (
+    WhatsAppConsentView, WhatsAppRetryView, WhatsAppSettingsView, WhatsAppWebhookView,
+)
 from .tracking_views import (
     TrackingEvidenceContentView, TrackingQuoteDecisionView, TrackingView,
 )
@@ -380,6 +383,25 @@ urlpatterns = [
         'internal/<slug:company_slug>/service/orders/<int:pk>/tracking-link/revoke/',
         V1ServiceTrackingLinkView.as_view(action='revoke'),
         name='v1-internal-service-tracking-link-revoke',
+    ),
+    # WHATSAPP-NOTIFY
+    path(
+        'internal/<slug:company_slug>/service/orders/<int:pk>/notifications/'
+        '<int:notification_id>/whatsapp/retry/',
+        WhatsAppRetryView.as_view(), name='v1-internal-service-whatsapp-retry',
+    ),
+    path(
+        'internal/<slug:company_slug>/service/customers/<int:pk>/whatsapp-consent/',
+        WhatsAppConsentView.as_view(), name='v1-internal-service-whatsapp-consent',
+    ),
+    path(
+        'internal/<slug:company_slug>/messaging/whatsapp/',
+        WhatsAppSettingsView.as_view(), name='v1-internal-messaging-whatsapp',
+    ),
+    # Called by the provider. The signature is the credential.
+    path(
+        'webhooks/whatsapp/<slug:company_slug>/',
+        WhatsAppWebhookView.as_view(), name='v1-webhook-whatsapp',
     ),
     # TRACKING — public, by link. No session: the token in the path is the key.
     path('tracking/<str:token>/', TrackingView.as_view(), name='v1-tracking'),

@@ -241,8 +241,40 @@ class V1ServiceOrderListSerializer(serializers.ModelSerializer):
         return _user_display(assignment.technician) if assignment else ''
 
 
+def customer_notification_payload(note) -> dict:
+    """
+    One customer notice of an order, and what happened to it on each channel.
+
+    What happened is READ from the delivery rows, never assumed: "sent" here
+    means a provider took it. The recipient is the masked number, and the
+    failure reason is the short one already stored — no payload, no credential.
+    """
+    from .notification_events import EMAIL_WORTHY_EVENTS
+
+    by_channel = {row.channel: row for row in note.deliveries.all()}
+    email = by_channel.get('email')
+    email_status = 'not_applicable'
+    if email is not None:
+        email_status = email.status
+    elif note.event_id and note.event.event_type in EMAIL_WORTHY_EVENTS:
+        email_status = 'pending'
+
+    whatsapp = by_channel.get('whatsapp')
+    return {
+        'id': note.pk, 'title': note.title, 'created_at': note.created_at,
+        'email_status': email_status,
+        'whatsapp_status': whatsapp.status if whatsapp is not None else 'not_applicable',
+        'whatsapp_detail': (whatsapp.failure_reason or None) if whatsapp is not None else None,
+        'whatsapp_recipient': (whatsapp.recipient_masked or None) if whatsapp is not None else None,
+        'whatsapp_sent_at': whatsapp.sent_at if whatsapp is not None else None,
+        'whatsapp_delivered_at': whatsapp.delivered_at if whatsapp is not None else None,
+        'whatsapp_read_at': whatsapp.read_at if whatsapp is not None else None,
+    }
+
+
 class V1ServiceOrderDetailSerializer(V1ServiceOrderListSerializer):
     customer_notifications = serializers.SerializerMethodField()
+    whatsapp = serializers.SerializerMethodField()
     device_detail = V1ServiceDeviceSerializer(source='device', read_only=True)
     received_by_name = serializers.SerializerMethodField()
     history = serializers.SerializerMethodField()
@@ -254,31 +286,31 @@ class V1ServiceOrderDetailSerializer(V1ServiceOrderListSerializer):
             'reported_issue', 'physical_condition', 'received_accessories',
             'internal_notes', 'received_by_name', 'device_detail',
             'history', 'assignments', 'available_transitions', 'customer_notifications',
+            'whatsapp',
         )
         read_only_fields = fields
 
     def get_received_by_name(self, obj) -> str:
         return _user_display(obj.received_by)
 
+    def get_whatsapp(self, obj) -> dict:
+        """Whether this company sends by WhatsApp, and whether THIS customer agreed."""
+        from . import whatsapp_services
+
+        config = whatsapp_services.config_for(obj.company)
+        return {
+            'enabled': bool(config and config.whatsapp_enabled),
+            'customer_opt_in': whatsapp_services.has_consent(obj.customer),
+        }
+
     def get_customer_notifications(self, obj):
         from .models import Notification
-        from .notification_events import EMAIL_WORTHY_EVENTS
         notes = Notification.objects.filter(
             company_id=obj.company_id, customer_id=obj.customer_id,
             audience=Notification.Audience.CUSTOMER,
             target_type='repair_order', target_id=obj.pk,
         ).select_related('event').prefetch_related('deliveries').order_by('-created_at', '-pk')[:20]
-        result = []
-        for note in notes:
-            delivery = next((row for row in note.deliveries.all() if row.channel == 'email'), None)
-            email_status = 'not_applicable'
-            if delivery is not None:
-                email_status = delivery.status
-            elif note.event_id and note.event.event_type in EMAIL_WORTHY_EVENTS:
-                email_status = 'pending'
-            result.append({'id': note.pk, 'title': note.title, 'created_at': note.created_at,
-                           'email_status': email_status})
-        return result
+        return [customer_notification_payload(note) for note in notes]
 
     def get_history(self, obj):
         return V1ServiceHistorySerializer(

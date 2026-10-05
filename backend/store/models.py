@@ -3132,6 +3132,20 @@ class Customer(models.Model):
     # endpoint for this model at all, which is the real guarantee.
     notes = models.TextField(max_length=2000, blank=True)
 
+    # ── WhatsApp consent (WHATSAPP-NOTIFY) ───────────────────────────────────
+    # A phone number on file is not permission to message it. The customer says
+    # yes, somebody records when and where, and saying no later wins.
+    WHATSAPP_OPT_IN_SOURCES = [
+        ('counter', 'En el mostrador'),
+        ('web', 'Desde la web'),
+        ('message', 'Por mensaje'),
+    ]
+    whatsapp_opt_in_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_opt_in_source = models.CharField(
+        max_length=16, blank=True, choices=WHATSAPP_OPT_IN_SOURCES,
+    )
+    whatsapp_opt_out_at = models.DateTimeField(null=True, blank=True)
+
     is_active = models.BooleanField(default=True, db_index=True)
 
     # Traceability only. Never consulted for permissions: who typed a record in
@@ -6433,15 +6447,23 @@ class NotificationDelivery(models.Model):
 
     class Channel(models.TextChoices):
         EMAIL = 'email', 'Correo'
+        WHATSAPP = 'whatsapp', 'WhatsApp'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pendiente'
         SENT = 'sent', 'Enviada'
+        # What the provider reports back afterwards (WhatsApp does; e-mail
+        # does not). They only ever move forward: sent → delivered → read.
+        DELIVERED = 'delivered', 'Entregada'
+        READ = 'read', 'Leída'
         FAILED = 'failed', 'Fallida'
         # Nothing was wrong; there was simply nowhere to send it — a customer
         # with no e-mail, a company with no notification address configured.
         # Distinct from FAILED so a retry pass does not chase them forever.
         SKIPPED = 'skipped', 'Omitida'
+
+    #: The message left this system. It is never sent again.
+    DONE_STATUSES = ('sent', 'delivered', 'read')
 
     notification = models.ForeignKey(
         Notification, on_delete=models.CASCADE, related_name='deliveries',
@@ -6459,6 +6481,19 @@ class NotificationDelivery(models.Model):
     # request can carry credentials.
     failure_reason = models.CharField(max_length=200, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ── What a provider gives back (WHATSAPP-NOTIFY) ─────────────────────────
+    # The provider's own id for the message: what its webhook quotes when it
+    # reports delivery. Empty for e-mail.
+    provider_message_id = models.CharField(max_length=128, blank=True, db_index=True)
+    # Where it went, MASKED (`•••• 4321`). Enough for an operator to recognise
+    # the number; the full one stays on the customer.
+    recipient_masked = models.CharField(max_length=32, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    # When a failed attempt may be tried again. NULL on a failed row means
+    # "not by itself": the failure was final, or the attempts ran out.
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -8636,3 +8671,64 @@ class PrintJob(models.Model):
 
     def __str__(self):
         return f'{self.get_kind_display()} · pedido {self.order_id} · {self.get_status_display()}'
+
+
+class CompanyMessagingSettings(models.Model):
+    """
+    How ONE company sends WhatsApp notices. WHATSAPP-NOTIFY.
+
+        NO SECRET LIVES IN THIS TABLE.
+
+    The access token, the app secret and the webhook verify token are read from
+    the process environment. What is stored here is the NAME of the variable
+    that holds each one — a reference, set by whoever operates the deployment
+    (`manage.py configure_whatsapp`), never by a tenant through the API. A
+    database dump, an admin screen or an API response therefore cannot leak a
+    credential, and a tenant cannot point their configuration at somebody
+    else's variable.
+
+    What a tenant administrator DOES control: whether notices are sent, which
+    approved template is used for each event, and the calling code assumed for
+    numbers written without one.
+    """
+
+    PROVIDER_CLOUD_API = 'cloud_api'
+    PROVIDER_CHOICES = [(PROVIDER_CLOUD_API, 'WhatsApp Cloud API (Meta)')]
+
+    company = models.OneToOneField(
+        Company, on_delete=models.CASCADE, related_name='messaging_settings',
+    )
+    whatsapp_enabled = models.BooleanField(default=False)
+    whatsapp_provider = models.CharField(
+        max_length=24, choices=PROVIDER_CHOICES, default=PROVIDER_CLOUD_API,
+    )
+    # Identifiers, not secrets: they travel in every request URL.
+    whatsapp_phone_number_id = models.CharField(max_length=40, blank=True)
+    whatsapp_business_account_id = models.CharField(max_length=40, blank=True)
+
+    # NAMES of environment variables. See the class docstring.
+    whatsapp_access_token_env = models.CharField(max_length=64, blank=True)
+    whatsapp_app_secret_env = models.CharField(max_length=64, blank=True)
+    whatsapp_verify_token_env = models.CharField(max_length=64, blank=True)
+
+    # Digits only, no "+". Empty means: only numbers written with their
+    # country code can be messaged. Nothing here assumes a country.
+    default_calling_code = models.CharField(max_length=4, blank=True)
+    template_language = models.CharField(max_length=10, default='es')
+    # {event code: approved template name}. An event without a template is not
+    # sent: there is no free-text fallback outside the 24-hour window.
+    whatsapp_templates = models.JSONField(default=dict, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+    )
+
+    class Meta:
+        verbose_name = 'Configuración de mensajería'
+        verbose_name_plural = 'Configuraciones de mensajería'
+
+    def __str__(self):
+        return f'Mensajería de {self.company_id}'
+

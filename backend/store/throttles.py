@@ -319,3 +319,8 @@ class TrackingDecisionThrottle(AnonRateThrottle):
 
 class AccountRepairsThrottle(UserRateThrottle):
     scope = 'account_repairs'
+
+
+class WhatsAppWebhookThrottle(AnonRateThrottle):
+    """El proveedor informa aquí de cada mensaje. La firma decide; esto acota."""
+    scope = 'whatsapp_webhook'
