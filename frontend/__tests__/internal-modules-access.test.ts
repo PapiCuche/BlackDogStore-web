@@ -93,3 +93,46 @@ describe('el menú no repite nada', () => {
     expect(repeated).toEqual([]);
   });
 });
+
+/**
+ * INTEGRATIONS-CONSOLE — un módulo que sólo existe para el master.
+ *
+ * Las credenciales de los servicios externos no son de ningún rol de empresa:
+ * ni el administrador con todas las capacidades, ni el operador antiguo. Un
+ * módulo sin capacidades ni roles declarados era, hasta aquí, «para todos»;
+ * `platformAdminOnly` se comprueba antes que nada de eso.
+ */
+describe('un módulo sólo para el master', () => {
+  const integrations = () => mod('admin.integrations');
+  const everyCapability = Array.from(
+    new Set(INTERNAL_MODULES.flatMap((m) => m.requiredCapabilities ?? [])),
+  );
+
+  it('está registrado como tal, con una ruta', () => {
+    expect(integrations().platformAdminOnly).toBe(true);
+    expect(integrations().href).toBe('/admin/settings/integrations');
+    expect(integrations().status).toBe('implemented');
+  });
+
+  it('no lo abre un administrador con todas las capacidades', () => {
+    expect(canAccessModule(integrations(), member(everyCapability, 'admin'))).toBe(false);
+    expect(navigableModules(member(everyCapability, 'admin')).map((m) => m.id)).not.toContain('admin.integrations');
+  });
+
+  it('ni el operador antiguo, con el rol que sea', () => {
+    for (const role of ['admin', 'sales', 'technician', 'inventory']) {
+      expect(canAccessModule(integrations(), legacyOperator(role))).toBe(false);
+    }
+  });
+
+  it('el master lo ve en su menú', () => {
+    const master: ModuleAccessContext = {
+      capabilities: [], legacyRole: null, isPlatformAdmin: true, hasCompanyContext: true,
+    };
+    expect(navigableModules(master).map((m) => m.id)).toContain('admin.integrations');
+  });
+
+  it('es el único módulo así: nada más deja de estar al alcance de un administrador', () => {
+    expect(INTERNAL_MODULES.filter((m) => m.platformAdminOnly).map((m) => m.id)).toEqual(['admin.integrations']);
+  });
+});
