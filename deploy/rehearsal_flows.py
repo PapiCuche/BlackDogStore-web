@@ -23,6 +23,9 @@ Uso:
     rehearsal_flows.py run       recorre todo y escribe el estado
     rehearsal_flows.py verify    vuelve a comprobar lo que debe sobrevivir a un
                                  reinicio, una reconstrucción o una restauración
+    rehearsal_flows.py mail      registro, verificación y recuperación de contraseña
+                                 por SMTP, contra el servidor de correo del ensayo
+    rehearsal_flows.py mail-down la tienda con ese servidor caído o mal configurado
     rehearsal_flows.py logs <archivo>
                                  busca en los registros de la tienda lo que el
                                  recorrido usó y no debe quedar escrito
@@ -438,6 +441,84 @@ def integrations(admin):
     check('Google sin configurar · el acceso con usuario sigue ahí', res.status in (400, 401), res.status)
 
 
+# --- correo real por SMTP -------------------------------------------------------
+
+def sink_messages():
+    """Lo que la tienda entregó al servidor de correo del ensayo, mensaje a mensaje."""
+    import subprocess
+
+    out = subprocess.run(
+        ['docker', 'exec', os.environ['R_MAIL_CONTAINER'], 'sh', '-c',
+         'for f in /tmp/mail/*.eml; do [ -f "$f" ] && cat "$f" && printf "\n=====FIN=====\n"; done'],
+        capture_output=True, text=True, timeout=30).stdout
+    return [m.strip().replace('=\n', '').replace('=3D', '=') for m in out.split('=====FIN=====') if m.strip()]
+
+
+def mail_for(address, needle):
+    return [m for m in sink_messages() if address in m.splitlines()[0] and needle in m]
+
+
+def link_token(message, path):
+    match = re.search(re.escape(f'https://{DOMAIN}{path}?token=') + r'([A-Za-z0-9_\-]+)', message)
+    return match.group(1) if match else ''
+
+
+def mail():
+    """
+    La tienda envía por SMTP de verdad —a un servidor de correo del ensayo, que
+    guarda los mensajes y no los reenvía—: el registro pide verificar el correo,
+    el enlace que llega funciona, la contraseña se recupera por correo, y ningún
+    enlace queda en el registro del servidor.
+    """
+    mark = uuid.uuid4().hex[:8]
+    address = f'correo-{mark}@example.invalid'
+    password, changed = f'Ensayo-{uuid.uuid4().hex[:10]}-A1', f'Ensayo-{uuid.uuid4().hex[:10]}-B2'
+    visitor = Client()
+    res, body = visitor.json('POST', '/api/auth/register', {
+        'username': f'correo_{mark}', 'email': address, 'first_name': 'Ensayo', 'last_name': 'Correo',
+        'password': password, 'password_confirm': password,
+    })
+    check('correo · registrarse pide verificar el correo',
+          res.status == 201 and (body or {}).get('requires_verification') is True, f'{res.status} {str(body)[:100]}')
+    res, _ = visitor.json('POST', '/api/auth/login', {'username': f'correo_{mark}', 'password': password})
+    check('correo · sin verificar no se entra', res.status in (400, 401, 403), res.status)
+
+    time.sleep(1)
+    received = mail_for(address, '/auth/verify-email')
+    check('correo · el mensaje de verificación llegó al servidor de correo', len(received) == 1, len(received))
+    token = link_token(received[0], '/auth/verify-email') if received else ''
+    check('correo · sale con el remitente configurado',
+          bool(received) and os.environ['R_MAIL_FROM'] in received[0].splitlines()[0])
+    res, _ = visitor.json('POST', '/api/auth/verify-email', {'token': token})
+    check('correo · el enlace recibido verifica la cuenta', res.status == 200, res.status)
+    res, _ = visitor.json('POST', '/api/auth/verify-email', {'token': token})
+    check('correo · el enlace vale una sola vez', res.status in (400, 404, 410), res.status)
+
+    res, _ = visitor.json('POST', '/api/auth/password-reset/request', {'email': address})
+    check('correo · pedir recuperar la contraseña', res.status == 200, res.status)
+    time.sleep(1)
+    received = mail_for(address, '/auth/reset-password')
+    check('correo · el mensaje de recuperación llegó', len(received) == 1, len(received))
+    reset = link_token(received[0], '/auth/reset-password') if received else ''
+    res, _ = visitor.json('POST', '/api/auth/password-reset/confirm', {'token': reset, 'new_password': changed})
+    check('correo · el enlace recibido cambia la contraseña', res.status == 200, res.status)
+    res, _ = Client().json('POST', '/api/auth/login', {'username': f'correo_{mark}', 'password': changed})
+    check('correo · se entra con la contraseña nueva', res.status == 200, res.status)
+    res, _ = visitor.json('POST', '/api/auth/password-reset/request', {'email': f'nadie-{mark}@example.invalid'})
+    check('correo · pedirlo para un correo que no existe responde igual', res.status == 200, res.status)
+    check('correo · y no envía nada', mail_for(f'nadie-{mark}@example.invalid', '') == [])
+    return {'mail_address': address, 'mail_tokens': [token, reset], 'mail_passwords': [password, changed]}
+
+
+def mail_down(state):
+    """El servidor de correo no está, o rechaza la contraseña: la tienda sigue contestando."""
+    started = time.monotonic()
+    res, _ = Client().json('POST', '/api/auth/password-reset/request', {'email': state['mail_address']})
+    elapsed = time.monotonic() - started
+    check('correo · con el servidor de correo caído o mal configurado, la tienda contesta igual y sin colgarse',
+          res.status == 200 and elapsed < 15, f'{res.status} en {elapsed:.1f} s')
+
+
 def verify(state):
     anonymous = Client()
     res, data = anonymous.request('GET', state['product_image'], origin=False)
@@ -459,13 +540,37 @@ def logs(state, path):
         ('el IMEI del equipo vendido', state.get('imei')),
         ('la contraseña del administrador', os.environ.get('R_PASSWORD')),
         ('la clave hash de la pasarela', os.environ.get('R_IZIPAY_HASH_KEY')),
+        ('la contraseña del servidor de correo', os.environ.get('R_MAIL_PASSWORD')),
     ):
         check(f'registros · no guardan {label}', bool(needle) and needle not in text)
+    for index, token in enumerate(state.get('mail_tokens', []), 1):
+        check(f'registros · no guardan el enlace de correo {index}', bool(token) and token not in text)
+    for index, password in enumerate(state.get('mail_passwords', []), 1):
+        check(f'registros · no guardan la contraseña {index} del registro de prueba', password not in text)
+    if state.get('mail_tokens'):
+        check('registros · los correos no se escriben en el registro', 'Para verificar tu cuenta' not in text)
     check('registros · no guardan ningún token de sesión', not re.search(r'eyJ[A-Za-z0-9_-]{20,}\.', text))
 
 
 def main():
     mode = sys.argv[1]
+    if mode in ('mail', 'mail-down'):
+        state = {}
+        if os.path.exists(FLOWS_STATE):
+            with open(FLOWS_STATE) as handle:
+                state = json.load(handle)
+        try:
+            if mode == 'mail':
+                state.update(mail())
+                with open(FLOWS_STATE, 'w') as handle:
+                    json.dump(state, handle)
+            else:
+                mail_down(state)
+        except Exception as exc:
+            check('correo · el recorrido termina', False, f'{type(exc).__name__}: {str(exc)[:200]}')
+        failed = rehearsal_media.FAILED
+        print(f"  {'TODO OK' if not failed else 'FALLOS: ' + '; '.join(failed)}")
+        sys.exit(1 if failed else 0)
     if mode == 'logs':
         with open(FLOWS_STATE) as handle:
             logs(json.load(handle), sys.argv[2])
