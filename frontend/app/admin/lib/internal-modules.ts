@@ -73,6 +73,12 @@ export type InternalModule = {
   requiredCapabilities?: string[];
   /** Transitional: what the endpoint actually checks today. */
   legacyRoles?: string[];
+  /**
+   * Only the platform master. No company role reaches it, whatever its
+   * capabilities, and neither does the legacy operator: the module is about
+   * the installation, not about a company. Checked before anything else.
+   */
+  platformAdminOnly?: boolean;
   status: ModuleStatus;
   /** Surfaced as a large card on the dashboard. */
   quickAction?: boolean;
@@ -454,6 +460,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["company.view"],
     status: "implemented",
   },
+  {
+    id: "admin.integrations",
+    group: "administration",
+    label: "Integraciones",
+    description: "Correo, pasarela de pago, WhatsApp, Google y SUNAT: credenciales y pruebas.",
+    href: "/admin/settings/integrations",
+    // Sin capacidades: no es de ningún rol de empresa. El servidor responde 403
+    // a quien no sea master (`IsPlatformAdmin`), con el rol que tenga.
+    platformAdminOnly: true,
+    status: "implemented",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -473,7 +490,8 @@ export type ModuleAccessContext = {
  * The same rule each page applies through `InternalAccess.can` (RBAC-F3):
  * with a resolved company, capabilities decide and the legacy role grants
  * nothing; the legacy role only speaks for the pre-SaaS operator who has no
- * company context. A platform master passes everything.
+ * company context. A platform master passes everything, and a module marked
+ * `platformAdminOnly` lets nobody else in.
  *
  * The menu used to fall back to the legacy role whenever the capabilities fell
  * short, so it listed modules whose page then answered "no access".
@@ -483,6 +501,7 @@ export function canAccessModule(
   ctx: ModuleAccessContext,
 ): boolean {
   if (ctx.isPlatformAdmin) return true;
+  if (module.platformAdminOnly) return false;
 
   const required = module.requiredCapabilities ?? [];
   const legacyRoles = module.legacyRoles ?? [];

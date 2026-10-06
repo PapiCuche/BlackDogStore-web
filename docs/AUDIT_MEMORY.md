@@ -277,6 +277,26 @@ Autoridad: `frontend/app/api/[...path]/route.ts` (rechaza con 400 segmentos `.`,
 Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
 Estado: VERIFICADO @ `4a9dd5c`.
 
+**INT-SECRET-01** — Un secreto de integración se escribe y no vuelve.
+Autoridad: `backend/store/integrations/secret_store.py` (Fernet, clave raíz `APP_CONFIG_ENCRYPTION_KEY`, fuera de la base), `service.py` (`_describe_row`: sólo `configured`, cuándo y quién; nada del secreto queda en claro; `_audit`: nombres de campos, nunca valores). `Resolved` no imprime sus secretos.
+Tests: `test_integrations_core` (SecretStoreTest, WriteOnlyApiTest, AuditTest), y en cada `test_integrations_<proveedor>` «no secret comes back»; `frontend/__tests__/integrations-console.test.tsx`; E2E `integrations-console`.
+Estado: VERIFICADO en la rama `feat/integrations-console`.
+
+**INT-MASTER-01** — La consola de integraciones es sólo del MASTER.
+Autoridad: `backend/store/integration_views.py` (`IsAuthenticated` + `IsPlatformAdmin` en las cuatro vistas); `frontend/app/admin/lib/internal-modules.ts` (`platformAdminOnly`, comprobado antes que capacidades y rol antiguo).
+Tests: `test_integrations_core.MasterOnlyTest` (administrador con todas las capacidades, técnico, `is_staff`, cliente, anónimo × todas las rutas); `internal-modules-access.test.ts`; `integrations-page.test.tsx`; E2E.
+Estado: VERIFICADO.
+
+**INT-OFF-01** — Apagado es apagado: una integración desactivada en la consola, o guardada y que el servidor no puede leer, no recurre al entorno.
+Autoridad: `service.resolve` / `resolve_panel`; `integrations/mail.py::_legacy_backend`; `integrations/payments.py::active_code`; `messaging/__init__.py::_console`; `fiscal_config._console_row`.
+Tests: «does not fall back» y «cannot read» en cada `test_integrations_<proveedor>`.
+Estado: VERIFICADO.
+
+**INT-ACTIVATE-01** — Sólo se activa lo que pasó la prueba, y esa versión.
+Autoridad: `service.activate` (borrador bloqueado, `version` exacta, `validated`); `service.test` cambia la versión y sólo escribe su resultado si la fila sigue en la versión que leyó (409 si no); guardar borra `validated`.
+Tests: `test_integrations_core` (LifecycleTest, ConcurrencyTest); ensayo, paso 11c.
+Estado: VERIFICADO.
+
 ---
 
 ## 4. Mapa de dominios
@@ -533,6 +553,15 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
+| PAY-TENANT-SCOPE | PAGOS | la pasarela es de la instalación: checkout, rutas de notificación y frontend asumen un comercio | Media | decisión de producto |
+| FISCAL-TENANT-SCOPE | FISCAL | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa | Media | certificado y credenciales reales |
+| PAY-SWITCH-PENDING | PAGOS | MITIGADO: apagar, revocar, cambiar de producto o de claves con cobros abiertos en la última hora exige escribir `INTERRUMPIR`; el cobro abierto sigue quedándose sin notificación | Media | PAY-RECONCILE |
+| PAY-ROLLBACK | PAGOS | sustituir claves no conserva las anteriores | Baja | — |
+| IZIPAY-MODE-DECLARED | PAGOS | en «SDK web / Checkout» el entorno lo declara quien configura; `token_url` admite cualquier https | Baja | claves reales |
+| SUNAT-SOL-CHECK | FISCAL | la prueba de la consola no comprueba la clave SOL (sólo al emitir) | Baja | — |
+| ENV-FALLBACK-RETIRE | INFRA | las variables de entorno de las cinco integraciones siguen como respaldo; plan de retirada en `docs/integraciones-y-secretos.md` §6 | Baja | instalación real en la consola |
+| INTEGRATION-READ-COST | INFRA | cada uso lee y descifra la configuración activa, sin caché (DEC-INT-06) | Baja | medir con tráfico |
+| MAIL-TENANT-SCOPE | CORREO | un solo correo saliente para todas las empresas | Baja | decisión de producto |
 | THROTTLE-CACHE-01 | INFRA | CONTROLADO: producción corre un proceso de gunicorn y los límites son exactos; subir procesos exige antes una caché compartida (`docs/despliegue-produccion.md`) | Media | infraestructura |
 | LOGIN-CSRF-01 | AUTH | el inicio de sesión no rechaza por origen (401 con credenciales erróneas desde un origen ajeno); las operaciones con sesión sí | Baja | — |
 | FISCAL-PDF-01 | FISCAL | PDF sin línea de descuentos globales | Baja | — |
@@ -586,6 +615,9 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 - **SERVICE-TRACKING**: rama `feat/service-tracking-equipment`. Identidad de equipo, seguimiento por enlace, decisiones de cotización y ticket, avisos reales y WhatsApp, equipos con serie, categorías de portada, carrusel y Google. Migraciones `0102`–`0109`. Backend 5172; Jest 765; Playwright 183/183. Decisiones DEC-DEVICE-01 … DEC-GOOGLE-01. Revisión independiente: 2 P2 y 5 P3, corregidos (`fd99611`).
 - **PAYMENTS-EQUIPMENT-DOCUMENTS**: rama `feat/payments-equipment-documents`. Segundo producto de Izipay («Mi Cuenta Web») detrás de `PAYMENT_PROVIDER`; «Registrar equipo» y carga masiva «Equipos serializados.xlsx»; plantilla de productos con ayuda; trazado común de documentos con serie e IMEI por línea. Migración `0110`. Backend 5255 pruebas, 0 fallos, 5 omitidas; Jest 787/787; Playwright 184/184, 0 omitidas. Decisiones DEC-PAY-02, DEC-UNIT-IMPORT-01, DEC-DOC-01. Revisión independiente: 1 P2 y 5 P3, corregidos (`2d76298`).
 - **PRODUCTION-READINESS-01**: rama `chore/production-readiness-01` desde `78ad79c`. Ensayo sobre el código actual (`ENSAYO: OK`, 107 + 49); tope de tamaño por ruta (DEC-LIMIT-01), registros sin tokens (DEC-LOG-01), cuerpos lentos, copias enteras, `healthcheck.sh` + `ops_status`, `crontab.example`, DOC-TIMEZONE, «Desvincular cuenta». Backend 5332 pruebas, 0 fallos, 5 omitidas; Jest 795/795; Playwright 184/184, 0 omitidas. Sin migraciones. READY WITH CONDITIONS.
+
+- **EXTERNAL-PRODUCTION-CONFIG-01**: PR #89, `master` `5da4e99`. `preflight.py`, correo por SMTP en el ensayo, restauración en servidor nuevo. NOT READY por datos del propietario.
+- **INTEGRATIONS-CONSOLE-01**: rama `feat/integrations-console` desde `5da4e99`. Panel › Configuración › Integraciones (sólo MASTER): almacén de secretos, registro de proveedores, API `/api/admin/integrations/`, y correo, Izipay, WhatsApp, Google y SUNAT leyendo su configuración en cada uso (consola → entorno). `ops_status` con integraciones; ensayo con la consola (paso 11c). Decisiones DEC-INT-01…07; invariantes INT-SECRET-01, INT-MASTER-01, INT-OFF-01, INT-ACTIVATE-01. Migración `0111`. Operación: `docs/integraciones-y-secretos.md`.
 
 ---
 

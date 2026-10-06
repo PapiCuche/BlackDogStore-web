@@ -91,6 +91,21 @@ class IzipayError(Exception):
     """Talking to Izipay failed. Never carries a credential or a raw payload."""
 
 
+class IzipayUnreachable(IzipayError):
+    """
+    The gateway did not answer, or answered that it is the one that is broken.
+
+    Told apart from a refusal by TYPE: whoever validates a set of keys has to say
+    "try again" for this one and "these keys are wrong" for the other, and the
+    sentence a person reads is not something to decide that on.
+    """
+
+
+def _is_refusal(exc) -> bool:
+    """An HTTP 4xx is the gateway answering no. Everything else is no answer."""
+    return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
+
+
 @dataclass(frozen=True)
 class IzipayCredentials:
     """
@@ -112,10 +127,47 @@ class IzipayCredentials:
     public_key: str
     token_url: str
     currency: str
+    #: Where the gateway is told to notify. None = «whoever built this value did
+    #: not say»: the installation's setting applies. '' = «none»: the address in
+    #: the merchant panel applies.
+    ipn_url: str = None
 
     @property
     def sdk_url(self) -> str:
         return SDK_URLS[self.environment]
+
+
+#: Console field → the name of the legacy setting it replaces. The refusals below
+#: name the setting, which is what an operator reading a log can act on.
+_CONSOLE_FIELDS = {
+    'environment': 'IZIPAY_ENV', 'merchant_code': 'IZIPAY_MERCHANT_CODE', 'api_key': 'IZIPAY_API_KEY',
+    'hash_key': 'IZIPAY_HASH_KEY', 'public_key': 'IZIPAY_PUBLIC_KEY', 'token_url': 'IZIPAY_TOKEN_URL',
+    'currency': 'IZIPAY_CURRENCY', 'ipn_url': 'IZIPAY_IPN_URL',
+}
+CONSOLE_PROVIDER = 'izipay_checkout'
+
+
+def _configured_values() -> dict:
+    """
+    The account this installation charges with, keyed by setting name.
+
+    THE CONSOLE FIRST: what a platform master activated in Configuración ›
+    Integraciones. The `IZIPAY_*` settings are the fallback of an installation
+    that has not moved there. Read on every call, so activating a configuration
+    takes effect on the next payment, with no restart.
+    """
+    from ..integrations import secret_store, service
+
+    try:
+        config = service.resolve_panel(CONSOLE_PROVIDER)
+    except secret_store.SecretStoreError as exc:
+        raise IzipayError(str(exc)) from None
+    if config is not None:
+        return {name: config.get(field, '') for field, name in _CONSOLE_FIELDS.items()}
+    if service.has_panel_row(CONSOLE_PROVIDER):
+        # Switched off in the console. The environment is not a way round that.
+        raise IzipayError('Esta pasarela está desactivada en Configuración › Integraciones.')
+    return {name: getattr(settings, name, '') for name in _CONSOLE_FIELDS.values()}
 
 
 def load_credentials() -> IzipayCredentials:
@@ -126,22 +178,23 @@ def load_credentials() -> IzipayCredentials:
     would fail later, in front of a buyer, with a provider error nobody can act
     on.
     """
-    environment = (settings.IZIPAY_ENV or '').strip().lower()
+    return credentials_from(_configured_values())
+
+
+def credentials_from(values: dict) -> IzipayCredentials:
+    """The same rules for an account from the console and for one from the environment."""
+    environment = (values.get('IZIPAY_ENV') or '').strip().lower()
     if environment not in ENVIRONMENTS:
         raise IzipayError(
             f"IZIPAY_ENV debe ser uno de {sorted(ENVIRONMENTS)}; se recibió "
             f"{environment!r}."
         )
 
-    token_url = (settings.IZIPAY_TOKEN_URL or '').strip()
+    token_url = (values.get('IZIPAY_TOKEN_URL') or '').strip()
     missing = [
-        name for name, value in (
-            ('IZIPAY_MERCHANT_CODE', settings.IZIPAY_MERCHANT_CODE),
-            ('IZIPAY_API_KEY', settings.IZIPAY_API_KEY),
-            ('IZIPAY_HASH_KEY', settings.IZIPAY_HASH_KEY),
-            ('IZIPAY_PUBLIC_KEY', settings.IZIPAY_PUBLIC_KEY),
-            ('IZIPAY_TOKEN_URL', token_url),
-        ) if not (value or '').strip()
+        name for name in (
+            'IZIPAY_MERCHANT_CODE', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_TOKEN_URL',
+        ) if not (values.get(name) or '').strip()
     ]
     if missing:
         raise IzipayError(
@@ -162,12 +215,13 @@ def load_credentials() -> IzipayCredentials:
 
     return IzipayCredentials(
         environment=environment,
-        merchant_code=settings.IZIPAY_MERCHANT_CODE.strip(),
-        api_key=settings.IZIPAY_API_KEY.strip(),
-        hash_key=settings.IZIPAY_HASH_KEY.strip(),
-        public_key=settings.IZIPAY_PUBLIC_KEY.strip(),
+        merchant_code=values['IZIPAY_MERCHANT_CODE'].strip(),
+        api_key=values['IZIPAY_API_KEY'].strip(),
+        hash_key=values['IZIPAY_HASH_KEY'].strip(),
+        public_key=values['IZIPAY_PUBLIC_KEY'].strip(),
         token_url=token_url,
-        currency=(settings.IZIPAY_CURRENCY or '').strip().upper(),
+        currency=(values.get('IZIPAY_CURRENCY') or 'PEN').strip().upper(),
+        ipn_url=(values.get('IZIPAY_IPN_URL') or '').strip(),
     )
 
 
@@ -391,12 +445,15 @@ def request_session_token(
         # Deliberately not `str(exc)` into the caller's message: a urllib error
         # can quote the request, and the request carries the API key.
         logger.error('Izipay: fallo de red al pedir el token de sesión (%s)', type(exc).__name__)
-        raise IzipayError('No se pudo contactar a la pasarela de pago.')
+        kind = IzipayError if _is_refusal(exc) else IzipayUnreachable
+        raise kind('No se pudo contactar a la pasarela de pago.')
 
     try:
         parsed = json.loads(raw)
     except ValueError:
-        raise IzipayError('Respuesta inválida de la pasarela de pago.')
+        # An HTML error page from whatever stands in front of the gateway.
+        logger.error('Izipay: la respuesta al pedir el token de sesión no es JSON')
+        raise IzipayUnreachable('Respuesta inválida de la pasarela de pago.')
 
     token = _extract_token(parsed)
     if not token:

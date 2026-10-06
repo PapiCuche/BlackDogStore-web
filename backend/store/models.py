@@ -8897,3 +8897,68 @@ class ExternalIdentity(models.Model):
     def __str__(self):
         return f'{self.provider}:{self.user_id}'
 
+
+
+class IntegrationConfig(models.Model):
+    """
+    INTEGRATIONS-CONSOLE — one provider's configuration, as the console stores it.
+
+    Two rows per provider (and per company, for a company-scoped one):
+
+        active   what the running system resolves and uses;
+        draft    what a platform master is preparing and has not activated.
+
+    A draft never replaces the active row by being saved. It has to be tested and
+    then activated, so that a mistyped credential cannot take a working
+    integration down.
+
+    WHAT IS NOT HERE: a secret in the clear. `sealed_secrets` is the text the
+    secret store produced for THIS row; `secret_meta` keeps what the console may
+    show about each secret — that it exists, its last four characters, when and
+    who — and nothing that helps to rebuild it. The key that opens the sealed
+    text is a value of the deployment, never a row of this database.
+
+    `company` NULL means the platform itself.
+    """
+
+    SLOT_ACTIVE = 'active'
+    SLOT_DRAFT = 'draft'
+    SLOT_CHOICES = [(SLOT_ACTIVE, 'Activa'), (SLOT_DRAFT, 'Borrador')]
+
+    provider = models.CharField(max_length=40, db_index=True)
+    company = models.ForeignKey(
+        Company, null=True, blank=True, on_delete=models.PROTECT, related_name='integration_configs',
+    )
+    slot = models.CharField(max_length=8, choices=SLOT_CHOICES)
+    #: Only meaningful on the active row: a disabled integration resolves to nothing.
+    enabled = models.BooleanField(default=False)
+    public = models.JSONField(default=dict, blank=True)
+    sealed_secrets = models.TextField(blank=True)
+    secret_meta = models.JSONField(default=dict, blank=True)
+    #: The stored values passed their test and have not changed since.
+    validated = models.BooleanField(default=False)
+    last_tested_at = models.DateTimeField(null=True, blank=True)
+    last_test_status = models.CharField(max_length=40, blank=True)
+    last_test_message = models.CharField(max_length=300, blank=True)
+    #: Optimistic concurrency: every write names the version it read.
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['provider', 'company', 'slot'], condition=models.Q(company__isnull=False),
+                name='unique_integration_config_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['provider', 'slot'], condition=models.Q(company__isnull=True),
+                name='unique_integration_config_platform',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.provider}:{self.company_id or "platform"}:{self.slot}'

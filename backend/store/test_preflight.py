@@ -12,6 +12,7 @@ and the file it reads is the one place where every production secret lives.
 It checks configuration. It does not replace the gateway's TEST payment or the
 rehearsal, and it says so.
 """
+import base64
 import os
 import re
 import stat
@@ -37,11 +38,14 @@ IZIPAY_API_KEY = 'api-key-NoEsReal-0123456789'
 IZIPAY_HASH_KEY = 'hash-key-NoEsReal-0123456789'
 MCW_PASSWORD = 'testpassword_NoEsRealNoEsRealNoEsReal'
 MCW_HMAC = 'hmac-NoEsReal-0123456789'
+#: The shape of a real root key (32 random bytes, URL-safe base64) and not one.
+ROOT_KEY = base64.urlsafe_b64encode(b'NoEsRealNoEsRealNoEsRealNoEsReal').decode()
 
 BASE = {
     'SITE_DOMAIN': 'tienda.example.pe',
     'SECRET_KEY': SECRET_KEY,
     'POSTGRES_PASSWORD': DB_PASSWORD,
+    'APP_CONFIG_ENCRYPTION_KEY': ROOT_KEY,
     'EMAIL_BACKEND': 'django.core.mail.backends.smtp.EmailBackend',
     'EMAIL_HOST': 'smtp.example.pe',
     'EMAIL_PORT': '587',
@@ -71,7 +75,7 @@ MICUENTAWEB = {
     'MICUENTAWEB_HMAC_KEY': MCW_HMAC,
     'MICUENTAWEB_IPN_URL': 'https://tienda.example.pe/api/payments/micuentaweb/notification/',
 }
-SECRETS = (SECRET_KEY, DB_PASSWORD, MAIL_PASSWORD, IZIPAY_API_KEY, IZIPAY_HASH_KEY, MCW_PASSWORD, MCW_HMAC)
+SECRETS = (SECRET_KEY, DB_PASSWORD, MAIL_PASSWORD, IZIPAY_API_KEY, IZIPAY_HASH_KEY, MCW_PASSWORD, MCW_HMAC, ROOT_KEY)
 
 
 @skipUnless(EXAMPLE.exists(), 'deploy/ is not part of this checkout')
@@ -108,6 +112,74 @@ class PreflightTest(SimpleTestCase):
         for item in ('Google', 'WhatsApp', 'SUNAT'):
             self.assertIn(item, optional)
         self.assertIn('CONFIGURACIÓN: INCOMPLETA', result.stdout)
+
+    # -- INTEGRATIONS-CONSOLE: the root key, and what may be typed in the console ----
+
+    MAIL = ('EMAIL_BACKEND', 'EMAIL_HOST', 'EMAIL_PORT', 'EMAIL_USE_TLS', 'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD',
+            'DEFAULT_FROM_EMAIL')
+
+    def without(self, values, *names):
+        return {k: v for k, v in values.items() if k not in names}
+
+    def test_the_root_key_of_the_secret_store_is_owed_and_generated_on_the_server(self):
+        result = self.run_preflight(self.without({**BASE, **IZIPAY}, 'APP_CONFIG_ENCRYPTION_KEY'))
+        self.assertEqual(result.returncode, 1)
+        owed = '\n'.join(self.lines(result, 'BLOCKED/OWNER-DATA'))
+        self.assertIn('APP_CONFIG_ENCRYPTION_KEY', owed)
+        self.assertIn('se genera en el servidor', owed)
+        shipped = self.run_preflight({}, text=EXAMPLE.read_text(encoding='utf-8'))
+        self.assertIn('APP_CONFIG_ENCRYPTION_KEY', '\n'.join(self.lines(shipped, 'BLOCKED/OWNER-DATA')))
+
+    def test_a_root_key_that_is_not_one_is_refused_and_not_repeated(self):
+        for wrong in ('PEGADO-POR-ERROR-NoEsReal', SECRET_KEY, ROOT_KEY[:-4], ROOT_KEY + ',' + ROOT_KEY):
+            with self.subTest(len(wrong)):
+                result = self.run_preflight({**BASE, **IZIPAY, 'APP_CONFIG_ENCRYPTION_KEY': wrong})
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('APP_CONFIG_ENCRYPTION_KEY', '\n'.join(self.lines(result, 'ATENCIÓN')))
+                self.assertNotIn('PEGADO-POR-ERROR', result.stdout + result.stderr)
+
+    def test_the_previous_root_keys_have_to_be_keys_too(self):
+        good = self.run_preflight({**BASE, **IZIPAY, 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS': f'{ROOT_KEY}, {ROOT_KEY}'})
+        self.assertEqual(good.returncode, 0, good.stdout)
+        bad = self.run_preflight({**BASE, **IZIPAY, 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS': 'PEGADO-POR-ERROR-NoEsReal'})
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn('APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS', '\n'.join(self.lines(bad, 'ATENCIÓN')))
+        self.assertNotIn('PEGADO-POR-ERROR', bad.stdout)
+
+    def test_mail_and_payments_may_be_left_for_the_console_and_are_still_owed(self):
+        result = self.run_preflight(self.without(BASE, *self.MAIL))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        owed = self.lines(result, 'BLOCKED/OWNER-DATA')
+        self.assertEqual(len(owed), 2, owed)
+        for line, word in zip(sorted(owed), ('Izipay', 'correo')):
+            self.assertIn(word, line)
+            self.assertIn('Configuración › Integraciones', line)
+        self.assertIn('CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR', result.stdout)
+        self.assertIn('antes de abrir', result.stdout)
+        self.assertNotIn('CONFIGURACIÓN: COMPLETA', result.stdout)
+
+    def test_mail_named_in_the_file_and_left_half_written_still_stops_everything(self):
+        """`EMAIL_BACKEND=smtp` without its host is a backend that does not start."""
+        result = self.run_preflight(self.without({**BASE, **IZIPAY}, 'EMAIL_HOST', 'EMAIL_HOST_PASSWORD'))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('CONFIGURACIÓN: INCOMPLETA', result.stdout)
+        half = self.run_preflight(self.without({**BASE, **IZIPAY}, 'EMAIL_BACKEND', 'EMAIL_HOST_PASSWORD'))
+        self.assertEqual(half.returncode, 1)
+
+    def test_the_example_as_shipped_leaves_mail_and_payments_to_the_console(self):
+        """Copied and filled in with only what the server needs to start, it starts."""
+        text = EXAMPLE.read_text(encoding='utf-8')
+        self.assertNotRegex(text, r'(?m)^EMAIL_BACKEND=')
+        self.assertNotRegex(text, r'(?m)^PAYMENT_PROVIDER=')
+        filled = (text.replace('SITE_DOMAIN=', 'SITE_DOMAIN=tienda.example.pe', 1)
+                  .replace('\nSECRET_KEY=', f'\nSECRET_KEY={SECRET_KEY}', 1)
+                  .replace('\nPOSTGRES_PASSWORD=', f'\nPOSTGRES_PASSWORD={DB_PASSWORD}', 1)
+                  .replace('\nAPP_CONFIG_ENCRYPTION_KEY=', f'\nAPP_CONFIG_ENCRYPTION_KEY={ROOT_KEY}', 1)
+                  .replace('\nORDER_NOTIFICATION_EMAIL=', '\nORDER_NOTIFICATION_EMAIL=pedidos@example.pe', 1))
+        result = self.run_preflight({}, text=filled)
+        self.assertEqual(self.lines(result, 'ATENCIÓN'), [], result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR', result.stdout)
 
     def test_it_names_the_variables_to_fill_in(self):
         result = self.run_preflight(BASE)
@@ -183,8 +255,14 @@ class PreflightTest(SimpleTestCase):
     def test_a_file_other_users_can_read_is_refused(self):
         self.attention({**BASE, **IZIPAY}, 'chmod 600', mode=0o644)
 
-    def test_whatsapp_switched_on_without_credentials_is_refused(self):
-        self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api'}, 'WhatsApp')
+    def test_whatsapp_switched_on_leaves_each_company_to_the_console(self):
+        """INTEGRATIONS-CONSOLE: a company's credentials are typed in the console, so none here is not a fault."""
+        result = self.run_preflight({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api'})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        optional = next(line for line in self.lines(result, 'BLOCKED/OPTIONAL') if 'WhatsApp' in line)
+        self.assertIn('Configuración › Integraciones', optional)
+        # Half of the old scheme is still a mistake: one variable of the three.
+        self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api', 'WHATSAPP_TOKEN_TIENDA': 'x' * 40}, 'WhatsApp')
         configured = {**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api', 'WHATSAPP_TOKEN_TIENDA': 'x' * 40,
                       'WHATSAPP_SECRET_TIENDA': 'y' * 32, 'WHATSAPP_VERIFY_TIENDA': 'z' * 24}
         result = self.run_preflight(configured)
@@ -279,7 +357,12 @@ class PreflightTest(SimpleTestCase):
     def test_whatsapp_is_on_unless_the_file_says_otherwise(self):
         """The application's default is the real provider: a missing line is not «off»."""
         without = {k: v for k, v in {**BASE, **IZIPAY}.items() if k != 'WHATSAPP_PROVIDER'}
-        self.attention(without, 'WHATSAPP_PROVIDER')
+        result = self.run_preflight(without)
+        self.assertEqual(self.lines(result, 'ATENCIÓN'), [])
+        self.assertIn('WhatsApp', '\n'.join(self.lines(result, 'BLOCKED/OPTIONAL')))
+        self.assertNotIn('apagado en este servidor', result.stdout)
+        off = self.run_preflight({**BASE, **IZIPAY})
+        self.assertIn('apagado en este servidor', '\n'.join(self.lines(off, 'BLOCKED/OPTIONAL')))
         self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': ''}, 'WHATSAPP_PROVIDER')
 
     def test_a_value_compose_would_rewrite_is_pointed_out(self):

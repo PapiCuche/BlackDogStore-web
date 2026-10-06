@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar EXTERNAL-PRODUCTION-CONFIG-01)
+master: ver `git log -1 origin/master` (este archivo se escribió al cerrar INTEGRATIONS-CONSOLE-01)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -12,35 +12,39 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-NOT READY, por datos externos y no por el código. No se recibió ningún dato del
-propietario: no hay servidor, dominio, SMTP, claves de Izipay ni destino de copia. El código
-está verde y ensayado (`ENSAYO: OK` con correo por SMTP y restauración en servidor nuevo).
-No hay nada publicado en Internet y no se tocó ningún DNS.
+NOT READY, por datos externos y no por el código. INTEGRATIONS-CONSOLE-01 cerrada: el
+correo, la pasarela, WhatsApp, Google y SUNAT se configuran, se prueban y se activan en
+Panel › Configuración › Integraciones (sólo MASTER), sin tocar el servidor ni reiniciar.
+Sigue sin haber servidor, dominio, SMTP ni claves de Izipay. No hay nada publicado.
 
 current_priority:
-1. El propietario entrega los datos de blocked_external como dice
-   `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
-   del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
-2. Con servidor y `deploy/.env.production`: `docs/despliegue-produccion.md` §4 en orden,
-   `preflight.py --smtp-send-to <dirección>`, y la prueba de Izipay en TEST
-   (`docs/pagos-equipos-documentos.md` §1.4).
-3. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar.
-4. Recorrer `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
+1. El propietario contrata el servidor y el dominio. En el servidor:
+   `cp deploy/.env.production.example deploy/.env.production`, rellenar lo de arranque
+   (dominio, `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_CONFIG_ENCRYPTION_KEY`, dirección de
+   los pedidos) y `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
+2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
+   Configuración › Integraciones: correo (probar con mensaje de prueba, activar) y la
+   pasarela (elegir el producto de Izipay, claves de TEST, probar, activar).
+3. Un pago completo en TEST con la tienda publicada. Eso —y sólo eso— cierra
+   IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT.
+4. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
+   `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
 5. Primera fase tras publicar: SERIAL-PICK.
 
 validated:
-- Backend: 5375 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL; y CI).
-- Frontend: Jest 795/795, typecheck, lint 0 errores / 22 avisos, build (sin cambios en la rama).
-- Playwright completo: 184/184, 0 omitidas (sobre `master` `7829685` y sobre la rama).
-- Ensayo de producción: `ENSAYO: OK` (131 + 49) sobre `4c291a6`; los commits posteriores
-  sólo tocan documentación. Sobre `master` `7829685`: `ENSAYO: OK` (107 + 49).
-- Revisión independiente de la rama: 2 P1, 5 P2 y 7 P3; corregidos los P1 y los P2.
+- Backend: 5581 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL), sobre `2a5632d`.
+- Frontend: Jest 830/830, typecheck, lint 0 errores / 22 avisos, build.
+- Playwright completo: 187/187, 0 omitidas, sobre `2a5632d`.
+- Ensayo de producción: `ENSAYO: OK` (138 + 49) sobre `2a5632d`, con la consola de
+  integraciones recorrida en la pila de producción; los commits posteriores sólo tocan
+  documentación.
+- Revisión independiente de la rama: 0 P1, 4 P2 y 7 P3; corregidos los P2 y seis P3.
 
 blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
-  IZIPAY-TOKEN-CONTRACT, las dos abiertas).
-- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado.
+  IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
+- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
 - Servidor: proveedor, IP, usuario SSH y acceso.
 - Dominio y quién gestiona el DNS.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
@@ -60,6 +64,10 @@ otros pendientes del propietario:
 - Confirmar que el código de comercio `4001061` de las pruebas no es el suyo (es público, no un secreto).
 
 known_debt (detalle en `docs/AUDIT_MEMORY.md`):
+- De la consola (`docs/integraciones-y-secretos.md` §10): PAY-TENANT-SCOPE y
+  FISCAL-TENANT-SCOPE (pasarela y SUNAT son de la instalación), PAY-SWITCH-PENDING
+  (cambiar de producto con cobros abiertos), SUNAT-SOL-CHECK, ENV-FALLBACK-RETIRE,
+  INTEGRATION-READ-COST, MAIL-TENANT-SCOPE.
 - SERIAL-PICK (lo primero tras publicar): la caja vende el equipo más antiguo; hay que
   entregar el que nombra la nota. SERIAL-TRANSFER, SERIAL-COUNT.
 - PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda
@@ -85,4 +93,5 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 next_exact_action:
 Propietario: decir cuál de los dos productos de Izipay tiene contratado y contratar el
 servidor. Con el servidor: `cp deploy/.env.production.example deploy/.env.production`,
-rellenarlo allí y ejecutar `python3 deploy/preflight.py`.
+rellenar lo de arranque allí, `python3 deploy/preflight.py`, arrancar, y configurar el
+correo y la pasarela en Panel › Configuración › Integraciones.

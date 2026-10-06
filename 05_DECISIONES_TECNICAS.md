@@ -186,6 +186,93 @@ ADR por dominio, que no se reescriben.
   su clave de idempotencia: la que falla se reintenta sin duplicar y las demás no
   dependen de ella.
 
+### DEC-INT-01 · Los secretos de las integraciones van cifrados, con una clave que no está en la base
+
+Fase INTEGRATIONS-CONSOLE-01. Operación: [docs/integraciones-y-secretos.md](docs/integraciones-y-secretos.md).
+
+- **Qué:** los campos secretos de cada integración se guardan juntos, cifrados con Fernet
+  (`cryptography`: AES-128-CBC + HMAC-SHA-256), en `IntegrationConfig.sealed_secrets`. La
+  clave raíz es `APP_CONFIG_ENCRYPTION_KEY`, del entorno del servidor.
+- **Por qué no una columna por secreto:** una columna legible acaba en un serializer, un
+  volcado o una bitácora. Aquí no hay ninguna que se pueda leer sin la clave, y la clave
+  no viaja con la base.
+- **Por qué Fernet y no algo propio:** es cifrado autenticado estándar de una biblioteca
+  que el proyecto ya usa para firmar los comprobantes. No se diseña criptografía.
+- **Atado a su sitio:** el texto cifrado lleva dentro integración, empresa y si es borrador
+  o activo. Una fila copiada a otra empresa no se abre.
+- **Escritura sin lectura:** ninguna API devuelve un secreto; devuelve `configured`, cuándo
+  y quién. No se guarda en claro nada de él: los cuatro últimos caracteres que se
+  guardaban al principio eran un tercio de una contraseña de doce (revisión).
+- **Rotación:** `APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS` + `reseal_integration_secrets`.
+- **Lo que se paga:** perder la clave raíz es perder las credenciales guardadas (se vuelven
+  a escribir). Es el precio de que una copia de la base no las contenga.
+
+### DEC-INT-02 · El dominio no nombra a ningún proveedor
+
+- **Registro de proveedores** (`store.integrations.registry`): cada uno declara id,
+  categoría, alcance, campos públicos y secretos, validación, modos, prueba, confirmación
+  de activación y respaldo de entorno. La API y la pantalla se construyen con eso.
+- **Adaptadores:** el checkout llega a la pasarela por `store.integrations.payments`
+  (un adaptador por producto); el correo, por un backend de Django
+  (`RuntimeEmailBackend`) que elige en cada envío; WhatsApp, por `store.messaging`.
+- **Por qué:** añadir un proveedor es una clase y su declaración, no un `if` nuevo en el
+  checkout. Hay una prueba que falla si el checkout vuelve a nombrar una pasarela.
+
+### DEC-INT-03 · Qué es de la instalación y qué es de cada empresa
+
+| Integración | Alcance | Por qué |
+|---|---|---|
+| Correo SMTP | instalación | un remitente de transporte para todas; la identidad visible de cada mensaje ya es de cada empresa |
+| Izipay | instalación | el checkout, las rutas de notificación y el frontend asumen un comercio; por empresa es otra fase (PAY-TENANT-SCOPE) |
+| WhatsApp | **empresa** | cada empresa tiene su número; ya era así con las referencias a variables |
+| Google | instalación | un ID de cliente por dominio |
+| SUNAT | instalación | el código sólo opera BETA con credenciales comunes; `fiscal_config` ya recibe la empresa (FISCAL-TENANT-SCOPE) |
+
+La consola declara el alcance que el código tiene, no el que sería deseable. No se
+inventa un «Producción» de SUNAT ni un Izipay por empresa.
+
+### DEC-INT-04 · Borrador, prueba, activación; y apagado es apagado
+
+- Dos filas por integración: `active` (lo que corre) y `draft`. Guardar nunca toca lo que
+  corre.
+- Sólo se activa un borrador que pasó la prueba, y esa versión exacta: la prueba cambia la
+  versión y la activación la exige (concurrencia optimista; 409 si no coincide). El
+  resultado de una prueba sólo se escribe si la fila sigue siendo la que se leyó: una
+  prueba tarda segundos y lo guardado entretanto no es lo que se probó.
+- **«Coherente, sin verificar» no es «Correcto».** Las claves de producción de la pasarela
+  no se pueden probar sin tocar dinero real: pasan, y se dice que nadie las verificó.
+- **Parar lo que está en uso con algo en curso se escribe** (`INTERRUMPIR`): el proveedor
+  declara qué quedaría cortado (hoy, cobros abiertos en la última hora).
+- Orden de resolución en cada uso: consola activa → si la consola la tiene apagada, nada →
+  si la consola no tiene nada, entorno.
+- **Por qué apagado no recurre al entorno:** un interruptor que deja pasar por otra puerta
+  no es un interruptor. Lo mismo vale para lo guardado que no se puede leer.
+- Lo que cuesta dinero o no tiene vuelta atrás pide escribir una palabra (`PRODUCCION`,
+  `EMITIR`, `REVOCAR`). No se pide la contraseña otra vez: no hay una reautenticación
+  reutilizable y no se inventa una débil.
+
+### DEC-INT-05 · Sólo el MASTER, y no por capacidades
+
+`IsPlatformAdmin` en cada ruta y `platformAdminOnly` en el registro de módulos. No se creó
+una capacidad `integrations.manage`: una capacidad se puede conceder desde un rol de
+empresa, y estas credenciales no son de ninguna empresa (salvo WhatsApp, que el MASTER
+administra por ellas).
+
+### DEC-INT-06 · Sin caché: cada uso pregunta
+
+La configuración activa se lee —y se descifra— en cada envío, cada cobro y cada inicio de
+sesión. Así un cambio vale al instante y en todos los procesos, sin invalidar nada. Es una
+consulta por clave única; si el tráfico lo pidiera, se mide antes de añadir una caché
+(INTEGRATION-READ-COST). Dentro de una misma petición WhatsApp lo lee una vez.
+
+### DEC-INT-07 · El correo ya no impide arrancar
+
+Antes el backend no arrancaba en producción sin `EMAIL_BACKEND`. Con la consola el correo
+se configura después de arrancar, así que arrancar sin él es legítimo: los envíos fallan
+con un error registrado, `ops_status` da la alarma y nunca se cae al backend de consola
+(MAIL-CONSOLE-DEFAULT sigue en pie). `EMAIL_BACKEND=smtp` sin `EMAIL_HOST` sigue sin
+arrancar: es una contradicción del archivo, no una ausencia.
+
 ### DEC-PAY-01 · Izipay se prueba contra un Izipay falso, y lo que el falso no puede probar se dice
 
 - La petición del token no la ejercitaba ninguna prueba: se sustituía entera.

@@ -92,7 +92,7 @@ def readiness(config) -> tuple[bool, list[str]]:
     """Whether this company could send right now, and what is missing if not."""
     if config is None:
         return False, ['phone_number_id', *messaging.CREDENTIALS]
-    missing = [] if config.whatsapp_phone_number_id else ['phone_number_id']
+    missing = [] if messaging.phone_number_id(config) else ['phone_number_id']
     missing += [name for name, present in messaging.credentials_state(config).items() if not present]
     return not missing, missing
 
@@ -110,7 +110,7 @@ def settings_payload(company) -> dict:
         'provider': config.whatsapp_provider if config else CompanyMessagingSettings.PROVIDER_CLOUD_API,
         'ready': ready,
         'missing': missing,
-        'phone_number_configured': bool(config and config.whatsapp_phone_number_id),
+        'phone_number_configured': bool(config and messaging.phone_number_id(config)),
         'credentials': (
             messaging.credentials_state(config) if config
             else {name: False for name in messaging.CREDENTIALS}

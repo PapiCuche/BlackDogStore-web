@@ -22,6 +22,7 @@ from django.db.models import Q
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
+from store.integrations import health as integration_health
 from store.models import NotificationDelivery, PaymentTransaction
 
 #: How far back a failure is still news.
@@ -47,7 +48,7 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 class Command(BaseCommand):
-    help = 'Lo que necesita atención: migraciones, pagos y avisos de WhatsApp. Sólo lee.'
+    help = 'Lo que necesita atención: migraciones, pagos, avisos de WhatsApp e integraciones. Sólo lee.'
 
     def handle(self, *args, **options):
         now = timezone.now()
@@ -129,6 +130,11 @@ class Command(BaseCommand):
                 '¿Se está ejecutando `send_pending_notifications` cada minuto?'
             )
         report('WhatsApp', whatsapp, 'sin mensajes fallidos ni atrasados', whatsapp_notes)
+
+        # What a master configured in Configuración › Integraciones, and the two
+        # integrations a shop cannot work without. Labels and states, never values.
+        findings, summary = integration_health.report()
+        report('integraciones', findings, summary, [summary] if findings else [])
 
         if problems:
             raise SystemExit(1)

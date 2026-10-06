@@ -493,18 +493,37 @@ def _require_public_url(name, value):
 if not DEBUG:
     _require_public_url('CHECKOUT_RETURN_URL', CHECKOUT_RETURN_URL)
 
+# INTEGRATIONS-CONSOLE — la clave raíz del almacén de secretos.
+#
+# Las credenciales que un administrador de plataforma escribe en el panel
+# (Configuración › Integraciones) se guardan cifradas en la base de datos. Ésta
+# es la clave que las cifra: pertenece al despliegue, como SECRET_KEY, y NO vive
+# en la base ni se administra desde el panel. Sin ella el panel no puede guardar
+# ni leer ninguna credencial; con otra distinta, tampoco las ya guardadas.
+#
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# Para cambiarla: la nueva aquí, la anterior en APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS
+# (varias, separadas por comas), y `python manage.py reseal_integration_secrets`.
+# En desarrollo (DEBUG) puede faltar: se deriva una de SECRET_KEY.
+APP_CONFIG_ENCRYPTION_KEY = env('APP_CONFIG_ENCRYPTION_KEY', default='')
+APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS = env('APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS', default='')
+
 # Email
 #
-# The console backend prints every message to stdout — verification, reset and
-# invitation links included. It is the development default and nothing else: in
-# production how mail leaves has to be CHOSEN, so that a missing line cannot turn
-# the container log into a list of working links (MAIL-CONSOLE-DEFAULT).
-EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend' if DEBUG else '')
-if not EMAIL_BACKEND:
-    raise ImproperlyConfigured(
-        "EMAIL_BACKEND must be set in production "
-        "(e.g. EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend)."
-    )
+# EL CORREO SE CONFIGURA EN EL PANEL (Configuración › Integraciones › Correo SMTP).
+# Django entrega cada mensaje a `RuntimeEmailBackend`, que en CADA envío pregunta
+# qué configuración está activa: la del panel primero; si no hay, las `EMAIL_*` de
+# este archivo, que quedan como respaldo de una instalación anterior al panel.
+#
+# `EMAIL_BACKEND` (la variable) nombra ese respaldo. En desarrollo, por omisión, es
+# el de consola, que escribe cada mensaje —con sus enlaces de un solo uso— en la
+# salida. En producción NO hay valor por omisión: si no hay SMTP ni en el panel ni
+# aquí, el correo queda «sin configurar», los envíos fallan con un error que se
+# registra y `ops_status` lo dice. Nunca se cae a la consola en silencio
+# (MAIL-CONSOLE-DEFAULT).
+EMAIL_BACKEND_LEGACY = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend' if DEBUG else '')
+EMAIL_BACKEND = 'store.integrations.mail.RuntimeEmailBackend'
 # Transport-level sender. Platform configuration, not tenant configuration:
 # the SMTP credentials behind it belong to the operator, and a per-tenant
 # sender would need per-tenant SMTP — explicitly out of scope (no secrets in
@@ -580,7 +599,7 @@ PLATFORM_NAME = env('PLATFORM_NAME', default='')
 
 if (
     not DEBUG
-    and EMAIL_BACKEND == 'django.core.mail.backends.smtp.EmailBackend'
+    and EMAIL_BACKEND_LEGACY == 'django.core.mail.backends.smtp.EmailBackend'
     and not EMAIL_HOST
 ):
     raise ImproperlyConfigured(
