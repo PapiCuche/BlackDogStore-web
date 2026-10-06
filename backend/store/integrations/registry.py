@@ -183,6 +183,12 @@ class Provider:
         """`(public, secrets)` read from the legacy environment settings, or None."""
         return None
 
+    def on_activated(self, company, public: dict) -> None:
+        """
+        Inside the transaction that activates: rows of the domain that must exist
+        for this configuration to be usable. It fails, the activation fails.
+        """
+
     def after_change(self, company=None) -> None:
         """Called after activation, disabling, enabling or revocation."""
 

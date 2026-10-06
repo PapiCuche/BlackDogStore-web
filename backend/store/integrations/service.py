@@ -351,6 +351,7 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
     active.updated_by = actor
     active.save()
     draft.delete()
+    provider.on_activated(company, dict(active.public))
     _audit('integration_activated', provider, company, actor, request, mode=provider.mode(active.public, secrets))
     transaction.on_commit(lambda: provider.after_change(company))
     return active
