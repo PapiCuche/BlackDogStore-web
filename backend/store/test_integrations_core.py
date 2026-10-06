@@ -16,6 +16,7 @@ here depends on a real vendor:
 """
 import json
 import logging
+from unittest import mock
 
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
@@ -489,6 +490,37 @@ class AuditTest(_Base):
 
 
 class RegistryTest(_Base):
+    def test_a_provider_declares_what_its_test_may_be_given(self):
+        """The console draws the inputs of a test from the provider, and the API accepts those and no others."""
+        class _WithOption(_Probe):
+            id = 'probe_option'
+            test_fields = (Field('send_to', 'Enviar a', kind='email'),)
+            given = []
+
+            def test(self, config, **options):
+                type(self).given.append(options)
+                return TestOutcome(True, 'ok', 'Correcto.')
+
+        registry.register(_WithOption())
+        self.addCleanup(registry.unregister, 'probe_option')
+        self.save(provider='probe_option')
+
+        described = self.detail('probe_option').json()
+        self.assertEqual([f['name'] for f in described['test_fields']], ['send_to'])
+        self.assertEqual(self.detail().json()['test_fields'], [])
+
+        url = self.url('probe_option', 'test')
+        self.assertEqual(self.client.post(url, {'send_to': 'ana@example.pe', 'other': 'x'}, format='json').status_code, 200)
+        self.assertEqual(_WithOption.given[-1], {'send_to': 'ana@example.pe'})
+        refused = self.client.post(url, {'send_to': 'no es un correo'}, format='json')
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('send_to', refused.json()['errors'])
+        # A provider that declares none is given none, whatever is posted.
+        self.save()
+        with mock.patch.object(_Probe, 'test', return_value=TestOutcome(True, 'ok', 'Correcto.')) as plain:
+            self.client.post(self.url(action='test'), {'send_to': 'ana@example.pe'}, format='json')
+        self.assertEqual(plain.call_args.kwargs, {})
+
     def test_the_list_says_what_each_integration_is_and_how_it_stands(self):
         self.save()
         listed = {item['id']: item for item in self.client.get('/api/admin/integrations/').json()['results']}

@@ -447,4 +447,5 @@ def describe(provider, company=None, *, with_fields=True) -> dict:
     }
     if with_fields:
         data['fields'] = [f.describe() for f in provider.fields]
+        data['test_fields'] = [f.describe() for f in provider.test_fields]
     return data

@@ -74,6 +74,11 @@ class SmtpProvider(Provider):
         Field('timeout', 'Espera máxima (segundos)', required=True, kind='int', default=10, minimum=1, maximum=60),
     )
 
+    test_fields = (
+        Field('send_to', 'Enviar un correo de prueba a', kind='email',
+              help='Opcional. Vacío, sólo se comprueba la conexión y no se envía nada.'),
+    )
+
     def clean(self, public, secrets):
         errors = {}
         security, host, port = public.get('security'), (public.get('host') or '').lower(), public.get('port')

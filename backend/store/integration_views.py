@@ -127,12 +127,17 @@ class IntegrationActionView(_IntegrationView):
         provider, company = self.target(request, provider_id)
         data = request.data if isinstance(request.data, dict) else {}
         if action == 'test':
-            options = {}
-            if isinstance(data.get('send_to'), str) and data['send_to'].strip():
+            options, errors = {}, {}
+            for field in provider.test_fields:
+                raw = data.get(field.name)
+                if raw is None or raw == '':
+                    continue
                 try:
-                    options['send_to'] = registry.Field('send_to', 'Correo de prueba', kind='email').clean(data['send_to'])
+                    options[field.name] = field.clean(raw)
                 except ValueError as exc:
-                    raise ConfigError({'send_to': str(exc)}) from None
+                    errors[field.name] = str(exc)
+            if errors:
+                raise ConfigError(errors)
             target = data.get('target') if data.get('target') in ('active', 'draft') else None
             result = service.test(provider, company, actor=request.user, request=request, target=target, **options)
             return Response({**result, 'integration': service.describe(provider, company)})
