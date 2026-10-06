@@ -15,16 +15,20 @@ checkout would ask first — a session token, or a form token for S/ 1.80 in tes
 mode — and stops. Production keys are checked for coherence only and are never
 sent anywhere from here.
 """
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 from django.conf import settings
+from django.utils import timezone
 
 from ...payments import izipay, micuentaweb
 from .. import registry
 from ..registry import ConfigError, Field, Provider, TestOutcome
 
 PRODUCTION_WORD = 'PRODUCCION'
+#: How long a buyer may reasonably still be at the card form.
+IN_FLIGHT = timedelta(hours=1)
 
 
 class _PaymentProvider(Provider):
@@ -40,6 +44,20 @@ class _PaymentProvider(Provider):
             return None
         return PRODUCTION_WORD, (
             f'Vas a activar claves de PRODUCCIÓN: se cobrará dinero real. Escribe {PRODUCTION_WORD} para confirmarlo.')
+
+    def interruption_warning(self, company=None) -> str:
+        """Buyers who are at the card form right now, opened through this product."""
+        from ...models import PaymentTransaction
+
+        opened = PaymentTransaction.objects.filter(
+            provider=self.legacy_code, status=PaymentTransaction.Status.PENDING,
+            created_at__gte=timezone.now() - IN_FLIGHT,
+        ).count()
+        if not opened:
+            return ''
+        charges = '1 cobro abierto' if opened == 1 else f'{opened} cobros abiertos'
+        return (f'Hay {charges} con {self.label} en la última hora. Si el comprador termina de pagar después de '
+                'este cambio, la notificación de la pasarela ya no se aceptará y su pedido quedará sin marcar como pagado.')
 
     def _legacy_selected(self) -> bool:
         return (getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower() == self.legacy_code
@@ -80,8 +98,7 @@ class IzipayCheckoutProvider(_PaymentProvider):
         except izipay.IzipayError:
             return TestOutcome(False, 'incomplete', 'Las credenciales están incompletas o no son coherentes.')
         if credentials.environment != 'sandbox':
-            return TestOutcome(True, 'ok', 'Claves de PRODUCCIÓN coherentes. No se prueban contra Izipay desde '
-                                           'aquí: no se hace ningún cargo. Valídalas antes en TEST.')
+            return _unverified_production()
         from ... import checkout_services
 
         # What a checkout would send first, for an order that exists nowhere.
@@ -100,7 +117,9 @@ class IzipayCheckoutProvider(_PaymentProvider):
             return _gateway_refusal(isinstance(exc, izipay.IzipayUnreachable))
         if not token:
             return TestOutcome(False, 'invalid', 'Izipay no entregó un token de sesión con estas credenciales.')
-        return TestOutcome(True, 'ok', 'Conectado: el entorno TEST de Izipay entregó un token de sesión. No se hizo ningún cargo.')
+        return TestOutcome(True, 'ok', (
+            'Conectado: el entorno TEST de Izipay entregó un token de sesión con esta API key. No se hizo ningún cargo. '
+            'La clave hash no se puede comprobar así: la comprueba la notificación de un pago de prueba.'))
 
     def from_env(self, company=None):
         if not self._legacy_selected():
@@ -160,8 +179,7 @@ class MiCuentaWebProvider(_PaymentProvider):
         except micuentaweb.MiCuentaWebError:
             return TestOutcome(False, 'incomplete', 'Las credenciales están incompletas o no son coherentes.')
         if credentials.environment != 'test':
-            return TestOutcome(True, 'ok', 'Claves de PRODUCCIÓN coherentes. No se prueban contra la pasarela '
-                                           'desde aquí: no se hace ningún cargo. Valídalas antes en TEST.')
+            return _unverified_production()
         try:
             token = micuentaweb.create_payment(
                 credentials=credentials, order_id=micuentaweb.new_order_id(), amount=Decimal('1.80'),
@@ -181,6 +199,18 @@ class MiCuentaWebProvider(_PaymentProvider):
         by_field = {field: values[name] for field, name in micuentaweb._CONSOLE_FIELDS.items()}
         secrets = {'password': by_field.pop('password'), 'hmac_key': getattr(settings, 'MICUENTAWEB_HMAC_KEY', '') or ''}
         return by_field, secrets
+
+
+def _unverified_production() -> TestOutcome:
+    """
+    Production keys are never sent anywhere from a test: there is no call that
+    proves them without touching real money. So the result says exactly that,
+    and is not «Correcto».
+    """
+    return TestOutcome(True, 'unverified', (
+        'Claves de PRODUCCIÓN coherentes entre sí, pero no se han verificado: desde aquí no se envían a la '
+        'pasarela ni se hace ningún cargo. Valida antes las de TEST y, nada más activar éstas, haz un pago real '
+        'pequeño y comprueba que el pedido queda pagado.'))
 
 
 def _gateway_refusal(unreachable: bool) -> TestOutcome:

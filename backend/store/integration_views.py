@@ -47,6 +47,13 @@ class _IntegrationView(APIView):
             raise ApiNotFound('No encontrado.') from None
         return provider, company
 
+    @staticmethod
+    def body(request) -> dict:
+        """The JSON object of the request. Anything else — a list, a string — is refused, not guessed at."""
+        if not isinstance(request.data, dict):
+            raise _Refusal('El cuerpo de la petición tiene que ser un objeto JSON.')
+        return request.data
+
     def handle_exception(self, exc):
         if isinstance(exc, _Refusal):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -109,10 +116,11 @@ class IntegrationDraftView(_IntegrationView):
 
     def put(self, request, provider_id):
         provider, company = self.target(request, provider_id)
-        version = request.data.get('version')
+        data = self.body(request)
+        version = data.get('version')
         service.save_draft(
             provider, company, actor=request.user, request=request,
-            public=request.data.get('public', {}), secrets=request.data.get('secrets', {}),
+            public=data.get('public', {}), secrets=data.get('secrets', {}),
             version=version if isinstance(version, int) else None,
         )
         return Response(service.describe(provider, company))
@@ -125,7 +133,7 @@ class IntegrationActionView(_IntegrationView):
 
     def post(self, request, provider_id, action):
         provider, company = self.target(request, provider_id)
-        data = request.data if isinstance(request.data, dict) else {}
+        data = self.body(request)
         if action == 'test':
             options, errors = {}, {}
             for field in provider.test_fields:
@@ -146,11 +154,12 @@ class IntegrationActionView(_IntegrationView):
             service.activate(provider, company, actor=request.user, request=request, payload=data,
                              version=version if isinstance(version, int) else None)
         elif action in ('enable', 'disable'):
-            service.set_enabled(provider, company, actor=request.user, request=request, enabled=action == 'enable')
+            service.set_enabled(provider, company, actor=request.user, request=request, enabled=action == 'enable',
+                                payload=data)
         elif action == 'revoke':
             if data.get('confirm') != service.REVOKE_WORD:
                 raise _Refusal(f'Para revocar esta integración escribe {service.REVOKE_WORD}.')
-            service.revoke(provider, company, actor=request.user, request=request)
+            service.revoke(provider, company, actor=request.user, request=request, payload=data)
         elif action == 'import-env':
             service.import_env(provider, company, actor=request.user, request=request)
         else:

@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  fetchIntegrations, STATE_LABELS, STATE_TONES, testStatusLabel,
+  fetchIntegrations, STATE_LABELS, STATE_TONES, stateLabel, testStatusLabel,
   type CompanyIntegrationSummary, type Integration, type IntegrationSummary,
 } from "@/app/lib/integrations";
 
@@ -49,7 +49,7 @@ function PlatformCard({ item, onConfigure }: { item: Integration; onConfigure: (
   return (
     <Card label={item.label} description={item.description}>
       <div className="flex flex-wrap items-center gap-2">
-        <Pill label={STATE_LABELS[item.state]} tone={STATE_TONES[item.state]} />
+        <Pill label={stateLabel(item)} tone={STATE_TONES[item.state]} />
         {item.source === "env" ? <span className="text-[11px] text-muted">Configurado mediante entorno</span> : null}
       </div>
       <p className="text-xs text-muted">

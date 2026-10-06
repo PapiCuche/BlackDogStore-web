@@ -202,13 +202,19 @@ class RuntimeTest(_Base):
         self.assertIn('no SMTP configuration is active', '\n'.join(captured.output))
 
     def test_the_password_never_reaches_a_log(self):
+        """Through the path that logs: a server that refuses the password, quoting it back."""
         port, _folder = start_sink(self, ('tienda', 'la-buena'))
-        with self.assertLogs(level='DEBUG') as captured:
+        self.save(self.public(port))                    # PASSWORD is not the one the server takes
+        with self.assertLogs('store', level='DEBUG') as captured:
             import logging
-            logging.getLogger('store.integrations').debug('inicio')
-            self.save(self.public(port))
-            self.test_connection()
-        self.assertNotIn(PASSWORD, '\n'.join(captured.output))
+            logging.getLogger('store.integrations').info('prueba de conexión')
+            self.assertEqual(self.test_connection().json()['status'], 'auth_failed')
+            with mock.patch('store.integrations.providers.smtp.connect',
+                            side_effect=RuntimeError(f'535 bad password {PASSWORD}')):
+                self.assertEqual(self.test_connection().json()['status'], 'error')
+        text = '\n'.join(captured.output)
+        self.assertIn('integration test crashed', text)
+        self.assertNotIn(PASSWORD, text)
 
 
 class LegacyEnvironmentTest(_Base):
@@ -263,6 +269,16 @@ class LegacyEnvironmentTest(_Base):
             mail.send_mail('asunto', 'cuerpo', None, ['x@example.pe'])
             self.assertEqual(len(mail.outbox), 1)
             self.assertTrue(runtime_mail.is_configured())
+
+
+    def test_testing_the_draft_when_there_is_none_does_not_test_the_environment_instead(self):
+        port, _folder = start_sink(self, ('tienda', PASSWORD))
+        with self.env(port):
+            response = self.client.post('/api/admin/integrations/smtp/test/', {'target': 'draft'}, format='json')
+            self.assertEqual(response.status_code, 404)
+            # Asked about what runs, the environment IS what runs.
+            running = self.client.post('/api/admin/integrations/smtp/test/', {'target': 'active'}, format='json')
+            self.assertEqual(running.json()['status'], 'ok')
 
 
 class ConnectionTestTest(_Base):
@@ -384,5 +400,6 @@ class ValidationTest(_Base):
         self.save(self.remote())
         detail = self.client.get('/api/admin/integrations/smtp/').json()
         self.assertNotIn(PASSWORD, str(detail))
-        self.assertEqual(detail['draft']['secrets']['password']['last_four'], PASSWORD[-4:])
+        self.assertEqual(detail['draft']['secrets']['password']['configured'], True)
+        self.assertNotIn(PASSWORD[-4:], str(detail))
         self.assertNotIn('password', detail['draft']['public'])

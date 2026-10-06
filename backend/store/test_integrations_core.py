@@ -177,14 +177,26 @@ class WriteOnlyApiTest(_Base):
         self.save()
         token = self.detail().json()['draft']['secrets']['token']
         self.assertEqual(token['configured'], True)
-        self.assertEqual(token['last_four'], SECRET[-4:])
+        self.assertNotIn('last_four', token)
         self.assertEqual(token['updated_by'], 'master')
         self.assertIn('updated_at', token)
         self.assertEqual(self.detail().json()['draft']['secrets']['extra'], {'configured': False})
 
-    def test_a_short_secret_shows_none_of_itself(self):
-        self.save(secrets={'token': 'abcd12'})
-        self.assertEqual(self.detail().json()['draft']['secrets']['token']['last_four'], '')
+    def test_nothing_of_a_secret_is_kept_in_the_clear_not_even_its_last_characters(self):
+        """REVIEW: four characters of a twelve-character password are a third of it, in every dump."""
+        self.save(secrets={'token': SECRET, 'extra': SECOND_SECRET})
+        stored = IntegrationConfig.objects.get()
+        legible = json.dumps([stored.public, stored.secret_meta])
+        for secret in (SECRET, SECOND_SECRET):
+            for size in (3, 4):
+                self.assertNotIn(secret[-size:], legible)
+        self.assertNotIn(SECRET[-4:], self.detail().content.decode())
+
+    def test_an_opened_configuration_does_not_print_its_secrets(self):
+        resolved = integrations.Resolved('probe', {'endpoint': 'https://x.invalid'}, {'token': SECRET}, 'panel')
+        self.assertNotIn(SECRET, repr(resolved))
+        self.assertNotIn(SECRET, str(resolved))
+        self.assertIn('probe', repr(resolved))
 
     def test_saving_without_a_secret_keeps_the_one_already_stored(self):
         self.save()
@@ -226,13 +238,31 @@ class WriteOnlyApiTest(_Base):
         self.assertEqual(self.client.get('/api/admin/integrations/no-existe/').status_code, 404)
 
     def test_the_log_holds_no_secret(self):
+        """
+        The paths that DO write to the log: a test that fails, and an adapter that
+        crashes with the credential inside its own exception.
+        """
+        self.save(secrets={'token': SECRET, 'extra': SECOND_SECRET})
         with self.assertLogs(level=logging.DEBUG) as captured:
-            logging.getLogger('store.integrations').debug('inicio')
-            self.save(secrets={'token': SECRET, 'extra': SECOND_SECRET})
             _Probe.outcome = TestOutcome(False, 'auth_failed', 'El proveedor rechazó las credenciales.')
             self.client.post(self.url(action='test'), {}, format='json')
-        self.assertNotIn(SECRET, '\n'.join(captured.output))
-        self.assertNotIn(SECOND_SECRET, '\n'.join(captured.output))
+            with mock.patch.object(_Probe, 'test', side_effect=RuntimeError(f'401 for token {SECRET} / {SECOND_SECRET}')):
+                crashed = self.client.post(self.url(action='test'), {}, format='json')
+        self.assertEqual(crashed.json()['status'], 'error')
+        self.assertNoSecret(crashed)
+        text = '\n'.join(captured.output)
+        self.assertIn('integration test crashed', text)          # the path was taken…
+        self.assertIn('RuntimeError', text)
+        self.assertNotIn(SECRET, text)                             # …and wrote the kind of error, not the error
+        self.assertNotIn(SECOND_SECRET, text)
+        self.assertNotIn(SECRET, IntegrationConfig.objects.get().last_test_message)
+
+    def test_a_body_that_is_not_an_object_is_refused_not_a_crash(self):
+        for method, url in (('put', self.url(action='draft')), ('post', self.url(action='test')),
+                            ('post', self.url(action='activate'))):
+            with self.subTest(url=url):
+                response = getattr(self.client, method)(url, ['no', 'es', 'un', 'objeto'], format='json')
+                self.assertIn(response.status_code, (400, 404))
 
 
 class MasterOnlyTest(_Base):
@@ -307,7 +337,7 @@ class ScopeTest(_Base):
         self.assertIsNone(other['draft'])
         self.assertEqual(other['state'], 'NOT_CONFIGURED')
         mine = self.detail('probe_company', company=self.company).json()
-        self.assertEqual(mine['draft']['secrets']['token']['last_four'], SECRET[-4:])
+        self.assertEqual(mine['draft']['secrets']['token']['configured'], True)
         self.assertEqual(mine['company'], {'id': self.company.pk, 'name': 'Empresa A', 'slug': 'integ-a'})
 
     def test_one_companys_configuration_is_never_resolved_for_another(self):
@@ -411,6 +441,56 @@ class LifecycleTest(_Base):
         self.client.post(self.url(action='disable'), {}, format='json')
         self.assertIsNone(integrations.resolve('probe'))
 
+    def test_a_first_draft_that_failed_its_test_is_an_error_with_nothing_running(self):
+        """REVIEW: this state crashed `ops_status`, and the console called it «active»."""
+        self.save()
+        _Probe.outcome = TestOutcome(False, 'auth_failed', 'El proveedor rechazó las credenciales.')
+        self.client.post(self.url(action='test'), {}, format='json')
+        detail = self.detail().json()
+        self.assertEqual(detail['state'], 'ERROR')
+        self.assertIsNone(detail['active'])
+        self.assertIsNone(integrations.resolve('probe'))
+
+        from store.integrations import health
+        findings, summary = health.report()
+        self.assertIn('Sonda: borrador con la prueba fallida', summary)
+        self.assertFalse([f for f in findings if 'Sonda' in f], 'a draft is not running: it is not an alarm')
+
+    def test_testing_the_draft_when_there_is_none_tests_nothing_else(self):
+        """REVIEW: it fell through to the active row or to the environment, and reported THAT as the draft's test."""
+        self.save()
+        self.client.post(self.url(action='test'), {}, format='json')
+        self.client.post(self.url(action='activate'), {'version': self.detail().json()['draft']['version']}, format='json')
+        _Probe.seen = []
+        response = self.client.post(self.url(action='test'), {'target': 'draft'}, format='json')
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(_Probe.seen, [])
+
+    def test_switching_back_on_asks_what_activating_asked(self):
+        """REVIEW: «enable» skipped the confirmation that activation requires."""
+        class _Guarded(_Probe):
+            id = 'probe_guarded'
+
+            def activation_confirmation(self, public, secrets):
+                return 'ADELANTE', 'Esto tiene consecuencias. Escribe ADELANTE.'
+
+        registry.register(_Guarded())
+        self.addCleanup(registry.unregister, 'probe_guarded')
+        url = lambda action: self.url('probe_guarded', action)                                   # noqa: E731
+        self.save(provider='probe_guarded')
+        self.client.post(url('test'), {}, format='json')
+        version = self.detail('probe_guarded').json()['draft']['version']
+        self.assertEqual(self.client.post(url('activate'), {'version': version, 'confirm': 'ADELANTE'}, format='json').status_code, 200)
+        self.assertEqual(self.client.post(url('disable'), {}, format='json').status_code, 200)
+        self.assertEqual(self.detail('probe_guarded').json()['active']['activation_confirmation']['word'], 'ADELANTE')
+
+        refused = self.client.post(url('enable'), {}, format='json')
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('confirm', refused.json()['errors'])
+        self.assertIsNone(integrations.resolve('probe_guarded'))
+        self.assertEqual(self.client.post(url('enable'), {'confirm': 'ADELANTE'}, format='json').status_code, 200)
+        self.assertIsNotNone(integrations.resolve('probe_guarded'))
+
     def test_revoking_asks_for_the_word(self):
         self.save()
         response = self.client.post(self.url(action='revoke'), {}, format='json')
@@ -447,6 +527,53 @@ class ConcurrencyTest(_Base):
         self.client.post(self.url(action='test'), {}, format='json')
         response = self.client.post(self.url(action='activate'), {'version': 1}, format='json')
         self.assertEqual(response.status_code, 409)
+
+
+    def test_a_test_does_not_validate_what_was_saved_while_it_ran(self):
+        """
+        REVIEW: a test takes seconds. Whatever was saved meanwhile is NOT what was
+        tested, and must not come out of it marked as tested.
+        """
+        self.save()
+        read = self.detail().json()['draft']['version']
+
+        def somebody_saves_meanwhile(config, **options):
+            service.save_draft(_Probe_instance(), None, actor=self.other_master, version=read,
+                               public={'endpoint': 'https://otro.example.invalid'}, secrets={'token': SECOND_SECRET})
+            return TestOutcome(True, 'ok', 'Correcto.')
+
+        with mock.patch.object(_Probe, 'test', side_effect=somebody_saves_meanwhile):
+            response = self.client.post(self.url(action='test'), {}, format='json')
+        self.assertEqual(response.status_code, 409)
+        draft = self.detail().json()['draft']
+        self.assertFalse(draft['validated'])
+        self.assertEqual(draft['public']['endpoint'], 'https://otro.example.invalid')
+        refused = self.client.post(self.url(action='activate'), {'version': draft['version']}, format='json')
+        self.assertEqual(refused.status_code, 409)
+        self.assertIsNone(integrations.resolve('probe'))
+
+    def test_a_test_of_something_revoked_meanwhile_is_a_conflict_not_a_crash(self):
+        self.save()
+
+        def somebody_revokes_meanwhile(config, **options):
+            service.revoke(_Probe_instance(), None, actor=self.other_master)
+            return TestOutcome(True, 'ok', 'Correcto.')
+
+        with mock.patch.object(_Probe, 'test', side_effect=somebody_revokes_meanwhile):
+            response = self.client.post(self.url(action='test'), {}, format='json')
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(IntegrationConfig.objects.exists())
+
+    def test_two_first_saves_at_once_are_a_conflict_not_a_crash(self):
+        from django.db import IntegrityError
+
+        with mock.patch.object(IntegrationConfig, 'save', side_effect=IntegrityError('duplicate key')):
+            response = self.save()
+        self.assertEqual(response.status_code, 409)
+
+
+def _Probe_instance():
+    return registry.get('probe')
 
 
 class AuditTest(_Base):

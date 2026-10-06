@@ -144,8 +144,9 @@ class Resolved:
 
     provider_id: str
     public: dict
-    secrets: dict
-    source: str                       # 'panel' or 'env'
+    #: Never printed: a `Resolved` that reaches a log line or a traceback shows no secret.
+    secrets: dict = dataclass_field(repr=False)
+    source: str = 'panel'             # 'panel' or 'env'
     company_id: int = None
     extra: dict = dataclass_field(default_factory=dict)
 
@@ -233,6 +234,13 @@ class Provider:
         Inside the transaction that activates: rows of the domain that must exist
         for this configuration to be usable. It fails, the activation fails.
         """
+
+    def interruption_warning(self, company=None) -> str:
+        """
+        What is in flight RIGHT NOW that stops working if this provider is switched
+        off, revoked or replaced — as a sentence for the master — or ''.
+        """
+        return ''
 
     def health_note(self) -> str:
         """Something about THIS SERVER an operator should read beside this provider's state, or ''."""

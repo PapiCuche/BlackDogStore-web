@@ -30,9 +30,12 @@ def _unreadable(provider) -> int:
 
 def _platform(provider, findings) -> str:
     state, source = service.state(provider.id), service.source(provider.id)
+    active = service.row(provider.id)
+    if state == service.STATE_ERROR and active is None:
+        # A first draft whose test failed. Nothing is running: it is not an alarm.
+        return f'{provider.label}: borrador con la prueba fallida'
     words = _STATE[state]
     if state in (service.STATE_ACTIVE, service.STATE_ERROR, service.STATE_DISABLED):
-        active = service.row(provider.id)
         public = dict(active.public) if active is not None else dict((provider.from_env() or ({}, {}))[0])
         mode = _MODE.get(provider.mode(public, {}), '') if len(provider.supported_modes) > 1 else ''
         words += (f', {mode}' if mode and state != service.STATE_DISABLED else '') + f' ({_SOURCE.get(source, source)})'

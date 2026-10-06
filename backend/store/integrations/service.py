@@ -10,7 +10,7 @@ names fields and never values.
 """
 import logging
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from ..models import AdminAuditLog, IntegrationConfig
@@ -30,6 +30,11 @@ STATE_ERROR = 'ERROR'
 STATE_DISABLED = 'DISABLED'
 
 REVOKE_WORD = 'REVOCAR'
+#: Typed to go ahead with something that cuts operations already in flight.
+INTERRUPT_WORD = 'INTERRUMPIR'
+#: Test results that are not a failure. `unverified`: coherent, and not something
+#: that can be checked without doing the real thing (production payment keys).
+PASSING = ('', 'ok', 'unverified')
 
 
 class Conflict(Exception):
@@ -70,10 +75,15 @@ def _seal(config: IntegrationConfig, secrets: dict) -> None:
     )
 
 
-def _meta(value: str, actor, field=None) -> dict:
-    """What may be shown about a secret. Four characters of a long one; none of a short one or of a file."""
+def _meta(actor) -> dict:
+    """
+    What may be shown about a secret: that it is there, since when and by whom.
+
+    Nothing of the secret itself. Its last characters used to be kept «to tell
+    two keys apart»: of a twelve-character password that is a third, in the
+    clear, in every dump of the database.
+    """
     return {
-        'last_four': value[-4:] if len(value) >= 12 and getattr(field, 'kind', '') != 'file' else '',
         'updated_at': timezone.now().isoformat(),
         'updated_by': getattr(actor, 'username', '') or '',
     }
@@ -148,11 +158,11 @@ def state(provider_id, company=None) -> str:
     if active is not None:
         if not active.enabled:
             return STATE_DISABLED
-        return STATE_ERROR if active.last_test_status not in ('', 'ok') else STATE_ACTIVE
+        return STATE_ERROR if active.last_test_status not in PASSING else STATE_ACTIVE
     if draft is not None:
         if draft.validated:
             return STATE_VALIDATED
-        return STATE_ERROR if draft.last_test_status not in ('', 'ok', 'incomplete') else STATE_CONFIGURED
+        return STATE_ERROR if draft.last_test_status not in (*PASSING, 'incomplete') else STATE_CONFIGURED
     provider = registry.get(provider_id)
     if provider is not None and provider.from_env(company) is not None:
         return STATE_ACTIVE
@@ -225,7 +235,7 @@ def save_draft(provider, company, *, actor, public, secrets, version=None, reque
             current_meta.pop(name, None)
         else:
             current_secrets[name] = value
-            current_meta[name] = _meta(value, actor, provider.field(name))
+            current_meta[name] = _meta(actor)
     provider.clean(public, current_secrets)
 
     draft.public = public
@@ -236,7 +246,12 @@ def save_draft(provider, company, *, actor, public, secrets, version=None, reque
     draft.last_tested_at = None
     draft.version += 1
     draft.updated_by = actor
-    draft.save()
+    try:
+        with transaction.atomic():
+            draft.save()
+    except IntegrityError:
+        # Two first saves at once: the other one's draft is the one that exists.
+        raise Conflict('Otra persona acaba de guardar este borrador. Vuelve a cargarlo antes de guardar.') from None
     _audit(
         'integration_draft_saved', provider, company, actor, request,
         fields_changed=sorted(n for n in public if public[n] != previous_public.get(n)),
@@ -268,8 +283,12 @@ def test(provider, company, *, actor, request=None, target=None, **options) -> d
     what the environment holds. Never what a browser sends along with the request.
     """
     config = row(provider.id, company, DRAFT if target != ACTIVE else ACTIVE)
+    if config is None and target == DRAFT:
+        # Asked for the draft by name: the answer is never about something else.
+        raise NotFound('No hay ningún borrador que probar: guarda primero la configuración.')
     if config is None and target is None:
         config = row(provider.id, company, ACTIVE)
+    read_version = config.version if config is not None else None
     if config is not None:
         public, secrets, origin = dict(config.public), open_secrets(config), 'panel'
     else:
@@ -293,7 +312,12 @@ def test(provider, company, *, actor, request=None, target=None, **options) -> d
     tested_at = timezone.now()
     if config is not None:
         with transaction.atomic():
-            locked = IntegrationConfig.objects.select_for_update().get(pk=config.pk)
+            locked = IntegrationConfig.objects.select_for_update().filter(pk=config.pk).first()
+            if locked is None or locked.version != read_version:
+                # The test took seconds, and what it tested is no longer what is
+                # stored: its result says nothing about what is there now.
+                raise Conflict('La configuración cambió mientras se probaba. Vuelve a cargarla y pruébala de nuevo.',
+                               locked.version if locked is not None else None)
             locked.last_tested_at = tested_at
             locked.last_test_status = outcome.status[:40]
             locked.last_test_message = outcome.message[:300]
@@ -310,6 +334,38 @@ def test(provider, company, *, actor, request=None, target=None, **options) -> d
     }
 
 
+# -- what stopping something would cut off --------------------------------------------
+
+def interruption(provider, company=None):
+    """
+    `(word, message)` when switching this provider off, revoking it or replacing
+    what runs would cut operations that are already in flight; None otherwise.
+
+    Asked of this provider if it is the one running, and of whichever provider of
+    its category an activation would switch off.
+    """
+    affected = []
+    active = row(provider.id, company, ACTIVE)
+    if active is not None and active.enabled:
+        affected.append(provider)
+    if provider.exclusive_in_category:
+        others = [p for p in registry.in_category(provider.category) if p.id != provider.id]
+        for other in others:
+            sibling = row(other.id, company, ACTIVE)
+            if sibling is not None and sibling.enabled:
+                affected.append(other)
+    warnings = [text for text in (p.interruption_warning(company) for p in affected) if text]
+    if not warnings:
+        return None
+    return INTERRUPT_WORD, ' '.join(warnings) + f' Espera a que terminen, o escribe {INTERRUPT_WORD} para seguir de todos modos.'
+
+
+def _require_acknowledgement(provider, company, payload) -> None:
+    warning = interruption(provider, company)
+    if warning and (payload or {}).get('acknowledge') != warning[0]:
+        raise ConfigError({'acknowledge': warning[1]})
+
+
 # -- activation ------------------------------------------------------------------
 
 @transaction.atomic
@@ -324,6 +380,7 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
                        draft.version)
     secrets = open_secrets(draft)
     provider.activation_guard(dict(draft.public), secrets, payload or {})
+    _require_acknowledgement(provider, company, payload)
 
     if provider.exclusive_in_category:
         # One provider of this category runs at a time. Switching is this one act.
@@ -358,16 +415,22 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
 
 
 @transaction.atomic
-def set_enabled(provider, company, *, actor, enabled: bool, request=None):
+def set_enabled(provider, company, *, actor, enabled: bool, request=None, payload=None):
     active = row(provider.id, company, ACTIVE, lock=True)
     if active is None:
         raise NotFound('Esta integración no tiene una configuración activa.')
     if active.enabled != enabled:
+        if enabled:
+            # Switching back on is activating: it asks what activating asked.
+            provider.activation_guard(dict(active.public), {}, payload or {})
+        else:
+            _require_acknowledgement(provider, company, payload)
         if enabled and provider.exclusive_in_category:
             others = [p.id for p in registry.in_category(provider.category) if p.id != provider.id]
-            running = IntegrationConfig.objects.filter(provider__in=others, slot=ACTIVE, enabled=True)
+            # Locked: two «enable» at once must not both find the category free.
+            running = IntegrationConfig.objects.select_for_update().filter(provider__in=others, slot=ACTIVE)
             running = running.filter(company=company) if company else running.filter(company__isnull=True)
-            if running.exists():
+            if any(sibling.enabled for sibling in running):
                 raise Conflict('Ya hay otro proveedor de esta categoría activo. Desactívalo primero.', active.version)
         active.enabled = enabled
         active.version += 1
@@ -379,11 +442,12 @@ def set_enabled(provider, company, *, actor, enabled: bool, request=None):
 
 
 @transaction.atomic
-def revoke(provider, company, *, actor, request=None):
+def revoke(provider, company, *, actor, request=None, payload=None):
     rows = IntegrationConfig.objects.select_for_update().filter(provider=provider.id)
     rows = rows.filter(company=company) if company else rows.filter(company__isnull=True)
     if not rows.exists():
         raise NotFound('Esta integración no tiene nada guardado.')
+    _require_acknowledgement(provider, company, payload)
     rows.delete()
     _audit('integration_revoked', provider, company, actor, request)
     transaction.on_commit(lambda: provider.after_change(company))
@@ -445,6 +509,9 @@ def describe(provider, company=None, *, with_fields=True) -> dict:
         },
         'store_available': secret_store.is_available(),
     }
+    warning = interruption(provider, company)
+    # What the console has to make a master type before it stops or replaces what runs.
+    data['interruption'] = {'word': warning[0], 'message': warning[1]} if warning else None
     if with_fields:
         data['fields'] = [f.describe() for f in provider.fields]
         data['test_fields'] = [f.describe() for f in provider.test_fields]

@@ -36,7 +36,7 @@ type Row = Record<string, unknown> | null;
 function row(overrides: Record<string, unknown> = {}) {
   return {
     public: { host: 'smtp.example.pe', port: 587, security: 'starttls', username: 'tienda', from_email: 'tienda@example.pe' },
-    secrets: { password: { configured: true, last_four: '', updated_at: '2026-10-06T10:00:00Z', updated_by: 'master' } },
+    secrets: { password: { configured: true, updated_at: '2026-10-06T10:00:00Z', updated_by: 'master' } },
     enabled: true, validated: false, version: 1, last_tested_at: null, last_test_status: '', last_test_message: '',
     updated_at: '2026-10-06T10:00:00Z', updated_by: 'master', mode: '', activation_confirmation: null,
     ...overrides,
@@ -48,6 +48,7 @@ function integration(overrides: Record<string, unknown> = {}) {
     id: 'smtp', label: 'Correo SMTP', category: 'email', scope: 'platform',
     description: 'El servidor por el que salen los correos.', supported_modes: [],
     state: 'NOT_CONFIGURED', source: 'none', company: null, active: null as Row, draft: null as Row, env: null,
+    interruption: null as { word: string; message: string } | null,
     store_available: true, fields: SMTP_FIELDS, test_fields: [SEND_TO],
     ...overrides,
   };
@@ -106,7 +107,7 @@ beforeEach(() => {
       const previous = (item.draft ?? item.active) as ReturnType<typeof row> | null;
       const secrets = { ...(previous?.secrets ?? {}) } as Record<string, unknown>;
       for (const [name, value] of Object.entries((body?.secrets ?? {}) as Record<string, unknown>)) {
-        secrets[name] = value ? { configured: true, last_four: '', updated_by: 'master' } : { configured: false };
+        secrets[name] = value ? { configured: true, updated_by: 'master' } : { configured: false };
       }
       item.draft = row({ public: body?.public, secrets, version: ((item.draft?.version as number) ?? 0) + 1 });
       item.state = item.active ? item.state : 'CONFIGURED';
@@ -444,4 +445,83 @@ test('a file is sent as the provider asks, and a file that is too big is refused
   fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
   await waitFor(() => expect(sent('PUT', '/smtp/draft/')).toHaveLength(1));
   expect(sent('PUT', '/smtp/draft/')[0].body!.secrets).toEqual({ certificate_p12: 'AQID' });
+});
+
+// -- REVIEW ------------------------------------------------------------------------
+
+test('a first draft whose test failed is not called active', async () => {
+  current.smtp = integration({ state: 'ERROR', draft: row({ last_test_status: 'auth_failed', last_tested_at: '2026-10-06T11:00:00Z' }) });
+  render(<IntegrationsConsole />);
+  const card = await screen.findByRole('article', { name: 'Correo SMTP' });
+  expect(within(card).getByText('Borrador con la prueba fallida')).toBeInTheDocument();
+  expect(within(card).queryByText(/Activa/)).toBeNull();
+});
+
+test('what is active and failed its last test says both', async () => {
+  current.smtp = integration({ state: 'ERROR', source: 'panel', active: row({ last_test_status: 'auth_failed', last_tested_at: '2026-10-06T11:00:00Z' }) });
+  render(<IntegrationsConsole />);
+  const card = await screen.findByRole('article', { name: 'Correo SMTP' });
+  expect(within(card).getByText('Activa, con error')).toBeInTheDocument();
+});
+
+test('keys nobody could verify are not called correct, and can still be activated on purpose', async () => {
+  const confirmation = { word: 'PRODUCCION', message: 'Vas a activar claves de PRODUCCIÓN.' };
+  current.smtp = integration({ state: 'CONFIGURED', draft: row({ mode: 'production', activation_confirmation: confirmation }) });
+  respond = (call) => (call.url.includes('/test/')
+    ? json(200, { ok: true, status: 'unverified', message: 'Claves coherentes, pero no se han verificado.',
+                  integration: { ...current.smtp, state: 'VALIDATED',
+                                 draft: row({ version: 2, validated: true, last_test_status: 'unverified', mode: 'production', activation_confirmation: confirmation }) } })
+    : null);
+  await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Probar conexión' }));
+  expect(await screen.findByText('Coherente, sin verificar')).toBeInTheDocument();
+  expect(screen.queryByText('Correcto')).toBeNull();
+  fill('Confirmación', 'PRODUCCION');
+  expect(screen.getByRole('button', { name: 'Activar' })).toBeEnabled();
+});
+
+test('stopping something a buyer is in the middle of has to be typed', async () => {
+  const interruption = { word: 'INTERRUMPIR', message: 'Hay 1 cobro abierto con Izipay en la última hora. Escribe INTERRUMPIR para seguir de todos modos.' };
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }), draft: row({ validated: true, version: 3 }), interruption });
+  await open();
+  expect(screen.getByText(interruption.message)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Desactivar' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Activar' })).toBeDisabled();
+  fill('Escribe REVOCAR para borrar esta configuración', 'REVOCAR');
+  expect(screen.getByRole('button', { name: 'Revocar' })).toBeDisabled();
+
+  fill('Confirmación de la interrupción', 'INTERRUMPIR');
+  fireEvent.click(screen.getByRole('button', { name: 'Activar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+  await waitFor(() => expect(sent('POST', '/smtp/activate/')).toHaveLength(1));
+  expect(sent('POST', '/smtp/activate/')[0].body).toEqual({ version: 3, acknowledge: 'INTERRUMPIR' });
+});
+
+test('the word travels with switching off and with revoking too', async () => {
+  const interruption = { word: 'INTERRUMPIR', message: 'Hay 2 cobros abiertos.' };
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }), interruption });
+  await open();
+  fill('Confirmación de la interrupción', 'INTERRUMPIR');
+  fill('Escribe REVOCAR para borrar esta configuración', 'REVOCAR');
+  fireEvent.click(screen.getByRole('button', { name: 'Revocar' }));
+  await waitFor(() => expect(sent('POST', '/smtp/revoke/')).toHaveLength(1));
+  expect(sent('POST', '/smtp/revoke/')[0].body).toEqual({ confirm: 'REVOCAR', acknowledge: 'INTERRUMPIR' });
+});
+
+test('switching back on asks for the word that activating asked for', async () => {
+  const confirmation = { word: 'EMITIR', message: 'Vas a habilitar la emisión hacia SUNAT. Escribe EMITIR.' };
+  current.smtp = integration({ state: 'DISABLED', source: 'panel', active: row({ enabled: false, validated: true, activation_confirmation: confirmation }) });
+  await open();
+  expect(screen.getByText(confirmation.message)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Volver a activar' })).toBeDisabled();
+  fill('Confirmación para volver a activar', 'EMITIR');
+  fireEvent.click(screen.getByRole('button', { name: 'Volver a activar' }));
+  await waitFor(() => expect(sent('POST', '/smtp/enable/')).toHaveLength(1));
+  expect(sent('POST', '/smtp/enable/')[0].body).toEqual({ confirm: 'EMITIR' });
+});
+
+test('nothing of a stored secret is shown, not even how it ends', async () => {
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }) });
+  await open();
+  expect(screen.queryByText(/termina en/)).toBeNull();
 });

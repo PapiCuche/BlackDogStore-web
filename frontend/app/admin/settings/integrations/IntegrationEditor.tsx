@@ -17,8 +17,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  activateIntegration, fetchIntegration, importIntegrationFromEnvironment, IntegrationError, MODE_LABELS,
-  REVOKE_WORD, revokeIntegration, saveIntegrationDraft, setIntegrationEnabled, STATE_LABELS, STATE_TONES,
+  activateIntegration, fetchIntegration, importIntegrationFromEnvironment, IntegrationError, isUnverified, MODE_LABELS,
+  REVOKE_WORD, revokeIntegration, saveIntegrationDraft, setIntegrationEnabled, STATE_TONES, stateLabel,
   testIntegration, testStatusLabel,
   type Integration, type IntegrationField, type IntegrationRow,
 } from "@/app/lib/integrations";
@@ -129,6 +129,8 @@ export function IntegrationEditor({
   const [result, setResult] = useState<TestResult | null>(null);
   const [confirmWord, setConfirmWord] = useState("");
   const [revokeWord, setRevokeWord] = useState("");
+  const [enableWord, setEnableWord] = useState("");
+  const [interruptWord, setInterruptWord] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -149,6 +151,8 @@ export function IntegrationEditor({
     setDirty(false);
     setConfirmWord("");
     setRevokeWord("");
+    setEnableWord("");
+    setInterruptWord("");
     setFieldErrors({});
   }, []);
 
@@ -195,6 +199,11 @@ export function IntegrationEditor({
   const { draft, active } = data;
   const stored: IntegrationRow | null = draft ?? active;
   const confirmation = draft?.activation_confirmation ?? null;
+  const reactivation = active && !active.enabled ? active.activation_confirmation : null;
+  // Something is in flight that stopping or replacing what runs would cut off.
+  const interruption = data.interruption;
+  const interrupts = Boolean(interruption && interruptWord !== interruption.word);
+  const acknowledge = interruption ? interruptWord : "";
   const mode = (draft ?? active)?.mode || data.env?.mode || "";
   const locked = working || !data.store_available;
   const label = (name: string) => fields.find((field) => field.name === name)?.label ?? name;
@@ -243,7 +252,7 @@ export function IntegrationEditor({
 
   const activate = () => run(async () => {
     if (!draft) return;
-    show(await activateIntegration(id, draft.version, confirmation ? confirmWord : "", companyId));
+    show(await activateIntegration(id, draft.version, { confirm: confirmation ? confirmWord : "", acknowledge }, companyId));
     setResult(null);
     setNotice("Configuración activada.");
   });
@@ -257,7 +266,6 @@ export function IntegrationEditor({
   function secretField(field: IntegrationField) {
     const inputId = `integration-${id}-${field.name}`;
     const isStored = Boolean(stored?.secrets[field.name]?.configured);
-    const lastFour = stored?.secrets[field.name]?.last_four;
 
     if (removed[field.name]) {
       return (
@@ -276,7 +284,7 @@ export function IntegrationEditor({
           <span className={LABEL}>{field.label}</span>
           <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-foreground">
             <span aria-hidden="true" className="font-mono tracking-widest">{MASK}</span>
-            <span className="text-xs text-success">{lastFour ? `Configurada · termina en ${lastFour}` : "Configurada"}</span>
+            <span className="text-xs text-success">Configurada</span>
             <NamedButton
               name={`Reemplazar ${field.label}`} disabled={locked}
               onClick={() => setReplacing((previous) => ({ ...previous, [field.name]: true }))}
@@ -318,7 +326,7 @@ export function IntegrationEditor({
         </h2>
         <p className="text-sm text-muted">{data.description}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Pill label={STATE_LABELS[data.state]} tone={STATE_TONES[data.state]} />
+          <Pill label={stateLabel(data)} tone={STATE_TONES[data.state]} />
           {MODE_LABELS[mode] ? <Pill label={MODE_LABELS[mode]} tone={mode === "production" ? "bad" : "neutral"} /> : null}
         </div>
       </header>
@@ -328,6 +336,17 @@ export function IntegrationEditor({
           Este servidor no tiene la clave raíz del almacén de secretos (APP_CONFIG_ENCRYPTION_KEY): no se puede
           guardar ni leer ninguna credencial. La pone quien administra el servidor; no se configura desde aquí.
         </p>
+      ) : null}
+
+      {interruption ? (
+        <div role="alert" className="rounded-xl border border-warning-border bg-warning-surface px-4 py-3">
+          <p className="text-sm text-warning">{interruption.message}</p>
+          <label htmlFor={`integration-${id}-interrupt`} className={`${LABEL} mt-3`}>Confirmación de la interrupción</label>
+          <input
+            id={`integration-${id}-interrupt`} value={interruptWord} autoComplete="off" spellCheck={false}
+            onChange={(e) => setInterruptWord(e.target.value)} className={`${INPUT} md:w-64`}
+          />
+        </div>
       ) : null}
 
       {data.source === "env" && data.env ? (
@@ -359,16 +378,29 @@ export function IntegrationEditor({
             <Button disabled={working} onClick={() => void test("active")}>Probar la configuración en uso</Button>
             {active.enabled ? (
               <Confirm
-                label="Desactivar" tone="danger" disabled={working}
+                label="Desactivar" tone="danger" disabled={working || interrupts}
                 question="¿Desactivarla? El sistema deja de usarla ahora mismo y no recurre al entorno."
-                onConfirm={() => void act(() => setIntegrationEnabled(id, false, companyId), "Desactivada.")}
+                onConfirm={() => void act(() => setIntegrationEnabled(id, false, { acknowledge }, companyId), "Desactivada.")}
               />
             ) : (
-              <Button tone="primary" disabled={working} onClick={() => void act(() => setIntegrationEnabled(id, true, companyId), "Activada de nuevo.")}>
+              <Button
+                tone="primary" disabled={working || Boolean(reactivation && enableWord !== reactivation.word)}
+                onClick={() => void act(() => setIntegrationEnabled(id, true, { confirm: reactivation ? enableWord : "" }, companyId), "Activada de nuevo.")}
+              >
                 Volver a activar
               </Button>
             )}
           </div>
+          {reactivation ? (
+            <div className="mt-4">
+              <p className="text-sm text-warning">{reactivation.message}</p>
+              <label htmlFor={`integration-${id}-enable`} className={`${LABEL} mt-3`}>Confirmación para volver a activar</label>
+              <input
+                id={`integration-${id}-enable`} value={enableWord} autoComplete="off" spellCheck={false}
+                onChange={(e) => setEnableWord(e.target.value)} className={`${INPUT} md:w-64`}
+              />
+            </div>
+          ) : null}
         </Panel>
       ) : null}
 
@@ -449,7 +481,7 @@ export function IntegrationEditor({
             ) : null}
           </div>
           {result ? (
-            <p role="status" className={`mt-3 rounded-lg border px-3 py-2 text-sm ${result.ok ? "border-success-border text-success" : "border-danger-border bg-danger-surface text-danger"}`}>
+            <p role="status" className={`mt-3 rounded-lg border px-3 py-2 text-sm ${isUnverified(result.status) ? "border-warning-border bg-warning-surface text-warning" : result.ok ? "border-success-border text-success" : "border-danger-border bg-danger-surface text-danger"}`}>
               <strong className="font-semibold">{testStatusLabel(result.status)}</strong>
               {result.message ? <span className="ml-2 text-xs">{result.message}</span> : null}
             </p>
@@ -469,7 +501,7 @@ export function IntegrationEditor({
           ) : null}
           <Confirm
             label="Activar" tone="primary"
-            disabled={working || dirty || !draft?.validated || Boolean(confirmation && confirmWord !== confirmation.word)}
+            disabled={working || dirty || interrupts || !draft?.validated || Boolean(confirmation && confirmWord !== confirmation.word)}
             question={active ? "¿Sustituir la configuración en uso por este borrador?" : "¿Activar esta configuración?"}
             onConfirm={() => void activate()}
           />
@@ -489,8 +521,8 @@ export function IntegrationEditor({
               className="w-56 rounded-xl border border-bd-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus:border-foreground/25"
             />
             <Button
-              tone="danger" disabled={working || revokeWord !== REVOKE_WORD}
-              onClick={() => void act(() => revokeIntegration(id, revokeWord, companyId), "Revocada.")}
+              tone="danger" disabled={working || interrupts || revokeWord !== REVOKE_WORD}
+              onClick={() => void act(() => revokeIntegration(id, { confirm: revokeWord, acknowledge }, companyId), "Revocada.")}
             >
               Revocar
             </Button>

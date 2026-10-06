@@ -27,9 +27,9 @@ export type IntegrationField = {
   max_bytes?: number;
 };
 
+/** That a secret is stored, since when and by whom. Nothing of the secret itself. */
 export type SecretState = {
   configured: boolean;
-  last_four?: string;
   updated_at?: string;
   updated_by?: string;
 };
@@ -71,6 +71,11 @@ export type Integration = {
   draft: IntegrationRow | null;
   /** What the environment contributes: public values and the NAMES of the secrets it holds. */
   env: { public: Record<string, unknown>; secrets: string[]; mode: string } | null;
+  /**
+   * Set when switching this off, revoking it or activating a draft would cut
+   * something already in flight (a buyer at the card form). The word is typed.
+   */
+  interruption: { word: string; message: string } | null;
   /** False when the server has no root key: nothing can be stored or read. */
   store_available: boolean;
   fields?: IntegrationField[];
@@ -160,14 +165,22 @@ export const testIntegration = (
   id: string, target: "draft" | "active", options: Record<string, string>, companyId?: number | null,
 ) => act<IntegrationTestResult>(id, "test", { target, ...options }, companyId, "No se pudo hacer la prueba.");
 
-export const activateIntegration = (id: string, version: number, confirm: string, companyId?: number | null) =>
-  act<Integration>(id, "activate", confirm ? { version, confirm } : { version }, companyId, "No se pudo activar.");
+/** The words a master typed: `confirm` for what the act itself asks, `acknowledge` for what it interrupts. */
+export type TypedWords = { confirm?: string; acknowledge?: string };
 
-export const setIntegrationEnabled = (id: string, enabled: boolean, companyId?: number | null) =>
-  act<Integration>(id, enabled ? "enable" : "disable", {}, companyId, "No se pudo cambiar el estado.");
+const words = ({ confirm, acknowledge }: TypedWords) => ({
+  ...(confirm ? { confirm } : {}),
+  ...(acknowledge ? { acknowledge } : {}),
+});
 
-export const revokeIntegration = (id: string, confirm: string, companyId?: number | null) =>
-  act<Integration>(id, "revoke", { confirm }, companyId, "No se pudo revocar.");
+export const activateIntegration = (id: string, version: number, typed: TypedWords, companyId?: number | null) =>
+  act<Integration>(id, "activate", { version, ...words(typed) }, companyId, "No se pudo activar.");
+
+export const setIntegrationEnabled = (id: string, enabled: boolean, typed: TypedWords, companyId?: number | null) =>
+  act<Integration>(id, enabled ? "enable" : "disable", words(typed), companyId, "No se pudo cambiar el estado.");
+
+export const revokeIntegration = (id: string, typed: TypedWords, companyId?: number | null) =>
+  act<Integration>(id, "revoke", words(typed), companyId, "No se pudo revocar.");
 
 export const importIntegrationFromEnvironment = (id: string, companyId?: number | null) =>
   act<Integration>(id, "import-env", {}, companyId, "No se pudo copiar la configuración del entorno.");
@@ -179,9 +192,19 @@ export const STATE_LABELS: Record<IntegrationState, string> = {
   CONFIGURED: "Borrador sin probar",
   VALIDATED: "Probada, sin activar",
   ACTIVE: "Activa",
-  ERROR: "Activa, con error",
+  ERROR: "Con error",
   DISABLED: "Desactivada",
 };
+
+/**
+ * ERROR means «its last test failed», of what runs or of a first draft. Those
+ * are different things to read on a screen: one is a service that may be down,
+ * the other is nothing running at all.
+ */
+export function stateLabel(integration: Pick<Integration, "state" | "active">): string {
+  if (integration.state !== "ERROR") return STATE_LABELS[integration.state];
+  return integration.active ? "Activa, con error" : "Borrador con la prueba fallida";
+}
 
 export const STATE_TONES: Record<IntegrationState, "neutral" | "good" | "warn" | "bad"> = {
   NOT_CONFIGURED: "neutral", CONFIGURED: "warn", VALIDATED: "warn", ACTIVE: "good", ERROR: "bad", DISABLED: "neutral",
@@ -190,6 +213,7 @@ export const STATE_TONES: Record<IntegrationState, "neutral" | "good" | "warn" |
 /** The fixed words a test can end with. The server's own sentence is shown beside it. */
 const TEST_STATUS_LABELS: Record<string, string> = {
   ok: "Correcto",
+  unverified: "Coherente, sin verificar",
   auth_failed: "Credenciales rechazadas",
   tls_invalid: "Certificado TLS no válido",
   timeout: "Sin respuesta a tiempo",
@@ -205,5 +229,8 @@ const TEST_STATUS_LABELS: Record<string, string> = {
 export const testStatusLabel = (status: string) => TEST_STATUS_LABELS[status] ?? "Resultado desconocido";
 
 export const MODE_LABELS: Record<string, string> = { test: "TEST", production: "PRODUCCIÓN" };
+
+/** A result that passed and proved nothing: shown as a warning, not as a success. */
+export const isUnverified = (status: string) => status === "unverified";
 
 export const REVOKE_WORD = "REVOCAR";

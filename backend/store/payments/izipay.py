@@ -164,6 +164,9 @@ def _configured_values() -> dict:
         raise IzipayError(str(exc)) from None
     if config is not None:
         return {name: config.get(field, '') for field, name in _CONSOLE_FIELDS.items()}
+    if service.has_panel_row(CONSOLE_PROVIDER):
+        # Switched off in the console. The environment is not a way round that.
+        raise IzipayError('Esta pasarela está desactivada en Configuración › Integraciones.')
     return {name: getattr(settings, name, '') for name in _CONSOLE_FIELDS.values()}
 
 

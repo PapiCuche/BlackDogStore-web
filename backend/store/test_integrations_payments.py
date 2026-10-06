@@ -196,6 +196,28 @@ class RuntimeTest(_Base):
         self.assertFalse(Order.objects.exists())
 
 
+    def test_the_adapters_never_read_the_environment_once_the_console_took_over(self):
+        """REVIEW: a disabled row made the credential loaders fall through to the settings."""
+        from store.payments import izipay
+
+        with override_settings(**IZIPAY_TEST_SETTINGS):
+            self.go_live_with_checkout()
+            self.console.post(self.url('izipay_checkout', 'disable'), {}, format='json')
+            with self.assertRaises(izipay.IzipayError) as refused:
+                izipay.load_credentials()
+        self.assertIn('desactivada', str(refused.exception))
+
+        from store.payments import micuentaweb
+
+        with override_settings(PAYMENT_PROVIDER='micuentaweb', MICUENTAWEB_SHOP_ID='69876357',
+                               MICUENTAWEB_PASSWORD='testpassword_DelEntornoNoEsReal',
+                               MICUENTAWEB_PUBLIC_KEY='69876357:testpublickey_DelEntornoNoEsReal'):
+            self.go_live_with_mcw()
+            self.console.post(self.url('izipay_micuentaweb', 'disable'), {}, format='json')
+            with self.assertRaises(micuentaweb.MiCuentaWebError):
+                micuentaweb.load_credentials()
+
+
 class SwitchingTest(_Base):
     def test_a_master_switches_product_from_the_console(self):
         self.go_live_with_checkout()
@@ -246,6 +268,64 @@ class SwitchingTest(_Base):
         self.assertEqual({a.code for a in payment_adapters._ADAPTERS.values()}, {'izipay', 'micuentaweb'})
 
 
+class InFlightTest(_Base):
+    """
+    REVIEW: switching the gateway off, revoking it, changing product or changing
+    its keys leaves a buyer who is typing their card without a notification
+    route. It is one click now, so it is said and has to be meant.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.fake_gateway = self.go_live_with_checkout()
+        self.assertEqual(self.buy(self.fake_gateway).status_code, 200)       # a buyer is at the card form
+
+    def test_the_console_says_a_charge_is_open(self):
+        warning = self.console.get(self.url('izipay_checkout')).json()['interruption']
+        self.assertEqual(warning['word'], 'INTERRUMPIR')
+        self.assertIn('1 cobro abierto', warning['message'])
+        # The other product's screen says it too: activating it switches this one off.
+        self.assertIn('1 cobro abierto', self.console.get(self.url('izipay_micuentaweb')).json()['interruption']['message'])
+
+    def test_switching_it_off_or_revoking_it_has_to_be_meant(self):
+        for action, body in (('disable', {}), ('revoke', {'confirm': 'REVOCAR'})):
+            refused = self.console.post(self.url('izipay_checkout', action), body, format='json')
+            self.assertEqual(refused.status_code, 400, action)
+            self.assertIn('acknowledge', refused.json()['errors'])
+        self.assertEqual(checkout.active_payment_provider(), 'izipay')
+        allowed = self.console.post(self.url('izipay_checkout', 'disable'), {'acknowledge': 'INTERRUMPIR'}, format='json')
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_changing_product_or_keys_has_to_be_meant(self):
+        self.save('izipay_micuentaweb', MCW_PUBLIC, MCW_SECRETS)
+        self.validate('izipay_micuentaweb', fake_mcw())
+        self.assertEqual(self.activate('izipay_micuentaweb').status_code, 400)
+        self.assertEqual(checkout.active_payment_provider(), 'izipay')
+
+        self.save('izipay_checkout', CHECKOUT_PUBLIC, {**CHECKOUT_SECRETS, 'hash_key': 'otra-clave-hash-NoEsReal'})
+        self.validate('izipay_checkout', fake_checkout())
+        refused = self.activate('izipay_checkout')
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('acknowledge', refused.json()['errors'])
+        self.assertEqual(self.activate('izipay_checkout', acknowledge='INTERRUMPIR').status_code, 200)
+
+    def test_a_charge_nobody_finished_an_hour_ago_holds_nothing_up(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        PaymentTransaction.objects.update(created_at=timezone.now() - timedelta(hours=2))
+        self.assertIsNone(self.console.get(self.url('izipay_checkout')).json()['interruption'])
+        self.assertEqual(self.console.post(self.url('izipay_checkout', 'disable'), {}, format='json').status_code, 200)
+
+    def test_a_charge_that_was_answered_holds_nothing_up(self):
+        attempt = PaymentTransaction.objects.get()
+        payload = self.fake_gateway.payload(transaction_id=attempt.transaction_id, order_number=attempt.order_number,
+                                            amount=attempt.amount)
+        self.client.post('/api/payments/izipay/notification/', self.fake_gateway.envelope(payload), format='json')
+        self.assertIsNone(self.console.get(self.url('izipay_checkout')).json()['interruption'])
+
+
 class TestAndProductionTest(_Base):
     PROD_PUBLIC = {**CHECKOUT_PUBLIC, 'environment': 'production', 'token_url': 'https://api.izipay.invalid/token'}
 
@@ -259,9 +339,35 @@ class TestAndProductionTest(_Base):
         fake = fake_checkout(self.PROD_PUBLIC)
         self.save('izipay_checkout', self.PROD_PUBLIC, CHECKOUT_SECRETS)
         result = self.validate('izipay_checkout', fake)
-        self.assertEqual(result['status'], 'ok')
         self.assertIn('PRODUCCIÓN', result['message'])
         self.assertEqual(fake.requests, [])
+
+    def test_production_keys_are_called_unverified_not_correct(self):
+        """
+        REVIEW: nothing checked them, and the console said «Correcto». It now
+        says what it did: they are coherent, and nobody has verified them.
+        """
+        self.save('izipay_checkout', self.PROD_PUBLIC, CHECKOUT_SECRETS)
+        result = self.validate('izipay_checkout', fake_checkout(self.PROD_PUBLIC))
+        self.assertEqual(result['status'], 'unverified')
+        self.assertIn('no se han verificado', result['message'])
+        self.assertEqual(self.activate('izipay_checkout', confirm='PRODUCCION').status_code, 200)
+        detail = self.console.get(self.url('izipay_checkout')).json()
+        self.assertEqual(detail['state'], 'ACTIVE')                    # unverified is not a failed test
+        self.assertEqual(detail['active']['last_test_status'], 'unverified')
+
+        self.console.post(self.url('izipay_checkout', 'revoke'), {'confirm': 'REVOCAR'}, format='json')
+        prod = {**MCW_PUBLIC, 'public_key': '90000001:prodpublickey_NoEsRealNoEsReal'}
+        self.save('izipay_micuentaweb', prod, {'password': 'prodpassword_NoEsRealNoEsRealNoEsReal'})
+        self.assertEqual(self.validate('izipay_micuentaweb', fake_mcw())['status'], 'unverified')
+
+    def test_the_test_says_what_it_cannot_check(self):
+        """The key that signs notifications is only proven by a notification."""
+        self.save('izipay_checkout', CHECKOUT_PUBLIC, CHECKOUT_SECRETS)
+        result = self.validate('izipay_checkout', fake_checkout())
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('clave hash', result['message'])
+        self.assertIn('pago de prueba', result['message'])
 
     def test_production_cannot_be_activated_by_accident(self):
         self.save('izipay_checkout', self.PROD_PUBLIC, CHECKOUT_SECRETS)
