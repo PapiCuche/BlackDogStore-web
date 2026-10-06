@@ -166,6 +166,17 @@ class RuntimeTest(_Base):
             self.register('eva')
         self.assertEqual(received(folder), [])
 
+    def test_off_is_off_whatever_the_environment_names(self):
+        """A development backend in the environment is not a way round the switch."""
+        port, _folder = start_sink(self, ('tienda', PASSWORD))
+        self.configure(port)
+        self.client.post('/api/admin/integrations/smtp/disable/', {}, format='json')
+        with override_settings(EMAIL_BACKEND_LEGACY='django.core.mail.backends.locmem.EmailBackend'):
+            self.assertFalse(runtime_mail.is_configured())
+            with self.assertRaises(runtime_mail.MailNotConfigured), self.assertLogs('store.integrations', level='ERROR'):
+                mail.send_mail('asunto', 'cuerpo', None, ['x@example.pe'])
+        self.assertEqual(mail.outbox, [])
+
     def test_with_nothing_configured_mail_is_an_error_and_never_the_console(self):
         self.assertFalse(runtime_mail.is_configured())
         with self.assertRaises(runtime_mail.MailNotConfigured):

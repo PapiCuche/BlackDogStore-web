@@ -17,12 +17,16 @@ from datetime import timedelta
 from unittest import mock
 
 from django.core.management import call_command
-from django.test import TestCase
+from cryptography.fernet import Fernet
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from store.models import NotificationDelivery, PaymentTransaction
 from store.test_whatsapp import WhatsAppBase
-from store.tests import _order, _pay_attempt
+from store.integrations import registry, service
+from store.models import IntegrationConfig
+from store.tests import IZIPAY_TEST_SETTINGS, _order, _pay_attempt
 
 
 def run():
@@ -35,6 +39,14 @@ def run():
     return code, out.getvalue()
 
 
+#: An installation that can send mail and charge, the way a published one is.
+CONFIGURED = {**IZIPAY_TEST_SETTINGS, 'PAYMENT_PROVIDER': 'izipay',
+              'EMAIL_BACKEND_LEGACY': 'django.core.mail.backends.smtp.EmailBackend',
+              'EMAIL_HOST': 'smtp.entorno.invalid', 'EMAIL_HOST_USER': 'usuario-del-entorno',
+              'EMAIL_HOST_PASSWORD': 'clave-del-entorno-NoEsReal'}
+
+
+@override_settings(**CONFIGURED)
 class OpsStatusTest(WhatsAppBase):
     def test_a_quiet_installation_is_all_right(self):
         code, text = run()
@@ -143,3 +155,117 @@ class OpsStatusTest(WhatsAppBase):
         _code, text = run()
         self.assertNotIn('987', text)
         self.assertNotIn(self.customer.first_name, text)
+
+
+SMTP_PUBLIC = {'host': 'smtp.example.invalid', 'port': 587, 'security': 'starttls', 'username': 'usuario-smtp',
+               'from_email': 'tienda@example.invalid', 'from_name': 'Tienda', 'timeout': 10}
+SMTP_PASSWORD = 'clave-smtp-NoEsReal'
+KEY = Fernet.generate_key().decode()
+
+
+@override_settings(APP_CONFIG_ENCRYPTION_KEY=KEY, **CONFIGURED)
+class IntegrationsStatusTest(TestCase):
+    """
+    What the console configured, as an operator needs it: which integrations
+    run, from where, and whether one of them cannot. Never a value.
+    """
+
+    def setUp(self):
+        self.master = get_user_model().objects.create_superuser('master', 'master@example.com', 'x')
+
+    def smtp_from_the_console(self, status='ok'):
+        provider = registry.get('smtp')
+        draft = service.save_draft(provider, None, actor=self.master, public=SMTP_PUBLIC,
+                                   secrets={'password': SMTP_PASSWORD})
+        IntegrationConfig.objects.filter(pk=draft.pk).update(
+            validated=True, last_test_status='ok', last_tested_at=timezone.now())
+        active = service.activate(provider, None, actor=self.master, version=draft.version)
+        if status != 'ok':
+            IntegrationConfig.objects.filter(pk=active.pk).update(last_test_status=status)
+        return active
+
+    def line(self, text):
+        return next(row for row in text.splitlines() if ' integraciones: ' in row and not row.startswith('ATENCIÓN'))
+
+    def test_it_says_which_integrations_run_and_from_where(self):
+        code, text = run()
+        self.assertEqual(code, 0, text)
+        summary = self.line(text)
+        self.assertTrue(summary.startswith('OK    integraciones: '), summary)
+        self.assertIn('Correo SMTP: activa (entorno)', summary)
+        self.assertIn(f'{registry.get("izipay_checkout").label}: activa, TEST (entorno)', summary)
+        self.assertIn(f'{registry.get("izipay_micuentaweb").label}: sin configurar', summary)
+
+        self.smtp_from_the_console()
+        self.assertIn('Correo SMTP: activa (consola)', self.line(run()[1]))
+
+    def test_optional_integrations_that_nobody_configured_are_not_an_alarm(self):
+        with override_settings(GOOGLE_OAUTH_CLIENT_ID='', FISCAL_ENABLED=False):
+            code, text = run()
+        self.assertEqual(code, 0, text)
+        self.assertIn('Inicio de sesión con Google: sin configurar', text)
+        self.assertIn('SUNAT · Facturación electrónica: sin configurar', text)
+        self.assertIn('WhatsApp Business: ninguna empresa en la consola', text)
+
+    def test_a_shop_that_cannot_send_mail_needs_somebody(self):
+        with override_settings(EMAIL_BACKEND_LEGACY=''):
+            code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN integraciones: el correo no está configurado', text)
+
+    def test_a_shop_that_cannot_charge_needs_somebody(self):
+        with override_settings(IZIPAY_API_KEY='', IZIPAY_HASH_KEY=''):
+            code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN integraciones: la pasarela de pago', text)
+
+        self.smtp_from_the_console()
+        with override_settings(PAYMENT_PROVIDER=''):
+            code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN integraciones: no hay ninguna pasarela de pago activa', text)
+
+    def test_a_console_configuration_without_its_root_key_needs_somebody(self):
+        self.smtp_from_the_console()
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY='', DEBUG=False):
+            code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('APP_CONFIG_ENCRYPTION_KEY', text)
+
+    def test_a_configuration_sealed_with_another_key_needs_somebody(self):
+        self.smtp_from_the_console()
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN integraciones: Correo SMTP: lo guardado en la consola no se puede leer', text)
+
+    def test_an_active_integration_whose_last_test_failed_needs_somebody(self):
+        self.smtp_from_the_console(status='auth_failed')
+        code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN integraciones: Correo SMTP: la última prueba falló (auth_failed)', text)
+
+    def test_one_switched_off_on_purpose_is_said_and_is_not_an_alarm_by_itself(self):
+        active = self.smtp_from_the_console()
+        IntegrationConfig.objects.filter(pk=active.pk).update(enabled=False)
+        code, text = run()
+        self.assertIn('Correo SMTP: desactivada (consola)', text)
+        # …but mail is then not configured, and THAT is one.
+        self.assertEqual(code, 1)
+        self.assertIn('el correo no está configurado', text)
+
+    def test_no_line_carries_a_value(self):
+        self.smtp_from_the_console(status='auth_failed')
+        _code, text = run()
+        for value in (SMTP_PASSWORD, 'smtp.example.invalid', 'usuario-smtp', KEY, 'smtp.entorno.invalid',
+                      'usuario-del-entorno', 'clave-del-entorno-NoEsReal',
+                      IZIPAY_TEST_SETTINGS['IZIPAY_API_KEY'], IZIPAY_TEST_SETTINGS['IZIPAY_HASH_KEY'],
+                      IZIPAY_TEST_SETTINGS['IZIPAY_MERCHANT_CODE']):
+            self.assertNotIn(value, text)
+
+    def test_it_still_writes_nothing(self):
+        self.smtp_from_the_console()
+        wrote = AssertionError('ops_status wrote to the database')
+        with mock.patch('django.db.models.Model.save', side_effect=wrote), \
+                mock.patch('django.db.models.QuerySet.update', side_effect=wrote):
+            self.assertEqual(run()[0], 0)

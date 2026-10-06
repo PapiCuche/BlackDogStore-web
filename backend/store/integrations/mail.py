@@ -32,11 +32,24 @@ class MailNotConfigured(Exception):
     """No SMTP configuration is active and none was given to the installation."""
 
 
-def is_configured() -> bool:
-    if service.resolve('smtp') is not None:
-        return True
+def _legacy_backend(config) -> str:
+    """
+    The backend the environment names, when it may be used.
+
+    SMTP from the environment only together with its `EMAIL_*` settings (that
+    is `config`, resolved from them). Any other backend — the console or the
+    in-memory one of development — as it is. And none at all once the console
+    holds a configuration that was switched off: off is off.
+    """
     legacy = getattr(settings, 'EMAIL_BACKEND_LEGACY', '')
-    return bool(legacy) and legacy != smtp.SMTP_BACKEND
+    if not legacy or (config is None and service.has_panel_row('smtp')):
+        return ''
+    return legacy if (legacy != smtp.SMTP_BACKEND or config is not None) else ''
+
+
+def is_configured() -> bool:
+    config = service.resolve('smtp')
+    return config is not None or bool(_legacy_backend(config))
 
 
 class RuntimeEmailBackend(BaseEmailBackend):
@@ -52,8 +65,8 @@ class RuntimeEmailBackend(BaseEmailBackend):
                 use_ssl=public.get('security') == smtp.IMPLICIT_TLS,
                 timeout=int(public.get('timeout') or 10), fail_silently=self.fail_silently,
             ), smtp.sender(public)
-        legacy = getattr(settings, 'EMAIL_BACKEND_LEGACY', '')
-        if legacy and (legacy != smtp.SMTP_BACKEND or config is not None):
+        legacy = _legacy_backend(config)
+        if legacy:
             return import_string(legacy)(fail_silently=self.fail_silently), None
         raise MailNotConfigured(
             'El correo no está configurado: activa un servidor SMTP en Configuración › Integraciones.'
