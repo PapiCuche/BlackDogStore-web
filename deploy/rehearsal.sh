@@ -50,6 +50,7 @@ EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
 EMAIL_HOST=correo
 EMAIL_PORT=2525
 EMAIL_USE_TLS=0
+EMAIL_TIMEOUT=4
 EMAIL_HOST_USER=ensayo
 EMAIL_HOST_PASSWORD={secrets.token_urlsafe(18)}
 DEFAULT_FROM_EMAIL=tienda@$DOMAIN
@@ -106,11 +107,13 @@ healthy() {
   docker inspect -f '{{.State.Health.Status}}' "$PROJECT-$1-1" 2>/dev/null
 }
 shell() { $C exec -T backend python manage.py shell -c "$1" 2>&1 | grep -v "objects imported" | grep -v '^$'; }
-NEW_PROJECT="$PROJECT-nuevo"
+MAIN_PROJECT="$PROJECT"; NEW_PROJECT="$PROJECT-nuevo"
+# Los dos proyectos por su nombre fijo: el paso 19b cambia $C y $PROJECT al
+# segundo, y un fallo en mitad de ese paso no debe dejar el primero atrás.
 cleanup() {
-  docker rm -f "$PROJECT-correo" >/dev/null 2>&1
+  docker rm -f "$MAIN_PROJECT-correo" >/dev/null 2>&1
   docker compose -p "$NEW_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
-  $C down -v --rmi local >/dev/null 2>&1
+  docker compose -p "$MAIN_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
   rm -f "$ENVF" "$SMOKE_FRONTEND_DIR/.rehearsal-smoke.mjs"
   rm -rf "$WORK"
 }
@@ -118,13 +121,13 @@ trap cleanup EXIT
 export R_DOMAIN="$DOMAIN" R_PORT="$PORT" R_SLUG="$SLUG" R_STATE="$WORK/media.json"
 export R_USER=ensayo_admin R_PASSWORD="$ADMIN_PW" R_OUTSIDER=ensayo_ajeno R_OUTSIDER_PASSWORD="$OUTSIDER_PW"
 export R_IZIPAY_HASH_KEY="$(envval IZIPAY_HASH_KEY)" R_IZIPAY_MERCHANT="$(envval IZIPAY_MERCHANT_CODE)"
-export R_MAIL_CONTAINER="$PROJECT-correo" R_MAIL_FROM="tienda@$DOMAIN" R_MAIL_PASSWORD="$(envval EMAIL_HOST_PASSWORD)"
+export R_MAIL_CONTAINER="$PROJECT-correo" R_MAIL_FROM="tienda@$DOMAIN" R_MAIL_PASSWORD="$(envval EMAIL_HOST_PASSWORD)" R_MAIL_TIMEOUT="$(envval EMAIL_TIMEOUT)"
 # mailserver <contraseña>: (re)arranca el servidor de correo del ensayo aceptando sólo esa contraseña.
 mailserver() {
   docker rm -f "$PROJECT-correo" >/dev/null 2>&1
   docker run -d --name "$PROJECT-correo" --network "${PROJECT}_default" --network-alias correo \
     -v "$ROOT/deploy/rehearsal_smtp_sink.py:/sink.py:ro" --entrypoint python "$PROJECT-backend" \
-    /sink.py 2525 /tmp/mail ensayo "$1" >/dev/null 2>&1
+    /sink.py 2525 /tmp/mail ensayo "$@" >/dev/null 2>&1
   pause 2
   docker inspect -f '{{.State.Running}}' "$PROJECT-correo" 2>/dev/null
 }
@@ -305,9 +308,11 @@ docker rm -f "$PROJECT-correo" >/dev/null 2>&1
 flows "con el servidor de correo caído" mail-down
 expect "servidor de correo que rechaza la contraseña" "$(mailserver "otra-$R_MAIL_PASSWORD")" true
 flows "con el servidor de correo rechazando la contraseña" mail-down
+expect "servidor de correo que acepta la conexión y no responde" "$(mailserver --stall)" true
+flows "con el servidor de correo mudo: la espera es la de EMAIL_TIMEOUT" mail-stall
 docker rm -f "$PROJECT-correo" >/dev/null 2>&1
 $C logs backend frontend caddy > "$WORK/logs.txt" 2>&1
-expect "los dos fallos de envío quedaron anotados" "$(grep -c 'Failed to send password reset email' "$WORK/logs.txt" | awk '{print ($1 >= 2) ? "sí" : "no"}')" "sí"
+expect "los tres fallos de envío quedaron anotados" "$(grep -c 'Failed to send password reset email' "$WORK/logs.txt" | awk '{print ($1 >= 3) ? "sí" : "no"}')" "sí"
 flows "los registros no guardan los enlaces de los correos ni la contraseña del correo" logs "$WORK/logs.txt"
 
 step "12 navegador real: tienda, imágenes, sesión y panel"

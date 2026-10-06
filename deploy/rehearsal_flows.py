@@ -519,6 +519,20 @@ def mail_down(state):
           res.status == 200 and elapsed < 15, f'{res.status} en {elapsed:.1f} s')
 
 
+def mail_stall(state):
+    """
+    El servidor de correo acepta la conexión y deja de responder. La tienda
+    espera lo que dice EMAIL_TIMEOUT —ni se rinde al instante ni se queda
+    colgada— y contesta.
+    """
+    timeout = float(os.environ['R_MAIL_TIMEOUT'])
+    started = time.monotonic()
+    res, _ = Client().json('POST', '/api/auth/password-reset/request', {'email': state['mail_address']})
+    elapsed = time.monotonic() - started
+    check(f'correo · con el servidor de correo mudo, la tienda espera {timeout:.0f} s y contesta',
+          res.status == 200 and timeout - 1 <= elapsed < timeout + 4, f'{res.status} en {elapsed:.1f} s')
+
+
 def verify(state):
     anonymous = Client()
     res, data = anonymous.request('GET', state['product_image'], origin=False)
@@ -554,7 +568,7 @@ def logs(state, path):
 
 def main():
     mode = sys.argv[1]
-    if mode in ('mail', 'mail-down'):
+    if mode in ('mail', 'mail-down', 'mail-stall'):
         state = {}
         if os.path.exists(FLOWS_STATE):
             with open(FLOWS_STATE) as handle:
@@ -564,8 +578,10 @@ def main():
                 state.update(mail())
                 with open(FLOWS_STATE, 'w') as handle:
                     json.dump(state, handle)
-            else:
+            elif mode == 'mail-down':
                 mail_down(state)
+            else:
+                mail_stall(state)
         except Exception as exc:
             check('correo · el recorrido termina', False, f'{type(exc).__name__}: {str(exc)[:200]}')
         failed = rehearsal_media.FAILED

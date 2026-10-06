@@ -10,9 +10,12 @@ SMTP (y no escribe los correos en su registro), qué pasa si el servidor de
 correo rechaza la contraseña y qué pasa si no está.
 
     rehearsal_smtp_sink.py <puerto> <carpeta> [usuario contraseña]
+    rehearsal_smtp_sink.py <puerto> <carpeta> --stall
 
 Con usuario y contraseña, sólo acepta esa pareja (AUTH PLAIN o LOGIN); sin
-ellos acepta cualquiera. Cada mensaje queda en <carpeta>/NNNN.eml, y su sobre
+ellos acepta cualquiera. Con `--stall` acepta la conexión y no dice nada: es el
+servidor de correo que ha dejado de responder, el caso en el que la tienda
+tiene que cansarse de esperar. Cada mensaje queda en <carpeta>/NNNN.eml, y su sobre
 en la primera línea como comentario.
 
 Sólo la biblioteca estándar. No es un servidor de correo: no lo uses como tal.
@@ -39,6 +42,9 @@ class Handler(socketserver.StreamRequestHandler):
         return expected is None or (user, password) == expected
 
     def handle(self):
+        if self.server.stall:
+            self.rfile.read(1)      # hasta que el cliente se canse y cuelgue
+            return
         sender, recipients, authenticated = '', [], self.server.credentials is None
         self.reply('220 ensayo ESMTP')
         while True:
@@ -108,16 +114,17 @@ class Sink(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, port, folder, credentials=None, host='0.0.0.0'):
+    def __init__(self, port, folder, credentials=None, host='0.0.0.0', stall=False):
         os.makedirs(folder, exist_ok=True)
-        self.folder, self.credentials = folder, credentials
+        self.folder, self.credentials, self.stall = folder, credentials, stall
         super().__init__((host, port), Handler)
 
 
 def main():
     port, folder = int(sys.argv[1]), sys.argv[2]
-    credentials = (sys.argv[3], sys.argv[4]) if len(sys.argv) > 4 else None
-    with Sink(port, folder, credentials) as server:
+    stall = '--stall' in sys.argv[3:]
+    credentials = (sys.argv[3], sys.argv[4]) if len(sys.argv) > 4 and not stall else None
+    with Sink(port, folder, credentials, stall=stall) as server:
         print(f'sumidero SMTP en el puerto {port}', flush=True)
         server.serve_forever()
 
