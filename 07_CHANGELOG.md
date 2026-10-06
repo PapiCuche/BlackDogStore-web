@@ -3,6 +3,49 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-05 — PRODUCTION-READINESS-01
+
+**Added**
+- Tope de tamaño para el cuerpo de toda petición, por ruta: `store/request_limits.py`
+  (middleware) y los mismos números en `deploy/Caddyfile`.
+- Tiempos de espera en Caddy y lectura previa de los cuerpos pequeños.
+- Registro de acceso sin lo que una dirección puede llevar (`backend/log_redaction.py`,
+  `backend/gunicorn_logging.py`) y el mismo filtro en el registro de la aplicación.
+- `python manage.py ops_status` (sólo lectura): migraciones sin aplicar, notificaciones
+  de pago rechazadas, pagos esperando y avisos de WhatsApp fallidos o atrasados.
+- `deploy/healthcheck.sh` y `deploy/crontab.example`.
+- `backups/LAST_OK`: la hora de la última copia completa.
+- Rotación de los registros de cada contenedor (5 archivos de 10 MB).
+- Ficha de cliente › «Desvincular cuenta».
+- `deploy/rehearsal_flows.py`: el ensayo recorre límites, integridad de la notificación
+  de pago, un equipo con serie de la recepción a la venta, documentos, seguimiento,
+  WhatsApp y Google apagados, y lo que guardan los registros.
+
+**Changed**
+- Producción no arranca sin `EMAIL_BACKEND`.
+- gunicorn arranca sin socket de control.
+- `/seguimiento/<código>` responde `Referrer-Policy: no-referrer` en su cabecera.
+- La comprobación CSRF de la API lee el token sólo de la cabecera `X-CSRFToken`; ya no lo
+  acepta como campo de formulario (ninguna pantalla lo enviaba así).
+- El ensayo comprueba la portada V3 (ya no pide una variante de hero), la tienda a 390 y
+  1440 px sin imágenes rotas ni errores de script, y las pantallas nuevas del panel.
+- `.gitignore` y los `.dockerignore`: variantes de `.env`, claves, volcados y la
+  configuración real del agente de impresión.
+
+**Fixed**
+- DOC-TIMEZONE: la nota de venta, su ticket, la salida térmica y el comprobante de pedido
+  imprimían la hora en UTC (una venta de las 21:30 salía fechada al día siguiente).
+- BACKUP-FILES-PARTIAL: un archivo de imágenes y evidencias cortado quedaba como copia.
+- RESTORE-LATE-CHECK: la restauración miraba el archivo de imágenes después de haber
+  reemplazado la base de datos.
+- GUNICORN-CONTROL-SOCKET: un `[ERROR]` en cada arranque del backend.
+- SLOW-BODY: nueve peticiones a medio enviar, sin sesión, dejaban la API sin responder.
+- BODY-LIMIT-502: una petición demasiado grande recibía a veces 502 en vez de 413.
+- CSRF-BODY-READ: una cuenta sin permiso podía hacer que el servidor recibiera y guardara
+  una subida completa antes de negársela.
+- REHEARSAL-HERO-V3: el ensayo fallaba en `master` por una comprobación de la portada
+  anterior.
+
 ## 2026-10-05 — PAYMENTS-EQUIPMENT-DOCUMENTS
 
 **Added**

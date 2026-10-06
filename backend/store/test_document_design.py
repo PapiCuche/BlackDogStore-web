@@ -371,7 +371,47 @@ class OrderReceiptTest(DocumentBase):
             self.assertNotIn(claim, text)
 
 
+class DocumentDatesTest(DocumentBase):
+    def test_dates_are_printed_in_the_shops_time_not_in_utc(self):
+        """
+        DOC-TIMEZONE. The database keeps instants in UTC and the documents printed
+        them as stored: a sale at 21:30 in Lima came out dated 02:30 of the next
+        day, on the note, on its ticket and on the order receipt.
+        """
+        from datetime import datetime, timezone as dt_timezone
+
+        from store.models import SalesNote
+        from store.printing.escpos import sales_note_ticket
+
+        evening_in_lima = datetime(2026, 3, 10, 2, 30, tzinfo=dt_timezone.utc)   # 09/03 21:30 en Lima
+        order = self.sale([(self.case, 1)])
+        Order.objects.filter(pk=order.pk).update(paid_at=evening_in_lima, created_at=evening_in_lima)
+        order.refresh_from_db()
+        note = self.note_for(order)
+        SalesNote.objects.filter(pk=note.pk).update(issued_at=evening_in_lima)
+        note.refresh_from_db()
+
+        documents = {
+            'la nota A4': text_of(generate_sales_note_pdf(note)),
+            'el ticket': text_of(generate_sales_note_ticket_pdf(note)),
+            'la salida térmica': sales_note_ticket(note).decode('cp858', 'replace'),
+            'el comprobante de pedido': text_of(generate_order_receipt_pdf(order)),
+        }
+        for name, text in documents.items():
+            self.assertIn('09/03/2026 21:30', text, name)
+            self.assertNotIn('10/03/2026', text, name)
+
+
 class SharedDesignTest(SimpleTestCase):
+    def test_a_stamp_takes_whatever_the_models_hold(self):
+        from datetime import date, datetime
+
+        from store.document_style import local_stamp
+
+        self.assertEqual(local_stamp(None), '—')
+        self.assertEqual(local_stamp(date(2026, 3, 9), '%d/%m/%Y'), '09/03/2026')
+        self.assertEqual(local_stamp(datetime(2026, 3, 9, 21, 30)), '09/03/2026 21:30')
+
     def test_amounts_are_spelled_the_way_a_peruvian_document_spells_them(self):
         from store.document_style import amount_in_words
 

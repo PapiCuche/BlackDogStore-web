@@ -279,6 +279,54 @@ ADR por dominio, que no se reescriben.
 - Las pruebas leen el texto y la estructura (tamaño de página, imágenes, páginas). No
   comparan bytes. `DOCUMENT_SAMPLES_DIR` deja los PDF para revisarlos a la vista.
 
+### DEC-LIMIT-01 · El tamaño de una petición se decide una vez y se aplica tres
+
+- Nada limitaba el cuerpo de una petición. Caddy lo dejaba pasar entero y Django no
+  tiene un tope que cubra esta API: un JSON se lee del flujo sin límite y un formulario
+  con archivos se escribe en disco, del tamaño que sea, en cualquier ruta —el inicio de
+  sesión incluido—.
+- **Una tabla, tres aplicaciones.** `store/request_limits.py` dice qué admite cada ruta:
+  lo que su pantalla acepta más el sobre del formulario para las que reciben archivos,
+  1 MiB para el resto. Un middleware rechaza por la longitud declarada antes de leer;
+  `deploy/Caddyfile` repite los mismos números para cortar en el borde; la vista
+  conserva su regla, que es la que sabe explicarse.
+- **Quien responde 413 es el proxy.** Compara la longitud anunciada con el tope de la
+  ruta y contesta sin llamar a ninguna aplicación. Dejar que lo hiciera Django daba 502
+  una de cada diez veces: Django contesta y cierra sin leer el cuerpo que el proxy
+  todavía le estaba enviando. El middleware de Django se queda como segunda línea, para
+  una instalación sin este proxy delante.
+- **Los números están escritos dos veces a propósito.** Caddy no puede leer Python. Una
+  prueba compara los dos archivos y falla si dejan de coincidir, o si una vista empieza
+  a recibir archivos sin tener su tramo.
+- Una ruta que nadie listó recibe el tope pequeño: lo nuevo falla cerrado.
+- El cuerpo sin longitud declarada (por trozos) no es una vía: Django entrega a la vista
+  un flujo limitado a la longitud declarada, que entonces es cero.
+- **El proxy lee el cuerpo entero antes de pasarlo donde Django lo leería sin saber quién
+  llama**: la ruta general y las dos que reciben llamadas de fuera (notificación de pago,
+  webhook de WhatsApp). Django atiende con ocho hilos; sin eso, nueve cuerpos que no
+  terminan de llegar dejan a la API sin hilos. Cada tramo declara si es de ésos
+  (`read_without_session`) y la prueba exige que el proxy lea exactamente ésos.
+- **Las rutas de archivos no se leen antes de autorizar.** Para que sea verdad, la
+  comprobación CSRF toma el token sólo de la cabecera: Django lo busca primero en el
+  formulario, y buscarlo ahí es leer la subida entera antes de saber si quien la envía
+  puede enviarla.
+
+### DEC-LOG-01 · Los registros no guardan lo que una dirección puede llevar
+
+- El registro de acceso escribía la línea de cada petición. Una dirección puede ser una
+  credencial (el enlace de seguimiento de una reparación, el token de una invitación, el
+  token con que Meta verifica un webhook) o llevar lo que alguien escribió en un
+  buscador (un IMEI, un documento, un teléfono).
+- **Una ruta conserva su forma y pierde el token. Una consulta conserva sus claves y
+  sólo los valores de una lista corta de claves inocuas** (`page`, `branch`, `status`…).
+  Negar por omisión: un parámetro en el que nadie pensó sale oculto, no a la vista.
+- La misma regla filtra las líneas que escribe la aplicación (Django nombra la ruta de
+  cada petición que rechaza).
+- Producción no arranca sin `EMAIL_BACKEND`: el valor de desarrollo escribe cada correo,
+  con sus enlaces de un solo uso, en ese mismo registro.
+- Lo que no se hizo: enmascarar el identificador de un inicio de sesión fallido. Es lo
+  que permite investigar un ataque, y la contraseña nunca se registra.
+
 ### DEC-FISC-PRINT-01 · La representación impresa sigue los Anexos I y II de la RS 114-2019
 
 - Fuente: los anexos oficiales de SUNAT (RS 114-2019, que sustituyen a los Anexos 1 y 2

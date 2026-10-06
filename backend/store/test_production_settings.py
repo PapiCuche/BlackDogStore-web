@@ -81,6 +81,23 @@ class ProductionSettingsTest(SimpleTestCase):
 
     # SEC-SET-03 ------------------------------------------------------------
 
+    def test_production_refuses_to_guess_how_mail_leaves(self):
+        """
+        The default mail backend prints every message to stdout: verification,
+        password-reset and invitation links, token included. In development that
+        is the point. In production a missing line must not turn the container
+        log into a list of working links.
+        """
+        self.refused('EMAIL_BACKEND', EMAIL_BACKEND=None)
+        self.refused('EMAIL_BACKEND', EMAIL_BACKEND='')
+
+    def test_production_accepts_a_mail_backend_that_was_chosen(self):
+        self.ok(EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend')
+        self.ok(EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend', EMAIL_HOST='smtp.example')
+
+    def test_development_keeps_the_console_default(self):
+        self.ok(DEBUG='1', EMAIL_BACKEND=None)
+
     def test_samesite_none_is_refused(self):
         """
         With SameSite=None the refresh cookie travels on cross-site requests,

@@ -47,6 +47,25 @@ LOGO_TICKET_MM = (42, 16)
 NBSP = ' '
 
 
+def local_stamp(moment, fmt: str = '%d/%m/%Y %H:%M') -> str:
+    """
+    An instant, written the way the shop's clock read it.
+
+    The database keeps instants in UTC and hands them back in UTC. Printed as
+    stored, a sale at 21:30 in Lima is dated 02:30 of the next day
+    (DOC-TIMEZONE). Every date a document shows to a person goes through here.
+    """
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    if moment is None:
+        return '—'
+    if isinstance(moment, datetime) and timezone.is_aware(moment):
+        moment = timezone.localtime(moment)
+    return moment.strftime(fmt)
+
+
 def money(symbol: str, amount) -> str:
     """`S/ 1499.00`. The symbol, never the ISO code, and always two decimals."""
     return f'{symbol} {Decimal(amount):.2f}'

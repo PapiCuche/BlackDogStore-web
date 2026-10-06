@@ -86,9 +86,11 @@ const SECURITY_HEADERS = [
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
 
-// Pages whose URL carries a one-time token. Listed AFTER the general rule:
-// when two rules set the same header, the last one wins.
-const TOKEN_IN_URL_PAGES = ["/auth/verify-email", "/auth/reset-password", "/invitacion"];
+// Pages whose URL carries a token. Listed AFTER the general rule: when two
+// rules set the same header, the last one wins. A repair's tracking link is
+// not one-time, which makes it matter more: whoever holds it can answer the
+// quote as the customer.
+const TOKEN_IN_URL_PAGES = ["/auth/verify-email", "/auth/reset-password", "/invitacion", "/seguimiento/:token"];
 
 const nextConfig: NextConfig = {
   async headers() {

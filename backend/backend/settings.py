@@ -176,6 +176,10 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    # BODY-LIMIT. Antes que nada que pueda leer el cuerpo: rechaza por la
+    # longitud declarada. La tabla vive en store/request_limits.py y el proxy
+    # (deploy/Caddyfile) repite los mismos números.
+    'store.request_limits.RequestBodyLimitMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -305,6 +309,10 @@ IMPORT_IMAGES_ZIP_MAX_RATIO = env.int('IMPORT_IMAGES_ZIP_MAX_RATIO', default=200
 # la misma petición: el tope de Django tiene que quedar por encima del nuestro,
 # que es el que sabe explicarse.
 DATA_UPLOAD_MAX_NUMBER_FILES = IMPORT_IMAGES_MAX_FILES + 20
+# Lo que Django acepta tener en memoria de un cuerpo que no es un archivo. El
+# tope por ruta lo pone store/request_limits.py; éste sólo no debe quedar por
+# debajo del mayor cuerpo sin archivos que se lee entero: el webhook de WhatsApp.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 3 * 1024 * 1024
 
 SERVICE_EVIDENCE_MAX_UPLOAD_BYTES = env.int(
     'SERVICE_EVIDENCE_MAX_UPLOAD_BYTES', default=25 * 1024 * 1024
@@ -486,7 +494,17 @@ if not DEBUG:
     _require_public_url('CHECKOUT_RETURN_URL', CHECKOUT_RETURN_URL)
 
 # Email
-EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+#
+# The console backend prints every message to stdout — verification, reset and
+# invitation links included. It is the development default and nothing else: in
+# production how mail leaves has to be CHOSEN, so that a missing line cannot turn
+# the container log into a list of working links (MAIL-CONSOLE-DEFAULT).
+EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend' if DEBUG else '')
+if not EMAIL_BACKEND:
+    raise ImproperlyConfigured(
+        "EMAIL_BACKEND must be set in production "
+        "(e.g. EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend)."
+    )
 # Transport-level sender. Platform configuration, not tenant configuration:
 # the SMTP credentials behind it belong to the operator, and a per-tenant
 # sender would need per-tenant SMTP — explicitly out of scope (no secrets in
@@ -569,8 +587,12 @@ LOGGING = {
     'formatters': {
         'plain': {'format': '%(asctime)s %(levelname)s %(name)s %(message)s'},
     },
+    # LOG-REDACT: a URL can be a credential. See backend/log_redaction.py.
+    'filters': {
+        'redact': {'()': 'backend.log_redaction.RedactingFilter'},
+    },
     'handlers': {
-        'console': {'class': 'logging.StreamHandler', 'formatter': 'plain'},
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'plain', 'filters': ['redact']},
     },
     'root': {
         'handlers': ['console'],

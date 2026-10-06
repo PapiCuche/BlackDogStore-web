@@ -10,6 +10,53 @@
 	{$CADDY_TLS_DIRECTIVE}
 }
 
+# TIEMPOS DE ESPERA (PROXY-TIMEOUTS). Sin ellos, quien abre una conexión y no
+# envía nada, o envía un byte por minuto, la conserva el tiempo que quiera.
+#
+#   read_header  lo que tarda una petición en decir qué pide;
+#   read_body    lo que puede tardar su cuerpo: una carga masiva de 111 MiB por
+#                una conexión doméstica lenta cabe; un cuerpo que no avanza, no;
+#   idle         una conexión abierta sin ninguna petición.
+#
+# LO QUE CADDY ESCRIBE EN SU PROPIO REGISTRO (LOG-REDACT). No lleva registro de
+# acceso, pero cuando no alcanza a una aplicación anota la petición que estaba
+# atendiendo, con su dirección entera y su referente: el enlace de seguimiento
+# de una reparación, o lo que alguien escribió en un buscador. Se quitan esos
+# dos campos; el método, el host y el error siguen ahí.
+{
+	servers {
+		timeouts {
+			read_header 15s
+			read_body 15m
+			idle 2m
+		}
+	}
+	log default {
+		format filter {
+			fields {
+				request>uri delete
+				request>headers>Referer delete
+			}
+		}
+	}
+}
+
+# DEMASIADO GRANDE, DICHO POR CADDY (BODY-LIMIT). Si la petición anuncia más de
+# lo que su ruta admite, se rechaza aquí con 413 sin leer nada y sin llamar a
+# ninguna aplicación. `max_size`, más abajo, es la segunda línea: corta un
+# cuerpo que no anunció su tamaño o que mintió.
+#
+# Por qué no basta con que lo rechace Django: lo hace, pero contesta y cierra
+# sin leer el cuerpo, y Caddy —que aún se lo estaba enviando— respondía a
+# veces 502 en vez de 413.
+#
+#   import too_large <nombre> <bytes>
+(too_large) {
+	@over_{args[0]} expression `{header.Content-Length} != "" && int({header.Content-Length}) > {args[1]}`
+	header @over_{args[0]} Content-Type application/json
+	respond @over_{args[0]} `{"detail":"La petición es demasiado grande."}` 413
+}
+
 {$SITE_DOMAIN} {
 	import tls_mode
 	encode zstd gzip
@@ -44,10 +91,101 @@
 		# hace el proxy de Next: añadirla antes de reenviar.
 		@noslash not path */
 		rewrite @noslash {path}/
-		reverse_proxy backend:8000
+
+		# TAMAÑO MÁXIMO DEL CUERPO, POR RUTA (BODY-LIMIT).
+		#
+		# Ninguna petición cruza sin tope. Cada ruta que recibe archivos admite
+		# lo que su pantalla acepta más el sobre del formulario; el resto, 1 MiB.
+		# Lo que exceda se corta aquí con 413 y no llega entero a Django.
+		#
+		# ESTA TABLA ES LA DE `backend/store/request_limits.py`, escrita dos
+		# veces porque este archivo no puede leer Python. La prueba
+		# `store.test_request_limits` falla si dejan de coincidir: quien suba un
+		# límite en un sitio tiene que subirlo en el otro.
+		@limit_payment_notification path_regexp ^/api/payments/(izipay|micuentaweb)/notification/?$
+		handle @limit_payment_notification {
+			import too_large payment_notification 131072
+			request_body {
+				max_size 128KiB
+			}
+			reverse_proxy backend:8000 {
+				request_buffers 128KiB
+			}
+		}
+
+		@limit_whatsapp_webhook path_regexp ^/api/v1/webhooks/whatsapp/[^/]+/?$
+		handle @limit_whatsapp_webhook {
+			import too_large whatsapp_webhook 3145728
+			request_body {
+				max_size 3MiB
+			}
+			reverse_proxy backend:8000 {
+				request_buffers 3MiB
+			}
+		}
+
+		@limit_image path_regexp ^/api/admin/(storefront/images|products/[0-9]+/images)/?$
+		handle @limit_image {
+			import too_large image 9437184
+			request_body {
+				max_size 9MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_evidence path_regexp ^/api/v1/internal/[^/]+/service/orders/[0-9]+/evidence/?$
+		handle @limit_evidence {
+			import too_large evidence 27262976
+			request_body {
+				max_size 26MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview)/?$
+		handle @limit_workbook {
+			import too_large workbook 11534336
+			request_body {
+				max_size 11MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		@limit_product_import path_regexp ^/api/admin/products/import/preview/?$
+		handle @limit_product_import {
+			import too_large product_import 116391936
+			request_body {
+				max_size 111MiB
+			}
+			reverse_proxy backend:8000
+		}
+
+		# El resto de la API. Además del tope, Caddy LEE EL CUERPO ENTERO antes
+		# de pasar la petición (SLOW-BODY): Django atiende con ocho hilos, y un
+		# cuerpo que llega a cuentagotas ocuparía uno mientras dure. Con nueve
+		# peticiones así, sin sesión, la API dejaba de responder.
+		#
+		# Lo mismo en las dos rutas de arriba que reciben llamadas de fuera —la
+		# notificación de pago y el webhook de WhatsApp—, cuya vista lee el
+		# cuerpo sin que nadie haya probado quién es. En las de archivos no: el
+		# cuerpo es grande, y Django no lo lee hasta haber comprobado la sesión,
+		# la cabecera CSRF y el permiso.
+		handle {
+			import too_large api 1048576
+			request_body {
+				max_size 1MiB
+			}
+			reverse_proxy backend:8000 {
+				request_buffers 1MiB
+			}
+		}
 	}
 
 	handle {
+		import too_large pages 1048576
+		request_body {
+			max_size 1MiB
+		}
 		reverse_proxy frontend:3000
 	}
 }

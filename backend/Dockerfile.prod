@@ -36,8 +36,17 @@ EXPOSE 8000
 # LAS MIGRACIONES NO SE APLICAN AL ARRANCAR. Algunas cambian datos y una (0025)
 # puede detenerse a pedir una decisión. Aplicarlas es un paso explícito del
 # despliegue: ver docs/despliegue-produccion.md.
+#
+# EL REGISTRO DE ACCESO NO GUARDA LO QUE UNA URL PUEDE LLEVAR: el enlace de
+# seguimiento de una reparación, el token de una invitación, un IMEI escrito en
+# un buscador (LOG-REDACT, backend/log_redaction.py).
+#
+# Sin socket de control: gunicorn 26 lo abre bajo /app, donde este usuario no
+# escribe, y deja un ERROR en cada arranque por una función que no se usa.
 CMD ["gunicorn", "backend.wsgi:application", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "1", "--threads", "8", \
      "--timeout", "60", \
+     "--no-control-socket", \
+     "--logger-class", "backend.gunicorn_logging.RedactingLogger", \
      "--access-logfile", "-", "--error-logfile", "-"]

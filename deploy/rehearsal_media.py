@@ -79,7 +79,12 @@ class Client:
         if method not in ('GET', 'HEAD') and 'csrftoken' in self.cookies:
             headers['X-CSRFToken'] = self.cookies['csrftoken']
         conn = Conn(DOMAIN, timeout=60)
-        conn.request(method, path, body=body, headers=headers)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+        except (BrokenPipeError, ConnectionResetError):
+            # La tienda contestó y cerró sin esperar el resto del cuerpo: es lo
+            # que hace con uno que excede su tope. La respuesta ya está escrita.
+            pass
         res = conn.getresponse()
         data = res.read()
         for value in res.headers.get_all('Set-Cookie') or []:
@@ -196,8 +201,11 @@ def public_checks(urls):
           res.status == 200 and page.get('hero_image_url') == urls['hero']
           and page.get('services_image_url') == urls['servicio']
           and page.get('location_image_url') == urls['ubicación'] and page.get('hero_variant') == 'light')
+    # La portada (V3) no tiene variantes de hero: pinta la imagen que la tienda
+    # colocó. `hero_variant` sigue en la API por compatibilidad y no decide nada.
     res, html = anonymous.request('GET', '/', origin=False)
-    check('la portada se sirve con el hero claro', res.status == 200 and b'data-hero-variant="light"' in html)
+    check('la portada se sirve con la imagen del hero que la tienda colocó',
+          res.status == 200 and urls['hero'].encode() in html)
 
 
 def private_checks(state, staff=None):
@@ -276,7 +284,10 @@ def upload():
         ('HTML disfrazado de PNG', 'pagina.png', b'<html><script>alert(1)</script></html>', 'image/png'),
         ('GIF', 'animado.gif', gif, 'image/gif'),
         ('PNG truncado', 'roto.png', png()[:60], 'image/png'),
-        ('archivo de 9 MB', 'grande.png', png() + b'\x00' * (9 * 1024 * 1024), 'image/png'),
+        # Más de lo que la pantalla acepta (8 MB) y menos que el tope del borde
+        # (9 MiB): llega a la vista, y es ella quien lo rechaza y lo explica. Lo
+        # que excede el tope del borde lo recorre `rehearsal_flows.py`.
+        ('archivo de 8,5 MB', 'grande.png', png() + b'\x00' * (8 * 1024 * 1024 + 512 * 1024), 'image/png'),
     ):
         res, _ = admin.upload(target, 'file', name, content, kind)
         check(f'rechazo · {label}', res.status in (400, 413), res.status)

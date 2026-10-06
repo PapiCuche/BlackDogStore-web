@@ -19,6 +19,7 @@ from .models import (
     Review, Coupon, UserProfile, assert_items_match_order,
 )
 from . import checkout_services as checkout
+from . import request_limits
 from .payments import izipay, micuentaweb
 from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
@@ -312,7 +313,7 @@ def _payment_session_payload(order, payment) -> dict:
 
 #: A gateway notification is a few kilobytes. These endpoints take no session and
 #: no throttle, so the size of what they will hold in memory is their own limit.
-MAX_NOTIFICATION_BYTES = 128 * 1024
+MAX_NOTIFICATION_BYTES = request_limits.PAYMENT_NOTIFICATION_BYTES
 
 
 class _SignedNotificationMixin:

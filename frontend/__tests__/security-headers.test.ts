@@ -66,7 +66,10 @@ describe('cabeceras de seguridad del frontend', () => {
     expect(directives).toEqual(['base-uri', 'frame-ancestors']);
   });
 
-  it.each(['/auth/verify-email', '/auth/reset-password', '/invitacion'])(
+  // `/seguimiento/<código>`: el código ES la credencial de la reparación. La
+  // página ya lo pide con una etiqueta `meta`; la cabecera vale antes de que
+  // el navegador haya leído el documento.
+  it.each(['/auth/verify-email', '/auth/reset-password', '/invitacion', '/seguimiento/:token'])(
     '%s no entrega su token en el referente',
     async (source) => {
       const all = await rules();
