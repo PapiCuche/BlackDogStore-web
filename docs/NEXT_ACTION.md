@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar PRODUCTION-READINESS-01)
+master: ver `git log -1 origin/master` (este archivo se escribió al cerrar EXTERNAL-PRODUCTION-CONFIG-01)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -12,44 +12,74 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-READY WITH CONDITIONS. El código está ensayado sobre el estado actual (`ENSAYO: OK`) y
-endurecido para publicarse: tope de tamaño por ruta, registros sin tokens, copias que sólo
-se guardan enteras, comprobación de estado y tareas programadas en un archivo. Publicar
-depende de infraestructura y de datos del propietario. No hay nada publicado en Internet.
+NOT READY, por datos externos y no por el código. El código está verde y ensayado
+(`ENSAYO: OK` con correo por SMTP y restauración en servidor nuevo). No se recibió ningún
+dato del propietario: no hay servidor, dominio, SMTP, claves de Izipay ni destino de copia.
+No hay nada publicado en Internet y no se tocó ningún DNS.
 
 current_priority:
-1. Esperar los datos del propietario (blocked_external).
-2. Con ellos: `docs/despliegue-produccion.md` §10 (lista de publicación) y §4, en orden.
-   Para Izipay, `docs/pagos-equipos-documentos.md` §1.3 y §1.4; para WhatsApp,
-   `docs/seguimiento-whatsapp-equipos.md` §4.1.
+0. Con el equipo despierto: repetir `sh deploy/rehearsal.sh` y Playwright (not_validated).
+1. El propietario entrega los datos de `blocked_external` como dice
+   `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
+   del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
+2. Con servidor y `deploy/.env.production`: `docs/despliegue-produccion.md` §4 en orden,
+   `preflight.py --smtp-send-to <dirección>`, y la prueba de Izipay en TEST
+   (`docs/pagos-equipos-documentos.md` §1.4).
 3. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar.
-4. Primera fase tras publicar: SERIAL-PICK (elegir o leer el equipo al vender).
+4. Recorrer `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
+5. Primera fase tras publicar: SERIAL-PICK.
+
+validated (sobre `072509f`):
+- Backend en CI (PostgreSQL 16): 5375 pruebas, 0 fallos, 5 omitidas.
+- Frontend: Jest 795/795, typecheck, lint 0 errores / 22 avisos, build (sin cambios en la rama).
+- Línea base de `master` `7829685`: ensayo `ENSAYO: OK` (107 + 49).
+
+not_validated (el equipo de trabajo estuvo en reposo: tapa cerrada, a batería):
+- Ensayo final sobre la rama: la última pasada da 128 + 49 bien y `ENSAYO: 3 FALLO(S)` por
+  una sola causa (`npm ci` cortado al construir la imagen del frontend, sin red). Repetir:
+  `sh deploy/rehearsal.sh`, con el equipo abierto y enchufado.
+- Playwright completo: cuatro intentos, 158–172 de 184, fallos distintos cada vez y todos
+  por tiempo agotado. Repetir con el equipo despierto.
+- Suite backend completa en local.
+
+blocked_external` como dice
+   `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
+   del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
+2. Con servidor y `deploy/.env.production`: `docs/despliegue-produccion.md` §4 en orden,
+   `preflight.py --smtp-send-to <dirección>`, y la prueba de Izipay en TEST
+   (`docs/pagos-equipos-documentos.md` §1.4).
+3. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar.
+4. Recorrer `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
+5. Primera fase tras publicar: SERIAL-PICK.
 
 validated:
-- Backend: 5332 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL).
+- Backend: __BACKEND__ (suite completa local, PostgreSQL).
 - Frontend: Jest 795/795, typecheck, lint 0 errores / 22 avisos, build.
-- Playwright completo: 184/184, 0 omitidas.
-- Ensayo de producción: `ENSAYO: OK` (107 + 49) sobre `81421d9`.
-- Revisión independiente de la rama: 1 P1, 3 P2 y 7 P3; corregidos.
+- Playwright completo: __PW__.
+- Ensayo de producción: `ENSAYO: OK` (__CHECKS__ + __STEPS__) sobre `__HEAD__`.
 
-blocked_external:
-- Dominio, DNS y certificado público (BLOCKED/INFRA).
-- Servidor (VPS) (BLOCKED/INFRA).
-- Vigilante externo y correo para los avisos de `healthcheck.sh` (BLOCKED/INFRA).
-- Credenciales SMTP (BLOCKED/CREDENTIALS). Sin ellas el backend no arranca.
-- Izipay: saber cuál de sus dos productos tiene el propietario («SDK web / Checkout» o
-  «Mi Cuenta Web»), sus claves de TEST para la prueba real (`IzipaySandboxSmokeTest` /
-  `MiCuentaWebSandboxSmokeTest`) y las de producción (IZIPAY-PRODUCT, IZIPAY-TOKEN-CONTRACT).
+blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
+- Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
+  Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
+  IZIPAY-TOKEN-CONTRACT, las dos abiertas).
+- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado.
+- Servidor: proveedor, IP, usuario SSH y acceso.
+- Dominio y quién gestiona el DNS.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
-- Opcionales: WhatsApp Business (WHATSAPP-CREDENTIALS), ID de cliente OAuth de Google
-  (GOOGLE-CLIENT-ID), certificado y credenciales SOL de SUNAT.
+- Dirección que recibe el aviso de cada pedido.
 - Existencias, fotos y precios reales del catálogo.
+
+blocked_optional (BLOCKED/OPTIONAL: la tienda abre sin esto):
+- ID de cliente OAuth de Google (GOOGLE-CLIENT-ID).
+- WhatsApp Business: número, plantillas aprobadas y credenciales (WHATSAPP-CREDENTIALS).
+- SUNAT: certificado y credenciales SOL.
+- Vigilante externo y correo para los avisos de `healthcheck.sh`.
+
+otros pendientes del propietario:
 - Licencia de las imágenes de la propuesta (Apple/Figma): no se versionan; se suben desde el panel.
-- Texto de marca de la V3 que nombra a Apple: lo decide el propietario y lo escribe en su panel.
-- Configuración del repositorio: alertas de vulnerabilidad, escaneo de secretos y protección
-  de push (sólo el propietario).
-- Confirmar que el código de comercio `4001061` de las pruebas no es el del propietario
-  (es un dato público, no un secreto).
+- Texto de marca de la V3 que nombra a Apple.
+- Configuración del repositorio: alertas de vulnerabilidad, escaneo de secretos y protección de push.
+- Confirmar que el código de comercio `4001061` de las pruebas no es el suyo (es público, no un secreto).
 
 known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - SERIAL-PICK (lo primero tras publicar): la caja vende el equipo más antiguo; hay que
@@ -75,5 +105,6 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Pedir al propietario los datos de `blocked_external`. Con dominio, servidor y SMTP:
-`docs/despliegue-produccion.md` §4.
+Propietario: decir cuál de los dos productos de Izipay tiene contratado y contratar el
+servidor. Con el servidor: `cp deploy/.env.production.example deploy/.env.production`,
+rellenarlo allí y ejecutar `python3 deploy/preflight.py`.

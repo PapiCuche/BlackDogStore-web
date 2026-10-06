@@ -3,6 +3,82 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01: configuración externa, sin publicar
+
+Rama `chore/external-production-config-01`, desde `master` `7829685` (merge de #88). Sin
+migraciones. Operación: [docs/despliegue-produccion.md](docs/despliegue-produccion.md)
+(§3 entrega de datos y `preflight`, §9 ensayo, §11 qué tiene que estar comprobado antes
+de abrir). Nada está publicado en Internet.
+
+**Estado: NOT READY.** No por el código, que está verde y ensayado, sino porque **no se
+recibió ningún dato del propietario**: no hay servidor, dominio, SMTP, claves de Izipay ni
+destino de la copia externa. Sin Izipay validado en TEST y sin correo real probado, la
+tienda no se puede abrir si va a cobrar en línea.
+
+**Línea base, medida sobre `master` `7829685`:**
+
+| Medida | Resultado |
+|---|---|
+| Jest · tipos · lint · build | 795/795 · limpio · 0 errores, 22 avisos · correcto |
+| `manage.py check` · `makemigrations --check` | sin incidencias · sin cambios pendientes |
+| Ensayo de producción | `ENSAYO: OK`, 107 comprobaciones y 49 pasos de navegador |
+| Backend, suite completa en local | 5332 pruebas, 1 fallo, 5 omitidas. El fallo es una prueba de límite por minuto (`P0BThrottleSpoofingTest`) cuyas peticiones se repartieron en más de un minuto porque el equipo entró en reposo a mitad; sola pasa (6 de 6). En CI, sobre el mismo árbol: 5332, 0 fallos |
+| Playwright completo | **Sin pasada válida.** Cuatro intentos, entre 158 y 172 pasadas de 184 y entre 2 y 8 fallos cada vez, distintos en cada intento y todos por tiempo agotado: el equipo estaba con la tapa cerrada y a batería, y entra en reposo unos 15 minutos de cada 16. La última pasada limpia (184/184) es la de PRODUCTION-READINESS-01, con el mismo frontend |
+
+**El equipo de trabajo entró en reposo durante la fase.** Lo que necesita media hora
+seguida despierto —Playwright y el ensayo— no se puede medir con fiabilidad hasta que
+esté abierto y enchufado. No se cambió ningún ajuste de energía.
+
+| Asunto | Estado | Por qué |
+|---|---|---|
+| Producto de Izipay contratado (IZIPAY-PRODUCT) | BLOCKED/OWNER-DATA | No se ha dicho cuál de los dos. No se asume: los dos adaptadores siguen detrás de `PAYMENT_PROVIDER` |
+| Prueba contra la pasarela en TEST (IZIPAY-TOKEN-CONTRACT) | BLOCKED/OWNER-DATA | Sin claves de TEST, `IzipaySandboxSmokeTest` y `MiCuentaWebSandboxSmokeTest` se omiten. Ninguna de las dos incidencias se cierra |
+| Servidor, dominio, DNS | BLOCKED/OWNER-DATA | No hay servidor al que entrar ni dominio que configurar. No se tocó ningún DNS |
+| SMTP real | BLOCKED/OWNER-DATA | Sin credenciales. Lo que sí se comprobó: la tienda envía por SMTP de verdad a un servidor de correo del ensayo |
+| Copia externa | BLOCKED/OWNER-DATA | No hay destino. La restauración sí quedó probada en un «servidor nuevo» |
+| Tareas programadas y comprobación de estado en el servidor | BLOCKED/OWNER-DATA | No hay servidor. Los cinco comandos corren en el ensayo |
+| «Continuar con Google» | BLOCKED/OPTIONAL | Sin ID de cliente. La tienda funciona sin él (ensayado) |
+| WhatsApp | BLOCKED/OPTIONAL | Sin credenciales. Las órdenes de servicio funcionan sin él (ensayado) |
+| SUNAT | BLOCKED/OPTIONAL | La emisión real no entra en la primera publicación (`FISCAL_ENABLED=0`) |
+| Ensayo con configuración equivalente a producción | **Pendiente de una pasada limpia** | Sobre `072509f`: 128 comprobaciones y 49 pasos de navegador pasan —correo por SMTP, servidor de correo caído, mudo o rechazando la contraseña, y restauración en servidor nuevo incluidos— y 3 fallan por una sola causa ajena al código: `npm ci` se cortó al construir la imagen del frontend, con el equipo en reposo y la red caída. `ENSAYO: 3 FALLO(S)` no vale como ensayo final: hay que repetirlo con el equipo despierto |
+
+**Hecho en la fase, sin datos externos**
+
+| Qué | Para qué |
+|---|---|
+| `deploy/preflight.py` | Dice qué falta, qué es opcional y qué se contradice en el archivo de variables, **sin imprimir ningún valor**. Sabe a cuál de los dos productos de Izipay pertenecen las claves y rechaza un juego mezclado. Es la forma de entregar los datos sin pasarlos por un chat |
+| Correo por SMTP en el ensayo | Registro con verificación, recuperación de contraseña, servidor de correo caído y contraseña rechazada, contra un servidor de correo propio. Ningún enlace de un solo uso queda en el registro |
+| Restauración en un «servidor nuevo» | El procedimiento de la guía (§6.4), hecho: otro proyecto de Docker, volúmenes vacíos, el mismo archivo de variables. Datos, archivos y enlace de seguimiento, iguales |
+| Guía: entrega de datos, criterios de salida y tabla exacta de lo que falta | §3 y §11 |
+
+**Corregido en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| MAIL-TIMEOUT (P2) | Django espera a un servidor de correo sin límite, y un registro o una recuperación de contraseña envían su mensaje dentro de la petición. Con ocho hilos, un proveedor que dejara de responder tumbaría la API registro a registro. Ahora espera 10 segundos (`EMAIL_TIMEOUT`) |
+| MAIL-SSL (P3) | Sólo se podía configurar STARTTLS (puerto 587). Hay proveedores que sólo ofrecen el 465. Se lee `EMAIL_USE_SSL`, y pedir los dos cifrados a la vez se rechaza al arrancar |
+
+**Revisión independiente de la rama:** 2 P1, 5 P2 y 7 P3, todos en la herramienta nueva o
+en el ensayo; corregidos con prueba (`5cd9a3d`, `072509f`).
+
+| ID | Qué pasaba |
+|---|---|
+| PREFLIGHT-ECHO (P1) | `preflight.py` rompía su propia regla: escribía tal cual el servidor y el puerto del correo (una dirección con la contraseña dentro salía entera), aceptaba como dominio cualquier cosa con un punto, y un número mal escrito terminaba en una traza que lo citaba. Ahora sólo imprime un dominio o un servidor si tienen forma de serlo, y ningún error se muestra con el texto que lo provocó |
+| PREFLIGHT-PARSE (P2) | Leía el archivo a su manera, no como Compose y Django: una línea `EMAIL_USE_TLS=` vacía le parecía STARTTLS (Django la lee como «no»: la contraseña del correo habría viajado en claro), no entendía un comentario tras un valor ni las líneas con `export`, y daba por apagado un WhatsApp que la aplicación da por encendido |
+| PREFLIGHT-PLAIN-AUTH (P2) | Con `--smtp` entraba al servidor de correo con la contraseña real justo después de avisar de que la conexión iba sin cifrar |
+| REHEARSAL-TIMEOUT-UNTESTED (P2) | Los dos casos de «servidor de correo caído» fallaban al instante y no ejercitaban `EMAIL_TIMEOUT`. Se añadió un servidor que acepta la conexión y calla: la tienda espera lo configurado (medido: 10,1 s con el valor por omisión de 10) y contesta |
+| REHEARSAL-CLEANUP (P3) | Un fallo en mitad del paso de «servidor nuevo» dejaba atrás los volúmenes del primer proyecto |
+
+**Sin cambios, a propósito:** SERIAL-PICK, SERIAL-TRANSFER, SERIAL-COUNT, PAY-RECONCILE,
+TypeScript 6 (#80), @types/node (#85) y el resto de la deuda P4 siguen para después de
+publicar.
+
+**Medido al cerrar, sobre `072509f`:** backend en CI (PostgreSQL 16) 5375 pruebas, 0
+fallos, 5 omitidas; pruebas nuevas en local (`test_preflight` 40, `test_production_settings`
+20) verdes; Jest 795/795, tipos, lint y build sin cambios (la rama no toca el frontend).
+**Sin medir en local:** la suite backend completa, Playwright y un ensayo limpio, por el
+reposo del equipo.
+
 ## 2026-10-05 — PRODUCTION-READINESS-01: ensayo, endurecimiento y lista de publicación
 
 Rama `chore/production-readiness-01`, desde `master` `78ad79c` (merge de #87). Sin
