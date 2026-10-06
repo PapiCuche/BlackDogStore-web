@@ -234,6 +234,10 @@ class Provider:
         for this configuration to be usable. It fails, the activation fails.
         """
 
+    def health_note(self) -> str:
+        """Something about THIS SERVER an operator should read beside this provider's state, or ''."""
+        return ''
+
     def after_change(self, company=None) -> None:
         """Called after activation, disabling, enabling or revocation."""
 

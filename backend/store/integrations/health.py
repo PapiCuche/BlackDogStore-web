@@ -66,7 +66,9 @@ def report() -> tuple:
                 findings.append(
                     f'{provider.label}: lo guardado en la consola no se puede leer con la clave raíz de este servidor. '
                     f'¿Se cambió {secret_store.KEY_SETTING} sin conservar la anterior?')
-        parts.append(_per_company(provider) if provider.scope == registry.SCOPE_COMPANY else _platform(provider, findings))
+        part = _per_company(provider) if provider.scope == registry.SCOPE_COMPANY else _platform(provider, findings)
+        note = provider.health_note()
+        parts.append(f'{part} — {note}' if note else part)
 
     # The two without which the shop does not do its job.
     try:

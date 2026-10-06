@@ -255,8 +255,14 @@ class PreflightTest(SimpleTestCase):
     def test_a_file_other_users_can_read_is_refused(self):
         self.attention({**BASE, **IZIPAY}, 'chmod 600', mode=0o644)
 
-    def test_whatsapp_switched_on_without_credentials_is_refused(self):
-        self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api'}, 'WhatsApp')
+    def test_whatsapp_switched_on_leaves_each_company_to_the_console(self):
+        """INTEGRATIONS-CONSOLE: a company's credentials are typed in the console, so none here is not a fault."""
+        result = self.run_preflight({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api'})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        optional = next(line for line in self.lines(result, 'BLOCKED/OPTIONAL') if 'WhatsApp' in line)
+        self.assertIn('Configuración › Integraciones', optional)
+        # Half of the old scheme is still a mistake: one variable of the three.
+        self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api', 'WHATSAPP_TOKEN_TIENDA': 'x' * 40}, 'WhatsApp')
         configured = {**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': 'cloud_api', 'WHATSAPP_TOKEN_TIENDA': 'x' * 40,
                       'WHATSAPP_SECRET_TIENDA': 'y' * 32, 'WHATSAPP_VERIFY_TIENDA': 'z' * 24}
         result = self.run_preflight(configured)
@@ -351,7 +357,12 @@ class PreflightTest(SimpleTestCase):
     def test_whatsapp_is_on_unless_the_file_says_otherwise(self):
         """The application's default is the real provider: a missing line is not «off»."""
         without = {k: v for k, v in {**BASE, **IZIPAY}.items() if k != 'WHATSAPP_PROVIDER'}
-        self.attention(without, 'WHATSAPP_PROVIDER')
+        result = self.run_preflight(without)
+        self.assertEqual(self.lines(result, 'ATENCIÓN'), [])
+        self.assertIn('WhatsApp', '\n'.join(self.lines(result, 'BLOCKED/OPTIONAL')))
+        self.assertNotIn('apagado en este servidor', result.stdout)
+        off = self.run_preflight({**BASE, **IZIPAY})
+        self.assertIn('apagado en este servidor', '\n'.join(self.lines(off, 'BLOCKED/OPTIONAL')))
         self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': ''}, 'WHATSAPP_PROVIDER')
 
     def test_a_value_compose_would_rewrite_is_pointed_out(self):

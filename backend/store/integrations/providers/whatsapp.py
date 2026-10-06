@@ -52,6 +52,12 @@ class WhatsAppCloudProvider(Provider):
         if errors:
             raise ConfigError(errors)
 
+    def health_note(self):
+        kind = getattr(settings, 'WHATSAPP_PROVIDER', 'cloud_api')
+        if kind == 'cloud_api':
+            return ''
+        return 'envío simulado en este servidor' if kind == 'fake' else 'apagado en este servidor (WHATSAPP_PROVIDER)'
+
     def on_activated(self, company, public):
         # The row the company's own screen and the webhook look for. Created off:
         # turning notices on stays the company's decision.

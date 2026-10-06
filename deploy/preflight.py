@@ -495,22 +495,29 @@ def check_optional(report, values):
     provider = values.get('WHATSAPP_PROVIDER', 'cloud_api').strip().lower()
     names = {key.split('_', 2)[1] for key, value in values.items()
              if key.startswith(('WHATSAPP_TOKEN_', 'WHATSAPP_SECRET_', 'WHATSAPP_VERIFY_')) and value.strip()}
+    owed = ('WhatsApp: número, plantillas aprobadas, token, secreto de la aplicación y token de verificación de cada '
+            'empresa. Se escriben en Configuración › Integraciones › WhatsApp Business')
     if provider == 'disabled':
-        report.optional_data('WhatsApp: número, plantillas aprobadas, token, secreto de la aplicación y token de verificación',
-                             'WHATSAPP_PROVIDER', 'WHATSAPP_TOKEN_<EMPRESA>', 'WHATSAPP_SECRET_<EMPRESA>', 'WHATSAPP_VERIFY_<EMPRESA>')
+        report.optional_data(owed + '. Hoy está apagado en este servidor: con WHATSAPP_PROVIDER=disabled ninguna '
+                                    'empresa envía aunque esté configurada', 'WHATSAPP_PROVIDER')
     elif provider != 'cloud_api':
         report.bad('WHATSAPP_PROVIDER tiene que ser cloud_api o disabled en producción (una línea vacía no es ninguno de los dos)')
+    elif not names:
+        # Encendido y sin variables: cada empresa se configura en la consola.
+        report.optional_data(owed)
     elif names != {'TOKEN', 'SECRET', 'VERIFY'}:
-        report.bad('WhatsApp encendido sin sus tres credenciales (WHATSAPP_TOKEN_…, WHATSAPP_SECRET_…, WHATSAPP_VERIFY_…). '
-                   'Sin la línea WHATSAPP_PROVIDER la aplicación lo da por encendido: pon WHATSAPP_PROVIDER=disabled, o las credenciales')
+        report.bad('WhatsApp con variables WHATSAPP_… a medias: el esquema anterior necesita las tres (WHATSAPP_TOKEN_…, '
+                   'WHATSAPP_SECRET_…, WHATSAPP_VERIFY_…). Complétalas, o quítalas y configura la empresa en la consola')
     else:
-        report.ok('WhatsApp: credenciales presentes (enlázalas con `manage.py configure_whatsapp`)')
+        report.ok('WhatsApp: credenciales presentes en el entorno (enlázalas con `manage.py configure_whatsapp`, '
+                  'o pásalas a la consola)')
 
     if flag(values, 'FISCAL_ENABLED'):
         report.bad('FISCAL_ENABLED está encendido: emitir a SUNAT es una fase aparte, con certificado y credenciales SOL. '
                    'Para la primera publicación va en 0')
     else:
-        report.optional_data('facturación electrónica (SUNAT): apagada; encenderla necesita certificado y credenciales SOL',
+        report.optional_data('facturación electrónica (SUNAT): apagada; encenderla necesita certificado y credenciales SOL, '
+                             'que se escriben en Configuración › Integraciones › SUNAT',
                              'FISCAL_ENABLED')
 
     if not values.get('NEXT_PUBLIC_IMAGE_HOSTS', '').strip():

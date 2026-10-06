@@ -207,6 +207,15 @@ class IntegrationsStatusTest(TestCase):
         self.assertIn('SUNAT · Facturación electrónica: sin configurar', text)
         self.assertIn('WhatsApp Business: ninguna empresa en la consola', text)
 
+    def test_a_server_that_does_not_send_whatsapp_says_so_beside_it(self):
+        with override_settings(WHATSAPP_PROVIDER='disabled'):
+            self.assertIn('WhatsApp Business: ninguna empresa en la consola — apagado en este servidor (WHATSAPP_PROVIDER)',
+                          run()[1])
+        with override_settings(WHATSAPP_PROVIDER='cloud_api'):
+            code, text = run()
+        self.assertNotIn('apagado en este servidor', text)
+        self.assertEqual(code, 0, text)
+
     def test_a_shop_that_cannot_send_mail_needs_somebody(self):
         with override_settings(EMAIL_BACKEND_LEGACY=''):
             code, text = run()
