@@ -12,15 +12,12 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-NOT READY, por datos externos. No se recibió ningún dato del propietario: no hay servidor,
-dominio, SMTP, claves de Izipay ni destino de copia. El código está verde en CI; el ensayo
-con los pasos nuevos (correo por SMTP, restauración en servidor nuevo) pasa en todo salvo
-en una construcción de imagen cortada por la red, y falta repetirlo limpio (not_validated).
-No hay nada publicado en Internet y no se tocó ningún DNS. PR #89 abierto, sin mergear.
+NOT READY, por datos externos y no por el código. No se recibió ningún dato del
+propietario: no hay servidor, dominio, SMTP, claves de Izipay ni destino de copia. El código
+está verde y ensayado (`ENSAYO: OK` con correo por SMTP y restauración en servidor nuevo).
+No hay nada publicado en Internet y no se tocó ningún DNS.
 
 current_priority:
-0. Con el equipo de trabajo despierto (abierto y enchufado): repetir `sh deploy/rehearsal.sh`
-   y Playwright sobre la rama (ver not_validated). Sin un `ENSAYO: OK` limpio no se mergea #89.
 1. El propietario entrega los datos de blocked_external como dice
    `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
    del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
@@ -31,17 +28,13 @@ current_priority:
 4. Recorrer `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
 5. Primera fase tras publicar: SERIAL-PICK.
 
-validated (sobre `072509f`):
-- Backend en CI (PostgreSQL 16): 5375 pruebas, 0 fallos, 5 omitidas.
+validated:
+- Backend: 5375 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL; y CI).
 - Frontend: Jest 795/795, typecheck, lint 0 errores / 22 avisos, build (sin cambios en la rama).
-- Línea base de `master` `7829685`: ensayo `ENSAYO: OK` (107 + 49).
-
-not_validated (el equipo de trabajo estuvo en reposo: tapa cerrada, a batería):
-- Ensayo final sobre la rama: la última pasada da 128 + 49 bien y `ENSAYO: 3 FALLO(S)` por
-  una sola causa (`npm ci` cortado al construir la imagen del frontend, sin red).
-- Playwright completo: cuatro intentos, 158–172 de 184, fallos distintos cada vez y todos
-  por tiempo agotado.
-- Suite backend completa en local.
+- Playwright completo: 184/184, 0 omitidas (sobre `master` `7829685` y sobre la rama).
+- Ensayo de producción: `ENSAYO: OK` (131 + 49) sobre `4c291a6`; los commits posteriores
+  sólo tocan documentación. Sobre `master` `7829685`: `ENSAYO: OK` (107 + 49).
+- Revisión independiente de la rama: 2 P1, 5 P2 y 7 P3; corregidos los P1 y los P2.
 
 blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta

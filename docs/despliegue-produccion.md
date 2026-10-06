@@ -602,14 +602,13 @@ Docker, unos puertos y un dominio reservados (`bds-rehearsal`, 18080/18443,
 `tienda.test`) y un certificado interno de Caddy. No sale a Internet, no envía
 correo y no cobra. Termina con `ENSAYO: OK` o con el número de fallos.
 
-Última pasada limpia: 2026-10-05, sobre `master` `7829685`. Resultado: `ENSAYO: OK` — 107
-comprobaciones del guion y 49 pasos de navegador, 0 fallos.
+Última pasada: 2026-10-06, sobre `4c291a6` (rama `chore/external-production-config-01`,
+`master` `7829685` incorporado, árbol limpio). Resultado: `ENSAYO: OK` — 131 comprobaciones
+del guion y 49 pasos de navegador, 0 fallos. Los commits posteriores sólo tocan
+documentación.
 
-Los pasos 4b, 11c (correo por SMTP) y 19b (restauración en un servidor nuevo) son
-posteriores. Sobre `072509f` pasan —128 comprobaciones y 49 pasos de navegador—, pero esa
-pasada terminó en `ENSAYO: 3 FALLO(S)` por una causa ajena al código: `npm ci` se cortó al
-construir la imagen del frontend, con el equipo en reposo y sin red. **Hay que repetir el
-ensayo sobre el commit que se publique**, con el equipo despierto.
+El ensayo necesita la red para construir las imágenes y el equipo despierto de principio a
+fin: con el portátil en reposo, una pasada falló porque `npm ci` se cortó a mitad.
 
 La pasada anterior sobre `master` (`78ad79c`) dio `ENSAYO: 7 FALLO(S)`, los siete
 por una sola comprobación del propio guion, que seguía pidiendo a la portada una

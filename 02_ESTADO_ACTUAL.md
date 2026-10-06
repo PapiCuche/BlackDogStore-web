@@ -23,11 +23,11 @@ tienda no se puede abrir si va a cobrar en línea.
 | `manage.py check` · `makemigrations --check` | sin incidencias · sin cambios pendientes |
 | Ensayo de producción | `ENSAYO: OK`, 107 comprobaciones y 49 pasos de navegador |
 | Backend, suite completa en local | 5332 pruebas, 1 fallo, 5 omitidas. El fallo es una prueba de límite por minuto (`P0BThrottleSpoofingTest`) cuyas peticiones se repartieron en más de un minuto porque el equipo entró en reposo a mitad; sola pasa (6 de 6). En CI, sobre el mismo árbol: 5332, 0 fallos |
-| Playwright completo | **Sin pasada válida.** Cuatro intentos, entre 158 y 172 pasadas de 184 y entre 2 y 8 fallos cada vez, distintos en cada intento y todos por tiempo agotado: el equipo estaba con la tapa cerrada y a batería, y entra en reposo unos 15 minutos de cada 16. La última pasada limpia (184/184) es la de PRODUCTION-READINESS-01, con el mismo frontend |
+| Playwright completo | 184/184, 0 omitidas, con el equipo ya despierto. Antes hubo cuatro intentos no válidos (entre 158 y 172 pasadas, fallos distintos cada vez y todos por tiempo agotado) mientras el equipo estaba en reposo |
 
-**El equipo de trabajo entró en reposo durante la fase.** Lo que necesita media hora
-seguida despierto —Playwright y el ensayo— no se puede medir con fiabilidad hasta que
-esté abierto y enchufado. No se cambió ningún ajuste de energía.
+**El equipo de trabajo estuvo en reposo buena parte de la fase** (tapa cerrada, a
+batería). Lo que necesita media hora seguida despierto —Playwright y el ensayo— se midió
+al final, con el equipo abierto. No se cambió ningún ajuste de energía.
 
 | Asunto | Estado | Por qué |
 |---|---|---|
@@ -40,7 +40,7 @@ esté abierto y enchufado. No se cambió ningún ajuste de energía.
 | «Continuar con Google» | BLOCKED/OPTIONAL | Sin ID de cliente. La tienda funciona sin él (ensayado) |
 | WhatsApp | BLOCKED/OPTIONAL | Sin credenciales. Las órdenes de servicio funcionan sin él (ensayado) |
 | SUNAT | BLOCKED/OPTIONAL | La emisión real no entra en la primera publicación (`FISCAL_ENABLED=0`) |
-| Ensayo con configuración equivalente a producción | **Pendiente de una pasada limpia** | Sobre `072509f`: 128 comprobaciones y 49 pasos de navegador pasan —correo por SMTP, servidor de correo caído, mudo o rechazando la contraseña, y restauración en servidor nuevo incluidos— y 3 fallan por una sola causa ajena al código: `npm ci` se cortó al construir la imagen del frontend, con el equipo en reposo y la red caída. `ENSAYO: 3 FALLO(S)` no vale como ensayo final: hay que repetirlo con el equipo despierto |
+| Ensayo con configuración equivalente a producción | `ENSAYO: OK`, 131 comprobaciones y 49 pasos de navegador, sobre `4c291a6` | Con correo por SMTP —servidor caído, mudo o rechazando la contraseña incluidos— y restauración en servidor nuevo. Los commits posteriores sólo tocan documentación |
 
 **Hecho en la fase, sin datos externos**
 
@@ -73,11 +73,9 @@ en el ensayo; corregidos con prueba (`5cd9a3d`, `072509f`).
 TypeScript 6 (#80), @types/node (#85) y el resto de la deuda P4 siguen para después de
 publicar.
 
-**Medido al cerrar, sobre `072509f`:** backend en CI (PostgreSQL 16) 5375 pruebas, 0
-fallos, 5 omitidas; pruebas nuevas en local (`test_preflight` 40, `test_production_settings`
-20) verdes; Jest 795/795, tipos, lint y build sin cambios (la rama no toca el frontend).
-**Sin medir en local:** la suite backend completa, Playwright y un ensayo limpio, por el
-reposo del equipo.
+**Medido al cerrar, sobre `4c291a6`:** backend 5375 pruebas, 0 fallos, 5 omitidas (local y CI); Jest 795/795; Playwright 184/184, 0
+omitidas; tipos limpio; lint 0 errores / 22 avisos; build correcto; `manage.py check` y
+`makemigrations --check` sin incidencias; ensayo `ENSAYO: OK` (131 + 49).
 
 ## 2026-10-05 — PRODUCTION-READINESS-01: ensayo, endurecimiento y lista de publicación
 
