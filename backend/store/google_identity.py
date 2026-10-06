@@ -47,6 +47,9 @@ _NONCE_SALT = 'store.google-identity.nonce'
 
 _jwks_client = None
 
+#: The id this integration has in the provider registry of the console.
+CONSOLE_PROVIDER = 'google'
+
 
 class GoogleIdentityError(Exception):
     """The token does not prove what it has to. Views answer 400, always the same."""
@@ -62,7 +65,17 @@ class GoogleIdentity:
 
 
 def client_id() -> str:
-    return (getattr(settings, 'GOOGLE_OAUTH_CLIENT_ID', '') or '').strip()
+    """
+    The OAuth client ID in force NOW, or '' when sign-in with Google is off.
+
+    The console first (Configuración › Integraciones › Google), then
+    `GOOGLE_OAUTH_CLIENT_ID` for an installation that has not used the console.
+    Read at every request: changing it there needs no restart.
+    """
+    from .integrations import service
+
+    config = service.resolve(CONSOLE_PROVIDER)
+    return str(config.get('client_id') or '').strip() if config is not None else ''
 
 
 def is_enabled() -> bool:
@@ -91,12 +104,24 @@ def consume_nonce(nonce: str) -> bool:
     return bool(cache.add(_nonce_key(nonce), 1, NONCE_MAX_AGE))
 
 
-def _signing_key(credential: str):
-    """Google's public key for this token. The only line that touches the network."""
+def _keys():
     global _jwks_client
     if _jwks_client is None:
         _jwks_client = jwt.PyJWKClient(JWKS_URL, cache_keys=True, lifespan=3600, timeout=5)
-    return _jwks_client.get_signing_key_from_jwt(credential).key
+    return _jwks_client
+
+
+def _signing_key(credential: str):
+    """Google's public key for this token. With the one below, all that touches the network."""
+    return _keys().get_signing_key_from_jwt(credential).key
+
+
+def signing_keys_reachable() -> bool:
+    """Whether this server can fetch the keys a sign-in is verified with."""
+    try:
+        return bool(_keys().get_signing_keys())
+    except jwt.PyJWKClientError:
+        return False
 
 
 def verify(credential, *, browser_nonce: str) -> GoogleIdentity:
