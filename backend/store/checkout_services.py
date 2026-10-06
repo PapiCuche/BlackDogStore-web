@@ -37,6 +37,7 @@ from .models import (
     assert_items_match_order,
 )
 from .payments import izipay, micuentaweb
+from .integrations import payments as payment_adapters
 from .tenancy import company_fulfillment_branch
 
 logger = logging.getLogger(__name__)
@@ -483,8 +484,13 @@ class PaymentSession:
 
 
 def active_payment_provider() -> str:
-    """The ONE gateway product this installation is configured for."""
-    return (getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower()
+    """
+    The ONE gateway product this installation charges with, right now.
+
+    Decided by the console (Configuración › Integraciones › Pagos) when a master
+    has activated a payment provider there, and by `PAYMENT_PROVIDER` otherwise.
+    """
+    return payment_adapters.active_code()
 
 
 def require_payment_provider_configured():
@@ -496,7 +502,8 @@ def require_payment_provider_configured():
     error, every single time, until someone sets the variable.
     """
     provider = active_payment_provider()
-    if provider not in (izipay.PROVIDER, micuentaweb.PROVIDER):
+    adapter = payment_adapters.adapter(provider)
+    if adapter is None:
         # A typo here must not fall back to «the usual one»: the operator said
         # which gateway holds the money, and it is not one this code knows.
         logger.error('PAYMENT_PROVIDER no es un proveedor conocido: %r', provider[:32])
@@ -504,10 +511,8 @@ def require_payment_provider_configured():
             'La pasarela de pago no está configurada.', status_code=500,
         )
     try:
-        if provider == micuentaweb.PROVIDER:
-            return micuentaweb.load_credentials()
-        return izipay.load_credentials()
-    except (izipay.IzipayError, micuentaweb.MiCuentaWebError) as exc:
+        return adapter.load_credentials()
+    except payment_adapters.ERRORS as exc:
         # The operator needs the detail; it names variables, never values.
         logger.error('Pasarela de pago mal configurada: %s', exc)
         raise CheckoutError(
@@ -574,8 +579,9 @@ def build_payment_config(
     # Told per transaction when we have a public address for it; otherwise the
     # merchant panel holds it. Either way the endpoint trusts the signature and
     # not the route the message took.
-    if settings.IZIPAY_IPN_URL:
-        config['urlIPN'] = settings.IZIPAY_IPN_URL
+    ipn_url = credentials.ipn_url if credentials.ipn_url is not None else settings.IZIPAY_IPN_URL
+    if ipn_url:
+        config['urlIPN'] = ipn_url
     return config
 
 
@@ -597,11 +603,13 @@ def start_payment_attempt(order: Order, *, credentials) -> PaymentSession:
     keeps its own record of having been declined.
 
     WHICH GATEWAY is decided by the credentials that were loaded, and those by
-    `PAYMENT_PROVIDER`: one product per installation, never a mix.
+    the active payment provider: one product per installation, never a mix.
     """
-    if isinstance(credentials, micuentaweb.MiCuentaWebCredentials):
-        return _start_micuentaweb_attempt(order, credentials)
+    return payment_adapters.adapter_for(credentials).start_attempt(order, credentials)
 
+
+def _start_izipay_attempt(order: Order, credentials: izipay.IzipayCredentials) -> PaymentSession:
+    """The step for «SDK web / Checkout»: a row first, then the session token."""
     transaction_id = izipay.new_transaction_id()
     order_number = izipay.new_order_number()
 
@@ -708,23 +716,7 @@ def payment_session_payload(payment: PaymentSession) -> dict:
     micuentaweb` gets a `form_token` and a public key, and none of the fields
     of the other SDK to be tempted to load it with.
     """
-    if payment.provider == micuentaweb.PROVIDER:
-        return {
-            'provider': payment.provider,
-            'environment': payment.environment,
-            'transaction_id': payment.transaction_id,
-            'form_token': payment.form_token,
-            'public_key': payment.public_key,
-        }
-    return {
-        'provider': payment.provider,
-        'environment': payment.environment,
-        'transaction_id': payment.transaction_id,
-        'authorization': payment.authorization,
-        'merchant_code': payment.merchant_code,
-        'public_key': payment.public_key,
-        'config': payment.config,
-    }
+    return payment_adapters.adapter(payment.provider).session_payload(payment)
 
 
 def mark_payment_failure(order: Order, message: str) -> None:

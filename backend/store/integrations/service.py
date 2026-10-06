@@ -118,6 +118,22 @@ def resolve(provider_id, company=None):
     )
 
 
+def resolve_panel(provider_id, company=None):
+    """Only what the console activated. None when the console has nothing enabled for this provider."""
+    active = row(provider_id, company, ACTIVE)
+    if active is None or not active.enabled:
+        return None
+    return Resolved(
+        provider_id=provider_id, public=dict(active.public), secrets=open_secrets(active),
+        source='panel', company_id=company.pk if company else None,
+    )
+
+
+def has_panel_row(provider_id, company=None) -> bool:
+    """The console has taken this provider over (even if it then switched it off)."""
+    return row(provider_id, company, ACTIVE) is not None
+
+
 def source(provider_id, company=None) -> str:
     """'panel', 'env' or 'none' — where the running configuration comes from."""
     if row(provider_id, company, ACTIVE) is not None:

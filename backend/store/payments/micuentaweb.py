@@ -78,6 +78,15 @@ class MiCuentaWebError(Exception):
     """Talking to the gateway failed. Never carries a credential or a raw payload."""
 
 
+class MiCuentaWebUnreachable(MiCuentaWebError):
+    """The gateway did not answer, or answered that it is the one that is broken."""
+
+
+def _is_refusal(exc) -> bool:
+    """An HTTP 4xx is the gateway answering no. Everything else is no answer."""
+    return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
+
+
 @dataclass(frozen=True)
 class MiCuentaWebCredentials:
     """
@@ -105,12 +114,36 @@ class MiCuentaWebCredentials:
         return 'TEST' if self.environment == 'test' else 'PRODUCTION'
 
 
+_CONSOLE_FIELDS = {
+    'shop_id': 'MICUENTAWEB_SHOP_ID', 'password': 'MICUENTAWEB_PASSWORD', 'public_key': 'MICUENTAWEB_PUBLIC_KEY',
+    'api_url': 'MICUENTAWEB_API_URL', 'currency': 'MICUENTAWEB_CURRENCY', 'ipn_url': 'MICUENTAWEB_IPN_URL',
+}
+CONSOLE_PROVIDER = 'izipay_micuentaweb'
+
+
+def _configured_values() -> dict:
+    """The console first, the `MICUENTAWEB_*` settings as the fallback. Read on every call."""
+    from ..integrations import secret_store, service
+
+    try:
+        config = service.resolve_panel(CONSOLE_PROVIDER)
+    except secret_store.SecretStoreError as exc:
+        raise MiCuentaWebError(str(exc)) from None
+    if config is not None:
+        return {name: config.get(field, '') for field, name in _CONSOLE_FIELDS.items()}
+    return {name: getattr(settings, name, '') for name in _CONSOLE_FIELDS.values()}
+
+
 def load_credentials() -> MiCuentaWebCredentials:
     """Read the configured shop, or refuse. Fails closed and names what is missing."""
+    return credentials_from(_configured_values())
+
+
+def credentials_from(configured: dict) -> MiCuentaWebCredentials:
+    """The same rules for a shop from the console and for one from the environment."""
     values = {
-        'MICUENTAWEB_SHOP_ID': (getattr(settings, 'MICUENTAWEB_SHOP_ID', '') or '').strip(),
-        'MICUENTAWEB_PASSWORD': (getattr(settings, 'MICUENTAWEB_PASSWORD', '') or '').strip(),
-        'MICUENTAWEB_PUBLIC_KEY': (getattr(settings, 'MICUENTAWEB_PUBLIC_KEY', '') or '').strip(),
+        name: (configured.get(name) or '').strip()
+        for name in ('MICUENTAWEB_SHOP_ID', 'MICUENTAWEB_PASSWORD', 'MICUENTAWEB_PUBLIC_KEY')
     }
     missing = [name for name, value in values.items() if not value]
     if missing:
@@ -136,15 +169,15 @@ def load_credentials() -> MiCuentaWebCredentials:
             'MICUENTAWEB_PASSWORD y MICUENTAWEB_PUBLIC_KEY son de entornos distintos (TEST y PRODUCCIÓN).'
         )
 
-    api_url = (getattr(settings, 'MICUENTAWEB_API_URL', '') or DEFAULT_API_URL).strip().rstrip('/')
+    api_url = (configured.get('MICUENTAWEB_API_URL') or DEFAULT_API_URL).strip().rstrip('/')
     if not api_url.startswith('https://'):
         raise MiCuentaWebError('MICUENTAWEB_API_URL debe ser https.')
 
     return MiCuentaWebCredentials(
         environment=environment, shop_id=shop_id, password=password, public_key=public_key,
         api_url=api_url,
-        currency=(getattr(settings, 'MICUENTAWEB_CURRENCY', '') or 'PEN').strip().upper(),
-        ipn_url=(getattr(settings, 'MICUENTAWEB_IPN_URL', '') or '').strip(),
+        currency=(configured.get('MICUENTAWEB_CURRENCY') or 'PEN').strip().upper(),
+        ipn_url=(configured.get('MICUENTAWEB_IPN_URL') or '').strip(),
     )
 
 
@@ -223,13 +256,14 @@ def create_payment(*, credentials: MiCuentaWebCredentials, order_id: str, amount
             raw = response.read().decode('utf-8', 'replace')
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         logger.error('Mi Cuenta Web: fallo de red al crear el pago (%s)', type(exc).__name__)
-        raise MiCuentaWebError('No se pudo contactar a la pasarela de pago.') from None
+        kind = MiCuentaWebError if _is_refusal(exc) else MiCuentaWebUnreachable
+        raise kind('No se pudo contactar a la pasarela de pago.') from None
 
     try:
         parsed = json.loads(raw)
     except ValueError:
         logger.error('Mi Cuenta Web: la respuesta al crear el pago no es JSON')
-        raise MiCuentaWebError('Respuesta inválida de la pasarela de pago.') from None
+        raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.') from None
 
     answer = parsed.get('answer') if isinstance(parsed, dict) else None
     form_token = answer.get('formToken') if isinstance(answer, dict) else None
