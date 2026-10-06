@@ -159,6 +159,14 @@ class RuntimeTest(_Base):
         self.assertNotEqual(self.delivery(order).status, 'sent')
         self.assertEqual(messaging.credential(wa.config_for(self.company), 'access_token'), '')
 
+    def test_credentials_this_server_cannot_read_send_nothing_and_do_not_fall_back(self):
+        self.go_live()
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()), \
+                self.assertLogs('store.messaging', level='ERROR'):
+            self.new_order()
+            self.assertEqual(messaging.credential(wa.config_for(self.company), 'access_token'), '')
+        self.assertEqual(FakeProvider.sent, [])
+
     def test_the_company_s_own_screen_says_ready_and_shows_no_credential(self):
         self.forget_the_environment()
         self.go_live()

@@ -177,6 +177,21 @@ class RuntimeTest(_Base):
                 mail.send_mail('asunto', 'cuerpo', None, ['x@example.pe'])
         self.assertEqual(mail.outbox, [])
 
+    def test_a_configuration_this_server_cannot_read_is_no_configuration_and_no_crash(self):
+        """The root key was changed, or the database came from another server."""
+        port, folder = start_sink(self, ('tienda', PASSWORD))
+        self.configure(port)
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode(),
+                               EMAIL_BACKEND_LEGACY='django.core.mail.backends.locmem.EmailBackend'):
+            with self.assertLogs('store.integrations', level='ERROR') as captured:
+                self.assertFalse(runtime_mail.is_configured())
+                with self.assertRaises(runtime_mail.MailNotConfigured):
+                    mail.send_mail('asunto', 'cuerpo', None, ['x@example.pe'])
+                self.assertEqual(self.register('otra_clave').status_code, 201)
+            self.assertIn('cannot be read', '\n'.join(captured.output))
+        self.assertEqual(received(folder), [])
+        self.assertEqual(mail.outbox, [])           # and the environment's backend was not a way round it
+
     def test_with_nothing_configured_mail_is_an_error_and_never_the_console(self):
         self.assertFalse(runtime_mail.is_configured())
         with self.assertRaises(runtime_mail.MailNotConfigured):

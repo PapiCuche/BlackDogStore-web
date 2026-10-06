@@ -22,7 +22,7 @@ from django.core.mail.backends.base import BaseEmailBackend
 from django.core.mail.backends.smtp import EmailBackend as SmtpBackend
 from django.utils.module_loading import import_string
 
-from . import service
+from . import secret_store, service
 from .providers import smtp
 
 logger = logging.getLogger('store.integrations')
@@ -47,15 +47,32 @@ def _legacy_backend(config) -> str:
     return legacy if (legacy != smtp.SMTP_BACKEND or config is not None) else ''
 
 
+def _resolve():
+    """
+    The mail configuration in force, or None.
+
+    A configuration the console holds and this server cannot open — the root key
+    was changed, or the database came from another server — is no configuration.
+    It is said in the log and by `ops_status`; it is not a reason to fall back to
+    what the environment names, and it must not break the request that wanted
+    to send a message.
+    """
+    try:
+        return service.resolve('smtp')
+    except secret_store.SecretStoreError:
+        logger.error('the stored mail configuration cannot be read with this server\'s root key')
+        return None
+
+
 def is_configured() -> bool:
-    config = service.resolve('smtp')
+    config = _resolve()
     return config is not None or bool(_legacy_backend(config))
 
 
 class RuntimeEmailBackend(BaseEmailBackend):
     def _delegate(self):
         """`(backend, sender or None)` for the configuration that is active right now."""
-        config = service.resolve('smtp')
+        config = _resolve()
         if config is not None and config.source == 'panel':
             public = config.public
             return SmtpBackend(

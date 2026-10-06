@@ -185,6 +185,17 @@ class RuntimeTest(_Base):
                 self.assertEqual(self.buy(fake_checkout()).status_code, 500)
 
 
+    def test_keys_this_server_cannot_read_charge_nothing_and_create_no_order(self):
+        with override_settings(**IZIPAY_TEST_SETTINGS):
+            self.go_live_with_checkout()
+            with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()), \
+                    self.assertLogs('store', level='ERROR'):
+                fake = fake_checkout()
+                self.assertEqual(self.buy(fake).status_code, 500)
+            self.assertEqual(fake.requests, [])
+        self.assertFalse(Order.objects.exists())
+
+
 class SwitchingTest(_Base):
     def test_a_master_switches_product_from_the_console(self):
         self.go_live_with_checkout()

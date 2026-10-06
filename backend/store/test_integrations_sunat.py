@@ -140,6 +140,15 @@ class RuntimeTest(_Base):
             with self.assertRaises(fiscal_config.FiscalConfigError):
                 fiscal_config.resolve_credentials(None)
 
+    def test_a_configuration_this_server_cannot_read_emits_nothing_and_says_so(self):
+        with override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
+                               FISCAL_SOL_PASSWORD='moddatos'):
+            self.go_live()
+            with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+                with self.assertRaises(fiscal_config.FiscalConfigError) as refused:
+                    fiscal_config.resolve_credentials(None)
+        self.assertIn('consola', str(refused.exception))
+
     def test_the_signing_certificate_can_be_inspected_without_its_key(self):
         self.go_live()
         metadata, validity = fiscal_config.inspect_signing_certificate()

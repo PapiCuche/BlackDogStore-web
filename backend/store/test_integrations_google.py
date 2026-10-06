@@ -94,6 +94,15 @@ class RuntimeTest(_Base):
             self.assertEqual(self.client.post(LOGIN, {'credential': 'x'}, format='json').status_code, 404)
 
 
+    def test_it_holds_no_secret_so_it_does_not_depend_on_the_root_key(self):
+        """Nothing of this integration is sealed: a server with another root key still reads it."""
+        self.go_live()
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            self.assertEqual(self.client.get(CONFIG).json()['client_id'], PANEL_ID)
+        from store.models import IntegrationConfig
+        self.assertEqual(IntegrationConfig.objects.get(provider='google', slot='active').secret_meta, {})
+
+
 class ValidationTest(_Base):
     def test_only_a_google_client_id_is_accepted(self):
         for wrong in ('prueba', 'https://accounts.google.com', 'GOCSPX-esto-es-un-secreto',

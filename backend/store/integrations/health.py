@@ -71,11 +71,7 @@ def report() -> tuple:
         parts.append(f'{part} — {note}' if note else part)
 
     # The two without which the shop does not do its job.
-    try:
-        mail_ready = mail.is_configured()
-    except secret_store.SecretStoreError:
-        mail_ready = False
-    if not mail_ready:
+    if not mail.is_configured():
         findings.append('el correo no está configurado: la verificación de cuentas, la recuperación de contraseña '
                         'y los avisos de pedido no salen. Configúralo en Configuración › Integraciones › Correo.')
     code = payments.active_code()
