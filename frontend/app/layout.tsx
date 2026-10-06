@@ -10,6 +10,7 @@ import {
 } from "./components/StorefrontChrome";
 import { StorefrontProvider } from "./components/StorefrontProvider";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "./components/ThemeProvider";
+import { PLATFORM_ICONS } from "./lib/platform-icons";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
 const inter = Inter({
@@ -44,7 +45,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const name = config.company.name;
 
   if (!name) {
-    return { title: "Tienda", description: "" };
+    return { title: "Tienda", description: "", icons: PLATFORM_ICONS };
   }
 
   const description =
@@ -61,10 +62,8 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       ...(config.branding.logo_url ? { images: [config.branding.logo_url] } : {}),
     },
-    // FAVICON stays platform-level. Serving a per-tenant icon needs either an
-    // upload pipeline or a dynamic icon route, and neither exists — see
-    // docs/saas-multiempresa.md, "PENDIENTE — favicon por empresa".
-    icons: { icon: "/assets/branding/favicon.svg" },
+    // The platform's isotype, for every storefront: see `lib/platform-icons`.
+    icons: PLATFORM_ICONS,
   };
 }
 

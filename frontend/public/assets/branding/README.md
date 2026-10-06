@@ -26,3 +26,15 @@ leía. Se retiraron en la auditoría de frontend.
 
 Las imágenes comerciales del tenant no van en el repositorio: van en su
 configuración, que es lo que permite que cada empresa tenga las suyas.
+
+
+## El icono de la pestaña
+
+`favicon-on-light-<n>.png` y `favicon-on-dark-<n>.png` (16, 32, 48 y 96 px),
+`public/favicon.ico` y `public/apple-touch-icon.png` salen de los dos isotipos de
+arriba con `npm run favicons:generate`. No se editan a mano y no llevan nada que
+no sea el isotipo: ni letra, ni fondo, ni otro dibujo (`__tests__/favicon.test.ts`
+compara cada archivo con el isotipo oficial). El de Apple es la única excepción
+al fondo: iOS pinta la transparencia de negro.
+
+Es el icono de la plataforma, no de cada empresa.
