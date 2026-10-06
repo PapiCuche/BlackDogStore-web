@@ -138,19 +138,28 @@ Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria
 | Dato | Para qué | Dónde va |
 |---|---|---|
 | Dominio | La dirección de la tienda | `SITE_DOMAIN` |
-| Servidor SMTP: host, puerto, usuario, contraseña (o contraseña de aplicación), remitente y si cifra con STARTTLS (587) o desde el primer byte (465) | Invitar personal, verificar cuentas, recuperar contraseñas, avisos de pedido | `EMAIL_*`, `DEFAULT_FROM_EMAIL` |
+| Servidor SMTP: host, puerto, usuario, contraseña (o contraseña de aplicación), remitente y si cifra con STARTTLS (587) o desde el primer byte (465) | Invitar personal, verificar cuentas, recuperar contraseñas, avisos de pedido | **Panel › Configuración › Integraciones › Correo SMTP** |
 | Correo que recibe los pedidos | Aviso de cada pedido pagado | `ORDER_NOTIFICATION_EMAIL` |
-| Credenciales de Izipay, y cuál de sus dos productos es | Cobrar en línea | `PAYMENT_PROVIDER` y `IZIPAY_*` o `MICUENTAWEB_*` (`docs/pagos-equipos-documentos.md` §1) |
+| Credenciales de Izipay, y cuál de sus dos productos es | Cobrar en línea | **Integraciones › Pagos** (`docs/pagos-equipos-documentos.md` §1) |
 | Dónde se alojan las fotos de producto | Que la web pueda mostrarlas | `NEXT_PUBLIC_IMAGE_HOSTS` |
-| Número de WhatsApp Business, plantillas aprobadas, token, secreto de la aplicación y token de verificación | Avisos al cliente por WhatsApp (opcional) | `WHATSAPP_*` y `configure_whatsapp` |
-| ID de cliente OAuth de Google, con el dominio como origen autorizado | «Continuar con Google» (opcional) | `GOOGLE_OAUTH_CLIENT_ID` |
+| Número de WhatsApp Business, plantillas aprobadas, token, secreto de la aplicación y token de verificación | Avisos al cliente por WhatsApp (opcional) | **Integraciones › WhatsApp Business › la empresa** |
+| ID de cliente OAuth de Google, con el dominio como origen autorizado | «Continuar con Google» (opcional) | **Integraciones › Inicio de sesión con Google** |
+| Credenciales SOL y certificado digital | Facturación electrónica, entorno BETA (opcional) | **Integraciones › SUNAT** |
+
+Lo que va al **panel** lo escribe un usuario MASTER después de arrancar, lo prueba ahí
+mismo y lo activa: no hay que editar ningún archivo ni reiniciar nada
+([integraciones-y-secretos.md](integraciones-y-secretos.md)). Las variables de entorno
+de siempre (`EMAIL_*`, `IZIPAY_*`, `WHATSAPP_*`, `GOOGLE_OAUTH_CLIENT_ID`, `FISCAL_*`)
+siguen funcionando como respaldo de una instalación que no haya usado el panel.
 
 ### Cómo entregar esos datos
 
-**Los secretos no viajan por chat, por correo ni por una captura.** Van directos
-al archivo `deploy/.env.production` del servidor (§4.2), que sólo lee su dueño y
-no está en el repositorio. Quien ayude a configurar necesita saber *qué* está
-puesto, no *cuánto vale*; para eso está:
+**Los secretos no viajan por chat, por correo ni por una captura.** Los de arranque
+van directos al archivo `deploy/.env.production` del servidor (§4.2), que sólo lee su
+dueño y no está en el repositorio. Los de las integraciones los escribe el propio
+dueño, con su cuenta MASTER, en el panel: se guardan cifrados y no vuelven a
+mostrarse. Quien ayude a configurar necesita saber *qué* está puesto, no *cuánto
+vale*; para el archivo está:
 
 ```sh
 python3 deploy/preflight.py                 # qué falta y qué se contradice
@@ -164,6 +173,11 @@ darlo), `BLOCKED/OPTIONAL` (falta y la tienda publica sin ello), `ATENCIÓN` (se
 contradice o es inseguro)— y **nunca imprime un valor**: dice nombres de
 variables. Lo que escribe sí se puede pegar en un chat.
 
+Un archivo sin correo y sin pasarela termina en `CONFIGURACIÓN: SUFICIENTE PARA
+ARRANCAR`: los dos siguen saliendo como `BLOCKED/OWNER-DATA`, con la indicación de
+que se escriben en el panel **antes de abrir la tienda**. Después de arrancar, quien
+dice si ya están es `deploy/healthcheck.sh` (§6.1.4), no este programa.
+
 Lee el archivo como lo leen Docker Compose y Django —un comentario tras un valor
 no es parte del valor; una línea como `EMAIL_USE_TLS=` vacía cuenta como «no»; un
 «$» dentro de una contraseña lo sustituiría Compose si no va entre comillas
@@ -176,11 +190,12 @@ notificación en otro dominio. No dice que la tienda esté lista: comprueba un
 archivo, no el pago de prueba en la pasarela ni el ensayo.
 
 Sin Izipay la tienda funciona (catálogo, carrito, panel, punto de venta) pero no
-cobra en línea. Sin SMTP el backend **no arranca** con la configuración de
-ejemplo: es deliberado, porque sin correo no se puede invitar a nadie ni recuperar
-una contraseña. Tampoco arranca sin `EMAIL_BACKEND`: el valor por omisión de
-desarrollo escribe cada correo —con sus enlaces de un solo uso— en el registro
-del contenedor.
+cobra en línea. Sin correo el backend **arranca** —se configura después, en el
+panel— pero no se puede invitar a nadie ni recuperar una contraseña: los envíos
+fallan con un error anotado y `healthcheck.sh` da la alarma hasta que se configure.
+Nunca se escribe un correo —con sus enlaces de un solo uso— en el registro del
+contenedor. Lo que sí impide arrancar es dejar `EMAIL_BACKEND` puesto con
+`EMAIL_HOST` vacío: o el correo está entero en el archivo, o no está.
 
 ## 4. Publicar por primera vez
 
@@ -201,17 +216,23 @@ cp deploy/.env.production.example deploy/.env.production
 chmod 600 deploy/.env.production
 ```
 
-Rellena `deploy/.env.production`. Genera los dos secretos en el propio servidor:
+Rellena `deploy/.env.production`. Genera los tres secretos en el propio servidor:
 
 ```sh
 python3 -c "import secrets; print(secrets.token_urlsafe(64))"   # SECRET_KEY
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # POSTGRES_PASSWORD
+python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"   # APP_CONFIG_ENCRYPTION_KEY
 ```
+
+`APP_CONFIG_ENCRYPTION_KEY` es la **clave raíz del almacén de secretos**: cifra todo lo
+que se guarde en Configuración › Integraciones. No está en la base de datos ni se cambia
+desde el panel. Con eso, el dominio y la dirección de los avisos de pedido, el archivo
+basta para arrancar; el correo y la pasarela se pueden dejar para el panel.
 
 Ese archivo no se sube al repositorio. No reutilices los valores de desarrollo.
 Cuando lo tengas, `python3 deploy/preflight.py` dice qué falta (§3).
 
-**Correo.** Con STARTTLS, el caso habitual: `EMAIL_PORT=587` y `EMAIL_USE_TLS=1`.
+**Correo, si lo pones en el archivo y no en el panel.** Con STARTTLS, el caso habitual: `EMAIL_PORT=587` y `EMAIL_USE_TLS=1`.
 Si el proveedor sólo ofrece el puerto 465: `EMAIL_PORT=465`, `EMAIL_USE_TLS=0` y
 `EMAIL_USE_SSL=1`. Nunca los dos, y nunca ninguno: la contraseña viajaría en
 claro. La tienda espera al servidor de correo 10 segundos (`EMAIL_TIMEOUT`); si
@@ -226,7 +247,11 @@ servidor: los documentos y el panel la muestran bien. Las tareas programadas
 de contraseñas. La copia de seguridad no lo incluye (§6.1). Sin su `SECRET_KEY`
 no basta con restaurar la base: las sesiones abiertas caducan y **los enlaces de
 seguimiento ya enviados a los clientes dejan de abrir**. Sin su
-`POSTGRES_PASSWORD` no se puede leer el volumen de la base.
+`POSTGRES_PASSWORD` no se puede leer el volumen de la base. Y **sin su
+`APP_CONFIG_ENCRYPTION_KEY` las credenciales guardadas en el panel no se pueden
+leer**: habría que escribirlas otra vez (cómo cambiarla y qué hacer si se pierde:
+[integraciones-y-secretos.md](integraciones-y-secretos.md) §9). Guarda esa copia en
+un sitio distinto del de las copias de la base de datos.
 
 ### 4.3 Arranque
 
@@ -270,6 +295,12 @@ $C exec backend python manage.py createsuperuser
 Con esa cuenta entra en `https://<dominio>/auth`, abre el panel, elige la empresa y
 desde **Personal** invita a quienes vayan a trabajar con su rol. Usa una
 contraseña larga y única.
+
+Esa cuenta es MASTER: es la única que ve **Configuración › Integraciones**. Antes de
+invitar a nadie, configura ahí el **correo** (sin él las invitaciones no salen):
+guardar, «Probar conexión» —con un mensaje de prueba a tu propia dirección— y
+activar. Después, la **pasarela**: elige el producto de Izipay que tengas, escribe
+sus claves de TEST y pruébalas ahí mismo.
 
 ### 4.5 Comprobaciones
 
@@ -422,11 +453,16 @@ sólo mira.
 | Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó, y desde la tienda no se distingue de una notificación perdida (PAY-RECONCILE) |
 | WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
 | Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
+| La tienda no puede enviar correo, o no puede cobrar | Sin correo activo (ni en el panel ni en el entorno); sin pasarela activa o sin sus credenciales completas |
+| Lo configurado en el panel no se puede leer | Falta la clave raíz, o no es la que cifró lo guardado |
+| Una integración activa dejó de pasar su prueba | El resultado de la última «Probar la configuración en uso» |
 | Las copias dejaron de hacerse | `backups/LAST_OK` con más de 26 horas |
 | El disco se llena | Más del 90 % usado |
 
-Las cuatro del medio las informa la propia aplicación
-(`python manage.py ops_status`, sólo lectura, sin datos de clientes).
+Las de la aplicación (migraciones, pagos, WhatsApp e integraciones) las informa ella
+misma (`python manage.py ops_status`, sólo lectura, sin datos de clientes). De las
+integraciones escribe además una línea con cuáles corren y desde dónde —`consola` o
+`entorno`—, sin ningún servidor, usuario ni clave.
 
 En el `crontab`, cada 15 minutos. No imprime nada si todo está bien; si algo
 falla, imprime las líneas `ATENCIÓN`, y cron las envía al correo de `MAILTO` si
@@ -638,6 +674,7 @@ variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo dem
 | 11b | **WhatsApp apagado, Google sin configurar** | La orden se crea igual y no queda ningún mensaje enviado ni pendiente; la pantalla dice qué falta. Google se anuncia apagado, su entrada responde 404 y el acceso con usuario sigue |
 | 11b | **Registros** | Tras todo lo anterior no contienen el enlace de seguimiento, ningún IMEI usado, la contraseña del administrador, la clave de la pasarela ni tokens de sesión |
 | 11c | **Correo por SMTP** | Registrarse pide verificar el correo y sin verificar no se entra; el mensaje llega con el remitente configurado; su enlace verifica la cuenta y vale una sola vez; la contraseña se recupera por correo y se entra con la nueva; pedirlo para un correo que no existe responde igual y no envía nada |
+| 11c | **Consola de integraciones** | Un MASTER ve las seis integraciones, con el correo y la pasarela «configurados mediante entorno»; una persona sin empresa y un visitante sin sesión no la ven ni escriben en ella (403 / 401). El MASTER configura **otro** servidor de correo, que ninguna variable nombra: guardado como borrador nada cambia; sin probarlo no se activa; probado y activado, **el siguiente registro sale por él, con su remitente, sin reiniciar nada**. Una contraseña equivocada no pasa la prueba y no sustituye a la sana. Apagado, no sale ningún correo por ninguno de los dos servidores. Revocado, el correo vuelve a ser el del entorno. Un correo sin cifrar hacia otro equipo no se copia a la consola. Ninguna contraseña aparece en una respuesta, en la auditoría ni en los registros |
 | 11c | **Servidor de correo caído, que rechaza la contraseña, o que deja de responder** | La tienda contesta igual: al momento en los dos primeros casos y, en el tercero, tras esperar lo que dice `EMAIL_TIMEOUT`. Los tres fallos quedan anotados; el registro no contiene los enlaces de los correos, las contraseñas escritas ni la contraseña del correo |
 | 12 | Navegador real | Portada, catálogo, ficha, carrito, checkout, servicios, nosotros, contacto y acceso a 390 y 1440 px: sin desbordes, sin imágenes rotas y sin errores de script. Las cinco imágenes de la tienda a 320, 390, 768 y 1440 px, en claro y en oscuro. Seguimiento de una reparación sin sesión. Sin botón de Google. Categorías con teclado. Sesión, panel y catorce pantallas del panel, entre ellas equipos, cargas masivas, impresoras y mensajería |
 | 13 | CSRF | Con sesión, desde un origen ajeno o sin token: 403 |
@@ -718,13 +755,14 @@ antes de tomarla, y cómo se comprueba cada cosa.
 |---|---|---|
 | El código está verde | Suites completas y CI sobre el commit que se publica | Hecho |
 | El ensayo está verde | `sh deploy/rehearsal.sh` sobre ese mismo commit: `ENSAYO: OK` | Hecho (§9) |
-| El archivo de variables está completo | `python3 deploy/preflight.py`: ningún `BLOCKED/OWNER-DATA` ni `ATENCIÓN` | `BLOCKED/OWNER-DATA` |
+| El archivo de variables basta para arrancar | `python3 deploy/preflight.py`: ningún `ATENCIÓN`, y de `BLOCKED/OWNER-DATA` sólo lo que se escribe en el panel | `BLOCKED/OWNER-DATA` |
+| Las integraciones están activas | `sh deploy/healthcheck.sh` en el servidor: la línea `integraciones` sin `ATENCIÓN`, con el correo y la pasarela activos | `BLOCKED/OWNER-DATA`: no hay servidor |
 | El servidor está listo | §4.3 en el servidor: contenedores sanos, `check --deploy` con su único aviso | `BLOCKED/OWNER-DATA`: no hay servidor |
-| El correo sale y llega | `preflight.py --smtp-send-to <tu dirección>` y un registro de prueba en la tienda: el mensaje está en el buzón | `BLOCKED/OWNER-DATA`: no hay SMTP |
-| Izipay cobra en TEST | La prueba contra el entorno real (`pagos-equipos-documentos.md` §1.4) y un pago completo en TEST con la tienda publicada: el pedido queda pagado por la notificación | `BLOCKED/OWNER-DATA`: no se sabe qué producto ni hay claves de TEST |
+| El correo sale y llega | Integraciones › Correo SMTP: «Probar conexión» con un mensaje de prueba a tu dirección, y un registro de prueba en la tienda: los dos mensajes están en el buzón | `BLOCKED/OWNER-DATA`: no hay SMTP |
+| Izipay cobra en TEST | Integraciones › Pagos: «Probar conexión» con las claves de TEST dice «Correcto»; y un pago completo en TEST con la tienda publicada: el pedido queda pagado por la notificación (`pagos-equipos-documentos.md` §1.4) | `BLOCKED/OWNER-DATA`: no se sabe qué producto ni hay claves de TEST |
 | La copia se puede restaurar | `backup.sh` en el servidor y `restore.sh` en OTRO servidor o en este equipo | Hecho en el ensayo (§9, pasos 18–19b); falta el destino externo |
 | Las tareas y la vigilancia están puestas | `crontab -l` muestra las cinco líneas; `sh deploy/healthcheck.sh` termina bien; hay un vigilante externo | `BLOCKED/OWNER-DATA`: no hay servidor |
-| No hay secretos fuera de su sitio | `deploy/.env.production` con `chmod 600`, copia en un gestor de contraseñas, nada en Git | Pendiente de crearlo |
+| No hay secretos fuera de su sitio | `deploy/.env.production` con `chmod 600`, copia —con su clave raíz— en un gestor de contraseñas y no junto a las copias de la base, nada en Git | Pendiente de crearlo |
 
 **Listo para publicar** cuando todas las filas están hechas. WhatsApp, «Continuar
 con Google» y SUNAT no cuentan: la tienda publica sin ellos y se encienden
@@ -740,10 +778,13 @@ WhatsApp a clientes o emitir comprobantes a SUNAT.
 
 ### Los datos que faltan, exactamente
 
-Todos van en `deploy/.env.production` del servidor, salvo los que no son
-secretos, que basta con decirlos.
+Los de arranque van en `deploy/.env.production` del servidor. Los de las
+integraciones —correo, Izipay, Google, WhatsApp, SUNAT— los escribe el propietario
+en **Panel › Configuración › Integraciones** con su cuenta MASTER; la columna
+«Variable» dice además con qué nombre se pondrían en el archivo, que sigue valiendo
+como respaldo. Los que no son secretos basta con decirlos.
 
-| Dato | Se puede decir en claro | Variable |
+| Dato | Se puede decir en claro | Variable de respaldo |
 |---|---|---|
 | Dominio | Sí | `SITE_DOMAIN` |
 | Proveedor del servidor, su IP y el usuario SSH | Sí (la clave SSH, no) | — |

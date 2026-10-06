@@ -3,6 +3,69 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-06 — INTEGRATIONS-CONSOLE-01: los servicios externos se configuran en el panel
+
+Rama `feat/integrations-console`, desde `master` `5da4e99` (merge de #89). Una migración
+(`0111_integration_config`). Operación:
+[docs/integraciones-y-secretos.md](docs/integraciones-y-secretos.md). Decisiones:
+DEC-INT-01 a 07. Nada está publicado en Internet.
+
+**Qué cambia.** Un usuario MASTER configura, prueba y activa el correo, la pasarela de
+pago, WhatsApp (por empresa), el ID de cliente de Google y SUNAT desde **Panel ›
+Configuración › Integraciones**, sin editar `.env`, sin recompilar el frontend, sin
+reconstruir imágenes y sin reiniciar. Las credenciales se guardan cifradas y no vuelven a
+mostrarse. Las variables de entorno quedan como respaldo de una instalación que no haya
+usado el panel.
+
+**Estado: NOT READY, por datos del propietario.** Igual que al cerrar la fase anterior: no
+hay servidor, dominio, SMTP ni claves de Izipay. Lo que cambia es dónde se escribirán.
+
+**Línea base, medida sobre `master` `5da4e99`:** backend 5375 pruebas, 0 fallos, 5
+omitidas · Jest 795/795 · Playwright 184/184 · tipos limpios · lint 0 errores, 22 avisos ·
+build correcto · `ENSAYO: OK` (131 comprobaciones y 49 pasos de navegador).
+
+**Cada integración, y cómo se demostró que el panel manda**
+
+| Integración | Alcance | Lo que el sistema usa tras activarla en el panel | Prueba |
+|---|---|---|---|
+| Correo SMTP | instalación | El registro de un usuario sale por el servidor, el usuario y el remitente del panel; cambiarlo cambia el siguiente envío | `test_integrations_smtp` (servidor SMTP real en la prueba) y el ensayo, paso 11c, en la pila de producción |
+| Izipay (2 productos) | instalación | El checkout abre el cobro con el producto y las claves del panel; la notificación se verifica con su clave hash; cambiar de producto cambia la ruta de notificación | `test_integrations_payments` (pasarelas falsas de contrato) |
+| WhatsApp Business | empresa | El aviso sale con el número y el token de esa empresa; su webhook sólo cree su secreto de aplicación; otra empresa no ve nada | `test_integrations_whatsapp` |
+| Google | instalación | El botón recibe ese ID de cliente y un token sólo se acepta para esa audiencia | `test_integrations_google` |
+| SUNAT (sólo BETA) | instalación | La emisión recibe esas credenciales SOL y firma con el certificado subido | `test_integrations_sunat` |
+
+En las cinco: desactivada en el panel no recurre al entorno; lo que el servidor no puede
+leer no rompe ninguna petición; ningún secreto vuelve por la API, la auditoría, los
+registros ni `ops_status`.
+
+**Lo que NO se cerró.** IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT siguen abiertas: «Probar
+conexión» con claves de TEST existe y está probado contra las pasarelas falsas, pero no se
+ha ejecutado contra Izipay porque no hay claves. Ninguna integración se probó contra su
+servicio real: no hay credenciales de ninguno.
+
+**Defectos encontrados en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| PAY-TEST-BY-TEXT | La validación de la pasarela distinguía «no responde» de «rechaza las claves» por el texto del error del adaptador (y «red» está dentro de «credenciales»). Ahora por su tipo |
+| MAIL-OFF-BYPASS | Un correo apagado en el panel seguía saliendo si el entorno nombraba un backend de desarrollo |
+| WHATSAPP-DEFAULT-OFF | El archivo de ejemplo traía `WHATSAPP_PROVIDER=disabled`: WhatsApp no se podía activar desde el panel sin editar el servidor |
+| MAIL-UNREADABLE-CRASH | Con la clave raíz cambiada, enviar un correo lanzaba un error dentro de la petición que lo pedía |
+| IMPORT-PLAIN-SMTP (regla, no defecto) | Hallado en la pila de producción: el panel se niega a copiar del entorno un correo sin cifrar hacia otro equipo. Se mantiene; el ensayo usa un servidor de correo en la máquina del backend |
+
+**Verificación**
+
+| Medida | Resultado |
+|---|---|
+| Pruebas nuevas de backend (`test_integrations_*`: núcleo, correo, pagos, WhatsApp, Google, SUNAT) | 170, verdes. Cada módulo se comprobó con mutaciones: quitar la lectura del panel, el filtro por empresa, la confirmación o el «apagado es apagado» hace fallar pruebas |
+| `test_ops_status` · `test_preflight` · `test_production_settings` | 23 · 46 · 22, verdes |
+| Suites existentes de pagos, checkout, fiscal, WhatsApp y Google | verdes (357 de pagos y checkout; 482 con las fiscales) |
+| Jest | 823/823 (28 nuevas) |
+| Tipos · lint | limpio · 0 errores, 22 avisos (los de siempre) |
+| Playwright, spec nueva (`integrations-console`) | 3/3 |
+| Consola en la pila de producción (recorrido `console` del ensayo) | TODO OK, 27 comprobaciones |
+| Backend completo · Playwright completo · build · ensayo completo | PENDIENTE al escribir esto: el equipo de trabajo estaba a batería. Se mide antes de abrir el PR |
+
 ## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01: configuración externa, sin publicar
 
 Rama `chore/external-production-config-01`, desde `master` `7829685` (merge de #88). Sin

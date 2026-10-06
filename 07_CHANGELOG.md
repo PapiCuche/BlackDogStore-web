@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-06 — INTEGRATIONS-CONSOLE-01
+
+**Added**
+- **Panel › Configuración › Integraciones**, sólo para el MASTER: correo SMTP, Izipay (sus
+  dos productos), WhatsApp Business por empresa, ID de cliente de Google y SUNAT se
+  configuran, se prueban y se activan sin tocar el servidor ni reiniciar.
+- Almacén de secretos (`store.integrations.secret_store`): Fernet con la clave raíz
+  `APP_CONFIG_ENCRYPTION_KEY`; `manage.py reseal_integration_secrets` para rotarla.
+- Registro de proveedores y adaptadores (`store.integrations`); modelo `IntegrationConfig`
+  (migración `0111`); API `/api/admin/integrations/…`.
+- `ops_status` y `healthcheck.sh` informan de las integraciones y dan la alarma si la
+  tienda no puede enviar correo o cobrar, o si lo guardado no se puede leer.
+- El ensayo recorre la consola en la pila de producción con un segundo servidor de correo.
+- [docs/integraciones-y-secretos.md](docs/integraciones-y-secretos.md).
+
+**Changed**
+- El checkout, el correo, WhatsApp, Google y SUNAT leen su configuración en cada uso:
+  la de la consola si hay una activa; si no, las variables de entorno, que quedan como
+  respaldo. Una integración apagada en la consola no recurre al entorno.
+- El backend arranca en producción sin correo configurado (se configura en la consola).
+- `deploy/.env.production.example`: `APP_CONFIG_ENCRYPTION_KEY` es obligatoria; el correo,
+  la pasarela y `WHATSAPP_PROVIDER` vienen sin rellenar, para la consola.
+- `deploy/preflight.py`: exige la clave raíz; un archivo sin correo ni pasarela es
+  «suficiente para arrancar», y los dos siguen figurando como datos que debe el propietario.
+
+**Fixed**
+- La prueba de conexión de la pasarela distinguía «no responde» de «rechaza las claves»
+  por el texto del error; ahora por su tipo.
+- Con `WHATSAPP_PROVIDER=disabled` de serie, WhatsApp no se podía activar desde la consola.
+- Una configuración guardada que el servidor no puede leer rompía la petición que quería
+  enviar un correo.
+
 ## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01
 
 **Added**
