@@ -46,7 +46,15 @@ POSTGRES_PASSWORD={secrets.token_urlsafe(32)}
 POSTGRES_USER=blackdog
 POSTGRES_DB=blackdog
 DEFAULT_STOREFRONT_COMPANY_SLUG=$SLUG
-EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=correo
+EMAIL_PORT=2525
+EMAIL_USE_TLS=0
+EMAIL_TIMEOUT=4
+EMAIL_HOST_USER=ensayo
+EMAIL_HOST_PASSWORD={secrets.token_urlsafe(18)}
+DEFAULT_FROM_EMAIL=tienda@$DOMAIN
+ORDER_NOTIFICATION_EMAIL=pedidos@$DOMAIN
 REQUIRE_EMAIL_VERIFICATION=1
 PAYMENT_PROVIDER=izipay
 IZIPAY_ENV=sandbox
@@ -63,6 +71,11 @@ PY
 # apuntan no existe (`.invalid`) y sirven para una sola cosa, comprobar que la
 # notificación de pago sólo acepta lo que viene firmado. No son de Izipay.
 # WhatsApp va apagado y Google sin ID de cliente: así llega una instalación nueva.
+#
+# El correo sale por SMTP DE VERDAD, como en producción, hacia un servidor de
+# correo del propio ensayo (`deploy/rehearsal_smtp_sink.py`, en la red interna):
+# guarda cada mensaje y no reenvía nada. Va sin cifrar porque no sale de esta
+# máquina; con un proveedor real es EMAIL_USE_TLS=1 o EMAIL_USE_SSL=1.
 envval() { grep "^$1=" "$ENVF" | cut -d= -f2-; }
 
 C="docker compose -p $PROJECT -f docker-compose.prod.yml --env-file $ENVF"
@@ -94,8 +107,13 @@ healthy() {
   docker inspect -f '{{.State.Health.Status}}' "$PROJECT-$1-1" 2>/dev/null
 }
 shell() { $C exec -T backend python manage.py shell -c "$1" 2>&1 | grep -v "objects imported" | grep -v '^$'; }
+MAIN_PROJECT="$PROJECT"; NEW_PROJECT="$PROJECT-nuevo"
+# Los dos proyectos por su nombre fijo: el paso 19b cambia $C y $PROJECT al
+# segundo, y un fallo en mitad de ese paso no debe dejar el primero atrás.
 cleanup() {
-  $C down -v --rmi local >/dev/null 2>&1
+  docker rm -f "$MAIN_PROJECT-correo" >/dev/null 2>&1
+  docker compose -p "$NEW_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
+  docker compose -p "$MAIN_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
   rm -f "$ENVF" "$SMOKE_FRONTEND_DIR/.rehearsal-smoke.mjs"
   rm -rf "$WORK"
 }
@@ -103,6 +121,16 @@ trap cleanup EXIT
 export R_DOMAIN="$DOMAIN" R_PORT="$PORT" R_SLUG="$SLUG" R_STATE="$WORK/media.json"
 export R_USER=ensayo_admin R_PASSWORD="$ADMIN_PW" R_OUTSIDER=ensayo_ajeno R_OUTSIDER_PASSWORD="$OUTSIDER_PW"
 export R_IZIPAY_HASH_KEY="$(envval IZIPAY_HASH_KEY)" R_IZIPAY_MERCHANT="$(envval IZIPAY_MERCHANT_CODE)"
+export R_MAIL_CONTAINER="$PROJECT-correo" R_MAIL_FROM="tienda@$DOMAIN" R_MAIL_PASSWORD="$(envval EMAIL_HOST_PASSWORD)" R_MAIL_TIMEOUT="$(envval EMAIL_TIMEOUT)"
+# mailserver <contraseña>: (re)arranca el servidor de correo del ensayo aceptando sólo esa contraseña.
+mailserver() {
+  docker rm -f "$PROJECT-correo" >/dev/null 2>&1
+  docker run -d --name "$PROJECT-correo" --network "${PROJECT}_default" --network-alias correo \
+    -v "$ROOT/deploy/rehearsal_smtp_sink.py:/sink.py:ro" --entrypoint python "$PROJECT-backend" \
+    /sink.py 2525 /tmp/mail ensayo "$@" >/dev/null 2>&1
+  pause 2
+  docker inspect -f '{{.State.Running}}' "$PROJECT-correo" 2>/dev/null
+}
 # flows <descripción> <modo> [archivo]: corre rehearsal_flows.py y enseña sólo lo que falló.
 flows() {
   label=$1; shift
@@ -113,6 +141,8 @@ flows() {
 
 step "0 base"
 echo "HEAD $(git rev-parse --short HEAD) · master $(git rev-parse --short origin/master 2>/dev/null) · detrás de master $(git rev-list --count HEAD..origin/master 2>/dev/null) · cambios sin confirmar $(git status --short | grep -v '^??' | wc -l | tr -d ' ')"
+docker rm -f "$PROJECT-correo" >/dev/null 2>&1
+docker compose -p "$NEW_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
 $C down -v --rmi local >/dev/null 2>&1
 
 step "1 construcción sin caché"
@@ -157,6 +187,10 @@ expect "los cuatro contenedores rotan su registro" "$(docker inspect -f '{{index
 expect "y en las ocho rechaza él mismo lo que se anuncia demasiado grande" "$(printf '%s' "$ADAPTED" | grep -o '"status_code":413' | wc -l | tr -d ' ')" 8
 expect "cada ruta hacia una aplicación tiene tope de tamaño (8 de 8)" "$(printf '%s' "$ADAPTED" | grep -o '"max_size"' | wc -l | tr -d ' ') $(printf '%s' "$ADAPTED" | grep -o '"handler":"reverse_proxy"' | wc -l | tr -d ' ')" "8 8"
 
+step "4b servidor de correo del ensayo"
+expect "en marcha, en la red interna" "$(mailserver "$R_MAIL_PASSWORD")" true
+expect "no publica ningún puerto" "$(docker port "$PROJECT-correo" 2>/dev/null | wc -l | tr -d ' ')" 0
+
 step "5 ajustes efectivos de Django"
 shell "
 from django.conf import settings as s
@@ -168,9 +202,14 @@ print('FRONTEND_URL', s.FRONTEND_URL, '| CHECKOUT_RETURN_URL', s.CHECKOUT_RETURN
 print('renderers', s.REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'])
 print('EMAIL_BACKEND', s.EMAIL_BACKEND.rsplit('.',1)[-1], '| IZIPAY_ENV', s.IZIPAY_ENV, '| FISCAL', s.FISCAL_ENABLED, '| ALMACÉN', s.EVIDENCE_STORAGE_BACKEND)
 print('CACHE', s.CACHES['default']['BACKEND'].rsplit('.',1)[-1], '| DB', s.DATABASES['default']['ENGINE'].rsplit('.',1)[-1])
+print('correo', s.EMAIL_BACKEND.rsplit('.',2)[-2], '| espera', s.EMAIL_TIMEOUT, 's | TLS', s.EMAIL_USE_TLS, '| SSL', s.EMAIL_USE_SSL)
+import datetime, django.utils.timezone as tz
+print('hora: zona de la tienda', s.TIME_ZONE, '| USE_TZ', s.USE_TZ, '| ahora en la tienda', tz.localtime().strftime('%H:%M %z'), '| contenedor', datetime.datetime.now().astimezone().strftime('%H:%M %z'))
 from django.urls import get_resolver; print('rutas raíz', sorted(str(p.pattern) for p in get_resolver().url_patterns))
 "
 expect "DEBUG" "$(shell "from django.conf import settings as s; print(s.DEBUG)")" False
+expect "el correo no va al registro: sale por SMTP" "$(shell "from django.conf import settings as s; print(s.EMAIL_BACKEND)")" "django.core.mail.backends.smtp.EmailBackend"
+echo "base de datos: zona $($C exec -T postgres sh -c 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "show timezone"' 2>/dev/null | tr -d '\r')"
 
 step "6 datos de ensayo: semilla, primer administrador y una persona ajena"
 $C exec -T backend python manage.py seed_demo_users --company-slug "$SLUG" >/dev/null 2>&1
@@ -258,6 +297,23 @@ from store.models import NotificationDelivery as N
 print(N.objects.filter(channel='whatsapp', status__in=['pending', 'sent', 'delivered', 'read']).count())" | tail -1)" 0
 $C logs backend frontend caddy > "$WORK/logs.txt" 2>&1
 flows "los registros no guardan enlaces, IMEI, contraseñas ni claves" logs "$WORK/logs.txt"
+
+step "11c correo real por SMTP: registro, verificación, recuperación, y el servidor de correo caído"
+pause 62
+flows "registro con verificación y recuperación de contraseña, por SMTP" mail
+expect "el servidor de correo recibió los mensajes" "$(docker exec "$PROJECT-correo" sh -c 'ls /tmp/mail/*.eml 2>/dev/null | wc -l' | awk '{print ($1 >= 2) ? "sí" : "no"}')" "sí"
+# Otra ventana: pedir la recuperación está limitado a 3 por minuto.
+pause 62
+docker rm -f "$PROJECT-correo" >/dev/null 2>&1
+flows "con el servidor de correo caído" mail-down
+expect "servidor de correo que rechaza la contraseña" "$(mailserver "otra-$R_MAIL_PASSWORD")" true
+flows "con el servidor de correo rechazando la contraseña" mail-down
+expect "servidor de correo que acepta la conexión y no responde" "$(mailserver --stall)" true
+flows "con el servidor de correo mudo: la espera es la de EMAIL_TIMEOUT" mail-stall
+docker rm -f "$PROJECT-correo" >/dev/null 2>&1
+$C logs backend frontend caddy > "$WORK/logs.txt" 2>&1
+expect "los tres fallos de envío quedaron anotados" "$(grep -c 'Failed to send password reset email' "$WORK/logs.txt" | awk '{print ($1 >= 3) ? "sí" : "no"}')" "sí"
+flows "los registros no guardan los enlaces de los correos ni la contraseña del correo" logs "$WORK/logs.txt"
 
 step "12 navegador real: tienda, imágenes, sesión y panel"
 # El límite de inicio de sesión es de 5 por minuto y por dirección: se deja
@@ -376,6 +432,33 @@ expect "lo creado después de la copia ya no existe" "$(shell "from django.contr
 media "imágenes y evidencias siguen en su sitio" verify
 flows "la foto de producto y el enlace de seguimiento siguen ahí" verify
 expect "tienda tras restaurar" "$(code "$BASE/") $(code "$BASE/api/products")" "200 200"
+
+step "19b restauración en un servidor nuevo (otro proyecto, volúmenes vacíos, el mismo archivo de variables)"
+# Lo que dice docs/despliegue-produccion.md §6.4 para un servidor nuevo, hecho:
+# pila recién creada, base recién migrada y entonces restore.sh con la copia.
+# El primer proyecto se apaga (conserva sus volúmenes) para dejar libres los puertos.
+$C down 2>&1 | tail -1
+OLD_C=$C; OLD_PROJECT=$PROJECT
+C="docker compose -p $NEW_PROJECT -f docker-compose.prod.yml --env-file $ENVF"; PROJECT=$NEW_PROJECT
+$C build -q 2>&1 | tail -1
+$C up -d postgres 2>&1 | tail -1
+expect "postgres del servidor nuevo" "$(healthy postgres)" healthy
+$C run --rm backend python manage.py migrate --noinput 2>&1 | tail -1
+$C up -d 2>&1 | tail -1
+expect "backend" "$(healthy backend)" healthy; expect "frontend" "$(healthy frontend)" healthy; pause 5
+expect "el servidor nuevo empieza sin usuarios ni archivos" "$(shell "from django.contrib.auth import get_user_model as U; print(U().objects.count())") $(files)" "0 0"
+mkdir -p "$WORK/backups-nuevo"
+echo RESTAURAR | COMPOSE="$C" BACKUP_DIR="$WORK/backups-nuevo" sh deploy/restore.sh "$DB" "$EV" 2>&1 | grep -E "^[0-9]/4|Restaurado|ERROR|error" | cut -c1-100
+expect "backend" "$(healthy backend)" healthy; expect "frontend" "$(healthy frontend)" healthy; pause 5
+expect "los datos del servidor nuevo son los de la copia" "$(count)" "$BEFORE"
+expect "los archivos del servidor nuevo son los de la copia" "$(files)" "$FILES"
+media "imágenes públicas y evidencias privadas, en el servidor nuevo" verify
+flows "la foto de producto se sirve y el enlace de seguimiento abre (misma SECRET_KEY)" verify
+expect "tienda en el servidor nuevo" "$(code "$BASE/") $(code "$BASE/api/products")" "200 200"
+$C down -v --rmi local >/dev/null 2>&1
+C=$OLD_C; PROJECT=$OLD_PROJECT
+$C up -d 2>&1 | tail -1
+expect "de vuelta en el primero: backend" "$(healthy backend)" healthy
 
 step "20 volúmenes"
 docker volume ls --filter "name=$PROJECT" --format '{{.Name}}' | tr '\n' ' '; echo

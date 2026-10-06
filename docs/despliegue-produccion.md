@@ -138,12 +138,42 @@ Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria
 | Dato | Para qué | Dónde va |
 |---|---|---|
 | Dominio | La dirección de la tienda | `SITE_DOMAIN` |
-| Servidor SMTP, usuario y contraseña | Invitar personal, recuperar contraseñas, avisos de pedido | `EMAIL_*` |
+| Servidor SMTP: host, puerto, usuario, contraseña (o contraseña de aplicación), remitente y si cifra con STARTTLS (587) o desde el primer byte (465) | Invitar personal, verificar cuentas, recuperar contraseñas, avisos de pedido | `EMAIL_*`, `DEFAULT_FROM_EMAIL` |
 | Correo que recibe los pedidos | Aviso de cada pedido pagado | `ORDER_NOTIFICATION_EMAIL` |
 | Credenciales de Izipay, y cuál de sus dos productos es | Cobrar en línea | `PAYMENT_PROVIDER` y `IZIPAY_*` o `MICUENTAWEB_*` (`docs/pagos-equipos-documentos.md` §1) |
 | Dónde se alojan las fotos de producto | Que la web pueda mostrarlas | `NEXT_PUBLIC_IMAGE_HOSTS` |
 | Número de WhatsApp Business, plantillas aprobadas, token, secreto de la aplicación y token de verificación | Avisos al cliente por WhatsApp (opcional) | `WHATSAPP_*` y `configure_whatsapp` |
 | ID de cliente OAuth de Google, con el dominio como origen autorizado | «Continuar con Google» (opcional) | `GOOGLE_OAUTH_CLIENT_ID` |
+
+### Cómo entregar esos datos
+
+**Los secretos no viajan por chat, por correo ni por una captura.** Van directos
+al archivo `deploy/.env.production` del servidor (§4.2), que sólo lee su dueño y
+no está en el repositorio. Quien ayude a configurar necesita saber *qué* está
+puesto, no *cuánto vale*; para eso está:
+
+```sh
+python3 deploy/preflight.py                 # qué falta y qué se contradice
+python3 deploy/preflight.py --smtp          # además entra al servidor de correo (no envía nada)
+python3 deploy/preflight.py --smtp-send-to yo@midominio.pe   # además entrega un mensaje de prueba
+python3 deploy/preflight.py --dns --server-ip <IP del servidor>
+```
+
+Responde línea a línea —`OK`, `BLOCKED/OWNER-DATA` (falta y sólo tú puedes
+darlo), `BLOCKED/OPTIONAL` (falta y la tienda publica sin ello), `ATENCIÓN` (se
+contradice o es inseguro)— y **nunca imprime un valor**: dice nombres de
+variables. Lo que escribe sí se puede pegar en un chat.
+
+Lee el archivo como lo leen Docker Compose y Django —un comentario tras un valor
+no es parte del valor; una línea como `EMAIL_USE_TLS=` vacía cuenta como «no»; un
+«$» dentro de una contraseña lo sustituiría Compose si no va entre comillas
+simples—, y sólo entra al servidor de correo si la conexión va cifrada.
+
+Sabe a cuál de los dos productos de Izipay pertenecen las claves y rechaza un
+juego mezclado: claves de los dos productos, TEST con PRODUCCIÓN, la clave
+pública de otra tienda, producción apuntando a un sandbox, o una dirección de
+notificación en otro dominio. No dice que la tienda esté lista: comprueba un
+archivo, no el pago de prueba en la pasarela ni el ensayo.
 
 Sin Izipay la tienda funciona (catálogo, carrito, panel, punto de venta) pero no
 cobra en línea. Sin SMTP el backend **no arranca** con la configuración de
@@ -179,6 +209,18 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # POSTGRES_PASSW
 ```
 
 Ese archivo no se sube al repositorio. No reutilices los valores de desarrollo.
+Cuando lo tengas, `python3 deploy/preflight.py` dice qué falta (§3).
+
+**Correo.** Con STARTTLS, el caso habitual: `EMAIL_PORT=587` y `EMAIL_USE_TLS=1`.
+Si el proveedor sólo ofrece el puerto 465: `EMAIL_PORT=465`, `EMAIL_USE_TLS=0` y
+`EMAIL_USE_SSL=1`. Nunca los dos, y nunca ninguno: la contraseña viajaría en
+claro. La tienda espera al servidor de correo 10 segundos (`EMAIL_TIMEOUT`); si
+no responde, la petición sigue y el fallo queda en el registro.
+
+**Hora del servidor.** La tienda trabaja en la hora de Lima sea cual sea la del
+servidor: los documentos y el panel la muestran bien. Las tareas programadas
+(§6) sí usan la hora del servidor. Para que «la copia de las 3:15» sea a las
+3:15 de Lima: `sudo timedatectl set-timezone America/Lima`.
 
 **Guarda una copia de `deploy/.env.production` fuera del servidor**, en un gestor
 de contraseñas. La copia de seguridad no lo incluye (§6.1). Sin su `SECRET_KEY`
@@ -433,7 +475,9 @@ una copia de lo que hay.
 En un servidor nuevo: instalar Docker, clonar el repositorio, poner el
 `deploy/.env.production` guardado (§4.2), seguir §4.3 hasta `$C up -d` —con la
 base recién creada y sus migraciones— y entonces `sh deploy/restore.sh` con los
-dos archivos.
+dos archivos. El ensayo lo hace tal cual en otro proyecto de Docker con los
+volúmenes vacíos (§9, paso 19b). **Nunca se prueba una restauración sobre la
+tienda en marcha**: se prueba en otro servidor, o en este equipo con el ensayo.
 
 **Prueba la restauración una vez** antes de necesitarla: una copia que nunca se ha
 restaurado no se sabe si sirve.
@@ -558,9 +602,13 @@ Docker, unos puertos y un dominio reservados (`bds-rehearsal`, 18080/18443,
 `tienda.test`) y un certificado interno de Caddy. No sale a Internet, no envía
 correo y no cobra. Termina con `ENSAYO: OK` o con el número de fallos.
 
-Última pasada: 2026-10-05, sobre `81421d9` (rama `chore/production-readiness-01`,
-`master` `78ad79c` incorporado). Resultado: `ENSAYO: OK` — 107 comprobaciones del
-guion y 49 pasos de navegador, 0 fallos.
+Última pasada: 2026-10-06, sobre `4c291a6` (rama `chore/external-production-config-01`,
+`master` `7829685` incorporado, árbol limpio). Resultado: `ENSAYO: OK` — 131 comprobaciones
+del guion y 49 pasos de navegador, 0 fallos. Los commits posteriores sólo tocan
+documentación.
+
+El ensayo necesita la red para construir las imágenes y el equipo despierto de principio a
+fin: con el portátil en reposo, una pasada falló porque `npm ci` se cortó a mitad.
 
 La pasada anterior sobre `master` (`78ad79c`) dio `ENSAYO: 7 FALLO(S)`, los siete
 por una sola comprobación del propio guion, que seguía pidiendo a la portada una
@@ -571,7 +619,8 @@ variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo dem
 | 1 | Construcción sin caché | Dos imágenes. Sin `.env` ni base dentro; el backend corre sin root (uid 10001); el frontend no lleva ningún secreto en su entorno ni en los archivos que sirve; el backend no lleva claves ni copias |
 | 2–3 | PostgreSQL 16 vacío y migraciones | 122 migraciones de `store` aplicadas, 0 pendientes; `makemigrations --check` sin cambios |
 | 4 | Arranque | Backend y frontend sanos; sólo Caddy publica puertos; un proceso de gunicorn; ningún error en el registro de arranque; tope de tamaño y rechazo por longitud anunciada en las ocho rutas de Caddy; tiempos de espera; los cuatro contenedores rotan su registro |
-| 5 | Ajustes efectivos | `DEBUG=False`; cookies `Secure` y `HttpOnly`; un proxy de confianza; sólo JSON; sin admin de Django |
+| 4b | Servidor de correo del ensayo | En la red interna, sin puertos publicados: guarda los mensajes y no reenvía nada |
+| 5 | Ajustes efectivos | `DEBUG=False`; cookies `Secure` y `HttpOnly`; un proxy de confianza; sólo JSON; sin admin de Django; el correo sale por SMTP, no al registro; la tienda en hora de Lima con el contenedor y la base en UTC |
 | 6 | Datos de demostración | `seed_demo_users` se niega; ninguna cuenta `dev_`; la ruta responde 404 |
 | 7 | Rutas por Caddy | Tienda, ficha, carrito, checkout, panel y API: 200. `/admin/login/`, `/static/admin/…`, `/media/…` y `/private-media/…` no llegan a Django ni a un archivo. Host desconocido: sin respuesta |
 | 8 | Cabeceras | HSTS una sola vez, `nosniff`, `X-Frame-Options: DENY`, política de contenido, `Permissions-Policy`; `no-referrer` en las páginas con token; no se anuncia el servidor |
@@ -588,6 +637,8 @@ variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo dem
 | 11b | **Seguimiento** | El enlace abre sin sesión, sin indexar y sin referente; IMEI enmascarado; alterado responde 404 |
 | 11b | **WhatsApp apagado, Google sin configurar** | La orden se crea igual y no queda ningún mensaje enviado ni pendiente; la pantalla dice qué falta. Google se anuncia apagado, su entrada responde 404 y el acceso con usuario sigue |
 | 11b | **Registros** | Tras todo lo anterior no contienen el enlace de seguimiento, ningún IMEI usado, la contraseña del administrador, la clave de la pasarela ni tokens de sesión |
+| 11c | **Correo por SMTP** | Registrarse pide verificar el correo y sin verificar no se entra; el mensaje llega con el remitente configurado; su enlace verifica la cuenta y vale una sola vez; la contraseña se recupera por correo y se entra con la nueva; pedirlo para un correo que no existe responde igual y no envía nada |
+| 11c | **Servidor de correo caído, que rechaza la contraseña, o que deja de responder** | La tienda contesta igual: al momento en los dos primeros casos y, en el tercero, tras esperar lo que dice `EMAIL_TIMEOUT`. Los tres fallos quedan anotados; el registro no contiene los enlaces de los correos, las contraseñas escritas ni la contraseña del correo |
 | 12 | Navegador real | Portada, catálogo, ficha, carrito, checkout, servicios, nosotros, contacto y acceso a 390 y 1440 px: sin desbordes, sin imágenes rotas y sin errores de script. Las cinco imágenes de la tienda a 320, 390, 768 y 1440 px, en claro y en oscuro. Seguimiento de una reparación sin sesión. Sin botón de Google. Categorías con teclado. Sesión, panel y catorce pantallas del panel, entre ellas equipos, cargas masivas, impresoras y mensajería |
 | 13 | CSRF | Con sesión, desde un origen ajeno o sin token: 403 |
 | 14 | Tareas programadas | `flushexpiredtokens`, `send_pending_notifications` y `cleanup_storefront_images --dry-run` corren; la limpieza no toca nada colocado |
@@ -599,6 +650,7 @@ variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo dem
 | 18b | `deploy/healthcheck.sh` | Todo sano: 0. Con el backend detenido: error, y nombra el contenedor y la API. Al encenderlo: 0 otra vez |
 | 18b | Registro de Caddy con el backend caído | Anota el fallo (502) sin la dirección de la petición: no aparece el enlace de seguimiento pedido |
 | 19 | **Prueba de recuperación**: daño y `deploy/restore.sh` | Se borran todos los archivos y se crea una cuenta nueva; tras restaurar, datos y archivos son los de la copia —equipos, ventas, notas y enlaces de seguimiento incluidos—, la foto de producto se sirve, el enlace abre y la cuenta posterior no existe |
+| 19b | **Restauración en un servidor nuevo** | Otro proyecto de Docker, volúmenes vacíos y el mismo archivo de variables: pila recién creada y migrada, que empieza sin usuarios ni archivos; `restore.sh` con la copia; datos y archivos iguales a los de la copia, imágenes públicas y evidencias privadas como antes, la foto de producto se sirve y el enlace de seguimiento abre |
 | 21 | Desmontaje | No queda ningún contenedor, volumen, imagen ni archivo de variables |
 
 Observado y anotado: el inicio de sesión no rechaza por origen. Desde un origen
@@ -610,16 +662,18 @@ redirección a HTTPS la hace Caddy, que es quien termina TLS; hacerla también e
 Django rompería la comprobación de salud interna.
 
 No se puede ensayar en local: el certificado público de Let's Encrypt (necesita
-el dominio real), el envío de correo por SMTP, el cobro con Izipay —el ensayo
-comprueba la notificación con claves propias, no la pasarela—, el envío por
-WhatsApp y el acceso con Google.
+el dominio real); que el proveedor de correo real acepte las credenciales y que
+el mensaje llegue al buzón —el ensayo envía por SMTP a un servidor propio, sin
+cifrar—; el cobro con Izipay —el ensayo comprueba la notificación con claves
+propias, no la pasarela—; el envío por WhatsApp y el acceso con Google.
 
 ## 10. Lista de publicación
 
 Qué falta para publicar, y de quién depende.
 
 - **LISTO** (CODE READY): está en el código y pasó el ensayo.
-- **FALTAN DATOS** (BLOCKED/CREDENTIALS): sólo el propietario puede darlos.
+- **FALTAN DATOS** (BLOCKED/CREDENTIALS, o `BLOCKED/OWNER-DATA` en `preflight.py`): sólo el
+  propietario puede darlos.
 - **FALTA INFRAESTRUCTURA** (BLOCKED/INFRA): hay que contratarla o configurarla fuera
   del código.
 - **OPCIONAL** (OPTIONAL): la tienda publica sin ello.
@@ -654,3 +708,56 @@ Qué falta para publicar, y de quién depende.
 
 Antes de cobrar de verdad: un pago completo en TEST con la tienda ya publicada. Es
 la única forma de ver llegar una notificación real de la pasarela.
+
+## 11. Antes de abrir la tienda: qué tiene que estar comprobado
+
+Publicar es una decisión del propietario. Esto es lo que tiene que ser verdad
+antes de tomarla, y cómo se comprueba cada cosa.
+
+| Qué | Cómo se comprueba | Hoy |
+|---|---|---|
+| El código está verde | Suites completas y CI sobre el commit que se publica | Hecho |
+| El ensayo está verde | `sh deploy/rehearsal.sh` sobre ese mismo commit: `ENSAYO: OK` | Hecho (§9) |
+| El archivo de variables está completo | `python3 deploy/preflight.py`: ningún `BLOCKED/OWNER-DATA` ni `ATENCIÓN` | `BLOCKED/OWNER-DATA` |
+| El servidor está listo | §4.3 en el servidor: contenedores sanos, `check --deploy` con su único aviso | `BLOCKED/OWNER-DATA`: no hay servidor |
+| El correo sale y llega | `preflight.py --smtp-send-to <tu dirección>` y un registro de prueba en la tienda: el mensaje está en el buzón | `BLOCKED/OWNER-DATA`: no hay SMTP |
+| Izipay cobra en TEST | La prueba contra el entorno real (`pagos-equipos-documentos.md` §1.4) y un pago completo en TEST con la tienda publicada: el pedido queda pagado por la notificación | `BLOCKED/OWNER-DATA`: no se sabe qué producto ni hay claves de TEST |
+| La copia se puede restaurar | `backup.sh` en el servidor y `restore.sh` en OTRO servidor o en este equipo | Hecho en el ensayo (§9, pasos 18–19b); falta el destino externo |
+| Las tareas y la vigilancia están puestas | `crontab -l` muestra las cinco líneas; `sh deploy/healthcheck.sh` termina bien; hay un vigilante externo | `BLOCKED/OWNER-DATA`: no hay servidor |
+| No hay secretos fuera de su sitio | `deploy/.env.production` con `chmod 600`, copia en un gestor de contraseñas, nada en Git | Pendiente de crearlo |
+
+**Listo para publicar** cuando todas las filas están hechas. WhatsApp, «Continuar
+con Google» y SUNAT no cuentan: la tienda publica sin ellos y se encienden
+después.
+
+**No listo** mientras falte cualquiera de estas: Izipay sin validar en TEST si se
+va a cobrar en línea, una copia cuya restauración no se ha probado, el correo
+sin funcionar, el ensayo en rojo, un secreto expuesto o migraciones sin aplicar.
+
+Lo que nunca se hace sin una orden expresa del propietario: apuntar el DNS
+público al servidor, cobrar con claves de producción, enviar mensajes de
+WhatsApp a clientes o emitir comprobantes a SUNAT.
+
+### Los datos que faltan, exactamente
+
+Todos van en `deploy/.env.production` del servidor, salvo los que no son
+secretos, que basta con decirlos.
+
+| Dato | Se puede decir en claro | Variable |
+|---|---|---|
+| Dominio | Sí | `SITE_DOMAIN` |
+| Proveedor del servidor, su IP y el usuario SSH | Sí (la clave SSH, no) | — |
+| Quién gestiona el DNS | Sí | — |
+| Destino de la copia externa | Sí (sus credenciales, no) | — |
+| SMTP: host, puerto y si es STARTTLS o TLS implícito | Sí | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS` / `EMAIL_USE_SSL` |
+| SMTP: usuario y contraseña | **No** | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` |
+| Dirección remitente y dirección que recibe los pedidos | Sí | `DEFAULT_FROM_EMAIL`, `ORDER_NOTIFICATION_EMAIL` |
+| Izipay: cuál de los dos productos | Sí | `PAYMENT_PROVIDER` |
+| Izipay «SDK web / Checkout», TEST: código de comercio y clave pública | Sí (son públicos) | `IZIPAY_MERCHANT_CODE`, `IZIPAY_PUBLIC_KEY` |
+| Izipay «SDK web / Checkout», TEST: API key, clave hash y dirección del token | **No** (la dirección sí) | `IZIPAY_API_KEY`, `IZIPAY_HASH_KEY`, `IZIPAY_TOKEN_URL` |
+| Izipay «Mi Cuenta Web», TEST: usuario y clave pública | Sí (son públicos) | `MICUENTAWEB_SHOP_ID`, `MICUENTAWEB_PUBLIC_KEY` |
+| Izipay «Mi Cuenta Web», TEST: contraseña y clave HMAC-SHA-256 | **No** | `MICUENTAWEB_PASSWORD`, `MICUENTAWEB_HMAC_KEY` |
+| Izipay, producción | **No**. Después del pago de prueba | las mismas |
+| Google: ID de cliente OAuth (opcional) | Sí (es público) | `GOOGLE_OAUTH_CLIENT_ID` |
+| WhatsApp: token, secreto de la aplicación y token de verificación (opcional) | **No** | `WHATSAPP_TOKEN_…`, `WHATSAPP_SECRET_…`, `WHATSAPP_VERIFY_…` |
+| WhatsApp: Phone Number ID y nombres de las plantillas (opcional) | Sí | `configure_whatsapp` y el panel |

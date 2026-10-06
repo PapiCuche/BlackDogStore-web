@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01
+
+**Added**
+- `deploy/preflight.py`: dice qué falta del propietario (`BLOCKED/OWNER-DATA`), qué es
+  opcional y qué se contradice en `deploy/.env.production`, sin imprimir ningún valor.
+  Con `--smtp` entra al servidor de correo; con `--smtp-send-to` entrega un mensaje de
+  prueba; con `--dns` pregunta a qué dirección apunta el dominio.
+- `EMAIL_TIMEOUT` (10 s por omisión) y `EMAIL_USE_SSL` (TLS desde el primer byte, puerto 465).
+- El ensayo envía el correo por SMTP de verdad, a un servidor de correo propio
+  (`deploy/rehearsal_smtp_sink.py`): registro con verificación, recuperación de
+  contraseña, servidor de correo caído y contraseña rechazada.
+- El ensayo restaura la copia en un «servidor nuevo»: otro proyecto de Docker, volúmenes
+  vacíos, el mismo archivo de variables.
+
+**Changed**
+- El ensayo ya no usa el correo de consola: comprueba que la tienda envía por SMTP y que
+  ningún enlace de un solo uso queda en el registro.
+
+**Fixed**
+- MAIL-TIMEOUT: sin tiempo de espera, un servidor de correo que dejara de responder
+  retenía la petición de cada registro o recuperación de contraseña indefinidamente.
+- MAIL-SSL: no se podía configurar un proveedor que sólo ofrece el puerto 465.
+- De la revisión de la rama: `preflight.py` podía imprimir un valor del archivo y lo leía
+  distinto de como lo leen Compose y Django.
+
 ## 2026-10-05 — PRODUCTION-READINESS-01
 
 **Added**
