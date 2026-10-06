@@ -537,7 +537,22 @@ EMAIL_HOST = env('EMAIL_HOST', default='')
 EMAIL_PORT = env.int('EMAIL_PORT', default=587)
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
-EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+# TLS implícito (puerto 465): la conexión es cifrada desde el primer byte. Hay
+# proveedores que sólo ofrecen eso. Excluye a STARTTLS (`EMAIL_USE_TLS`, 587).
+EMAIL_USE_SSL = env.bool('EMAIL_USE_SSL', default=False)
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=not EMAIL_USE_SSL)
+if EMAIL_USE_SSL and EMAIL_USE_TLS:
+    raise ImproperlyConfigured(
+        "EMAIL_USE_SSL and EMAIL_USE_TLS are mutually exclusive: use EMAIL_USE_SSL=1 "
+        "for implicit TLS (port 465) or EMAIL_USE_TLS=1 for STARTTLS (port 587)."
+    )
+# MAIL-TIMEOUT. Django espera a un servidor de correo sin límite si no se le
+# dice otra cosa, y un registro o una recuperación de contraseña envían su
+# mensaje dentro de la petición: con ocho hilos, un proveedor que deja de
+# responder tumbaría la API registro a registro.
+EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=10)
+if EMAIL_TIMEOUT <= 0:
+    raise ImproperlyConfigured("EMAIL_TIMEOUT must be a positive number of seconds.")
 # --- Internal new-sale notifications ---------------------------------------
 #
 # DEPRECATED AS A RECIPIENT since Phase 3. Each company now names its own address

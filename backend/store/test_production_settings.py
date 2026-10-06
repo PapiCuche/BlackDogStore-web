@@ -32,6 +32,9 @@ print(json.dumps({
     "logging_handlers": sorted(s.LOGGING.get("handlers", {})) if hasattr(s, "LOGGING") else None,
     "root_level": s.LOGGING.get("root", {}).get("level") if hasattr(s, "LOGGING") else None,
     "loggers": sorted(s.LOGGING.get("loggers", {})) if hasattr(s, "LOGGING") else None,
+    "email_timeout": getattr(s, "EMAIL_TIMEOUT", None),
+    "email_use_tls": getattr(s, "EMAIL_USE_TLS", None),
+    "email_use_ssl": getattr(s, "EMAIL_USE_SSL", None),
 }))
 '''
 
@@ -94,6 +97,31 @@ class ProductionSettingsTest(SimpleTestCase):
     def test_production_accepts_a_mail_backend_that_was_chosen(self):
         self.ok(EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend')
         self.ok(EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend', EMAIL_HOST='smtp.example')
+
+    def test_a_mail_server_that_does_not_answer_cannot_hold_a_request_for_ever(self):
+        """
+        MAIL-TIMEOUT. Django waits for an SMTP server without limit unless told
+        otherwise, and a registration or a password reset sends its message
+        inside the request. With eight threads, a provider that stops answering
+        would take the API down one sign-up at a time.
+        """
+        self.assertEqual(self.ok()['email_timeout'], 10)
+        self.assertEqual(self.ok(EMAIL_TIMEOUT='25')['email_timeout'], 25)
+        self.refused('EMAIL_TIMEOUT', EMAIL_TIMEOUT='0')
+
+    def test_a_provider_that_only_offers_implicit_tls_can_be_configured(self):
+        """MAIL-SSL. Port 465 speaks TLS from the first byte; STARTTLS (587) was the only option."""
+        smtp = {'EMAIL_BACKEND': 'django.core.mail.backends.smtp.EmailBackend', 'EMAIL_HOST': 'smtp.example'}
+        settings = self.ok(**smtp, EMAIL_PORT='465', EMAIL_USE_SSL='1', EMAIL_USE_TLS='0')
+        self.assertIs(settings['email_use_ssl'], True)
+        self.assertIs(settings['email_use_tls'], False)
+        self.assertIs(self.ok(**smtp)['email_use_ssl'], False)
+        self.assertIs(self.ok(**smtp)['email_use_tls'], True)
+
+    def test_both_kinds_of_tls_at_once_is_refused_at_start_up(self):
+        """Django refuses the pair only when the first message is sent. Better to learn it when starting."""
+        self.refused('EMAIL_USE_SSL', EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend',
+                     EMAIL_HOST='smtp.example', EMAIL_USE_SSL='1', EMAIL_USE_TLS='1')
 
     def test_development_keeps_the_console_default(self):
         self.ok(DEBUG='1', EMAIL_BACKEND=None)
