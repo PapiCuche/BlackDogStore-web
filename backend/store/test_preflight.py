@@ -211,6 +211,96 @@ class PreflightTest(SimpleTestCase):
         unknown = sorted(name for name in names if f"'{name}'" not in source and not name.endswith('_<EMPRESA>'))
         self.assertEqual(unknown, [])
 
+    # -- REVIEW: it must read the file the way Compose and Django read it -------
+
+    PASTED = 'PEGADO-POR-ERROR-NoEsReal'
+
+    def no_echo(self, values, *args, **kwargs):
+        result = self.run_preflight(values, *args, **kwargs)
+        self.assertNotIn(self.PASTED, result.stdout + result.stderr, 'a value from the file was printed')
+        self.assertNotIn('Traceback', result.stdout + result.stderr)
+        return result
+
+    def test_a_mail_host_that_is_not_a_host_name_is_refused_and_not_repeated(self):
+        url = {**BASE, **IZIPAY, 'EMAIL_HOST': f'smtp://apikey:{self.PASTED}@smtp.example.pe'}
+        result = self.no_echo(url)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('EMAIL_HOST', '\n'.join(self.lines(result, 'ATENCIÓN')))
+
+    def test_a_port_or_a_timeout_that_is_not_a_number_is_refused_and_not_repeated(self):
+        for name, value in (('EMAIL_PORT', f'587 {self.PASTED}'), ('EMAIL_PORT', 'abc'), ('EMAIL_PORT', '0'),
+                            ('EMAIL_TIMEOUT', self.PASTED), ('EMAIL_TIMEOUT', '0')):
+            for args in ((), ('--smtp',)):
+                result = self.no_echo({**BASE, **IZIPAY, name: value}, *args)
+                self.assertEqual(result.returncode, 1, f'{name}={value!r} {args}')
+                self.assertIn(name, '\n'.join(self.lines(result, 'ATENCIÓN')))
+
+    def test_a_domain_that_is_not_a_host_name_is_not_repeated(self):
+        for domain in (f'{self.PASTED}.pegado por error', f'tienda.pe {self.PASTED}', '10.0.0.1', 'tienda..pe', 'tienda.pe.'):
+            result = self.no_echo({**BASE, **IZIPAY, 'SITE_DOMAIN': domain}, '--dns')
+            self.assertEqual(result.returncode, 1, domain)
+            self.assertIn('SITE_DOMAIN', '\n'.join(self.lines(result, 'ATENCIÓN')))
+        for domain in ('tienda.pe', 'tienda.com.pe', 'mi-tienda.example.pe', 'xn--caf-dma.example.pe'):
+            result = self.run_preflight({**BASE, **IZIPAY, 'SITE_DOMAIN': domain, 'IZIPAY_IPN_URL': ''})
+            self.assertEqual(result.returncode, 0, domain + result.stdout)
+
+    def test_an_empty_switch_is_off_the_way_django_reads_it(self):
+        """`EMAIL_USE_TLS=` reaches Django as an empty string, and an empty string is False."""
+        result = self.attention({**BASE, **IZIPAY, 'EMAIL_USE_TLS': ''}, 'sin cifrar')
+        self.assertNotIn('STARTTLS)', result.stdout)
+
+    def test_every_spelling_of_yes_that_django_accepts_is_a_yes(self):
+        for spelling in ('1', 'true', 'True', 'yes', 'on', 'y', 'ok'):
+            result = self.run_preflight({**BASE, **IZIPAY, 'EMAIL_USE_TLS': spelling})
+            self.assertEqual(result.returncode, 0, spelling + result.stdout)
+        self.attention({**BASE, **IZIPAY, 'FISCAL_ENABLED': 'y'}, 'FISCAL_ENABLED')
+
+    def test_a_comment_after_a_value_is_not_part_of_the_value(self):
+        text = ''.join(f'{k}={v}  # nota\n' for k, v in {**BASE, **IZIPAY}.items())
+        self.assertEqual(self.run_preflight({}, text=text).returncode, 0)
+        self.attention({**BASE, **IZIPAY, 'EMAIL_PORT': '465 # ssl'}, '465')
+        result = self.run_preflight({**BASE, **IZIPAY, 'EMAIL_HOST': ' # pendiente'})
+        self.assertIn('correo', '\n'.join(self.lines(result, 'BLOCKED/OWNER-DATA')))
+
+    def test_a_line_written_for_a_shell_is_read_too(self):
+        text = ''.join(f'export {k}={v}\n' for k, v in {**BASE, **IZIPAY}.items())
+        self.assertEqual(self.run_preflight({}, text=text).returncode, 0)
+
+    def test_the_payment_product_defaults_as_the_application_defaults_it(self):
+        without = {k: v for k, v in {**BASE, **IZIPAY}.items() if k != 'PAYMENT_PROVIDER'}
+        result = self.run_preflight(without)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('OK    Izipay «SDK web / Checkout»', result.stdout)
+
+    def test_mi_cuenta_web_is_complete_without_the_key_nothing_reads(self):
+        without = {k: v for k, v in {**BASE, **MICUENTAWEB}.items() if k != 'MICUENTAWEB_HMAC_KEY'}
+        self.assertEqual(self.run_preflight(without).returncode, 0)
+
+    def test_whatsapp_is_on_unless_the_file_says_otherwise(self):
+        """The application's default is the real provider: a missing line is not «off»."""
+        without = {k: v for k, v in {**BASE, **IZIPAY}.items() if k != 'WHATSAPP_PROVIDER'}
+        self.attention(without, 'WHATSAPP_PROVIDER')
+        self.attention({**BASE, **IZIPAY, 'WHATSAPP_PROVIDER': ''}, 'WHATSAPP_PROVIDER')
+
+    def test_a_value_compose_would_rewrite_is_pointed_out(self):
+        """Compose replaces `$NAME` inside this file. A password with a `$` would reach the shop as another one."""
+        result = self.attention({**BASE, **IZIPAY, 'EMAIL_HOST_PASSWORD': 'abc$DEFghi-NoEsReal'}, 'EMAIL_HOST_PASSWORD')
+        self.assertNotIn('abc$DEF', result.stdout)
+        quoted = ''.join(f"{k}='{v}'\n" for k, v in {**BASE, **IZIPAY, 'EMAIL_HOST_PASSWORD': 'abc$DEFghi-NoEsReal'}.items())
+        self.assertEqual(self.run_preflight({}, text=quoted).returncode, 0)
+
+    def test_a_database_password_that_would_break_its_address_is_refused(self):
+        self.attention({**BASE, **IZIPAY, 'POSTGRES_PASSWORD': 'con/barra@y#almohadilla-0123456789'}, 'POSTGRES_PASSWORD')
+
+    def test_a_file_that_is_not_text_is_said_plainly(self):
+        self.env_file.write_bytes(b'SITE_DOMAIN=tienda.pe\nSECRET_KEY=\xff\xfe\xfa\n')
+        os.chmod(self.env_file, 0o600)
+        result = subprocess.run([sys.executable, str(PREFLIGHT), '--env', str(self.env_file)],
+                                cwd=ROOT, capture_output=True, text=True, timeout=60, env={'PATH': os.environ['PATH']})
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('Traceback', result.stdout + result.stderr)
+        self.assertIn('UTF-8', result.stdout)
+
     # -- the mail server, asked for real --------------------------------------
 
     def _sink(self, credentials=None):
@@ -251,3 +341,34 @@ class PreflightTest(SimpleTestCase):
         text = message.read_text()
         self.assertIn('prueba@example.pe', text.splitlines()[0])
         self.assertIn('tienda.example.pe', text)
+
+    def test_the_real_password_is_never_sent_over_a_connection_it_just_called_unsafe(self):
+        """
+        `--smtp` used to sign in right after warning that the mail was not
+        encrypted — sending the real password in the clear to say so.
+        """
+        unreachable = {**BASE, **IZIPAY, 'EMAIL_HOST': 'smtp.example.invalid', 'EMAIL_USE_TLS': '0'}
+        result = self.run_preflight(unreachable, '--smtp')
+        self.assertIn('sin cifrar', '\n'.join(self.lines(result, 'ATENCIÓN')))
+        self.assertIn('no se prueba el servidor de correo', result.stdout)
+        self.assertNotIn('no se pudo conectar', result.stdout)
+
+    def test_a_mail_server_on_this_same_machine_may_be_plain(self):
+        port = self._sink()
+        result = self.run_preflight(self._mail(port), '--smtp')
+        self.assertEqual(self.lines(result, 'ATENCIÓN'), [])
+
+    def test_a_password_the_protocol_cannot_carry_is_said_without_showing_any_of_it(self):
+        port = self._sink()
+        result = self.run_preflight(self._mail(port, EMAIL_HOST_PASSWORD='contrase\u00f1a-NoEsReal'), '--smtp')
+        self.assertNotIn('Traceback', result.stdout + result.stderr)
+        self.assertNotIn('\\xf1', result.stdout + result.stderr)
+        self.assertNotIn('position', result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1)
+
+    def test_an_address_to_write_to_that_is_not_one_is_refused_before_connecting(self):
+        port = self._sink()
+        result = self.run_preflight(self._mail(port), '--smtp-send-to', 'a@example.pe\nBcc: b@example.pe')
+        self.assertNotIn('Traceback', result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(list((Path(self.tmp.name) / 'mail').glob('*.eml')), [])
