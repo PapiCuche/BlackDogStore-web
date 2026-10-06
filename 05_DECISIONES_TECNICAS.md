@@ -200,8 +200,9 @@ Fase INTEGRATIONS-CONSOLE-01. Operación: [docs/integraciones-y-secretos.md](doc
   que el proyecto ya usa para firmar los comprobantes. No se diseña criptografía.
 - **Atado a su sitio:** el texto cifrado lleva dentro integración, empresa y si es borrador
   o activo. Una fila copiada a otra empresa no se abre.
-- **Escritura sin lectura:** ninguna API devuelve un secreto; devuelve `configured` y, de
-  uno largo, sus cuatro últimos caracteres (nunca de un archivo).
+- **Escritura sin lectura:** ninguna API devuelve un secreto; devuelve `configured`, cuándo
+  y quién. No se guarda en claro nada de él: los cuatro últimos caracteres que se
+  guardaban al principio eran un tercio de una contraseña de doce (revisión).
 - **Rotación:** `APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS` + `reseal_integration_secrets`.
 - **Lo que se paga:** perder la clave raíz es perder las credenciales guardadas (se vuelven
   a escribir). Es el precio de que una copia de la base no las contenga.
@@ -235,7 +236,13 @@ inventa un «Producción» de SUNAT ni un Izipay por empresa.
 - Dos filas por integración: `active` (lo que corre) y `draft`. Guardar nunca toca lo que
   corre.
 - Sólo se activa un borrador que pasó la prueba, y esa versión exacta: la prueba cambia la
-  versión y la activación la exige (concurrencia optimista; 409 si no coincide).
+  versión y la activación la exige (concurrencia optimista; 409 si no coincide). El
+  resultado de una prueba sólo se escribe si la fila sigue siendo la que se leyó: una
+  prueba tarda segundos y lo guardado entretanto no es lo que se probó.
+- **«Coherente, sin verificar» no es «Correcto».** Las claves de producción de la pasarela
+  no se pueden probar sin tocar dinero real: pasan, y se dice que nadie las verificó.
+- **Parar lo que está en uso con algo en curso se escribe** (`INTERRUMPIR`): el proveedor
+  declara qué quedaría cortado (hoy, cobros abiertos en la última hora).
 - Orden de resolución en cada uso: consola activa → si la consola la tiene apagada, nada →
   si la consola no tiene nada, entorno.
 - **Por qué apagado no recurre al entorno:** un interruptor que deja pasar por otra puerta

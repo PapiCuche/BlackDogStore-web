@@ -278,7 +278,7 @@ Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
 Estado: VERIFICADO @ `4a9dd5c`.
 
 **INT-SECRET-01** — Un secreto de integración se escribe y no vuelve.
-Autoridad: `backend/store/integrations/secret_store.py` (Fernet, clave raíz `APP_CONFIG_ENCRYPTION_KEY`, fuera de la base), `service.py` (`_describe_row`: `configured` y, de uno largo que no sea archivo, cuatro caracteres; `_audit`: nombres de campos, nunca valores).
+Autoridad: `backend/store/integrations/secret_store.py` (Fernet, clave raíz `APP_CONFIG_ENCRYPTION_KEY`, fuera de la base), `service.py` (`_describe_row`: sólo `configured`, cuándo y quién; nada del secreto queda en claro; `_audit`: nombres de campos, nunca valores). `Resolved` no imprime sus secretos.
 Tests: `test_integrations_core` (SecretStoreTest, WriteOnlyApiTest, AuditTest), y en cada `test_integrations_<proveedor>` «no secret comes back»; `frontend/__tests__/integrations-console.test.tsx`; E2E `integrations-console`.
 Estado: VERIFICADO en la rama `feat/integrations-console`.
 
@@ -293,7 +293,7 @@ Tests: «does not fall back» y «cannot read» en cada `test_integrations_<prov
 Estado: VERIFICADO.
 
 **INT-ACTIVATE-01** — Sólo se activa lo que pasó la prueba, y esa versión.
-Autoridad: `service.activate` (borrador bloqueado, `version` exacta, `validated`); `service.test` cambia la versión; guardar borra `validated`.
+Autoridad: `service.activate` (borrador bloqueado, `version` exacta, `validated`); `service.test` cambia la versión y sólo escribe su resultado si la fila sigue en la versión que leyó (409 si no); guardar borra `validated`.
 Tests: `test_integrations_core` (LifecycleTest, ConcurrencyTest); ensayo, paso 11c.
 Estado: VERIFICADO.
 
@@ -555,7 +555,9 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 |---|---|---|---|---|
 | PAY-TENANT-SCOPE | PAGOS | la pasarela es de la instalación: checkout, rutas de notificación y frontend asumen un comercio | Media | decisión de producto |
 | FISCAL-TENANT-SCOPE | FISCAL | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa | Media | certificado y credenciales reales |
-| PAY-SWITCH-PENDING | PAGOS | cambiar de producto de Izipay deja sin ruta (404) la notificación de un cobro abierto con el anterior; ahora es un clic | Media | PAY-RECONCILE |
+| PAY-SWITCH-PENDING | PAGOS | MITIGADO: apagar, revocar, cambiar de producto o de claves con cobros abiertos en la última hora exige escribir `INTERRUMPIR`; el cobro abierto sigue quedándose sin notificación | Media | PAY-RECONCILE |
+| PAY-ROLLBACK | PAGOS | sustituir claves no conserva las anteriores | Baja | — |
+| IZIPAY-MODE-DECLARED | PAGOS | en «SDK web / Checkout» el entorno lo declara quien configura; `token_url` admite cualquier https | Baja | claves reales |
 | SUNAT-SOL-CHECK | FISCAL | la prueba de la consola no comprueba la clave SOL (sólo al emitir) | Baja | — |
 | ENV-FALLBACK-RETIRE | INFRA | las variables de entorno de las cinco integraciones siguen como respaldo; plan de retirada en `docs/integraciones-y-secretos.md` §6 | Baja | instalación real en la consola |
 | INTEGRATION-READ-COST | INFRA | cada uso lee y descifra la configuración activa, sin caché (DEC-INT-06) | Baja | medir con tráfico |

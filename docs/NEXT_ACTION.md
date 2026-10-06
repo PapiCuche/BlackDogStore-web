@@ -32,11 +32,13 @@ current_priority:
 5. Primera fase tras publicar: SERIAL-PICK.
 
 validated:
-- Pruebas de la fase: 170 de backend en `test_integrations_*`, más `test_ops_status` (23) y
-  `test_preflight` (46); Jest 823/823; spec de Playwright `integrations-console` 3/3;
-  recorrido `console` del ensayo en la pila de producción: TODO OK.
-- Regresión completa: PENDIENTE al escribir esto: el equipo de trabajo estaba a batería. Se mide antes de abrir el PR
-- Línea base (`master` `5da4e99`): backend 5375, Jest 795, Playwright 184, `ENSAYO: OK` (131 + 49).
+- Backend: 5581 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL), sobre `2a5632d`.
+- Frontend: Jest 830/830, typecheck, lint 0 errores / 22 avisos, build.
+- Playwright completo: 187/187, 0 omitidas, sobre `2a5632d`.
+- Ensayo de producción: `ENSAYO: OK` (138 + 49) sobre `2a5632d`, con la consola de
+  integraciones recorrida en la pila de producción; los commits posteriores sólo tocan
+  documentación.
+- Revisión independiente de la rama: 0 P1, 4 P2 y 7 P3; corregidos los P2 y seis P3.
 
 blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta

@@ -34,6 +34,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Con `WHATSAPP_PROVIDER=disabled` de serie, WhatsApp no se podía activar desde la consola.
 - Una configuración guardada que el servidor no puede leer rompía la petición que quería
   enviar un correo.
+- De la revisión independiente (0 P1, 4 P2, 7 P3): una prueba podía dejar marcado como
+  probado lo que se guardó mientras corría; un primer borrador con la prueba fallida
+  tumbaba `ops_status`; las claves de producción de la pasarela salían como «Correcto»
+  sin que nada las comprobara (ahora «Coherente, sin verificar»); apagar o cambiar la
+  pasarela con cobros abiertos no avisaba (ahora pide `INTERRUMPIR`); se guardaban en
+  claro los cuatro últimos caracteres de cada secreto.
 
 ## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01
 

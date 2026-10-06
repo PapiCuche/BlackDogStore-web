@@ -51,20 +51,28 @@ servicio real: no hay credenciales de ninguno.
 | MAIL-OFF-BYPASS | Un correo apagado en el panel seguía saliendo si el entorno nombraba un backend de desarrollo |
 | WHATSAPP-DEFAULT-OFF | El archivo de ejemplo traía `WHATSAPP_PROVIDER=disabled`: WhatsApp no se podía activar desde el panel sin editar el servidor |
 | MAIL-UNREADABLE-CRASH | Con la clave raíz cambiada, enviar un correo lanzaba un error dentro de la petición que lo pedía |
+| TEST-RACE (revisión, P2) | Una prueba tarda segundos y al terminar marcaba como probado lo que hubiera guardado: un borrador guardado entretanto quedaba validado sin haberse probado |
+| OPS-DRAFT-CRASH (revisión, P2) | Un primer borrador con la prueba fallida tumbaba `ops_status` y `healthcheck.sh`, y la consola lo llamaba «activa» |
+| PROD-KEYS-CORRECT (revisión, P2) | Las claves de producción de la pasarela salían como «Correcto» sin que nada las comprobara. Ahora «Coherente, sin verificar», y la prueba de TEST dice que la clave hash sólo la prueba una notificación |
+| PAY-IN-FLIGHT (revisión, P2) | Apagar, revocar o cambiar la pasarela con un comprador en el formulario de la tarjeta no avisaba. Ahora cuenta los cobros abiertos y pide escribir `INTERRUMPIR` |
+| LAST-FOUR (revisión, P3) | Se guardaban en claro los cuatro últimos caracteres de cada secreto |
 | IMPORT-PLAIN-SMTP (regla, no defecto) | Hallado en la pila de producción: el panel se niega a copiar del entorno un correo sin cifrar hacia otro equipo. Se mantiene; el ensayo usa un servidor de correo en la máquina del backend |
 
 **Verificación**
 
 | Medida | Resultado |
 |---|---|
-| Pruebas nuevas de backend (`test_integrations_*`: núcleo, correo, pagos, WhatsApp, Google, SUNAT) | 170, verdes. Cada módulo se comprobó con mutaciones: quitar la lectura del panel, el filtro por empresa, la confirmación o el «apagado es apagado» hace fallar pruebas |
+| Pruebas nuevas de backend (`test_integrations_*`: núcleo, correo, pagos, WhatsApp, Google, SUNAT) | 178, verdes. Cada módulo se comprobó con mutaciones: quitar la lectura del panel, el filtro por empresa, la confirmación o el «apagado es apagado» hace fallar pruebas |
 | `test_ops_status` · `test_preflight` · `test_production_settings` | 23 · 46 · 22, verdes |
 | Suites existentes de pagos, checkout, fiscal, WhatsApp y Google | verdes (357 de pagos y checkout; 482 con las fiscales) |
-| Jest | 823/823 (28 nuevas) |
+| Jest | 830/830 (35 nuevas) |
 | Tipos · lint | limpio · 0 errores, 22 avisos (los de siempre) |
 | Playwright, spec nueva (`integrations-console`) | 3/3 |
-| Consola en la pila de producción (recorrido `console` del ensayo) | TODO OK, 27 comprobaciones |
-| Backend completo · Playwright completo · build · ensayo completo | PENDIENTE al escribir esto: el equipo de trabajo estaba a batería. Se mide antes de abrir el PR |
+| Revisión independiente de la rama | 0 P1, 4 P2 y 7 P3. Corregidos con prueba los cuatro P2 y seis P3; el séptimo (IZIPAY-MODE-DECLARED) queda anotado como deuda: es una sospecha sin claves reales con que confirmarla |
+| Backend, suite completa (PostgreSQL local) | 5581 pruebas, 0 fallos, 5 omitidas (línea base 5375), sobre `2a5632d` |
+| Playwright completo, base limpia | 187/187, 0 omitidas, sobre `2a5632d` |
+| Build · `manage.py check` · `makemigrations --check` | correcto · sin incidencias · sin cambios pendientes |
+| Ensayo de producción (`sh deploy/rehearsal.sh`) | `ENSAYO: OK`, 138 comprobaciones y 49 pasos de navegador, sobre `2a5632d`. Incluye la consola en la pila de producción (28 comprobaciones). Los commits posteriores sólo tocan documentación |
 
 ## 2026-10-05 — EXTERNAL-PRODUCTION-CONFIG-01: configuración externa, sin publicar
 

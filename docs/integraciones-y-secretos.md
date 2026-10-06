@@ -44,9 +44,19 @@ editor, que sigue siempre el mismo orden:
    (credenciales rechazadas, sin respuesta, certificado no válido…), nunca el texto que
    devolvió el proveedor.
 3. **Activar.** Sólo se puede activar lo que pasó la prueba, y exactamente esa versión: si
-   se toca el borrador después de probarlo, hay que probar de nuevo.
+   se toca el borrador después de probarlo —o mientras se prueba—, hay que probar de nuevo.
 
-Así, **una configuración que funciona nunca se sustituye por una que no se ha probado.**
+Así, **una configuración que funciona nunca se sustituye por una que no pasó su prueba.**
+Qué demuestra esa prueba depende de la integración, y la pantalla lo dice:
+
+| Integración | Qué comprueba «Probar conexión» | Qué no puede comprobar |
+|---|---|---|
+| Correo | que el servidor acepta la conexión, el cifrado y las credenciales | que el mensaje llegue al buzón (para eso, el mensaje de prueba) |
+| Izipay, claves de TEST | que la pasarela entrega un token con esas claves | la clave hash: la comprueba la notificación de un pago de prueba |
+| Izipay, claves de PRODUCCIÓN | sólo que son coherentes entre sí: **«Coherente, sin verificar»** | todo lo demás. No se envían a ningún sitio |
+| WhatsApp | que Meta reconoce el número con ese token | el secreto de la aplicación y las plantillas |
+| Google | la forma del ID y que el servidor alcanza las claves de Google | que sea el ID del proyecto correcto |
+| SUNAT | que el certificado abre, trae su clave y está vigente | la clave SOL |
 
 | Estado | Qué significa |
 |---|---|
@@ -55,10 +65,16 @@ Así, **una configuración que funciona nunca se sustituye por una que no se ha 
 | Probada, sin activar | pasó la prueba; la tienda todavía no lo usa |
 | Activa | es lo que la tienda usa ahora |
 | Activa, con error | es lo que la tienda usa y su última prueba falló: revisarla |
+| Borrador con la prueba fallida | no hay nada activo y el borrador no pasó: corregirlo |
 | Desactivada | apagada a propósito. **No se recurre al entorno:** apagado es apagado |
 
 Otras acciones: **Probar la configuración en uso**, **Desactivar / Volver a activar**,
 **Reemplazar** un secreto y **Revocar** (borra lo guardado; pide escribir `REVOCAR`).
+Volver a activar pide la misma palabra que pidió activar.
+
+**Cuando parar algo corta algo en curso, hay que escribirlo.** Si hay compradores en el
+formulario de la tarjeta, apagar la pasarela, revocarla, cambiar de producto o cambiar sus
+claves muestra cuántos cobros hay abiertos y pide escribir `INTERRUMPIR`.
 
 Si dos personas editan a la vez, la segunda recibe «otra persona cambió este borrador» y
 la pantalla carga lo que hay ahora. Nadie pisa el trabajo de nadie.
@@ -66,7 +82,8 @@ la pantalla carga lo que hay ahora. Nadie pisa el trabajo de nadie.
 ### Los secretos se escriben y no vuelven
 
 De un secreto guardado la pantalla sólo sabe que está: muestra `••••••••••` «Configurada»
-y un botón **Reemplazar**. No hay un campo del que leerlo, ni una API que lo devuelva.
+y un botón **Reemplazar**. No hay un campo del que leerlo, ni una API que lo devuelva. No
+se guarda en claro nada de él: ni sus últimos caracteres.
 
 - Lo que no se reemplaza no se reenvía: el servidor conserva lo que tenía.
 - Lo que se escribe vive en la pantalla hasta que se guarda. No va a `localStorage`, ni a
@@ -126,14 +143,19 @@ Alcance: la instalación. Izipay vende dos productos distintos y **se usa uno**:
   cobro —un token de sesión o un `formToken`— para una orden que no existe. No se crea
   ningún pedido ni ningún pago.
 - **Las claves de PRODUCCIÓN no se envían a ningún sitio desde la prueba:** sólo se
-  comprueba que son coherentes. Activarlas pide escribir `PRODUCCION`.
+  comprueba que son coherentes, y el resultado es «Coherente, sin verificar», no
+  «Correcto». Activarlas pide escribir `PRODUCCION`. **Nada más activarlas, haz un pago
+  real pequeño y comprueba que el pedido queda pagado:** es la única verificación que
+  existe, y la que prueba también la clave de las notificaciones.
 - El cobro lo sigue confirmando la notificación de la pasarela al servidor, firmada. Lo
   que diga el navegador no marca nada como pagado.
 - La ruta de notificación del producto que no está activo no existe (404).
 
-**Cambiar de producto con cobros abiertos.** Un pago que se abrió con el producto anterior
-y cuya notificación llega después del cambio no encuentra su ruta. Cambia de producto
-cuando no haya compras a medias (PAY-SWITCH-PENDING, §10).
+**Cobros abiertos.** Un pago que se abrió antes de apagar la pasarela, revocarla, cambiar
+de producto o cambiar sus claves, y cuya notificación llega después, ya no se acepta: el
+comprador pagó y el pedido queda sin marcar. La consola cuenta los cobros abiertos en la
+última hora, lo dice y pide escribir `INTERRUMPIR`. Lo sensato es esperar; si no se puede,
+revisa después esos pedidos en el panel de la pasarela (PAY-SWITCH-PENDING, §10).
 
 **Lo que sigue abierto.** IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT no se cierran con esta
 fase: hace falta saber qué producto tiene contratado el propietario y validar sus claves
@@ -300,7 +322,9 @@ a ellas por sí sola: el panel la tiene tomada. Revocarla es lo que la devuelve 
 | IZIPAY-PRODUCT, IZIPAY-TOKEN-CONTRACT | siguen abiertas: falta validar claves de TEST reales, desde la consola |
 | PAY-TENANT-SCOPE | la pasarela es de la instalación, no de cada empresa |
 | FISCAL-TENANT-SCOPE | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa |
-| PAY-SWITCH-PENDING | cambiar de producto deja sin ruta la notificación de un cobro abierto con el anterior |
+| PAY-SWITCH-PENDING | la consola avisa y exige `INTERRUMPIR`, pero un cobro abierto antes del cambio sigue quedándose sin notificación; resolverlo es conciliar con la pasarela (PAY-RECONCILE) |
+| PAY-ROLLBACK | al sustituir unas claves no se conservan las anteriores: no hay «volver a las de antes» en un clic |
+| IZIPAY-MODE-DECLARED | en «SDK web / Checkout» el entorno (TEST o PRODUCCIÓN) lo declara quien configura; nada en las claves lo delata. La dirección del token admite cualquier `https` |
 | SUNAT-SOL-CHECK | la clave SOL sólo se comprueba al emitir |
 | ENV-FALLBACK-RETIRE | retirar el respaldo de entorno (plan en §6) |
 | INTEGRATION-READ-COST | cada uso lee y descifra la configuración: sin caché a propósito, para que un cambio valga al instante y en todos los procesos. Medirlo si el tráfico crece |
