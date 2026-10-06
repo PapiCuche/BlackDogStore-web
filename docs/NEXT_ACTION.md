@@ -12,10 +12,11 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-NOT READY, por datos externos y no por el código. El código está verde y ensayado
-(`ENSAYO: OK` con correo por SMTP y restauración en servidor nuevo). No se recibió ningún
-dato del propietario: no hay servidor, dominio, SMTP, claves de Izipay ni destino de copia.
-No hay nada publicado en Internet y no se tocó ningún DNS.
+NOT READY, por datos externos. No se recibió ningún dato del propietario: no hay servidor,
+dominio, SMTP, claves de Izipay ni destino de copia. El código está verde en CI; el ensayo
+con los pasos nuevos (correo por SMTP, restauración en servidor nuevo) pasa en todo salvo
+en una construcción de imagen cortada por la red, y falta repetirlo limpio (not_validated).
+No hay nada publicado en Internet y no se tocó ningún DNS. PR #89 abierto, sin mergear.
 
 current_priority:
 0. Con el equipo de trabajo despierto (abierto y enchufado): repetir `sh deploy/rehearsal.sh`
