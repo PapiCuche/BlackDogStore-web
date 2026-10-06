@@ -35,11 +35,11 @@ class _PaymentProvider(Provider):
     #: `PAYMENT_PROVIDER` value of the legacy environment configuration.
     legacy_code = ''
 
-    def activation_guard(self, public, secrets, payload):
-        if self.mode(public, secrets) == 'production' and payload.get('confirm') != PRODUCTION_WORD:
-            raise ConfigError({'confirm': (
-                f'Vas a activar claves de PRODUCCIÓN: se cobrará dinero real. Escribe {PRODUCTION_WORD} para confirmarlo.'
-            )})
+    def activation_confirmation(self, public, secrets):
+        if self.mode(public, secrets) != 'production':
+            return None
+        return PRODUCTION_WORD, (
+            f'Vas a activar claves de PRODUCCIÓN: se cobrará dinero real. Escribe {PRODUCTION_WORD} para confirmarlo.')
 
     def _legacy_selected(self) -> bool:
         return (getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower() == self.legacy_code

@@ -46,7 +46,64 @@ def fiscal_enabled() -> bool:
     Apagada por defecto. Una instalación que no ha configurado nada fiscal no
     debe poder mandar nada a SUNAT por el hecho de tener el código instalado.
     """
+    active = _console_row()
+    if active is not None:
+        return active.enabled
     return bool(getattr(settings, 'FISCAL_ENABLED', False))
+
+
+#: El id de esta integración en el registro de proveedores de la consola.
+CONSOLE_PROVIDER = 'sunat'
+
+
+def _console_row():
+    """
+    Lo que un MASTER activó en Configuración › Integraciones › SUNAT, o None.
+
+    CUANDO EXISTE, MANDA: sus credenciales y su certificado sustituyen a las
+    variables `FISCAL_*`, y apagarla ahí apaga la emisión aunque el entorno diga
+    `FISCAL_ENABLED=True`. Activarla es un acto explícito y confirmado; guardar
+    un borrador o probarlo no enciende nada.
+    """
+    from .integrations import service
+
+    return service.row(CONSOLE_PROVIDER)
+
+
+def _console_secrets(active) -> dict:
+    from .integrations import secret_store, service
+
+    try:
+        return service.open_secrets(active)
+    except secret_store.SecretStoreError:
+        raise FiscalConfigError(
+            'No se pudo abrir la configuración fiscal guardada en la consola.'
+        ) from None
+
+
+def _console_credentials(active) -> dict:
+    """Las credenciales y el material de firma de la consola, en memoria."""
+    from .fiscal.certificate import CertificateError, signing_material_from_pkcs12
+    from .integrations.providers import sunat
+
+    secrets = _console_secrets(active)
+    ruc = str(active.public.get('ruc') or '').strip()
+    user = str(active.public.get('sol_user') or '').strip()
+    password = secrets.get('sol_password') or ''
+    if not (ruc and user and password):
+        raise FiscalConfigError('Faltan credenciales SOL en la configuración del servidor.')
+    if not secrets.get('certificate_p12'):
+        raise FiscalConfigError('Falta el certificado de firma en la configuración del servidor.')
+    try:
+        material = signing_material_from_pkcs12(
+            sunat.certificate_bytes(secrets), sunat.certificate_password(secrets),
+        )
+    except CertificateError as exc:
+        raise FiscalConfigError(str(exc)) from None
+    return {
+        'ruc': ruc, 'sol_user': user, 'sol_password': password,
+        'cert_pem': material.cert_pem, 'key_pem': material.key_pem,
+    }
 
 
 def resolve_environment() -> str:
@@ -199,24 +256,33 @@ def resolve_note_series(company, *, branch=None, note_type: str,
 
 def resolve_credentials(company) -> dict:
     """
-    Las credenciales de esta empresa. VIENEN DEL ENTORNO, no de la base de datos.
+    Las credenciales de esta empresa: las de la consola, o las del entorno.
+
+    Si un MASTER activó SUNAT en Configuración › Integraciones, son ésas: cifradas
+    en el almacén de secretos, nunca en una columna legible. Si no, las variables
+    `FISCAL_*` del servidor, como siempre.
 
     Hoy son las mismas para todas porque el único ambiente es el de pruebas de
     SUNAT, que publica credenciales comunes. La firma recibe `company` de todas
     formas: el día que cada empresa tenga las suyas, cambia esta función y no
     cambia nadie más.
 
-    NO SE GUARDAN EN NINGÚN MODELO. Una columna existe para llenarse, y un campo
-    `sol_password` acaba apareciendo en un serializer, en un volcado o en una
-    bitácora. Aquí no hay dónde.
+    NO HAY COLUMNA `sol_password`. Una columna existe para llenarse, y un campo
+    así acaba apareciendo en un serializer, en un volcado o en una bitácora. Lo
+    que guarda la consola es un bloque cifrado con una clave que no está en la
+    base de datos, y ninguna API lo devuelve.
 
     Devuelve las claves en crudo porque el proveedor las necesita; quien llame a
     esto no debe registrar el resultado.
     """
-    if not fiscal_enabled():
+    active = _console_row()
+    enabled = active.enabled if active is not None else bool(getattr(settings, 'FISCAL_ENABLED', False))
+    if not enabled:
         raise FiscalConfigError(
             'La emisión electrónica no está habilitada en este servidor.'
         )
+    if active is not None:
+        return _console_credentials(active)
 
     ruc = (getattr(settings, 'FISCAL_SOL_RUC', '') or '').strip()
     user = (getattr(settings, 'FISCAL_SOL_USER', '') or '').strip()
@@ -301,6 +367,19 @@ def inspect_signing_certificate():
     o no se puede abrir.
     """
     from .fiscal.certificate import CertificateError, inspect_pkcs12
+
+    active = _console_row()
+    if active is not None:
+        from .integrations.providers import sunat
+
+        secrets = _console_secrets(active)
+        if not secrets.get('certificate_p12'):
+            raise FiscalConfigError('No hay un certificado PKCS#12 configurado.')
+        try:
+            meta = inspect_pkcs12(sunat.certificate_bytes(secrets), sunat.certificate_password(secrets))
+        except CertificateError as exc:
+            raise FiscalConfigError(str(exc)) from None
+        return meta, meta.validity()
 
     p12_path = (getattr(settings, 'FISCAL_CERT_P12_PATH', '') or '').strip()
     if not p12_path:

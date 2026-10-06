@@ -14,6 +14,8 @@ and a value declared secret cannot be stored anywhere but sealed.
 ADDING A PROVIDER is an adapter, a declaration here and its tests. It is not a
 change in checkout, orders, service or inventory: they ask the registry.
 """
+import base64
+import binascii
 import re
 from dataclasses import dataclass, field as dataclass_field
 
@@ -24,6 +26,8 @@ _HOST = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-
 _EMAIL = re.compile(r'^[^@\s<>,;:"\\]+@[^@\s<>,;:"\\]+\.[^@\s<>,;:"\\]+$')
 MAX_TEXT = 2000
 MAX_SECRET = 16 * 1024
+#: Decoded size of a `file` field that declares no maximum of its own.
+MAX_FILE = 64 * 1024
 
 
 class ConfigError(Exception):
@@ -39,7 +43,7 @@ class Field:
     name: str
     label: str
     required: bool = False
-    #: text · int · bool · choice · email · host · url · textarea
+    #: text · int · bool · choice · email · host · url · textarea · file (base64 in JSON; `maximum` = bytes)
     kind: str = 'text'
     choices: tuple = ()
     default: object = None
@@ -48,11 +52,37 @@ class Field:
     minimum: int = None
     maximum: int = None
 
+    def _clean_file(self, value) -> str:
+        """
+        A small file, as the base64 a JSON body carries. Stored as that text.
+
+        The limit is on the DECODED size and is checked before decoding, on the
+        length of what arrived: nothing larger is ever held twice in memory.
+        """
+        if not isinstance(value, str):
+            raise ValueError('Tiene que ser un archivo.')
+        text = ''.join(value.split())
+        if not text:
+            return ''
+        limit = self.maximum or MAX_FILE
+        too_big = f'El archivo supera el máximo de {limit // 1024} KiB.'
+        if len(text) > (limit + 2) // 3 * 4:
+            raise ValueError(too_big)
+        try:
+            data = base64.b64decode(text, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError('El archivo no llegó completo. Vuelve a seleccionarlo.') from None
+        if len(data) > limit:
+            raise ValueError(too_big)
+        return text
+
     def describe(self) -> dict:
         data = {
             'name': self.name, 'label': self.label, 'kind': self.kind, 'required': self.required,
             'secret': self.secret, 'help': self.help,
         }
+        if self.kind == 'file':
+            data['max_bytes'] = self.maximum or MAX_FILE
         if self.choices:
             data['choices'] = [{'value': value, 'label': label} for value, label in self.choices]
         if self.default is not None and not self.secret:
@@ -61,6 +91,8 @@ class Field:
 
     def clean(self, value):
         """The value as it will be stored, or ConfigError's message for this field."""
+        if self.kind == 'file':
+            return self._clean_file(value)
         if self.kind == 'bool':
             if isinstance(value, bool):
                 return value
@@ -173,8 +205,18 @@ class Provider:
         """'test', 'production' or '' — what the console shows beside the state."""
         return ''
 
+    def activation_confirmation(self, public: dict, secrets: dict):
+        """
+        `(word, message)` when activating THIS configuration is something a
+        master has to mean — the word is typed back — or None.
+        """
+        return None
+
     def activation_guard(self, public: dict, secrets: dict, payload: dict) -> None:
         """Last word before a draft becomes what runs. Raise ConfigError to refuse."""
+        confirmation = self.activation_confirmation(public, secrets)
+        if confirmation and payload.get('confirm') != confirmation[0]:
+            raise ConfigError({'confirm': confirmation[1]})
 
     def test(self, config: Resolved, **options) -> TestOutcome:
         raise NotImplementedError

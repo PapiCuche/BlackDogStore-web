@@ -70,10 +70,10 @@ def _seal(config: IntegrationConfig, secrets: dict) -> None:
     )
 
 
-def _meta(value: str, actor) -> dict:
-    """What may be shown about a secret. Four characters of a long one; none of a short one."""
+def _meta(value: str, actor, field=None) -> dict:
+    """What may be shown about a secret. Four characters of a long one; none of a short one or of a file."""
     return {
-        'last_four': value[-4:] if len(value) >= 12 else '',
+        'last_four': value[-4:] if len(value) >= 12 and getattr(field, 'kind', '') != 'file' else '',
         'updated_at': timezone.now().isoformat(),
         'updated_by': getattr(actor, 'username', '') or '',
     }
@@ -225,7 +225,7 @@ def save_draft(provider, company, *, actor, public, secrets, version=None, reque
             current_meta.pop(name, None)
         else:
             current_secrets[name] = value
-            current_meta[name] = _meta(value, actor)
+            current_meta[name] = _meta(value, actor, provider.field(name))
     provider.clean(public, current_secrets)
 
     draft.public = public
@@ -417,7 +417,14 @@ def _describe_row(provider, config):
         'updated_at': config.updated_at.isoformat() if config.updated_at else None,
         'updated_by': getattr(config.updated_by, 'username', '') or '',
         'mode': provider.mode(dict(config.public), {}),
+        'activation_confirmation': _confirmation(provider, config),
     }
+
+
+def _confirmation(provider, config):
+    """What the console has to make a master type before activating this row. Decided on public values only."""
+    confirmation = provider.activation_confirmation(dict(config.public), {})
+    return {'word': confirmation[0], 'message': confirmation[1]} if confirmation else None
 
 
 def describe(provider, company=None, *, with_fields=True) -> dict:
