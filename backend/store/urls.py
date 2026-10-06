@@ -133,6 +133,9 @@ from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitListView,
 )
+from .integration_views import (
+    IntegrationActionView, IntegrationDetailView, IntegrationDraftView, IntegrationListView,
+)
 from .access_views import (
     AdminAreaDetailView, AdminAreaListView, AdminRoleAssignmentDetailView,
     AdminRoleAssignmentListView, AdminRoleDetailView, AdminRoleListView,
@@ -153,6 +156,11 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', RefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    # INTEGRATIONS-CONSOLE — platform masters only. Secrets are write-only.
+    path('admin/integrations/', IntegrationListView.as_view(), name='admin-integrations'),
+    path('admin/integrations/<slug:provider_id>/', IntegrationDetailView.as_view(), name='admin-integration'),
+    path('admin/integrations/<slug:provider_id>/draft/', IntegrationDraftView.as_view(), name='admin-integration-draft'),
+    path('admin/integrations/<slug:provider_id>/<slug:action>/', IntegrationActionView.as_view(), name='admin-integration-action'),
     path('auth/csrf/', CsrfView.as_view(), name='auth-csrf'),
     # Sólo con DEBUG=True; con DEBUG=False responde 404. Ver el módulo.
     path(

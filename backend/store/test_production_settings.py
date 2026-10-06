@@ -32,6 +32,9 @@ print(json.dumps({
     "logging_handlers": sorted(s.LOGGING.get("handlers", {})) if hasattr(s, "LOGGING") else None,
     "root_level": s.LOGGING.get("root", {}).get("level") if hasattr(s, "LOGGING") else None,
     "loggers": sorted(s.LOGGING.get("loggers", {})) if hasattr(s, "LOGGING") else None,
+    "email_backend": s.EMAIL_BACKEND,
+    "email_backend_legacy": s.EMAIL_BACKEND_LEGACY,
+    "root_key_set": bool(s.APP_CONFIG_ENCRYPTION_KEY),
     "email_timeout": getattr(s, "EMAIL_TIMEOUT", None),
     "email_use_tls": getattr(s, "EMAIL_USE_TLS", None),
     "email_use_ssl": getattr(s, "EMAIL_USE_SSL", None),
@@ -84,19 +87,39 @@ class ProductionSettingsTest(SimpleTestCase):
 
     # SEC-SET-03 ------------------------------------------------------------
 
-    def test_production_refuses_to_guess_how_mail_leaves(self):
+    def test_mail_always_goes_through_the_backend_that_asks_the_console(self):
         """
-        The default mail backend prints every message to stdout: verification,
-        password-reset and invitation links, token included. In development that
-        is the point. In production a missing line must not turn the container
-        log into a list of working links.
+        INTEGRATIONS-CONSOLE. Django hands every message to one backend, which
+        asks on each send what is active: the console first, the `EMAIL_*`
+        settings second. `EMAIL_BACKEND` (the variable) only names that fallback.
         """
-        self.refused('EMAIL_BACKEND', EMAIL_BACKEND=None)
-        self.refused('EMAIL_BACKEND', EMAIL_BACKEND='')
+        runtime = 'store.integrations.mail.RuntimeEmailBackend'
+        smtp = 'django.core.mail.backends.smtp.EmailBackend'
+        chosen = self.ok(EMAIL_BACKEND=smtp, EMAIL_HOST='smtp.example')
+        self.assertEqual((chosen['email_backend'], chosen['email_backend_legacy']), (runtime, smtp))
 
-    def test_production_accepts_a_mail_backend_that_was_chosen(self):
-        self.ok(EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend')
-        self.ok(EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend', EMAIL_HOST='smtp.example')
+    def test_production_without_mail_settings_starts_and_never_falls_back_to_the_console(self):
+        """
+        MAIL-CONSOLE-DEFAULT, kept. The development default prints every message
+        — reset and invitation links included — to stdout. Production has no
+        default: mail may be configured later, in the console; until then it is
+        «not configured», which is an error the system reports, not a log line
+        with a working link.
+        """
+        for value in (None, ''):
+            settings = self.ok(EMAIL_BACKEND=value)
+            self.assertEqual(settings['email_backend_legacy'], '')
+            self.assertNotIn('console', settings['email_backend'])
+
+    def test_smtp_named_in_the_environment_still_needs_its_host(self):
+        self.refused('EMAIL_HOST', EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend')
+
+    def test_development_keeps_the_console_default(self):
+        self.assertIn('console', self.ok(DEBUG='1', EMAIL_BACKEND=None)['email_backend_legacy'])
+
+    def test_the_root_key_of_the_secret_store_is_a_value_of_the_deployment(self):
+        self.assertIs(self.ok()['root_key_set'], False)
+        self.assertIs(self.ok(APP_CONFIG_ENCRYPTION_KEY='x' * 44)['root_key_set'], True)
 
     def test_a_mail_server_that_does_not_answer_cannot_hold_a_request_for_ever(self):
         """
@@ -122,9 +145,6 @@ class ProductionSettingsTest(SimpleTestCase):
         """Django refuses the pair only when the first message is sent. Better to learn it when starting."""
         self.refused('EMAIL_USE_SSL', EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend',
                      EMAIL_HOST='smtp.example', EMAIL_USE_SSL='1', EMAIL_USE_TLS='1')
-
-    def test_development_keeps_the_console_default(self):
-        self.ok(DEBUG='1', EMAIL_BACKEND=None)
 
     def test_samesite_none_is_refused(self):
         """
