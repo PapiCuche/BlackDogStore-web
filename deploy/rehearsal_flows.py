@@ -26,6 +26,9 @@ Uso:
     rehearsal_flows.py mail      registro, verificación y recuperación de contraseña
                                  por SMTP, contra el servidor de correo del ensayo
     rehearsal_flows.py mail-down la tienda con ese servidor caído o mal configurado
+    rehearsal_flows.py console   un MASTER pasa el correo a Configuración › Integraciones,
+                                 lo cambia, lo apaga y lo devuelve al entorno, sin
+                                 reiniciar nada; nadie más puede, y nada se filtra
     rehearsal_flows.py logs <archivo>
                                  busca en los registros de la tienda lo que el
                                  recorrido usó y no debe quedar escrito
@@ -443,19 +446,19 @@ def integrations(admin):
 
 # --- correo real por SMTP -------------------------------------------------------
 
-def sink_messages():
-    """Lo que la tienda entregó al servidor de correo del ensayo, mensaje a mensaje."""
+def sink_messages(container=None):
+    """Lo que la tienda entregó a un servidor de correo del ensayo, mensaje a mensaje."""
     import subprocess
 
     out = subprocess.run(
-        ['docker', 'exec', os.environ['R_MAIL_CONTAINER'], 'sh', '-c',
+        ['docker', 'exec', container or os.environ['R_MAIL_CONTAINER'], 'sh', '-c',
          'for f in /tmp/mail/*.eml; do [ -f "$f" ] && cat "$f" && printf "\n=====FIN=====\n"; done'],
         capture_output=True, text=True, timeout=30).stdout
     return [m.strip().replace('=\n', '').replace('=3D', '=') for m in out.split('=====FIN=====') if m.strip()]
 
 
-def mail_for(address, needle):
-    return [m for m in sink_messages() if address in m.splitlines()[0] and needle in m]
+def mail_for(address, needle, container=None):
+    return [m for m in sink_messages(container) if address in m.splitlines()[0] and needle in m]
 
 
 def link_token(message, path):
@@ -510,6 +513,137 @@ def mail():
     return {'mail_address': address, 'mail_tokens': [token, reset], 'mail_passwords': [password, changed]}
 
 
+# --- la consola de integraciones ---------------------------------------------------
+
+CONSOLE = '/api/admin/integrations'
+
+
+def _register(mark, name):
+    address = f'{name}-{mark}@example.invalid'
+    password = f'Ensayo-{uuid.uuid4().hex[:10]}-C3'
+    res, _ = Client().json('POST', '/api/auth/register', {
+        'username': f'{name}_{mark}', 'email': address, 'first_name': 'Ensayo', 'last_name': 'Consola',
+        'password': password, 'password_confirm': password,
+    })
+    return res.status, address
+
+
+def console():
+    """
+    Lo que la fase promete, en la pila de producción: lo que un MASTER activa en
+    la consola es lo que la tienda usa en el siguiente envío, sin reiniciar nada.
+
+    Hay dos servidores de correo: el del entorno (las variables `EMAIL_*`) y otro,
+    en la misma máquina que el backend, con otro usuario y otra contraseña, que
+    sólo conoce quien los escriba en la consola. Dónde llega cada mensaje dice
+    qué configuración se usó. El correo empieza en el entorno y termina en él.
+    """
+    mark = uuid.uuid4().hex[:8]
+    env_secret, typed = os.environ['R_MAIL_PASSWORD'], os.environ['R_CONSOLE_MAIL_PASSWORD']
+    theirs = os.environ['R_CONSOLE_MAIL_CONTAINER']
+    admin = Client()
+    check('consola · inicio de sesión del MASTER', admin.login(os.environ['R_USER'], os.environ['R_PASSWORD']) == 200)
+
+    res, listing = admin.json('GET', f'{CONSOLE}/')
+    rows = {row['id']: row for row in (listing or {}).get('results', [])}
+    check('consola · un MASTER ve las integraciones registradas',
+          res.status == 200 and {'smtp', 'izipay_checkout', 'izipay_micuentaweb', 'whatsapp_cloud', 'google', 'sunat'} <= set(rows),
+          f'{res.status} {sorted(rows)}')
+    check('consola · el almacén de secretos tiene su clave raíz', (listing or {}).get('store_available') is True)
+    check('consola · el correo figura activo y «configurado mediante entorno»',
+          (rows.get('smtp', {}).get('state'), rows.get('smtp', {}).get('source')) == ('ACTIVE', 'env'),
+          f"{rows.get('smtp', {}).get('state')} {rows.get('smtp', {}).get('source')}")
+    check('consola · la pasarela figura activa por entorno, y el otro producto sin configurar',
+          rows.get('izipay_checkout', {}).get('source') == 'env'
+          and rows.get('izipay_micuentaweb', {}).get('state') == 'NOT_CONFIGURED')
+    check('consola · SUNAT y Google, sin configurar',
+          rows.get('sunat', {}).get('state') == 'NOT_CONFIGURED' and rows.get('google', {}).get('state') == 'NOT_CONFIGURED')
+
+    outsider = Client()
+    outsider.login(os.environ['R_OUTSIDER'], os.environ['R_OUTSIDER_PASSWORD'])
+    for label, client in (('una persona sin empresa', outsider), ('nadie sin sesión', Client())):
+        res, _ = client.json('GET', f'{CONSOLE}/')
+        check(f'consola · {label} no la ve', res.status in (401, 403), res.status)
+        res, _ = client.json('PUT', f'{CONSOLE}/smtp/draft/', {'public': {'host': 'mal.example.invalid'}, 'secrets': {}})
+        check(f'consola · {label} no puede escribir en ella', res.status in (401, 403), res.status)
+
+    # El correo del ensayo va sin cifrar a otro contenedor. El entorno lo admite;
+    # la consola no guarda una contraseña que viajaría en claro a otro equipo.
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/import-env/', {})
+    check('consola · no copia del entorno un correo sin cifrar hacia otro equipo',
+          res.status == 400 and 'security' in ((body or {}).get('errors') or {}), f'{res.status} {str(body)[:120]}')
+
+    sender = f'Consola {mark}'
+    public = {'host': '127.0.0.1', 'port': 2526, 'security': 'none', 'username': 'consola',
+              'from_email': f'consola@{DOMAIN}', 'from_name': sender, 'timeout': 4}
+    res, body = admin.json('PUT', f'{CONSOLE}/smtp/draft/', {'public': public, 'secrets': {'password': typed}})
+    draft = (body or {}).get('draft') or {}
+    check('consola · se guarda como borrador', res.status == 200 and bool(draft), f'{res.status} {str(body)[:120]}')
+    check('consola · la contraseña queda «configurada» y no viaja de vuelta',
+          draft.get('secrets', {}).get('password', {}).get('configured') is True and typed not in json.dumps(body))
+
+    res, _ = admin.json('POST', f'{CONSOLE}/smtp/activate/', {'version': draft.get('version')})
+    check('consola · sin probarlo no se activa', res.status == 409, res.status)
+    status, before = _register(mark, 'antes')
+    time.sleep(1)
+    check('consola · un borrador no cambia nada: el correo sigue saliendo por el servidor del entorno',
+          status == 201 and len(mail_for(before, '/auth/verify-email')) == 1
+          and mail_for(before, '', theirs) == [], status)
+
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/test/', {})
+    check('consola · «Probar conexión» entra al servidor de correo: Correcto',
+          res.status == 200 and (body or {}).get('status') == 'ok', f"{res.status} {(body or {}).get('status')}")
+    check('consola · probar no envía ningún mensaje', sink_messages(theirs) == [])
+    tested = (((body or {}).get('integration') or {}).get('draft') or {}).get('version')
+    res, _ = admin.json('POST', f'{CONSOLE}/smtp/activate/', {'version': draft.get('version')})
+    check('consola · lo que se activa es lo que se probó: la versión de antes de la prueba ya no vale', res.status == 409, res.status)
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/activate/', {'version': tested})
+    check('consola · se activa', res.status == 200 and (body or {}).get('source') == 'panel',
+          f"{res.status} {(body or {}).get('source')}")
+
+    status, after = _register(mark, 'despues')
+    time.sleep(1)
+    received = mail_for(after, '/auth/verify-email', theirs)
+    check('consola · el siguiente registro sale por el servidor de la consola, con su remitente, sin reiniciar nada',
+          status == 201 and len(received) == 1 and sender in received[0] and mail_for(after, '') == [],
+          f'{status} {len(received)}')
+    token = link_token(received[0], '/auth/verify-email') if received else ''
+    res, _ = Client().json('POST', '/api/auth/verify-email', {'token': token})
+    check('consola · el enlace que llegó por ahí verifica la cuenta', res.status == 200, res.status)
+
+    # Una contraseña mala no llega a sustituir a la que funciona.
+    res, body = admin.json('PUT', f'{CONSOLE}/smtp/draft/', {'public': public, 'secrets': {'password': f'mala-{mark}'}})
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/test/', {})
+    check('consola · una contraseña equivocada no pasa la prueba', (body or {}).get('status') == 'auth_failed',
+          (body or {}).get('status'))
+    version = (((body or {}).get('integration') or {}).get('draft') or {}).get('version')
+    res, _ = admin.json('POST', f'{CONSOLE}/smtp/activate/', {'version': version})
+    check('consola · y no sustituye a la configuración sana', res.status == 409, res.status)
+
+    res, _ = admin.json('POST', f'{CONSOLE}/smtp/disable/', {})
+    res, _ = Client().json('POST', '/api/auth/password-reset/request', {'email': after})
+    time.sleep(1)
+    check('consola · apagado en la consola no sale ningún correo, ni por ella ni por el entorno',
+          res.status == 200 and mail_for(after, '/auth/reset-password') == []
+          and mail_for(after, '/auth/reset-password', theirs) == [])
+
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/revoke/', {})
+    check('consola · revocar pide confirmación', res.status == 400, res.status)
+    res, body = admin.json('POST', f'{CONSOLE}/smtp/revoke/', {'confirm': 'REVOCAR'})
+    check('consola · revocada, el correo vuelve a ser el del entorno',
+          res.status == 200 and ((body or {}).get('state'), (body or {}).get('source')) == ('ACTIVE', 'env'),
+          f"{res.status} {(body or {}).get('state')} {(body or {}).get('source')}")
+    res, _ = Client().json('POST', '/api/auth/password-reset/request', {'email': after})
+    time.sleep(1)
+    check('consola · y el mismo aviso, pedido otra vez, sale por el servidor del entorno',
+          len(mail_for(after, '/auth/reset-password')) == 1 and mail_for(after, '/auth/reset-password', theirs) == [])
+
+    res, text = admin.request('GET', f'{CONSOLE}/')
+    check('consola · ninguna respuesta trajo una contraseña de correo ni la clave de la pasarela',
+          not any(value.encode() in text for value in (env_secret, typed, os.environ['R_IZIPAY_HASH_KEY'])))
+    return {'console_secrets': [typed, f'mala-{mark}']}
+
+
 def mail_down(state):
     """El servidor de correo no está, o rechaza la contraseña: la tienda sigue contestando."""
     started = time.monotonic()
@@ -557,6 +691,8 @@ def logs(state, path):
         ('la contraseña del servidor de correo', os.environ.get('R_MAIL_PASSWORD')),
     ):
         check(f'registros · no guardan {label}', bool(needle) and needle not in text)
+    for index, typed in enumerate(state.get('console_secrets', []), 1):
+        check(f'registros · no guardan la contraseña {index} escrita en la consola', bool(typed) and typed not in text)
     for index, token in enumerate(state.get('mail_tokens', []), 1):
         check(f'registros · no guardan el enlace de correo {index}', bool(token) and token not in text)
     for index, password in enumerate(state.get('mail_passwords', []), 1):
@@ -568,7 +704,7 @@ def logs(state, path):
 
 def main():
     mode = sys.argv[1]
-    if mode in ('mail', 'mail-down', 'mail-stall'):
+    if mode in ('mail', 'mail-down', 'mail-stall', 'console'):
         state = {}
         if os.path.exists(FLOWS_STATE):
             with open(FLOWS_STATE) as handle:
@@ -578,12 +714,16 @@ def main():
                 state.update(mail())
                 with open(FLOWS_STATE, 'w') as handle:
                     json.dump(state, handle)
+            elif mode == 'console':
+                state.update(console())
+                with open(FLOWS_STATE, 'w') as handle:
+                    json.dump(state, handle)
             elif mode == 'mail-down':
                 mail_down(state)
             else:
                 mail_stall(state)
         except Exception as exc:
-            check('correo · el recorrido termina', False, f'{type(exc).__name__}: {str(exc)[:200]}')
+            check(f'{mode} · el recorrido termina', False, f'{type(exc).__name__}: {str(exc)[:200]}')
         failed = rehearsal_media.FAILED
         print(f"  {'TODO OK' if not failed else 'FALLOS: ' + '; '.join(failed)}")
         sys.exit(1 if failed else 0)

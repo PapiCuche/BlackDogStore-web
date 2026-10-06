@@ -38,6 +38,7 @@ Sólo la biblioteca estándar. Termina con 0 si no hay nada que el propietario
 deba todavía ni nada que corregir, y con 1 en otro caso.
 """
 import argparse
+import base64
 import os
 import re
 import smtplib
@@ -53,6 +54,7 @@ from email.message import EmailMessage
 #: sería una variable que nadie mira.
 KNOWN = {
     'SITE_DOMAIN', 'SECRET_KEY', 'POSTGRES_PASSWORD', 'POSTGRES_USER', 'POSTGRES_DB',
+    'APP_CONFIG_ENCRYPTION_KEY', 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS',
     'DEFAULT_STOREFRONT_COMPANY_SLUG', 'PLATFORM_NAME', 'NEXT_PUBLIC_IMAGE_HOSTS',
     'EMAIL_BACKEND', 'EMAIL_HOST', 'EMAIL_PORT', 'EMAIL_USE_TLS', 'EMAIL_USE_SSL', 'EMAIL_TIMEOUT',
     'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL', 'ORDER_NOTIFICATION_EMAIL',
@@ -79,7 +81,8 @@ SMTP_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 #: Las mismas palabras que Django (django-environ) toma por «sí».
 TRUE = {'true', 'on', 'ok', 'y', 'yes', '1'}
 #: Variables cuyo valor es un secreto: un `$` dentro de ellas lo cambiaría Compose.
-SECRET_NAMES = ('SECRET_KEY', 'POSTGRES_PASSWORD', 'EMAIL_HOST_PASSWORD', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY',
+SECRET_NAMES = ('SECRET_KEY', 'POSTGRES_PASSWORD', 'APP_CONFIG_ENCRYPTION_KEY', 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS',
+                'EMAIL_HOST_PASSWORD', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY',
                 'MICUENTAWEB_PASSWORD', 'MICUENTAWEB_HMAC_KEY', 'EVIDENCE_STORAGE_SECRET_ACCESS_KEY')
 
 HOSTNAME = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$', re.I)
@@ -90,13 +93,21 @@ RESERVED_TLDS = {'test', 'invalid', 'localhost', 'local', 'example'}
 
 class Report:
     def __init__(self):
-        self.owner = self.optional = self.attention = 0
+        self.owner = self.console = self.optional = self.attention = 0
 
     def ok(self, text):
         print(f'OK    {text}')
 
     def owner_data(self, text, *variables):
         self.owner += 1
+        print(f'BLOCKED/OWNER-DATA {text}' + (f' [{", ".join(variables)}]' if variables else ''))
+
+    def console_data(self, text, *variables):
+        """
+        Lo debe el propietario igual, pero no impide arrancar: se escribe después
+        en Configuración › Integraciones (o en este archivo, en esas variables).
+        """
+        self.console += 1
         print(f'BLOCKED/OWNER-DATA {text}' + (f' [{", ".join(variables)}]' if variables else ''))
 
     def optional_data(self, text, *variables):
@@ -216,6 +227,37 @@ def check_secrets(report, values):
                    'una URL): genera una con `secrets.token_urlsafe(32)` (§4.2)')
     else:
         report.ok('POSTGRES_PASSWORD')
+    check_root_key(report, values)
+
+
+def _is_root_key(text) -> bool:
+    """La forma de una clave de Fernet: 32 bytes al azar en base64 para URL (44 caracteres)."""
+    try:
+        return len(text) == 44 and len(base64.urlsafe_b64decode(text.encode('ascii'))) == 32
+    except (ValueError, UnicodeError):
+        return False
+
+
+def check_root_key(report, values):
+    """
+    La clave que cifra lo que se guarda en Configuración › Integraciones. Es del
+    despliegue: no está en la base de datos y no se administra desde el panel.
+    """
+    key = values.get('APP_CONFIG_ENCRYPTION_KEY', '').strip()
+    if not key:
+        report.owner_data('APP_CONFIG_ENCRYPTION_KEY: la clave raíz del almacén de secretos; se genera en el servidor '
+                          '(docs/integraciones-y-secretos.md)', 'APP_CONFIG_ENCRYPTION_KEY')
+    elif not _is_root_key(key):
+        report.bad('APP_CONFIG_ENCRYPTION_KEY no tiene la forma de una clave: genera una como dice el archivo de ejemplo '
+                   '(una sola, sin comas ni espacios)')
+    else:
+        report.ok('APP_CONFIG_ENCRYPTION_KEY (clave raíz del almacén de secretos)')
+    previous = [item.strip() for item in values.get('APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS', '').split(',') if item.strip()]
+    if previous and not all(_is_root_key(item) for item in previous):
+        report.bad('APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS: alguna de las claves anteriores no tiene la forma de una clave '
+                   '(van separadas por comas)')
+    elif previous:
+        report.ok(f'{len(previous)} clave(s) raíz anterior(es): quítalas tras `manage.py reseal_integration_secrets`')
 
 
 # --- correo ---------------------------------------------------------------------
@@ -228,8 +270,17 @@ def check_mail(report, values):
         report.bad('EMAIL_BACKEND no es SMTP: los correos, con sus enlaces de un solo uso, '
                    'irían al registro del servidor y no a su destinatario')
         return False
+    if not backend and len(absent) == len(MAIL_KEYS):
+        # Nada del correo está aquí: se escribirá en la consola. El backend arranca
+        # sin él; hasta entonces no sale ningún mensaje y `ops_status` lo dice.
+        report.console_data('correo saliente (SMTP): servidor, usuario, contraseña y remitente. Se escriben tras '
+                            'arrancar en Configuración › Integraciones › Correo, o en este archivo',
+                            'EMAIL_BACKEND', *absent)
+        _check_order_address(report, values)
+        return False
     if not backend or absent:
-        report.owner_data('correo saliente (SMTP): servidor, usuario, contraseña y remitente',
+        report.owner_data('correo saliente (SMTP): servidor, usuario, contraseña y remitente. A medio escribir no '
+                          'sirve: complétalo, o quita estas líneas y configúralo en Configuración › Integraciones',
                           *(['EMAIL_BACKEND'] if not backend else []), *absent)
         return False
 
@@ -266,9 +317,13 @@ def check_mail(report, values):
     if coherent:
         kind = 'TLS implícito' if use_ssl else 'STARTTLS' if use_tls else 'sin cifrar, en esta misma máquina'
         report.ok(f'correo saliente por {host}:{port} ({kind})')
+    _check_order_address(report, values)
+    return coherent
+
+
+def _check_order_address(report, values):
     if not values.get('ORDER_NOTIFICATION_EMAIL', '').strip():
         report.owner_data('dirección que recibe el aviso de cada pedido pagado', 'ORDER_NOTIFICATION_EMAIL')
-    return coherent
 
 
 def _smtp_session(values):
@@ -350,9 +405,10 @@ def check_payments(report, values, domain):
                    'Deja vacías las del que no sea PAYMENT_PROVIDER')
         return
     if not has_izipay and not has_mcw:
-        report.owner_data(
+        report.console_data(
             'Izipay: cuál de los dos productos tiene contratado («SDK web / Checkout» = izipay, '
-            '«Mi Cuenta Web» = micuentaweb) y sus claves de TEST',
+            '«Mi Cuenta Web» = micuentaweb) y sus claves de TEST. Se escriben tras arrancar en '
+            'Configuración › Integraciones › Pagos, o en este archivo',
             'PAYMENT_PROVIDER', 'IZIPAY_* o MICUENTAWEB_*')
         return
     if provider not in ('izipay', 'micuentaweb'):
@@ -514,6 +570,9 @@ def run(args):
     if report.owner or report.attention:
         print(f'CONFIGURACIÓN: INCOMPLETA — {report.owner} dato(s) del propietario, {report.attention} por corregir, '
               f'{report.optional} opcional(es)')
+    elif report.console:
+        print(f'CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR — {report.console} dato(s) del propietario por escribir en la '
+              f'consola (Configuración › Integraciones) antes de abrir la tienda, {report.optional} opcional(es)')
     elif report.optional:
         print(f'CONFIGURACIÓN: COMPLETA SALVO OPCIONALES — {report.optional} opcional(es) sin configurar')
     else:

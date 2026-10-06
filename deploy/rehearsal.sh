@@ -43,6 +43,7 @@ HTTPS_PORT=$PORT
 CADDY_TLS_DIRECTIVE=tls internal
 SECRET_KEY={secrets.token_urlsafe(64)}
 POSTGRES_PASSWORD={secrets.token_urlsafe(32)}
+APP_CONFIG_ENCRYPTION_KEY={__import__('base64').urlsafe_b64encode(secrets.token_bytes(32)).decode()}
 POSTGRES_USER=blackdog
 POSTGRES_DB=blackdog
 DEFAULT_STOREFRONT_COMPANY_SLUG=$SLUG
@@ -111,7 +112,7 @@ MAIN_PROJECT="$PROJECT"; NEW_PROJECT="$PROJECT-nuevo"
 # Los dos proyectos por su nombre fijo: el paso 19b cambia $C y $PROJECT al
 # segundo, y un fallo en mitad de ese paso no debe dejar el primero atrás.
 cleanup() {
-  docker rm -f "$MAIN_PROJECT-correo" >/dev/null 2>&1
+  docker rm -f "$MAIN_PROJECT-correo" "$MAIN_PROJECT-correo-consola" >/dev/null 2>&1
   docker compose -p "$NEW_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
   docker compose -p "$MAIN_PROJECT" -f docker-compose.prod.yml --env-file "$ENVF" down -v --rmi local >/dev/null 2>&1
   rm -f "$ENVF" "$SMOKE_FRONTEND_DIR/.rehearsal-smoke.mjs"
@@ -200,15 +201,17 @@ print('cookies Secure', s.SESSION_COOKIE_SECURE, s.CSRF_COOKIE_SECURE, s.JWT_COO
 print('CORS', s.CORS_ALLOWED_ORIGINS, '| CSRF_TRUSTED', s.CSRF_TRUSTED_ORIGINS)
 print('FRONTEND_URL', s.FRONTEND_URL, '| CHECKOUT_RETURN_URL', s.CHECKOUT_RETURN_URL)
 print('renderers', s.REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'])
-print('EMAIL_BACKEND', s.EMAIL_BACKEND.rsplit('.',1)[-1], '| IZIPAY_ENV', s.IZIPAY_ENV, '| FISCAL', s.FISCAL_ENABLED, '| ALMACÉN', s.EVIDENCE_STORAGE_BACKEND)
+print('EMAIL_BACKEND', s.EMAIL_BACKEND.rsplit('.',1)[-1], '| respaldo del entorno', s.EMAIL_BACKEND_LEGACY.rsplit('.',2)[-2] or '-', '| clave raíz', bool(s.APP_CONFIG_ENCRYPTION_KEY), '| IZIPAY_ENV', s.IZIPAY_ENV, '| FISCAL', s.FISCAL_ENABLED, '| ALMACÉN', s.EVIDENCE_STORAGE_BACKEND)
 print('CACHE', s.CACHES['default']['BACKEND'].rsplit('.',1)[-1], '| DB', s.DATABASES['default']['ENGINE'].rsplit('.',1)[-1])
-print('correo', s.EMAIL_BACKEND.rsplit('.',2)[-2], '| espera', s.EMAIL_TIMEOUT, 's | TLS', s.EMAIL_USE_TLS, '| SSL', s.EMAIL_USE_SSL)
+print('correo', s.EMAIL_BACKEND_LEGACY.rsplit('.',2)[-2], '| espera', s.EMAIL_TIMEOUT, 's | TLS', s.EMAIL_USE_TLS, '| SSL', s.EMAIL_USE_SSL)
 import datetime, django.utils.timezone as tz
 print('hora: zona de la tienda', s.TIME_ZONE, '| USE_TZ', s.USE_TZ, '| ahora en la tienda', tz.localtime().strftime('%H:%M %z'), '| contenedor', datetime.datetime.now().astimezone().strftime('%H:%M %z'))
 from django.urls import get_resolver; print('rutas raíz', sorted(str(p.pattern) for p in get_resolver().url_patterns))
 "
 expect "DEBUG" "$(shell "from django.conf import settings as s; print(s.DEBUG)")" False
-expect "el correo no va al registro: sale por SMTP" "$(shell "from django.conf import settings as s; print(s.EMAIL_BACKEND)")" "django.core.mail.backends.smtp.EmailBackend"
+expect "cada correo pregunta qué configuración está activa" "$(shell "from django.conf import settings as s; print(s.EMAIL_BACKEND)")" "store.integrations.mail.RuntimeEmailBackend"
+expect "el correo no va al registro: el respaldo del entorno es SMTP" "$(shell "from django.conf import settings as s; print(s.EMAIL_BACKEND_LEGACY)")" "django.core.mail.backends.smtp.EmailBackend"
+expect "el almacén de secretos tiene su clave raíz" "$(shell "from store.integrations import secret_store; print(secret_store.is_available())")" True
 echo "base de datos: zona $($C exec -T postgres sh -c 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "show timezone"' 2>/dev/null | tr -d '\r')"
 
 step "6 datos de ensayo: semilla, primer administrador y una persona ajena"
@@ -302,7 +305,26 @@ step "11c correo real por SMTP: registro, verificación, recuperación, y el ser
 pause 62
 flows "registro con verificación y recuperación de contraseña, por SMTP" mail
 expect "el servidor de correo recibió los mensajes" "$(docker exec "$PROJECT-correo" sh -c 'ls /tmp/mail/*.eml 2>/dev/null | wc -l' | awk '{print ($1 >= 2) ? "sí" : "no"}')" "sí"
-# Otra ventana: pedir la recuperación está limitado a 3 por minuto.
+# Otra ventana: registrarse y pedir la recuperación están limitados por minuto.
+pause 62
+# Un segundo servidor de correo, en la misma máquina que el backend (comparte su
+# red: 127.0.0.1:2526), con un usuario y una contraseña que no están en ningún
+# archivo de variables. Sólo los conoce quien los escriba en la consola.
+export R_CONSOLE_MAIL_CONTAINER="$PROJECT-correo-consola" R_CONSOLE_MAIL_PASSWORD="$(python3 -c "import secrets; print(secrets.token_urlsafe(18))")"
+docker run -d --name "$R_CONSOLE_MAIL_CONTAINER" --network "container:$PROJECT-backend-1" \
+  -v "$ROOT/deploy/rehearsal_smtp_sink.py:/sink.py:ro" --entrypoint python "$PROJECT-backend" \
+  /sink.py 2526 /tmp/mail consola "$R_CONSOLE_MAIL_PASSWORD" >/dev/null 2>&1
+pause 2
+expect "servidor de correo de la consola, en la máquina del backend" "$(docker inspect -f '{{.State.Running}}' "$R_CONSOLE_MAIL_CONTAINER" 2>/dev/null)" true
+flows "consola de integraciones: un MASTER configura otro correo, lo prueba, lo activa, lo apaga y lo revoca, sin reiniciar" console
+docker rm -f "$R_CONSOLE_MAIL_CONTAINER" >/dev/null 2>&1
+expect "la consola no dejó nada guardado tras revocar" "$(shell "from store.models import IntegrationConfig as I; print(I.objects.count())" | tail -1)" 0
+expect "cada acto de la consola quedó en la auditoría, sin valores" "$(shell "
+from store.models import AdminAuditLog as A
+rows = A.objects.filter(target_type='integration')
+import json, os
+text = json.dumps(list(rows.values_list('metadata', flat=True)))
+print(rows.count() >= 6 and os.environ.get('EMAIL_HOST_PASSWORD', '-') not in text and '$R_CONSOLE_MAIL_PASSWORD' not in text)" | tail -1)" True
 pause 62
 docker rm -f "$PROJECT-correo" >/dev/null 2>&1
 flows "con el servidor de correo caído" mail-down
@@ -405,6 +427,7 @@ health() { COMPOSE="$C" BACKUP_DIR="$BK" SITE_DOMAIN="$DOMAIN" HEALTH_CURL="$K" 
 expect "todo sano" "$(health)" 0
 grep -E "^ATENCIÓN" "$WORK/health.out" | cut -c1-200
 expect "la copia recién hecha cuenta como reciente" "$(grep -c '^OK    copia de seguridad' "$WORK/health.out")" 1
+expect "el estado informa de las integraciones, sin alarma" "$(grep -c '^OK    integraciones: ' "$WORK/health.out")" 1
 $C stop backend >/dev/null 2>&1
 expect "con el backend detenido, termina con error" "$(health)" 1
 expect "y dice qué pasa: el contenedor y la API" "$(grep -cE '^ATENCIÓN (contenedor backend|https://.*/api/categories)' "$WORK/health.out")" 2
