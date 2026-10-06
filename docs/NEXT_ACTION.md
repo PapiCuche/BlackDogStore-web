@@ -18,8 +18,9 @@ dato del propietario: no hay servidor, dominio, SMTP, claves de Izipay ni destin
 No hay nada publicado en Internet y no se tocó ningún DNS.
 
 current_priority:
-0. Con el equipo despierto: repetir `sh deploy/rehearsal.sh` y Playwright (not_validated).
-1. El propietario entrega los datos de `blocked_external` como dice
+0. Con el equipo de trabajo despierto (abierto y enchufado): repetir `sh deploy/rehearsal.sh`
+   y Playwright sobre la rama (ver not_validated). Sin un `ENSAYO: OK` limpio no se mergea #89.
+1. El propietario entrega los datos de blocked_external como dice
    `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
    del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
 2. Con servidor y `deploy/.env.production`: `docs/despliegue-produccion.md` §4 en orden,
@@ -36,27 +37,10 @@ validated (sobre `072509f`):
 
 not_validated (el equipo de trabajo estuvo en reposo: tapa cerrada, a batería):
 - Ensayo final sobre la rama: la última pasada da 128 + 49 bien y `ENSAYO: 3 FALLO(S)` por
-  una sola causa (`npm ci` cortado al construir la imagen del frontend, sin red). Repetir:
-  `sh deploy/rehearsal.sh`, con el equipo abierto y enchufado.
+  una sola causa (`npm ci` cortado al construir la imagen del frontend, sin red).
 - Playwright completo: cuatro intentos, 158–172 de 184, fallos distintos cada vez y todos
-  por tiempo agotado. Repetir con el equipo despierto.
+  por tiempo agotado.
 - Suite backend completa en local.
-
-blocked_external` como dice
-   `docs/despliegue-produccion.md` §3: los secretos, directos a `deploy/.env.production`
-   del servidor; nunca por chat. `python3 deploy/preflight.py` dice qué falta.
-2. Con servidor y `deploy/.env.production`: `docs/despliegue-produccion.md` §4 en orden,
-   `preflight.py --smtp-send-to <dirección>`, y la prueba de Izipay en TEST
-   (`docs/pagos-equipos-documentos.md` §1.4).
-3. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar.
-4. Recorrer `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
-5. Primera fase tras publicar: SERIAL-PICK.
-
-validated:
-- Backend: __BACKEND__ (suite completa local, PostgreSQL).
-- Frontend: Jest 795/795, typecheck, lint 0 errores / 22 avisos, build.
-- Playwright completo: __PW__.
-- Ensayo de producción: `ENSAYO: OK` (__CHECKS__ + __STEPS__) sobre `__HEAD__`.
 
 blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
