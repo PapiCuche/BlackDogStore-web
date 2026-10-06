@@ -235,6 +235,15 @@ class Provider:
         for this configuration to be usable. It fails, the activation fails.
         """
 
+    def runtime_public(self, config) -> dict:
+        """
+        What of this configuration a BROWSER may be told without a session, or {}.
+
+        Declared field by field: nothing stored is public until a provider says
+        so here. A secret never belongs in it.
+        """
+        return {}
+
     def interruption_warning(self, company=None) -> str:
         """
         What is in flight RIGHT NOW that stops working if this provider is switched

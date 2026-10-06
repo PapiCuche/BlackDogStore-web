@@ -154,7 +154,8 @@ class OpsStatusTest(WhatsAppBase):
             status=NotificationDelivery.Status.FAILED, next_attempt_at=None, failure_reason='131026')
         _code, text = run()
         self.assertNotIn('987', text)
-        self.assertNotIn(self.customer.first_name, text)
+        # As a word: the summary names «Google Analytics 4», and the customer is called Ana.
+        self.assertNotRegex(text, rf'\b{self.customer.first_name}\b')
 
 
 SMTP_PUBLIC = {'host': 'smtp.example.invalid', 'port': 587, 'security': 'starttls', 'username': 'usuario-smtp',
