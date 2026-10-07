@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar ANALYTICS-MARKETING-INTEGRATIONS-01)
+master: ver `git log -1 origin/master` (este archivo se escribió tras el merge de #91, `021ad13`, con las decisiones del propietario del 2026-10-07)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -15,10 +15,13 @@ current_phase:
 NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
 cerrada: Google Analytics 4, Meta y TikTok se configuran en la consola (sólo MASTER), la
 tienda pide permiso antes de cargar nada de terceros y la compra se mide una vez, desde
-la confirmación del pago. Ninguna integración se ha probado contra su servicio real.
+la confirmación del pago, en `master` desde #91. Ninguna integración se ha probado contra
+su servicio real. No iniciar SERIAL-PICK hasta que el propietario lo ordene.
 Sigue sin haber servidor, dominio, SMTP ni claves de Izipay. No hay nada publicado.
 
 current_priority:
+0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
+   de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
 1. El propietario contrata el servidor y el dominio. En el servidor:
    `cp deploy/.env.production.example deploy/.env.production`, rellenar lo de arranque
    (dominio, `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_CONFIG_ENCRYPTION_KEY`, dirección de
@@ -27,17 +30,19 @@ current_priority:
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
    IZIPAY-TOKEN-CONTRACT.
-4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9): antes de activar
-   un proveedor en producción, decidir CSP-01. Después: IDs y tokens en la consola, con
-   código de evento de prueba; una compra de prueba que aparezca UNA vez; quitar los
+4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9). Condiciones para
+   activar un proveedor en producción: CSP-01 implantada y validada con los dominios
+   reales de la pasarela y de los SDK (sin lista especulativa), y la política de
+   privacidad y cookies al día (MEAS-PRIVACY-NOTICE). Después: IDs y tokens en la consola,
+   con código de evento de prueba; una compra de prueba que aparezca UNA vez; quitar los
    códigos de prueba. En los paneles de Meta y TikTok, coincidencia avanzada automática
    apagada.
 5. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
    `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
-6. Primera fase tras publicar: SERIAL-PICK.
+6. Primera fase tras publicar: SERIAL-PICK, cuando el propietario lo ordene.
 
 validated:
-- Sobre `62ed3b8` (el código de la fase; lo posterior es documentación): backend 5654
+- Sobre `62ed3b8` (el código de la fase, en `master` con #91; lo posterior es documentación): backend 5654
   pruebas, 0 fallos, 5 omitidas · Jest 933/933 · tipos limpio · lint 0 errores, 22 avisos ·
   build correcto · Playwright 194/194, 0 omitidas · `ENSAYO: OK` (139 + 49).
 - Revisión de seguridad independiente: 1 P1 y 6 P2 corregidos; CSP-01 sigue PENDIENTE.
@@ -73,10 +78,12 @@ otros pendientes del propietario:
 - Confirmar que el código de comercio `4001061` de las pruebas no es el suyo (es público, no un secreto).
 
 known_debt (detalle en `docs/AUDIT_MEMORY.md`):
-- De analítica y marketing (`docs/analytics-marketing.md` §9): CSP-01 (decidir antes de
-  activar un proveedor en producción), MEAS-FORM-PAGES, MEAS-IP-UA (pendiente de que el
-  propietario lo confirme), MEAS-SERVER-EVENTS, MEAS-GA-HISTORY, MEAS-PIXEL-URL,
-  MEAS-HARD-NAV, MEAS-CONSENT-LOG, MEAS-TENANT-SCOPE.
+- De analítica y marketing (`docs/analytics-marketing.md` §9): CSP-01 (bloqueante para
+  activar un proveedor en producción), MEAS-PRIVACY-NOTICE (antes de producción),
+  INT-IMPORT-CYCLE (microfase INT-IMPORT-CYCLE-01), MEAS-FORM-PAGES, MEAS-SERVER-EVENTS,
+  MEAS-GA-HISTORY, MEAS-PIXEL-URL, MEAS-HARD-NAV, MEAS-CONSENT-LOG, MEAS-TENANT-SCOPE.
+  Decidido: MEAS-IP-UA aprobado bajo consentimiento de marketing; coincidencia avanzada
+  automática desactivada (DEC-MEAS-08).
 - De la consola (`docs/integraciones-y-secretos.md` §10): PAY-TENANT-SCOPE y
   FISCAL-TENANT-SCOPE (pasarela y SUNAT son de la instalación), PAY-SWITCH-PENDING
   (cambiar de producto con cobros abiertos), SUNAT-SOL-CHECK, ENV-FALLBACK-RETIRE,

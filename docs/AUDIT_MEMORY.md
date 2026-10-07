@@ -573,9 +573,10 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
-| CSP-01 (agravada) | FRONTEND | sin `script-src`; desde esta fase hay tres scripts de terceros que se cargan con consentimiento. Decidir antes de activar un proveedor en producción; lista de dominios en `docs/analytics-marketing.md` §7 | Media | probar con el SDK de la pasarela real |
+| CSP-01 (agravada) | FRONTEND | sin `script-src`; desde esta fase hay tres scripts de terceros que se cargan con consentimiento. Bloqueante para activar un proveedor en producción (decisión del propietario, 2026-10-07), sin lista especulativa; lista de dominios en `docs/analytics-marketing.md` §7 | Media | probar con el SDK de la pasarela real |
 | MEAS-FORM-PAGES | MEDICIÓN | Meta y TikTok no reciben `AddPaymentInfo` ni `CompleteRegistration`: no están en las páginas con formulario | Baja | decisión de privacidad |
-| MEAS-IP-UA | MEDICIÓN | IP y navegador van a Meta y TikTok con la compra, con consentimiento de marketing | Baja | confirmación del propietario |
+| MEAS-PRIVACY-NOTICE | MEDICIÓN | la política de privacidad y cookies no dice que la IP y el navegador van a Meta y TikTok con la compra (aprobado por el propietario el 2026-10-07, sólo bajo consentimiento de marketing) | Media | texto del propietario, antes de producción |
+| INT-IMPORT-CYCLE | INTEGRACIONES | dos ciclos de imports por archivo introducidos por #91 (`providers/measurement.py` con el paquete `integrations`, y con `store/measurement/__init__.py`); ninguno falla al cargar | Baja | microfase INT-IMPORT-CYCLE-01 |
 | MEAS-SERVER-EVENTS | MEDICIÓN | sólo la compra se envía desde el servidor | Baja | — |
 | MEAS-HARD-NAV | MEDICIÓN | entrar en una ruta privada o en el checkout con scripts cargados recarga la página | Baja | — |
 | MEAS-CONSENT-LOG | MEDICIÓN | sin registro de consentimientos en el servidor (sólo el del pedido) | Baja | requisito legal, si aparece |
