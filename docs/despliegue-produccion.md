@@ -263,10 +263,17 @@ C="docker compose -f docker-compose.prod.yml --env-file deploy/.env.production"
 $C build
 $C up -d postgres
 $C run --rm backend python manage.py migrate --noinput
+$C run --rm backend python manage.py bootstrap_pilot_store           # dice qué haría
+$C run --rm backend python manage.py bootstrap_pilot_store --apply   # lo hace
 $C run --rm backend python manage.py check --deploy
 $C up -d
 $C ps
 ```
+
+La base es **PostgreSQL vacío y `migrate`**, nada más. No se copia `db.sqlite3`, no se
+restaura un volcado de desarrollo y no se ejecuta ninguna semilla: `seed_demo_users` se
+niega con `DEBUG=0`. Qué deja `migrate` y qué hace `bootstrap_pilot_store` está en la
+sección 5.
 
 `check --deploy` debe mostrar un único aviso, `security.W008`
 (`SECURE_SSL_REDIRECT`). Es el esperado: la redirección a HTTPS la hace Caddy, y
@@ -288,19 +295,35 @@ aplicarlas es una decisión de cada despliegue.
 Las cuentas de demostración no existen en producción y el comando que las crea se
 niega a ejecutarse con `DEBUG=0`.
 
+Una base nueva no tiene ningún usuario. El primero se crea a mano, en el servidor:
+
 ```sh
 $C exec backend python manage.py createsuperuser
 ```
 
-Con esa cuenta entra en `https://<dominio>/auth`, abre el panel, elige la empresa y
-desde **Personal** invita a quienes vayan a trabajar con su rol. Usa una
-contraseña larga y única.
+El comando pregunta el usuario, el correo y la contraseña, y la contraseña no se ve al
+escribirla. No la pongas en un archivo, en una variable ni en un mensaje: no hay
+contraseña inicial en el repositorio, en las migraciones ni en `.env.production`. Usa
+una larga y única.
 
-Esa cuenta es MASTER: es la única que ve **Configuración › Integraciones**. Antes de
-invitar a nadie, configura ahí el **correo** (sin él las invitaciones no salen):
-guardar, «Probar conexión» —con un mensaje de prueba a tu propia dirección— y
-activar. Después, la **pasarela**: elige el producto de Izipay que tengas, escribe
-sus claves de TEST y pruébalas ahí mismo.
+Esa cuenta es **MASTER** (`is_superuser`): administra la plataforma y es la única que
+ve **Configuración › Integraciones**. No pertenece a ninguna empresa y no le hace falta:
+entra en `https://<dominio>/auth`, abre el panel, **elige la empresa** y puede
+configurarla entera. Lo que no es, sin pertenecer a ella: no aparece en **Personal**, no
+puede figurar como vendedor de una venta de caja y no tiene comisión.
+
+En este orden:
+
+1. **Correo**, en Configuración › Integraciones: guardar, «Probar conexión» —con un
+   mensaje de prueba a tu propia dirección— y activar. Sin él las invitaciones no salen.
+2. **Pasarela**: elige el producto de Izipay que tengas, escribe sus claves de TEST y
+   pruébalas ahí mismo.
+3. **La empresa**: razón social, RUC, dirección, WhatsApp y la portada.
+4. **Personal › Invitar**, con el rol, el área y las sucursales de cada persona. Quien
+   recibe la invitación pone su propia contraseña; nadie escribe la de otro.
+
+Para el trabajo diario, invítate a ti también con tu correo personal y un rol de la
+empresa, y deja la cuenta MASTER para configurar: ve los secretos de las integraciones.
 
 ### 4.5 Comprobaciones
 
@@ -311,25 +334,71 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/api/categories       
 curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/api/dev/demo-accounts  # 404
 ```
 
-Y en el navegador: iniciar sesión, añadir un producto al carrito, abrir el panel.
+Y en el navegador: iniciar sesión y abrir el panel. El catálogo está vacío hasta que
+cargues el real (sección 5); añadir un producto al carrito se comprueba después.
 
 ## 5. Datos iniciales
 
-Una base nueva, tras `migrate`, ya trae la empresa, su sucursal, los roles, la
-configuración de la tienda, las dos categorías y los tres productos: los crean las
-migraciones. No hay nada que copiar para eso.
+Una base nueva nace de `migrate`. Esto es lo que trae, medido en el ensayo (paso 3b,
+«PRODUCTION FRESH DATABASE CHECK»):
 
-Lo que **no** es real en una base nueva:
+| Qué | Cuánto | De dónde |
+|---|---|---|
+| Usuarios, membresías, invitaciones | 0 | — |
+| Clientes, equipos, órdenes de servicio | 0 | — |
+| Pedidos, pagos, carritos, reseñas | 0 | — |
+| Movimientos de stock, documentos fiscales | 0 | — |
+| Integraciones configuradas, contextos y conversiones de medición | 0 | — |
+| Roles, áreas, estados de reparación, series internas, lista de control de calidad | 5 · 7 · 12 · 2 · 1 | migraciones; son estructura, se quedan |
+| La empresa piloto, su sucursal y su configuración | 1 · 1 · 1 | migraciones `0015` y `0028` |
+| Portada: texto, 5 preguntas frecuentes, 8 servicios y la campaña «iPhone 18 Pro Max» | publicada | migraciones `0075` y `0078` |
+| **Tres productos de ejemplo, con 10, 15 y 20 unidades** | 3 | migración `0002`: **no son reales** |
 
-- **Existencias.** Las migraciones dejan 10, 15 y 20 unidades de ejemplo. Corrige
-  cada producto desde el panel, en **Inventario → Stock**, con un ajuste: queda
-  registrado en el Kardex con quién lo hizo. El respaldo local (sección 6.3) trae
-  `stock.csv` con las cantidades que había en desarrollo.
-- **Fotos de producto.** Vienen vacías. Se cargan como URL en cada producto, y el
-  host donde estén alojadas tiene que figurar en `NEXT_PUBLIC_IMAGE_HOSTS`.
-- **Usuarios.** Ninguno. Los ocho que hay en desarrollo son cuentas de
-  demostración con contraseña pública y no pasan a producción.
+**Los tres productos de ejemplo se retiran antes de cargar nada.** Los escribió la
+primera migración cuando la tienda era un prototipo; publicada tal cual, la tienda
+ofrecería 45 unidades que no existen, sin una sola línea de Kardex. Para eso está el
+paso de la sección 4.3:
+
+```sh
+$C run --rm backend python manage.py bootstrap_pilot_store           # dice qué haría
+$C run --rm backend python manage.py bootstrap_pilot_store --apply   # lo hace
+```
+
+- Retira un producto de ejemplo sólo si está **exactamente** como lo dejó la migración,
+  nada lo referencia y la base no se ha usado. Si alguien lo editó, movió su stock, lo
+  metió en un carrito o ya hay clientes o pedidos, **se niega y no cambia nada**: dice
+  qué encontró, y eso se revisa a mano.
+- Deja a la tienda piloto con sus categorías aprobadas, en este orden: iPhone, Mac,
+  iPad, Apple Watch, Accesorios. Las que existen no se tocan.
+- Se puede repetir: hecho una vez, no tiene nada que hacer.
+- No crea ningún usuario.
+- Es de la tienda piloto y de nadie más. Una empresa nueva no hereda sus categorías,
+  su campaña ni ningún producto.
+
+Después: `Product=0 | BranchStock=0 | StockMovement=0`.
+
+Lo que hay que cargar, con la cuenta MASTER o con quien tenga el rol:
+
+- **Catálogo y existencias reales.** Desde el panel, producto a producto o con la carga
+  masiva ([imagenes-y-evidencias.md](imagenes-y-evidencias.md)). Cada unidad entra con
+  su movimiento en el Kardex.
+- **Fotos de producto.** Se suben desde el panel.
+- **Usuarios.** Ninguno viene de desarrollo: las cuentas de demostración tienen la
+  contraseña publicada en el repositorio y no existen en producción.
 - **Pedidos.** Ninguno. Los de desarrollo son pruebas.
+
+El orden completo de un primer arranque:
+
+1. PostgreSQL vacío.
+2. `migrate --noinput`.
+3. `bootstrap_pilot_store --apply`.
+4. `check --deploy` y levantar la aplicación.
+5. `createsuperuser`: el MASTER (sección 4.4).
+6. Entrar, configurar el correo, la pasarela y la empresa.
+7. Invitar al personal y darle rol, área y sucursales.
+8. Cargar el catálogo y las existencias reales.
+9. Recorrer la sección 11.
+10. Abrir el tráfico, por orden del propietario.
 
 ## 6. Copias de seguridad
 
@@ -672,10 +741,11 @@ variante de hero que la V3 no tiene. La aplicación no fallaba en nada de lo dem
 |---|---|---|
 | 1 | Construcción sin caché | Dos imágenes. Sin `.env` ni base dentro; el backend corre sin root (uid 10001); el frontend no lleva ningún secreto en su entorno ni en los archivos que sirve; el backend no lleva claves ni copias |
 | 2–3 | PostgreSQL 16 vacío y migraciones | 122 migraciones de `store` aplicadas, 0 pendientes; `makemigrations --check` sin cambios |
+| 3b | **Base de producción nueva** («PRODUCTION FRESH DATABASE CHECK») | Tras `migrate`, sin semillas: 0 usuarios, 0 cuentas de demostración y 0 datos operativos (16 tablas medidas); una sola empresa, la piloto, con su sucursal y su campaña publicada. `bootstrap_pilot_store` informa sin escribir, retira los tres productos de ejemplo (`Product=0 \| BranchStock=0 \| StockMovement=0`), deja las cinco categorías aprobadas y no tiene nada que hacer la segunda vez |
 | 4 | Arranque | Backend y frontend sanos; sólo Caddy publica puertos; un proceso de gunicorn; ningún error en el registro de arranque; tope de tamaño y rechazo por longitud anunciada en las ocho rutas de Caddy; tiempos de espera; los cuatro contenedores rotan su registro |
 | 4b | Servidor de correo del ensayo | En la red interna, sin puertos publicados: guarda los mensajes y no reenvía nada |
 | 5 | Ajustes efectivos | `DEBUG=False`; cookies `Secure` y `HttpOnly`; un proxy de confianza; sólo JSON; sin admin de Django; el correo sale por SMTP, no al registro; la tienda en hora de Lima con el contenedor y la base en UTC |
-| 6 | Datos de demostración | `seed_demo_users` se niega; ninguna cuenta `dev_`; la ruta responde 404 |
+| 6 | Datos de demostración y primer administrador | `seed_demo_users` se niega; ninguna cuenta `dev_`; la ruta responde 404. Tras `createsuperuser`: un usuario, MASTER, sin membresía. El producto que el ensayo necesita lo crea él, con su movimiento de stock inicial |
 | 7 | Rutas por Caddy | Tienda, ficha, carrito, checkout, panel y API: 200. `/admin/login/`, `/static/admin/…`, `/media/…` y `/private-media/…` no llegan a Django ni a un archivo. Host desconocido: sin respuesta |
 | 8 | Cabeceras | HSTS una sola vez, `nosniff`, `X-Frame-Options: DENY`, política de contenido, `Permissions-Policy`; `no-referrer` en las páginas con token; no se anuncia el servidor |
 | 9–10 | Carrito, cotización, CORS | Añadir y cotizar: 200. CORS sólo para el origen propio |
@@ -757,7 +827,7 @@ Qué falta para publicar, y de quién depende.
 | ☐ | «Continuar con Google» | OPCIONAL · FALTAN DATOS: ID de cliente OAuth. Sin él el botón no aparece | `seguimiento-whatsapp-equipos.md` §7 |
 | ☐ | Facturación electrónica (SUNAT) | OPCIONAL · FALTAN DATOS: certificado y credenciales SOL. Va apagada (`FISCAL_ENABLED=0`); encenderla es una fase aparte | §8 |
 | ☐ | Impresoras de tienda | OPCIONAL: se dan de alta en el panel y se instala el agente en el local | §6.5 |
-| ☐ | Existencias, fotos y precios reales | FALTAN DATOS: una base nueva trae tres productos de ejemplo | §5 |
+| ☐ | Catálogo, existencias, fotos y precios reales | FALTAN DATOS: tras `bootstrap_pilot_store --apply` la tienda nace sin productos | §5 |
 | ☐ | Volver atrás | LISTO: copia antes de actualizar, `git checkout` del commit anterior y, si una migración cambió datos, `restore.sh` | §7 |
 | ☐ | Repetir `sh deploy/rehearsal.sh` sobre el commit que se publica | LISTO: es un comando | §9 |
 
