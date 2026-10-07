@@ -1,4 +1,5 @@
 import logging
+import re
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -18,7 +19,7 @@ from .auth_serializers import (
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
 )
-from . import security_log
+from . import accounts, security_log
 from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
 from .models import AccountToken
@@ -67,7 +68,7 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        if settings.REQUIRE_EMAIL_VERIFICATION:
+        if settings.REQUIRE_EMAIL_VERIFICATION and not _vouched_by_invitation(request, user.email):
             user.is_active = False
             user.save(update_fields=['is_active'])
             raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
@@ -94,6 +95,55 @@ def _submitted(request, field):
     """A field of the request body, whatever shape the body arrived in."""
     data = request.data
     return data.get(field) if hasattr(data, 'get') else None
+
+
+def _vouched_by_invitation(request, email) -> bool:
+    """
+    Whether this registration arrives with a staff invitation FOR THIS ADDRESS.
+
+    E-mail verification asks one thing: does this person read this mailbox? An
+    invitation link was sent to that mailbox and nowhere else, so holding one
+    that still serves has already answered it. Sending a second e-mail to ask
+    again is what left invited workers with an account they could neither use
+    nor recreate.
+
+    It vouches for its own address and no other, and only while it serves: an
+    invented, expired, revoked, replaced or spent link vouches for nothing, and
+    the registration is then exactly what it would have been without it.
+    """
+    from .staff_services import find_invitation, normalize_email
+
+    raw_token = _submitted(request, 'invitation_token')
+    if not isinstance(raw_token, str) or not raw_token:
+        return False
+    invitation = find_invitation(raw_token)
+    return invitation is not None and invitation.email == normalize_email(email)
+
+
+# The only address a recovery e-mail may carry the person back to: an invitation,
+# with a token of the shape ours have. Not «any local path»: the link is written
+# into an e-mail, and an e-mail is not the place for somebody else's choice of URL.
+_INVITATION_RETURN = re.compile(r'^/invitacion\?token=[A-Za-z0-9_-]{16,128}$')
+
+
+def _recoverable_account(email):
+    """
+    The account a recovery e-mail may be sent for, or None.
+
+    An active one, as always. And one that was registered and never verified:
+    the recovery link goes to the same mailbox the verification link went to,
+    so using it proves the same thing, and it is the only way such an account
+    can ever be finished by somebody who has lost the first e-mail.
+
+    Two accounts under one address is a state this code never creates; a
+    database that has it gets the same quiet answer as an unknown address, not
+    a guess about which of the two was meant.
+    """
+    found = [user for user in accounts.with_email(email) if user.is_active or accounts.is_unverified(user)]
+    if len(found) > 1:
+        logger.warning('password recovery skipped: %d accounts share one address', len(found))
+        return None
+    return found[0] if found else None
 
 
 class LoginView(APIView):
@@ -304,9 +354,12 @@ class ResendVerificationView(APIView):
 
 class PasswordResetRequestView(APIView):
     """
-    POST with {email} — sends a password reset link to the user's email.
+    POST with {email[, next]} — sends a password reset link to the user's email.
     Always returns a generic message (anti-enumeration).
-    Only sends to active users (inactive = not yet verified).
+
+    Sent to an active account, and to one that was registered and never
+    verified (`_recoverable_account`). `next` travels in the link only when it
+    is the address of a staff invitation.
     """
     authentication_classes = []
     permission_classes = [permissions.AllowAny]
@@ -319,13 +372,16 @@ class PasswordResetRequestView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
 
-        try:
-            user = User.objects.get(email__iexact=email, is_active=True)
-        except User.DoesNotExist:
+        user = _recoverable_account(email)
+        if user is None:
             return Response(self._GENERIC_RESPONSE)
 
+        next_path = serializer.validated_data.get('next') or ''
+        if not _INVITATION_RETURN.fullmatch(next_path):
+            next_path = None
+
         raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
-        send_password_reset_email(user, raw_token)
+        send_password_reset_email(user, raw_token, next_path=next_path)
         return Response(self._GENERIC_RESPONSE)
 
 
@@ -351,8 +407,15 @@ class PasswordResetConfirmView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         user = account_token.user
+        # Asked BEFORE anything changes: an account registered and never
+        # verified is finished here. The link was read in its mailbox, which is
+        # all verification ever asked, and the new password replaces whatever
+        # was typed when the account was made — by whoever made it.
+        finishing = accounts.is_unverified(user)
         user.set_password(new_password)
-        user.save(update_fields=['password'])
+        if finishing:
+            user.is_active = True
+        user.save(update_fields=['password', 'is_active'] if finishing else ['password'])
 
         # H4.1.2B — restablecer la contraseña cierra TODAS las sesiones, que es
         # lo que esta pantalla promete y lo que espera quien la usa porque cree
@@ -367,7 +430,13 @@ class PasswordResetConfirmView(APIView):
             except TokenError:
                 pass
 
-        response = Response({'detail': 'Contraseña restablecida. Inicia sesión con tu nueva contraseña.'})
+        response = Response({
+            'detail': 'Contraseña restablecida. Inicia sesión con tu nueva contraseña.',
+            # The name to log in with. Whoever got this far has read the
+            # account's mailbox, and somebody who never chose a password — a
+            # Google account, an invited worker — may not know they have one.
+            'username': user.get_username(),
+        })
         response.delete_cookie(settings.JWT_COOKIE_ACCESS_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
         response.delete_cookie(settings.JWT_COOKIE_REFRESH_NAME, path='/', samesite=settings.JWT_COOKIE_SAMESITE)
         return response
