@@ -63,7 +63,10 @@ await page.setViewportSize({ width: 390, height: 844 });
 
 await step("sin «Continuar con Google» mientras no haya ID de cliente", async () => {
   await page.goto("/auth", { waitUntil: "networkidle" });
-  if (await page.getByText(/Google/i).count()) throw new Error("la página de acceso ofrece Google sin estar configurado");
+  // El botón de Google, no la palabra: el aviso de cookies nombra a Google
+  // Analytics en todas las páginas, y eso no es ofrecer entrar con Google.
+  const google = page.locator('[data-google-button], script[src*="accounts.google.com/gsi"], iframe[src*="accounts.google.com"]');
+  if (await google.count()) throw new Error("la página de acceso ofrece Google sin estar configurado");
   if (!(await page.getByLabel("Usuario").count())) throw new Error("no está el acceso con usuario");
   return "acceso con usuario y contraseña";
 });
