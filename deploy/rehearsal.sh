@@ -365,6 +365,7 @@ echo "registro de seguridad: $($C logs backend 2>/dev/null | grep -cE 'login_(ok
 step "14 tareas programadas"
 $C exec -T backend python manage.py flushexpiredtokens >/dev/null 2>&1; expect "flushexpiredtokens" "$?" 0
 $C exec -T backend python manage.py send_pending_notifications >/dev/null 2>&1; expect "send_pending_notifications (con WhatsApp apagado no hace nada y termina bien)" "$?" 0
+$C exec -T backend python manage.py send_pending_conversions >/dev/null 2>&1; expect "send_pending_conversions (sin conversiones pendientes no hace nada y termina bien)" "$?" 0
 if $C exec -T backend python manage.py help cleanup_storefront_images >/dev/null 2>&1; then
   echo "  $($C exec -T backend python manage.py cleanup_storefront_images --dry-run 2>&1 | tail -1 | cut -c1-140)"
   expect "cleanup_storefront_images --dry-run" "$?" 0

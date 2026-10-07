@@ -549,6 +549,14 @@ WHATSAPP_GRAPH_API_VERSION = env('WHATSAPP_GRAPH_API_VERSION', default='v21.0')
 # Try the send right after the transaction commits. Turn it off where a timer
 # runs `send_pending_notifications`, so a slow provider never delays a counter.
 WHATSAPP_SEND_INLINE = env.bool('WHATSAPP_SEND_INLINE', default=True)
+
+# ANALYTICS-MARKETING. The purchase conversion (Google Analytics, Meta, TikTok) is
+# written with the payment and sent right after the transaction commits. Turn
+# this off where a timer runs `send_pending_conversions`, so a slow provider is
+# never waited for in the request that confirms a payment. Which providers
+# exist, their IDs and their keys are NOT configured here: a master sets them in
+# Configuración › Integraciones.
+MEASUREMENT_SEND_INLINE = env.bool('MEASUREMENT_SEND_INLINE', default=True)
 if not DEBUG:
     _require_public_url('FRONTEND_URL', FRONTEND_URL)
 REQUIRE_EMAIL_VERIFICATION = env.bool('REQUIRE_EMAIL_VERIFICATION', default=False)

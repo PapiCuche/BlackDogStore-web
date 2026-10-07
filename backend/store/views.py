@@ -20,6 +20,7 @@ from .models import (
 )
 from . import checkout_services as checkout
 from . import request_limits
+from .measurement import conversions
 from .payments import izipay, micuentaweb
 from .company_settings import build_identity_snapshot
 from .inventory_services import record_sale_stock_movements
@@ -286,6 +287,11 @@ class CreateCheckoutSessionView(APIView):
             )
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
+
+        # What this browser accepted, kept beside the order for when it is paid.
+        # Read from the raw body on purpose: it is not part of the checkout's
+        # contract, and nothing in it may ever refuse a sale.
+        conversions.capture(order, request, request.data.get('measurement') if isinstance(request.data, dict) else None)
 
         try:
             payment = checkout.start_payment_attempt(order, credentials=credentials)
@@ -569,6 +575,13 @@ class _SignedNotificationMixin:
             # notifications must not become a way to mail people twice.
             emit_payment_confirmed(order)
 
+            # ANALYTICS-MARKETING — the purchase as a conversion, born HERE and
+            # nowhere else: not when a browser opens the success page. One
+            # outbox row per provider the buyer consented to, written with the
+            # payment and sent after the commit. It cannot raise and works
+            # under a savepoint: measuring a sale must never be able to undo it.
+            conversions.record_purchase(order)
+
             _order_pk = order.pk
             transaction.on_commit(lambda: send_order_emails_after_payment(_order_pk))
 
@@ -767,13 +780,18 @@ class PaymentStatusView(APIView):
             Order.Status.REFUNDED: 'Pago reembolsado',
         }
 
-        return Response({
+        payload = {
             'order_id': order.id,
             'status': order.status,
             'paid': order.paid,
             'total': str(order.total),
             'message': status_messages.get(order.status, 'Estado desconocido'),
-        })
+        }
+        if order.status == Order.Status.PAID and order.paid:
+            # Only for an order the gateway confirmed: the purchase event the
+            # browser may emit, with the id the server's own copy carries.
+            payload['measurement'] = conversions.browser_purchase(order)
+        return Response(payload)
 
 
 class CartViewSet(

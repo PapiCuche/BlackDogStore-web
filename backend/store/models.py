@@ -8962,3 +8962,85 @@ class IntegrationConfig(models.Model):
 
     def __str__(self):
         return f'{self.provider}:{self.company_id or "platform"}:{self.slot}'
+
+
+class MeasurementContext(models.Model):
+    """
+    ANALYTICS-MARKETING — what a buyer's browser ACCEPTED and how the measurement
+    providers know it, at the moment they started paying.
+
+    Written when a checkout starts and read once, when the gateway confirms the
+    payment: it is what lets the server send the purchase to Google, Meta or
+    TikTok — and what forbids it. Refusing in the browser is refusing here.
+
+    TEMPORARY, AND AS SMALL AS THE CONSENT. No row at all for a buyer who accepted
+    nothing. The address and the browser's user agent are stored only with
+    marketing consent (Meta and TikTok are the ones that take them). The row is
+    deleted as soon as every conversion of the order reached a final state, and
+    by `send_pending_conversions` after a week in any case.
+
+    It carries nothing about the PERSON: no name, e-mail, phone or document.
+    """
+
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='measurement_context')
+    analytics = models.BooleanField(default=False)
+    marketing = models.BooleanField(default=False)
+    ga_client_id = models.CharField(max_length=64, blank=True)
+    ga_session_id = models.CharField(max_length=32, blank=True)
+    fbp = models.CharField(max_length=128, blank=True)
+    fbc = models.CharField(max_length=255, blank=True)
+    ttp = models.CharField(max_length=128, blank=True)
+    ttclid = models.CharField(max_length=255, blank=True)
+    user_agent = models.CharField(max_length=400, blank=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'order {self.order_id}: analytics={self.analytics} marketing={self.marketing}'
+
+
+class ConversionDelivery(models.Model):
+    """
+    ANALYTICS-MARKETING — the outbox of conversions sent from the server.
+
+        ONE SALE IS ONE CONVERSION PER PROVIDER.
+
+    The row is written in the transaction that makes the order paid, so it is
+    exactly as durable as the payment; the UNIQUE constraint is what makes a
+    replayed notification, a second worker or a retry unable to produce a second
+    one. `event_id` is the same value the browser uses for its own copy of the
+    event: that is how Meta and TikTok discard the duplicate.
+
+    It records WHAT KIND of failure happened and the provider's own code — never
+    its message, which can quote the access token.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pendiente'
+        SENDING = 'sending', 'Enviándose'
+        SENT = 'sent', 'Enviada'
+        FAILED = 'failed', 'Fallida'
+        SKIPPED = 'skipped', 'Omitida'
+
+    FINAL = (Status.SENT, Status.FAILED, Status.SKIPPED)
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='conversions')
+    provider = models.CharField(max_length=32)
+    event = models.CharField(max_length=32, default='purchase')
+    event_id = models.CharField(max_length=64)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    failure_kind = models.CharField(max_length=32, blank=True)
+    provider_code = models.CharField(max_length=40, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['order', 'provider', 'event'], name='unique_conversion_per_order_provider_event'),
+        ]
+
+    def __str__(self):
+        return f'{self.provider}:{self.event}:{self.order_id}:{self.status}'
