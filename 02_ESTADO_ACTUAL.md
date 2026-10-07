@@ -3,6 +3,109 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
+
+Rama `fix/staff-invitation-onboarding`, desde `master` `54b26ac` (#98). Sin migraciones.
+Decisión: DEC-ONBOARD-01. No se desplegó nada: llevarlo al servidor es un paso aparte.
+
+**Qué pasaba en producción.** Una persona abría su invitación, veía «Crear cuenta» y al
+registrarse se le decía que la cuenta ya existía. No conocía ninguna contraseña que
+sirviera y no podía terminar.
+
+**Causa.** La invitación y el registro coinciden en quién es alguien (comparan el correo
+sin mayúsculas ni espacios), así que no era un desacuerdo. Era el recorrido:
+
+1. la invitación mandaba al registro ordinario, que además se abría en la pantalla de
+   iniciar sesión y sin el correo;
+2. con la verificación de correo activa (producción), registrarse crea una cuenta
+   INACTIVA y envía un segundo correo;
+3. desde ahí el correo «ya está registrado», la cuenta no puede iniciar sesión y la
+   recuperación de contraseña la ignoraba por no estar activa.
+
+Reproducido con los ajustes de producción antes de tocar nada. Ninguna prueba recorría el
+camino entero con la verificación activa. Lo que no se pudo saber desde el código: cuál
+de las variantes sufrió la persona real (cuenta a medio crear, cuenta abandonada de
+antes, o un nombre de usuario ya ocupado).
+
+**Qué cambia.**
+
+| Caso | Antes | Ahora |
+|---|---|---|
+| El correo no tiene cuenta | Registro ordinario: cuenta inactiva, segundo correo, sin vuelta | «Crear mi cuenta» abre el registro con el correo de la invitación, que no se puede cambiar. La cuenta nace activa: el enlace ya prueba el buzón. Queda dentro y de vuelta en la invitación |
+| Tiene cuenta y sabe la contraseña | Iniciar sesión y aceptar | Igual |
+| Tiene cuenta y no la sabe, o nunca tuvo una (Google) | Sin enlace desde la invitación y sin vuelta | «No conozco mi contraseña» pide la recuperación de siempre para ese correo; el enlace vuelve a la invitación y dice con qué usuario se entra |
+| Cuenta registrada y nunca verificada | No entraba, no se registraba, no recuperaba | La invitación lo dice («a medio terminar») y ofrece establecer la contraseña; al hacerlo la cuenta queda activa |
+| Sesión de otra cuenta | No se podía aceptar | Igual, y se puede cerrar esa sesión ahí mismo |
+
+- La contraseña la elige siempre la persona. Nadie más la escribe ni la ve, y no se
+  envía ninguna por correo.
+- Aceptar sigue exigiendo una sesión del correo invitado: lo comprueba el servidor.
+- La recuperación también sirve a una cuenta registrada y nunca verificada, con o sin
+  invitación. Una cuenta apagada después de haber sido verificada no se reactiva.
+- El enlace de recuperación sólo puede volver a una invitación; cualquier otra
+  dirección se descarta, en el navegador y en el servidor.
+- `GET /api/staff/invitations/accept/` añade `account_state` (`none`, `active`,
+  `unverified`); `POST /api/auth/password-reset/confirm/` añade `username`. Lo demás no
+  cambia, y las invitaciones ya enviadas siguen sirviendo.
+
+**Lo que encontró el navegador real**, que las pruebas unitarias no:
+- La lectura de una invitación tiene un cupo por red (20 por minuto). La pantalla
+  preguntaba de más y, con el cupo agotado, decía «Invitación no válida». Ahora pregunta
+  una vez, conserva lo que sabía y distingue «no pudimos comprobarla».
+- Si la invitación no se puede leer, el registro no sigue sin ella.
+- Dos cuentas con el mismo correo hacían que pedir la recuperación respondiera 500.
+
+**Lo que encontró la revisión de seguridad independiente**, antes de abrir el PR:
+
+| | Qué | Corrección |
+|---|---|---|
+| P1 | El registro guardaba la cuenta activa y después miraba la invitación. Un token malformado hacía fallar esa consulta: respuesta 500 y una cuenta activa, sin verificar, en cualquier correo | La decisión se toma antes de crear la cuenta, que se escribe una vez y en su estado final junto con su enlace de verificación. Lo que no tiene forma de token no se consulta; una consulta que falla es un «no» |
+| P2 | Una cuenta terminada por recuperación seguía pareciendo «nunca verificada»: apagada después, una recuperación la habría reactivado | Al terminarla se gastan sus enlaces de verificación |
+| P3 | La vuelta a la invitación en el correo de recuperación sólo se comprobaba por su forma | Se conserva sólo si es una invitación vigente de ese mismo correo |
+| P3 | Reenviar la verificación de un correo con dos cuentas respondía 500 | Misma respuesta discreta que un correo desconocido |
+
+Aceptado y dicho, no corregido: **para un correo sin cuenta, el enlace de invitación
+basta por sí solo** para crear la cuenta y aceptar. Antes hacía falta leer además un
+segundo correo. Es la consecuencia de que la invitación pruebe el buzón (DEC-ONBOARD-01)
+y es lo que desbloquea a quien recibe una; lo acotan su caducidad de siete días, el uso
+único, la revocación y el reenvío, que anula el enlace anterior. Decide el propietario.
+
+**Verificación**
+
+| Medida | Antes (`master` `54b26ac`) | Después |
+|---|---|---|
+| Backend, suite completa en PostgreSQL | 5679, 0 fallos, 5 omitidas | 5714, 0 fallos, 5 omitidas (35 nuevas), sobre `6264176` |
+| Jest | 936/936 | 977/977: 37 nuevas, más las 4 que trajo #99 al unir `master` |
+| Tipos · lint | limpio · 0 errores, 22 avisos | limpio · 0 errores, los mismos 22 avisos |
+| Navegador, specs de personal y de sesión | 20/20 | 22/22, 0 omitidas |
+| Navegador, con verificación de correo obligatoria | no se probaba | los dos recorridos nuevos, 2/2 |
+| `manage.py check` · `makemigrations --check` | — | sin incidencias · sin cambios: 0 migraciones |
+| Ensayo de producción | — | `ENSAYO: OK` sobre `25b6666`: 149 comprobaciones y 49 pasos de navegador; no deja nada en el equipo |
+
+- Pruebas nuevas vistas primero en rojo: 15 de las 28 iniciales de backend fallaban contra
+  el código anterior; las 7 de la revisión, también.
+- Mutaciones: 17 reglas del backend y 12 del frontend rotas a propósito; todas detectadas
+  menos una, que es la segunda capa de una defensa doble (la forma del token) y cuya
+  ausencia sigue cubierta por la primera.
+- Revisión de seguridad independiente: 1 P1, 1 P2 y 2 P3 corregidos con prueba; un P2 de
+  diseño aceptado y dicho arriba.
+- Corridas del ensayo que NO se cuentan, y por qué: una con el equipo en reposo (falló
+  el inicio de sesión del navegador); dos en las que `pip install` falló al construir la
+  imagen sin caché (intermitente: la misma imagen construye bien por separado, y el
+  resto de esas corridas pasó); y una que destapó un fallo que ya estaba en `master`:
+  desde #99 el aviso de cookies nombra a Google Analytics y la comprobación «sin
+  Continuar con Google» buscaba esa palabra en la página de acceso. Ahora busca el botón.
+
+**Deuda que deja**
+- LOGIN-BY-EMAIL: se inicia sesión con un nombre de usuario, que la persona tiene que
+  elegir y recordar. La recuperación ya se lo dice; entrar con el correo sería mejor.
+- INVITE-REGISTER-USERNAME: el registro desde una invitación pide un nombre de usuario;
+  si está ocupado, se dice y hay que elegir otro.
+- VERIFY-RESEND-UI: reenviar la verificación existe en la API y ninguna pantalla lo
+  ofrece. Ya no bloquea a nadie: la recuperación termina esas cuentas.
+- INVITE-PENDING-LIST: una persona con sesión no ve sus invitaciones pendientes si
+  pierde el correo; la empresa puede reenviarla.
+
 ## 2026-10-07 — Aviso de medición y renovación del consentimiento
 
 **PARCIAL · pendiente de publicación y validación del responsable.** Se prepara `/privacy`,

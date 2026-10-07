@@ -310,6 +310,36 @@ de dominios en `docs/analytics-marketing.md` §7.
   empresa nombrándola; para vender o constar como personal hace falta una membresía
   explícita, que se da por invitación.
 
+### DEC-ONBOARD-01 · La invitación prueba el buzón; la contraseña es de la persona
+
+- **Una invitación válida para un correo ya responde lo que la verificación pregunta**:
+  ¿lee esta persona ese buzón? Registrarse con ella crea la cuenta activa, sin segundo
+  correo. Responde por su correo y por ningún otro, y sólo mientras sirve.
+- **La invitación no fija la contraseña de una cuenta que ya existe.** Dura siete días;
+  el enlace de recuperación, una hora y un solo uso. Quien no conoce su contraseña usa
+  la recuperación de siempre, que es de la misma persona y del mismo buzón.
+- **La recuperación termina una cuenta que nunca se verificó.** Usarla prueba lo mismo
+  que el enlace de verificación, y la contraseña nueva sustituye a la que escribió quien
+  creó la cuenta. «Nunca verificada» se pregunta con precisión (`accounts.is_unverified`:
+  inactiva, con enlaces de verificación y ninguno usado); una cuenta inactiva por otro
+  motivo no se toca.
+- **El enlace de recuperación vuelve a una invitación y a nada más.** Lo escribe el
+  servidor en un correo: sólo acepta `/invitacion?token=…` con un token de la forma de
+  los nuestros.
+- **Se decide antes de escribir, y se falla cerrado.** Si la cuenta nace activa o no se
+  decide antes de crearla y se escribe una sola vez; lo que no se puede comprobar es un
+  «no». Guardarla activa y apagarla después dejaba una cuenta utilizable cada vez que
+  algo fallaba en medio.
+- **Consecuencia aceptada: para un correo sin cuenta, el enlace de invitación basta.**
+  Quien lo tenga puede crear la cuenta y aceptar. Lo acotan la caducidad (siete días),
+  el uso único, la revocación y que reenviar anula el anterior. Exigir además un segundo
+  correo es lo que dejaba a la gente sin poder terminar.
+- **El administrador nunca elige ni ve una contraseña**, y no se envía ninguna por
+  correo. No hay contraseñas temporales.
+- **Descartado:** activar la cuenta sin verificar con sólo abrir la invitación (dejaría
+  viva la contraseña de quien la registró); un segundo sistema de credenciales para
+  invitados; una identidad por empresa.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay

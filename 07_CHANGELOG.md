@@ -3,6 +3,37 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — STAFF-ONBOARDING-01
+
+**Fixed**
+- Una persona invitada podía quedar sin salida: «Crear cuenta» la llevaba a un registro
+  que, con la verificación de correo activa, dejaba una cuenta inactiva que no podía
+  iniciar sesión, registrarse otra vez ni recuperar su contraseña.
+- La invitación ofrecía «Crear cuenta» abriendo la pantalla de inicio de sesión, sin el
+  correo de la invitación.
+- Con el cupo de lecturas agotado, una invitación válida se mostraba como «no válida».
+- Pedir la recuperación, o reenviar la verificación, para un correo con dos cuentas
+  respondía 500.
+- De la revisión de seguridad, antes de publicar el cambio: un token de invitación
+  malformado dejaba una cuenta activa sin verificar (el registro decide ahora antes de
+  crear la cuenta y falla cerrado); una cuenta terminada por recuperación podía
+  reactivarse más tarde; la vuelta a la invitación se comprobaba sólo por su forma.
+
+**Changed**
+- Registrarse con una invitación válida para ese correo crea la cuenta activa.
+- La recuperación de contraseña sirve también a una cuenta registrada y nunca
+  verificada, y la deja activa; su enlace puede volver a una invitación y su respuesta
+  dice con qué usuario se entra.
+- La invitación dice qué hace falta (`account_state`) y ofrece sólo eso: crear la
+  cuenta, iniciar sesión o establecer la contraseña.
+- El formulario de Personal explica que la contraseña la elige el trabajador.
+
+- El ensayo de producción fallaba en `master` desde el aviso de privacidad: su
+  comprobación «sin Continuar con Google» buscaba la palabra en toda la página de
+  acceso, y el aviso de cookies nombra a Google Analytics. Ahora busca el botón.
+
+Sin migraciones. Sin desplegar.
+
 ## 2026-10-07 — Aviso de privacidad y cookies para medición
 
 **PARCIAL · pendiente de publicación y validación del responsable.** Se prepara `/privacy`,
