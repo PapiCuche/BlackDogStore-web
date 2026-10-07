@@ -496,14 +496,33 @@ class NeverInTheWayTest(_Base):
 
     def test_no_log_line_carries_a_token_or_a_browser_identifier(self):
         self.all_server_side()
-        self.answers['graph.facebook.com'] = http_error(400, {'error': {'code': 190, 'message': META_SECRET['access_token']}})
-        self.answers['business-api.tiktok.com'] = urllib.error.URLError(f'refused {TIKTOK_SECRET["access_token"]}')
-        with self.assertLogs('store', level='DEBUG') as captured:
-            self.purchase()
+        private = (
+            *META_SECRET.values(), *TIKTOK_SECRET.values(), *GA_SECRET.values(),
+            *(value for value in BROWSER.values() if isinstance(value, str)),
+            '203.0.113.7', USER_AGENT, *BUYER.values(),
+        )
+        # HTTP/network refusals become sanitised Answers without logging. An
+        # unexpected exception at the HTTP boundary reaches attempt()'s real
+        # error logger; its message must never reach the log or undo the sale.
+        for host in OKS:
+            self.answers[host] = RuntimeError('provider failure: ' + ' '.join(private))
+        with self.assertLogs('store.measurement', level='DEBUG') as captured:
+            order = self.purchase()
+        self.assertTrue(order.paid)
+        self.assertEqual(len(captured.records), 3)
+        for record in captured.records:
+            self.assertEqual(record.name, 'store.measurement')
+            self.assertEqual(record.levelname, 'ERROR')
+            self.assertIsNone(record.exc_info)
+        self.assertEqual(
+            list(ConversionDelivery.objects.filter(order=order).order_by('provider').values_list(
+                'provider', 'status', 'failure_kind', 'attempt_count')),
+            [('google_analytics', 'pending', 'error', 1), ('meta', 'pending', 'error', 1),
+             ('tiktok', 'pending', 'error', 1)],
+        )
         text = '\n'.join(captured.output)
-        for private in (*META_SECRET.values(), *TIKTOK_SECRET.values(), *GA_SECRET.values(), BROWSER['fbp'], BROWSER['ttclid'],
-                        '203.0.113.7', BUYER['customer_email']):
-            self.assertNotIn(private, text)
+        for value in private:
+            self.assertNotIn(value, text)
 
 
 class RuntimeTest(_Base):
