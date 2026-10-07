@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-07 — CHECKPOINT 2: base desplegada en red interna, sin tráfico público
 
-**PARCIAL · 55% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
+**PARCIAL · 60% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
 documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
 árbol limpio. Sin cambios de código. `GO DNS` y la apertura pública siguen pendientes.
@@ -33,10 +33,14 @@ documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
 - Primera copia con `deploy/backup.sh`: volcado legible con 98 tablas y `LAST_OK`.
   **Restauración no ensayada en el servidor.**
 
-Pendiente: MASTER (`createsuperuser`, lo escribe el propietario), `GO DNS`, apertura de
+- MASTER creado por el propietario con `createsuperuser` desde su terminal: 1 usuario,
+  `is_superuser`, activo, sin membresía (`Membership=0`). La contraseña no pasó por el chat.
+
+Pendiente: `GO DNS`, apertura de
 80/443, Caddy y certificado, SMTP e Izipay TEST en el panel, cron, copia externa,
 restauración, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
-55% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15.
+60% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5.
 No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE siguen PENDIENTES.
 

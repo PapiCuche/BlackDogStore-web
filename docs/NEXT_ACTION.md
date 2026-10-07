@@ -14,14 +14,15 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 55% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
+CHECKPOINT 2 **PARCIAL · 60% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
 `blackdogstore-prod-01` (`sa-east-1a`, 4 GB, 2 vCPU, 80 GB), Static IP `54.94.236.23`.
 Código del servidor: `c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
 Preflight `SUFICIENTE PARA ARRANCAR`. Imágenes construidas; PostgreSQL vacío + 154
 migraciones + `bootstrap_pilot_store --apply`; estado inicial comprobado (0 usuarios,
 0 productos/stock/movimientos, cinco categorías, campaña publicada).
 `postgres`, `backend` y `frontend` sanos en la red interna. **Caddy sin arrancar**;
-ningún puerto publicado; 80/443 cerrados en AWS. Sin MASTER. Primera copia local hecha,
+ningún puerto publicado; 80/443 cerrados en AWS. MASTER creado por el propietario
+(1 superusuario, sin membresía). Primera copia local hecha,
 restauración sin ensayar en el servidor. Acceso: `ssh deploy@54.94.236.23` con la
 clave dedicada del equipo del propietario (`~/.ssh/blackdogstore_prod_ed25519`);
 `deploy` no tiene sudo.
@@ -40,8 +41,7 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. Falta, en orden: MASTER con
-   `createsuperuser` (lo escribe el propietario en su terminal), `GO DNS`, autorización
+1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. MASTER creado. Falta, en orden: `GO DNS`, autorización
    para abrir 80/443, `up -d caddy` y §4.5. No arrancar Caddy antes de que el DNS
    responda: Let's Encrypt limita los intentos fallidos.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
@@ -135,8 +135,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario, en su terminal (la contraseña no pasa por el chat):
-`ssh -t -i ~/.ssh/blackdogstore_prod_ed25519 deploy@54.94.236.23 'cd /srv/blackdogstore && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec backend python manage.py createsuperuser'`
-Después decidir `GO DNS` sobre la tabla antes/después y, aparte, la apertura de 80/443.
-Con ambas: arrancar Caddy, §4.5, SMTP e Izipay TEST en el panel MASTER, cron, ensayar
-la restauración y `sh deploy/rehearsal.sh` sobre el commit publicado.
+Propietario: decidir `GO DNS` sobre la tabla antes/después (A @ y A www hacia
+54.94.236.23, DNS only, TTL Auto) y, aparte, la apertura de 80/443. Con ambas: esperar
+a que el DNS responda, arrancar Caddy, §4.5, SMTP e Izipay TEST en el panel MASTER,
+cron, ensayar la restauración y `sh deploy/rehearsal.sh` sobre el commit publicado.
