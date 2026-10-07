@@ -3,6 +3,7 @@ import re
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.middleware.csrf import get_token
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import AuthenticationFailed
@@ -66,12 +67,22 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
 
-        if settings.REQUIRE_EMAIL_VERIFICATION and not _vouched_by_invitation(request, user.email):
-            user.is_active = False
-            user.save(update_fields=['is_active'])
-            raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        # DECIDED BEFORE THE ACCOUNT EXISTS, and the account is written once, in
+        # the state it has to end in. It used to be saved active and switched
+        # off afterwards: anything that broke in between — and the invitation
+        # look-up could be made to — answered 500 and left an account that
+        # worked, on an address nobody had verified (found by the review).
+        needs_verification = settings.REQUIRE_EMAIL_VERIFICATION and not _vouched_by_invitation(
+            request, serializer.validated_data['email'],
+        )
+        raw_token = None
+        with transaction.atomic():
+            user = serializer.save(is_active=not needs_verification)
+            if needs_verification:
+                raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+
+        if needs_verification:
             send_verification_email(user, raw_token)
             return Response(
                 {
@@ -110,20 +121,53 @@ def _vouched_by_invitation(request, email) -> bool:
     It vouches for its own address and no other, and only while it serves: an
     invented, expired, revoked, replaced or spent link vouches for nothing, and
     the registration is then exactly what it would have been without it.
+
+    IT FAILS CLOSED. Whatever arrives in that field that is not a token of the
+    shape ours have is not looked up at all, and a look-up that cannot be
+    completed is a «no»: not knowing is never a reason to skip a verification.
     """
-    from .staff_services import find_invitation, normalize_email
+    from . import staff_services
 
     raw_token = _submitted(request, 'invitation_token')
-    if not isinstance(raw_token, str) or not raw_token:
+    if not isinstance(raw_token, str) or not _TOKEN_SHAPE.fullmatch(raw_token):
         return False
-    invitation = find_invitation(raw_token)
-    return invitation is not None and invitation.email == normalize_email(email)
+    try:
+        invitation = staff_services.find_invitation(raw_token)
+    except Exception:  # noqa: BLE001 — a «no», and said without the token
+        logger.exception('an invitation could not be looked up during a registration')
+        return False
+    return invitation is not None and invitation.email == staff_services.normalize_email(email)
 
 
 # The only address a recovery e-mail may carry the person back to: an invitation,
 # with a token of the shape ours have. Not «any local path»: the link is written
 # into an e-mail, and an e-mail is not the place for somebody else's choice of URL.
-_INVITATION_RETURN = re.compile(r'^/invitacion\?token=[A-Za-z0-9_-]{16,128}$')
+_TOKEN_SHAPE = re.compile(r'[A-Za-z0-9_-]{16,128}')
+_INVITATION_RETURN = re.compile(r'/invitacion\?token=(?P<token>[A-Za-z0-9_-]{16,128})')
+
+
+def _invitation_return(raw, user):
+    """
+    `raw` if it is the address of an invitation THAT SERVES AND IS FOR THIS
+    ACCOUNT'S ADDRESS; otherwise None.
+
+    The shape alone is not enough: the value is written into an e-mail to
+    `user`, and the only thing that belongs there is that person's own
+    invitation.
+    """
+    from . import staff_services
+
+    match = _INVITATION_RETURN.fullmatch(raw) if isinstance(raw, str) else None
+    if match is None:
+        return None
+    try:
+        invitation = staff_services.find_invitation(match.group('token'))
+    except Exception:  # noqa: BLE001 — the link simply does not carry it
+        logger.exception('an invitation could not be looked up for a recovery link')
+        return None
+    if invitation is None or invitation.email != staff_services.normalize_email(user.email):
+        return None
+    return raw
 
 
 def _recoverable_account(email):
@@ -342,10 +386,11 @@ class ResendVerificationView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
 
-        try:
-            user = User.objects.get(email__iexact=email, is_active=False)
-        except User.DoesNotExist:
+        waiting = [user for user in accounts.with_email(email) if not user.is_active]
+        if len(waiting) != 1:
+            # None, or a legacy duplicate: the same quiet answer, not a guess.
             return Response(self._GENERIC_RESPONSE)
+        user = waiting[0]
 
         raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
         send_verification_email(user, raw_token)
@@ -376,9 +421,7 @@ class PasswordResetRequestView(APIView):
         if user is None:
             return Response(self._GENERIC_RESPONSE)
 
-        next_path = serializer.validated_data.get('next') or ''
-        if not _INVITATION_RETURN.fullmatch(next_path):
-            next_path = None
+        next_path = _invitation_return(serializer.validated_data.get('next'), user)
 
         raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
         send_password_reset_email(user, raw_token, next_path=next_path)
@@ -413,9 +456,13 @@ class PasswordResetConfirmView(APIView):
         # was typed when the account was made — by whoever made it.
         finishing = accounts.is_unverified(user)
         user.set_password(new_password)
-        if finishing:
-            user.is_active = True
-        user.save(update_fields=['password', 'is_active'] if finishing else ['password'])
+        with transaction.atomic():
+            if finishing:
+                # Verified for good: it must not look «never verified» again if
+                # somebody switches it off one day.
+                user.is_active = True
+                accounts.mark_verified(user)
+            user.save(update_fields=['password', 'is_active'] if finishing else ['password'])
 
         # H4.1.2B — restablecer la contraseña cierra TODAS las sesiones, que es
         # lo que esta pantalla promete y lo que espera quien la usa porque cree

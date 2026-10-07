@@ -30,9 +30,11 @@ WHAT THE ROAD IS NOW
 
 The password is the worker's in every case. Nobody else sets or sees it.
 """
+import json
 import logging
 import re
 from contextlib import contextmanager
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -46,7 +48,7 @@ from store.models import (
     AccountToken, AdminAuditLog, Company, CompanyRole, Membership,
     MembershipRoleAssignment, StaffInvitation, UserProfile,
 )
-from store.staff_services import create_invitation, resend_invitation
+from store.staff_services import create_invitation, resend_invitation, revoke_invitation
 
 User = get_user_model()
 
@@ -202,8 +204,7 @@ class NewWorkerTest(_Base):
                 if spoil == 'invented':
                     raw = 'x' * 64
                 elif spoil == 'revoked':
-                    invitation.status = StaffInvitation.STATUS_REVOKED
-                    invitation.save(update_fields=['status'])
+                    revoke_invitation(invitation)
                 elif spoil == 'expired':
                     invitation.expires_at = timezone.now() - timezone.timedelta(minutes=1)
                     invitation.save(update_fields=['expires_at'])
@@ -211,7 +212,64 @@ class NewWorkerTest(_Base):
                     resend_invitation(invitation)                     # G · the old link dies
                 response = self.register(raw, email=email, username=f'u_{spoil}', client=APIClient())
                 self.assertEqual(response.status_code, 201)
+                self.assertTrue(response.json()['requires_verification'], spoil)
                 self.assertFalse(User.objects.get(email=email).is_active, spoil)
+
+    def test_a_link_already_used_vouches_for_nothing(self):
+        """Spent by its owner: it cannot make an account for whoever finds it afterwards."""
+        raw = self.invite()
+        self.register(raw)
+        self.log_in()
+        self.assertEqual(self.accept(raw).status_code, 200)
+        User.objects.filter(email=WORKER).update(email='ya-no@empresa.test')
+        response = self.register(raw, username='otra.persona', client=APIClient())
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()['requires_verification'])
+        self.assertFalse(User.objects.get(username='otra.persona').is_active)
+
+    def test_something_that_is_not_a_token_never_leaves_an_account_that_works(self):
+        """
+        REVIEW (P1). The account was saved, active, BEFORE the invitation was
+        looked at. A token that made that look-up raise — a lone surrogate was
+        enough — answered 500 and left an active account on any address, with
+        the password of whoever sent it and no e-mail ever verified.
+        """
+        for position, junk in enumerate((
+            '\ud800', '\udfff' * 40, 'x' * 5000, ' ', '\x00' * 64, ['a'], {'a': 1}, 12345, True,
+            'not/a token', '../' * 20,
+        )):
+            with self.subTest(repr(junk)[:30]):
+                cache.clear()
+                email = f'victima{position}@empresa.test'
+                # As bytes, the way it travels: a lone surrogate is legal in a
+                # JSON escape and the test client would refuse to encode it.
+                response = APIClient().post(REGISTER, json.dumps({
+                    'username': f'evil{position}', 'email': email, 'password': PASSWORD,
+                    'password_confirm': PASSWORD, 'invitation_token': junk,
+                }), content_type='application/json')
+                self.assertEqual(response.status_code, 201, response.content)
+                self.assertTrue(response.json()['requires_verification'])
+                self.assertFalse(User.objects.get(email=email).is_active)
+                self.assertEqual(
+                    APIClient().post(LOGIN, {'username': f'evil{position}', 'password': PASSWORD}, format='json').status_code, 401,
+                )
+
+    def test_if_the_invitation_cannot_be_looked_up_the_account_is_not_vouched_for(self):
+        """It fails closed: not knowing is not a yes."""
+        raw = self.invite()
+        with mock.patch('store.staff_services.find_invitation', side_effect=RuntimeError('la base no responde')):
+            response = self.register(raw)
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()['requires_verification'])
+        self.assertFalse(User.objects.get(email=WORKER).is_active)
+
+    def test_a_registration_that_fails_half_way_leaves_no_account(self):
+        """Whatever breaks after the account is written, there is no active row left behind."""
+        with mock.patch('store.auth_views.AccountToken.make', side_effect=RuntimeError('boom')):
+            self.browser.raise_request_exception = False
+            response = self.register(None, email='mitad@empresa.test', username='mitad')
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(User.objects.filter(email='mitad@empresa.test').exists())
 
     def test_without_an_invitation_registration_is_what_it_was(self):
         response = self.register(None, email='cliente@correo.test', username='cliente')
@@ -343,6 +401,25 @@ class UnknownPasswordTest(_Base):
         self.assertEqual(self.accept(raw).status_code, 200)
         self.assertEqual(self.membership().user_id, person.pk)
 
+    def test_an_account_finished_by_recovery_is_verified_for_good(self):
+        """
+        REVIEW (P2). Finishing left the verification links unused, so the
+        account still looked «never verified»: switched off later, a recovery
+        would have switched it back on.
+        """
+        self.register(None)
+        raw = self.invite()
+        self.assertEqual(self.recover(raw).status_code, 200)
+        person = User.objects.get(email=WORKER)
+        self.assertTrue(person.is_active)
+
+        person.is_active = False                                     # somebody switches it off
+        person.save(update_fields=['is_active'])
+        before = len(mail.outbox)
+        self.browser.post(RESET_REQUEST, {'email': WORKER}, format='json')
+        self.assertEqual(len(mail.outbox), before)
+        self.assertEqual(self.seen(raw).json()['account_state'], 'active')   # not «unverified»: it was finished
+
     def test_a_never_verified_account_can_recover_without_any_invitation(self):
         self.register(None)
         self.browser.post(RESET_REQUEST, {'email': WORKER}, format='json')
@@ -373,6 +450,15 @@ class UnknownPasswordTest(_Base):
         self.assertEqual(len(mail.outbox), before)
 
 
+    def test_asking_again_for_the_verification_of_a_duplicated_address_is_quiet_too(self):
+        User.objects.create_user('ana.uno', WORKER, PASSWORD, is_active=False)
+        User.objects.create_user('ana.dos', WORKER.upper(), PASSWORD, is_active=False)
+        before = len(mail.outbox)
+        response = self.browser.post('/api/auth/resend-verification/', {'email': WORKER}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), before)
+
+
 class ReturnAddressTest(_Base):
     """The recovery e-mail carries the worker back to an invitation, and nowhere else."""
 
@@ -394,10 +480,29 @@ class ReturnAddressTest(_Base):
                 self.assertEqual(response.status_code, 200)
                 self.assertNotIn('next=', self.reset_link())
 
+    def test_only_the_invitation_of_this_very_address_travels(self):
+        """REVIEW (P3). Not «any token of the right shape»: this person's invitation."""
+        mine = self.invite()
+        somebody_elses = self.invite('otra@empresa.test')
+        for label, back, kept in (
+            ('mine', mine, True), ('of another address', somebody_elses, False), ('invented', 'a' * 64, False),
+        ):
+            with self.subTest(label):
+                cache.clear()
+                mail.outbox = []
+                self.browser.post(RESET_REQUEST, {'email': WORKER, 'next': f'/invitacion?token={back}'}, format='json')
+                self.assertEqual('next=' in self.reset_link(), kept)
+
     def test_the_answer_is_the_same_whoever_asks(self):
-        known = self.browser.post(RESET_REQUEST, {'email': WORKER, 'next': '/invitacion?token=' + 'a' * 64}, format='json')
-        unknown = APIClient().post(RESET_REQUEST, {'email': 'nadie@empresa.test', 'next': '/invitacion?token=' + 'a' * 64}, format='json')
-        self.assertEqual((known.status_code, known.json()), (unknown.status_code, unknown.json()))
+        self.register(None, email='sin-verificar@empresa.test', username='sin.verificar', client=APIClient())
+        back = '/invitacion?token=' + 'a' * 64
+        answers = []
+        for email in (WORKER, 'nadie@empresa.test', 'sin-verificar@empresa.test'):
+            cache.clear()
+            response = APIClient().post(RESET_REQUEST, {'email': email, 'next': back}, format='json')
+            answers.append((response.status_code, response.json()))
+        self.assertEqual(answers[0], answers[1])
+        self.assertEqual(answers[0], answers[2])
 
 
 class DisclosureTest(_Base):
@@ -433,12 +538,15 @@ class DisclosureTest(_Base):
             self.browser.post(RESET_REQUEST, {'email': WORKER, 'next': f'/invitacion?token={raw}'}, format='json')
             reset_token = self.reset_token()
             accepted = self.accept(raw)
+            confirmed = APIClient().post(RESET_CONFIRM, {'token': reset_token, 'new_password': OTHER_PASSWORD}, format='json')
         self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(set(confirmed.json()), {'detail', 'username'})
         # The capture is real: the login it watched is in it.
         self.assertTrue(any('login_ok' in line for line in records), records)
-        said = ' '.join(r.content.decode() for r in (registered, logged, accepted, self.seen(raw)))
+        said = ' '.join(r.content.decode() for r in (registered, logged, accepted, confirmed, self.seen(raw)))
         written = '\n'.join(records) + str(list(AdminAuditLog.objects.values('action', 'metadata')))
-        for secret in (PASSWORD, raw, reset_token):
+        for secret in (PASSWORD, OTHER_PASSWORD, raw, reset_token):
             self.assertNotIn(secret, said)
             self.assertNotIn(secret, written)
         self.assertEqual(

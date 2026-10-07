@@ -13,6 +13,7 @@ token; confirming it marks one as used. An inactive account with tokens and none
 of them used is unverified. Any other inactive account is not ours to revive.
 """
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from .models import AccountToken
 
@@ -25,6 +26,17 @@ def is_unverified(user) -> bool:
         user=user, purpose=AccountToken.PURPOSE_EMAIL_VERIFICATION,
     )
     return tokens.exists() and not tokens.filter(used_at__isnull=False).exists()
+
+
+def mark_verified(user) -> None:
+    """
+    The mailbox has been confirmed by some other road (a recovery link read in
+    it). Spend the verification links so the account is never again taken for
+    one nobody confirmed.
+    """
+    AccountToken.objects.filter(
+        user=user, purpose=AccountToken.PURPOSE_EMAIL_VERIFICATION, used_at__isnull=True,
+    ).update(used_at=timezone.now())
 
 
 def with_email(email: str) -> list:
