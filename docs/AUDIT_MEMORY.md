@@ -277,6 +277,26 @@ Autoridad: `frontend/app/api/[...path]/route.ts` (rechaza con 400 segmentos `.`,
 Tests: `frontend/__tests__/api-proxy-scope.test.ts` (11/11).
 Estado: VERIFICADO @ `4a9dd5c`.
 
+**MEAS-CONSENT-01** — Sin el permiso de su categoría no se carga el script de un proveedor ni se le envía nada, desde el navegador ni desde el servidor.
+Autoridad: `frontend/app/lib/analytics/service.ts` (`allowed`, `reconcile`, `dispatch`), `frontend/app/lib/consent.ts`; `backend/store/measurement/conversions.py` (`_capture` con `is True`, `_plan`, re-comprobación en `deliver`).
+Tests: `analytics-service.test.ts`, `consent-banner.test.tsx`; `test_measurement_conversions.ConsentTest`; E2E `analytics-consent`.
+Estado: VERIFICADO en `feat/analytics-marketing`.
+
+**MEAS-PRIVATE-01** — Un script de medición y una dirección privada nunca están en el mismo documento; los de marketing tampoco en una página con formulario de datos personales.
+Autoridad: `frontend/app/lib/analytics/privacy.ts` (`mayMeasure`), `service.ts` (`guardHistory`: `pushState`/`replaceState` envueltos, `popstate` en captura); `frontend/app/lib/payment-reference.ts`; `app/repairs/page.tsx` (enlace de seguimiento como `<a>`).
+Tests: `analytics-service.test.ts` («a loaded script never sees a private address»), `analytics-wiring.test.tsx`; E2E `analytics-consent` (navegación interna y botón Atrás).
+Estado: VERIFICADO.
+
+**MEAS-PURCHASE-01** — Una venta es una conversión por proveedor, nacida de la notificación firmada de la pasarela.
+Autoridad: `backend/store/views.py::_confirm` → `conversions.record_purchase` (punto de guardado) → `send_after_commit` (tras el correo, `robust`); `ConversionDelivery` única por pedido, proveedor y evento; `browser_purchase` sólo para un pedido pagado y durante una hora.
+Tests: `test_measurement_conversions` (OneSaleOneConversionTest, NeverInTheWayTest, RuntimeTest); E2E `analytics-consent`.
+Estado: VERIFICADO.
+
+**MEAS-BOUNDARY-01** — `gtag`, `fbq` y `ttq` existen sólo en `frontend/app/lib/analytics/adapters/`; las direcciones de los scripts y de las API son constantes del código; ningún ID viene de `NEXT_PUBLIC_*`.
+Autoridad: los tres adaptadores; `backend/store/measurement/adapters.py`; proveedores sin campos de URL.
+Tests: `analytics-boundaries.test.ts`; `test_measurement_providers.RegistryTest`.
+Estado: VERIFICADO.
+
 **INT-SECRET-01** — Un secreto de integración se escribe y no vuelve.
 Autoridad: `backend/store/integrations/secret_store.py` (Fernet, clave raíz `APP_CONFIG_ENCRYPTION_KEY`, fuera de la base), `service.py` (`_describe_row`: sólo `configured`, cuándo y quién; nada del secreto queda en claro; `_audit`: nombres de campos, nunca valores). `Resolved` no imprime sus secretos.
 Tests: `test_integrations_core` (SecretStoreTest, WriteOnlyApiTest, AuditTest), y en cada `test_integrations_<proveedor>` «no secret comes back»; `frontend/__tests__/integrations-console.test.tsx`; E2E `integrations-console`.
@@ -553,6 +573,12 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 | ID | Dominio | Motivo | Prioridad | Depende de |
 |---|---|---|---|---|
+| CSP-01 (agravada) | FRONTEND | sin `script-src`; desde esta fase hay tres scripts de terceros que se cargan con consentimiento. Decidir antes de activar un proveedor en producción; lista de dominios en `docs/analytics-marketing.md` §7 | Media | probar con el SDK de la pasarela real |
+| MEAS-FORM-PAGES | MEDICIÓN | Meta y TikTok no reciben `AddPaymentInfo` ni `CompleteRegistration`: no están en las páginas con formulario | Baja | decisión de privacidad |
+| MEAS-IP-UA | MEDICIÓN | IP y navegador van a Meta y TikTok con la compra, con consentimiento de marketing | Baja | confirmación del propietario |
+| MEAS-SERVER-EVENTS | MEDICIÓN | sólo la compra se envía desde el servidor | Baja | — |
+| MEAS-HARD-NAV | MEDICIÓN | entrar en una ruta privada o en el checkout con scripts cargados recarga la página | Baja | — |
+| MEAS-CONSENT-LOG | MEDICIÓN | sin registro de consentimientos en el servidor (sólo el del pedido) | Baja | requisito legal, si aparece |
 | PAY-TENANT-SCOPE | PAGOS | la pasarela es de la instalación: checkout, rutas de notificación y frontend asumen un comercio | Media | decisión de producto |
 | FISCAL-TENANT-SCOPE | FISCAL | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa | Media | certificado y credenciales reales |
 | PAY-SWITCH-PENDING | PAGOS | MITIGADO: apagar, revocar, cambiar de producto o de claves con cobros abiertos en la última hora exige escribir `INTERRUMPIR`; el cobro abierto sigue quedándose sin notificación | Media | PAY-RECONCILE |
@@ -618,6 +644,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 
 - **EXTERNAL-PRODUCTION-CONFIG-01**: PR #89, `master` `5da4e99`. `preflight.py`, correo por SMTP en el ensayo, restauración en servidor nuevo. NOT READY por datos del propietario.
 - **INTEGRATIONS-CONSOLE-01**: rama `feat/integrations-console` desde `5da4e99`. Panel › Configuración › Integraciones (sólo MASTER): almacén de secretos, registro de proveedores, API `/api/admin/integrations/`, y correo, Izipay, WhatsApp, Google y SUNAT leyendo su configuración en cada uso (consola → entorno). `ops_status` con integraciones; ensayo con la consola (paso 11c). Decisiones DEC-INT-01…07; invariantes INT-SECRET-01, INT-MASTER-01, INT-OFF-01, INT-ACTIVATE-01. Migración `0111`. Operación: `docs/integraciones-y-secretos.md`.
+- **ANALYTICS-MARKETING-INTEGRATIONS-01**: rama `feat/analytics-marketing` desde `643ba90`. Favicon con el isotipo; proveedores `google_analytics`, `meta`, `tiktok` sobre la consola de #90; `GET /api/measurement/config/`; aviso de cookies; servicio de analítica y tres adaptadores; compra como salida de conversiones (`ConversionDelivery`, migración `0112`), `send_pending_conversions`. Invariantes MEAS-CONSENT-01, MEAS-PRIVATE-01, MEAS-PURCHASE-01, MEAS-BOUNDARY-01. Decisiones DEC-MEAS-01…07. En este código «tracking» es el seguimiento de reparaciones: lo nuevo es `measurement` (backend) y `analytics` (frontend). Operación: `docs/analytics-marketing.md`. Backend 5654; Jest 933; Playwright 194/194. Grafo final con Graphify: deuda INT-IMPORT-CYCLE.
 
 ---
 

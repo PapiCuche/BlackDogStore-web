@@ -186,6 +186,88 @@ ADR por dominio, que no se reescriben.
   su clave de idempotencia: la que falla se reintenta sin duplicar y las demás no
   dependen de ella.
 
+### DEC-MEAS-01 · Quien visita decide, en el navegador y en el servidor
+
+Fase ANALYTICS-MARKETING-INTEGRATIONS-01. Operación: [docs/analytics-marketing.md](docs/analytics-marketing.md).
+
+- Dos categorías opcionales, apagadas hasta que alguien las enciende: **analítica**
+  (Google Analytics) y **marketing** (Meta, TikTok). Rechazar cuesta un clic, como aceptar.
+- La respuesta vive en el navegador (`localStorage`): es una preferencia del dispositivo
+  y tiene que poder leerse antes de iniciar sesión. No lleva ningún identificador.
+- **El servidor obedece la misma respuesta.** Viaja con el pedido al empezar a pagar y es
+  lo único que permite planificar una conversión. `is True`, no «algo que parezca sí».
+- No se guarda un registro de consentimientos en el servidor (MEAS-CONSENT-LOG): sólo el
+  del pedido, y se borra con él.
+
+### DEC-MEAS-02 · La tienda dice sus propios eventos; tres adaptadores traducen
+
+- Un vocabulario (`frontend/app/lib/analytics/events.ts`) cuyos tipos no tienen un campo
+  para una persona, un equipo o un token: lo que no cabe no se envía por descuido.
+- Un servicio (`service.ts`) es lo único a lo que hablan las páginas. `gtag`, `fbq` y
+  `ttq` existen sólo en `adapters/`; una prueba lee el código y falla si aparecen fuera.
+- Cada adaptador decide a qué evento del proveedor corresponde cada uno, o a ninguno. No
+  se inventan eventos para rellenar: Meta y TikTok no tienen «ver carrito».
+
+### DEC-MEAS-03 · La compra nace donde el pedido queda pagado, y es una fila
+
+- `ConversionDelivery`, única por pedido, proveedor y evento, escrita en la transacción de
+  `_confirm` bajo un punto de guardado propio: tan duradera como el pago, e incapaz de
+  deshacerlo. Se envía tras el commit; los reintentos llevan el mismo identificador.
+- El navegador emite su copia sólo cuando el servidor dice que el pedido está pagado, con
+  el identificador que le da el servidor. Donde el servidor la envía solo (GA4 con
+  secreto), el navegador no la envía.
+- **Por qué una tabla y no una tarea en memoria:** una conversión que se pierde si el
+  proceso muere, o que se repite si se reintenta a ciegas, es justo lo que hay que evitar.
+- `MeasurementContext` guarda lo mínimo y poco tiempo: nada sin consentimiento; IP y
+  navegador sólo con el de marketing; se borra al terminar o a los siete días.
+
+### DEC-MEAS-04 · En una dirección privada no hay ningún script
+
+El script de un proveedor lee `location.href` por su cuenta. Sanear lo que se le pasa no
+basta: la única protección de una dirección con token es que el script no esté.
+
+- En seguimiento, restablecer contraseña, verificar correo, invitación, pedidos,
+  reparaciones y el panel no se carga ni se envía nada, con el permiso dado y todo.
+- **Y un script ya cargado no llega a verlas.** Callar nuestros eventos no bastaba (lo
+  encontró la revisión de seguridad): el script lee la dirección solo. Desde que hay uno
+  cargado, la API de historial está envuelta: ir a una dirección que ese script no puede
+  ver se hace con una carga completa, tras decirle que pare. Cuesta una recarga.
+- Meta y TikTok tampoco están en las páginas con formulario de datos personales: sus
+  paneles pueden activar una lectura automática de campos que este código no puede apagar.
+- La referencia del pago salió de la dirección de la página de éxito (`sessionStorage`).
+- Desde «Mis reparaciones», el enlace de seguimiento es una navegación completa.
+- A Google se le dice una ruta; nunca los parámetros.
+
+### DEC-MEAS-05 · Un identificador público, ninguna dirección configurable
+
+- Cada proveedor tiene un ID que es tan público como una etiqueta `<script>`, y es lo
+  único que sale por `GET /api/measurement/config/`. Se construye con lo que el proveedor
+  DECLARA público (`runtime_public`), no filtrando la fila guardada.
+- De dónde se carga cada script y adónde van los eventos son constantes del código. Un
+  campo de URL en la consola dejaría a una sesión MASTER robada apuntar a los clientes de
+  la tienda a un script ajeno; un ID con la forma de su proveedor, no.
+- Nada de esto usa `NEXT_PUBLIC_*`: cambiar un ID no exige recompilar.
+
+### DEC-MEAS-06 · Una prueba nunca crea un evento real
+
+Con código de evento de prueba, Meta y TikTok se verifican por su canal de pruebas. Sin
+él, y en los modos «sólo píxel» y en GA4, el resultado es «Coherente, sin verificar»: el
+servidor de validación de Google dice de sí mismo que no comprueba el ID ni el secreto.
+
+### DEC-MEAS-07 · La CSP no se toca en esta fase
+
+La tienda no tiene `script-src` (CSP-01). Añadirla exige un *nonce* en cada script que
+emite Next y probarla con el SDK de la pasarela real, que no hay. Abrir una política
+laxa «para que funcionen los píxeles» sería peor que no tenerla. Queda la lista exacta
+de dominios en `docs/analytics-marketing.md` §7.
+
+### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
+
+El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay
+dos juegos y el navegador elige con `prefers-color-scheme`; no hay un tercero sin
+condición, que podría ganar a los otros dos. Sin fondo, sin letra y sin realce: a 16 px
+el realce rellenaba la cara y borraba las gafas. Es marca de plataforma, no de empresa.
+
 ### DEC-INT-01 · Los secretos de las integraciones van cifrados, con una clave que no está en la base
 
 Fase INTEGRATIONS-CONSOLE-01. Operación: [docs/integraciones-y-secretos.md](docs/integraciones-y-secretos.md).

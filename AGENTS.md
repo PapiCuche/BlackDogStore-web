@@ -89,7 +89,7 @@ Next dev no hidrata desde otro origen. Backend en `:8100` y `next dev` en `:3002
 no sirve: le falta el pedido pagado con factura y `fiscal-invoice` omite sus 9 pruebas. En la copia, y sólo
 en ella, se vacían las fotos de producto que apuntan a un host externo y se archivan las campañas publicadas
 (`next/image` rechaza un host que no está en `NEXT_PUBLIC_IMAGE_HOSTS` y la portada cae). Una prueba omitida
-no cuenta como verde: la pasada completa son 187 y 0 omitidas.
+no cuenta como verde: la pasada completa son 194 y 0 omitidas.
 Una pasada sólo vale si el equipo no se suspendió (`pmset -g log`), si no hubo login manual justo antes
 (límite 5/min) y si queda stock (cada pasada vende; reponer por `inventory-adjust`). Un fallo por límite de
 peticiones o stock se arregla aislando el test, no ignorando la pasada.
