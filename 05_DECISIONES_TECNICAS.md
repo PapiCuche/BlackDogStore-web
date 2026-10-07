@@ -284,10 +284,14 @@ de dominios en `docs/analytics-marketing.md` §7.
   una migración aplicada, y **una migración nueva que los borrase correría también en
   cada base de desarrollo y de pruebas**. Se retiran con `bootstrap_pilot_store`, que
   alguien ejecuta una vez sobre la base que va a ser la real.
-- **Todo o nada.** Sólo retira un producto que está exactamente como lo dejó la
-  migración, sin referencias y en una base sin actividad; si no, se niega y no cambia
-  nada. Las referencias se preguntan al modelo, no a una lista: una relación nueva
-  cuenta el día que existe.
+- **Todo o nada.** Retira los tres productos sólo si están los tres, exactamente como
+  los dejó la migración, sin referencias y en una base sin actividad; si no, se niega y
+  no cambia nada. Uno o dos de tres no es una base nueva ni una preparada: se niega. Las
+  referencias se preguntan al modelo, no a una lista: una relación nueva cuenta el día
+  que existe.
+- **Prepara un arranque, no mantiene una configuración.** Con la base ya en uso no
+  escribe nada, ni siquiera para reponer una categoría que la tienda quitó. Y no se
+  ejecuta con `DEBUG` activo: borra filas, y una base de desarrollo no es su sitio.
 - **Lo de la tienda piloto no es un valor por defecto de la plataforma.** Sus categorías
   y su campaña están ligadas a su slug; `company_provisioning`, que es de donde nace
   una empresa nueva, no copia catálogo.

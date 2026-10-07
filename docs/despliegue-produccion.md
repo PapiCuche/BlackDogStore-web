@@ -364,13 +364,17 @@ $C run --rm backend python manage.py bootstrap_pilot_store           # dice qué
 $C run --rm backend python manage.py bootstrap_pilot_store --apply   # lo hace
 ```
 
-- Retira un producto de ejemplo sólo si está **exactamente** como lo dejó la migración,
-  nada lo referencia y la base no se ha usado. Si alguien lo editó, movió su stock, lo
-  metió en un carrito o ya hay clientes o pedidos, **se niega y no cambia nada**: dice
-  qué encontró, y eso se revisa a mano.
+- Retira los productos de ejemplo sólo si están los tres, cada uno **exactamente** como
+  lo dejó la migración, nada los referencia y la base no se ha usado.
 - Deja a la tienda piloto con sus categorías aprobadas, en este orden: iPhone, Mac,
   iPad, Apple Watch, Accesorios. Las que existen no se tocan.
-- Se puede repetir: hecho una vez, no tiene nada que hacer.
+- **Se niega y no cambia nada** si quedan uno o dos de los tres productos, si alguien
+  editó uno, movió su stock o lo metió en un carrito, o si ya hay clientes, pedidos o
+  movimientos. Dice qué encontró, y eso se revisa a mano.
+- **No toca una tienda que ya funciona.** Hecho una vez, no tiene nada que hacer. Si
+  después la tienda quita una categoría, el comando no la repone: se niega.
+- **Sólo se ejecuta con `DEBUG=0`.** Con `DEBUG` activo se niega, también sin `--apply`:
+  no es un comando para una base de desarrollo.
 - No crea ningún usuario.
 - Es de la tienda piloto y de nadie más. Una empresa nueva no hereda sus categorías,
   su campaña ni ningún producto.

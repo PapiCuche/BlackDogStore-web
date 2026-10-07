@@ -32,6 +32,9 @@ existen, sin una línea de Kardex.
   actividad; si no, se niega y no cambia nada. Deja a la tienda piloto con sus cinco
   categorías aprobadas (iPhone, Mac, iPad, Apple Watch, Accesorios). Sin `--apply` sólo
   informa. Repetirlo no hace nada.
+- Tres guardas añadidas tras la revisión del propietario en el PR: se niega si quedan uno
+  o dos de los tres productos; no se ejecuta con `DEBUG` activo; y con la base ya en uso
+  no escribe nada, ni para reponer una categoría que la tienda quitó.
 - No es una migración: correría también en cada base de desarrollo y de pruebas.
 - Es de la tienda piloto: una empresa nueva no hereda categorías, campaña ni productos.
 - El ensayo mide la base recién migrada (paso 3b) y al primer administrador.
@@ -50,11 +53,11 @@ de producción y `/api/dev/demo-accounts/` responde 404 con `DEBUG=False`.
 | Medida | Resultado |
 |---|---|
 | Línea base, `master` `52a4ba3` (código de `a1d2a29`) | CI backend 5654, 0 fallos, 5 omitidas · ensayo 139 + 49 (CHECKPOINT 1B) |
-| Pruebas nuevas (`test_pilot_bootstrap`) | 17/17. Primero en rojo: el comando no existía |
-| Mutaciones | 9 reglas del comando rotas a propósito (referencias, actividad, edición, stock, empresa, simulación, orden, categoría ajena, escritura antes de negarse): las 9 detectadas |
-| Backend, suite completa en PostgreSQL | 5671 pruebas, 0 fallos, 5 omitidas |
+| Pruebas nuevas (`test_pilot_bootstrap`) | 25/25. Primero en rojo: las 17 iniciales porque el comando no existía; las 8 de las tres guardas, 7 fallaban contra el comando anterior |
+| Mutaciones | 11 reglas del comando rotas a propósito sobre la versión final (`DEBUG`, catálogo parcial, actividad sin productos, comprobación tras escribir, referencias, actividad, edición, stock, empresa, simulación, orden): las 11 detectadas |
+| Backend, suite completa en PostgreSQL, sobre `3b63400` | 5679 pruebas, 0 fallos, 5 omitidas |
 | `manage.py check` · `makemigrations --check` | sin incidencias · sin cambios: 0 migraciones nuevas |
-| Ensayo de producción (`sh deploy/rehearsal.sh`) | `ENSAYO: OK`, 149 comprobaciones (10 nuevas) y 49 pasos de navegador; no deja nada en el equipo |
+| Ensayo de producción (`sh deploy/rehearsal.sh`), sobre `3b63400` | `ENSAYO: OK`, 149 comprobaciones (10 nuevas) y 49 pasos de navegador; no deja nada en el equipo |
 | Base nueva, tras `bootstrap_pilot_store --apply` (ensayo, paso 3b) | `Product=0 \| BranchStock=0 \| StockMovement=0`; categorías: iPhone, Mac, iPad, Apple Watch, Accesorios; campaña publicada: 1; usuarios: 0 |
 | Segunda empresa (prueba) | 0 categorías, 0 campañas y 0 productos heredados; una con un producto del mismo slug lo conserva |
 | Primer administrador (ensayo, paso 6) | tras `createsuperuser`: 1 usuario, MASTER, 0 membresías, 0 cuentas de demostración |
