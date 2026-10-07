@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió tras el merge de #91, `021ad13`, con las decisiones del propietario del 2026-10-07)
+master: ver `git log -1 origin/master`; CHECKPOINT 1B ensayado sobre `a1d2a29` (#93), 2026-10-07.
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -12,23 +12,23 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-FIX-MEAS-LOG-TEST-01: corrección exclusiva del test de logs de conversiones en
-`fix/measurement-log-test`. Antes de mergear: CI backend completo sobre su HEAD exacto.
-Después: repetir CHECKPOINT 1B en el nuevo master (incluido ensayo y recuperación),
-y presentar Lightsail sólo si queda verde. El dominio del propietario es
-`blackdogstoreperu.com`; no crear recursos AWS sin su aprobación.
+CHECKPOINT 1B cerrado: **READY FOR CHECKPOINT 2** sobre `a1d2a29` (#93).
+FIX-MEAS-LOG-TEST-01 IMPLEMENTADO, CI completo verde sobre su HEAD exacto.
+Esperar aprobación explícita del plan Lightsail antes de crear cualquier recurso AWS.
+Dominio comprado: `blackdogstoreperu.com`. Ningún servidor creado ni tienda publicada.
+La preparación técnica está validada; no equivale a READY FOR PRODUCTION.
 
-NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
+Producción: NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
 cerrada: Google Analytics 4, Meta y TikTok se configuran en la consola (sólo MASTER), la
 tienda pide permiso antes de cargar nada de terceros y la compra se mide una vez, desde
 la confirmación del pago, en `master` desde #91. Ninguna integración se ha probado contra
 su servicio real. No iniciar SERIAL-PICK hasta que el propietario lo ordene.
-Sigue sin haber servidor, dominio, SMTP ni claves de Izipay. No hay nada publicado.
+Sigue sin haber servidor, SMTP ni claves de Izipay. El dominio ya está comprado; DNS pendiente. No hay nada publicado.
 
 current_priority:
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. El propietario contrata el servidor y el dominio. En el servidor:
+1. Con aprobación del propietario, crear el servidor del CHECKPOINT 2. El dominio ya está comprado. En el servidor:
    `cp deploy/.env.production.example deploy/.env.production`, rellenar lo de arranque
    (dominio, `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_CONFIG_ENCRYPTION_KEY`, dirección de
    los pedidos) y `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
@@ -48,6 +48,11 @@ current_priority:
 6. Primera fase tras publicar: SERIAL-PICK, cuando el propietario lo ordene.
 
 validated:
+- CHECKPOINT 1B en `a1d2a29`: backend relevante 445 (2 sandbox BLOCKED/CREDENTIALS),
+  frontend 933/933, typecheck/build correctos, lint 0 errores / 22 avisos; imágenes,
+  compose, preflight con datos sintéticos y ENSAYO COMPLETO 139, navegador, backup y
+  dos restores correctos; limpieza completa. CI #93: 5654, OK, 5 omitidas conocidas.
+- Escaneo del diff limpio; rama local del propietario preservada. Sin recursos AWS.
 - Sobre `62ed3b8` (el código de la fase, en `master` con #91; lo posterior es documentación): backend 5654
   pruebas, 0 fallos, 5 omitidas · Jest 933/933 · tipos limpio · lint 0 errores, 22 avisos ·
   build correcto · Playwright 194/194, 0 omitidas · `ENSAYO: OK` (139 + 49).

@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — CHECKPOINT 1B revalidado
+
+- #93 mergeado con CI backend verde en su HEAD exacto; test de error real y ausencia
+  de secretos, sin tocar código productivo.
+- Revalidado master `a1d2a29`: frontend 933, backend relevante 445 (2 sandbox sin
+  credenciales), tipos/lint/build, imágenes, compose y preflight de ensayo correctos.
+- Ensayo completo 139 comprobaciones, navegador, backup y dos restores: OK.
+- READY FOR CHECKPOINT 2, sólo tras aprobación para Lightsail; ningún recurso AWS.
+
 ## 2026-10-07 — FIX-MEAS-LOG-TEST-01
 
 - La prueba de logs de conversiones deja de depender de un INFO incidental de correo.
