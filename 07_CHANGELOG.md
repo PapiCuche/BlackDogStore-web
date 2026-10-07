@@ -23,6 +23,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   reales restaurada en una base desechable con recuentos idénticos.
 - Copia externa provisional al equipo del propietario cada noche; copia de
   `.env.production` en su llavero local.
+- `ENSAYO: OK` sobre `54b26ac`: 198 comprobaciones, 0 fallos.
 - Acceso por clave SSH dedicada del usuario `deploy`.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)

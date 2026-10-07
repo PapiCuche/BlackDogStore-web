@@ -14,7 +14,7 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 85% · BLOCKED/OWNER-DATA**. Servidor Lightsail
+CHECKPOINT 2 **PARCIAL · 90% · BLOCKED/OWNER-DATA**. Servidor Lightsail
 `blackdogstore-prod-01` (`sa-east-1a`), Static IP `54.94.236.23`. Código del servidor:
 `54b26ac` (#98, corrección de la consola de integraciones), árbol limpio.
 `https://blackdogstoreperu.com` responde: los cuatro contenedores en marcha, certificado
@@ -135,7 +135,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 
 next_exact_action:
 Propietario: cargar catálogo, existencias y fotos reales desde el panel; cuando Izipay
-entregue credenciales, escribir las de TEST en Integraciones › Pagos. Agente:
-`sh deploy/rehearsal.sh` sobre `54b26ac` hasta `ENSAYO: OK` y §11 de la guía; después,
-un pago completo en TEST. Antes de abrir a clientes: correo con dominio propio y copia
+entregue credenciales, escribir las de TEST en Integraciones › Pagos. Agente: §11 de
+la guía con el catálogo cargado; después, un pago completo en TEST. `ENSAYO: OK` sobre
+`54b26ac` (198 comprobaciones) ya hecho. Antes de abrir a clientes: correo con dominio propio y copia
 externa en almacenamiento de objetos.

@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-07 — CHECKPOINT 2: tienda desplegada con HTTPS, sin catálogo ni integraciones
 
-**PARCIAL · 85% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
+**PARCIAL · 90% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
 documentación: el servidor arrancó en `c5f8c935a8b16072a6424184fc814efbe1babaf1` y
 quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
@@ -85,11 +85,13 @@ quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 re
   Ese llavero es local: no se sincroniza con iCloud.
 - Izipay: el propietario aún no tiene credenciales; BLOCKED/CREDENTIALS, se omite por ahora.
   El catálogo y las existencias los carga él desde el panel.
+- `sh deploy/rehearsal.sh` sobre `54b26ac`, el commit desplegado: **`ENSAYO: OK`**, 198
+  comprobaciones, 0 fallos, 0 omitidas, incluidos 3b (base nueva), 19 (`restore.sh`) y 19b
+  (restauración en servidor nuevo); desmontaje completo.
 
-Pendiente: Izipay TEST en el panel, copia externa en almacenamiento de objetos, catálogo real, remitente con dominio propio, `rehearsal.sh` sobre
-`54b26ac` y §11 de la guía.
-85% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
-+ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10 + correo 5 + cron y restauración 5.
+Pendiente: Izipay TEST en el panel, copia externa en almacenamiento de objetos, catálogo real, remitente con dominio propio y §11 de la guía con el catálogo cargado.
+90% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10 + correo 5 + cron y restauración 5 + ensayo 5.
 No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE siguen PENDIENTES.
 
