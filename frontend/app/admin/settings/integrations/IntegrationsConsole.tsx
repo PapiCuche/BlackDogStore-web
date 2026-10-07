@@ -22,10 +22,18 @@ import {
 import { Button, ErrorNote, Pill, dateTime } from "../../service/components/ServiceUi";
 import { IntegrationEditor } from "./IntegrationEditor";
 
-const CATEGORY_LABELS: Record<string, string> = {
+/**
+ * The sections of the screen. A provider's `category` says what it IS; a section
+ * is where a master looks for it — and analytics and marketing are looked for
+ * together, because one consent notice governs both.
+ */
+const SECTION_OF: Record<string, string> = { analytics: "measurement", marketing: "measurement" };
+const SECTION_LABELS: Record<string, string> = {
   email: "Correo", payments: "Pagos", messaging: "Mensajería", identity: "Acceso", fiscal: "Facturación",
+  measurement: "Analítica y marketing",
 };
-const CATEGORY_ORDER = ["email", "payments", "messaging", "identity", "fiscal"];
+const SECTION_ORDER = ["email", "payments", "messaging", "identity", "fiscal", "measurement"];
+const sectionOf = (category: string) => SECTION_OF[category] ?? category;
 
 export const MASTER_NOTICE =
   "Estas credenciales controlan servicios externos de la empresa. Sólo usuarios MASTER pueden modificarlas.";
@@ -116,10 +124,11 @@ export function IntegrationsConsole() {
     return <IntegrationEditor id={selected.id} companyId={selected.companyId} onBack={() => setSelected(null)} />;
   }
 
-  const groups = CATEGORY_ORDER
-    .concat((items ?? []).map((item) => item.category).filter((c) => !CATEGORY_ORDER.includes(c)))
-    .filter((category, index, all) => all.indexOf(category) === index)
-    .map((category) => ({ category, members: (items ?? []).filter((item) => item.category === category) }))
+  const sections = (items ?? []).map((item) => sectionOf(item.category));
+  const groups = SECTION_ORDER
+    .concat(sections.filter((section) => !SECTION_ORDER.includes(section)))
+    .filter((section, index, all) => all.indexOf(section) === index)
+    .map((section) => ({ category: section, members: (items ?? []).filter((item) => sectionOf(item.category) === section) }))
     .filter((group) => group.members.length);
 
   return (
@@ -132,7 +141,7 @@ export function IntegrationsConsole() {
       {groups.map(({ category, members }) => (
         <section key={category} className="space-y-3">
           <h2 className="font-display text-base font-semibold tracking-wide text-foreground">
-            {CATEGORY_LABELS[category] ?? category}
+            {SECTION_LABELS[category] ?? category}
           </h2>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {members.map((item) => (isPerCompany(item) ? (

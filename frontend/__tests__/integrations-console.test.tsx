@@ -525,3 +525,21 @@ test('nothing of a stored secret is shown, not even how it ends', async () => {
   await open();
   expect(screen.queryByText(/termina en/)).toBeNull();
 });
+
+// -- ANALYTICS-MARKETING -----------------------------------------------------------
+
+test('Google Analytics, Meta and TikTok are found together, under «Analítica y marketing»', async () => {
+  current.google_analytics = integration({ id: 'google_analytics', label: 'Google Analytics 4', category: 'analytics' });
+  current.meta = integration({ id: 'meta', label: 'Meta', category: 'marketing', state: 'ACTIVE', source: 'panel',
+                               active: row({ validated: true, last_test_status: 'unverified', last_tested_at: '2026-10-06T11:00:00Z' }) });
+  current.tiktok = integration({ id: 'tiktok', label: 'TikTok', category: 'marketing' });
+  render(<IntegrationsConsole />);
+
+  const section = (await screen.findByRole('heading', { name: 'Analítica y marketing' })).closest('section') as HTMLElement;
+  expect(within(section).getAllByRole('article').map((card) => card.getAttribute('aria-label')))
+    .toEqual(['Google Analytics 4', 'Meta', 'TikTok']);
+  expect(screen.queryByRole('heading', { name: 'analytics' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'marketing' })).toBeNull();
+  // A pixel that nothing could verify is said so on its card, not shown as «Correcto».
+  expect(within(within(section).getByRole('article', { name: 'Meta' })).getByText(/Última prueba: Coherente, sin verificar/)).toBeInTheDocument();
+});

@@ -10,6 +10,8 @@ import {
 } from "./components/StorefrontChrome";
 import { StorefrontProvider } from "./components/StorefrontProvider";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "./components/ThemeProvider";
+import { AnalyticsProvider } from "./components/AnalyticsProvider";
+import { ConsentBanner } from "./components/ConsentBanner";
 import { PLATFORM_ICONS } from "./lib/platform-icons";
 import { brandingStyle, fetchStorefrontConfig } from "./lib/storefront";
 
@@ -123,6 +125,10 @@ export default async function RootLayout({
           */}
           <StorefrontContent>{children}</StorefrontContent>
           <StorefrontFooter />
+          {/* Qué se mide lo decide quien visita: sin respuesta no se carga nada
+              de terceros. Ninguno de los dos pinta nada en el servidor. */}
+          <AnalyticsProvider />
+          <ConsentBanner />
           <WhatsAppButton />
         </StorefrontProvider>
         </ThemeProvider>

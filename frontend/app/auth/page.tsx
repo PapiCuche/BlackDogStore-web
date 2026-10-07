@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { track } from "../lib/analytics/service";
 import { BrandLogo } from "../components/BrandLogo";
 import { GoogleSignIn } from "../components/GoogleSignIn";
 import { useStorefront } from "../components/StorefrontProvider";
@@ -63,12 +64,14 @@ export default function AuthPage() {
       if (isLogin) {
         const data = await login(username, password);
         setUser(data.user);
+        track({ name: "LOGIN", method: "password" });
         setSuccess("Inicio de sesión correcto.");
         forgetInternalAccess();
         window.dispatchEvent(new Event("authChange"));
         router.push(await destinationAfterLogin());
       } else {
         const result = await register({ username, email, password, password_confirm: passwordConfirm });
+        track({ name: "SIGN_UP", method: "password" });
         if (result.requires_verification) {
           setSuccess("Registro completado. Revisa tu correo para verificar tu cuenta antes de iniciar sesión.");
         } else {
@@ -82,6 +85,7 @@ export default function AuthPage() {
   }
 
   async function handleGoogleSignedIn(signedIn: AuthUser) {
+    track({ name: "LOGIN", method: "google" });
     // La sesión ya está en sus cookies; desde aquí es un inicio como cualquiera.
     setUser(signedIn);
     setError(null);
