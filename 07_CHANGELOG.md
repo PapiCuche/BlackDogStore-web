@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — Cierre de ANALYTICS-MARKETING-INTEGRATIONS-01
+
+- La fase está en `master`: PR #91, merge `021ad13`. Sin despliegue.
+- **Decidido por el propietario** (DEC-MEAS-08): CSP-01 es condición para activar un
+  proveedor en producción y no se implanta con una lista especulativa; la IP y el
+  navegador se envían a Meta y TikTok sólo bajo consentimiento de marketing (MEAS-IP-UA,
+  aprobado); la coincidencia avanzada automática sigue desactivada; los dos ciclos de
+  imports de la fase se corrigen en la microfase INT-IMPORT-CYCLE-01.
+- Pendiente nuevo: MEAS-PRIVACY-NOTICE, decir en la política de privacidad y cookies lo
+  que se envía a Meta y TikTok, antes de producción.
+- `docs/CODEBASE_MAP.md` incorpora la consola de integraciones (#90) y la medición (#91).
+
 ## 2026-10-06 — ANALYTICS-MARKETING-INTEGRATIONS-01
 
 **Added**

@@ -5,7 +5,8 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-06 — ANALYTICS-MARKETING-INTEGRATIONS-01: medir, con permiso y una sola vez
 
-Rama `feat/analytics-marketing`, desde `master` `643ba90` (merge de #90). Una migración
+En `master` desde el 2026-10-07: PR #91, merge `021ad13` (rama `feat/analytics-marketing`,
+desde `643ba90`, merge de #90). Una migración
 (`0112_measurement_conversions`). Operación:
 [docs/analytics-marketing.md](docs/analytics-marketing.md). Decisiones: DEC-MEAS-01 a 07 y
 DEC-BRAND-ICON-01. Nada está publicado en Internet.
@@ -31,6 +32,20 @@ implementadas y probadas con respuestas simuladas; ninguna contra su servicio re
 | ECOMMERCE TRACKING | IMPLEMENTADO; Meta y TikTok sin `AddPaymentInfo` ni `CompleteRegistration` por decisión de privacidad |
 | PURCHASE DEDUP | IMPLEMENTADO |
 | CSP | PENDIENTE (CSP-01): auditada, no implantada; lista de dominios en `docs/analytics-marketing.md` §7 |
+
+**Decisiones del propietario al cerrar (2026-10-07)**, en DEC-MEAS-08:
+
+| | Clasificación |
+|---|---|
+| ANALYTICS-MARKETING-INTEGRATIONS-01 | IMPLEMENTADO |
+| Validación real de GA4 | BLOCKED/CREDENTIALS |
+| Validación real de Meta | BLOCKED/CREDENTIALS |
+| Validación real de TikTok | BLOCKED/CREDENTIALS |
+| CSP-01 | PENDIENTE / BLOQUEANTE PARA ACTIVACIÓN EN PRODUCCIÓN. Sin lista especulativa: se cierra validando los dominios reales de la pasarela y de los SDK |
+| INT-IMPORT-CYCLE | PENDIENTE / DEUDA TÉCNICA. Se corrige en una microfase propia, INT-IMPORT-CYCLE-01, no en esta fase |
+| MEAS-IP-UA | APROBADO BAJO CONSENTIMIENTO MARKETING. Falta decirlo en la política de privacidad y cookies antes de producción (MEAS-PRIVACY-NOTICE) |
+| Coincidencia avanzada automática | DESACTIVADA, en el código y en los paneles de Meta y TikTok |
+| Producción | NO DESPLEGADA |
 
 **Línea base, sobre `master` `643ba90`** (mismo árbol de código que `2a5632d`): backend
 5581 pruebas, 0 fallos, 5 omitidas (también en CI) · Jest 830 · Playwright 187 · lint 0

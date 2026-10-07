@@ -244,8 +244,10 @@ Cómo se sostiene:
 
 **Lo que sí se envía de quien compra, con su permiso de marketing:** la dirección IP y el
 navegador, a Meta y a TikTok, junto a la compra. Sus API de servidor los usan para
-atribuirla y no son «coincidencia avanzada» (no hay correo ni teléfono). Si el
-propietario prefiere no enviarlos, es un cambio de dos líneas y una decisión suya.
+atribuirla y no son «coincidencia avanzada» (no hay correo ni teléfono). El propietario
+lo aprobó el 2026-10-07, sólo bajo consentimiento de marketing (DEC-MEAS-08). Antes de
+producción, la política de privacidad y cookies de la tienda tiene que decirlo
+(MEAS-PRIVACY-NOTICE).
 
 **Límite conocido.** En una ruta normal, los píxeles de Meta y TikTok envían la dirección
 completa de la página. Los parámetros de una campaña (`utm_…`) viajan, como es habitual.
@@ -275,8 +277,11 @@ se carga ninguno sin consentimiento, ninguno en rutas privadas, y los de marketi
 en las páginas con formulario. Las cookies de sesión son `HttpOnly` y no las ven. **La
 revisión de seguridad recomienda implantar la política antes de activar un proveedor en
 producción**; no se hizo aquí porque exige probarla con el SDK de la pasarela real, que
-carga sus propios scripts antifraude, y no hay con qué. Activar un proveedor sin ella es
-una decisión del propietario.
+carga sus propios scripts antifraude, y no hay con qué.
+
+**Decisión del propietario (2026-10-07): CSP-01 es obligatoria antes de activar un
+proveedor en producción.** No se implanta una lista especulativa: se cierra cuando puedan
+validarse los dominios reales de producción, los de la pasarela y los de los SDK.
 
 ## 8. Rendimiento
 
@@ -294,13 +299,18 @@ una vez por ruta, aunque el componente se vuelva a pintar.
 | TikTok Pixel · Events API (compra) | IMPLEMENTADO · validación real BLOCKED/CREDENTIALS |
 | Eventos de comercio | IMPLEMENTADO |
 | Compra única e idempotente | IMPLEMENTADO |
-| CSP (`script-src`) | PENDIENTE (CSP-01) |
-| Coincidencia avanzada · eventos de servicio técnico | PROPUESTA |
+| CSP (`script-src`) | PENDIENTE (CSP-01) · bloqueante para activar un proveedor en producción |
+| IP y navegador a Meta y TikTok | APROBADO, sólo bajo consentimiento de marketing |
+| Coincidencia avanzada automática | DESACTIVADA |
+| Eventos de servicio técnico | PROPUESTA |
 
 Ninguno de los tres se ha probado contra su servicio real: no hay credenciales. Los
 contratos están tomados de la documentación oficial y probados con respuestas simuladas.
 Cuando el MASTER los cargue:
 
+0. Antes, en producción: CSP-01 implantada y la política de privacidad y cookies al día
+   (MEAS-PRIVACY-NOTICE). En los paneles de Meta y TikTok, coincidencia avanzada
+   automática apagada.
 1. Guardar, probar (con código de evento de prueba en Meta y TikTok) y activar.
 2. Visitar la tienda aceptando las cookies y comprobar en la pantalla de tiempo real o de
    eventos de prueba de cada proveedor que llegan las vistas.
@@ -311,16 +321,17 @@ Deuda:
 
 | ID | Qué |
 |---|---|
-| CSP-01 | sin política de scripts; la lista de dominios está en §7 |
+| CSP-01 | sin política de scripts; bloqueante para activar un proveedor en producción; la lista de dominios de partida está en §7 |
 | MEAS-SERVER-EVENTS | sólo la compra se envía desde el servidor; el resto, sólo desde el navegador |
 | MEAS-GA-HISTORY | Google cuenta cada vista dos veces si «eventos del historial» sigue activo en su panel (§3.1) |
 | MEAS-PIXEL-URL | los píxeles envían la dirección completa de las rutas no privadas (§6) |
 | MEAS-FORM-PAGES | Meta y TikTok no reciben `AddPaymentInfo` ni `CompleteRegistration`: no están en las páginas con formulario |
-| MEAS-IP-UA | la IP y el navegador se envían a Meta y TikTok con la compra, con consentimiento de marketing: pendiente de que el propietario lo confirme |
+| MEAS-IP-UA | la IP y el navegador se envían a Meta y TikTok con la compra, con consentimiento de marketing: aprobado por el propietario el 2026-10-07 |
+| MEAS-PRIVACY-NOTICE | la política de privacidad y cookies de la tienda (su dirección la configura cada tienda) aún no dice qué se envía a Meta y TikTok; pendiente antes de producción |
 | MEAS-HARD-NAV | entrar en una ruta privada o en el checkout con scripts cargados recarga la página: es el precio de que no la vean |
 | MEAS-CONSENT-LOG | no se guarda un registro de consentimientos en el servidor, sólo el del pedido |
 | MEAS-TENANT-SCOPE | una configuración para toda la instalación, no por empresa |
-| INT-IMPORT-CYCLE | `providers/measurement.py` y `store/measurement/__init__.py` se importan entre sí a través del paquete `integrations`, con un import diferido: el mismo patrón que los proveedores de #90. No falla al cargar; se resuelve sacando `public_config` a un módulo propio |
+| INT-IMPORT-CYCLE | `providers/measurement.py` y `store/measurement/__init__.py` se importan entre sí a través del paquete `integrations`, con un import diferido: el mismo patrón que los proveedores de #90. No falla al cargar. Se corrige en la microfase INT-IMPORT-CYCLE-01 |
 
 ## 10. Para quien toque el código
 

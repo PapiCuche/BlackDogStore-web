@@ -261,6 +261,21 @@ emite Next y probarla con el SDK de la pasarela real, que no hay. Abrir una pol�
 laxa «para que funcionen los píxeles» sería peor que no tenerla. Queda la lista exacta
 de dominios en `docs/analytics-marketing.md` §7.
 
+### DEC-MEAS-08 · Lo que el propietario decidió al cerrar la fase (2026-10-07)
+
+- **CSP-01 es obligatoria antes de activar un proveedor de analítica o marketing en
+  producción.** No se escribe una lista de dominios por adelantado: la política se cierra
+  cuando puedan validarse los dominios reales, sobre todo los de la pasarela y los que
+  cargan de verdad los SDK.
+- **La IP y el navegador van a la API de conversiones de Meta y a Events API de TikTok**,
+  sólo con eventos cubiertos por el consentimiento de marketing. Sin ese consentimiento
+  no se envían. La minimización de `MeasurementContext` no cambia. Antes de producción,
+  la política de privacidad y cookies de la tienda tiene que decirlo (MEAS-PRIVACY-NOTICE).
+- **La coincidencia avanzada automática sigue desactivada** en Meta y TikTok.
+- **Los dos ciclos de imports de la fase (INT-IMPORT-CYCLE) se corrigen aparte**, en la
+  microfase INT-IMPORT-CYCLE-01, para no alterar la línea base ni la regresión de una
+  fase ya cerrada.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay

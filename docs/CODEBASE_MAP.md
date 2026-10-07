@@ -22,6 +22,8 @@ Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.
 | Carga masiva con imágenes | `import_media.py` (lote y ZIP), `import_services.py` | `images` e `images_zip` en `/api/admin/products/import/preview/` | ZIP sin extraer; imágenes en espera = sin colocar, de la empresa del trabajo |
 | Imágenes de la tienda | `storefront_media.py`, `storefront_media_views.py`, modelo `StorefrontImage` | `POST /api/admin/storefront/images/`, `GET /api/storefront/images/<id>` | Públicas; el decodificador decide el tipo; comparten almacén con evidencias, no autorización |
 | Pagos (Izipay) | `payments/izipay.py`, `checkout_services.py`, `views.py` (`IzipayNotificationView`), `payments/fake_izipay.py` (sólo pruebas) | `/api/payments/create-checkout-session/`, `/api/payments/izipay/notification/` | Sólo la notificación firmada paga un pedido; importe, moneda y comercio contra la base |
+| Integraciones (consola) | `integrations/` (`registry.py`, `service.py`, `secret_store.py`, `health.py`, `mail.py`, `payments.py`, `providers/`), `integration_views.py` | `/api/admin/integrations/` (lista, detalle, `draft/`, acciones) | Sólo MASTER (`IsPlatformAdmin`); secretos cifrados con `APP_CONFIG_ENCRYPTION_KEY`, nunca en una respuesta |
+| Medición (analítica y marketing) | `integrations/providers/measurement.py`, `measurement/` (`adapters.py`, `conversions.py`), `measurement_views.py`, `management/commands/send_pending_conversions.py`, modelos `MeasurementContext` y `ConversionDelivery` | `GET /api/measurement/config/` (público, sólo identificadores) | El consentimiento del pedido gobierna el envío; la compra nace en la confirmación del pago; nada privado sale |
 | Impresión en tienda | `printing/services.py`, `printing/escpos.py`, `print_views.py`, `fiscal_logo.py`, `backend/print_agent/` | `/api/admin/printing/{printers,agents,jobs}/`, `/api/v1/print-agent/jobs/…` | Todo por sucursal; token de agente por local; direcciones sólo de red local |
 | Fiscal (SUNAT) | `fiscal/`, `fiscal_*` | emisión, notas, bajas, resúmenes | Apagado por defecto (`FISCAL_ENABLED=0`) |
 | Configuración | `backend/backend/settings.py`, `urls.py` | variables en `.env.example` | Falla cerrado con `DEBUG=0`; sin admin de Django |
@@ -33,9 +35,10 @@ Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.
 | Armazón de tienda | `layout.tsx`, `components/StorefrontChrome.tsx`, `StorefrontProvider.tsx`, `ThemeProvider.tsx`, `Header.tsx`, `Footer.tsx`, `BrandLogo.tsx` | `shop-surface` / `internal-surface`; logo por contraste |
 | Portada | `page.tsx`, `components/Hero.tsx`, `ProductCarousel.tsx`, `lib/storefront.ts`, `lib/storefront-media.ts`, `lib/catalog-categories.ts` | Todo desde `useStorefront()`; hero `dark`/`light` por tienda |
 | Comercio | `product/`, `cart/`, `checkout/`, `orders/`, `lib/cart.ts`, `lib/payments.ts` | Carrito anónimo por clave aleatoria; Izipay por SDK |
+| Analítica y consentimiento | `lib/consent.ts`, `components/ConsentBanner.tsx`, `components/AnalyticsProvider.tsx`, `lib/analytics/` (`service.ts`, `events.ts`, `privacy.ts`, `items.ts`, `adapters/`) | `gtag`, `fbq` y `ttq` sólo en `adapters/`; ningún script sin consentimiento ni en rutas privadas |
 | Sesión | `auth/`, `invitacion/`, `lib/auth.ts`, `lib/api.ts`, `api/[...path]/route.ts` | `fetchWithAuth`; proxy con tope de cuerpo y redirecciones propias |
 | Panel | `admin/components/` (`AdminShell`, `InternalSidebar`, `InternalTopbar`, `AccessGuard`, `ImageUploadField`), `admin/lib/` (`internal-api.ts`, `internal-modules.ts`, `internal-access.ts`, `branch-authority.ts`) | Menú y botones siguen capacidades |
-| Panel · pantallas | `admin/{products,inventory,sales,customers,service,settings,staff,users,roles,orders,...}/` | Escaparate: `admin/settings/storefront/` |
+| Panel · pantallas | `admin/{products,inventory,sales,customers,service,settings,staff,users,roles,orders,...}/` | Escaparate: `admin/settings/storefront/`; integraciones (sólo MASTER): `admin/settings/integrations/` |
 | Cabeceras | `next.config.ts` | `frame-ancestors`, `no-referrer` en páginas con token |
 
 ## Infraestructura
@@ -43,7 +46,7 @@ Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.
 | Pieza | Archivos | Notas |
 |---|---|---|
 | CI | `.github/workflows/frontend-uxui-validation.yml`, `backend-postgres-validation.yml` | Filtros por ruta; backend ~70 min |
-| Producción | `backend/Dockerfile.prod`, `frontend/Dockerfile.prod`, `docker-compose.prod.yml`, `deploy/` | En la rama `deploy/production-vps` hasta que entre el PR de despliegue |
+| Producción | `backend/Dockerfile.prod`, `frontend/Dockerfile.prod`, `docker-compose.prod.yml`, `deploy/` | `sh deploy/rehearsal.sh` ensaya la pila completa; `deploy/preflight.py` revisa el archivo de variables |
 | Almacenamiento | `evidence_storage.py` (`filesystem` o `s3`) | Evidencias y `companies/<id>/storefront/` en el mismo almacén |
 | Datos locales | `backend/private-media/`, `*.sqlite3`, `.env` | Ignorados por git; nunca se versionan |
 
