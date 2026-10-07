@@ -5,10 +5,11 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-07 — CHECKPOINT 2: base desplegada en red interna, sin tráfico público
 
-**PARCIAL · 60% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
+**PARCIAL · 65% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
 documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
-árbol limpio. Sin cambios de código. `GO DNS` y la apertura pública siguen pendientes.
+árbol limpio. Sin cambios de código. `GO DNS` recibido y aplicado; la apertura pública
+sigue pendiente.
 
 - Acceso: clave SSH dedicada para `deploy`, instalada por el propietario desde el SSH
   del navegador de Lightsail; la mitad privada vive sólo en su equipo. Firewall de AWS
@@ -35,12 +36,17 @@ documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
 
 - MASTER creado por el propietario con `createsuperuser` desde su terminal: 1 usuario,
   `is_superuser`, activo, sin membresía (`Membership=0`). La contraseña no pasó por el chat.
+- `GO DNS` del propietario, sobre la tabla antes/después. Antes: zona con 0 registros.
+  Después: A `blackdogstoreperu.com` y A `www` hacia `54.94.236.23`, DNS only, TTL Auto,
+  creados desde el panel de Cloudflare con la sesión del propietario. Nameservers y proxy
+  sin cambios; ningún otro registro. Resuelven en los nameservers de Cloudflare, 1.1.1.1 y
+  8.8.8.8; sin AAAA. `preflight.py --dns --server-ip`: OK los dos. 80/443 siguen cerrados.
 
-Pendiente: `GO DNS`, apertura de
+Pendiente: apertura de
 80/443, Caddy y certificado, SMTP e Izipay TEST en el panel, cron, copia externa,
 restauración, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
-60% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
-+ MASTER 5.
+65% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5 + DNS 5.
 No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE siguen PENDIENTES.
 

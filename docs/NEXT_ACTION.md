@@ -14,7 +14,7 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 60% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
+CHECKPOINT 2 **PARCIAL · 65% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
 `blackdogstore-prod-01` (`sa-east-1a`, 4 GB, 2 vCPU, 80 GB), Static IP `54.94.236.23`.
 Código del servidor: `c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
 Preflight `SUFICIENTE PARA ARRANCAR`. Imágenes construidas; PostgreSQL vacío + 154
@@ -26,8 +26,8 @@ ningún puerto publicado; 80/443 cerrados en AWS. MASTER creado por el propietar
 restauración sin ensayar en el servidor. Acceso: `ssh deploy@54.94.236.23` con la
 clave dedicada del equipo del propietario (`~/.ssh/blackdogstore_prod_ed25519`);
 `deploy` no tiene sudo.
-`GO DNS` pendiente: zona sin registros; propuesta A @ y A www hacia la Static IP,
-DNS only, TTL Auto; nameservers sin cambios.
+`GO DNS` aplicado: A @ y A www hacia la Static IP, DNS only, TTL Auto; resuelven en
+resolvedores públicos; nameservers sin cambios. Apertura de 80/443: sin autorizar.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
 INT-IMPORT-CYCLE-01; no tocar #80/#85.
@@ -41,7 +41,7 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. MASTER creado. Falta, en orden: `GO DNS`, autorización
+1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. MASTER creado y DNS aplicado. Falta, en orden: autorización
    para abrir 80/443, `up -d caddy` y §4.5. No arrancar Caddy antes de que el DNS
    responda: Let's Encrypt limita los intentos fallidos.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
@@ -80,8 +80,7 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
 - SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
-- DNS: GO DNS independiente para A @ y A www hacia 54.94.236.23, DNS only.
-  Servidor y acceso AWS ya disponibles; dominio gestionado por Cloudflare.
+- Apertura de 80/443 en el firewall de Lightsail: orden separada del propietario.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
@@ -135,7 +134,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: decidir `GO DNS` sobre la tabla antes/después (A @ y A www hacia
-54.94.236.23, DNS only, TTL Auto) y, aparte, la apertura de 80/443. Con ambas: esperar
-a que el DNS responda, arrancar Caddy, §4.5, SMTP e Izipay TEST en el panel MASTER,
-cron, ensayar la restauración y `sh deploy/rehearsal.sh` sobre el commit publicado.
+Propietario: autorizar (o no) abrir 80/443 en el firewall de Lightsail. Sin eso Caddy no
+obtiene certificado. Con la autorización: abrir puertos, `up -d caddy`, §4.5, SMTP e
+Izipay TEST en el panel MASTER, cron, ensayar la restauración y `sh deploy/rehearsal.sh`
+sobre el commit publicado.

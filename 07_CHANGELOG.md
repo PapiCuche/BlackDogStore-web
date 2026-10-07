@@ -13,6 +13,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - `backend` y `frontend` en marcha y sanos sólo en la red interna. Caddy sin arrancar,
   80/443 cerrados, DNS sin tocar. Primera copia local hecha; restauración pendiente.
 - MASTER creado por el propietario con `createsuperuser`, sin membresía.
+- Con `GO DNS`: A `@` y A `www` hacia `54.94.236.23`, DNS only, TTL Auto. Verificados.
 - Acceso por clave SSH dedicada del usuario `deploy`. Sin cambios de código.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)
