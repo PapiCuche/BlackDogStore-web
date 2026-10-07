@@ -7,8 +7,8 @@ documentación real, sin reemplazar su historial.
 
 **PARCIAL · 75% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
-documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
-árbol limpio. Sin cambios de código. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
+documentación: el servidor arrancó en `c5f8c935a8b16072a6424184fc814efbe1babaf1` y
+quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
 
 - Acceso: clave SSH dedicada para `deploy`, instalada por el propietario desde el SSH
   del navegador de Lightsail; la mitad privada vive sólo en su equipo. Firewall de AWS
@@ -50,6 +50,18 @@ documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
   desde internet: 22 (sólo la IP administrativa), 80 y 443; 5432, 8000, 3000 y 2019 cerrados.
 - La tienda es visible para cualquiera con el dominio: sin catálogo, sin correo y sin
   pagos. No se ha anunciado ni se ha abierto a clientes.
+- **Defecto encontrado al usar el panel (INT-PLATFORM-COMPANY, corregido en #98).** Con la
+  cuenta MASTER, Integraciones › Correo SMTP › Configurar respondía «Esta integración es de
+  la plataforma: no lleva empresa.» `fetchWithAuth` añadía la empresa elegida en el panel
+  a toda llamada bajo `/admin/`, y la API de integraciones rechaza ese parámetro en los
+  proveedores de plataforma. Las pruebas de la consola simulaban `fetchWithAuth` y no lo
+  veían. Corrección sólo de frontend: `withSelectedCompany` no toca `/admin/integrations/`.
+  Prueba nueva con el `fetchWithAuth` real, RED antes y GREEN después; Jest 936/936, tipos
+  limpio, lint 0 errores y 22 avisos; CI verde. Merge ordenado por el propietario:
+  `54b26ac15767f35eb74ccf6e98b9f176579019dc`.
+- Servidor actualizado a `54b26ac`: sólo se reconstruyó y reinició `frontend`; sin
+  migraciones. Los cuatro contenedores en marcha; portada, `/auth` y API 200. Falta que el
+  propietario confirme en el panel que el editor abre.
 
 Pendiente: SMTP e Izipay TEST en el panel (datos del propietario), cron, copia externa,
 restauración ensayada, `rehearsal.sh` sobre el commit publicado y §11 de la guía.

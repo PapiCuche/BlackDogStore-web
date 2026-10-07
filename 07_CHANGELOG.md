@@ -16,7 +16,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Con orden del propietario: 80/443 abiertos en Lightsail, Caddy en marcha con
   certificado de Let's Encrypt, comprobaciones de §4.5 correctas. Sin catálogo, correo
   ni pagos; no abierta a clientes.
-- Acceso por clave SSH dedicada del usuario `deploy`. Sin cambios de código.
+- **Fixed** (#98): la consola de integraciones enviaba la empresa del panel a los
+  proveedores de plataforma y el servidor la rechazaba; un MASTER no podía configurar
+  correo ni pagos. Servidor actualizado a `54b26ac`, sólo `frontend`.
+- Acceso por clave SSH dedicada del usuario `deploy`.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)
 

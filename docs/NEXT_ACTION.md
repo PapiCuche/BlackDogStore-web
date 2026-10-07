@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: baseline del servidor `c5f8c935a8b16072a6424184fc814efbe1babaf1` (#95), 2026-10-07.
+master: código del servidor `54b26ac15767f35eb74ccf6e98b9f176579019dc` (#98), 2026-10-07.
 Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
 actualizan automáticamente la copia desplegable del servidor.
 
@@ -16,7 +16,7 @@ open_prs:
 current_phase:
 CHECKPOINT 2 **PARCIAL · 75% · BLOCKED/OWNER-DATA**. Servidor Lightsail
 `blackdogstore-prod-01` (`sa-east-1a`), Static IP `54.94.236.23`. Código del servidor:
-`c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
+`54b26ac` (#98, corrección de la consola de integraciones), árbol limpio.
 `https://blackdogstoreperu.com` responde: los cuatro contenedores en marcha, certificado
 de Let's Encrypt, §4.5 correcta. Base nacida de PostgreSQL vacío + 154 migraciones +
 `bootstrap_pilot_store --apply`: 0 productos, cinco categorías, campaña publicada.
@@ -134,4 +134,4 @@ next_exact_action:
 Propietario, con la cuenta MASTER en `https://blackdogstoreperu.com/auth`: Configuración ›
 Integraciones › Correo SMTP (guardar, probar, activar) y Pagos (producto de Izipay y
 claves de TEST). Agente, sin esperar: instalar el cron de §6.1.0, ensayar la restauración
-de la copia fuera de la base en uso y repetir `sh deploy/rehearsal.sh` sobre `c5f8c93`.
+de la copia fuera de la base en uso y repetir `sh deploy/rehearsal.sh` sobre `54b26ac`.
