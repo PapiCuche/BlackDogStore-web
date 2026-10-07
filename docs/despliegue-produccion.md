@@ -359,8 +359,9 @@ completa. Si una parte falla, el guion termina con error y no toca
 
 ### 6.1.0 Las tareas programadas, de una vez
 
-`deploy/crontab.example` trae las cinco líneas de esta sección —copia, sesiones,
-imágenes sin uso, avisos de WhatsApp y comprobación de estado—. Para instalarlas
+`deploy/crontab.example` trae las seis líneas de esta sección —copia, sesiones,
+imágenes sin uso, avisos de WhatsApp, conversiones de compra y comprobación de
+estado—. Para instalarlas
 en el `crontab` del usuario que administra el servidor:
 
 ```sh
@@ -433,6 +434,22 @@ Es seguro ejecutarla dos veces a la vez y nunca envía un mensaje dos veces. Con
 enviar y la tarea no hace falta. Cómo se enlazan las credenciales de cada empresa
 y qué registra en Meta: [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §4.1.
 
+### 6.1.3b Conversiones de compra pendientes
+
+Si un usuario MASTER activó Google Analytics, Meta o TikTok con envío desde el
+servidor ([analytics-marketing.md](analytics-marketing.md)), cada compra confirmada
+se envía a esos proveedores nada más confirmarse el pago. Lo que no aceptaron
+entonces —estaban caídos, o el proceso se interrumpió— lo reenvía esta tarea, cada
+cinco minutos:
+
+```
+*/5 * * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py send_pending_conversions >> backups/send_pending_conversions.log 2>&1
+```
+
+Es seguro ejecutarla dos veces a la vez y nunca cuenta una venta dos veces: cada
+reintento lleva el mismo identificador. Sin ninguna de esas integraciones activa
+no hay nada que enviar. Un fallo aquí no afecta a ningún pedido.
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
@@ -454,6 +471,7 @@ sólo mira.
 | WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
 | Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
 | La tienda no puede enviar correo, o no puede cobrar | Sin correo activo (ni en el panel ni en el entorno); sin pasarela activa o sin sus credenciales completas |
+| Las conversiones de compra no salen | Tres o más sin enviar en 24 h y ninguna enviada, o alguna esperando más de 30 minutos. Una suelta es una nota |
 | Lo configurado en el panel no se puede leer | Falta la clave raíz, o no es la que cifró lo guardado |
 | Una integración activa dejó de pasar su prueba | El resultado de la última «Probar la configuración en uso» |
 | Las copias dejaron de hacerse | `backups/LAST_OK` con más de 26 horas |
@@ -761,7 +779,7 @@ antes de tomarla, y cómo se comprueba cada cosa.
 | El correo sale y llega | Integraciones › Correo SMTP: «Probar conexión» con un mensaje de prueba a tu dirección, y un registro de prueba en la tienda: los dos mensajes están en el buzón | `BLOCKED/OWNER-DATA`: no hay SMTP |
 | Izipay cobra en TEST | Integraciones › Pagos: «Probar conexión» con las claves de TEST dice «Correcto»; y un pago completo en TEST con la tienda publicada: el pedido queda pagado por la notificación (`pagos-equipos-documentos.md` §1.4) | `BLOCKED/OWNER-DATA`: no se sabe qué producto ni hay claves de TEST |
 | La copia se puede restaurar | `backup.sh` en el servidor y `restore.sh` en OTRO servidor o en este equipo | Hecho en el ensayo (§9, pasos 18–19b); falta el destino externo |
-| Las tareas y la vigilancia están puestas | `crontab -l` muestra las cinco líneas; `sh deploy/healthcheck.sh` termina bien; hay un vigilante externo | `BLOCKED/OWNER-DATA`: no hay servidor |
+| Las tareas y la vigilancia están puestas | `crontab -l` muestra las seis líneas; `sh deploy/healthcheck.sh` termina bien; hay un vigilante externo | `BLOCKED/OWNER-DATA`: no hay servidor |
 | No hay secretos fuera de su sitio | `deploy/.env.production` con `chmod 600`, copia —con su clave raíz— en un gestor de contraseñas y no junto a las copias de la base, nada en Git | Pendiente de crearlo |
 
 **Listo para publicar** cuando todas las filas están hechas. WhatsApp, «Continuar

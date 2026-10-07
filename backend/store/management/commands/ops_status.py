@@ -23,7 +23,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from store.integrations import health as integration_health
-from store.models import NotificationDelivery, PaymentTransaction
+from store.integrations import registry
+from store.models import ConversionDelivery, NotificationDelivery, PaymentTransaction
 
 #: How far back a failure is still news.
 RECENT = timedelta(hours=24)
@@ -35,6 +36,14 @@ WHATSAPP_WAIT = timedelta(minutes=15)
 #: This many final failures with not one message delivered is not one customer's
 #: number: it is the token, the sender or the templates.
 SYSTEMIC_FAILURES = 3
+#: The conversion sender runs every five minutes; the longest wait between two
+#: attempts is scheduled, and is not this.
+CONVERSION_WAIT = timedelta(minutes=30)
+
+
+def _provider_label(provider_id: str) -> str:
+    provider = registry.get(provider_id)
+    return provider.label if provider is not None else provider_id
 
 
 def pending_migrations() -> list:
@@ -48,7 +57,7 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 class Command(BaseCommand):
-    help = 'Lo que necesita atención: migraciones, pagos, avisos de WhatsApp e integraciones. Sólo lee.'
+    help = 'Lo que necesita atención: migraciones, pagos, avisos de WhatsApp, conversiones e integraciones. Sólo lee.'
 
     def handle(self, *args, **options):
         now = timezone.now()
@@ -130,6 +139,34 @@ class Command(BaseCommand):
                 '¿Se está ejecutando `send_pending_notifications` cada minuto?'
             )
         report('WhatsApp', whatsapp, 'sin mensajes fallidos ni atrasados', whatsapp_notes)
+
+        # ANALYTICS-MARKETING. The purchase conversions the server sends to Google,
+        # Meta and TikTok. The kind of failure and the provider, never an order.
+        conversions, conversion_notes = [], []
+        sales = ConversionDelivery.objects.filter(created_at__gte=now - RECENT)
+        refused = sales.filter(status=ConversionDelivery.Status.FAILED)
+        if refused.exists():
+            count = refused.count()
+            if count >= SYSTEMIC_FAILURES and not sales.filter(status=ConversionDelivery.Status.SENT).exists():
+                conversions.append(
+                    f'{count} conversiones de compra sin enviar en las últimas 24 h y ninguna enviada. '
+                    'Revisa los tokens en Configuración › Integraciones › Analítica y marketing.')
+            else:
+                kinds = sorted({f'{_provider_label(row["provider"])}: {row["failure_kind"] or "error"}'
+                                for row in refused.values('provider', 'failure_kind')})
+                conversion_notes.append(
+                    f'{_plural(count, "conversión de compra no se pudo enviar", "conversiones de compra no se pudieron enviar")} '
+                    f'en las últimas 24 h ({", ".join(kinds)}). La venta no se ve afectada.')
+        waiting = ConversionDelivery.objects.filter(
+            Q(status=ConversionDelivery.Status.PENDING, next_attempt_at__isnull=True, created_at__lt=now - CONVERSION_WAIT)
+            | Q(status=ConversionDelivery.Status.PENDING, next_attempt_at__lt=now - CONVERSION_WAIT)
+        ).count()
+        if waiting:
+            conversions.append(
+                f'{_plural(waiting, "conversión de compra", "conversiones de compra")} sin enviar desde hace más de '
+                f'{int(CONVERSION_WAIT.total_seconds() // 60)} minutos. '
+                '¿Se está ejecutando `send_pending_conversions`?')
+        report('conversiones', conversions, 'sin conversiones fallidas ni atrasadas', conversion_notes)
 
         # What a master configured in Configuración › Integraciones, and the two
         # integrations a shop cannot work without. Labels and states, never values.

@@ -3,6 +3,104 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-06 — ANALYTICS-MARKETING-INTEGRATIONS-01: medir, con permiso y una sola vez
+
+Rama `feat/analytics-marketing`, desde `master` `643ba90` (merge de #90). Una migración
+(`0112_measurement_conversions`). Operación:
+[docs/analytics-marketing.md](docs/analytics-marketing.md). Decisiones: DEC-MEAS-01 a 07 y
+DEC-BRAND-ICON-01. Nada está publicado en Internet.
+
+**Qué cambia.** Google Analytics 4, Meta y TikTok se configuran en la consola de #90
+(Panel › Configuración › Integraciones › Analítica y marketing). Quien visita la tienda
+decide con un aviso de cookies; sin su permiso no se carga nada de terceros y el servidor
+no envía nada. La compra se mide una vez, desde la confirmación firmada del pago. El icono
+de la pestaña es el isotipo oficial.
+
+**Estado: NOT READY, por datos del propietario**, como antes. Las tres integraciones están
+implementadas y probadas con respuestas simuladas; ninguna contra su servicio real.
+
+| | Estado |
+|---|---|
+| FAVICON | IMPLEMENTADO |
+| CONSENT | IMPLEMENTADO |
+| GA4 | IMPLEMENTADO · validación real BLOCKED/CREDENTIALS |
+| META PIXEL | IMPLEMENTADO · validación real BLOCKED/CREDENTIALS |
+| META CAPI | IMPLEMENTADO (compra) · validación real BLOCKED/CREDENTIALS |
+| TIKTOK PIXEL | IMPLEMENTADO · validación real BLOCKED/CREDENTIALS |
+| TIKTOK EVENTS API | IMPLEMENTADO (compra) · validación real BLOCKED/CREDENTIALS |
+| ECOMMERCE TRACKING | IMPLEMENTADO; Meta y TikTok sin `AddPaymentInfo` ni `CompleteRegistration` por decisión de privacidad |
+| PURCHASE DEDUP | IMPLEMENTADO |
+| CSP | PENDIENTE (CSP-01): auditada, no implantada; lista de dominios en `docs/analytics-marketing.md` §7 |
+
+**Línea base, sobre `master` `643ba90`** (mismo árbol de código que `2a5632d`): backend
+5581 pruebas, 0 fallos, 5 omitidas (también en CI) · Jest 830 · Playwright 187 · lint 0
+errores, 22 avisos · `ENSAYO: OK` (138 + 49).
+
+**Grafo de dependencias.** Al empezar la fase «Graphify» no estaba instalado y no se
+instaló: el grafo inicial se construyó con análisis estático propio (imports de Python con
+`ast`, imports de TypeScript). El propietario lo instaló durante la fase y el grafo final
+es de Graphify 0.9.79, sobre `62ed3b8`: todo el código por AST (702 archivos) y, por
+extracción semántica, sólo `docs/analytics-marketing.md` y
+`docs/integraciones-y-secretos.md`. Quedaron fuera los otros 49 documentos y las 23
+imágenes. 18 591 nodos, 46 883 aristas, 616 comunidades. El grafo no se versiona.
+
+| | Antes (análisis propio) | Después (Graphify) |
+|---|---|---|
+| Ciclos de imports | 1, contado por paquete: `integrations` y sus proveedores | 12, contados por archivo, todos a través de `integrations/__init__.py`. 10 ya estaban en `master`; 2 son de esta fase y repiten el patrón de #90 (ver abajo) |
+| Proveedores sin consumidor en ejecución | 0 | 0: `store/measurement/conversions.py` y `store/measurement_views.py` consumen los tres nuevos |
+| Llamadas `gtag` / `fbq` / `ttq` | 0 | los tres adaptadores sólo los importa `frontend/app/lib/analytics/service.ts` |
+| Código que habla con los tres desde el servidor | — | `store/measurement/adapters.py`, importado sólo por el módulo de proveedores y por `conversions.py` |
+| Quién dispara la compra en el servidor | — | `store/views.py` (confirmación del pago) y el comando `send_pending_conversions`; nadie más importa `conversions.py` |
+| Consentimiento | — | `lib/consent.ts` lo leen el aviso, el pie, el servicio y los adaptadores; ninguna página lo escribe por su cuenta |
+
+**Corrección.** El análisis propio decía «ningún ciclo nuevo». Contando por archivo,
+Graphify encuentra dos: el módulo `providers/measurement.py` con el paquete que lo
+registra (igual que los otros cinco proveedores de #90), y ese mismo módulo con
+`store/measurement/__init__.py`, que importa `integrations` dentro de una función (igual
+que `payments/izipay.py`, `messaging` y `google_identity.py`). Ninguno es un ciclo al
+cargar: el paquete importa sus proveedores al final y el otro import es diferido. No se
+cambió el código al cierre; queda anotado como INT-IMPORT-CYCLE.
+
+**Límites del grafo.** Graphify no resuelve las llamadas escritas como
+`conversions.record_purchase(...)` a su función: la relación entre `views.py` y los
+ganchos de compra está a nivel de archivo. No hay arista entre el frontend y el backend
+(se hablan por HTTP); los unen los nodos de la documentación. El informe marca 1513
+aristas hacia módulos de fuera del repositorio (biblioteca estándar, Django, React), 18
+autoreferencias y 1037 aristas repetidas que se funden, casi todas imports repetidos de
+`store/tests.py`. Las aristas `indirect_call` de las pruebas de navegador hacia
+`service.ts` son coincidencias de nombre, no llamadas.
+
+**Defectos encontrados en la fase**
+
+| ID | Qué pasaba |
+|---|---|
+| FAVICON-DEFAULT | El icono de la pestaña era el triángulo por defecto del framework, y el que declaraba la página, un círculo de un prototipo |
+| PAY-REFERENCE-URL | La referencia del pago viajaba en la dirección de la página de éxito |
+| VIEW-ITEM-TWICE | Una ficha de producto se contaba dos veces si su efecto se ejecutaba dos veces (hallado en navegador real) |
+| SPA-PRIVATE (revisión, P1) | Con un script de medición ya cargado, navegar dentro de la tienda a una dirección privada lo dejaba presente: lee la dirección por su cuenta. Ahora esa navegación abre un documento nuevo, sin él |
+| FORM-PIXELS (revisión, P2) | Los píxeles de marketing estaban en el checkout y el acceso, donde su panel puede hacerles leer los campos |
+| MAIL-AFTER-PROVIDERS (revisión, P2) | El primer envío a los proveedores se programaba antes del correo de confirmación y podía retrasarlo o cancelarlo |
+| CONTEXT-KEPT (revisión, P2) | Los identificadores del navegador se guardaban en cada checkout aunque nadie fuera a leerlos, y los de pedidos abandonados dependían de una tarea para borrarse |
+| STATUS-REPLAY (revisión, P2) | La página de estado daba el evento de compra indefinidamente, con el cupón |
+| TIKTOK-CONSENT (revisión, P2) | Retirar el permiso sólo apagaba la cookie de TikTok, no su estado de consentimiento |
+| Propio | Durante la fase se sobrescribió `store/tracking_views.py` (seguimiento de reparaciones) al crear un archivo con ese nombre; se restauró desde git en el acto y lo nuevo se llama `measurement` |
+
+**Verificación**
+
+| Medida | Resultado |
+|---|---|
+| Backend, suite completa en PostgreSQL, sobre `62ed3b8` | 5654 pruebas, 0 fallos, 5 omitidas (73 nuevas) |
+| Jest | 933/933 (97 suites; 103 nuevas) |
+| Tipos · lint · build | limpio · 0 errores, 22 avisos (los de antes) · correcto |
+| `manage.py check` · `makemigrations --check` | sin incidencias · sin cambios |
+| Playwright completo, sobre `62ed3b8` | 194/194, 0 omitidas (7 nuevas) |
+| Ensayo de producción, sobre `62ed3b8` | `ENSAYO: OK`, 139 comprobaciones y 49 pasos de navegador; no deja nada en el equipo |
+| Mutaciones | cada regla nueva de consentimiento, privacidad y compra única se rompió a propósito y una prueba lo detectó |
+| Revisión de seguridad independiente | 1 P1 y 6 P2 corregidos con prueba; 1 P2 no corregido: CSP-01, que sigue PENDIENTE y es condición para activar un proveedor en producción; P3 revisados uno a uno |
+| Llamadas reales a Google, Meta o TikTok | ninguna: respuestas simuladas en las pruebas, dominios interceptados en el navegador |
+
+El equipo de trabajo no entró en reposo durante las tres corridas largas.
+
 ## 2026-10-06 — INTEGRATIONS-CONSOLE-01: los servicios externos se configuran en el panel
 
 Rama `feat/integrations-console`, desde `master` `5da4e99` (merge de #89). Una migración

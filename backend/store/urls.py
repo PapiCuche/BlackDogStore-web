@@ -117,6 +117,7 @@ from .print_views import (
     AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
     AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
 )
+from .measurement_views import MeasurementConfigView
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
     AdminSequenceScopeView, StorefrontConfigView,
@@ -294,6 +295,8 @@ urlpatterns = [
 
     # --- SaaS Phase 3: company configuration and branding ---
     path('storefront/config/', StorefrontConfigView.as_view(), name='storefront-config'),
+    # ANALYTICS-MARKETING: the public IDs of the measurement providers a master activated.
+    path('measurement/config/', MeasurementConfigView.as_view(), name='measurement-config'),
     path(
         'storefront/images/<str:public_id>/',
         StorefrontImageView.as_view(), name='storefront-image',

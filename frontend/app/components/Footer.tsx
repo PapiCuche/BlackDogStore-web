@@ -14,6 +14,7 @@
 
 import Link from "next/link";
 import { useStorefront } from "./StorefrontProvider";
+import { openConsentPreferences } from "../lib/consent";
 import { BrandLogo } from "./BrandLogo";
 import { categoryHref, useCatalogCategories } from "../lib/catalog-categories";
 
@@ -234,6 +235,16 @@ export function Footer() {
             {policies.privacy_url ? <a className="transition hover:text-foreground" href={policies.privacy_url}>Privacidad</a> : null}
           </nav>
         ) : null}
+
+        <p className="mt-6 text-xs text-muted">
+          <button
+            type="button"
+            onClick={openConsentPreferences}
+            className="underline underline-offset-4 transition hover:text-foreground"
+          >
+            Preferencias de cookies
+          </button>
+        </p>
 
         {/* Bottom bar */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-bd-border pt-8 sm:flex-row">

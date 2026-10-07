@@ -154,7 +154,8 @@ class OpsStatusTest(WhatsAppBase):
             status=NotificationDelivery.Status.FAILED, next_attempt_at=None, failure_reason='131026')
         _code, text = run()
         self.assertNotIn('987', text)
-        self.assertNotIn(self.customer.first_name, text)
+        # As a word: the summary names «Google Analytics 4», and the customer is called Ana.
+        self.assertNotRegex(text, rf'\b{self.customer.first_name}\b')
 
 
 SMTP_PUBLIC = {'host': 'smtp.example.invalid', 'port': 587, 'security': 'starttls', 'username': 'usuario-smtp',
@@ -278,3 +279,52 @@ class IntegrationsStatusTest(TestCase):
         with mock.patch('django.db.models.Model.save', side_effect=wrote), \
                 mock.patch('django.db.models.QuerySet.update', side_effect=wrote):
             self.assertEqual(run()[0], 0)
+
+
+@override_settings(APP_CONFIG_ENCRYPTION_KEY=KEY, **CONFIGURED)
+class ConversionsStatusTest(TestCase):
+    """ANALYTICS-MARKETING: the purchase conversions the server sends, as an operator needs to hear of them."""
+
+    def setUp(self):
+        from store.tests import _order, _pilot_company
+        self.order = _order(_pilot_company(), total='50.00')
+
+    def conversion(self, provider='meta', **fields):
+        from store.models import ConversionDelivery
+        return ConversionDelivery.objects.create(order=self.order, provider=provider, event_id='purchase.1', **fields)
+
+    def test_with_none_waiting_or_failed_it_is_all_right(self):
+        self.conversion(status='sent')
+        code, text = run()
+        self.assertEqual(code, 0, text)
+        self.assertIn('OK    conversiones: sin conversiones fallidas ni atrasadas', text)
+
+    def test_one_that_a_provider_refused_is_a_note_with_its_kind_and_no_more(self):
+        self.conversion(status='failed', failure_kind='auth_failed', provider_code='190')
+        code, text = run()
+        self.assertEqual(code, 0, text)
+        self.assertIn('NOTA  conversiones: 1 conversión de compra no se pudo enviar en las últimas 24 h (Meta: auth_failed)', text)
+
+    def test_several_refused_and_none_through_needs_somebody(self):
+        for provider in ('meta', 'tiktok', 'google_analytics'):
+            self.conversion(provider, status='failed', failure_kind='auth_failed')
+        code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('ATENCIÓN conversiones: 3 conversiones de compra sin enviar en las últimas 24 h y ninguna enviada', text)
+
+    def test_one_waiting_for_longer_than_the_timer_takes_needs_somebody(self):
+        row = self.conversion(status='pending')
+        type(row).objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        code, text = run()
+        self.assertEqual(code, 1)
+        self.assertIn('send_pending_conversions', text)
+
+    def test_one_that_is_waiting_for_its_next_attempt_is_not_overdue(self):
+        self.conversion(status='pending', attempt_count=2, next_attempt_at=timezone.now() + timedelta(minutes=20))
+        self.assertEqual(run()[0], 0)
+
+    def test_the_line_names_no_order_and_no_identifier(self):
+        self.conversion(status='failed', failure_kind='invalid', provider_code='100')
+        _code, text = run()
+        self.assertNotIn('purchase.1', text)
+        self.assertNotIn(str(self.order.pk) + ' ', text.split('conversiones:')[1].split('\n')[0].replace('1 conversión', ''))

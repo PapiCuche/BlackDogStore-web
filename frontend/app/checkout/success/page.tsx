@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toItem } from "../../lib/analytics/items";
+import { track } from "../../lib/analytics/service";
+import { takePaymentReference } from "../../lib/payment-reference";
 import { useStorefront } from "../../components/StorefrontProvider";
 import Link from "next/link";
 import { API_BASE } from "../../lib/api";
@@ -19,6 +22,15 @@ type StatusData = {
   paid: boolean;
   total: string;
   message: string;
+  /** Present only for an order the gateway confirmed: the purchase, as it may be measured. */
+  measurement?: {
+    event_id: string;
+    transaction_id: string;
+    value: number;
+    currency: string;
+    tax: number;
+    items: { id: string; name: string; category?: string; price: number; quantity: number }[];
+  };
 };
 
 function StatusShell({
@@ -65,17 +77,11 @@ function StatusShell({
  */
 export default function CheckoutSuccessPage() {
   const whatsappLink = useStorefront().contact.whatsapp_link;
-  const [reference] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("reference");
-  });
+  const [reference] = useState<string | null>(() => takePaymentReference());
   const [statusData, setStatusData] = useState<StatusData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(() =>
-    typeof window !== "undefined" &&
-    !new URLSearchParams(window.location.search).get("reference")
-      ? "No se recibió la referencia del pago."
-      : null,
+    typeof window !== "undefined" && !reference ? "No se recibió la referencia del pago." : null,
   );
   const [retryCount, setRetryCount] = useState(0);
 
@@ -106,6 +112,18 @@ export default function CheckoutSuccessPage() {
         const data: StatusData = await res.json();
         if (cancelled) return;
         setStatusData(data);
+        if (data.status === "paid" && data.paid && data.measurement) {
+          // ONLY HERE, and only on the server's word: this page having been
+          // opened proves nothing. The server sends `measurement` for an order
+          // its gateway confirmed, with the id its own copy of the event
+          // carries; the service emits it once per order in this browser.
+          const purchase = data.measurement;
+          track({
+            name: "PURCHASE", eventId: purchase.event_id, transactionId: purchase.transaction_id,
+            currency: purchase.currency, value: purchase.value, tax: purchase.tax,
+            items: purchase.items.map((item) => toItem(item, item.quantity)),
+          });
+        }
 
         if (data.status === "pending_payment" && retryCount < 5) {
           timer = setTimeout(() => setRetryCount((count) => count + 1), 2000);

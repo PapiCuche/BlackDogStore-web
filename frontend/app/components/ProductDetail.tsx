@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
+import { track } from "../lib/analytics/service";
 import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { API_BASE } from "../lib/api";
@@ -111,6 +113,17 @@ export default function ProductDetail({ product }: { product: Product }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id, product.category?.slug]);
 
+  const viewedProduct = useRef<number | string | null>(null);
+  useEffect(() => {
+    // Once per product shown. The ref is what makes it once: an effect can run
+    // again for the same product (a remount, React's development double-run)
+    // and that is not a second look at it.
+    if (viewedProduct.current === product.id) return;
+    viewedProduct.current = product.id;
+    track({ name: "VIEW_ITEM", item: toItem(product), currency: DEFAULT_CURRENCY, value: Number(product.price) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id]);
+
   async function fetchReviews() {
     try {
       const res = await fetch(`${API_BASE}/reviews/?product=${product.id}`);
@@ -138,6 +151,10 @@ export default function ProductDetail({ product }: { product: Product }) {
       setStatusType("success");
       setStatus("Producto agregado al carrito.");
       emitCartChange();
+      track({
+        name: "ADD_TO_CART", item: toItem(product, quantity), currency: DEFAULT_CURRENCY,
+        value: Math.round(Number(product.price) * quantity * 100) / 100,
+      });
     } catch (error: unknown) {
       setStatusType("error");
       setStatus(error instanceof Error ? error.message : "Error al agregar.");

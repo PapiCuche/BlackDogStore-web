@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-06 — ANALYTICS-MARKETING-INTEGRATIONS-01
+
+**Added**
+- **Google Analytics 4, Meta y TikTok** en Panel › Configuración › Integraciones ›
+  Analítica y marketing, sobre la consola de #90: identificadores públicos, claves
+  cifradas, sin direcciones configurables.
+- **Aviso de cookies** con tres respuestas (aceptar todas, rechazar opcionales,
+  configurar) y «Preferencias de cookies» en el pie.
+- Servicio de analítica de la tienda y tres adaptadores; eventos de catálogo, carrito,
+  checkout, registro, inicio de sesión y contacto.
+- **La compra como conversión única**: una fila por proveedor escrita con el pago, enviada
+  desde el servidor (Measurement Protocol, Conversions API, Events API) con reintentos.
+  `manage.py send_pending_conversions`; línea nueva en `deploy/crontab.example`.
+- `GET /api/measurement/config/`: lo que la tienda puede usar para medir, sin secretos.
+- `ops_status` informa de las conversiones.
+- [docs/analytics-marketing.md](docs/analytics-marketing.md).
+
+**Changed**
+- El icono de la pestaña es el isotipo oficial (antes: el triángulo por defecto del
+  framework y un círculo de prototipo).
+- La referencia del pago ya no viaja en la dirección de la página de éxito.
+- Desde «Mis reparaciones», el enlace de seguimiento abre un documento nuevo.
+
+**Fixed**
+- Una ficha de producto podía contarse dos veces si su efecto se ejecutaba dos veces.
+- De la revisión de seguridad independiente (1 P1, 6 P2): un script de medición ya cargado
+  seguía presente al navegar dentro de la tienda a una dirección privada (ahora esa
+  navegación abre un documento nuevo); los píxeles de marketing estaban en las páginas con
+  formulario; el primer envío a los proveedores podía retrasar o cancelar el correo de
+  confirmación; los identificadores del navegador se guardaban sin que nadie fuera a
+  leerlos; la página de estado daba el evento de compra indefinidamente.
+
 ## 2026-10-06 — INTEGRATIONS-CONSOLE-01
 
 **Added**

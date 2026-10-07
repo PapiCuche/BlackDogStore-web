@@ -102,12 +102,16 @@ export default function RepairsPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   {repair.tracking_path ? (
-                    <Link
+                    // UN ENLACE DE VERDAD, no `<Link>`: la dirección de seguimiento
+                    // lleva un token. Con una navegación completa la página se
+                    // abre en un documento nuevo, donde no hay cargado ningún
+                    // script de medición que pueda leer esa dirección.
+                    <a
                       href={repair.tracking_path}
                       className="text-base font-semibold text-foreground underline-offset-4 hover:underline"
                     >
                       {repair.number}
-                    </Link>
+                    </a>
                   ) : (
                     <span className="text-base font-semibold text-foreground">{repair.number}</span>
                   )}

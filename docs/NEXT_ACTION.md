@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master` (este archivo se escribió al cerrar INTEGRATIONS-CONSOLE-01)
+master: ver `git log -1 origin/master` (este archivo se escribió al cerrar ANALYTICS-MARKETING-INTEGRATIONS-01)
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -12,9 +12,10 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-NOT READY, por datos externos y no por el código. INTEGRATIONS-CONSOLE-01 cerrada: el
-correo, la pasarela, WhatsApp, Google y SUNAT se configuran, se prueban y se activan en
-Panel › Configuración › Integraciones (sólo MASTER), sin tocar el servidor ni reiniciar.
+NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
+cerrada: Google Analytics 4, Meta y TikTok se configuran en la consola (sólo MASTER), la
+tienda pide permiso antes de cargar nada de terceros y la compra se mide una vez, desde
+la confirmación del pago. Ninguna integración se ha probado contra su servicio real.
 Sigue sin haber servidor, dominio, SMTP ni claves de Izipay. No hay nada publicado.
 
 current_priority:
@@ -23,22 +24,27 @@ current_priority:
    (dominio, `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_CONFIG_ENCRYPTION_KEY`, dirección de
    los pedidos) y `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
-   Configuración › Integraciones: correo (probar con mensaje de prueba, activar) y la
-   pasarela (elegir el producto de Izipay, claves de TEST, probar, activar).
-3. Un pago completo en TEST con la tienda publicada. Eso —y sólo eso— cierra
-   IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT.
-4. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
+   Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
+3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
+   IZIPAY-TOKEN-CONTRACT.
+4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9): antes de activar
+   un proveedor en producción, decidir CSP-01. Después: IDs y tokens en la consola, con
+   código de evento de prueba; una compra de prueba que aparezca UNA vez; quitar los
+   códigos de prueba. En los paneles de Meta y TikTok, coincidencia avanzada automática
+   apagada.
+5. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
    `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
-5. Primera fase tras publicar: SERIAL-PICK.
+6. Primera fase tras publicar: SERIAL-PICK.
 
 validated:
-- Backend: 5581 pruebas, 0 fallos, 5 omitidas (suite completa local, PostgreSQL), sobre `2a5632d`.
-- Frontend: Jest 830/830, typecheck, lint 0 errores / 22 avisos, build.
-- Playwright completo: 187/187, 0 omitidas, sobre `2a5632d`.
-- Ensayo de producción: `ENSAYO: OK` (138 + 49) sobre `2a5632d`, con la consola de
-  integraciones recorrida en la pila de producción; los commits posteriores sólo tocan
-  documentación.
-- Revisión independiente de la rama: 0 P1, 4 P2 y 7 P3; corregidos los P2 y seis P3.
+- Sobre `62ed3b8` (el código de la fase; lo posterior es documentación): backend 5654
+  pruebas, 0 fallos, 5 omitidas · Jest 933/933 · tipos limpio · lint 0 errores, 22 avisos ·
+  build correcto · Playwright 194/194, 0 omitidas · `ENSAYO: OK` (139 + 49).
+- Revisión de seguridad independiente: 1 P1 y 6 P2 corregidos; CSP-01 sigue PENDIENTE.
+- Grafo final con Graphify 0.9.79: sin proveedores sin consumidor, `gtag`/`fbq`/`ttq`
+  sólo en los adaptadores, 2 ciclos de imports nuevos del mismo patrón que #90
+  (INT-IMPORT-CYCLE), ninguno al cargar.
+- Ninguna integración probada contra su servicio real (BLOCKED/CREDENTIALS).
 
 blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
@@ -52,6 +58,9 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Existencias, fotos y precios reales del catálogo.
 
 blocked_optional (BLOCKED/OPTIONAL: la tienda abre sin esto):
+- Google Analytics 4: ID de medición y, opcional, secreto de API (BLOCKED/CREDENTIALS).
+- Meta: ID del píxel y, opcional, token de la API de conversiones (BLOCKED/CREDENTIALS).
+- TikTok: código del píxel y, opcional, token de Events API (BLOCKED/CREDENTIALS).
 - ID de cliente OAuth de Google (GOOGLE-CLIENT-ID).
 - WhatsApp Business: número, plantillas aprobadas y credenciales (WHATSAPP-CREDENTIALS).
 - SUNAT: certificado y credenciales SOL.
@@ -64,6 +73,10 @@ otros pendientes del propietario:
 - Confirmar que el código de comercio `4001061` de las pruebas no es el suyo (es público, no un secreto).
 
 known_debt (detalle en `docs/AUDIT_MEMORY.md`):
+- De analítica y marketing (`docs/analytics-marketing.md` §9): CSP-01 (decidir antes de
+  activar un proveedor en producción), MEAS-FORM-PAGES, MEAS-IP-UA (pendiente de que el
+  propietario lo confirme), MEAS-SERVER-EVENTS, MEAS-GA-HISTORY, MEAS-PIXEL-URL,
+  MEAS-HARD-NAV, MEAS-CONSENT-LOG, MEAS-TENANT-SCOPE.
 - De la consola (`docs/integraciones-y-secretos.md` §10): PAY-TENANT-SCOPE y
   FISCAL-TENANT-SCOPE (pasarela y SUNAT son de la instalación), PAY-SWITCH-PENDING
   (cambiar de producto con cobros abiertos), SUNAT-SOL-CHECK, ENV-FALLBACK-RETIRE,

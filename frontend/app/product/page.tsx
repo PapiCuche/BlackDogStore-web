@@ -1,12 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback, Suspense } from "react";
+import { toItem } from "../lib/analytics/items";
+import { track } from "../lib/analytics/service";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ProductCard } from "../components/ProductCard";
 import { fetcher, apiUrl } from "../lib/api";
 
 type Category = { id: number; name: string; slug: string };
+/** The name this list has in the events it emits. */
+const LIST_NAME = "Catálogo";
+
 type Product = {
   id: number;
   slug: string;
@@ -103,7 +108,11 @@ function CatalogContent() {
 
       try {
         const data = await fetcher<Product[]>(apiUrl(`/products${qs ? `?${qs}` : ""}`));
-        if (!cancelled) setProducts(data);
+        if (!cancelled) {
+          setProducts(data);
+          if (search) track({ name: "SEARCH", term: search });
+          if (data.length) track({ name: "VIEW_ITEM_LIST", listName: LIST_NAME, items: data.slice(0, 24).map((p) => toItem(p)) });
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Error al cargar el catálogo.");
@@ -270,7 +279,15 @@ function CatalogContent() {
             ) : null}
           </div>
         ) : (
-          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3"
+            // Which card was chosen, read from the link that was clicked: the card
+            // itself stays a plain component that knows nothing about measurement.
+            onClickCapture={(event) => {
+              const slug = (event.target as Element).closest?.('a[href^="/product/"]')?.getAttribute("href")?.split("/")[2];
+              const chosen = products.find((product) => product.slug === slug);
+              if (chosen) track({ name: "SELECT_ITEM", listName: LIST_NAME, item: toItem(chosen) });
+            }}
+          >
             {products.map((product) => (
               <ProductCard key={product.id} {...product} />
             ))}

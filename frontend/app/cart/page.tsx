@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { API_BASE, fetcher } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, writeStoredCoupon } from "../lib/cart";
 import { formatMoney } from "../lib/format";
+import { DEFAULT_CURRENCY, lineTotal, markCheckoutBegun, toItem, toItems } from "../lib/analytics/items";
+import { track } from "../lib/analytics/service";
 import { CartItemCard } from "../components/CartItemCard";
 
 type CartItem = {
@@ -34,12 +36,19 @@ export default function CartPage() {
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponLoading, setCouponLoading] = useState(false);
 
+  const viewed = useRef(false);
+
   async function loadCart() {
     setLoading(true);
     setError(null);
     try {
       const data = await fetcher<CartItem[]>(`${API_BASE}/cart/?session_key=${sessionKey}`);
       setItems(data);
+      if (!viewed.current && data.length) {
+        // The cart as it was found, once per visit to this page — not on every reload after an edit.
+        viewed.current = true;
+        track({ name: "VIEW_CART", items: toItems(data), currency: DEFAULT_CURRENCY, value: lineTotal(data) });
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error al cargar el carrito.");
     } finally {
@@ -73,6 +82,13 @@ export default function CartPage() {
     try {
       const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
       if (!res.ok) throw new Error("No se pudo eliminar.");
+      const removed = items.find((line) => line.id === id);
+      if (removed) {
+        track({
+          name: "REMOVE_FROM_CART", item: toItem(removed.product, removed.quantity), currency: DEFAULT_CURRENCY,
+          value: lineTotal([removed]),
+        });
+      }
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -247,6 +263,13 @@ export default function CartPage() {
 
               <Link
                 href="/checkout"
+                onClick={() => {
+                  track({
+                    name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
+                    ...(coupon ? { coupon: coupon.code } : {}),
+                  });
+                  markCheckoutBegun();
+                }}
                 className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
               >
                 Continuar al checkout

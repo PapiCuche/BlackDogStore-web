@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "images:generate": "node ./scripts/generate_images.js",
+    "favicons:generate": "node ./scripts/generate_favicons.js",
     "start": "next start",
     "lint": "eslint .",
     "test": "jest",

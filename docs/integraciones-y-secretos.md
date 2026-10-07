@@ -98,6 +98,7 @@ se guarda en claro nada de él: ni sus últimos caracteres.
 | Izipay: cuál de los dos productos y sus claves | Credenciales de PostgreSQL |
 | WhatsApp Business de cada empresa | **`APP_CONFIG_ENCRYPTION_KEY`**, la clave raíz (§8) |
 | ID de cliente de Google | `SITE_DOMAIN` y lo que sale de él |
+| Google Analytics, Meta y TikTok ([analytics-marketing.md](analytics-marketing.md)) | `MEASUREMENT_SEND_INLINE`, cuándo envía el servidor la compra |
 | SUNAT: credenciales SOL y certificado | Almacenamiento de evidencias, nivel de registro |
 | | `WHATSAPP_PROVIDER`, el interruptor de WhatsApp de ese servidor |
 | | `ORDER_NOTIFICATION_EMAIL`, quién recibe el aviso de cada pedido |
@@ -207,6 +208,20 @@ Campos: RUC, usuario SOL, clave SOL, certificado digital (`.p12` / `.pfx`) y su 
 - **Activar es lo que enciende la emisión**, y pide escribir `EMITIR`. Guardar o probar no
   encienden nada.
 - Series, endpoint y entorno siguen sin poder elegirse desde ningún formulario.
+
+### 5.6 Analítica y marketing: Google Analytics 4, Meta y TikTok
+
+Alcance: la instalación. Tienen su propio documento:
+[analytics-marketing.md](analytics-marketing.md). Lo que comparten con el resto de esta
+consola es todo lo de arriba —sólo MASTER, guardar → probar → activar, secretos que no
+vuelven—, y lo que tienen de distinto:
+
+- Cada uno tiene **un identificador público** (el que carga su script en el navegador) y,
+  opcionalmente, una clave secreta para enviar la compra desde el servidor.
+- **No tienen respaldo de entorno**: sólo existen en la consola.
+- **Nadie los ve hasta que el visitante acepta las cookies** de su categoría.
+- Su prueba **nunca crea un evento real**; cuando no hay cómo verificar sin crearlo, el
+  resultado es «Coherente, sin verificar».
 
 ## 6. «Configurado mediante entorno»
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import { useRouter } from "next/navigation";
@@ -20,6 +20,9 @@ type CheckoutItem = {
   product: { id: number; name: string; price: number | string; slug: string };
 };
 import { API_BASE } from "../lib/api";
+import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/analytics/items";
+import { checkoutContext, track } from "../lib/analytics/service";
+import { rememberPaymentReference } from "../lib/payment-reference";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import {
   deliveryDescriptions,
@@ -189,6 +192,18 @@ export default function CheckoutPage() {
   const total = subtotal - discount;
 
   const couponCode = coupon?.code ?? "";
+
+  const began = useRef(false);
+  useEffect(() => {
+    // Once per visit to the checkout, when the cart it will charge is known.
+    if (began.current || !items || items.length === 0) return;
+    began.current = true;
+    if (takeCheckoutBegun()) return;          // the cart's button already said it
+    track({
+      name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
+      ...(couponCode ? { coupon: couponCode } : {}),
+    });
+  }, [items, couponCode]);
   useEffect(() => {
     // Se vuelve a pedir cuando cambia el carrito o el cupón, porque el desglose
     // cambia con ellos. Si falla, el resumen sigue mostrando el total y omite
@@ -248,6 +263,9 @@ export default function CheckoutPage() {
     setFieldErrors({});
 
     const body = {
+      // What this visitor accepted about measurement, so that the server's copy
+      // of the purchase follows the same answer. Not part of the order.
+      measurement: checkoutContext(),
       session_key: sessionKey,
       customer_name: form.customer_name,
       customer_email: form.customer_email,
@@ -302,6 +320,12 @@ export default function CheckoutPage() {
       }
       clearStoredCoupon();
       setPayment(data);
+      // The form was accepted and the gateway's own form is about to open: the
+      // buyer gave how they want it delivered, and is now asked for the card.
+      const basket = { items: toItems(items ?? []), currency: quote?.currency || DEFAULT_CURRENCY, value: Number(quote?.total ?? total),
+                       ...(couponCode ? { coupon: couponCode } : {}) };
+      track({ name: "ADD_SHIPPING_INFO", shippingTier: form.delivery_method, ...basket });
+      track({ name: "ADD_PAYMENT_INFO", paymentType: "card", ...basket });
     } catch (e: unknown) {
       setMessage(e instanceof Error ? e.message : "Error al iniciar el pago.");
       setLoading(false);
@@ -320,9 +344,10 @@ export default function CheckoutPage() {
    */
   function handlePaymentSettled() {
     if (!payment) return;
-    router.push(
-      `/checkout/success?reference=${encodeURIComponent(payment.transaction_id)}`,
-    );
+    // The reference opens this payment's status to whoever holds it, so it does
+    // not go in the address: an address is what a third-party script reads.
+    rememberPaymentReference(payment.transaction_id);
+    router.push("/checkout/success");
   }
 
   const fe = fieldErrors;
