@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — CHECKPOINT 1B: revalidación del master actual
+
+**READY FOR CHECKPOINT 2**, pendiente de aprobación del propietario para crear
+Lightsail. Nada creado en AWS, nada publicado y ningún cambio en el árbol principal.
+Dominio comprado por el propietario: `blackdogstoreperu.com`.
+
+SHA ensayado: `a1d2a29a11f324071b849f0100ccc85d4a756bb1`, merge de #93.
+FIX-MEAS-LOG-TEST-01 queda IMPLEMENTADO: defecto exclusivo del test, sin cambio
+productivo. CI backend completo sobre `dff943f7a240c7c101742b584e5baaac7dc0f0d1`:
+5654 pruebas, OK, 5 omitidas (3 de catálogo sin capacidades reservadas y 2 de
+pasarelas reales sin credenciales). El árbol de código de ese HEAD y el master
+ensayado es idéntico. CI: https://github.com/PapiCuche/BlackDogStore-web/actions/runs/37580138775
+
+Revalidación local fresca en copia limpia de master: frontend 933/933 (97 suites),
+typecheck limpio, lint 0 errores / 22 avisos existentes, build correcto; backend
+relevante 445 pruebas, OK, 2 omitidas exclusivamente por credenciales de pasarela;
+redacción/logging/integraciones en la corrección 333/333 sin omitidas.
+`makemigrations --check --dry-run`: sin cambios. Imágenes productivas reconstruidas
+sin caché, `compose config --quiet` correcto. Preflight con dominio comprado y
+secretos/destinatario sintéticos: SUFICIENTE PARA ARRANCAR, no prueba datos reales.
+Ensayo COMPLETO: `ENSAYO: OK`, 139 comprobaciones, navegador incluido, backup,
+restore tras daño y restore en otro proyecto con volúmenes vacíos. Limpieza:
+0 contenedores, volúmenes, imágenes y env del ensayo. Escaneo del diff añadido limpio.
+
+Desde `643ba90`: analítica de #91, documentación de #92 y prueba de #93. Topología,
+compose, Caddy, Dockerfiles y healthcheck sin cambios. Una migración nueva:
+`0112_measurement_conversions`; 124 migraciones de store aplicadas en el ensayo.
+Variable opcional nueva: `MEASUREMENT_SEND_INLINE=1`. IDs y secretos de proveedores
+se guardan en la consola cifrada; no hay secretos nuevos obligatorios para arrancar.
+Sin IDs/integraciones activas no se carga ni envía analítica; consentimiento denegado
+por defecto. Se excluyen las rutas privadas/tokenizadas documentadas; Meta/TikTok
+además no se cargan en formularios `/auth` y `/checkout` (excepto success).
+Dominios externos y límites de la exclusión: `docs/analytics-marketing.md` §6–7.
+
+Sin bloqueadores técnicos para CHECKPOINT 2. Antes de abrir producción: SMTP,
+pasarela TEST/producción, destinatario real de pedidos, servidor/DNS y secretos
+reales; analítica desactivada hasta cerrar CSP-01 y MEAS-PRIVACY-NOTICE y validar
+proveedores reales. Backup externo queda en su fase autorizable separada.
+
 ## 2026-10-07 — FIX-MEAS-LOG-TEST-01: comprobar el error de conversión, no un aviso de correo
 
 Rama `fix/measurement-log-test`, desde `master` `cc6a785`. Sólo cambia una prueba;
