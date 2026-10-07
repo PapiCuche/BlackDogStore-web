@@ -181,6 +181,40 @@ class OneSaleOneConversionTest(_Base):
                          told['transaction_id'])
         self.assertEqual((told['value'], told['currency'], told['items'][0]['quantity']), (float(order.total), 'PEN', 2))
 
+    def test_the_browser_is_told_the_purchase_only_for_a_while_and_without_the_coupon(self):
+        """
+        REVIEW: whoever holds the reference could fetch the purchase for ever, and
+        each new browser that did would emit it again. It is told for an hour.
+        """
+        from datetime import timedelta
+        from django.utils import timezone
+
+        self.all_server_side()
+        attempt = self.start_paying()
+        order = self.gateway_confirms(attempt)
+        Order.objects.filter(pk=order.pk).update(coupon_code='BIENVENIDA')
+        url = f'/api/payments/status/?reference={attempt.transaction_id}'
+
+        told = self.client.get(url).json()
+        self.assertEqual(sorted(told['measurement']), ['currency', 'event_id', 'items', 'tax', 'transaction_id', 'value'])
+        self.assertNotIn('BIENVENIDA', json.dumps(told))
+
+        Order.objects.filter(pk=order.pk).update(paid_at=timezone.now() - timedelta(minutes=61))
+        later = self.client.get(url).json()
+        self.assertEqual((later['status'], later['paid']), ('paid', True))
+        self.assertNotIn('measurement', later)
+
+    def test_a_failure_building_that_block_does_not_break_the_status_of_a_paid_order(self):
+        self.all_server_side()
+        attempt = self.start_paying()
+        self.gateway_confirms(attempt)
+        with mock.patch('store.measurement.conversions.order_summary', side_effect=RuntimeError('boom')), \
+                self.assertLogs('store.measurement', level='ERROR'):
+            response = self.client.get(f'/api/payments/status/?reference={attempt.transaction_id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'paid')
+        self.assertNotIn('measurement', response.json())
+
     def test_a_pixel_only_provider_sends_nothing_from_the_server(self):
         self.activate_provider('meta', {'mode': 'pixel_only', 'pixel_id': META['pixel_id']})
         self.activate_provider('google_analytics', GA)                    # no API secret
@@ -260,6 +294,15 @@ class WhatIsSentTest(_Base):
         self.assertEqual(self.to('graph.facebook.com')[0]['body']['data'][0]['user_data'],
                          {'client_ip_address': '203.0.113.7', 'client_user_agent': USER_AGENT})
 
+    def test_an_identifier_with_a_line_break_or_other_alphabets_digits_is_dropped(self):
+        """REVIEW: `$` accepts a trailing line break and `\\d` accepts every script's digits."""
+        self.all_server_side()
+        odd = {**BROWSER, 'fbp': BROWSER['fbp'] + '\n', 'ga_client_id': '١٢٣٤٥٦٧٨٩٠.1700000000', 'ttp': BROWSER['ttp'] + '\nX-Injected: 1'}
+        self.start_paying(odd)
+        context = MeasurementContext.objects.get()
+        self.assertEqual((context.fbp, context.ga_client_id, context.ttp), ('', '', ''))
+        self.assertEqual(context.fbc, BROWSER['fbc'])
+
     def test_what_identified_the_browser_is_not_kept_once_it_was_used(self):
         self.all_server_side()
         self.purchase()
@@ -297,6 +340,31 @@ class ConsentTest(_Base):
         self.purchase({**BROWSER, 'consent': {'analytics': False, 'marketing': True}})
         self.assertEqual([len(self.to(host)) for host in OKS], [1, 1, 0])
         self.assertEqual(sorted(ConversionDelivery.objects.values_list('provider', flat=True)), ['meta', 'tiktok'])
+
+    def test_nothing_is_stored_when_no_provider_sends_from_the_server(self):
+        """REVIEW: the browser's identifiers were kept for every checkout, with nobody to read them."""
+        self.activate_provider('meta', {'mode': 'pixel_only', 'pixel_id': META['pixel_id']})
+        self.activate_provider('google_analytics', GA)                                # no API secret
+        self.start_paying()
+        self.assertFalse(MeasurementContext.objects.exists())
+
+        self.activate_provider('tiktok', TIKTOK, TIKTOK_SECRET)                       # one that does: marketing
+        self.start_paying({**BROWSER, 'consent': {'analytics': True, 'marketing': False}})
+        self.assertFalse(MeasurementContext.objects.exists(), 'kept for a provider this buyer refused')
+        self.start_paying()
+        self.assertEqual(MeasurementContext.objects.count(), 1)
+
+    def test_an_abandoned_checkout_does_not_keep_them_for_ever(self):
+        """Without depending on a timer: every new checkout forgets the ones a week old."""
+        from datetime import timedelta
+        from django.utils import timezone
+
+        self.all_server_side()
+        abandoned = self.start_paying()
+        MeasurementContext.objects.filter(order=abandoned.order).update(created_at=timezone.now() - timedelta(days=8))
+        self.start_paying()
+        self.assertEqual(list(MeasurementContext.objects.values_list('order_id', flat=True)),
+                         [PaymentTransaction.objects.latest('pk').order_id])
 
     def test_without_marketing_consent_the_address_and_the_browser_are_not_even_stored(self):
         self.all_server_side()
@@ -360,15 +428,65 @@ class NeverInTheWayTest(_Base):
         self.assertEqual(ConversionDelivery.objects.get(provider='tiktok').status, 'sent')
 
     def test_measurement_failing_inside_the_payment_does_not_undo_the_payment(self):
+        """
+        With a REAL database error inside the payment's transaction — the kind
+        that leaves PostgreSQL refusing every later statement — not a Python
+        exception: only the savepoint keeps the payment alive.
+        """
+        from django.db import connection
+
+        def breaks_the_transaction(order):
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1 FROM una_tabla_que_no_existe')
+
         self.all_server_side()
         attempt = self.start_paying()
-        with mock.patch('store.measurement.conversions._plan', side_effect=RuntimeError('boom')), \
+        with mock.patch('store.measurement.conversions._plan', side_effect=breaks_the_transaction), \
                 self.assertLogs('store.measurement', level='ERROR'):
             order = self.gateway_confirms(attempt)
         self.assertTrue(order.paid)
         self.assertEqual(PaymentTransaction.objects.get(pk=attempt.pk).status, PaymentTransaction.Status.AUTHORIZED)
 
+    def test_the_confirmation_mail_is_scheduled_before_any_provider_is_spoken_to(self):
+        """REVIEW: a slow or failing provider must not delay or cancel the e-mail of a paid order."""
+        self.all_server_side()
+        attempt = self.start_paying()
+        order_of_events = []
+        with mock.patch('store.views.send_order_emails_after_payment', side_effect=lambda pk: order_of_events.append('mail')), \
+                mock.patch('store.measurement.conversions.attempt', side_effect=lambda ids, **kw: order_of_events.append('providers')):
+            self.gateway_confirms(attempt)
+        self.assertEqual(order_of_events, ['mail', 'providers'])
+
+    def test_a_crash_while_sending_cannot_take_the_other_hooks_with_it(self):
+        self.all_server_side()
+        attempt = self.start_paying()
+        mailed = []
+        with mock.patch('store.views.send_order_emails_after_payment', side_effect=lambda pk: mailed.append(pk)), \
+                mock.patch('store.measurement.conversions.deliver', side_effect=RuntimeError('boom')), \
+                mock.patch('store.measurement.conversions._release', side_effect=RuntimeError('la base no responde')), \
+                self.assertLogs('store.measurement', level='ERROR'):
+            order = self.gateway_confirms(attempt)
+        self.assertTrue(order.paid)
+        self.assertEqual(mailed, [order.pk])
+
+    def test_the_payment_request_waits_little_for_a_provider(self):
+        """Inline, right after the payment: a short wait. The timer retries with the full one."""
+        from store.measurement import conversions
+
+        self.all_server_side()
+        self.purchase()
+        self.assertTrue(all(call['timeout'] <= conversions.INLINE_TIMEOUT_SECONDS <= 4 for call in self.sent))
+        self.sent.clear()
+        self.answers['graph.facebook.com'] = http_error(503, {})
+        self.purchase()
+        ConversionDelivery.objects.update(next_attempt_at=None)
+        self.sent.clear()
+        with self.online():
+            call_command('send_pending_conversions')
+        self.assertGreater(self.sent[0]['timeout'], conversions.INLINE_TIMEOUT_SECONDS)
+
     def test_a_bad_measurement_block_does_not_refuse_the_checkout(self):
+        self.activate_provider('google_analytics', GA, GA_SECRET)          # somebody who would read a consent
         for garbage in ('x' * 50_000, {'consent': {'analytics': True}, 'ga_client_id': ['a'] * 1000}, 7, {}, 'granted', ['x']):
             attempt = self.start_paying(garbage)
             self.assertEqual(attempt.order.status, Order.Status.PENDING_PAYMENT)

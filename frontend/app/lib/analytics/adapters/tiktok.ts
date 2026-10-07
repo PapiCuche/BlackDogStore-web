@@ -13,7 +13,10 @@ import { cookie, type ProviderAdapter } from "./types";
  */
 const SCRIPT = "https://analytics.tiktok.com/i18n/pixel/events.js";
 const PIXEL_CODE = /^[A-Z0-9]{16,24}$/;
-const METHODS = ["page", "track", "identify", "instances", "debug", "on", "off", "once", "ready", "alias", "group", "enableCookie", "disableCookie"];
+const METHODS = [
+  "page", "track", "identify", "instances", "debug", "on", "off", "once", "ready", "alias", "group",
+  "enableCookie", "disableCookie", "holdConsent", "revokeConsent", "grantConsent",
+];
 
 type Ttq = unknown[] & Record<string, unknown> & {
   methods?: string[];
@@ -21,6 +24,8 @@ type Ttq = unknown[] & Record<string, unknown> & {
   track: (name: string, params?: Record<string, unknown>, options?: Record<string, unknown>) => void;
   enableCookie: () => void;
   disableCookie: () => void;
+  grantConsent: () => void;
+  revokeConsent: () => void;
 };
 
 declare global {
@@ -42,7 +47,16 @@ const contents = (items: Item[]) => ({
 
 export function createTikTokAdapter(pixelCode: string, purchase: PurchaseSender): ProviderAdapter | null {
   if (!PIXEL_CODE.test(pixelCode)) return null;
-  const cookies = (consent: Consent) => (consent.marketing ? window.ttq?.enableCookie() : window.ttq?.disableCookie());
+  // Both of TikTok's switches: its consent state, and its first-party cookie.
+  const cookies = (consent: Consent) => {
+    if (consent.marketing) {
+      window.ttq?.grantConsent();
+      window.ttq?.enableCookie();
+    } else {
+      window.ttq?.revokeConsent();
+      window.ttq?.disableCookie();
+    }
+  };
 
   return {
     id: "tiktok",

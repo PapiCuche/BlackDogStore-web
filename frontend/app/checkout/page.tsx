@@ -20,7 +20,7 @@ type CheckoutItem = {
   product: { id: number; name: string; price: number | string; slug: string };
 };
 import { API_BASE } from "../lib/api";
-import { DEFAULT_CURRENCY, lineTotal, toItems } from "../lib/analytics/items";
+import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/analytics/items";
 import { checkoutContext, track } from "../lib/analytics/service";
 import { rememberPaymentReference } from "../lib/payment-reference";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
@@ -198,6 +198,7 @@ export default function CheckoutPage() {
     // Once per visit to the checkout, when the cart it will charge is known.
     if (began.current || !items || items.length === 0) return;
     began.current = true;
+    if (takeCheckoutBegun()) return;          // the cart's button already said it
     track({
       name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
       ...(couponCode ? { coupon: couponCode } : {}),

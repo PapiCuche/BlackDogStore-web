@@ -34,19 +34,26 @@ PURCHASE = 'purchase'
 BACKOFF_MINUTES = (1, 5, 30, 120, 720)
 #: A row left «sending» this long belonged to a process that died: it is retried.
 STUCK = timedelta(minutes=10)
+#: How long the payment's own request waits for a provider. Short: whoever is
+#: slow is left for the timer, which waits the adapters' full time.
+INLINE_TIMEOUT_SECONDS = 3
+#: For how long after a payment the success page is told the purchase, so that the
+#: browser can emit its copy. Afterwards the reference opens a status and a total.
+PURCHASE_TOLD_FOR = timedelta(hours=1)
 #: The browser identifiers are not kept longer than this, sent or not.
 CONTEXT_RETENTION = timedelta(days=7)
 #: How late each provider still takes an event (Google 72 h, Meta 7 days; TikTok's 48 h is its dedup window).
 MAX_AGE = {'google_analytics': timedelta(hours=71), 'meta': timedelta(days=6, hours=23), 'tiktok': timedelta(hours=47)}
 
 # What each provider's own script writes. Anything else a browser sends is dropped.
+# `[0-9]` and `fullmatch`: `\d` takes every alphabet's digits and `$` a trailing line break.
 _SHAPES = {
-    'ga_client_id': re.compile(r'^\d{1,20}\.\d{1,20}$'),
-    'ga_session_id': re.compile(r'^\d{1,20}$'),
-    'fbp': re.compile(r'^fb\.\d\.\d{10,16}\.\d{1,20}$'),
-    'fbc': re.compile(r'^fb\.\d\.\d{10,16}\.[A-Za-z0-9_-]{1,200}$'),
-    'ttp': re.compile(r'^[A-Za-z0-9_-]{10,80}$'),
-    'ttclid': re.compile(r'^[A-Za-z0-9_.-]{10,200}$'),
+    'ga_client_id': re.compile(r'[0-9]{1,20}\.[0-9]{1,20}'),
+    'ga_session_id': re.compile(r'[0-9]{1,20}'),
+    'fbp': re.compile(r'fb\.[0-9]\.[0-9]{10,16}\.[0-9]{1,20}'),
+    'fbc': re.compile(r'fb\.[0-9]\.[0-9]{10,16}\.[A-Za-z0-9_-]{1,200}'),
+    'ttp': re.compile(r'[A-Za-z0-9_-]{10,80}'),
+    'ttclid': re.compile(r'[A-Za-z0-9_.-]{10,200}'),
 }
 _MARKETING_ONLY = ('fbp', 'fbc', 'ttp', 'ttclid')
 
@@ -72,16 +79,21 @@ def _capture(order, request, payload) -> None:
 
     if not isinstance(payload, dict) or not isinstance(payload.get('consent'), dict):
         return
+    forget_old_contexts()        # here, so that it does not depend on any timer being installed
+    # Kept only for a provider that will READ it: one that sends the purchase from
+    # the server. With pixels alone the browser does everything, and nothing of
+    # this browser has any business in the database.
+    readers = {active[0].consent for active in map(_server_side, PROVIDER_IDS) if active is not None}
     # `is True`: a string, a number or a missing key is not consent.
-    analytics = payload['consent'].get('analytics') is True
-    marketing = payload['consent'].get('marketing') is True
+    analytics = payload['consent'].get('analytics') is True and 'analytics' in readers
+    marketing = payload['consent'].get('marketing') is True and 'marketing' in readers
     if not (analytics or marketing):
         return
     fields = {}
     for name, shape in _SHAPES.items():
         value = payload.get(name)
         allowed = marketing if name in _MARKETING_ONLY else analytics
-        if allowed and isinstance(value, str) and shape.match(value):
+        if allowed and isinstance(value, str) and value.isascii() and shape.fullmatch(value):
             fields[name] = value
     if marketing:
         fields['user_agent'] = str(request.META.get('HTTP_USER_AGENT') or '')[:400]
@@ -92,20 +104,28 @@ def _capture(order, request, payload) -> None:
 
 # -- payment confirmed: one row per provider -----------------------------------------------
 
-def record_purchase(order) -> None:
+def record_purchase(order) -> list:
     """
     Called INSIDE the transaction that makes `order` paid. Writes the outbox rows
-    and schedules their sending for after the commit. Never raises, and cannot
-    break the transaction it is called from.
+    and returns their ids for `send_after_commit`. Never raises, and cannot break
+    the transaction it is called from.
     """
     try:
         with transaction.atomic():                       # a savepoint: ours to lose, not the payment's
-            ids = _plan(order)
+            return _plan(order)
     except Exception as exc:  # noqa: BLE001
         logger.error('purchase conversion not recorded for an order (%s)', type(exc).__name__)
-        return
+        return []
+
+
+def send_after_commit(ids) -> None:
+    """
+    Schedule the first attempt for after the commit. Registered by the caller
+    AFTER its own hooks — the confirmation e-mail goes first — and `robust`: a
+    hook that raises would otherwise cancel every hook after it.
+    """
     if ids and getattr(settings, 'MEASUREMENT_SEND_INLINE', True):
-        transaction.on_commit(lambda: attempt(ids))
+        transaction.on_commit(lambda: attempt(ids, timeout=INLINE_TIMEOUT_SECONDS), robust=True)
 
 
 def _server_side(provider_id):
@@ -140,14 +160,17 @@ def _plan(order) -> list:
 
 # -- sending ---------------------------------------------------------------------------------
 
-def attempt(delivery_ids) -> None:
-    """Best effort, after commit. Swallows everything: the row keeps the truth."""
+def attempt(delivery_ids, timeout=None) -> None:
+    """Best effort. Swallows everything, twice over: the row keeps the truth."""
     for delivery_id in delivery_ids:
         try:
-            deliver(delivery_id)
+            deliver(delivery_id, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 — nothing may surface from on_commit
             logger.error('conversion delivery crashed (%s)', type(exc).__name__)
-            _release(delivery_id)
+            try:
+                _release(delivery_id)
+            except Exception as again:  # noqa: BLE001 — the database itself; the timer finds the row later
+                logger.error('conversion delivery could not be released (%s)', type(again).__name__)
 
 
 def due(now=None):
@@ -178,7 +201,7 @@ def _release(delivery_id) -> None:
         _forget_context_when_done(row.order_id)
 
 
-def deliver(delivery_id) -> None:
+def deliver(delivery_id, timeout=None) -> None:
     from ..models import ConversionDelivery, MeasurementContext
 
     S = ConversionDelivery.Status
@@ -205,7 +228,7 @@ def deliver(delivery_id) -> None:
         return
 
     _provider, config = active
-    answer = _SENDERS[row.provider](config, order, context, row.event_id)
+    answer = _SENDERS[row.provider](config, order, context, row.event_id, timeout or adapters.TIMEOUT_SECONDS)
     if answer.ok:
         row.sent_at = timezone.now()
         _finish(row, S.SENT, code=answer.code)
@@ -267,11 +290,28 @@ def order_summary(order) -> dict:
     }
 
 
-def browser_purchase(order) -> dict:
-    """What the success page is told once the order is PAID: the same event, for the browser's copy."""
-    summary = order_summary(order)
-    return {'event_id': event_id(order), **summary,
-            'items': [{k: v for k, v in item.items() if v != ''} for item in summary['items']]}
+def browser_purchase(order):
+    """
+    What the success page is told once the order is PAID, so that the browser can
+    emit its copy of the event with the id the server's carries — or None.
+
+    FOR AN HOUR. The reference of a payment keeps opening its status for as long
+    as the order exists; if it kept opening THIS, every new browser that used it
+    would emit the purchase again. And without the coupon: the browser's copy does
+    not need the code somebody was given.
+
+    Never raises: it is called while answering a status poll.
+    """
+    try:
+        if not order.paid_at or timezone.now() - order.paid_at > PURCHASE_TOLD_FOR:
+            return None
+        summary = order_summary(order)
+        summary.pop('coupon', None)
+        return {'event_id': event_id(order), **summary,
+                'items': [{k: v for k, v in item.items() if v != ''} for item in summary['items']]}
+    except Exception as exc:  # noqa: BLE001
+        logger.error('purchase event not described for the browser (%s)', type(exc).__name__)
+        return None
 
 
 def _success_url() -> str:
@@ -279,7 +319,7 @@ def _success_url() -> str:
     return (getattr(settings, 'FRONTEND_URL', '') or '').rstrip('/') + '/checkout/success'
 
 
-def _send_google(config, order, context, _event_id):
+def _send_google(config, order, context, _event_id, timeout):
     summary = order_summary(order)
     params = {
         'transaction_id': summary['transaction_id'], 'value': summary['value'], 'currency': summary['currency'],
@@ -300,10 +340,10 @@ def _send_google(config, order, context, _event_id):
         'timestamp_micros': int(paid_at.timestamp() * 1_000_000),
         'consent': {'ad_user_data': advertising, 'ad_personalization': advertising},
         'events': [{'name': 'purchase', 'params': params}],
-    })
+    }, timeout=timeout)
 
 
-def _send_meta(config, order, context, shared_id):
+def _send_meta(config, order, context, shared_id, timeout):
     summary = order_summary(order)
     user = {'client_ip_address': context.ip, 'client_user_agent': context.user_agent, 'fbp': context.fbp, 'fbc': context.fbc}
     return adapters.meta_send(config.get('pixel_id'), config.get('access_token'), [{
@@ -316,10 +356,10 @@ def _send_meta(config, order, context, shared_id):
             'contents': [{'id': i['id'], 'quantity': i['quantity'], 'item_price': i['price']} for i in summary['items']],
             'num_items': sum(i['quantity'] for i in summary['items']),
         },
-    }], config.get('test_event_code'))
+    }], config.get('test_event_code'), timeout=timeout)
 
 
-def _send_tiktok(config, order, context, shared_id):
+def _send_tiktok(config, order, context, shared_id, timeout):
     summary = order_summary(order)
     user = {'ip': context.ip, 'user_agent': context.user_agent, 'ttp': context.ttp, 'ttclid': context.ttclid}
     return adapters.tiktok_send(config.get('pixel_code'), config.get('access_token'), [{
@@ -333,7 +373,7 @@ def _send_tiktok(config, order, context, shared_id):
                                             ('content_category', i['category']), ('price', i['price']),
                                             ('quantity', i['quantity'])) if v != ''} for i in summary['items']],
         },
-    }], config.get('test_event_code'))
+    }], config.get('test_event_code'), timeout=timeout)
 
 
 _SENDERS = {'google_analytics': _send_google, 'meta': _send_meta, 'tiktok': _send_tiktok}

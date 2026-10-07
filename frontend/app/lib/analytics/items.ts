@@ -35,3 +35,33 @@ export const toItems = (lines: LineLike[]): Item[] => lines.map((line) => toItem
 
 export const lineTotal = (lines: LineLike[]): number =>
   Math.round(lines.reduce((total, line) => total + Number(line.product.price ?? 0) * line.quantity, 0) * 100) / 100;
+
+/**
+ * «The buyer started the checkout» is said ONCE per checkout, at the first of two
+ * moments: pressing the button in the cart, or — for somebody who arrives at the
+ * checkout some other way — the checkout page finding its cart.
+ *
+ * The button comes first on purpose. Meta's and TikTok's scripts are not on the
+ * checkout page (it has a personal-data form), so the cart is the last place
+ * they can be told. This flag is how the checkout page knows it was already said.
+ */
+const BEGUN = "bd.checkout.begun";
+
+export function markCheckoutBegun(): void {
+  try {
+    window.sessionStorage.setItem(BEGUN, "1");
+  } catch {
+    // Without storage the checkout page says it again: counted twice by Google, never lost.
+  }
+}
+
+/** True once per mark: reading it clears it. */
+export function takeCheckoutBegun(): boolean {
+  try {
+    const begun = window.sessionStorage.getItem(BEGUN) === "1";
+    window.sessionStorage.removeItem(BEGUN);
+    return begun;
+  } catch {
+    return false;
+  }
+}

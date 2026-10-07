@@ -92,7 +92,7 @@ describe('the provider component', () => {
         <AnalyticsProvider />
         <a href="https://wa.me/51987654321?text=Hola">WhatsApp</a>
         <a href="mailto:tienda@example.pe">Correo</a>
-        <a href="/product">Catálogo</a>
+        <a href="#catalogo">Catálogo</a>
       </>,
     );
     await waitFor(() => expect(meta().map((call) => call[1])).toEqual(['PageView']));
@@ -126,7 +126,7 @@ describe("the purchase is the server's word, not the page's", () => {
   const SuccessPage = require('@/app/checkout/success/page').default;
   const PAID = {
     order_id: 77, status: 'paid', paid: true, total: '4999.00', message: 'Pago confirmado',
-    measurement: { event_id: 'purchase.77', transaction_id: '77', value: 4999, currency: 'PEN', tax: 762.56, coupon: '',
+    measurement: { event_id: 'purchase.77', transaction_id: '77', value: 4999, currency: 'PEN', tax: 762.56,
                    items: [{ id: '42', name: 'iPhone 15 Pro', price: 4999, quantity: 1 }] },
   };
 

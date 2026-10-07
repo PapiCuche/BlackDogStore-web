@@ -580,10 +580,13 @@ class _SignedNotificationMixin:
             # outbox row per provider the buyer consented to, written with the
             # payment and sent after the commit. It cannot raise and works
             # under a savepoint: measuring a sale must never be able to undo it.
-            conversions.record_purchase(order)
+            conversion_ids = conversions.record_purchase(order)
 
             _order_pk = order.pk
             transaction.on_commit(lambda: send_order_emails_after_payment(_order_pk))
+            # After the e-mail, and robust: a provider that is slow or down must
+            # neither delay nor cancel what the buyer is waiting for.
+            conversions.send_after_commit(conversion_ids)
 
 
 class IzipayNotificationView(_SignedNotificationMixin, APIView):
@@ -737,7 +740,10 @@ class PaymentStatusView(APIView):
     session id had, carried over rather than downgraded to an enumerable
     `order_id` — see the P1-D note in the docs.
 
-    The response carries no personal data: a status, a total and a message.
+    The response carries no personal data: a status, a total and a message —
+    and, for one hour after a confirmed payment, the order's own lines and
+    amounts as the purchase event (`measurement`), so that the buyer's
+    browser can emit its copy. No name, no address, no coupon.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -788,9 +794,12 @@ class PaymentStatusView(APIView):
             'message': status_messages.get(order.status, 'Estado desconocido'),
         }
         if order.status == Order.Status.PAID and order.paid:
-            # Only for an order the gateway confirmed: the purchase event the
-            # browser may emit, with the id the server's own copy carries.
-            payload['measurement'] = conversions.browser_purchase(order)
+            # Only for an order the gateway confirmed, and only for an hour after:
+            # the purchase event the browser may emit, with the id the server's
+            # own copy carries. It cannot fail the poll.
+            measurement = conversions.browser_purchase(order)
+            if measurement:
+                payload['measurement'] = measurement
         return Response(payload)
 
 

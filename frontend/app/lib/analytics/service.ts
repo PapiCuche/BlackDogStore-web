@@ -9,9 +9,13 @@
  *      accepted, and an event reaches only providers whose category is accepted
  *      at that moment. Before an answer, and after a refusal, nothing is loaded
  *      and nothing is sent. Withdrawing consent stops the next event.
- *   2. NO PROVIDER ON A PRIVATE ADDRESS. Where the address itself is private —
- *      a repair's tracking link, a password reset, the panel — no script is
- *      loaded and no event is sent (`privacy.ts`).
+ *   2. A PROVIDER'S SCRIPT AND A PRIVATE ADDRESS ARE NEVER IN THE SAME DOCUMENT.
+ *      Where the address is private — a repair's tracking link, a password
+ *      reset, the panel — no script is loaded. And once one IS loaded, the
+ *      application cannot move to such an address inside this document: the
+ *      History API is wrapped, the script is told to stop, and the browser is
+ *      sent there with a full load (`privacy.ts`). Not sending our own events
+ *      would not be enough: a loaded script reads the address by itself.
  *   3. IT CANNOT BREAK THE SHOP. Every call into a provider is wrapped: a script
  *      that failed to load, or throws, costs a measurement and nothing else.
  *   4. A PAGE IS VIEWED ONCE, AND A SALE IS BOUGHT ONCE. Re-renders do not repeat
@@ -39,6 +43,15 @@ let consent: Consent = NO_CONSENT;
 let loaded = new Set<string>();
 let queue: AnalyticsEvent[] = [];
 let lastPage = "";
+let guarded_history = false;
+
+type HardNavigation = (url: string, how: "assign" | "replace" | "reload") => void;
+const browserNavigation: HardNavigation = (url, how) => {
+  if (how === "reload") window.location.reload();
+  else if (how === "replace") window.location.replace(url);
+  else window.location.assign(url);
+};
+let hardNavigate: HardNavigation = browserNavigation;
 
 function here(): { pathname: string; search: string } {
   return { pathname: window.location.pathname, search: window.location.search };
@@ -68,13 +81,73 @@ function allowed(adapter: ProviderAdapter): boolean {
   return consent[adapter.consent] === true;
 }
 
+/** Whether this provider may exist on that address. */
+function mayBeAt(adapter: ProviderAdapter, pathname: string, search: string): boolean {
+  return mayMeasure(pathname, search, adapter.consent);
+}
+
+/** A script that cannot be unloaded is told that nothing is allowed any more. */
+function silence(): void {
+  for (const adapter of adapters ?? []) {
+    if (loaded.has(adapter.id)) guarded(() => adapter.updateConsent(NO_CONSENT));
+  }
+}
+
+/** Whether moving to `target` inside this document would show it to a script that may not see it. */
+function mustLeaveDocument(target: string | URL | null | undefined): URL | null {
+  if (target === null || target === undefined || loaded.size === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(String(target), window.location.href);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin) return null;
+  const exposed = (adapters ?? []).some((adapter) => loaded.has(adapter.id) && !mayBeAt(adapter, url.pathname, url.search));
+  return exposed ? url : null;
+}
+
+/**
+ * From the moment a provider's script is on the page, the application's own
+ * navigation goes through here. A route change to an address that script may
+ * not see is never given to the History API — which the script listens to — but
+ * done as a full page load, after telling the script to stop.
+ *
+ * The Back button cannot be intercepted before the address changes, so there
+ * the document is reloaded at once, and no listener registered after this one —
+ * a provider's — is told that anything happened.
+ */
+function guardHistory(): void {
+  if (guarded_history || typeof window === "undefined") return;
+  guarded_history = true;
+  for (const method of ["pushState", "replaceState"] as const) {
+    const original = window.history[method].bind(window.history);
+    window.history[method] = function guardedNavigation(state: unknown, unused: string, target?: string | URL | null) {
+      const exposed = mustLeaveDocument(target);
+      if (exposed) {
+        silence();
+        hardNavigate(exposed.href, method === "pushState" ? "assign" : "replace");
+        return;
+      }
+      original(state, unused, target);
+    };
+  }
+  window.addEventListener("popstate", (event) => {
+    if (!mustLeaveDocument(window.location.href)) return;
+    event.stopImmediatePropagation();
+    silence();
+    hardNavigate(window.location.href, "reload");
+  }, true);
+}
+
 /** Bring in the scripts of the providers that are allowed here and now, and tell the others the answer. */
 function reconcile(): void {
   if (!adapters) return;
   const { pathname, search } = here();
   for (const adapter of adapters) {
     if (allowed(adapter) && !loaded.has(adapter.id)) {
-      if (!mayMeasure(pathname, search)) continue;          // not on this address; maybe on the next one
+      if (!mayBeAt(adapter, pathname, search)) continue;    // not on this address; maybe on the next one
+      guardHistory();                                       // before the script exists, so it never hears a private address
       guarded(() => adapter.load(consent));
       loaded.add(adapter.id);
     } else if (loaded.has(adapter.id)) {
@@ -96,7 +169,8 @@ function alreadyPurchased(eventId: string): boolean {
 function dispatch(event: AnalyticsEvent): void {
   if (!adapters) return;
   const { pathname, search } = here();
-  if (!mayMeasure(pathname, search)) return;
+  const present = adapters.filter((adapter) => allowed(adapter) && loaded.has(adapter.id) && mayBeAt(adapter, pathname, search));
+  if (!present.length) return;
   if (event.name === "PAGE_VIEW") {
     const key = sanitizePath(pathname);
     if (key === lastPage) return;                           // a re-render, not a visit
@@ -107,8 +181,7 @@ function dispatch(event: AnalyticsEvent): void {
   // One id per event, shared by every provider: the server's copy of a purchase carries the same one.
   const eventId = event.name === "PURCHASE" ? event.eventId : newEventId();
   const context = page();
-  for (const adapter of adapters) {
-    if (!allowed(adapter) || !loaded.has(adapter.id)) continue;
+  for (const adapter of present) {
     if (event.name === "PURCHASE" && adapter.purchase === "server") continue;      // the server sends it alone
     guarded(() => adapter.track(event, context, eventId));
   }
@@ -149,8 +222,10 @@ export function setConsent(next: Consent): void {
   reconcile();
   if (!adapters) return;
   // A provider that has just been allowed learns of the page the visitor is on. Nothing earlier.
-  const newly = adapters.filter((adapter) => allowed(adapter) && !before[adapter.consent] && loaded.has(adapter.id));
-  if (newly.length && mayMeasure(here().pathname, here().search)) {
+  const { pathname, search } = here();
+  const newly = adapters.filter((adapter) =>
+    allowed(adapter) && !before[adapter.consent] && loaded.has(adapter.id) && mayBeAt(adapter, pathname, search));
+  if (newly.length) {
     const context = page();
     const eventId = newEventId();
     newly.forEach((adapter) => guarded(() => adapter.track({ name: "PAGE_VIEW" }, context, eventId)));
@@ -179,8 +254,14 @@ export function checkoutContext(): { consent: Consent } & Record<string, unknown
   return context;
 }
 
-/** For tests: forget everything this module learnt. */
+/** For tests: where a full navigation goes instead of the browser. */
+export function setHardNavigationForTests(navigation: HardNavigation | null): void {
+  hardNavigate = navigation ?? browserNavigation;
+}
+
+/** For tests: forget everything this module learnt. The caller restores the History API. */
 export function resetAnalyticsForTests(): void {
+  guarded_history = false;
   adapters = null;
   consent = NO_CONSENT;
   loaded = new Set();

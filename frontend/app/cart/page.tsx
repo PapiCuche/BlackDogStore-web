@@ -6,7 +6,7 @@ import { API_BASE, fetcher } from "../lib/api";
 import { fetchWithAuth, getCurrentUser } from "../lib/auth";
 import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, writeStoredCoupon } from "../lib/cart";
 import { formatMoney } from "../lib/format";
-import { DEFAULT_CURRENCY, lineTotal, toItem, toItems } from "../lib/analytics/items";
+import { DEFAULT_CURRENCY, lineTotal, markCheckoutBegun, toItem, toItems } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
 import { CartItemCard } from "../components/CartItemCard";
 
@@ -263,6 +263,13 @@ export default function CartPage() {
 
               <Link
                 href="/checkout"
+                onClick={() => {
+                  track({
+                    name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
+                    ...(coupon ? { coupon: coupon.code } : {}),
+                  });
+                  markCheckoutBegun();
+                }}
                 className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
               >
                 Continuar al checkout

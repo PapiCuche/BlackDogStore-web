@@ -79,24 +79,35 @@ def _network_failure() -> Answer:
     return Answer(UNAVAILABLE, retryable=True)
 
 
+def _unbuildable() -> Answer:
+    """
+    The request could not even be written — an identifier or a token with
+    characters HTTP does not carry. Trying again cannot help, and it must not
+    escape as an exception: this runs right after a payment.
+    """
+    return Answer(INVALID)
+
+
 # -- Google Analytics 4 -----------------------------------------------------------------
 
 def ga_url(base: str, measurement_id: str, api_secret: str) -> str:
     return f'{base}?' + urllib.parse.urlencode({'measurement_id': measurement_id, 'api_secret': api_secret})
 
 
-def ga_validate(measurement_id: str, api_secret: str, payload: dict) -> Answer:
+def ga_validate(measurement_id: str, api_secret: str, payload: dict, timeout: float = TIMEOUT_SECONDS) -> Answer:
     """
     Google's validation server: it checks the SHAPE of a payload and records
     nothing. By Google's own words it validates neither the measurement ID nor
     the API secret, so a clean answer proves the payload, not the credentials.
     """
     try:
-        _status, parsed = _post(ga_url(GA_VALIDATE, measurement_id, api_secret), payload)
+        _status, parsed = _post(ga_url(GA_VALIDATE, measurement_id, api_secret), payload, timeout=timeout)
     except urllib.error.HTTPError as exc:
         return Answer(UNAVAILABLE if exc.code >= 500 or exc.code == 429 else INVALID, retryable=exc.code >= 500)
     except (urllib.error.URLError, TimeoutError, OSError):
         return _network_failure()
+    except (UnicodeError, ValueError):
+        return _unbuildable()
     messages = parsed.get('validationMessages') if isinstance(parsed, dict) else None
     if messages:
         code = str((messages[0] or {}).get('validationCode') or '')[:40] if isinstance(messages[0], dict) else ''
@@ -104,21 +115,24 @@ def ga_validate(measurement_id: str, api_secret: str, payload: dict) -> Answer:
     return Answer(OK)
 
 
-def ga_send(measurement_id: str, api_secret: str, payload: dict) -> Answer:
+def ga_send(measurement_id: str, api_secret: str, payload: dict, timeout: float = TIMEOUT_SECONDS) -> Answer:
     """The Measurement Protocol answers 2xx to anything it received, malformed or not."""
     try:
-        _post(ga_url(GA_COLLECT, measurement_id, api_secret), payload)
+        _post(ga_url(GA_COLLECT, measurement_id, api_secret), payload, timeout=timeout)
     except urllib.error.HTTPError as exc:
         retry = exc.code >= 500 or exc.code == 429
         return Answer(UNAVAILABLE if retry else INVALID, retryable=retry, code=str(exc.code))
     except (urllib.error.URLError, TimeoutError, OSError):
         return _network_failure()
+    except (UnicodeError, ValueError):
+        return _unbuildable()
     return Answer(OK)
 
 
 # -- Meta Conversions API ---------------------------------------------------------------
 
-def meta_send(pixel_id: str, access_token: str, events: list, test_event_code: str = '') -> Answer:
+def meta_send(pixel_id: str, access_token: str, events: list, test_event_code: str = '',
+              timeout: float = TIMEOUT_SECONDS) -> Answer:
     """
     POST /{pixel}/events. The token travels in the BODY: a URL ends up in the
     access log of every proxy on the way, and in a library's error message.
@@ -127,7 +141,7 @@ def meta_send(pixel_id: str, access_token: str, events: list, test_event_code: s
     if test_event_code:
         body['test_event_code'] = test_event_code
     try:
-        _status, parsed = _post(f'{META_GRAPH}/{META_GRAPH_VERSION}/{pixel_id}/events', body)
+        _status, parsed = _post(f'{META_GRAPH}/{META_GRAPH_VERSION}/{pixel_id}/events', body, timeout=timeout)
     except urllib.error.HTTPError as exc:
         error = _error_payload(exc).get('error')
         code = str((error or {}).get('code') or '') if isinstance(error, dict) else ''
@@ -138,19 +152,22 @@ def meta_send(pixel_id: str, access_token: str, events: list, test_event_code: s
         return Answer(INVALID, code=code)
     except (urllib.error.URLError, TimeoutError, OSError):
         return _network_failure()
+    except (UnicodeError, ValueError):
+        return _unbuildable()
     received = parsed.get('events_received') if isinstance(parsed, dict) else None
     return Answer(OK) if received else Answer(INVALID)
 
 
 # -- TikTok Events API 2.0 --------------------------------------------------------------
 
-def tiktok_send(pixel_code: str, access_token: str, events: list, test_event_code: str = '') -> Answer:
+def tiktok_send(pixel_code: str, access_token: str, events: list, test_event_code: str = '',
+                timeout: float = TIMEOUT_SECONDS) -> Answer:
     """POST /event/track/. TikTok answers HTTP 200 with its own `code`: 0 is the only success."""
     body = {'event_source': 'web', 'event_source_id': pixel_code, 'data': events}
     if test_event_code:
         body['test_event_code'] = test_event_code
     try:
-        _status, parsed = _post(TIKTOK_TRACK, body, headers={'Access-Token': access_token})
+        _status, parsed = _post(TIKTOK_TRACK, body, headers={'Access-Token': access_token}, timeout=timeout)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return Answer(AUTH_FAILED, code=str(exc.code))
@@ -158,6 +175,8 @@ def tiktok_send(pixel_code: str, access_token: str, events: list, test_event_cod
         return Answer(UNAVAILABLE if retry else INVALID, retryable=retry, code=str(exc.code))
     except (urllib.error.URLError, TimeoutError, OSError):
         return _network_failure()
+    except (UnicodeError, ValueError):
+        return _unbuildable()
     code = str(parsed.get('code')) if isinstance(parsed, dict) and parsed.get('code') is not None else ''
     if code == '0':
         return Answer(OK)

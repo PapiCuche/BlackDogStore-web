@@ -176,8 +176,9 @@ test("sin respuesta no se pide nada a nadie; rechazar tampoco; cada categoría t
   // Y retirarlo detiene el siguiente evento.
   await page.getByRole("button", { name: "Preferencias de cookies" }).click();
   await page.getByRole("dialog", { name: "Preferencias de cookies" }).getByRole("button", { name: "Rechazar opcionales" }).click();
-  await page.getByRole("link", { name: /cat[aá]logo/i }).first().click().catch(() => undefined);
-  await page.waitForLoadState("networkidle");
+  await page.getByRole("contentinfo").getByRole("link", { name: "Nosotros" }).click();
+  await page.waitForURL(/\/about$/);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   expect((await queued(page)).google.map((event) => event.name), "siguió midiendo tras retirar el permiso").toEqual(["page_view"]);
 });
 
@@ -213,6 +214,64 @@ test("aceptar todo carga los tres, una vez; en una dirección privada no se carg
     await page.goto(address, { waitUntil: "networkidle" });
     expect(requested, `${address}: se cargó un script de medición`).toEqual([]);
     expect((await queued(page)).loaded, address).toEqual({ gtag: "undefined", fbq: "undefined" });
+  }
+});
+
+test("con los scripts ya cargados, ir a una dirección privada abre un documento nuevo, sin ellos", async ({ page }) => {
+  // REVISIÓN (P1). Un script ya cargado lee la dirección por su cuenta: no enviar
+  // NUESTROS eventos no protege nada. La aplicación no cambia a una dirección
+  // privada dentro del documento donde vive un script de medición.
+  const requested = await interceptProviders(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await accept(page);
+  await expect.poll(() => requested.length).toBe(3);
+
+  // Una navegación de la propia aplicación: lo que hace un <Link> o un router.push.
+  await page.evaluate(() => { (window as unknown as { __mismoDocumento?: boolean }).__mismoDocumento = true; });
+  requested.length = 0;
+  await page.evaluate(() => window.history.pushState({}, "", "/orders"));
+  await page.waitForURL(/\/(orders|auth)/);
+  await page.waitForLoadState("networkidle");
+  expect(await page.evaluate(() => (window as unknown as { __mismoDocumento?: boolean }).__mismoDocumento), "siguió en el mismo documento").toBeUndefined();
+  expect(requested, "el documento nuevo cargó un script de medición").toEqual(
+    page.url().includes("/auth") ? expect.arrayContaining([expect.stringContaining(HOSTS.google)]) : []);
+  expect((await queued(page)).loaded.fbq, "Meta está en una página privada o con formulario").toBe("undefined");
+
+  // El botón Atrás. Se llega al seguimiento con carga completa (sin scripts), se pasa a
+  // la tienda dentro del mismo documento —ahí se cargan— y se vuelve atrás: la dirección
+  // con el token no puede quedar en un documento que ya los tiene.
+  const tracking = "/seguimiento/AbCdEf0123456789AbCdEf0123456789AbCd";
+  await page.goto(tracking, { waitUntil: "networkidle" });
+  expect((await queued(page)).loaded).toEqual({ gtag: "undefined", fbq: "undefined" });
+  requested.length = 0;
+  await page.evaluate(() => window.history.pushState({}, "", "/about"));
+  await expect.poll(() => requested.length, { message: "la tienda no cargó sus scripts al salir del seguimiento" }).toBe(3);
+  await page.evaluate(() => { (window as unknown as { __mismoDocumento?: boolean }).__mismoDocumento = true; });
+  requested.length = 0;
+  await page.goBack({ waitUntil: "commit" }).catch(() => null);
+  // La recarga la pide la página al oír el «Atrás»: se espera a que el documento sea otro.
+  await expect.poll(
+    () => page.evaluate(() => (window as unknown as { __mismoDocumento?: boolean }).__mismoDocumento ?? "nuevo").catch(() => "cargando"),
+    { message: "Atrás dejó el token en el documento con scripts", timeout: 20_000 },
+  ).toBe("nuevo");
+  await page.waitForLoadState("networkidle");
+  expect(page.url()).toContain(tracking);
+  expect(requested).toEqual([]);
+  expect((await queued(page)).loaded, "un script de medición está en la página de seguimiento").toEqual({ gtag: "undefined", fbq: "undefined" });
+});
+
+test("en el checkout, que pide datos personales, no están los píxeles de marketing", async ({ page }) => {
+  const requested = await interceptProviders(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await accept(page);
+  await expect.poll(() => requested.length).toBe(3);
+
+  for (const address of ["/checkout", "/auth"]) {
+    requested.length = 0;
+    await page.goto(address, { waitUntil: "networkidle" });
+    expect(from(requested, HOSTS.meta).concat(from(requested, HOSTS.tiktok)), `${address}: se cargó un píxel de marketing`).toEqual([]);
+    expect(from(requested, HOSTS.google), `${address}: Google sí puede estar`).toHaveLength(1);
+    expect((await queued(page)).loaded.fbq).toBe("undefined");
   }
 });
 
@@ -253,7 +312,29 @@ test("producto → carrito → checkout → pago confirmado: una compra, una vez
 
   await page.getByRole("link", { name: /carrito/i }).first().click();
   await page.waitForURL(/\/cart$/);
+  // EL LIMITADOR SE RESPETA, NO SE ESQUIVA. Leer el carrito está limitado a 60 por
+  // minuto y por IP, y esta suite lo lee en cada página que abre: si responde 429 se
+  // espera la ventana y se vuelve a pedir, en vez de apagar la defensa para la prueba.
+  for (let intento = 0; intento < 4; intento += 1) {
+    await page.waitForLoadState("networkidle");
+    if ((await page.getByRole("link", { name: "Continuar al checkout" }).count()) > 0) break;
+    await page.waitForTimeout(20_000);
+    await page.reload({ waitUntil: "networkidle" });
+  }
   await expect.poll(async () => (await queued(page)).google.filter((event) => event.name === "view_cart").length).toBe(1);
+
+  // «Continuar al checkout»: el último sitio donde Meta y TikTok pueden oírlo, porque
+  // en el checkout —que pide datos personales— no están.
+  const sentToProviders: string[] = [];
+  await page.exposeFunction("__e2eBegun", (name: string) => { sentToProviders.push(name); });
+  await page.evaluate(() => {
+    const w = window as unknown as { fbq: { queue: unknown[][] }; __e2eBegun: (name: string) => void };
+    const push = w.fbq.queue.push.bind(w.fbq.queue);
+    w.fbq.queue.push = (...calls: unknown[][]) => { calls.forEach((call) => { if (call[0] === "track") w.__e2eBegun(String(call[1])); }); return push(...calls); };
+  });
+  await page.getByRole("link", { name: "Continuar al checkout" }).click();
+  await page.waitForURL(/\/checkout$/);
+  expect(sentToProviders, "Meta no supo que empezaba el checkout").toContain("InitiateCheckout");
 
   // Checkout: lo que el comprador aceptó viaja con el pedido.
   let sent: Record<string, unknown> | null = null;
@@ -262,8 +343,10 @@ test("producto → carrito → checkout → pago confirmado: una compra, una vez
     // La pasarela de la prueba no existe: la sesión de pago se sustituye abajo por un pedido sembrado.
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Pasarela no disponible en la prueba." }) });
   });
-  await page.goto("/checkout", { waitUntil: "networkidle" });
-  await expect.poll(async () => (await queued(page)).google.filter((event) => event.name === "begin_checkout").length).toBe(1);
+  await page.waitForLoadState("networkidle");
+  // Documento nuevo: Google está, los píxeles no, y el inicio del checkout no se repite.
+  expect((await queued(page)).loaded.fbq, "un píxel de marketing está en el checkout").toBe("undefined");
+  expect((await queued(page)).google.filter((event) => event.name === "begin_checkout"), "el inicio del checkout se contó dos veces").toEqual([]);
   await page.locator("#checkout-customer-name").fill("Compradora De Prueba");
   await page.locator("#checkout-customer-email").fill("compradora@example.invalid");
   await page.locator("#checkout-customer-phone").fill("987654321");

@@ -1,16 +1,22 @@
+import type { ConsentCategory } from "../consent";
+
 /**
  * What a measurement provider may be told about WHERE a visitor is and WHAT they typed.
  *
  * A URL in this shop can be a credential: the link to follow a repair, to reset
  * a password, to verify an account or to accept an invitation carries a token
  * that opens that thing for whoever holds it. A provider's script reads
- * `location.href` by itself and sends it home, and nothing passed to it can
- * stop that. So the rule has two halves:
+ * `location.href` by itself and sends it home — Google's even sends its own page
+ * views when the address changes — and nothing passed to it can stop that. So:
  *
- *   1. ON A SENSITIVE PAGE NO PROVIDER SCRIPT IS PRESENT AT ALL — and a document
- *      that STARTED on one never loads any, even after navigating away
- *      (`service.ts`). The only safe script on such a page is none.
- *   2. Everywhere else, what we say explicitly is a path with no query string,
+ *   1. A PROVIDER'S SCRIPT AND A PRIVATE ADDRESS ARE NEVER IN THE SAME DOCUMENT.
+ *      On a private address none is loaded. And when one IS loaded and the
+ *      application is about to change to a private address, that change is made
+ *      with a full page load instead (`service.ts`): the script is told to stop
+ *      and the address is opened in a new document, which has no such script.
+ *   2. Meta and TikTok are also kept off the pages with a personal-data form:
+ *      their dashboards can make their scripts read what is typed there.
+ *   3. Everywhere else, what we say explicitly is a path with no query string,
  *      and free text a visitor typed is checked before it is repeated.
  */
 
@@ -24,6 +30,16 @@ const SENSITIVE_PREFIXES = [
   "/orders",               // a customer's own orders
   "/repairs",              // a customer's own repairs, with their tracking links
 ];
+
+/**
+ * Pages with a form that takes a name, an e-mail, a phone, a document or a
+ * password. No MARKETING script here: Meta and TikTok offer «automatic advanced
+ * matching», switched on from their own dashboards, which reads those fields.
+ * Nothing in this code can switch it off, so their scripts are simply not there.
+ */
+const FORM_PREFIXES = ["/checkout", "/auth"];
+/** …except the page after paying, which has no form and is where a purchase is said. */
+const FORM_FREE = ["/checkout/success"];
 
 const EMAIL = /[^\s@/]+@[^\s@/]+\.[a-z]{2,}/i;
 const LONG_NUMBER = /\d{8,}/;                       // an IMEI, a document, a phone, a card
@@ -40,13 +56,21 @@ export function looksPrivate(text: string): boolean {
   return EMAIL.test(text) || LONG_NUMBER.test(text.replace(/[\s.-]/g, "")) || TOKEN.test(text) || SERIAL.test(text);
 }
 
+export function isFormPath(pathname: string): boolean {
+  const path = pathname.toLowerCase();
+  if (FORM_FREE.some((free) => path === free || path.startsWith(`${free}/`))) return false;
+  return FORM_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 /**
- * Whether measurement may run on this address at all. False on a sensitive
- * route, and false when the query string carries something private — a provider
+ * Whether a provider of this consent category may exist on this address. False
+ * on a private route; false for marketing on a page with a personal-data form;
+ * and false when the query string carries something private — a provider's
  * script would read it straight from the address bar.
  */
-export function mayMeasure(pathname: string, search: string): boolean {
+export function mayMeasure(pathname: string, search: string, category: ConsentCategory): boolean {
   if (isSensitivePath(pathname)) return false;
+  if (category === "marketing" && isFormPath(pathname)) return false;
   let query = search;
   try {
     query = decodeURIComponent(search);

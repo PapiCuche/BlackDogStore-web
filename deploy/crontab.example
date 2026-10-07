@@ -33,7 +33,7 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 
 # Conversiones de compra que Google Analytics, Meta o TikTok no aceptaron a la
 # primera. Cada cinco minutos. Sin ninguna de esas integraciones activa con envío
-# desde el servidor no hay nada que enviar y la línea puede quitarse.
+# desde el servidor no hay nada que enviar y termina al momento.
 */5 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py send_pending_conversions >> backups/send_pending_conversions.log 2>&1
 
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15

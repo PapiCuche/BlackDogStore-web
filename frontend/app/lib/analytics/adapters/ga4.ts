@@ -72,6 +72,9 @@ export function createGa4Adapter(measurementId: string, purchase: PurchaseSender
       });
       switch (event.name) {
         case "PAGE_VIEW":
+          // Also for whatever gtag sends by itself from here on (engagement, its own
+          // history events): the address it knows is this one, without parameters.
+          gtag("set", { page_location: page.location, page_referrer: safeReferrer(document.referrer) });
           return send("page_view", { page_title: page.title, page_referrer: safeReferrer(document.referrer) });
         case "VIEW_ITEM_LIST":
           return send("view_item_list", {

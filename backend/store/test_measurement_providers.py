@@ -181,6 +181,23 @@ class ValidationTest(_Base):
             with self.subTest(tiktok=wrong):
                 self.assertIn('pixel_code', self.errors('tiktok', {**TIKTOK, 'mode': 'pixel_only', 'pixel_code': wrong}))
 
+    def test_an_id_in_another_alphabets_digits_or_with_a_line_break_is_not_an_id(self):
+        """REVIEW: it passed, and then made the request to the provider crash outside its error handling."""
+        self.assertIn('pixel_id', self.errors('meta', {'mode': 'pixel_only', 'pixel_id': '١٢٣٤٥٦٧٨٩٠١٢٣٤٥'}))
+        self.assertIn('measurement_id', self.errors('google_analytics', {'measurement_id': 'G-NOESREAL٠١'}))
+        from store.integrations.providers import measurement
+        for pattern, value in ((measurement._META_PIXEL, '123456789012345\n'), (measurement._GA_ID, 'G-NOESREAL01\n'),
+                               (measurement._TIKTOK_PIXEL, 'C0NOESREAL0NOESREAL0\n'), (measurement._TEST_CODE, 'TEST12345\n')):
+            self.assertIsNone(pattern.fullmatch(value))
+            self.assertFalse(measurement.matches(pattern, value))
+
+    def test_a_request_that_cannot_even_be_built_is_a_refusal_not_a_crash(self):
+        from store.measurement import adapters
+        answer = adapters.tiktok_send('C0NOESREAL0NOESREAL0', 'token-con-ñ-y-٣', [{'event': 'Purchase'}])
+        self.assertEqual((answer.kind, answer.retryable), ('invalid', False))
+        answer = adapters.meta_send('١٢٣', 'token', [{'event_name': 'Purchase'}])
+        self.assertEqual((answer.kind, answer.retryable), ('invalid', False))
+
     def test_a_refused_id_is_not_repeated_back(self):
         response = self.save('google_analytics', {'measurement_id': "G-X');alert(1)//"})
         self.assertNotIn('alert', response.content.decode())

@@ -33,10 +33,18 @@ from ...measurement import adapters
 from .. import registry
 from ..registry import ConfigError, Field, Provider, TestOutcome
 
-_GA_ID = re.compile(r'^G-[A-Z0-9]{4,20}$')
-_META_PIXEL = re.compile(r'^\d{10,20}$')
-_TIKTOK_PIXEL = re.compile(r'^[A-Z0-9]{16,24}$')
-_TEST_CODE = re.compile(r'^[A-Za-z0-9_-]{4,40}$')
+# `[0-9]`, not `\d`: `\d` is every alphabet's digits, and an ID written in Arabic
+# digits is not an ID. And `fullmatch` (see `matches`): `$` lets a line break through.
+_GA_ID = re.compile(r'G-[A-Z0-9]{4,20}')
+_META_PIXEL = re.compile(r'[0-9]{10,20}')
+_TIKTOK_PIXEL = re.compile(r'[A-Z0-9]{16,24}')
+_TEST_CODE = re.compile(r'[A-Za-z0-9_-]{4,40}')
+
+
+def matches(pattern, value) -> bool:
+    """The WHOLE value is what the pattern says, in ASCII, with nothing after it."""
+    return isinstance(value, str) and value.isascii() and pattern.fullmatch(value) is not None
+
 
 PIXEL_ONLY = 'pixel_only'
 PURCHASE_BROWSER, PURCHASE_SERVER, PURCHASE_BOTH = 'browser', 'server', 'both'
@@ -85,7 +93,7 @@ class GoogleAnalyticsProvider(_Measurement):
     )
 
     def clean(self, public, secrets):
-        if public.get('measurement_id') and not _GA_ID.match(public['measurement_id']):
+        if public.get('measurement_id') and not matches(_GA_ID, public['measurement_id']):
             raise ConfigError({'measurement_id': 'No es un ID de medición de GA4: empieza por G- y sigue con letras '
                                                  'mayúsculas y números.'})
 
@@ -127,9 +135,9 @@ class _PixelProvider(_Measurement):
 
     def clean(self, public, secrets):
         errors = {}
-        if public.get(self.pixel_field) and not self.pixel_pattern.match(public[self.pixel_field]):
+        if public.get(self.pixel_field) and not matches(self.pixel_pattern, public[self.pixel_field]):
             errors[self.pixel_field] = self.pixel_error
-        if public.get('test_event_code') and not _TEST_CODE.match(public['test_event_code']):
+        if public.get('test_event_code') and not matches(_TEST_CODE, public['test_event_code']):
             errors['test_event_code'] = 'Es el código corto que da el proveedor en su pantalla de eventos de prueba.'
         if public.get('mode') == self.server_mode and not secrets.get('access_token'):
             errors['access_token'] = 'Este modo envía eventos desde el servidor: necesita el token de acceso.'

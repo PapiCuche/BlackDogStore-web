@@ -29,7 +29,6 @@ type StatusData = {
     value: number;
     currency: string;
     tax: number;
-    coupon: string;
     items: { id: string; name: string; category?: string; price: number; quantity: number }[];
   };
 };
@@ -122,7 +121,6 @@ export default function CheckoutSuccessPage() {
           track({
             name: "PURCHASE", eventId: purchase.event_id, transactionId: purchase.transaction_id,
             currency: purchase.currency, value: purchase.value, tax: purchase.tax,
-            ...(purchase.coupon ? { coupon: purchase.coupon } : {}),
             items: purchase.items.map((item) => toItem(item, item.quantity)),
           });
         }

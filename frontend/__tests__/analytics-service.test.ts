@@ -1,6 +1,8 @@
 import { CONSENT_KEY, writeConsent } from '@/app/lib/consent';
 import { EVENT_NAMES, type AnalyticsEvent, type MeasurementConfig } from '@/app/lib/analytics/events';
-import { checkoutContext, configure, pageView, resetAnalyticsForTests, setConsent, track } from '@/app/lib/analytics/service';
+import {
+  checkoutContext, configure, pageView, resetAnalyticsForTests, setConsent, setHardNavigationForTests, track,
+} from '@/app/lib/analytics/service';
 
 /**
  * ANALYTICS-MARKETING · the analytics service, in a browser with no network.
@@ -34,12 +36,22 @@ const metaEvents = () => meta().filter((call) => call[0] === 'track').map((call)
 const tiktok = () => ((window.ttq ?? []) as unknown as unknown[][]);
 const tiktokEvents = () => tiktok().filter((call) => call[0] === 'track').map((call) => ({ name: call[1] as string, params: call[2] as Record<string, unknown>, options: call[3] as { event_id: string } }));
 
+/** As a fresh document would be at this address: no script has seen anything yet. */
 function goTo(path: string) {
-  window.history.pushState({}, '', path);
+  nativePush({}, '', path);
 }
+
+// The History API as the browser gives it, kept before the service wraps it.
+const nativePush = window.history.pushState.bind(window.history);
+const nativeReplace = window.history.replaceState.bind(window.history);
+let left: { url: string; how: string }[] = [];
 
 beforeEach(() => {
   resetAnalyticsForTests();
+  window.history.pushState = nativePush;
+  window.history.replaceState = nativeReplace;
+  left = [];
+  setHardNavigationForTests((url, how) => { left.push({ url, how }); });
   window.localStorage.clear();
   document.head.querySelectorAll('script').forEach((node) => node.remove());
   document.cookie.split(';').forEach((entry) => { document.cookie = `${entry.split('=')[0].trim()}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`; });
@@ -395,5 +407,140 @@ describe('it cannot break the shop', () => {
     configure(ALL);
     pageView();
     expect(scripts()).toEqual([]);
+  });
+});
+
+/**
+ * REVIEW (P1). A provider's script that is already on the page keeps working when
+ * the application changes route without loading a new document: it reads the
+ * address by itself, and Google's sends its own page views on history changes.
+ * Not sending OUR events there protects nothing.
+ *
+ * So the rule is about documents: while a provider's script is loaded, a
+ * navigation to an address it may not see is not done inside this document. The
+ * script is told to stop, and the browser is sent there with a full load — into
+ * a document that has no such script.
+ */
+describe('a loaded script never sees a private address', () => {
+  const TOKEN = '/seguimiento/AbCdEf0123456789AbCdEf0123456789';
+
+  beforeEach(() => {
+    writeConsent({ analytics: true, marketing: true });
+    configure(ALL);
+    pageView();
+    expect(scripts()).toHaveLength(3);
+  });
+
+  it.each([
+    ['the panel', '/admin/orders'], ['a customer\'s orders', '/orders'], ['a tracking link', TOKEN],
+    ['a password reset', '/auth/reset-password?token=AbCdEf0123456789AbCdEf0123456789'],
+    ['a search for an IMEI', '/product?search=490154203237518'],
+  ])('going to %s inside the application becomes a full navigation, and the address never enters this document', (_what, address) => {
+    window.history.pushState({}, '', address);                  // what the router does on a <Link> or router.push
+    expect(left).toEqual([{ url: `http://localhost${address}`, how: 'assign' }]);
+    expect(window.location.pathname).toBe('/');                 // the History API was never told
+  });
+
+  it('replacing the address with a private one is a full navigation too', () => {
+    window.history.replaceState({}, '', '/product?search=ana%40example.com');
+    expect(left).toEqual([{ url: 'http://localhost/product?search=ana%40example.com', how: 'replace' }]);
+    expect(window.location.search).toBe('');
+  });
+
+  it('before leaving, every provider is told to stop', () => {
+    window.history.pushState({}, '', TOKEN);
+    expect(w['ga-disable-G-NOESREAL01']).toBe(true);
+    expect(meta().filter((call) => call[0] === 'consent').pop()).toEqual(['consent', 'revoke']);
+    expect(tiktok().filter((call) => call[0] === 'revokeConsent')).toHaveLength(1);
+  });
+
+  it('the Back button into a private address reloads, and no later listener hears of it', () => {
+    goTo(TOKEN);                                                // the browser has already moved the address
+    const later = jest.fn();
+    window.addEventListener('popstate', later);                 // registered after ours, as a provider's would be
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    window.removeEventListener('popstate', later);
+    expect(left).toEqual([{ url: `http://localhost${TOKEN}`, how: 'reload' }]);
+    expect(later).not.toHaveBeenCalled();
+    expect(w['ga-disable-G-NOESREAL01']).toBe(true);
+  });
+
+  it('ordinary navigation in the shop stays inside the document', () => {
+    window.history.pushState({}, '', '/product?category=iphone');
+    window.history.replaceState({}, '', '/product?category=iphone&search=funda');
+    expect(left).toEqual([]);
+    expect(window.location.pathname + window.location.search).toBe('/product?category=iphone&search=funda');
+  });
+
+  it('with no script loaded there is nothing to protect: the application navigates as usual', () => {
+    resetAnalyticsForTests();
+    window.history.pushState = nativePush;
+    window.localStorage.clear();
+    configure(ALL);                                             // nobody accepted anything
+    window.history.pushState({}, '', '/orders');
+    expect(left).toEqual([]);
+    expect(window.location.pathname).toBe('/orders');
+  });
+
+  it('Google is also told, for whatever it sends by itself, an address without parameters', () => {
+    goTo('/product?category=iphone&utm_source=x');
+    pageView();
+    const set = ga().filter((call) => call[0] === 'set').pop() as unknown[];
+    expect(set[1]).toMatchObject({ page_location: 'http://localhost/product' });
+  });
+});
+
+/**
+ * REVIEW (P2). Meta and TikTok can be told, from their own dashboards, to read
+ * the e-mail and phone a visitor types into a form («automatic advanced
+ * matching»). Nothing in this code can switch that off — so their scripts are
+ * not on the pages that have such a form. Google's is: it does not read fields.
+ */
+describe('marketing pixels are not on the pages with a personal-data form', () => {
+  it.each(['/checkout', '/auth', '/auth?next=%2Fproduct'])('%s: Google only', (address) => {
+    writeConsent({ analytics: true, marketing: true });
+    goTo(address);
+    configure(ALL);
+    pageView();
+    expect([loadedFrom(HOSTS.ga), loadedFrom(HOSTS.meta), loadedFrom(HOSTS.tiktok)]).toEqual([true, false, false]);
+    expect([window.fbq, window.ttq]).toEqual([undefined, undefined]);
+  });
+
+  it('with them loaded, going to the checkout leaves the document; Google alone would have stayed', () => {
+    writeConsent({ analytics: true, marketing: true });
+    configure(ALL);
+    pageView();
+    window.history.pushState({}, '', '/checkout');
+    expect(left).toEqual([{ url: 'http://localhost/checkout', how: 'assign' }]);
+
+    resetAnalyticsForTests();
+    window.history.pushState = nativePush;
+    left = [];
+    setHardNavigationForTests((url, how) => { left.push({ url, how }); });
+    writeConsent({ analytics: true, marketing: false });
+    configure(ALL);
+    window.history.pushState({}, '', '/checkout');
+    expect(left).toEqual([]);
+  });
+
+  it('the page after paying has no form: the purchase reaches them there', () => {
+    writeConsent({ analytics: true, marketing: true });
+    goTo('/checkout/success');
+    configure(ALL);
+    pageView();
+    track(PURCHASE);
+    expect(metaEvents().map((event) => event.name)).toEqual(['PageView', 'Purchase']);
+    expect(tiktokEvents().map((event) => event.name)).toEqual(['Purchase']);
+  });
+});
+
+describe('TikTok is told about consent with its own consent calls', () => {
+  it('granted on load, revoked on withdrawal', () => {
+    writeConsent({ analytics: false, marketing: true });
+    configure(ALL);
+    expect(tiktok().filter((call) => call[0] === 'grantConsent')).toHaveLength(1);
+    setConsent({ analytics: false, marketing: false });
+    expect(tiktok().filter((call) => call[0] === 'revokeConsent')).toHaveLength(1);
+    expect(tiktok().filter((call) => call[0] === 'disableCookie')).toHaveLength(1);
   });
 });
