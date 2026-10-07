@@ -3,6 +3,40 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
+
+**PARCIAL · 25% · BLOCKED/OWNER-DATA.** El propietario autorizó `GO AWS` para
+crear y configurar el servidor; `GO DNS` y la apertura pública son autorizaciones
+independientes y siguen pendientes. Baseline verificado por fetch: `c5f8c935a8b16072a6424184fc814efbe1babaf1`
+(#95). FRESH-PRODUCTION-DATA-01 está IMPLEMENTADO / MERGED.
+
+- AWS: cuenta BlackDogStore terminada en 7704; Lightsail `blackdogstore-prod-01`,
+  `sa-east-1a`, Ubuntu 24.04 LTS, 4 GB RAM, 2 vCPU, 80 GB SSD, US$24/mes.
+- Static IP `blackdogstore-prod-ip`: `54.94.236.23`, adjunta; IPv6 desactivado.
+  Firewall AWS: sólo SSH desde la IP administrativa y Lightsail browser SSH.
+  HTTP/HTTPS cerrados; sin balanceador, CDN, snapshots automáticos ni otros servicios.
+- Docker 29.8.2 / Compose 5.6.0, usuario `deploy` en grupo docker, UFW activo,
+  swap 2 GiB, hora America/Lima sincronizada. Repositorio limpio en
+  `/srv/blackdogstore`, HEAD exacto del baseline. Directorio 750, backups 700.
+- Los tres secretos de arranque se generaron directamente en el servidor; archivo
+  `deploy/.env.production` propiedad de deploy, 600; sin imprimir ni copiar valores.
+  `compose config --quiet`: OK. Preflight: CONFIGURACIÓN INCOMPLETA,
+  exclusivamente por `ORDER_NOTIFICATION_EMAIL`; SMTP e Izipay quedan para el panel.
+- Cloudflare autenticado: zona `blackdogstoreperu.com` con cero registros. Propuesta
+  pendiente de `GO DNS`: A `@` y A `www` hacia la Static IP, DNS only, TTL Auto.
+  No se modificó DNS, nameservers ni proxy.
+- El launch script de Lightsail falló antes de instalar por el envoltorio sh
+  (`pipefail`); se ejecutó explícitamente con Bash y se comprobó su finalización.
+  Actualizaciones oficiales aplicadas y reinicio verificado: Docker, UFW, swap
+  y Compose config correctos después de arrancar con el kernel actualizado.
+- Sin contenedores, base, migraciones, bootstrap, MASTER, cron ni tráfico público.
+  Build, healthcheck y backup/restore reales pendientes. No se tocó código productivo
+  ni el árbol principal del propietario. Analítica y pagos permanecen sin configurar.
+
+25% = plan/servidor 10% + host 15%; los otros bloques no se dan por terminados.
+No es READY FOR PRODUCTION. Siguiente dato: destinatario real de avisos de pedidos;
+después preflight, imágenes, PostgreSQL vacío, migrate y bootstrap, sin Caddy hasta DNS.
+
 ## 2026-10-07 — FRESH-PRODUCTION-DATA-01: producción nace de una base vacía
 
 Rama `feat/fresh-production-data-01`, desde `master` `52a4ba3` (documentación de #94 sobre

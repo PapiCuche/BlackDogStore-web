@@ -2,7 +2,9 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: ver `git log -1 origin/master`; CHECKPOINT 1B ensayado sobre `a1d2a29` (#93), 2026-10-07.
+master: baseline del servidor `c5f8c935a8b16072a6424184fc814efbe1babaf1` (#95), 2026-10-07.
+Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
+actualizan automáticamente la copia desplegable del servidor.
 
 open_prs:
 - #80 (TypeScript 6, DEP-TS6) y #85 (@types/node 24): versiones mayores que el lanzamiento
@@ -12,31 +14,32 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 1B cerrado: **READY FOR CHECKPOINT 2** sobre `a1d2a29` (#93).
-FIX-MEAS-LOG-TEST-01 IMPLEMENTADO, CI completo verde sobre su HEAD exacto.
-Esperar aprobación explícita del plan Lightsail antes de crear cualquier recurso AWS.
-Dominio comprado: `blackdogstoreperu.com`. Ningún servidor creado ni tienda publicada.
-La preparación técnica está validada; no equivale a READY FOR PRODUCTION.
-
-Producción: NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
-cerrada: Google Analytics 4, Meta y TikTok se configuran en la consola (sólo MASTER), la
-tienda pide permiso antes de cargar nada de terceros y la compra se mide una vez, desde
-la confirmación del pago, en `master` desde #91. Ninguna integración se ha probado contra
-su servicio real. No iniciar SERIAL-PICK hasta que el propietario lo ordene.
-Sigue sin haber servidor, SMTP ni claves de Izipay. El dominio ya está comprado; DNS pendiente. No hay nada publicado.
+CHECKPOINT 2 **PARCIAL · 25% · BLOCKED/OWNER-DATA**. `GO AWS` recibido; servidor
+Lightsail `blackdogstore-prod-01` creado en `sa-east-1a` (4 GB, 2 vCPU, 80 GB,
+US$24/mes), Static IP `blackdogstore-prod-ip` `54.94.236.23` adjunta.
+Docker/Compose, deploy, UFW, swap y copia limpia del baseline preparados.
+Secretos de arranque generados sólo en el servidor, `.env.production` 600.
+Compose config OK; preflight INCOMPLETO por `ORDER_NOTIFICATION_EMAIL`.
+No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
+`GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
+A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
+Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
+MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
+INT-IMPORT-CYCLE-01; no tocar #80/#85.
+CHECKPOINT 1B cerrado sobre `a1d2a29` (#93); FIX-MEAS-LOG-TEST-01 IMPLEMENTADO.
+FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED con #95 en `c5f8c93`.
 
 current_priority:
-0a. FRESH-PRODUCTION-DATA-01 (en PR, espera la revisión del propietario): producción nace
-   de PostgreSQL vacío y `migrate`; `bootstrap_pilot_store --apply` retira los tres
-   productos de ejemplo y deja las cinco categorías aprobadas; el primer usuario es el
-   MASTER, con `createsuperuser`. Orden de un primer arranque:
-   `docs/despliegue-produccion.md` §5.
+0a. FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED (#95): al desplegar,
+   PostgreSQL vacío → migrate → bootstrap_pilot_store --apply → comprobar cero
+   productos/stock/movimientos, cinco categorías y campaña conservada. Primer
+   usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. Con aprobación del propietario, crear el servidor del CHECKPOINT 2. El dominio ya está comprado. En el servidor:
-   `cp deploy/.env.production.example deploy/.env.production`, rellenar lo de arranque
-   (dominio, `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_CONFIG_ENCRYPTION_KEY`, dirección de
-   los pedidos) y `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
+1. Continuar CHECKPOINT 2 en el servidor ya creado, sin apertura pública. En el servidor:
+   `.env.production` ya existe y contiene los secretos generados: no volver a copiar
+   el ejemplo ni regenerarlos. Completar sólo el destinatario real de pedidos y
+   ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
@@ -57,7 +60,8 @@ validated:
   frontend 933/933, typecheck/build correctos, lint 0 errores / 22 avisos; imágenes,
   compose, preflight con datos sintéticos y ENSAYO COMPLETO 139, navegador, backup y
   dos restores correctos; limpieza completa. CI #93: 5654, OK, 5 omitidas conocidas.
-- Escaneo del diff limpio; rama local del propietario preservada. Sin recursos AWS.
+- Escaneo del diff del CHECKPOINT 1B limpio; rama local del propietario preservada.
+  En ese checkpoint no se crearon recursos; el servidor se creó después con GO AWS.
 - Sobre `62ed3b8` (el código de la fase, en `master` con #91; lo posterior es documentación): backend 5654
   pruebas, 0 fallos, 5 omitidas · Jest 933/933 · tipos limpio · lint 0 errores, 22 avisos ·
   build correcto · Playwright 194/194, 0 omitidas · `ENSAYO: OK` (139 + 49).
@@ -72,8 +76,8 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
 - SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
-- Servidor: proveedor, IP, usuario SSH y acceso.
-- Dominio y quién gestiona el DNS.
+- DNS: GO DNS independiente para A @ y A www hacia 54.94.236.23, DNS only.
+  Servidor y acceso AWS ya disponibles; dominio gestionado por Cloudflare.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
 - Dirección que recibe el aviso de cada pedido.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
@@ -128,7 +132,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: decir cuál de los dos productos de Izipay tiene contratado y contratar el
-servidor. Con el servidor: `cp deploy/.env.production.example deploy/.env.production`,
-rellenar lo de arranque allí, `python3 deploy/preflight.py`, arrancar, y configurar el
-correo y la pasarela en Panel › Configuración › Integraciones.
+Propietario: indicar únicamente el correo real que recibe los avisos de pedidos
+(ORDER_NOTIFICATION_EMAIL), sin contraseña. Después: completar preflight en el
+servidor, reconstruir imágenes y continuar el arranque limpio documentado. DNS se
+modifica sólo después de GO DNS sobre el antes/después; no abrir tráfico público.
+SMTP e Izipay TEST se escriben directamente en el panel MASTER cuando esté disponible.

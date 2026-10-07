@@ -120,16 +120,19 @@ la dirección real y Django la lee con `TRUSTED_PROXY_COUNT=1`.
 
 ## 2. Qué hay que contratar y cuánto cuesta
 
-Precios aproximados; confirmar al contratar.
+Contrato del piloto aprobado con `GO AWS` el 2026-10-07: Lightsail en
+`sa-east-1a`, Ubuntu 24.04, 4 GB RAM, 2 vCPU, 80 GB SSD, plan IPv4 US$24/mes.
+Static IP adjunta `54.94.236.23`; sin snapshots automáticos ni otros servicios AWS.
+El dominio `blackdogstoreperu.com` ya está comprado. Los demás costes son estimados.
 
 | Concepto | Opción sugerida | Costo aproximado |
 |---|---|---|
-| Servidor | VPS con 2 vCPU, 4 GB de RAM, 40 GB de disco, Ubuntu 24.04 | US$5–8 al mes |
+| Servidor | Lightsail con 2 vCPU, 4 GB de RAM, 80 GB SSD, Ubuntu 24.04 | US$24 al mes |
 | Dominio | `.com` o `.pe` | US$10–15 al año (`.com`); US$40–60 al año (`.pe`) |
 | Correo saliente (SMTP) | Un proveedor transaccional con plan gratuito o el correo del dominio | US$0–6 al mes |
 | Copia externa | Almacenamiento de objetos (unos pocos MB) | US$0–1 al mes |
 
-Total estimado: **US$6–15 al mes** más el dominio.
+Total estimado: **US$24–31 al mes** más el dominio.
 
 Con menos de 4 GB de RAM la compilación del frontend puede quedarse sin memoria.
 
@@ -200,6 +203,13 @@ contenedor. Lo que sí impide arrancar es dejar `EMAIL_BACKEND` puesto con
 ## 4. Publicar por primera vez
 
 ### 4.1 Dominio y servidor
+
+En CHECKPOINT 2 el servidor ya existe: `blackdogstore-prod-01`. `GO AWS` no
+autoriza DNS ni apertura pública. Antes de DNS, mostrar registros actuales y los
+dos A propuestos hacia la Static IP; esperar `GO DNS`, mantener DNS only y no
+cambiar nameservers. No abrir HTTP/HTTPS durante la preparación. Para un
+despliegue controlado posterior, definir el acceso administrativo y ACME antes de
+abrir puertos; la apertura a clientes requiere orden separada.
 
 1. Compra el dominio y crea dos registros DNS de tipo `A` hacia la IP del servidor:
    uno para el dominio y otro para `www`.
