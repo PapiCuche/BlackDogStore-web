@@ -75,19 +75,30 @@ export function invitationReturnFromLocation(): string | null {
 }
 
 /**
- * Lee la invitación. `null` para inexistente, alterada, caducada, revocada o
- * usada: el servidor responde lo mismo a todas, y aquí no se distingue más.
+ * Lo que se supo al leer una invitación.
+ *
+ *   found    sirve, y esto es lo que dice.
+ *   invalid  inexistente, alterada, caducada, revocada o usada: el servidor
+ *            responde lo mismo a todas, y aquí no se distingue más.
+ *   busy     no se pudo saber: demasiadas lecturas desde esta red en un minuto,
+ *            o no hubo respuesta. NO es «inválida»: decirle eso a alguien cuyo
+ *            enlace sirve lo manda a pedir otro que no necesita.
  */
-export async function fetchInvitation(token: string): Promise<InvitationInfo | null> {
+export type InvitationRead =
+  | { state: "found"; info: InvitationInfo }
+  | { state: "invalid" }
+  | { state: "busy" };
+
+export async function readInvitation(token: string): Promise<InvitationRead> {
   try {
     const res = await fetch(
       `${API_BASE}/staff/invitations/accept/?token=${encodeURIComponent(token)}`,
       { cache: "no-store" },
     );
-    if (!res.ok) return null;
-    return (await res.json()) as InvitationInfo;
+    if (res.ok) return { state: "found", info: (await res.json()) as InvitationInfo };
+    return res.status === 404 ? { state: "invalid" } : { state: "busy" };
   } catch {
-    return null;
+    return { state: "busy" };
   }
 }
 

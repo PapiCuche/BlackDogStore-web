@@ -22,14 +22,21 @@
  * ese enlace la trae de vuelta a esta invitación.
  */
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth, getCurrentUser, logout, requestPasswordReset } from "../lib/auth";
 import {
-  accountStateOf, fetchInvitation, invitationPath, type InvitationInfo,
+  accountStateOf, invitationPath, readInvitation, type InvitationInfo,
 } from "../lib/invitation";
+
+/**
+ * Cada lectura de la invitación cuenta contra un cupo por red (es lo que frena
+ * a quien prueba enlaces al azar). Volver a la pestaña no puede gastarlo: se
+ * vuelve a preguntar, como mucho, una vez cada tanto.
+ */
+const ASK_AGAIN_AFTER_MS = 15_000;
 
 export default function InvitationPage() {
   return (
@@ -65,14 +72,27 @@ function InvitationScreen() {
   // tanto la persona pudo crear la cuenta o iniciar sesión en otra parte, y lo
   // que esta pantalla ofrecía dejó de ser cierto.
   const [asked, setAsked] = useState(0);
+  const lastAsked = useRef(0);
+  const known = useRef(false);
 
   useEffect(() => {
-    const askAgain = () => setAsked((n) => n + 1);
-    const whenVisible = () => { if (document.visibilityState === "visible") askAgain(); };
-    window.addEventListener("pageshow", askAgain);
+    const askAgain = () => {
+      lastAsked.current = Date.now();
+      setAsked((n) => n + 1);
+    };
+    // Volver atrás a una página guardada por el navegador: lo que muestra es de
+    // antes. Una carga normal ya pregunta por sí sola.
+    const whenRestored = (event: Event) => {
+      if ((event as PageTransitionEvent).persisted) askAgain();
+    };
+    const whenVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastAsked.current >= ASK_AGAIN_AFTER_MS) askAgain();
+    };
+    window.addEventListener("pageshow", whenRestored);
     document.addEventListener("visibilitychange", whenVisible);
     return () => {
-      window.removeEventListener("pageshow", askAgain);
+      window.removeEventListener("pageshow", whenRestored);
       document.removeEventListener("visibilitychange", whenVisible);
     };
   }, []);
@@ -88,18 +108,28 @@ function InvitationScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    lastAsked.current = Date.now();
     void (async () => {
-      const found = await fetchInvitation(token);
+      const read = await readInvitation(token);
       if (cancelled) return;
-      if (found) {
-        setInfo(found);
-      } else {
+      if (read.state === "found") {
+        known.current = true;
+        setInfo(read.info);
+      } else if (read.state === "invalid") {
         // UN SOLO MENSAJE para inexistente, alterada, caducada y revocada:
         // distinguirlos diría a quien prueba enlaces si acertó el formato o
         // sólo el plazo.
+        known.current = false;
         setInfo(null);
         setError("Esta invitación no es válida o ya expiró.");
+      } else if (!known.current) {
+        // No se pudo saber, y no hay nada anterior que enseñar. No es lo mismo
+        // que inválida, y no se dice que lo sea.
+        setInfo(null);
+        setError("No pudimos comprobar la invitación ahora mismo. Espera un minuto y vuelve a abrir el enlace.");
       }
+      // Si ya se sabía y esta vez no hubo respuesta, se deja lo que había: una
+      // invitación que servía hace un momento no deja de servir por eso.
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -339,14 +369,16 @@ function InvitationScreen() {
         ) : (
           <>
             <h1 className="font-display text-xl text-foreground">
-              Invitación no válida
+              {error?.startsWith("No pudimos") ? "Invitación sin comprobar" : "Invitación no válida"}
             </h1>
             <p className="mt-2 text-sm text-muted">
               {error ?? "Esta invitación no es válida o ya expiró."}
             </p>
-            <p className="mt-3 text-xs text-muted">
-              Pide a la empresa que te envíe una nueva.
-            </p>
+            {error?.startsWith("No pudimos") ? null : (
+              <p className="mt-3 text-xs text-muted">
+                Pide a la empresa que te envíe una nueva.
+              </p>
+            )}
           </>
         )}
       </div>

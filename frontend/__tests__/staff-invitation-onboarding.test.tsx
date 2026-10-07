@@ -82,6 +82,19 @@ function serverSays(account: Account | null, extra: Record<string, unknown> = {}
   );
 }
 
+function serverAnswers(status: number) {
+  (global as unknown as { fetch: jest.Mock }).fetch = jest.fn(() =>
+    Promise.resolve({ ok: false, status, json: () => Promise.resolve({ detail: 'x' }) }),
+  );
+}
+
+/** Volver atrás a una página que el navegador tenía guardada. */
+function restored(): Event {
+  const event = new Event('pageshow');
+  Object.defineProperty(event, 'persisted', { value: true });
+  return event;
+}
+
 function wrapped(node: React.ReactNode) {
   return render(
     <ThemeProvider>
@@ -221,10 +234,48 @@ describe('la invitación ofrece el camino que termina', () => {
     expect(screen.getByRole('link', { name: 'Crear mi cuenta' })).toBeTruthy();
 
     serverSays('active');
-    await act(async () => { window.dispatchEvent(new Event('pageshow')); });
+    await act(async () => { window.dispatchEvent(restored()); });
 
     await screen.findByRole('link', { name: 'Iniciar sesión' });
     expect(screen.queryByText(/Crear/)).toBeNull();
+  });
+
+  it('una carga normal pregunta UNA vez: cada lectura gasta un cupo que es de toda la red', async () => {
+    serverSays('none');
+    await openInvitation();
+    await act(async () => { window.dispatchEvent(new Event('pageshow')); });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect((global as unknown as { fetch: jest.Mock }).fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('si no se puede comprobar, no se dice que la invitación no vale', async () => {
+    serverAnswers(429);
+    mockSearch = new URLSearchParams({ token: TOKEN });
+    wrapped(<InvitationPage />);
+
+    await screen.findByText(/No pudimos comprobar la invitación/);
+    expect(screen.queryByText(/no es válida/)).toBeNull();
+    expect(screen.queryByText(/te envíe una nueva/)).toBeNull();
+  });
+
+  it('una invitación que servía no deja de servir porque una lectura posterior falle', async () => {
+    serverSays('none');
+    await openInvitation();
+
+    serverAnswers(429);
+    await act(async () => { window.dispatchEvent(restored()); });
+
+    await waitFor(() => expect((global as unknown as { fetch: jest.Mock }).fetch).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('link', { name: 'Crear mi cuenta' })).toBeTruthy();
+    expect(screen.queryByText(/no es válida|No pudimos/)).toBeNull();
+  });
+
+  it('la que de verdad no sirve se sigue diciendo con un solo mensaje', async () => {
+    serverAnswers(404);
+    mockSearch = new URLSearchParams({ token: TOKEN });
+    wrapped(<InvitationPage />);
+    await screen.findByRole('heading', { name: 'Invitación no válida' });
+    expect(screen.getByText(/te envíe una nueva/)).toBeTruthy();
   });
 });
 
@@ -275,6 +326,22 @@ describe('crear la cuenta desde una invitación', () => {
     await openRegistration(`?mode=register&next=${encodeURIComponent(INVITATION)}`);
     await screen.findByRole('heading', { name: 'Iniciar sesión' });
     expect(screen.getByText(/Ya tienes una cuenta con este correo/)).toBeTruthy();
+  });
+
+  it('si la invitación no se pudo leer, no se crea la cuenta sin ella', async () => {
+    serverAnswers(429);
+    const { container } = await openRegistration(`?mode=register&next=${encodeURIComponent(INVITATION)}`);
+    await waitFor(() => expect((global as unknown as { fetch: jest.Mock }).fetch).toHaveBeenCalled());
+    await screen.findByRole('heading', { name: 'Crear cuenta' });
+
+    fill(container, {
+      'auth-page-usuario': 'ana.torres', 'auth-page-correo-electronico': WORKER,
+      'auth-page-contrasena': 'Una-clave-2026!', 'auth-page-confirmar-contrasena': 'Una-clave-2026!',
+    });
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+
+    await screen.findByText(/No pudimos comprobar tu invitación/);
+    expect(mockRegister).not.toHaveBeenCalled();
   });
 
   it('sin invitación, registrarse es lo que era: sin dato de invitación y sin entrar solo', async () => {

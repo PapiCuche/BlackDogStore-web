@@ -12,7 +12,7 @@ import {
 } from "../lib/auth";
 import { safeInternalNextPath } from "../lib/safe-next";
 import {
-  accountStateOf, fetchInvitation, invitationPath, invitationTokenFromNext,
+  accountStateOf, invitationPath, invitationTokenFromNext, readInvitation,
 } from "../lib/invitation";
 import { DevQuickLogin } from "./components/DevQuickLogin";
 
@@ -44,13 +44,19 @@ async function destinationAfterLogin(): Promise<string> {
  */
 const USERNAME_HANDOFF = "bd.auth.username";
 
-function takeHandedUsername(): string {
+function handedUsername(): string {
   try {
-    const value = window.sessionStorage.getItem(USERNAME_HANDOFF) ?? "";
-    window.sessionStorage.removeItem(USERNAME_HANDOFF);
-    return value;
+    return window.sessionStorage.getItem(USERNAME_HANDOFF) ?? "";
   } catch {
     return "";
+  }
+}
+
+function forgetHandedUsername(): void {
+  try {
+    window.sessionStorage.removeItem(USERNAME_HANDOFF);
+  } catch {
+    // Sin almacenamiento de sesión no había nada que olvidar.
   }
 }
 
@@ -72,6 +78,10 @@ export default function AuthPage() {
   // para una persona, no para quien tenga el enlace y escriba cualquier correo.
   const [invitation, setInvitation] = useState<{ token: string; email: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Se llegó desde una invitación y no se pudo leer. Registrarse ahora crearía
+  // la cuenta SIN la invitación —sin verificar, que es el estado del que no se
+  // salía—, así que no se deja: se dice que hay que esperar.
+  const [invitationUnread, setInvitationUnread] = useState(false);
   const [forgotHref, setForgotHref] = useState("/auth/forgot-password");
   const router = useRouter();
 
@@ -81,11 +91,19 @@ export default function AuthPage() {
       const search = new URLSearchParams(window.location.search);
       const wantsRegister = search.get("mode") === "register";
       const token = invitationTokenFromNext(search.get("next"));
-      const handed = takeHandedUsername();
-      const info = token ? await fetchInvitation(token) : null;
+      const handed = handedUsername();
+      const read = token ? await readInvitation(token) : null;
       if (cancelled) return;
+      const info = read?.state === "found" ? read.info : null;
+      if (read?.state === "busy") setInvitationUnread(true);
 
-      if (handed) setUsername(handed);
+      // Se olvida DESPUÉS de usarlo, no al leerlo: en desarrollo React ejecuta
+      // este efecto dos veces y la primera se cancela; borrarlo al leer dejaba
+      // el campo vacío (lo encontró la prueba en navegador real).
+      if (handed) {
+        setUsername(handed);
+        forgetHandedUsername();
+      }
       if (token) setForgotHref(`/auth/forgot-password?next=${encodeURIComponent(invitationPath(token))}`);
       if (!token || !info) {
         if (wantsRegister) setIsLogin(false);
@@ -115,6 +133,10 @@ export default function AuthPage() {
     setError(null);
     setSuccess(null);
     try {
+      if (!isLogin && invitationUnread) {
+        setError("No pudimos comprobar tu invitación ahora mismo. Espera un minuto y vuelve a cargar esta página antes de crear la cuenta.");
+        return;
+      }
       if (isLogin) {
         const data = await login(username, password);
         setUser(data.user);
