@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
 import { ProductImage } from "./ProductImage";
@@ -113,8 +113,13 @@ export default function ProductDetail({ product }: { product: Product }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id, product.category?.slug]);
 
+  const viewedProduct = useRef<number | string | null>(null);
   useEffect(() => {
-    // Once per product shown — keyed on its id, so a re-render is not a second view.
+    // Once per product shown. The ref is what makes it once: an effect can run
+    // again for the same product (a remount, React's development double-run)
+    // and that is not a second look at it.
+    if (viewedProduct.current === product.id) return;
+    viewedProduct.current = product.id;
     track({ name: "VIEW_ITEM", item: toItem(product), currency: DEFAULT_CURRENCY, value: Number(product.price) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.id]);
