@@ -174,6 +174,11 @@ function withSelectedCompany(url: string): string {
   // en la ruta y quedaba fuera: el selector de empresa seguía diciendo «elige
   // una» mientras los módulos ya cargaban con la elegida.
   if (!url.includes("/admin/") && !url.includes("/me/internal-")) return url;
+  // La consola de integraciones es de la plataforma: nombra ella la empresa en
+  // las integraciones que son de cada una, y en las demás (correo, pasarela) el
+  // servidor rechaza el parámetro. Añadirlo aquí dejaba al master sin poder
+  // configurarlas.
+  if (url.includes("/admin/integrations/")) return url;
   if (/[?&]company=/.test(url)) return url;
   let id: string | null = null;
   try {
