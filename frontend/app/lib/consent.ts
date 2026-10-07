@@ -17,9 +17,9 @@
 
 export type ConsentCategory = "analytics" | "marketing";
 export type Consent = Record<ConsentCategory, boolean>;
-export type StoredConsent = Consent & { version: 1; decidedAt: string };
+export type StoredConsent = Consent & { version: 2; decidedAt: string };
 
-export const CONSENT_KEY = "bd.consent.v1";
+export const CONSENT_KEY = "bd.consent.v2";
 export const NO_CONSENT: Consent = { analytics: false, marketing: false };
 export const FULL_CONSENT: Consent = { analytics: true, marketing: true };
 
@@ -34,9 +34,9 @@ export function readConsent(): StoredConsent | null {
     if (!parsed || typeof parsed !== "object") return null;
     const value = parsed as Record<string, unknown>;
     // Strict on purpose: a value somebody edited to "yes" is not a consent.
-    if (value.version !== 1 || typeof value.analytics !== "boolean" || typeof value.marketing !== "boolean") return null;
+    if (value.version !== 2 || typeof value.analytics !== "boolean" || typeof value.marketing !== "boolean") return null;
     return {
-      version: 1, analytics: value.analytics, marketing: value.marketing,
+      version: 2, analytics: value.analytics, marketing: value.marketing,
       decidedAt: typeof value.decidedAt === "string" ? value.decidedAt : "",
     };
   } catch {
@@ -52,7 +52,7 @@ export function currentConsent(): Consent {
 
 export function writeConsent(consent: Consent): StoredConsent {
   const stored: StoredConsent = {
-    version: 1, analytics: consent.analytics === true, marketing: consent.marketing === true,
+    version: 2, analytics: consent.analytics === true, marketing: consent.marketing === true,
     decidedAt: new Date().toISOString(),
   };
   try {

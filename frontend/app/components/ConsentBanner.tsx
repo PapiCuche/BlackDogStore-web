@@ -14,6 +14,7 @@
  * Not shown in the panel: staff are not measured, so there is nothing to ask.
  */
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -77,11 +78,15 @@ export function ConsentBanner() {
         {view === "notice" ? "Cookies en esta tienda" : "Preferencias de cookies"}
       </h2>
 
+      <p className="mt-2 text-xs text-muted">
+        <Link href="/privacy" className="underline underline-offset-4">Privacidad y cookies</Link>
+      </p>
+
       {view === "notice" ? (
         <>
           <p className="mt-2 text-xs leading-relaxed text-muted">
             Usamos las cookies necesarias para que la tienda funcione. Con tu permiso, también cookies de analítica
-            (para saber qué se visita) y de marketing (para medir nuestra publicidad). Puedes cambiarlo cuando quieras.
+            (para medir visitas y compras con Google Analytics) y de marketing (para medir nuestra publicidad). Puedes cambiarlo cuando quieras.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <button type="button" className={SOLID} onClick={() => answer(FULL_CONSENT)}>Aceptar todas</button>
@@ -98,7 +103,7 @@ export function ConsentBanner() {
             />
             <Toggle
               id="consent-analytics" label="Analítica" checked={choice.analytics}
-              description="Google Analytics: qué páginas y productos se visitan, sin tu nombre ni tu correo."
+              description="Google Analytics: visitas, productos, carrito y compras; identificadores de navegador y sesión, sin tu nombre ni tu correo. La compra puede enviarse desde el servidor al confirmar el pago."
               onChange={(analytics) => setChoice((previous) => ({ ...previous, analytics }))}
             />
             <Toggle
