@@ -3,6 +3,98 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — CHECKPOINT 2: tienda desplegada con HTTPS, sin catálogo ni integraciones
+
+**PARCIAL · 90% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
+`959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
+documentación: el servidor arrancó en `c5f8c935a8b16072a6424184fc814efbe1babaf1` y
+quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
+
+- Acceso: clave SSH dedicada para `deploy`, instalada por el propietario desde el SSH
+  del navegador de Lightsail; la mitad privada vive sólo en su equipo. Firewall de AWS
+  sin cambios (22 sólo desde la IP administrativa; 80/443 cerrados, comprobado desde fuera).
+- Host revalidado: Ubuntu 24.04.5, 3,8 GiB RAM, swap 2 GiB, disco 12% tras el build,
+  Docker 29.8.2 / Compose 5.6.0, hora America/Lima sincronizada, sin reinicio pendiente.
+  UFW no se pudo releer: `deploy` no tiene sudo sin contraseña (correcto).
+- `ORDER_NOTIFICATION_EMAIL` escrito con la dirección que dio el propietario; archivo
+  sigue `deploy:deploy` 600. Preflight: `CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR`
+  (SMTP e Izipay BLOCKED/OWNER-DATA para el panel; Google, WhatsApp y SUNAT opcionales).
+- §4.3 de la guía: `build` correcto (backend 460 MB, frontend 1,09 GB); PostgreSQL en
+  volumen nuevo; `migrate` aplicó las 154 migraciones, 0 pendientes; simulación y
+  `bootstrap_pilot_store --apply`; segunda ejecución: «Nada que hacer».
+- Estado inicial medido en el servidor, `DEBUG=False`: usuarios 0, pedidos 0, clientes 0,
+  `Product=0 | BranchStock=0 | StockMovement=0`, 1 empresa, 1 sucursal, cinco categorías
+  (iPhone, Mac, iPad, Apple Watch, Accesorios), campaña «iPhone 18 Pro Max» publicada.
+- `check --deploy`: un único aviso, `security.W008`, el esperado.
+- Arrancados primero `postgres`, `backend` y `frontend`, los tres `healthy`, sin Caddy
+  y sin puertos publicados. Sondas dentro de la red de Docker: `/api/categories` 200,
+  `/api/products/` 200, `/api/dev/demo-accounts/` 404, `/admin/` 404, portada de Next 200.
+- Primera copia con `deploy/backup.sh`: volcado legible con 98 tablas y `LAST_OK`.
+  **Restauración no ensayada en el servidor.**
+
+- MASTER creado por el propietario con `createsuperuser` desde su terminal: 1 usuario,
+  `is_superuser`, activo, sin membresía (`Membership=0`). La contraseña no pasó por el chat.
+- `GO DNS` del propietario, sobre la tabla antes/después. Antes: zona con 0 registros.
+  Después: A `blackdogstoreperu.com` y A `www` hacia `54.94.236.23`, DNS only, TTL Auto,
+  creados desde el panel de Cloudflare con la sesión del propietario. Nameservers y proxy
+  sin cambios; ningún otro registro. Resuelven en los nameservers de Cloudflare, 1.1.1.1 y
+  8.8.8.8; sin AAAA. `preflight.py --dns --server-ip`: OK los dos.
+- Apertura autorizada por el propietario. Firewall de Lightsail, antes: SSH 22 desde la IP
+  administrativa y el SSH del navegador. Después: además HTTP 80 y HTTPS 443 desde
+  cualquier IPv4. Sin IPv6. `up -d caddy`: certificados de Let's Encrypt emitidos para el
+  dominio y `www` al primer intento.
+- §4.5 desde fuera: `http://` 308 a `https://`; portada 200; `www` 301 al dominio;
+  `/api/categories` 200 con las cinco categorías; `/api/products/` 200 con 0 productos;
+  `/api/dev/demo-accounts` 404; `/media/` y una ruta del almacén 404; `/auth` 200.
+  Cabeceras: HSTS, `nosniff`, `X-Frame-Options: DENY`, sin `Server`. Puertos visibles
+  desde internet: 22 (sólo la IP administrativa), 80 y 443; 5432, 8000, 3000 y 2019 cerrados.
+- La tienda es visible para cualquiera con el dominio: sin catálogo, sin correo y sin
+  pagos. No se ha anunciado ni se ha abierto a clientes.
+- **Defecto encontrado al usar el panel (INT-PLATFORM-COMPANY, corregido en #98).** Con la
+  cuenta MASTER, Integraciones › Correo SMTP › Configurar respondía «Esta integración es de
+  la plataforma: no lleva empresa.» `fetchWithAuth` añadía la empresa elegida en el panel
+  a toda llamada bajo `/admin/`, y la API de integraciones rechaza ese parámetro en los
+  proveedores de plataforma. Las pruebas de la consola simulaban `fetchWithAuth` y no lo
+  veían. Corrección sólo de frontend: `withSelectedCompany` no toca `/admin/integrations/`.
+  Prueba nueva con el `fetchWithAuth` real, RED antes y GREEN después; Jest 936/936, tipos
+  limpio, lint 0 errores y 22 avisos; CI verde. Merge ordenado por el propietario:
+  `54b26ac15767f35eb74ccf6e98b9f176579019dc`.
+- Servidor actualizado a `54b26ac`: sólo se reconstruyó y reinició `frontend`; sin
+  migraciones. Los cuatro contenedores en marcha; portada, `/auth` y API 200. El editor de
+  Correo SMTP abre con la sesión MASTER.
+- **Correo SMTP configurado por el propietario desde el panel**, con una contraseña de
+  aplicación de Gmail que escribió él: fila `smtp` activa, validada, última prueba `ok`.
+  Provisional: antes de abrir a clientes, remitente con el dominio propio (proveedor
+  transaccional, SPF/DKIM en Cloudflare con otro `GO DNS`).
+- Cron de §6.1.0 instalado en el usuario `deploy` (copia 3:15, sesiones, imágenes sin uso,
+  avisos, conversiones, comprobación de estado).
+- `healthcheck.sh`: todo `OK`, salvo `ATENCIÓN` porque la pasarela no tiene credenciales
+  (la tienda no puede cobrar; esperado).
+- Copia `20261007-122707` (ya con MASTER y correo) restaurada en un PostgreSQL 16
+  desechable, sin volumen y sin red, en el propio servidor: `psql` sin errores y los mismos
+  recuentos que la base en uso (154 migraciones, 1 usuario, 5 categorías, 0 productos,
+  1 integración, 98 tablas). No se ejecutó `restore.sh` sobre la tienda: la guía lo prohíbe;
+  su recorrido lo cubre el ensayo (pasos 19 y 19b).
+- Copia externa **provisional**, decidida por el propietario: su equipo. Una tarea de
+  `launchd` (`pe.blackdogstore.backup-pull`, 3:40) trae `backups/` por SSH a
+  `~/BlackDogStore-backups`, comprueba cada archivo y guarda 30 días. Probada: dos copias
+  traídas e íntegras. Depende de que el equipo esté encendido; no sustituye a un
+  almacenamiento de objetos.
+- Copia de `deploy/.env.production` en el llavero de inicio de sesión del equipo del
+  propietario, verificada por suma SHA-256 contra el servidor, sin mostrar su contenido.
+  Ese llavero es local: no se sincroniza con iCloud.
+- Izipay: el propietario aún no tiene credenciales; BLOCKED/CREDENTIALS, se omite por ahora.
+  El catálogo y las existencias los carga él desde el panel.
+- `sh deploy/rehearsal.sh` sobre `54b26ac`, el commit desplegado: **`ENSAYO: OK`**, 198
+  comprobaciones, 0 fallos, 0 omitidas, incluidos 3b (base nueva), 19 (`restore.sh`) y 19b
+  (restauración en servidor nuevo); desmontaje completo.
+
+Pendiente: Izipay TEST en el panel, copia externa en almacenamiento de objetos, catálogo real, remitente con dominio propio y §11 de la guía con el catálogo cargado.
+90% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10 + correo 5 + cron y restauración 5 + ensayo 5.
+No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
+MEAS-PRIVACY-NOTICE siguen PENDIENTES.
+
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 
 **PARCIAL · 25% · BLOCKED/OWNER-DATA.** El propietario autorizó `GO AWS` para

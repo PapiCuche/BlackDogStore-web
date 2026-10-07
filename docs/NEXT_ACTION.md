@@ -2,7 +2,7 @@
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: baseline del servidor `c5f8c935a8b16072a6424184fc814efbe1babaf1` (#95), 2026-10-07.
+master: código del servidor `54b26ac15767f35eb74ccf6e98b9f176579019dc` (#98), 2026-10-07.
 Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
 actualizan automáticamente la copia desplegable del servidor.
 
@@ -14,15 +14,20 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 25% · BLOCKED/OWNER-DATA**. `GO AWS` recibido; servidor
-Lightsail `blackdogstore-prod-01` creado en `sa-east-1a` (4 GB, 2 vCPU, 80 GB,
-US$24/mes), Static IP `blackdogstore-prod-ip` `54.94.236.23` adjunta.
-Docker/Compose, deploy, UFW, swap y copia limpia del baseline preparados.
-Secretos de arranque generados sólo en el servidor, `.env.production` 600.
-Compose config OK; preflight INCOMPLETO por `ORDER_NOTIFICATION_EMAIL`.
-No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
-`GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
-A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
+CHECKPOINT 2 **PARCIAL · 90% · BLOCKED/OWNER-DATA**. Servidor Lightsail
+`blackdogstore-prod-01` (`sa-east-1a`), Static IP `54.94.236.23`. Código del servidor:
+`54b26ac` (#98, corrección de la consola de integraciones), árbol limpio.
+`https://blackdogstoreperu.com` responde: los cuatro contenedores en marcha, certificado
+de Let's Encrypt, §4.5 correcta. Base nacida de PostgreSQL vacío + 154 migraciones +
+`bootstrap_pilot_store --apply`: 0 productos, cinco categorías, campaña publicada.
+MASTER creado por el propietario (1 superusuario, sin membresía).
+DNS: A @ y A www hacia la Static IP, DNS only. Firewall de Lightsail: 22 desde la IP
+administrativa, 80 y 443 desde cualquier IPv4.
+Visible pero NO abierta a clientes: sin catálogo y sin pasarela. Correo SMTP activo
+(Gmail, provisional). Cron instalado. Copia restaurada en una base desechable con
+recuentos idénticos; `restore.sh` sólo en el ensayo. Acceso:
+`ssh deploy@54.94.236.23` con la clave dedicada del equipo del propietario
+(`~/.ssh/blackdogstore_prod_ed25519`); `deploy` no tiene sudo.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
 INT-IMPORT-CYCLE-01; no tocar #80/#85.
@@ -36,10 +41,8 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. Continuar CHECKPOINT 2 en el servidor ya creado, sin apertura pública. En el servidor:
-   `.env.production` ya existe y contiene los secretos generados: no volver a copiar
-   el ejemplo ni regenerarlos. Completar sólo el destinatario real de pedidos y
-   ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
+1. CHECKPOINT 2: §4.3, §4.5, correo, cron y prueba de restauración hechos. Falta lo que
+   depende del propietario (pasarela TEST, copia externa, catálogo) y el ensayo.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
@@ -75,11 +78,10 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
-- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
-- DNS: GO DNS independiente para A @ y A www hacia 54.94.236.23, DNS only.
-  Servidor y acceso AWS ya disponibles; dominio gestionado por Cloudflare.
-- Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
-- Dirección que recibe el aviso de cada pedido.
+- Correo con dominio propio antes de abrir a clientes: proveedor transaccional y registros
+  SPF/DKIM en Cloudflare (otro `GO DNS`). Hoy sale por Gmail.
+- Copia externa definitiva (almacenamiento de objetos, p. ej. Cloudflare R2). Hoy:
+  tarea nocturna al equipo del propietario y `.env.production` en su llavero local.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
 
@@ -132,8 +134,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: indicar únicamente el correo real que recibe los avisos de pedidos
-(ORDER_NOTIFICATION_EMAIL), sin contraseña. Después: completar preflight en el
-servidor, reconstruir imágenes y continuar el arranque limpio documentado. DNS se
-modifica sólo después de GO DNS sobre el antes/después; no abrir tráfico público.
-SMTP e Izipay TEST se escriben directamente en el panel MASTER cuando esté disponible.
+Propietario: cargar catálogo, existencias y fotos reales desde el panel; cuando Izipay
+entregue credenciales, escribir las de TEST en Integraciones › Pagos. Agente: §11 de
+la guía con el catálogo cargado; después, un pago completo en TEST. `ENSAYO: OK` sobre
+`54b26ac` (198 comprobaciones) ya hecho. Antes de abrir a clientes: correo con dominio propio y copia
+externa en almacenamiento de objetos.
