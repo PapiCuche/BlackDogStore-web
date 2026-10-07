@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)
+
+- Con `GO AWS`, creado Lightsail en São Paulo (4 GB / 2 vCPU / 80 GB,
+  US$24/mes) y Static IP adjunta. IPv6 apagado, SSH restringido en AWS;
+  puertos web cerrados, sin cambios DNS ni publicación.
+- Host con Docker/Compose oficiales, deploy, UFW, swap, hora de Lima y copia
+  limpia de `c5f8c93`. Secretos generados sólo en el servidor, permisos 600.
+- Compose validado sin expandir valores; preflight bloqueado por destinatario
+  de pedidos. Despliegue, MASTER, integraciones y backup/restore pendientes.
+- Corregida la continuidad documental: #95 ya está mergeado; dominio y servidor
+  ya existen. Sin cambios de código, migraciones ni frontend; #80/#85 intactos.
+
 ## 2026-10-07 — FRESH-PRODUCTION-DATA-01
 
 **Added**

@@ -14,6 +14,16 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CP2-HOST-01 · Lightsail en São Paulo, apertura por separado
+
+Aprobado por el propietario con `GO AWS`, 2026-10-07: instancia Ubuntu 24.04 LTS
+`blackdogstore-prod-01` en `sa-east-1a`, plan IPv4 de US$24/mes (4 GB RAM,
+2 vCPU, 80 GB SSD), Static IP adjunta. IPv6 desactivado. Se conserva Caddy como
+único proxy, PostgreSQL privado y un proceso gunicorn. Sin servicios AWS adicionales.
+SSH restringido en el firewall AWS a la administración y browser SSH de Lightsail;
+HTTP/HTTPS permanecen cerrados durante preparación. `GO DNS` es independiente,
+registros DNS only; la apertura pública requiere otra orden del propietario.
+
 ### DEC-DEVICE-01 · Un equipo se identifica por lo que su tipo lleva, y lo que no tiene es NULL
 
 - **La regla es del servidor** (`device_identity`): serie obligatoria en teléfono,
