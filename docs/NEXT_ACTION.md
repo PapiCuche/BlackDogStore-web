@@ -14,7 +14,7 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 75% · BLOCKED/OWNER-DATA**. Servidor Lightsail
+CHECKPOINT 2 **PARCIAL · 85% · BLOCKED/OWNER-DATA**. Servidor Lightsail
 `blackdogstore-prod-01` (`sa-east-1a`), Static IP `54.94.236.23`. Código del servidor:
 `54b26ac` (#98, corrección de la consola de integraciones), árbol limpio.
 `https://blackdogstoreperu.com` responde: los cuatro contenedores en marcha, certificado
@@ -23,8 +23,9 @@ de Let's Encrypt, §4.5 correcta. Base nacida de PostgreSQL vacío + 154 migraci
 MASTER creado por el propietario (1 superusuario, sin membresía).
 DNS: A @ y A www hacia la Static IP, DNS only. Firewall de Lightsail: 22 desde la IP
 administrativa, 80 y 443 desde cualquier IPv4.
-Visible pero NO abierta a clientes: sin catálogo, sin SMTP, sin pasarela, sin cron.
-Una copia local hecha; restauración sin ensayar en el servidor. Acceso:
+Visible pero NO abierta a clientes: sin catálogo y sin pasarela. Correo SMTP activo
+(Gmail, provisional). Cron instalado. Copia restaurada en una base desechable con
+recuentos idénticos; `restore.sh` sólo en el ensayo. Acceso:
 `ssh deploy@54.94.236.23` con la clave dedicada del equipo del propietario
 (`~/.ssh/blackdogstore_prod_ed25519`); `deploy` no tiene sudo.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
@@ -40,8 +41,8 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. CHECKPOINT 2: §4.3 y §4.5 hechas. Falta: cron (§6.1.0), ensayar la restauración,
-   copia externa y lo que depende de datos del propietario (puntos 2 y 3).
+1. CHECKPOINT 2: §4.3, §4.5, correo, cron y prueba de restauración hechos. Falta lo que
+   depende del propietario (pasarela TEST, copia externa, catálogo) y el ensayo.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
@@ -77,7 +78,8 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Izipay: cuál de sus dos productos tiene contratado («SDK web / Checkout» o «Mi Cuenta
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
-- SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
+- Correo con dominio propio antes de abrir a clientes: proveedor transaccional y registros
+  SPF/DKIM en Cloudflare (otro `GO DNS`). Hoy sale por Gmail.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
@@ -131,7 +133,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario, con la cuenta MASTER en `https://blackdogstoreperu.com/auth`: Configuración ›
-Integraciones › Correo SMTP (guardar, probar, activar) y Pagos (producto de Izipay y
-claves de TEST). Agente, sin esperar: instalar el cron de §6.1.0, ensayar la restauración
-de la copia fuera de la base en uso y repetir `sh deploy/rehearsal.sh` sobre `54b26ac`.
+Propietario: decir cuál de los dos productos de Izipay tiene y escribir sus claves de
+TEST en Integraciones › Pagos; indicar dónde va la copia externa y la de
+`deploy/.env.production`. Agente: `sh deploy/rehearsal.sh` sobre `54b26ac` hasta
+`ENSAYO: OK` y §11 de la guía; después, un pago completo en TEST.

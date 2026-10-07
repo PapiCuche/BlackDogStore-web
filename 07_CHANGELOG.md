@@ -19,6 +19,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - **Fixed** (#98): la consola de integraciones enviaba la empresa del panel a los
   proveedores de plataforma y el servidor la rechazaba; un MASTER no podía configurar
   correo ni pagos. Servidor actualizado a `54b26ac`, sólo `frontend`.
+- Correo SMTP activo desde el panel (Gmail, provisional). Cron instalado. Copia con datos
+  reales restaurada en una base desechable con recuentos idénticos.
 - Acceso por clave SSH dedicada del usuario `deploy`.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)

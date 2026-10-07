@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-07 — CHECKPOINT 2: tienda desplegada con HTTPS, sin catálogo ni integraciones
 
-**PARCIAL · 75% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
+**PARCIAL · 85% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
 documentación: el servidor arrancó en `c5f8c935a8b16072a6424184fc814efbe1babaf1` y
 quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
@@ -60,13 +60,27 @@ quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 re
   limpio, lint 0 errores y 22 avisos; CI verde. Merge ordenado por el propietario:
   `54b26ac15767f35eb74ccf6e98b9f176579019dc`.
 - Servidor actualizado a `54b26ac`: sólo se reconstruyó y reinició `frontend`; sin
-  migraciones. Los cuatro contenedores en marcha; portada, `/auth` y API 200. Falta que el
-  propietario confirme en el panel que el editor abre.
+  migraciones. Los cuatro contenedores en marcha; portada, `/auth` y API 200. El editor de
+  Correo SMTP abre con la sesión MASTER.
+- **Correo SMTP configurado por el propietario desde el panel**, con una contraseña de
+  aplicación de Gmail que escribió él: fila `smtp` activa, validada, última prueba `ok`.
+  Provisional: antes de abrir a clientes, remitente con el dominio propio (proveedor
+  transaccional, SPF/DKIM en Cloudflare con otro `GO DNS`).
+- Cron de §6.1.0 instalado en el usuario `deploy` (copia 3:15, sesiones, imágenes sin uso,
+  avisos, conversiones, comprobación de estado).
+- `healthcheck.sh`: todo `OK`, salvo `ATENCIÓN` porque la pasarela no tiene credenciales
+  (la tienda no puede cobrar; esperado).
+- Copia `20261007-122707` (ya con MASTER y correo) restaurada en un PostgreSQL 16
+  desechable, sin volumen y sin red, en el propio servidor: `psql` sin errores y los mismos
+  recuentos que la base en uso (154 migraciones, 1 usuario, 5 categorías, 0 productos,
+  1 integración, 98 tablas). No se ejecutó `restore.sh` sobre la tienda: la guía lo prohíbe;
+  su recorrido lo cubre el ensayo (pasos 19 y 19b).
 
-Pendiente: SMTP e Izipay TEST en el panel (datos del propietario), cron, copia externa,
-restauración ensayada, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
-75% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
-+ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10.
+Pendiente: Izipay TEST en el panel (datos del propietario), copia externa y de
+`.env.production`, catálogo real, remitente con dominio propio, `rehearsal.sh` sobre
+`54b26ac` y §11 de la guía.
+85% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10 + correo 5 + cron y restauración 5.
 No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE siguen PENDIENTES.
 
