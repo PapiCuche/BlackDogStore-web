@@ -80,7 +80,8 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
 - Correo con dominio propio antes de abrir a clientes: proveedor transaccional y registros
   SPF/DKIM en Cloudflare (otro `GO DNS`). Hoy sale por Gmail.
-- Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
+- Copia externa definitiva (almacenamiento de objetos, p. ej. Cloudflare R2). Hoy:
+  tarea nocturna al equipo del propietario y `.env.production` en su llavero local.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
 
@@ -133,7 +134,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: decir cuál de los dos productos de Izipay tiene y escribir sus claves de
-TEST en Integraciones › Pagos; indicar dónde va la copia externa y la de
-`deploy/.env.production`. Agente: `sh deploy/rehearsal.sh` sobre `54b26ac` hasta
-`ENSAYO: OK` y §11 de la guía; después, un pago completo en TEST.
+Propietario: cargar catálogo, existencias y fotos reales desde el panel; cuando Izipay
+entregue credenciales, escribir las de TEST en Integraciones › Pagos. Agente:
+`sh deploy/rehearsal.sh` sobre `54b26ac` hasta `ENSAYO: OK` y §11 de la guía; después,
+un pago completo en TEST. Antes de abrir a clientes: correo con dominio propio y copia
+externa en almacenamiento de objetos.

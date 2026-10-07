@@ -21,6 +21,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   correo ni pagos. Servidor actualizado a `54b26ac`, sólo `frontend`.
 - Correo SMTP activo desde el panel (Gmail, provisional). Cron instalado. Copia con datos
   reales restaurada en una base desechable con recuentos idénticos.
+- Copia externa provisional al equipo del propietario cada noche; copia de
+  `.env.production` en su llavero local.
 - Acceso por clave SSH dedicada del usuario `deploy`.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)

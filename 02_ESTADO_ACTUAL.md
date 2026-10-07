@@ -75,9 +75,18 @@ quedó en `54b26ac` tras #98, árbol limpio. `GO DNS` y la apertura de 80/443 re
   recuentos que la base en uso (154 migraciones, 1 usuario, 5 categorías, 0 productos,
   1 integración, 98 tablas). No se ejecutó `restore.sh` sobre la tienda: la guía lo prohíbe;
   su recorrido lo cubre el ensayo (pasos 19 y 19b).
+- Copia externa **provisional**, decidida por el propietario: su equipo. Una tarea de
+  `launchd` (`pe.blackdogstore.backup-pull`, 3:40) trae `backups/` por SSH a
+  `~/BlackDogStore-backups`, comprueba cada archivo y guarda 30 días. Probada: dos copias
+  traídas e íntegras. Depende de que el equipo esté encendido; no sustituye a un
+  almacenamiento de objetos.
+- Copia de `deploy/.env.production` en el llavero de inicio de sesión del equipo del
+  propietario, verificada por suma SHA-256 contra el servidor, sin mostrar su contenido.
+  Ese llavero es local: no se sincroniza con iCloud.
+- Izipay: el propietario aún no tiene credenciales; BLOCKED/CREDENTIALS, se omite por ahora.
+  El catálogo y las existencias los carga él desde el panel.
 
-Pendiente: Izipay TEST en el panel (datos del propietario), copia externa y de
-`.env.production`, catálogo real, remitente con dominio propio, `rehearsal.sh` sobre
+Pendiente: Izipay TEST en el panel, copia externa en almacenamiento de objetos, catálogo real, remitente con dominio propio, `rehearsal.sh` sobre
 `54b26ac` y §11 de la guía.
 85% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
 + MASTER 5 + DNS 5 + puertos, Caddy y certificado 10 + correo 5 + cron y restauración 5.
