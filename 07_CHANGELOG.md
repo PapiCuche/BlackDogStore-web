@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — FRESH-PRODUCTION-DATA-01
+
+**Added**
+- `manage.py bootstrap_pilot_store`: en una base de producción nueva retira los tres
+  productos de ejemplo que deja la migración `0002` (y su stock), sólo si están intactos,
+  sin referencias y la base no se ha usado; si no, se niega y no cambia nada. Deja a la
+  tienda piloto con sus cinco categorías aprobadas. Sin `--apply` sólo informa. Se niega
+  también si quedan uno o dos de los tres productos, si `DEBUG` está activo y si tendría
+  que escribir en una base que ya se usa.
+- El ensayo mide una base recién migrada («PRODUCTION FRESH DATABASE CHECK», paso 3b) y
+  comprueba el primer administrador: un usuario, MASTER, sin membresía.
+
+**Changed**
+- El ensayo crea su propio producto, con su movimiento de stock inicial: la tienda ya no
+  empieza con uno de ejemplo.
+- `docs/despliegue-produccion.md` §4 y §5: arranque desde una base vacía, primer
+  administrador con `createsuperuser` y orden de un primer arranque.
+
+Sin migraciones ni cambios de modelo, API o frontend.
+
 ## 2026-10-07 — CHECKPOINT 1B revalidado
 
 - #93 mergeado con CI backend verde en su HEAD exacto; test de error real y ausencia

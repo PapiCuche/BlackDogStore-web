@@ -276,6 +276,30 @@ de dominios en `docs/analytics-marketing.md` §7.
   microfase INT-IMPORT-CYCLE-01, para no alterar la línea base ni la regresión de una
   fase ya cerrada.
 
+### DEC-FRESH-DATA-01 · Producción nace de una base vacía; lo que sobra se retira con un paso, no con una migración
+
+- Una base de producción es PostgreSQL vacío y `migrate`. Ni copia de desarrollo, ni
+  volcado, ni semilla.
+- La migración `0002` dejó tres productos de ejemplo con stock y sin Kardex. No se edita
+  una migración aplicada, y **una migración nueva que los borrase correría también en
+  cada base de desarrollo y de pruebas**. Se retiran con `bootstrap_pilot_store`, que
+  alguien ejecuta una vez sobre la base que va a ser la real.
+- **Todo o nada.** Retira los tres productos sólo si están los tres, exactamente como
+  los dejó la migración, sin referencias y en una base sin actividad; si no, se niega y
+  no cambia nada. Uno o dos de tres no es una base nueva ni una preparada: se niega. Las
+  referencias se preguntan al modelo, no a una lista: una relación nueva cuenta el día
+  que existe.
+- **Prepara un arranque, no mantiene una configuración.** Con la base ya en uso no
+  escribe nada, ni siquiera para reponer una categoría que la tienda quitó. Y no se
+  ejecuta con `DEBUG` activo: borra filas, y una base de desarrollo no es su sitio.
+- **Lo de la tienda piloto no es un valor por defecto de la plataforma.** Sus categorías
+  y su campaña están ligadas a su slug; `company_provisioning`, que es de donde nace
+  una empresa nueva, no copia catálogo.
+- **El MASTER es `is_superuser` y no recibe una membresía por serlo.** Se crea con
+  `createsuperuser`, sin contraseña en el repositorio. Puede configurar cualquier
+  empresa nombrándola; para vender o constar como personal hace falta una membresía
+  explícita, que se da por invitación.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay

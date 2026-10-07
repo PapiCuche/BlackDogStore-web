@@ -108,6 +108,8 @@ healthy() {
   docker inspect -f '{{.State.Health.Status}}' "$PROJECT-$1-1" 2>/dev/null
 }
 shell() { $C exec -T backend python manage.py shell -c "$1" 2>&1 | grep -v "objects imported" | grep -v '^$'; }
+# Antes de arrancar la aplicación: un contenedor de un solo uso, como el de `migrate`.
+once() { $C run --rm backend python manage.py "$@" 2>/dev/null | grep -v "objects imported" | grep -v '^$'; }
 MAIN_PROJECT="$PROJECT"; NEW_PROJECT="$PROJECT-nuevo"
 # Los dos proyectos por su nombre fijo: el paso 19b cambia $C y $PROJECT al
 # segundo, y un fallo en mitad de ese paso no debe dejar el primero atrás.
@@ -171,6 +173,32 @@ expect "migraciones sin aplicar" "$($C run --rm backend python manage.py showmig
 expect "makemigrations --check" "$($C run --rm backend python manage.py makemigrations --check --dry-run 2>&1 | tail -1)" "No changes detected"
 echo "check --deploy: $($C run --rm backend python manage.py check --deploy 2>&1 | grep -E 'security\.|System check' | cut -c1-110 | tr '\n' ' ')"
 
+step "3b PRODUCTION FRESH DATABASE CHECK: lo que trae una base nueva, antes de crear nada"
+# Una base de producción nace de PostgreSQL vacío y `migrate`: sin semillas, sin
+# copias de desarrollo. Aquí se MIDE lo que eso deja, antes del primer usuario.
+FRESH_ZERO='from store.models import *; from django.contrib.auth import get_user_model as U; print("Users", U().objects.count(), "| Demo users", U().objects.filter(username__startswith="dev_").count(), "| Memberships", Membership.objects.count(), "| Invitations", StaffInvitation.objects.count(), "| Customers", Customer.objects.count(), "| Equipment", Device.objects.count(), "| Service orders", RepairOrder.objects.count(), "| Orders", Order.objects.count(), "| Payments", PaymentTransaction.objects.count(), "| Carts", CartItem.objects.count(), "| Reviews", Review.objects.count(), "| Stock movements", StockMovement.objects.count(), "| Fiscal documents", FiscalDocument.objects.count(), "| Integration configs", IntegrationConfig.objects.count(), "| Measurement contexts", MeasurementContext.objects.count(), "| Conversion deliveries", ConversionDelivery.objects.count())'
+NOTHING="Users 0 | Demo users 0 | Memberships 0 | Invitations 0 | Customers 0 | Equipment 0 | Service orders 0 | Orders 0 | Payments 0 | Carts 0 | Reviews 0 | Stock movements 0 | Fiscal documents 0 | Integration configs 0 | Measurement contexts 0 | Conversion deliveries 0"
+FRESH_STRUCT='from store.models import *; print("roles", CompanyRole.objects.count(), "| áreas", CompanyArea.objects.count(), "| estados de reparación", RepairStatusSetting.objects.count(), "| series internas", InternalSequence.objects.count(), "| listas de control de calidad", QualityChecklistTemplate.objects.count(), "| preguntas frecuentes", StorefrontFaq.objects.count(), "| servicios de la portada", StorefrontServiceOffering.objects.count())'
+FRESH_TENANT='from store.models import *; print(" ".join(Company.objects.values_list("slug", flat=True)), "| sucursales", Branch.objects.count(), "| campañas publicadas", " · ".join(StorefrontCampaign.objects.filter(status="published").values_list("title", flat=True)))'
+FRESH_CATALOG='from store.models import *; s="'"$SLUG"'"; print("Product=%d | BranchStock=%d | StockMovement=%d" % (Product.objects.count(), BranchStock.objects.count(), StockMovement.objects.count())); print("categorías:", ", ".join(Category.objects.filter(company__slug=s).order_by("home_order", "name").values_list("name", flat=True)), "| de otras empresas:", Category.objects.exclude(company__slug=s).count())'
+expect "ningún usuario, ninguna cuenta de demostración, ningún dato operativo" "$(once shell -c "$FRESH_ZERO" | tail -1)" "$NOTHING"
+echo "datos estructurales que dejan las migraciones: $(once shell -c "$FRESH_STRUCT" | tail -1)"
+expect "una sola empresa, la piloto, con su sucursal y su campaña publicada" "$(once shell -c "$FRESH_TENANT" | tail -1)" "$SLUG | sucursales 1 | campañas publicadas iPhone 18 Pro Max"
+once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
+expect "lo que NO es real: el catálogo de ejemplo de las migraciones" "$(head -1 "$WORK/fresh-catalog.txt")" "Product=3 | BranchStock=3 | StockMovement=0"
+once bootstrap_pilot_store > "$WORK/bootstrap-dry.txt"
+once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
+expect "bootstrap_pilot_store sin --apply informa y no escribe" "$(grep -c 'SIMULACIÓN' "$WORK/bootstrap-dry.txt") $(head -1 "$WORK/fresh-catalog.txt")" "1 Product=3 | BranchStock=3 | StockMovement=0"
+# Con su salida de error: si se niega, aquí se lee por qué.
+$C run --rm backend python manage.py bootstrap_pilot_store --apply > "$WORK/bootstrap-apply.txt" 2>&1
+echo "bootstrap_pilot_store --apply: $(grep -E 'Product=|^  - |No se cambia nada' "$WORK/bootstrap-apply.txt" | cut -c1-220)"
+once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
+expect "catálogo de ejemplo retirado, sin movimiento de Kardex" "$(head -1 "$WORK/fresh-catalog.txt")" "Product=0 | BranchStock=0 | StockMovement=0"
+expect "las categorías aprobadas de la tienda piloto, y sólo suyas" "$(tail -1 "$WORK/fresh-catalog.txt")" "categorías: iPhone, Mac, iPad, Apple Watch, Accesorios | de otras empresas: 0"
+expect "la campaña sigue publicada" "$(once shell -c "$FRESH_TENANT" | tail -1)" "$SLUG | sucursales 1 | campañas publicadas iPhone 18 Pro Max"
+expect "una segunda ejecución no tiene nada que hacer" "$(once bootstrap_pilot_store --apply | grep -c 'Nada que hacer')" 1
+expect "sigue sin haber usuarios ni datos operativos" "$(once shell -c "$FRESH_ZERO" | tail -1)" "$NOTHING"
+
 step "4 arranque, Caddy y comprobaciones de salud"
 $C up -d 2>&1 | tail -1
 expect "backend" "$(healthy backend)" healthy
@@ -220,6 +248,7 @@ expect "seed_demo_users se niega en producción" "$([ $? -ne 0 ] && echo sí || 
 expect "no existe ninguna cuenta de demostración" "$(shell "from django.contrib.auth import get_user_model as U; print(U().objects.filter(username__startswith='dev_').count())")" 0
 expect "las cuentas de demostración no se anuncian" "$(code "$BASE/api/dev/demo-accounts")" 404
 $C exec -T -e DJANGO_SUPERUSER_PASSWORD="$ADMIN_PW" backend python manage.py createsuperuser --noinput --username ensayo_admin --email ensayo@example.invalid 2>&1 | tail -1
+expect "tras createsuperuser: un usuario, MASTER, sin membresía y ninguna cuenta de demostración" "$(shell "from django.contrib.auth import get_user_model as U; from store.models import Membership; from store.tenancy import is_platform_admin; u = U().objects.get(); print(U().objects.count(), is_platform_admin(u), Membership.objects.count(), U().objects.filter(username__startswith='dev_').count())")" "1 True 0 0"
 $C exec -T -e OUTSIDER_PW="$OUTSIDER_PW" backend python manage.py shell -c "
 import os
 from django.contrib.auth import get_user_model
@@ -237,6 +266,18 @@ customer = Customer.objects.create(company=company, customer_type=Customer.TYPE_
 device = Device.objects.create(company=company, customer=customer, device_type=Device.TYPE_PHONE, brand='Ensayo', model='Evidencia', notes='ensayo')
 order = service.create_repair_order(company=company, branch=branch, customer=customer, device=device, reported_issue='Ensayo de evidencia privada', actor=admin)
 print('orden de servicio de ensayo creada:', bool(order.pk))" | tail -1
+# La tienda nace sin productos. El que el ensayo necesita para el catálogo, el
+# carrito y la cotización lo crea aquí, con su entrada en el Kardex.
+shell "
+from decimal import Decimal
+from django.contrib.auth import get_user_model
+from store import inventory_services
+from store.models import Branch, Category, Company, Product
+company = Company.objects.get(slug='$SLUG')
+branch = Branch.objects.filter(company=company, is_active=True).order_by('pk').first()
+product = Product.objects.create(company=company, name='Producto de ensayo', slug='producto-de-ensayo', price=Decimal('100.00'), category=Category.objects.get(company=company, slug='accesorios'))
+movement = inventory_services.apply_initial_stock(branch=branch, product=product, quantity=5, actor=get_user_model().objects.get(username='ensayo_admin'), reason='Ensayo')
+print('producto de ensayo creado, con su movimiento de stock inicial:', bool(product.pk and movement.pk))" | tail -1
 echo "admin de Django, directo al backend: $($C exec -T backend python -c "
 import urllib.request, urllib.error
 for p in ('/admin/', '/admin/login/'):

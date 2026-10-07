@@ -3,6 +3,76 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — FRESH-PRODUCTION-DATA-01: producción nace de una base vacía
+
+Rama `feat/fresh-production-data-01`, desde `master` `52a4ba3` (documentación de #94 sobre
+`a1d2a29`, merge de #93). Sin migraciones, sin cambios de modelo, de API ni de frontend.
+Decisión: DEC-FRESH-DATA-01. Operación: `docs/despliegue-produccion.md` §4.3, §4.4 y §5.
+Nada publicado y nada creado en AWS.
+
+**Qué se midió.** PostgreSQL vacío, las 154 migraciones, `DEBUG=False`, ninguna semilla:
+
+| | Filas | Clase |
+|---|---|---|
+| Usuarios, membresías, invitaciones | 0 | — |
+| Clientes, equipos, órdenes de servicio, pedidos, pagos, carritos, reseñas | 0 | — |
+| Movimientos de stock, documentos fiscales, integraciones, medición | 0 | — |
+| Roles · áreas · estados de reparación · series internas · lista de calidad | 5 · 7 · 12 · 2 · 1 | estructura |
+| Empresa piloto, sucursal y configuración (`0015`, `0028`) | 1 · 1 · 1 | tenant piloto |
+| Portada: 5 preguntas, 8 servicios, campaña «iPhone 18 Pro Max» publicada (`0075`, `0078`) | — | contenido piloto, aprobado |
+| Categorías iPhone y Accesorios (`0002`) | 2 | tenant piloto, aprobadas |
+| **iPhone 15 Pro, Apple Watch Series 9, AirPods Pro, con 10, 15 y 20 unidades** (`0002`, `0025`) | 3 | **dato de ejemplo** |
+
+Los tres productos salían por `/api/products/` y se podían comprar: 45 unidades que no
+existen, sin una línea de Kardex.
+
+**Qué cambia.**
+- `manage.py bootstrap_pilot_store`: retira esos tres productos y su stock sólo si están
+  exactamente como los dejó la migración, nada los referencia y la base no tiene
+  actividad; si no, se niega y no cambia nada. Deja a la tienda piloto con sus cinco
+  categorías aprobadas (iPhone, Mac, iPad, Apple Watch, Accesorios). Sin `--apply` sólo
+  informa. Repetirlo no hace nada.
+- Tres guardas añadidas tras la revisión del propietario en el PR: se niega si quedan uno
+  o dos de los tres productos; no se ejecuta con `DEBUG` activo; y con la base ya en uso
+  no escribe nada, ni para reponer una categoría que la tienda quitó.
+- No es una migración: correría también en cada base de desarrollo y de pruebas.
+- Es de la tienda piloto: una empresa nueva no hereda categorías, campaña ni productos.
+- El ensayo mide la base recién migrada (paso 3b) y al primer administrador.
+
+**MASTER.** Es `is_superuser`, se crea con `createsuperuser` y no hay contraseña en el
+repositorio, en las migraciones ni en los archivos de variables. Medido: sin membresía
+tiene las 44 capacidades en la empresa que nombre, ve la consola de integraciones y usa
+el panel entero; no figura como personal ni como vendedor de caja. No se le da una
+membresía por ser superusuario.
+
+**Login.** La tarjeta «Accesos de desarrollo» no entra en los archivos que sirve el build
+de producción y `/api/dev/demo-accounts/` responde 404 con `DEBUG=False`.
+
+**Verificación**
+
+| Medida | Resultado |
+|---|---|
+| Línea base, `master` `52a4ba3` (código de `a1d2a29`) | CI backend 5654, 0 fallos, 5 omitidas · ensayo 139 + 49 (CHECKPOINT 1B) |
+| Pruebas nuevas (`test_pilot_bootstrap`) | 25/25. Primero en rojo: las 17 iniciales porque el comando no existía; las 8 de las tres guardas, 7 fallaban contra el comando anterior |
+| Mutaciones | 11 reglas del comando rotas a propósito sobre la versión final (`DEBUG`, catálogo parcial, actividad sin productos, comprobación tras escribir, referencias, actividad, edición, stock, empresa, simulación, orden): las 11 detectadas |
+| Backend, suite completa en PostgreSQL, sobre `3b63400` | 5679 pruebas, 0 fallos, 5 omitidas |
+| `manage.py check` · `makemigrations --check` | sin incidencias · sin cambios: 0 migraciones nuevas |
+| Ensayo de producción (`sh deploy/rehearsal.sh`), sobre `3b63400` | `ENSAYO: OK`, 149 comprobaciones (10 nuevas) y 49 pasos de navegador; no deja nada en el equipo |
+| Base nueva, tras `bootstrap_pilot_store --apply` (ensayo, paso 3b) | `Product=0 \| BranchStock=0 \| StockMovement=0`; categorías: iPhone, Mac, iPad, Apple Watch, Accesorios; campaña publicada: 1; usuarios: 0 |
+| Segunda empresa (prueba) | 0 categorías, 0 campañas y 0 productos heredados; una con un producto del mismo slug lo conserva |
+| Primer administrador (ensayo, paso 6) | tras `createsuperuser`: 1 usuario, MASTER, 0 membresías, 0 cuentas de demostración |
+
+Frontend sin cambios: Jest, tipos, lint, build y Playwright no se repitieron.
+
+**Deuda que deja**
+- FRESH-CATEGORY-ORDER: el comando da posición a una categoría aprobada sólo si su orden
+  es 0, el valor por defecto. Una tienda que hubiera puesto una a propósito en 0 la vería
+  moverse.
+- FRESH-SAMPLE-DEV: las bases de desarrollo y de pruebas siguen naciendo con los tres
+  productos de ejemplo. Es deliberado: las pruebas los usan.
+- La campaña «iPhone 18 Pro Max» queda publicada sin producto que la respalde hasta que
+  se cargue el catálogo real.
+
 ## 2026-10-07 — CHECKPOINT 1B: revalidación del master actual
 
 **READY FOR CHECKPOINT 2**, pendiente de aprobación del propietario para crear

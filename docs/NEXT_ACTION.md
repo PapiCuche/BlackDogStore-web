@@ -26,6 +26,11 @@ su servicio real. No iniciar SERIAL-PICK hasta que el propietario lo ordene.
 Sigue sin haber servidor, SMTP ni claves de Izipay. El dominio ya está comprado; DNS pendiente. No hay nada publicado.
 
 current_priority:
+0a. FRESH-PRODUCTION-DATA-01 (en PR, espera la revisión del propietario): producción nace
+   de PostgreSQL vacío y `migrate`; `bootstrap_pilot_store --apply` retira los tres
+   productos de ejemplo y deja las cinco categorías aprobadas; el primer usuario es el
+   MASTER, con `createsuperuser`. Orden de un primer arranque:
+   `docs/despliegue-produccion.md` §5.
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
 1. Con aprobación del propietario, crear el servidor del CHECKPOINT 2. El dominio ya está comprado. En el servidor:
@@ -71,7 +76,8 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - Dominio y quién gestiona el DNS.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
 - Dirección que recibe el aviso de cada pedido.
-- Existencias, fotos y precios reales del catálogo.
+- Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
+  tienda nace sin productos.
 
 blocked_optional (BLOCKED/OPTIONAL: la tienda abre sin esto):
 - Google Analytics 4: ID de medición y, opcional, secreto de API (BLOCKED/CREDENTIALS).
