@@ -1,21 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { requestPasswordReset } from "../../lib/auth";
+import { invitationReturnFromLocation } from "../../lib/invitation";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Quien llegó aquí desde una invitación vuelve a ella después. Sólo a ella:
+  // cualquier otra dirección de vuelta se ignora, aquí y en el servidor.
+  const [loginHref, setLoginHref] = useState("/auth");
+
+  useEffect(() => {
+    void Promise.resolve().then(() => {
+      const back = invitationReturnFromLocation();
+      if (back) setLoginHref(`/auth?next=${encodeURIComponent(back)}`);
+    });
+  }, []);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      await requestPasswordReset(email);
+      const back = invitationReturnFromLocation();
+      await (back ? requestPasswordReset(email, back) : requestPasswordReset(email));
       setSubmitted(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "No se pudo enviar el correo.");
@@ -44,7 +56,7 @@ export default function ForgotPasswordPage() {
               <p className="mt-3 text-sm leading-6 text-muted">
                 Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña. Revisa también la carpeta de spam.
               </p>
-              <Link href="/auth" className="mt-6 inline-flex rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface">
+              <Link href={loginHref} className="mt-6 inline-flex rounded-full border border-bd-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface">
                 Volver al inicio de sesión
               </Link>
             </div>
@@ -78,7 +90,7 @@ export default function ForgotPasswordPage() {
                 </button>
               </form>
 
-              <Link href="/auth" className="mt-6 flex justify-center text-sm text-muted transition hover:text-foreground">
+              <Link href={loginHref} className="mt-6 flex justify-center text-sm text-muted transition hover:text-foreground">
                 Volver al inicio de sesión
               </Link>
             </>
