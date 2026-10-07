@@ -19,13 +19,24 @@ WHAT IT DOES
 
   1. Retires the three sample products and their stock — only while each one is
      EXACTLY what the migration wrote, nothing points at it and the database has
-     never been used. Otherwise it stops and changes nothing at all.
+     never been used.
   2. Leaves the pilot company with its approved categories. The ones that exist
      are kept as they are; the missing ones are created.
 
-It runs with DEBUG off — that is where it is meant to run — and it is safe to
-run again: once the sample catalogue is gone and the categories are there, it
-has nothing to do, whatever the shop has sold since.
+WHEN IT STOPS, AND CHANGES NOTHING AT ALL
+
+  * DEBUG is on. It deletes rows; it runs where a shop is about to open and
+    nowhere else, and a development database is not that place.
+  * One or two of the three sample products are there. A new database has all
+    three and a prepared one has none: anything in between is a database
+    somebody has been in.
+  * A sample product was edited, its stock moved, or something points at it.
+  * The database has been used and there is still something to write. It
+    prepares a launch; it does not keep a working shop's configuration in line.
+    A category that shop removed stays removed.
+
+It is safe to run again: once the sample catalogue is gone and the categories
+are there, it has nothing to do, whatever the shop has sold since.
 
 WHAT IT IS NOT
 
@@ -39,6 +50,7 @@ Not a way to create an account. The first user of a new shop is made by hand:
 """
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
@@ -143,6 +155,11 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        if settings.DEBUG:
+            raise CommandError(
+                'Este comando retira datos y sólo se ejecuta con DEBUG=False, sobre la base '
+                'que va a ser la de producción. Aquí DEBUG está activo: no se cambia nada.'
+            )
         company = Company.objects.filter(slug=PILOT_SLUG).first()
         if company is None:
             raise CommandError(f'No existe la empresa «{PILOT_SLUG}»: no hay nada que preparar.')
@@ -152,7 +169,6 @@ class Command(BaseCommand):
             Product.objects.select_for_update(of=('self',))
             .filter(company=company, slug__in=by_slug).select_related('category').order_by('pk')
         )
-        self._refuse_unless_untouched(company, samples, by_slug)
 
         missing, unordered = [], []
         for position, (name, slug) in enumerate(APPROVED_CATEGORIES, start=1):
@@ -167,6 +183,10 @@ class Command(BaseCommand):
             self.stdout.write('Nada que hacer: el catálogo de ejemplo no está y las categorías aprobadas sí.')
             self._report(company)
             return
+
+        # From here on something would be written, so everything has to be as a
+        # new database leaves it — checked before the first write, and in full.
+        self._refuse_unless_new(company, samples, by_slug)
 
         apply = options['apply']
         self.stdout.write('' if apply else 'SIMULACIÓN: no se escribe nada. Con --apply se haría esto:')
@@ -188,11 +208,15 @@ class Command(BaseCommand):
             category.save(update_fields=['home_order'])
         self._report(company)
 
-    def _refuse_unless_untouched(self, company, samples, by_slug):
-        """Nothing is retired unless EVERYTHING is as a new database leaves it."""
-        if not samples:
-            return
+    def _refuse_unless_new(self, company, samples, by_slug):
+        """Nothing is written unless EVERYTHING is as a new database leaves it."""
         problems = []
+        if samples and len(samples) != len(SAMPLE_PRODUCTS):
+            absent = sorted(set(by_slug) - {product.slug for product in samples})
+            problems.append(
+                f'quedan {len(samples)} de {len(SAMPLE_PRODUCTS)} productos de ejemplo (faltan: {", ".join(absent)}): '
+                'una base nueva los tiene todos y una ya preparada, ninguno'
+            )
         for product in samples:
             sample = by_slug[product.slug]
             edited = _edited(product, sample)
@@ -208,7 +232,7 @@ class Command(BaseCommand):
             problems.append(f'la base ya tiene actividad: {", ".join(activity)}')
         if problems:
             raise CommandError(
-                'No se retira el catálogo de ejemplo y no se cambia nada:\n  - '
+                'No se cambia nada:\n  - '
                 + '\n  - '.join(problems)
                 + '\nRevísalo a mano: esta base no es una base nueva.'
             )

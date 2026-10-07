@@ -191,7 +191,7 @@ once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
 expect "bootstrap_pilot_store sin --apply informa y no escribe" "$(grep -c 'SIMULACIÓN' "$WORK/bootstrap-dry.txt") $(head -1 "$WORK/fresh-catalog.txt")" "1 Product=3 | BranchStock=3 | StockMovement=0"
 # Con su salida de error: si se niega, aquí se lee por qué.
 $C run --rm backend python manage.py bootstrap_pilot_store --apply > "$WORK/bootstrap-apply.txt" 2>&1
-echo "bootstrap_pilot_store --apply: $(grep -E 'Product=|^  - |No se retira' "$WORK/bootstrap-apply.txt" | cut -c1-220)"
+echo "bootstrap_pilot_store --apply: $(grep -E 'Product=|^  - |No se cambia nada' "$WORK/bootstrap-apply.txt" | cut -c1-220)"
 once shell -c "$FRESH_CATALOG" > "$WORK/fresh-catalog.txt"
 expect "catálogo de ejemplo retirado, sin movimiento de Kardex" "$(head -1 "$WORK/fresh-catalog.txt")" "Product=0 | BranchStock=0 | StockMovement=0"
 expect "las categorías aprobadas de la tienda piloto, y sólo suyas" "$(tail -1 "$WORK/fresh-catalog.txt")" "categorías: iPhone, Mac, iPad, Apple Watch, Accesorios | de otras empresas: 0"
