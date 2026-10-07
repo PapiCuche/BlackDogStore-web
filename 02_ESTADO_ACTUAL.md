@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — Aviso de medición y renovación del consentimiento
+
+**PARCIAL · pendiente de publicación y validación del responsable.** Se prepara `/privacy`,
+con identidad y contacto del tenant, datos de navegación y compra, envío al confirmar
+el pago, proveedores, conservación técnica y cambio de preferencias. Enlaces desde
+el banner y pie; consentimiento v2: las respuestas del aviso anterior no habilitan
+medición. No se cambian conversiones, credenciales ni ajustes de producción.
+
+El aviso describe medición, no sustituye la política completa de cuentas, pedidos,
+comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
+nombre del titular la declaración de Google. Antes de publicar: validar identidad y
+contacto configurados, conservación de Analytics y política para las demás finalidades.
+
+
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 
 **PARCIAL · 25% · BLOCKED/OWNER-DATA.** El propietario autorizó `GO AWS` para
