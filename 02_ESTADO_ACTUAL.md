@@ -3,13 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-07 — CHECKPOINT 2: base desplegada en red interna, sin tráfico público
+## 2026-10-07 — CHECKPOINT 2: tienda desplegada con HTTPS, sin catálogo ni integraciones
 
-**PARCIAL · 65% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
+**PARCIAL · 75% · BLOCKED/OWNER-DATA.** `origin/master` verificado por fetch:
 `959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
 documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
-árbol limpio. Sin cambios de código. `GO DNS` recibido y aplicado; la apertura pública
-sigue pendiente.
+árbol limpio. Sin cambios de código. `GO DNS` y la apertura de 80/443 recibidos y aplicados, cada uno con su orden.
 
 - Acceso: clave SSH dedicada para `deploy`, instalada por el propietario desde el SSH
   del navegador de Lightsail; la mitad privada vive sólo en su equipo. Firewall de AWS
@@ -27,9 +26,8 @@ sigue pendiente.
   `Product=0 | BranchStock=0 | StockMovement=0`, 1 empresa, 1 sucursal, cinco categorías
   (iPhone, Mac, iPad, Apple Watch, Accesorios), campaña «iPhone 18 Pro Max» publicada.
 - `check --deploy`: un único aviso, `security.W008`, el esperado.
-- Arrancados `postgres`, `backend` y `frontend`, los tres `healthy`. **Caddy no se
-  arrancó**: sin DNS pediría certificados que fallarían. Ningún puerto publicado en el
-  host (sólo 22). Sondas dentro de la red de Docker: `/api/categories` 200,
+- Arrancados primero `postgres`, `backend` y `frontend`, los tres `healthy`, sin Caddy
+  y sin puertos publicados. Sondas dentro de la red de Docker: `/api/categories` 200,
   `/api/products/` 200, `/api/dev/demo-accounts/` 404, `/admin/` 404, portada de Next 200.
 - Primera copia con `deploy/backup.sh`: volcado legible con 98 tablas y `LAST_OK`.
   **Restauración no ensayada en el servidor.**
@@ -40,13 +38,23 @@ sigue pendiente.
   Después: A `blackdogstoreperu.com` y A `www` hacia `54.94.236.23`, DNS only, TTL Auto,
   creados desde el panel de Cloudflare con la sesión del propietario. Nameservers y proxy
   sin cambios; ningún otro registro. Resuelven en los nameservers de Cloudflare, 1.1.1.1 y
-  8.8.8.8; sin AAAA. `preflight.py --dns --server-ip`: OK los dos. 80/443 siguen cerrados.
+  8.8.8.8; sin AAAA. `preflight.py --dns --server-ip`: OK los dos.
+- Apertura autorizada por el propietario. Firewall de Lightsail, antes: SSH 22 desde la IP
+  administrativa y el SSH del navegador. Después: además HTTP 80 y HTTPS 443 desde
+  cualquier IPv4. Sin IPv6. `up -d caddy`: certificados de Let's Encrypt emitidos para el
+  dominio y `www` al primer intento.
+- §4.5 desde fuera: `http://` 308 a `https://`; portada 200; `www` 301 al dominio;
+  `/api/categories` 200 con las cinco categorías; `/api/products/` 200 con 0 productos;
+  `/api/dev/demo-accounts` 404; `/media/` y una ruta del almacén 404; `/auth` 200.
+  Cabeceras: HSTS, `nosniff`, `X-Frame-Options: DENY`, sin `Server`. Puertos visibles
+  desde internet: 22 (sólo la IP administrativa), 80 y 443; 5432, 8000, 3000 y 2019 cerrados.
+- La tienda es visible para cualquiera con el dominio: sin catálogo, sin correo y sin
+  pagos. No se ha anunciado ni se ha abierto a clientes.
 
-Pendiente: apertura de
-80/443, Caddy y certificado, SMTP e Izipay TEST en el panel, cron, copia externa,
-restauración, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
-65% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
-+ MASTER 5 + DNS 5.
+Pendiente: SMTP e Izipay TEST en el panel (datos del propietario), cron, copia externa,
+restauración ensayada, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
+75% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15
++ MASTER 5 + DNS 5 + puertos, Caddy y certificado 10.
 No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE siguen PENDIENTES.
 

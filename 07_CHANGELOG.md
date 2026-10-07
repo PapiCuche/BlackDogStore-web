@@ -3,17 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-07 — CHECKPOINT 2: base desplegada en red interna (PARCIAL)
+## 2026-10-07 — CHECKPOINT 2: tienda desplegada con HTTPS (PARCIAL)
 
 - Destinatario de avisos de pedidos escrito en el servidor; preflight
   `SUFICIENTE PARA ARRANCAR`.
 - Imágenes construidas en el servidor sobre `c5f8c93`; PostgreSQL vacío, 154
   migraciones y `bootstrap_pilot_store --apply`. Estado inicial aprobado comprobado:
   cero usuarios, productos, stock y movimientos; cinco categorías; campaña conservada.
-- `backend` y `frontend` en marcha y sanos sólo en la red interna. Caddy sin arrancar,
-  80/443 cerrados, DNS sin tocar. Primera copia local hecha; restauración pendiente.
+- Primera copia local hecha; restauración pendiente.
 - MASTER creado por el propietario con `createsuperuser`, sin membresía.
 - Con `GO DNS`: A `@` y A `www` hacia `54.94.236.23`, DNS only, TTL Auto. Verificados.
+- Con orden del propietario: 80/443 abiertos en Lightsail, Caddy en marcha con
+  certificado de Let's Encrypt, comprobaciones de §4.5 correctas. Sin catálogo, correo
+  ni pagos; no abierta a clientes.
 - Acceso por clave SSH dedicada del usuario `deploy`. Sin cambios de código.
 
 ## 2026-10-07 — CHECKPOINT 2: preparación del servidor (PARCIAL)

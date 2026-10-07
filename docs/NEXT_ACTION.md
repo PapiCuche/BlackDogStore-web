@@ -14,20 +14,19 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 65% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
-`blackdogstore-prod-01` (`sa-east-1a`, 4 GB, 2 vCPU, 80 GB), Static IP `54.94.236.23`.
-Código del servidor: `c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
-Preflight `SUFICIENTE PARA ARRANCAR`. Imágenes construidas; PostgreSQL vacío + 154
-migraciones + `bootstrap_pilot_store --apply`; estado inicial comprobado (0 usuarios,
-0 productos/stock/movimientos, cinco categorías, campaña publicada).
-`postgres`, `backend` y `frontend` sanos en la red interna. **Caddy sin arrancar**;
-ningún puerto publicado; 80/443 cerrados en AWS. MASTER creado por el propietario
-(1 superusuario, sin membresía). Primera copia local hecha,
-restauración sin ensayar en el servidor. Acceso: `ssh deploy@54.94.236.23` con la
-clave dedicada del equipo del propietario (`~/.ssh/blackdogstore_prod_ed25519`);
-`deploy` no tiene sudo.
-`GO DNS` aplicado: A @ y A www hacia la Static IP, DNS only, TTL Auto; resuelven en
-resolvedores públicos; nameservers sin cambios. Apertura de 80/443: sin autorizar.
+CHECKPOINT 2 **PARCIAL · 75% · BLOCKED/OWNER-DATA**. Servidor Lightsail
+`blackdogstore-prod-01` (`sa-east-1a`), Static IP `54.94.236.23`. Código del servidor:
+`c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
+`https://blackdogstoreperu.com` responde: los cuatro contenedores en marcha, certificado
+de Let's Encrypt, §4.5 correcta. Base nacida de PostgreSQL vacío + 154 migraciones +
+`bootstrap_pilot_store --apply`: 0 productos, cinco categorías, campaña publicada.
+MASTER creado por el propietario (1 superusuario, sin membresía).
+DNS: A @ y A www hacia la Static IP, DNS only. Firewall de Lightsail: 22 desde la IP
+administrativa, 80 y 443 desde cualquier IPv4.
+Visible pero NO abierta a clientes: sin catálogo, sin SMTP, sin pasarela, sin cron.
+Una copia local hecha; restauración sin ensayar en el servidor. Acceso:
+`ssh deploy@54.94.236.23` con la clave dedicada del equipo del propietario
+(`~/.ssh/blackdogstore_prod_ed25519`); `deploy` no tiene sudo.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
 INT-IMPORT-CYCLE-01; no tocar #80/#85.
@@ -41,9 +40,8 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. MASTER creado y DNS aplicado. Falta, en orden: autorización
-   para abrir 80/443, `up -d caddy` y §4.5. No arrancar Caddy antes de que el DNS
-   responda: Let's Encrypt limita los intentos fallidos.
+1. CHECKPOINT 2: §4.3 y §4.5 hechas. Falta: cron (§6.1.0), ensayar la restauración,
+   copia externa y lo que depende de datos del propietario (puntos 2 y 3).
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
@@ -80,7 +78,6 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
   Web») y sus claves de TEST; después, las de producción (IZIPAY-PRODUCT,
   IZIPAY-TOKEN-CONTRACT, las dos abiertas). Se escriben en la consola.
 - SMTP: host, puerto, usuario, contraseña, remitente y tipo de cifrado. En la consola.
-- Apertura de 80/443 en el firewall de Lightsail: orden separada del propietario.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
@@ -134,7 +131,7 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: autorizar (o no) abrir 80/443 en el firewall de Lightsail. Sin eso Caddy no
-obtiene certificado. Con la autorización: abrir puertos, `up -d caddy`, §4.5, SMTP e
-Izipay TEST en el panel MASTER, cron, ensayar la restauración y `sh deploy/rehearsal.sh`
-sobre el commit publicado.
+Propietario, con la cuenta MASTER en `https://blackdogstoreperu.com/auth`: Configuración ›
+Integraciones › Correo SMTP (guardar, probar, activar) y Pagos (producto de Izipay y
+claves de TEST). Agente, sin esperar: instalar el cron de §6.1.0, ensayar la restauración
+de la copia fuera de la base en uso y repetir `sh deploy/rehearsal.sh` sobre `c5f8c93`.
