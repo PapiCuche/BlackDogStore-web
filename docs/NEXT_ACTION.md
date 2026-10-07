@@ -14,15 +14,19 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
-CHECKPOINT 2 **PARCIAL · 25% · BLOCKED/OWNER-DATA**. `GO AWS` recibido; servidor
-Lightsail `blackdogstore-prod-01` creado en `sa-east-1a` (4 GB, 2 vCPU, 80 GB,
-US$24/mes), Static IP `blackdogstore-prod-ip` `54.94.236.23` adjunta.
-Docker/Compose, deploy, UFW, swap y copia limpia del baseline preparados.
-Secretos de arranque generados sólo en el servidor, `.env.production` 600.
-Compose config OK; preflight INCOMPLETO por `ORDER_NOTIFICATION_EMAIL`.
-No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
-`GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
-A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
+CHECKPOINT 2 **PARCIAL · 55% · BLOCKED/OWNER-ACTION**. Servidor Lightsail
+`blackdogstore-prod-01` (`sa-east-1a`, 4 GB, 2 vCPU, 80 GB), Static IP `54.94.236.23`.
+Código del servidor: `c5f8c93`, árbol limpio (lo posterior en `master` es documentación).
+Preflight `SUFICIENTE PARA ARRANCAR`. Imágenes construidas; PostgreSQL vacío + 154
+migraciones + `bootstrap_pilot_store --apply`; estado inicial comprobado (0 usuarios,
+0 productos/stock/movimientos, cinco categorías, campaña publicada).
+`postgres`, `backend` y `frontend` sanos en la red interna. **Caddy sin arrancar**;
+ningún puerto publicado; 80/443 cerrados en AWS. Sin MASTER. Primera copia local hecha,
+restauración sin ensayar en el servidor. Acceso: `ssh deploy@54.94.236.23` con la
+clave dedicada del equipo del propietario (`~/.ssh/blackdogstore_prod_ed25519`);
+`deploy` no tiene sudo.
+`GO DNS` pendiente: zona sin registros; propuesta A @ y A www hacia la Static IP,
+DNS only, TTL Auto; nameservers sin cambios.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
 MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
 INT-IMPORT-CYCLE-01; no tocar #80/#85.
@@ -36,10 +40,10 @@ current_priority:
    usuario MASTER con createsuperuser, sin membership implícita (§5 de la guía).
 0. INT-IMPORT-CYCLE-01 (microfase, espera el GO del propietario): quitar los dos ciclos
    de imports que introdujo #91, sin cambiar comportamiento, API, esquema ni RBAC.
-1. Continuar CHECKPOINT 2 en el servidor ya creado, sin apertura pública. En el servidor:
-   `.env.production` ya existe y contiene los secretos generados: no volver a copiar
-   el ejemplo ni regenerarlos. Completar sólo el destinatario real de pedidos y
-   ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
+1. CHECKPOINT 2 en el servidor: §4.3 hecha salvo Caddy. Falta, en orden: MASTER con
+   `createsuperuser` (lo escribe el propietario en su terminal), `GO DNS`, autorización
+   para abrir 80/443, `up -d caddy` y §4.5. No arrancar Caddy antes de que el DNS
+   responda: Let's Encrypt limita los intentos fallidos.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
 3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
@@ -79,7 +83,6 @@ blocked_external (BLOCKED/OWNER-DATA: sin esto no se abre):
 - DNS: GO DNS independiente para A @ y A www hacia 54.94.236.23, DNS only.
   Servidor y acceso AWS ya disponibles; dominio gestionado por Cloudflare.
 - Destino de la copia externa, y dónde guardar la copia de `deploy/.env.production`.
-- Dirección que recibe el aviso de cada pedido.
 - Catálogo, existencias, fotos y precios reales: tras `bootstrap_pilot_store --apply` la
   tienda nace sin productos.
 
@@ -132,8 +135,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - Los huecos `home_featured` y `home_promo` existen en el modelo y la portada no los pinta.
 
 next_exact_action:
-Propietario: indicar únicamente el correo real que recibe los avisos de pedidos
-(ORDER_NOTIFICATION_EMAIL), sin contraseña. Después: completar preflight en el
-servidor, reconstruir imágenes y continuar el arranque limpio documentado. DNS se
-modifica sólo después de GO DNS sobre el antes/después; no abrir tráfico público.
-SMTP e Izipay TEST se escriben directamente en el panel MASTER cuando esté disponible.
+Propietario, en su terminal (la contraseña no pasa por el chat):
+`ssh -t -i ~/.ssh/blackdogstore_prod_ed25519 deploy@54.94.236.23 'cd /srv/blackdogstore && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec backend python manage.py createsuperuser'`
+Después decidir `GO DNS` sobre la tabla antes/después y, aparte, la apertura de 80/443.
+Con ambas: arrancar Caddy, §4.5, SMTP e Izipay TEST en el panel MASTER, cron, ensayar
+la restauración y `sh deploy/rehearsal.sh` sobre el commit publicado.

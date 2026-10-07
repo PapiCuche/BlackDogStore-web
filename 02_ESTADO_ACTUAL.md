@@ -3,6 +3,43 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — CHECKPOINT 2: base desplegada en red interna, sin tráfico público
+
+**PARCIAL · 55% · BLOCKED/OWNER-ACTION.** `origin/master` verificado por fetch:
+`959231b49fd63da04ed8fcea4a3dad81a254ee9d` (#96). `c5f8c93..959231b` sólo cambia
+documentación: el servidor sigue en `c5f8c935a8b16072a6424184fc814efbe1babaf1`,
+árbol limpio. Sin cambios de código. `GO DNS` y la apertura pública siguen pendientes.
+
+- Acceso: clave SSH dedicada para `deploy`, instalada por el propietario desde el SSH
+  del navegador de Lightsail; la mitad privada vive sólo en su equipo. Firewall de AWS
+  sin cambios (22 sólo desde la IP administrativa; 80/443 cerrados, comprobado desde fuera).
+- Host revalidado: Ubuntu 24.04.5, 3,8 GiB RAM, swap 2 GiB, disco 12% tras el build,
+  Docker 29.8.2 / Compose 5.6.0, hora America/Lima sincronizada, sin reinicio pendiente.
+  UFW no se pudo releer: `deploy` no tiene sudo sin contraseña (correcto).
+- `ORDER_NOTIFICATION_EMAIL` escrito con la dirección que dio el propietario; archivo
+  sigue `deploy:deploy` 600. Preflight: `CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR`
+  (SMTP e Izipay BLOCKED/OWNER-DATA para el panel; Google, WhatsApp y SUNAT opcionales).
+- §4.3 de la guía: `build` correcto (backend 460 MB, frontend 1,09 GB); PostgreSQL en
+  volumen nuevo; `migrate` aplicó las 154 migraciones, 0 pendientes; simulación y
+  `bootstrap_pilot_store --apply`; segunda ejecución: «Nada que hacer».
+- Estado inicial medido en el servidor, `DEBUG=False`: usuarios 0, pedidos 0, clientes 0,
+  `Product=0 | BranchStock=0 | StockMovement=0`, 1 empresa, 1 sucursal, cinco categorías
+  (iPhone, Mac, iPad, Apple Watch, Accesorios), campaña «iPhone 18 Pro Max» publicada.
+- `check --deploy`: un único aviso, `security.W008`, el esperado.
+- Arrancados `postgres`, `backend` y `frontend`, los tres `healthy`. **Caddy no se
+  arrancó**: sin DNS pediría certificados que fallarían. Ningún puerto publicado en el
+  host (sólo 22). Sondas dentro de la red de Docker: `/api/categories` 200,
+  `/api/products/` 200, `/api/dev/demo-accounts/` 404, `/admin/` 404, portada de Next 200.
+- Primera copia con `deploy/backup.sh`: volcado legible con 98 tablas y `LAST_OK`.
+  **Restauración no ensayada en el servidor.**
+
+Pendiente: MASTER (`createsuperuser`, lo escribe el propietario), `GO DNS`, apertura de
+80/443, Caddy y certificado, SMTP e Izipay TEST en el panel, cron, copia externa,
+restauración, `rehearsal.sh` sobre el commit publicado y §11 de la guía.
+55% = plan/servidor 10 + host 15 + preflight 5 + imágenes 10 + base y estado inicial 15.
+No es READY FOR PRODUCTION. Analítica y pagos sin configurar; CSP-01 y
+MEAS-PRIVACY-NOTICE siguen PENDIENTES.
+
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 
 **PARCIAL · 25% · BLOCKED/OWNER-DATA.** El propietario autorizó `GO AWS` para
