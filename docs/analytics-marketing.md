@@ -327,7 +327,7 @@ Deuda:
 | MEAS-PIXEL-URL | los píxeles envían la dirección completa de las rutas no privadas (§6) |
 | MEAS-FORM-PAGES | Meta y TikTok no reciben `AddPaymentInfo` ni `CompleteRegistration`: no están en las páginas con formulario |
 | MEAS-IP-UA | la IP y el navegador se envían a Meta y TikTok con la compra, con consentimiento de marketing: aprobado por el propietario el 2026-10-07 |
-| MEAS-PRIVACY-NOTICE | la política de privacidad y cookies de la tienda (su dirección la configura cada tienda) aún no dice qué se envía a Meta y TikTok; pendiente antes de producción |
+| MEAS-PRIVACY-NOTICE | PARCIAL: aviso de medición en `/privacy`, enlazado desde banner y pie, consentimiento v2. Antes de cerrar: publicar, validar identidad/contacto del tenant, retención de Analytics y política completa para las demás finalidades. No equivale a aceptar la declaración de Google |
 | MEAS-HARD-NAV | entrar en una ruta privada o en el checkout con scripts cargados recarga la página: es el precio de que no la vean |
 | MEAS-CONSENT-LOG | no se guarda un registro de consentimientos en el servidor, sólo el del pedido |
 | MEAS-TENANT-SCOPE | una configuración para toda la instalación, no por empresa |
