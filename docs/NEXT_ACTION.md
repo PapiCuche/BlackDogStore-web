@@ -12,6 +12,12 @@ open_prs:
   Mayores: leer el cambio; si rompen la CI, `@dependabot ignore this major version`.
 
 current_phase:
+FIX-MEAS-LOG-TEST-01: corrección exclusiva del test de logs de conversiones en
+`fix/measurement-log-test`. Antes de mergear: CI backend completo sobre su HEAD exacto.
+Después: repetir CHECKPOINT 1B en el nuevo master (incluido ensayo y recuperación),
+y presentar Lightsail sólo si queda verde. El dominio del propietario es
+`blackdogstoreperu.com`; no crear recursos AWS sin su aprobación.
+
 NOT READY, por datos externos y no por el código. ANALYTICS-MARKETING-INTEGRATIONS-01
 cerrada: Google Analytics 4, Meta y TikTok se configuran en la consola (sólo MASTER), la
 tienda pide permiso antes de cargar nada de terceros y la compra se mide una vez, desde

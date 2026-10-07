@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-07 — FIX-MEAS-LOG-TEST-01
+
+- La prueba de logs de conversiones deja de depender de un INFO incidental de correo.
+- Provoca errores inesperados en la frontera HTTP simulada y verifica el logging real
+  de `store.measurement`: sin tokens, secretos de API, identificadores ni PII; sin
+  traceback, sin deshacer el pago y con reintento pendiente.
+- Sólo test backend; sin cambios productivos ni migraciones. RED → GREEN en PostgreSQL.
+
 ## 2026-10-07 — Cierre de ANALYTICS-MARKETING-INTEGRATIONS-01
 
 - La fase está en `master`: PR #91, merge `021ad13`. Sin despliegue.

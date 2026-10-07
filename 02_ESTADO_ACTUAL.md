@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-07 — FIX-MEAS-LOG-TEST-01: comprobar el error de conversión, no un aviso de correo
+
+Rama `fix/measurement-log-test`, desde `master` `cc6a785`. Sólo cambia una prueba;
+sin código productivo, migraciones ni configuración de despliegue.
+
+El test de ausencia de secretos pasaba en CI por un INFO de `store.email_services`
+cuando faltaba el destinatario interno de pedidos. Con `ORDER_NOTIFICATION_EMAIL`
+configurado desaparecía ese aviso y `assertLogs('store')` fallaba: los errores
+HTTP/red de Meta y TikTok se convierten en respuestas seguras sin logging.
+Reproducido dos veces aislado, con la clase y con el módulo; con el entorno de CI,
+tres aisladas, clase y módulo pasaban. Es un defecto del test, no una fuga demostrada.
+
+Ahora la frontera HTTP simulada lanza una excepción inesperada con tokens,
+identificadores del navegador y PII ficticia en su mensaje. El código real registra
+tres ERROR en `store.measurement`, sólo con el tipo de excepción y sin traceback.
+La prueba exige esos registros, comprueba que ningún dato sensible aparece y que
+el pago sigue confirmado con las conversiones pendientes de reintento.
+
+RED → GREEN en PostgreSQL 16 / Python 3.12: aislado con y sin destinatario, clase
+10/10 y módulo 35/35; redacción, logging e integraciones 333/333, sin omitidas;
+`makemigrations --check --dry-run`, sin cambios por generar. El merge exige CI backend completo sobre el HEAD exacto;
+CHECKPOINT 1B se repite después sobre el nuevo master. Sin recursos AWS.
+
 ## 2026-10-06 — ANALYTICS-MARKETING-INTEGRATIONS-01: medir, con permiso y una sola vez
 
 En `master` desde el 2026-10-07: PR #91, merge `021ad13` (rama `feat/analytics-marketing`,
