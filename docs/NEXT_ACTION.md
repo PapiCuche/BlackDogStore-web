@@ -1,5 +1,16 @@
 # NEXT ACTION
 
+## Prioridad del pedido actual: privacidad de medición
+
+PARCIAL: aviso `/privacy` y consentimiento v2 preparados. Revisar y publicar tras
+autorización expresa de despliegue; configurar identidad legal y correo del titular
+con los datos confirmados en la conversación (no hardcodearlos en el producto).
+Validar la retención real de Analytics y completar la política para otras finalidades
+antes de declarar cumplimiento. No aceptar automáticamente la declaración de Google
+ni activar el borrador del secreto API. La configuración de producción queda intacta.
+
+## Contexto previo del lanzamiento
+
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
 master: baseline del servidor `c5f8c935a8b16072a6424184fc814efbe1babaf1` (#95), 2026-10-07.

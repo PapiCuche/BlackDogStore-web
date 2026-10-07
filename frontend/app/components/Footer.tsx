@@ -237,6 +237,7 @@ export function Footer() {
         ) : null}
 
         <p className="mt-6 text-xs text-muted">
+          <Link href="/privacy" className="mr-6 underline underline-offset-4 transition hover:text-foreground">Privacidad y cookies</Link>
           <button
             type="button"
             onClick={openConsentPreferences}
