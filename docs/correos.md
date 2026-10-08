@@ -48,6 +48,14 @@ detalle**: ni precios, ni diagnóstico, ni datos del equipo. Eso sigue detrás d
 propia autorización. Por eso el correo de cotización no usa el bloque `detalle` del
 ejemplo `03-cotizacion.json`.
 
+**El botón sólo aparece si lleva a algo.** `/repairs` y `/orders` muestran lo que
+pertenece a una cuenta. Quien dejó un equipo en el mostrador o compró sin registrarse no
+tiene cuenta, y un pedido vendido en caja no está en la de nadie: esos avisos salen con
+la plantilla y sin botón, en vez de con un botón a una pantalla de acceso y una lista
+vacía. Para ellos el detalle está en el enlace de seguimiento de la reparación, que hoy
+**no** viaja por correo (deuda MAIL-TRACKING-LINK: lo decide el propietario, porque ese
+enlace permite aprobar una cotización).
+
 El progreso del cliente sólo muestra pasos que son ciertos pase lo que pase antes:
 «Equipo recibido · Listo para recoger · Entregado». Un equipo puede estar listo sin
 haberse reparado.

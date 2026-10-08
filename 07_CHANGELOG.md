@@ -16,6 +16,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 No cambia qué eventos envían correo, a quién, ni que cada uno salga una vez. Un aviso
 sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No desplegado.
 
+**De la revisión independiente, antes de publicar el cambio**
+- El botón del cliente llevaba a `/repairs` o `/orders` aunque esa persona no tuviera
+  cuenta, o el pedido no fuera de la suya: una pantalla de acceso y una lista vacía.
+  Ahora el botón sólo sale cuando esa página le va a mostrar lo que el aviso anuncia.
+- El mensaje de prueba del servidor de correo podía fallar al armarse en vez de salir
+  sin plantilla.
+- Un aviso de algo sin página conocida mostraba el progreso sin etiqueta ni botón.
+
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1)
 
 **Added**
