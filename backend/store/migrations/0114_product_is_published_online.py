@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0112_measurement_conversions'),
+        ('store', '0113_account_token_code'),
     ]
 
     operations = [

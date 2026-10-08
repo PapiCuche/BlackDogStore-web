@@ -5,8 +5,8 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-08 — PRODUCT-DESTINATION-01: «sólo stock interno» y la plantilla de carga masiva
 
-Rama `feat/product-visibility-import`, desde `master` `6266402`. **Con migración**
-(`0113_product_is_published_online`). Decisión: DEC-PRODUCT-DEST-01. No desplegado, sin
+Rama `feat/product-visibility-import`, apilada sobre `feat/mail-verification-code`. **Con migración**
+(`0114_product_is_published_online`). Decisión: DEC-PRODUCT-DEST-01. No desplegado, sin
 merge.
 
 **Qué hay.** Un producto tiene un dato nuevo, independiente de «activo»:
@@ -41,9 +41,9 @@ usan estos productos como cualquier otro. «Activo» significa lo mismo que ante
   caracteres, igual que la de un producto desactivado (PRODUCT-IMAGE-HIDDEN).
 - Las categorías públicas no cuentan productos: una categoría cuyos productos son todos
   internos se sigue listando, vacía.
-- **Migraciones:** esta rama y la del código de verificación (MAIL-TEMPLATE-01 3A) crean
-  cada una una `0113` sobre `0112`. La segunda que se una debe renumerarse a `0114`
-  dependiendo de la primera.
+- **Orden de unión (decisión del propietario, 2026-10-08):** primero el código de
+  verificación (MAIL-TEMPLATE-01 3A, migración `0113`); esta rama va apilada sobre ella
+  y su migración es la `0114`.
 - Un pedido creado mientras el producto estaba publicado se puede terminar de pagar
   después de que deje la web (igual que con un producto desactivado).
 - Una campaña enlazada a un producto interno se sigue pudiendo publicar; sale sin el
@@ -54,6 +54,57 @@ usan estos productos como cualquier otro. «Activo» significa lo mismo que ante
 recordado hacía ignorar «Destino» y publicaba lo que debía quedar interno; el checkout
 de la app confirmaba que un producto interno existe y daba su nombre— y un defecto más,
 todos corregidos con su prueba.
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1 de 3): los correos llevan la plantilla de la tienda
+
+Rama `feat/mail-template`, desde `master` `6266402` (#101). Sin migraciones y sin
+variables de entorno nuevas. Decisión: DEC-MAIL-01. **No desplegado.**
+
+**Qué hay.** Un motor de correo (`backend/store/mail/`) que rellena una sola plantilla
+HTML —la que entregó el propietario, sin editar— con un diccionario de datos, y produce
+con los mismos datos la versión de texto plano. Cinco correos lo usan ya: verificar
+correo, restablecer contraseña, invitación de personal, compra confirmada (con su PDF) y
+aviso interno de pedido. Guía: `docs/correos.md`.
+
+**De quién es la plantilla.** Su pie lleva el nombre, la dirección, el teléfono y las
+redes de una tienda; `store/mail/plantilla/marca.json` dice de cuál. La usan los correos
+de esa empresa, y los de plataforma sólo si `DEFAULT_STOREFRONT_COMPANY_SLUG` es esa
+empresa (en producción lo es) y la persona no lo pidió desde la dirección de otra.
+Cualquier otra empresa conserva el correo neutro de antes.
+
+**Un correo no se pierde por cómo se ve.** Si la plantilla no se puede rellenar —falta
+la razón social o el RUC, un dato no cumple el contrato, falla el motor— sale el correo
+neutro y queda un error en el registro, sin el cuerpo. Enviar se intenta una sola vez,
+con o sin plantilla.
+
+**Revisión independiente antes del PR:** sin hallazgos graves; dos defectos (un correo
+podía salir dos veces si el servidor fallaba al confirmar; la plantilla en correos de
+cuenta pedidos desde la dirección de otra empresa) y cinco menores, todos corregidos con
+su prueba. El ensayo de producción detectó por su cuenta el primero (el doble de espera
+con el servidor de correo mudo).
+
+**Vista previa**, sólo con `DEBUG`: `/api/dev/mail-preview/`. En producción responde 404.
+
+**Dependencia nueva:** `chevron==0.14.0` (Mustache en Python puro, MIT).
+
+**Fase 2** (rama `feat/mail-template-notifications`, sobre la fase 1): los avisos de
+`notification_services` y la prueba del servidor de correo salen con la plantilla. De
+los 15 eventos, hoy van por correo cuatro (`EMAIL_WORTHY_EVENTS`); esa decisión no se
+toca. Un aviso lleva un botón a donde está el detalle, nunca el detalle; y sólo cuando
+esa página se lo va a mostrar a quien lo recibe.
+
+**MAIL-TRACKING-LINK (decidido por el propietario el 2026-10-08):** el aviso de una
+reparación lleva al cliente su enlace de seguimiento, tenga cuenta o no. Sólo al cliente
+de esa reparación; un enlace revocado no se recrea; la copia del personal no lo lleva.
+
+**Fase 3**, aprobada por el propietario el 2026-10-08, en tres PR:
+
+- **3A · código de verificación** (rama `feat/mail-verification-code`, sobre la fase 2):
+  el correo de verificación lleva enlace y código de 6 dígitos. Migración
+  `0113_account_token_code`. Decisión DEC-MAIL-03.
+- **3B · garantía y posventa:** pendiente. Antes hay que resolver con el propietario el
+  IMEI de la garantía frente a SERIAL-PICK (hoy el pedido registra el equipo más antiguo,
+  no el que se entrega en mano).
+- **3C · promociones con consentimiento y baja:** pendiente.
 
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 

@@ -366,6 +366,101 @@ de dominios en `docs/analytics-marketing.md` §7.
   plantilla ayuda y no prohíbe: un nombre nuevo es como se usa «crear las que falten».
 - **Descartado:** un tercer estado en un campo de texto; ocultar por categoría; aplicar
   el destino a las categorías.
+### DEC-MAIL-01 · Una plantilla de correo es de una empresa; el correo neutro queda detrás
+
+- **La plantilla no es de la plataforma.** Su pie nombra una tienda, con su dirección,
+  su teléfono y sus redes. `store/mail/plantilla/marca.json` dice de qué empresa es, por
+  su `slug`. La llevan los correos de esa empresa; los de plataforma (cuenta,
+  contraseña), sólo cuando la tienda de la instalación es esa empresa y la persona no lo
+  pidió desde la dirección de otra. Otra empresa nunca firma con los datos de la
+  primera: sigue con el correo de texto que tenía.
+- **El archivo de la plantilla no se edita.** Sus `[corchetes]` se rellenan al cargarla:
+  la web desde `FRONTEND_URL`, la razón social y el RUC desde los ajustes de la empresa,
+  el logotipo y YouTube desde `marca.json`. Si falta uno, la plantilla no se usa: un pie
+  con «[RUC]» impreso es peor que el correo neutro.
+- **Los datos tienen contrato y se comprueban antes de rellenar.** Claves desconocidas,
+  números sin formatear y enlaces que no sean `https://` o la propia web se rechazan; lo
+  vacío se omite, y con ello su bloque. Todo dato se escapa (`{{ }}`).
+- **Un correo no se pierde por cómo se ve.** Cualquier fallo al componer la plantilla
+  deja salir el correo neutro y un error en el registro. El cuerpo no se registra nunca:
+  varios correos llevan un enlace que es el acceso.
+- **Componer y enviar son dos pasos, y el respaldo es sólo del primero.** Un envío que
+  falla no se repite sin plantilla: un servidor que aceptó el mensaje y no llegó a
+  confirmarlo ya lo entregó, y el segundo correo llevaría el mismo enlace. Además
+  duplicaba la espera de la petición con el servidor caído.
+- **Los valores fijos entran como texto, no como plantilla.** Se insertan en el fuente
+  antes de rellenarlo; una razón social con `{{` dentro sería Mustache. Las llaves se
+  escriben como entidades.
+- **El pie de texto dice lo que imprime la plantilla**, no lo que hay en los ajustes: el
+  pie HTML está escrito en el archivo, y las dos mitades de un correo no pueden firmar
+  distinto. `marca.json` lo repite y una prueba exige que coincida.
+- **El texto plano sale de los mismos datos**, no de quitar etiquetas al HTML: no puede
+  decir otra cosa ni llevar otro enlace.
+- **Motor:** Mustache con `chevron`, porque la plantilla entregada es Mustache y la del
+  propietario no se reescribe a la sintaxis de Django.
+- **Descartado:** una plantilla por tipo de correo; meter la marca en variables de
+  entorno (son datos de una empresa, ya están en sus ajustes); usar la plantilla para
+  todas las empresas con los datos de cada una (el diseño, los colores y las redes son
+  de una marca: otra empresa necesitará la suya, con su propio `marca.json`).
+
+### DEC-MAIL-02 · El aviso de una reparación lleva su enlace de seguimiento
+
+Decisión del propietario (2026-10-08). Antes ese enlace sólo se entregaba a mano, y
+quedaba escrito quién lo pidió.
+
+- **Por qué:** el aviso «tienes una cotización pendiente» no decía cómo verla. Las
+  páginas del cliente piden una cuenta, y quien deja un equipo en el mostrador casi
+  nunca la tiene. La página de seguimiento es donde se lee y se responde la cotización.
+- **El enlace es una forma de entrar, y se trata como tal.** Va sólo al correo del
+  cliente de esa reparación (misma empresa, mismo cliente); nunca a la copia del
+  personal; no se escribe en registros ni en el motivo de un envío fallido.
+- **Un enlace revocado sigue revocado.** El correo usa el enlace vivo y no crea otro:
+  revocar es una decisión de alguien, y un aviso no la deshace.
+- **Lo demás no cambia:** el aviso sigue sin llevar precios ni diagnóstico.
+- **Riesgo aceptado:** quien lea ese buzón puede abrir el seguimiento y responder la
+  cotización. Es el mismo alcance que ya tenía quien recibiera el enlace de mano del
+  personal.
+
+### DEC-MAIL-03 · El código de verificación es una comodidad con sus propios límites
+
+El propietario pidió un código de 6 dígitos en el correo de verificación, «que no
+moleste», con estas cifras: 15 minutos, 5 intentos, uno nuevo anula el anterior, 60
+segundos entre reenvíos y un tope diario (se fijó en 5).
+
+- **El enlace sigue siendo la prueba fuerte.** El código prueba lo mismo —que quien lo
+  escribe lee ese buzón— con un secreto de un millón de posibilidades. Verificar un
+  correo ajeno no es inocuo aquí: un buzón verificado es lo que deja aceptar una
+  invitación de personal dirigida a él.
+- **Los límites se cuentan en la cuenta, no en la red.** Intentos por código y códigos
+  por día viven en la fila del token; cambiar de red no los reinicia. El límite por
+  dirección (10 por minuto) es una segunda capa.
+- **Sólo se guarda un HMAC**, con clave derivada de `SECRET_KEY` y ligado a la cuenta.
+  Un hash simple de seis dígitos se revierte probando el millón.
+- **Una sola respuesta para toda negativa.** Ni «la cuenta no existe», ni «código
+  vencido», ni «demasiados intentos». Lo que no es un código (cinco dígitos, letras) no
+  gasta intento.
+- **Una fila, un correo.** El código vive en la misma fila que su enlace
+  (`AccountToken`): usar uno gasta el otro, y no hay un segundo sistema de tokens.
+- **Reenviar no dice si envió.** La espera de 60 segundos y el tope diario se aplican en
+  silencio; la pantalla muestra la cuenta atrás por su lado.
+- **Consecuencia aceptada:** alguien puede gastar los cinco códigos del día de una
+  cuenta ajena pidiendo reenvíos. El enlace del primer correo sigue sirviendo 24 horas,
+  y la recuperación de contraseña también termina la cuenta.
+- **Un mismo orden de bloqueos.** Emitir y comprobar tocan la cuenta y su código; los
+  dos bloquean primero la cuenta. Al revés en uno de ellos, un código correcto que
+  llegaba a la vez que un «enviar otro» se interbloqueaba y uno de los dos respondía 500.
+- **Un código es definitivo cuando su correo salió.** `issue` lo crea, `settle` mata los
+  anteriores una vez entregado, `withdraw` lo retira si el envío falló. Un servidor de
+  correo caído no puede dejar a nadie un día sin verificación.
+- **«Inactiva» no es la pregunta.** El código sólo termina una cuenta registrada y nunca
+  verificada (`accounts.is_unverified`), y reenviar sólo emite para esas.
+- **Las columnas nuevas llevan valor por defecto en la base** (`db_default`). Al
+  desplegar se migra con la versión anterior aún sirviendo; sin él, sus altas de tokens
+  fallaban, y pedir recuperar contraseña respondía 500 sólo para correos existentes.
+- **Lo que tarda dice poco, no nada.** Toda comprobación bloquea una fila de cuenta y
+  una de código y compara un HMAC, exista la cuenta o no. Queda una diferencia de
+  fracciones de milisegundo cuando hay un código vivo. El registro ya dice si un correo
+  está registrado, así que no se añade un dato que no estuviera.
 
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 

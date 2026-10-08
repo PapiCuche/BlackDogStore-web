@@ -124,6 +124,8 @@ REST_FRAMEWORK = {
         'print_agent': '240/min',
         'payment_status': '30/min',
         'resend_verification': '3/min',
+        # El código de 6 dígitos: además de sus 5 intentos por código, por dirección.
+        'verify_email_code': '10/min',
         'password_reset_request': '3/min',
         'password_reset_confirm': '5/min',
         'change_password': '5/min',
