@@ -1,0 +1,43 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Te invitamos: [Nombre del evento]",
+  "preheader": "[Fecha] · Octavio Muñoz Najar 238, Tienda 104.",
+  "momento_oro": true,
+  "etiqueta": "Invitación",
+  "titulo": "[Nombre del evento]",
+  "saludo": "Hola, [Nombre]:",
+  "parrafos": [
+    "[Una o dos líneas sobre el evento: qué vamos a presentar y por qué vale la pena venir.]"
+  ],
+  "datos": {
+    "titulo": "Datos del evento",
+    "campos": [
+      {
+        "nombre": "Fecha",
+        "valor": "[DD/MM/AAAA]"
+      },
+      {
+        "nombre": "Hora",
+        "valor": "[00:00]"
+      },
+      {
+        "nombre": "Lugar",
+        "valor": "Tienda 104"
+      },
+      {
+        "nombre": "Cupos",
+        "valor": "[Número]"
+      }
+    ]
+  },
+  "boton": {
+    "texto": "Confirmar asistencia",
+    "url": "[URL de confirmación]"
+  },
+  "motivo": "Recibes este correo porque eres cliente de Black Dog Store.",
+  "baja_url": "[URL para darse de baja]"
+}
