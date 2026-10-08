@@ -12,11 +12,13 @@ the code to:
   * any other company's notice is the one it was;
   * the delivery row tells the truth: SENT, FAILED and one attempt each.
 """
+import json
 import re
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail as outbox_module
+from django.core.cache import cache
 from django.core.mail.message import EmailMessage
 from django.test import override_settings
 from django.utils import timezone
@@ -26,14 +28,17 @@ from store import notification_events as ev
 from store import notification_services as notif
 from store.mail import builders, contract
 from store.models import Company, Customer, Notification, NotificationDelivery
-from store.test_mail import PILOT_MARKS, SITE, _Base, example, other_company, shape, within
+from store.test_mail import PILOT_MARKS, SITE, TEMPLATE, _Base, example, other_company, shape, within
+from store.tests import M12DeliveryBase
 
 User = get_user_model()
 
-# event → (what it is about, its number, where the customer reads it, the step it is at)
+# event → (what it is about, its number, where the customer reads it, the step it is at).
+# No page for the repairs here: these are hand-made notices about repairs that do
+# not exist, and a repair's page is its tracking link — `RepairTrackingLinkTest`.
 CUSTOMER_EVENTS = {
-    ev.SERVICE_QUOTE_AVAILABLE: ('repair_order', 41, '/repairs', 'Cotización por revisar'),
-    ev.SERVICE_READY_FOR_PICKUP: ('repair_order', 42, '/repairs', 'Listo para recoger'),
+    ev.SERVICE_QUOTE_AVAILABLE: ('repair_order', 41, None, 'Cotización por revisar'),
+    ev.SERVICE_READY_FOR_PICKUP: ('repair_order', 42, None, 'Listo para recoger'),
     ev.COMMERCE_FULFILLMENT_READY: ('order', 43, '/orders', 'Listo para recoger'),
     ev.COMMERCE_FULFILLMENT_SHIPPED: ('order', 44, '/orders', 'Enviado'),
 }
@@ -83,8 +88,11 @@ class NotificationEmailTest(_Base):
                 self.assertIn('logo-horizontal-on-light.png', html)
                 self.assertIn('>Tu equipo está listo para recoger</h1>', html)
                 self.assertIn('Puedes pasar a retirarlo cuando quieras. Orden ST-000042.', html)
-                self.assertIn(f'href="{SITE}{page}"', html)
-                self.assertIn(f'{SITE}{page}', message.body)
+                if page:
+                    self.assertIn(f'href="{SITE}{page}"', html)
+                    self.assertIn(f'{SITE}{page}', message.body)
+                else:
+                    self.assertNotIn('class="btn"', html)
                 self.assertIn(f'[>] {step} (en curso)', message.body)
                 self.assertEqual(message.body.count('[>]'), 1)
                 delivery = NotificationDelivery.objects.get(notification__event__event_key=event_type)
@@ -125,7 +133,7 @@ class NotificationEmailTest(_Base):
         data = builders.notification(
             company='Black Dog Store', title='Tienes una cotización pendiente de revisión',
             body='Orden ST-000041 · revisa y aprueba o rechaza.', audience=Notification.Audience.CUSTOMER,
-            event_type=ev.SERVICE_QUOTE_AVAILABLE, target_type='repair_order', target_id=41, site=SITE, has_account=True)
+            event_type=ev.SERVICE_QUOTE_AVAILABLE, target_type='repair_order', target_id=41, link=f'{SITE}/seguimiento/TOKEN')
         self.assertEqual(within(shape(contract.clean(data)), shape(example('10-aviso'))), [])
         # … and the example it has to stay inside has no block that could carry a detail.
         self.assertEqual(set(example('10-aviso')) & {'detalle', 'datos', 'codigo', 'imagen', 'aviso', 'secundario'}, set())
@@ -155,7 +163,7 @@ class NotificationEmailTest(_Base):
         """
         walk_in = self.customer_of(self.pilot, 'luis@correo.test', account=False)
         for event_type, target, number in (
-            (ev.SERVICE_QUOTE_AVAILABLE, 'repair_order', 41),
+            (ev.SERVICE_QUOTE_AVAILABLE, 'repair_order', 999999),       # a repair that is not there: no tracking link either
             (ev.COMMERCE_FULFILLMENT_SHIPPED, 'order', self.order_of(walk_in).pk),
         ):
             with self.subTest(event_type):
@@ -167,7 +175,7 @@ class NotificationEmailTest(_Base):
                 self.assertIn('logo-horizontal-on-light.png', html)            # dressed all the same
                 self.assertIn('Va en camino. Es un aviso sobre tu', html)
                 self.assertNotIn('class="btn"', html)
-                for dead_end in ('/repairs', '/orders', 'Entra a tu cuenta'):
+                for dead_end in ('/repairs', '/orders', '/seguimiento', 'con el botón'):
                     self.assertNotIn(dead_end, message.body + html)
                 self.assertIn('[>]', message.body)                             # what step it is at is still true
 
@@ -203,7 +211,7 @@ class NotificationEmailTest(_Base):
     def test_a_target_nobody_mapped_shows_no_half_message(self):
         data = contract.clean(builders.notification(
             company='Black Dog Store', title='Aviso', body='Algo pasó.', audience=Notification.Audience.CUSTOMER,
-            event_type=ev.SERVICE_READY_FOR_PICKUP, target_type='otra_cosa', target_id=3, site=SITE, has_account=True))
+            event_type=ev.SERVICE_READY_FOR_PICKUP, target_type='otra_cosa', target_id=3, link=f'{SITE}/x'))
         for block in ('progreso', 'boton', 'etiqueta'):
             self.assertNotIn(block, data)
 
@@ -265,7 +273,7 @@ class NotificationEmailTest(_Base):
             with self.subTest(len(body)):
                 data = builders.notification(
                     company='Black Dog Store', title='Aviso', body=body, audience=Notification.Audience.INTERNAL,
-                    event_type=ev.COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED, target_type='announcement', target_id=3, site=SITE, has_account=True)
+                    event_type=ev.COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED, target_type='announcement', target_id=3, link=f'{SITE}/admin/communications/3')
                 cleaned = contract.validate(contract.clean(data))
                 self.assertTrue(40 <= len(cleaned['preheader']) <= 90, cleaned['preheader'])
                 self.assertEqual(cleaned['boton']['url'], f'{SITE}/admin/communications/3')
@@ -278,12 +286,12 @@ class NotificationEmailTest(_Base):
         rendered = mail.render('notification', builders.notification(
             company='Black Dog Store', title='Tu pedido fue enviado', body='Va en camino. Pedido #44.',
             audience=Notification.Audience.CUSTOMER, event_type=ev.COMMERCE_FULFILLMENT_SHIPPED,
-            target_type='order', target_id=44, site=SITE, has_account=True), company=self.pilot)
+            target_type='order', target_id=44, link=f'{SITE}/orders'), company=self.pilot)
         self.assertEqual(rendered.html.count('En curso'), 1)
         self.assertEqual(len(re.findall(r'\[x\] ', rendered.text)), 1)
         self.assertEqual(contract.clean(builders.notification(
             company='X', title='T', body='B', audience=Notification.Audience.CUSTOMER, event_type=ev.SERVICE_DELIVERED,
-            target_type='repair_order', target_id=1, site=SITE, has_account=False))['anio'], str(timezone.localdate().year))
+            target_type='repair_order', target_id=1, link=''))['anio'], str(timezone.localdate().year))
 
 
 @override_settings(FRONTEND_URL=SITE)
@@ -352,3 +360,162 @@ class SmtpTestMessageTest(_Base):
             message = self.message()
         self.assertEqual(message['Subject'], 'Prueba de correo')
         self.assertFalse(message.is_multipart())
+
+
+class RepairTrackingLinkTest(M12DeliveryBase):
+    """
+    MAIL-TRACKING-LINK · a repair's notice to its customer carries the tracking link.
+
+    The owner decided it: the page behind that link is where a quote is read and
+    answered, and most people who leave a device have no account to look in.
+    The link is a way in, so it goes to the order's OWN customer and nobody
+    else, a revoked one stays revoked, and it is written to no log.
+
+    The real path of the workshop, not a hand-made notice: the fixture's order
+    (`self.order`, received in `setUp`) is quoted, repaired and checked.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        outbox_module.outbox = []
+        company = self.order_company()
+        Company.objects.filter(pk=company.pk).update(legal_name='Taller de Prueba S.A.C.', tax_id='20999999991')
+        owner = {**json.loads((TEMPLATE.parent / 'marca.json').read_text(encoding='utf-8')), 'empresa': company.slug}
+        patcher = mock.patch('store.mail.skin._brand', return_value=owner)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for setting in (override_settings(FRONTEND_URL=SITE, EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+                                          DEFAULT_FROM_EMAIL='no-reply@tienda.test'),):
+            setting.enable()
+            self.addCleanup(setting.disable)
+
+    def order_company(self):
+        return Company.objects.get(slug='m8-taller')
+
+    def ready(self, *, email='ana@correo.test'):
+        with self.captureOnCommitCallbacks(execute=True):
+            Customer.objects.filter(pk=self.order.customer_id).update(email=email, user=None)
+            self.order.customer.refresh_from_db()
+            self.ready_for_pickup()
+        return {message.to[0]: message for message in outbox_module.outbox}
+
+    def test_the_customers_notice_leads_to_the_tracking_page_account_or_not(self):
+        from store import tracking_services
+
+        sent = self.ready()
+        message = sent['ana@correo.test']
+        link = tracking_services.url_for(self.order)
+        self.assertTrue(link.startswith(f'{SITE}/seguimiento/'))
+        self.assertIsNone(self.order.customer.user_id)                     # no account, and it does not matter
+        self.assertIn(f'href="{link}"', message.alternatives[0][0])
+        self.assertIn(f'Ver mi equipo:\n{link}', message.body)
+        self.assertNotIn('/repairs', message.body)
+
+    def test_a_quote_to_review_leads_there_too(self):
+        from store import tracking_services
+
+        self.ready()
+        outbox_module.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            notif.emit(company=self.order.company, event_type=ev.SERVICE_QUOTE_AVAILABLE, event_key='cotiza',
+                       title='Tienes una cotización pendiente de revisión', body='Revisa y aprueba o rechaza.',
+                       customers=[self.order.customer], target_type='repair_order', target_id=self.order.pk)
+        [message] = outbox_module.outbox
+        self.assertIn(f'href="{tracking_services.url_for(self.order)}"', message.alternatives[0][0])
+        self.assertIn('[>] Cotización por revisar (en curso)', message.body)
+
+    def test_the_staff_copy_never_carries_it(self):
+        sent = self.ready()
+        staff = [message for address, message in sent.items() if address != 'ana@correo.test']
+        self.assertTrue(staff)
+        for message in staff:
+            blob = message.body + message.alternatives[0][0]
+            self.assertNotIn('/seguimiento/', blob)
+            self.assertIn(f'{SITE}/admin/service/orders/{self.order.pk}', blob)
+
+    def test_a_revoked_link_stays_revoked(self):
+        from store import tracking_services
+        from store.models import RepairTrackingLink
+
+        with self.captureOnCommitCallbacks(execute=True):
+            Customer.objects.filter(pk=self.order.customer_id).update(email='ana@correo.test', user=None)
+            tracking_services.revoke(self.order, actor=self.staff)
+            self.ready_for_pickup()
+        message = {m.to[0]: m for m in outbox_module.outbox}['ana@correo.test']
+        self.assertNotIn('/seguimiento/', message.body + message.alternatives[0][0])
+        self.assertNotIn('class="btn"', message.alternatives[0][0])
+        self.assertFalse(RepairTrackingLink.objects.filter(repair_order=self.order, revoked_at__isnull=True).exists())
+
+    def test_somebody_with_an_account_gets_the_tracking_page_as_well(self):
+        """One page for everybody: it is where the quote is answered, and it needs no login."""
+        from store import tracking_services
+
+        with self.captureOnCommitCallbacks(execute=True):
+            account = User.objects.create_user('ana.cuenta', 'ana@correo.test', 'x')
+            Customer.objects.filter(pk=self.order.customer_id).update(email='ana@correo.test', user=account)
+            self.ready_for_pickup()
+        message = {m.to[0]: m for m in outbox_module.outbox}['ana@correo.test']
+        self.assertIn(f'href="{tracking_services.url_for(self.order)}"', message.alternatives[0][0])
+        self.assertNotIn('/repairs', message.body)
+
+    def test_with_the_link_revoked_an_account_still_has_its_own_page(self):
+        from store import tracking_services
+
+        with self.captureOnCommitCallbacks(execute=True):
+            account = User.objects.create_user('ana.cuenta', 'ana@correo.test', 'x')
+            Customer.objects.filter(pk=self.order.customer_id).update(email='ana@correo.test', user=account)
+            tracking_services.revoke(self.order, actor=self.staff)
+            self.ready_for_pickup()
+        message = {m.to[0]: m for m in outbox_module.outbox}['ana@correo.test']
+        self.assertIn(f'href="{SITE}/repairs"', message.alternatives[0][0])
+
+    def test_it_goes_to_the_orders_own_customer_and_to_nobody_else(self):
+        """A notice that names a repair it does not belong to gets no way into it."""
+        from store import tracking_services
+
+        self.ready()
+        token = tracking_services.url_for(self.order).rsplit('/', 1)[1]
+        stranger = Customer.objects.create(
+            company=self.order.company, first_name='Otra', last_name='Persona', document_type='dni',
+            document_number='70000001', email='otra@correo.test')
+        outbox_module.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            notif.emit(company=self.order.company, event_type=ev.SERVICE_READY_FOR_PICKUP, event_key='ajeno',
+                       title='Listo', body='Orden ajena.', customers=[stranger],
+                       target_type='repair_order', target_id=self.order.pk)
+        [message] = outbox_module.outbox
+        self.assertNotIn(token, message.body + message.alternatives[0][0])
+        self.assertNotIn('/seguimiento/', message.body)
+
+    def test_the_link_is_written_to_no_log_and_to_no_failure_reason(self):
+        import logging
+
+        from store import tracking_services
+
+        records = []
+
+        class Keep(logging.Handler):
+            def emit(self, record):
+                records.append(self.format(record) + repr(record.args))
+
+        handler = Keep(level=logging.DEBUG)
+        handler.setFormatter(logging.Formatter('%(message)s\n%(exc_text)s'))
+        watched = [logging.getLogger()] + [
+            logger for logger in logging.root.manager.loggerDict.values() if isinstance(logger, logging.Logger)]
+        for logger in watched:
+            logger.addHandler(handler)
+        try:
+            with mock.patch.object(EmailMessage, 'send', side_effect=TimeoutError('sin respuesta')):
+                self.ready()
+        finally:
+            for logger in watched:
+                logger.removeHandler(handler)
+        token = tracking_services.url_for(self.order).rsplit('/', 1)[1]
+        failed = NotificationDelivery.objects.filter(status=NotificationDelivery.Status.FAILED)
+        self.assertTrue(failed.exists())
+        for delivery in failed:
+            self.assertNotIn(token, delivery.failure_reason)
+        self.assertTrue(records)
+        self.assertNotIn(token, '\n'.join(records))
+        self.assertNotIn('/seguimiento/', '\n'.join(records))

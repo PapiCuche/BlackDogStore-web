@@ -410,25 +410,62 @@ def _send(notification, address):
     message.send(fail_silently=False)
 
 
-def _can_open_it(notification) -> bool:
-    """
-    Whether the customer's page will show this notice's subject to its reader.
+#: Where staff read what a notice is about. The same pages the bell opens
+#: (`targetHref` in the panel's NotificationBell).
+_PANEL = {
+    'repair_order': '/admin/service/orders/{id}',
+    'order': '/admin/orders',
+    'announcement': '/admin/communications/{id}',
+}
 
-    `/repairs` and `/orders` list what belongs to an ACCOUNT. A customer without
-    one, or an order that was not placed from theirs — sold at the counter,
-    bought as a guest — is not there. It asks whose the order is and nothing
-    else about it.
+
+def _destination(notification) -> str:
     """
-    from .models import Order
+    The address where THIS reader finds the detail of the notice, or ''.
+
+    '' is an answer: a button to a login screen and an empty list is worse than
+    no button. It asks whose the order or the repair is, and nothing else about
+    it.
+
+    STAFF go to the panel.
+
+    A CUSTOMER'S REPAIR goes to its tracking page — the owner's decision
+    (MAIL-TRACKING-LINK): that page is where a quote is read and answered, and
+    most people who leave a device have no account to look in. That link is a
+    way in, so it is given only when the repair is this customer's own, and a
+    link somebody revoked stays revoked: then an account still has `/repairs`.
+
+    A CUSTOMER'S ORDER goes to `/orders`, which lists what was bought FROM AN
+    ACCOUNT: an order sold at the counter or bought as a guest is not there.
+    """
+    from django.conf import settings as dj_settings
+
+    from . import tracking_services
+    from .models import Order, RepairOrder
+
+    site = (getattr(dj_settings, 'FRONTEND_URL', '') or '').rstrip('/')
+    target, number = notification.target_type, notification.target_id
+    if not site or number is None:
+        return ''
+    if notification.audience == Notification.Audience.INTERNAL:
+        path = _PANEL.get(target)
+        return f'{site}{path.format(id=number)}' if path else ''
 
     customer = notification.customer
-    if customer is None or customer.user_id is None:
-        return False
-    if notification.target_type == 'order':
-        return Order.objects.filter(
-            pk=notification.target_id, company_id=notification.company_id, user_id=customer.user_id,
-        ).exists()
-    return True
+    if customer is None:
+        return ''
+    if target == 'repair_order':
+        order = RepairOrder.objects.filter(
+            pk=number, company_id=notification.company_id, customer_id=customer.pk,
+        ).first()
+        if order is None:
+            return ''
+        return tracking_services.url_for(order) or (f'{site}/repairs' if customer.user_id else '')
+    if target == 'order' and customer.user_id and Order.objects.filter(
+        pk=number, company_id=notification.company_id, user_id=customer.user_id,
+    ).exists():
+        return f'{site}/orders'
+    return ''
 
 
 def _dressed(notification):
@@ -440,8 +477,6 @@ def _dressed(notification):
     the words were chosen where the event was emitted, and the template adds a
     way to the page where the detail lives, not the detail.
     """
-    from django.conf import settings as dj_settings
-
     from . import mail
 
     company = notification.company
@@ -456,10 +491,10 @@ def _dressed(notification):
             event_type=notification.event.event_type if notification.event_id else '',
             target_type=notification.target_type,
             target_id=notification.target_id,
-            site=getattr(dj_settings, 'FRONTEND_URL', '') or '',
-            has_account=_can_open_it(notification),
+            link=_destination(notification),
         ), company=company)
     except Exception:  # noqa: BLE001
+        # Sin el cuerpo: el enlace de seguimiento es una forma de entrar.
         logger.exception('la notificación %s no se pudo componer con la plantilla', notification.pk)
         return None
 

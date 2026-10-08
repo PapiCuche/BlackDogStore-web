@@ -206,13 +206,13 @@ def internal_order(ctx: dict, *, admin_url: str) -> dict:
 # where to look, and — for the customer — which step that is. It reads nothing
 # of the order or the repair: the detail stays behind its own authorisation.
 
-# (audience, what it is about) → (label, button, where the detail lives)
-_WHERE = {
-    ('customer', 'repair_order'): ('Servicio técnico', 'Ver mi equipo', '/repairs'),
-    ('customer', 'order'): ('Pedido · N.º {id}', 'Ver mi pedido', '/orders'),
-    ('internal', 'repair_order'): ('Servicio técnico', 'Abrir en el panel', '/admin/service/orders/{id}'),
-    ('internal', 'order'): ('Pedido · N.º {id}', 'Abrir en el panel', '/admin/orders'),
-    ('internal', 'announcement'): ('Comunicado', 'Leer el comunicado', '/admin/communications/{id}'),
+# (audience, what it is about) → (label, what its button says)
+_WHAT = {
+    ('customer', 'repair_order'): ('Servicio técnico', 'Ver mi equipo'),
+    ('customer', 'order'): ('Pedido · N.º {id}', 'Ver mi pedido'),
+    ('internal', 'repair_order'): ('Servicio técnico', 'Abrir en el panel'),
+    ('internal', 'order'): ('Pedido · N.º {id}', 'Abrir en el panel'),
+    ('internal', 'announcement'): ('Comunicado', 'Leer el comunicado'),
 }
 
 # event → the steps a customer sees, and which one this is. Only steps that are
@@ -258,23 +258,23 @@ def _progress(event_type: str):
 
 
 def notification(*, company: str, title: str, body: str, audience: str, event_type: str,
-                 target_type: str, target_id, site: str, has_account: bool) -> dict:
+                 target_type: str, target_id, link: str) -> dict:
     """
     One notice of `notification_services`, for one recipient. 10-aviso.
 
-    `has_account` is whether the customer can open the page the button leads
-    to: those pages list what belongs to an account, and somebody who left a
-    device at the counter or bought without registering has none. They get the
-    notice without a button, not a button to a login screen and an empty list.
+    `link` is where THIS reader will find the detail, or '' when there is no
+    such place: whoever sends knows who the reader is and which page will show
+    them what the notice announces. Without one the notice goes without a
+    button — not with a button to a login screen and an empty list.
     """
     customer = audience == 'customer'
-    label, button, path = _WHERE.get((audience, target_type), ('', '', ''))
-    mapped = bool(path) and target_id is not None
-    can_open = mapped and bool(site) and (has_account or not customer)
+    label, button = _WHAT.get((audience, target_type), ('', ''))
+    mapped = bool(label) and target_id is not None
+    can_open = mapped and bool(link)
     body = (body or '').strip()
     if customer:
         reason = _ABOUT.get(target_type, 'eres cliente de {company}').format(company=company)
-        look = 'Entra a tu cuenta para ver el detalle.' if can_open else _IT_IS.get(target_type, f'Es un aviso de {company}.')
+        look = 'Mira el detalle con el botón de este correo.' if can_open else _IT_IS.get(target_type, f'Es un aviso de {company}.')
     else:
         reason = f'formas parte del equipo de {company}'
         look = 'Entra al panel para ver el detalle.'
@@ -285,7 +285,7 @@ def notification(*, company: str, title: str, body: str, audience: str, event_ty
         'titulo': title,
         'parrafos': [body or look],
         'progreso': _progress(event_type) if customer and mapped else None,
-        'boton': {'texto': button, 'url': f'{site.rstrip("/")}{path.format(id=target_id)}'} if can_open else None,
+        'boton': {'texto': button, 'url': link} if can_open else None,
         'motivo': f'Recibes este correo porque {reason}.',
         'anio': fmt.year(),
     }
