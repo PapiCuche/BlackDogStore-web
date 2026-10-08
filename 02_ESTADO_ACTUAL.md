@@ -3,6 +3,58 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-08 — PRODUCT-DESTINATION-01: «sólo stock interno» y la plantilla de carga masiva
+
+Rama `feat/product-visibility-import`, desde `master` `6266402`. **Con migración**
+(`0113_product_is_published_online`). Decisión: DEC-PRODUCT-DEST-01. No desplegado, sin
+merge.
+
+**Qué hay.** Un producto tiene un dato nuevo, independiente de «activo»:
+`Product.is_published_online`. En `false` es **«sólo stock interno»**: sigue en
+inventario y se vende en caja y en servicio técnico según los permisos de cada persona,
+y no existe para la tienda en línea: ni catálogo, ni búsqueda, ni su dirección, ni
+carrito, ni compra, ni campañas, ni reseñas. Todos los productos existentes quedan
+publicados, como estaban.
+
+**Dónde se decide.** En la ficha del producto («Destino») y en la carga masiva (columna
+«Destino»). Lo cambia quien puede gestionar productos; queda en el registro de auditoría.
+
+**Carga masiva.**
+- La columna «Destino» —y «Destino (pendiente web)», como venía en la plantilla del
+  propietario— se reconoce sola, se valida y se ve en la vista previa. Vacía: lo nuevo se
+  publica, lo existente no cambia. Un archivo de antes de esta columna se importa igual.
+- La plantilla descargable trae las categorías **de esa empresa** en una hoja
+  «Categorías» y las ofrece como lista en la columna «Categoría»; «Destino» también es
+  una lista. Los códigos van como texto. Las imágenes siguen siendo opcionales y se
+  añaden o cambian después desde la ficha (la galería que ya existía).
+- En la pantalla se puede elegir una categoría para las filas que no traen una. Se
+  comprueba que es de esa empresa.
+- Ninguna categoría está escrita en el código.
+
+**Lo que no cambia.** Caja, inventario, traslados, recuentos y servicio técnico ven y
+usan estos productos como cualquier otro. «Activo» significa lo mismo que antes.
+
+**Deuda y límites conocidos**
+- Un producto que deja la web estando en un carrito: el carrito sigue abriendo y la
+  compra se rechaza, igual que con un producto desactivado.
+- La imagen de un producto que deja la web sigue respondiendo por su dirección de 32
+  caracteres, igual que la de un producto desactivado (PRODUCT-IMAGE-HIDDEN).
+- Las categorías públicas no cuentan productos: una categoría cuyos productos son todos
+  internos se sigue listando, vacía.
+- **Migraciones:** esta rama y la del código de verificación (MAIL-TEMPLATE-01 3A) crean
+  cada una una `0113` sobre `0112`. La segunda que se una debe renumerarse a `0114`
+  dependiendo de la primera.
+- Un pedido creado mientras el producto estaba publicado se puede terminar de pagar
+  después de que deje la web (igual que con un producto desactivado).
+- Una campaña enlazada a un producto interno se sigue pudiendo publicar; sale sin el
+  enlace al producto.
+- No se probó en navegador real (sólo backend y Jest).
+
+**Revisión independiente antes de commitear:** dos fugas reales —un perfil de columnas
+recordado hacía ignorar «Destino» y publicaba lo que debía quedar interno; el checkout
+de la app confirmaba que un producto interno existe y daba su nombre— y un defecto más,
+todos corregidos con su prueba.
+
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 
 Rama `fix/staff-invitation-onboarding`, desde `master` `54b26ac` (#98). Sin migraciones.

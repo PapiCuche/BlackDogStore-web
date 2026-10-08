@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — PRODUCT-DESTINATION-01
+
+**Added**
+- `Product.is_published_online`: «Publicar en e-commerce» o «Solo stock interno», aparte
+  de «activo». Campo «Destino» en la ficha del producto, etiqueta en la lista y filtro
+  `?is_published_online=` en la API del panel.
+- Carga masiva: columna «Destino» (también «Destino (pendiente web)»), validada y visible
+  en la vista previa; categoría para las filas que no traen una.
+- Plantilla de productos: hoja «Categorías» con las de la empresa, listas desplegables
+  en «Categoría» y «Destino», códigos como texto.
+
+**Changed**
+- El catálogo público, su búsqueda, el detalle, el carrito, la cotización, el pago, las
+  campañas y las reseñas dejan fuera lo que es sólo stock interno. Una sola definición
+  (`tenancy.company_storefront_products` y `Product.is_sold_online`).
+- La fila de ayuda de una plantilla se reconoce aunque diga «OBLIGATORIO» en mayúsculas,
+  y la hoja «Categorías» nunca se ofrece como hoja de productos.
+
+**De la revisión independiente, antes de publicar el cambio**
+- La pantalla recuerda las columnas que usó para cada forma de archivo. Un archivo visto
+  antes de existir «Destino» se importaba con ese recuerdo, sin la columna: las filas
+  «Solo stock interno» nacían publicadas. La columna se busca ahora por su cabecera
+  siempre que la asignación recibida no la traiga, y la vista previa dice de cuál la tomó.
+- El checkout de la app respondía «<nombre> ya no está disponible» para un producto
+  interno y «Producto no disponible» para uno inexistente: quien adivinara una dirección
+  sabía qué hay en la trastienda. Ahora responde igual en los dos casos.
+- Una cabecera parecida («Destino web», «Destino del producto») no se leía y la fila se
+  publicaba sin aviso.
+- Menores: un formulario que no menciona el destino creaba el producto oculto; la
+  categoría elegida para filas sin categoría aceptaba una desactivada y un número
+  imposible respondía 500; la vista previa anunciaba esa categoría para productos que ya
+  tenían una; un nombre de categoría que empieza por `=` se escribía como fórmula; la
+  ficha reenviaba el destino con que se abrió; un fallo al leer las categorías se
+  mostraba como «no tienes categorías»; crear un producto o moverlo desde una carga no
+  dejaba el destino en el registro de auditoría.
+
+**Migración** `0113_product_is_published_online`: una columna con valor por defecto
+(también en la base). Los productos existentes quedan publicados. No desplegado.
+
 ## 2026-10-07 — STAFF-ONBOARDING-01
 
 **Fixed**

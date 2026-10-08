@@ -340,6 +340,33 @@ de dominios en `docs/analytics-marketing.md` §7.
   viva la contraseña de quien la registró); un segundo sistema de credenciales para
   invitados; una identidad por empresa.
 
+### DEC-PRODUCT-DEST-01 · «Sólo stock interno» es otro dato que «activo»
+
+- **Por qué un campo y no reutilizar `is_active`.** Inactivo saca el producto de todo:
+  la caja no lo vende y el inventario lo aparta. Un repuesto o un equipo que sólo se
+  despacha en tienda está en uso; lo único que no hace es venderse por la web.
+- **Un booleano, `is_published_online`, por defecto verdadero.** Son dos destinos, y
+  todo lo que existía sigue publicado sin tocar una fila.
+- **Una sola definición de «se vende por la web».** Para una consulta,
+  `tenancy.company_storefront_products`; para un producto ya en la mano (una línea de
+  carrito, una campaña), `Product.is_sold_online`. Toda superficie pública pasa por una
+  de las dos: una tercera copia es como un producto oculto acaba a la venta.
+- **Dentro de la empresa no cambia nada.** Caja, inventario y taller no filtran por este
+  dato; quién ve qué lo siguen decidiendo las capacidades de siempre.
+- **En la carga masiva, vacío no decide.** Lo nuevo se publica; lo existente se queda
+  como estaba. Sólo se aceptan los dos valores de la plantilla: adivinar aquí publica en
+  la web algo que alguien quiso dejar fuera.
+- **La columna «Destino» se busca por su cabecera, no se confía a la asignación.** La
+  asignación puede llegar sin ella por motivos que nadie eligió —un perfil recordado de
+  antes, un formato que nunca la tuvo— y entonces una celda que dice «Solo stock
+  interno» no se lee y el producto se publica. Fallar ahí es fallar abierto.
+- **Un producto interno responde como uno que no existe.** No «ya no está disponible»,
+  y nunca con su nombre.
+- **Las categorías son las de la empresa, leídas al descargar.** La lista de la
+  plantilla ayuda y no prohíbe: un nombre nuevo es como se usa «crear las que falten».
+- **Descartado:** un tercer estado en un campo de texto; ocultar por categoría; aplicar
+  el destino a las categorías.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay
