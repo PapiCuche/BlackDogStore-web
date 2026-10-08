@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 
 /**
@@ -390,8 +392,11 @@ test.describe("Aceptación", () => {
     ).toHaveCount(0);
     await expect(page.getByText(/Ahora mismo estás dentro como/i)).toBeVisible();
     await expect(page.getByText(correo).first()).toBeVisible();
+    // Se ofrece salir de esta sesión aquí mismo. Antes era un enlace a «Iniciar
+    // sesión» que, con una sesión abierta, sólo mostraba el perfil de la otra
+    // cuenta.
     await expect(
-      page.getByRole("link", { name: "Iniciar sesión" }),
+      page.getByRole("button", { name: "Cerrar sesión" }),
     ).toBeVisible();
 
     // Y la ruta sigue cerrada aunque se llame a mano: la pantalla es cortesía,
@@ -416,6 +421,169 @@ test.describe("Aceptación", () => {
     // 401 es la respuesta correcta aquí: lo que falta no es autoridad sino
     // demostrar quién eres. Tener el enlace no es demostrarlo.
     expect([401, 403, 404]).toContain(directo);
+  });
+
+  /**
+   * STAFF-ONBOARDING-01 — el recorrido completo, como lo hace una persona.
+   *
+   * En producción alguien abrió su invitación, se le ofreció «Crear cuenta» y
+   * acabó ante «ese correo ya está registrado» sin poder entrar con nada. Ninguna
+   * prueba recorría el camino entero; estas dos sí, en un navegador sin sesión,
+   * que es como llega quien recibe el correo.
+   */
+  const CLAVE = `Clave-e2e-${RUN}-A1!`;
+  const OTRA_CLAVE = `Otra-e2e-${RUN}-B2!`;
+
+  /** Un enlace de recuperación para ese correo, como el que llegaría a su buzón. */
+  function enlaceDeRecuperacion(correo: string): string {
+    const codigo = [
+      "import os",
+      "from django.contrib.auth import get_user_model",
+      "from store.models import AccountToken",
+      'user = get_user_model().objects.get(email__iexact=os.environ["E2E_RESET_EMAIL"])',
+      "raw, _ = AccountToken.make(user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)",
+      'print("TOKEN=" + raw)',
+    ].join("\n");
+    const salida = execFileSync("python3", ["manage.py", "shell", "-c", codigo], {
+      cwd: process.env.E2E_BACKEND_DIR ?? path.resolve(process.cwd(), "../backend"),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, E2E_RESET_EMAIL: correo },
+    }).toString();
+    const token = salida.match(/TOKEN=(\S+)/)?.[1];
+    if (!token) throw new Error("no se pudo emitir el enlace de recuperación");
+    return token;
+  }
+
+  async function invitar(page: Page, correo: string): Promise<string> {
+    await openStaff(page);
+    const creada = await invitarPorApi(page, correo);
+    expect(creada.status, JSON.stringify(creada)).toBe(201);
+    const token = creada.token as string | undefined;
+    if (!token) test.skip(true, "el backend no corre con DEBUG: no hay enlace en claro");
+    return token!;
+  }
+
+  async function aceptar(persona: Page) {
+    await persona.getByRole("button", { name: "Aceptar invitación" }).click();
+    await expect(
+      persona.getByRole("heading", { name: "Tu acceso ha sido configurado correctamente" }),
+    ).toBeVisible({ timeout: 20_000 });
+    // No es un rótulo: el servidor abre el panel a esta sesión.
+    const panel = await persona.evaluate(async () =>
+      (await fetch("/api/me/internal-dashboard/", { credentials: "include" })).status);
+    expect(panel, "aceptó, pero el servidor no le abre el panel").toBe(200);
+  }
+
+  test("M · persona nueva: crea su cuenta con el correo invitado y su propia contraseña, y acepta", async ({ page, browser, baseURL }) => {
+    test.setTimeout(180_000);
+    const correo = inviteEmail("nueva");
+    const token = await invitar(page, correo);
+    const invitacion = `/invitacion?token=${encodeURIComponent(token)}`;
+
+    const contexto = await browser.newContext({ baseURL });
+    const persona = await contexto.newPage();
+    try {
+      await persona.goto(invitacion, { waitUntil: "networkidle" });
+      await expect(persona.getByText("Crea tu cuenta para continuar")).toBeVisible({ timeout: 20_000 });
+      await expect(persona.getByRole("link", { name: "Iniciar sesión" })).toHaveCount(0);
+
+      await persona.getByRole("link", { name: "Crear mi cuenta" }).click();
+      await persona.waitForURL(/\/auth\?mode=register/, { timeout: 20_000 });
+      await expect(persona.getByRole("heading", { name: "Crear cuenta" })).toBeVisible({ timeout: 20_000 });
+      // El correo es el de la invitación y no se puede cambiar por otro.
+      const campo = persona.locator("#auth-page-correo-electronico");
+      await expect(campo).toHaveValue(correo, { timeout: 20_000 });
+      await expect(campo).toHaveAttribute("readonly", "");
+
+      await persona.locator("#auth-page-usuario").fill(`e2e_nueva_${RUN}`);
+      await persona.locator("#auth-page-contrasena").fill(CLAVE);
+      await persona.locator("#auth-page-confirmar-contrasena").fill(CLAVE);
+      await persona.getByRole("button", { name: "Registrarme" }).click();
+
+      // Sin segundo correo y sin volver a buscar el primero: queda dentro, de
+      // vuelta en su invitación.
+      await persona.waitForURL(/\/invitacion\?token=/, { timeout: 30_000 });
+      await aceptar(persona);
+      await expect(persona.locator("main")).not.toContainText(token);
+    } finally {
+      await contexto.close();
+    }
+  });
+
+  test("N · con cuenta y sin contraseña conocida: nunca se le ofrece crear otra; recupera, vuelve y acepta", async ({ page, browser, baseURL }) => {
+    test.setTimeout(300_000);
+    const correo = inviteEmail("recupera");
+    const usuario = `e2e_recupera_${RUN}`;
+    // Leer una invitación tiene un cupo por dirección (20 por minuto: es lo que
+    // frena a quien prueba enlaces), y en desarrollo React pide cada pantalla
+    // dos veces. Este recorrido abre cinco; se espera la ventana, como hace
+    // `signIn` con el cupo de entradas.
+    await page.waitForTimeout(61_000);
+
+    const contexto = await browser.newContext({ baseURL });
+    const persona = await contexto.newPage();
+    try {
+      // La cuenta ya existe: se registró por su cuenta, como cualquier cliente.
+      // Donde la verificación de correo es obligatoria queda SIN VERIFICAR, que
+      // es exactamente el estado que bloqueaba a la persona en producción.
+      await persona.goto("/auth", { waitUntil: "networkidle" });
+      const registro = await persona.evaluate(async (datos) => {
+        const res = await fetch("/api/auth/register/", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(datos),
+        });
+        return res.status;
+      }, { username: usuario, email: correo, password: CLAVE, password_confirm: CLAVE });
+      expect(registro).toBe(201);
+
+      const token = await invitar(page, correo);
+      const invitacion = `/invitacion?token=${encodeURIComponent(token)}`;
+
+      await persona.goto(invitacion, { waitUntil: "networkidle" });
+      await expect(persona.getByText("Ya tienes una cuenta con este correo")).toBeVisible({ timeout: 20_000 });
+      await expect(persona.getByText(/Crear mi cuenta|Crea tu cuenta/)).toHaveCount(0);
+
+      // EL CAMINO QUE TERMINABA EN «ESE CORREO YA ESTÁ REGISTRADO» ESTÁ CERRADO
+      // EN SU ORIGEN: pedir el registro para esa invitación abre el inicio de
+      // sesión.
+      await persona.goto(`/auth?mode=register&next=${encodeURIComponent(invitacion)}`, { waitUntil: "networkidle" });
+      await expect(persona.getByRole("heading", { name: "Iniciar sesión" })).toBeVisible({ timeout: 20_000 });
+      await expect(persona.getByText(/Ya tienes una cuenta con este correo/)).toBeVisible();
+      await expect(persona.locator("#auth-page-correo-electronico")).toHaveCount(0);
+
+      // Pide el enlace desde la propia invitación.
+      await persona.goto(invitacion, { waitUntil: "networkidle" });
+      await persona.getByRole("button", { name: /No conozco mi contraseña|Establecer mi contraseña/ }).click();
+      await expect(persona.getByText("Te enviamos un enlace")).toBeVisible({ timeout: 20_000 });
+
+      // Abre el enlace de su buzón, que la trae de vuelta a la invitación.
+      const recuperacion = enlaceDeRecuperacion(correo);
+      await persona.goto(
+        `/auth/reset-password?token=${encodeURIComponent(recuperacion)}&next=${encodeURIComponent(invitacion)}`,
+        { waitUntil: "networkidle" },
+      );
+      const claves = persona.locator('input[type="password"]');
+      await claves.nth(0).fill(OTRA_CLAVE);
+      await claves.nth(1).fill(OTRA_CLAVE);
+      await persona.locator('form button[type="submit"]').click();
+      await expect(persona.getByText("Contraseña restablecida")).toBeVisible({ timeout: 20_000 });
+      // Se le dice con qué usuario se entra: puede no saberlo.
+      await expect(persona.getByText(usuario)).toBeVisible();
+      // Restablecer cierra todas las sesiones de la cuenta, al segundo.
+      await persona.waitForTimeout(1500);
+
+      await persona.getByRole("link", { name: "Iniciar sesión" }).click();
+      await persona.waitForURL(/\/auth\?next=/, { timeout: 20_000 });
+      await expect(persona.locator("#auth-page-usuario")).toHaveValue(usuario, { timeout: 20_000 });
+      await persona.locator("#auth-page-contrasena").fill(OTRA_CLAVE);
+      await persona.getByRole("button", { name: /iniciar sesión/i }).first().click();
+
+      await persona.waitForURL(/\/invitacion\?token=/, { timeout: 30_000 });
+      await aceptar(persona);
+    } finally {
+      await contexto.close();
+    }
   });
 
   test("H2 · un token inventado no dice nada de más", async ({ page }) => {

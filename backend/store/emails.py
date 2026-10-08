@@ -21,6 +21,7 @@ borrowing one.
 """
 
 import logging
+from urllib.parse import quote
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -64,8 +65,15 @@ def send_verification_email(user, raw_token):
         logger.exception("Failed to send verification email to user %s", user.pk)
 
 
-def send_password_reset_email(user, raw_token):
+def send_password_reset_email(user, raw_token, next_path=None):
+    """
+    `next_path` is where the person was going when they found they could not
+    log in. The caller has already checked it is the address of an invitation:
+    nothing else is ever written into this link.
+    """
     link = f"{settings.FRONTEND_URL}/auth/reset-password?token={raw_token}"
+    if next_path:
+        link += f"&next={quote(next_path, safe='')}"
     name = _platform_name()
     subject = f'Recuperación de contraseña — {name}' if name else 'Recuperación de contraseña'
     try:

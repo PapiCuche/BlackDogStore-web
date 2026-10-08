@@ -281,6 +281,37 @@ def requires_authentication(invitation: StaffInvitation) -> bool:
     return User.objects.filter(email__iexact=invitation.email).exists()
 
 
+ACCOUNT_NONE = 'none'
+ACCOUNT_ACTIVE = 'active'
+ACCOUNT_UNVERIFIED = 'unverified'
+
+
+def account_state(invitation: StaffInvitation) -> str:
+    """
+    Qué tiene que hacer la persona invitada para poder aceptar.
+
+      none        no hay cuenta con ese correo: la crea.
+      active      hay cuenta: inicia sesión, o recupera su contraseña.
+      unverified  hay cuenta, registrada y nunca confirmada: no puede iniciar
+                  sesión con nada. Sólo le sirve establecer su contraseña.
+
+    Sin el tercero la pantalla ofrecía un inicio de sesión que sólo podía
+    fallar, o —si no se había recargado— un «Crear cuenta» que terminaba en
+    «ese correo ya está registrado».
+
+    COMO `requires_authentication`, NO REVELA NADA HACIA FUERA: sólo responde a
+    quien trae un token válido para ese mismo correo.
+    """
+    from . import accounts
+
+    found = accounts.with_email(invitation.email)
+    if not found:
+        return ACCOUNT_NONE
+    if all(accounts.is_unverified(user) for user in found):
+        return ACCOUNT_UNVERIFIED
+    return ACCOUNT_ACTIVE
+
+
 class StaffIdentityError(StaffError):
     """
     Quien acepta no ha demostrado controlar el correo invitado.

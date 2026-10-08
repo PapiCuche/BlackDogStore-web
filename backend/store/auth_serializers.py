@@ -14,6 +14,9 @@ class ResendVerificationSerializer(serializers.Serializer):
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    # Where to go back to afterwards. The view keeps it only if it is the
+    # address of an invitation; anything else is dropped, not refused.
+    next = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):

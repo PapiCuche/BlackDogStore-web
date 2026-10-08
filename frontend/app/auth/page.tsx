@@ -11,6 +11,9 @@ import {
   forgetInternalAccess, hasInternalAccess,
 } from "../lib/auth";
 import { safeInternalNextPath } from "../lib/safe-next";
+import {
+  accountStateOf, invitationPath, invitationTokenFromNext, readInvitation,
+} from "../lib/invitation";
 import { DevQuickLogin } from "./components/DevQuickLogin";
 
 /**
@@ -34,6 +37,29 @@ async function destinationAfterLogin(): Promise<string> {
   return (await hasInternalAccess()) ? "/admin" : "/";
 }
 
+/**
+ * El usuario que la pantalla de recuperación acaba de decirle a la persona. Va
+ * de una pantalla a la siguiente en la misma pestaña y se borra al leerlo: no es
+ * una credencial, pero tampoco algo que dejar escrito en la dirección.
+ */
+const USERNAME_HANDOFF = "bd.auth.username";
+
+function handedUsername(): string {
+  try {
+    return window.sessionStorage.getItem(USERNAME_HANDOFF) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function forgetHandedUsername(): void {
+  try {
+    window.sessionStorage.removeItem(USERNAME_HANDOFF);
+  } catch {
+    // Sin almacenamiento de sesión no había nada que olvidar.
+  }
+}
+
 export default function AuthPage() {
   // The storefront this visitor arrived at. The ACCOUNT they log into is
   // global — one identity across every shop — but this page is the shop's.
@@ -47,7 +73,53 @@ export default function AuthPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  // Quien llega desde una invitación (`?next=/invitacion?token=…`). Crear la
+  // cuenta usa entonces el correo de la invitación, y no otro: la invitación es
+  // para una persona, no para quien tenga el enlace y escriba cualquier correo.
+  const [invitation, setInvitation] = useState<{ token: string; email: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Se llegó desde una invitación y no se pudo leer. Registrarse ahora crearía
+  // la cuenta SIN la invitación —sin verificar, que es el estado del que no se
+  // salía—, así que no se deja: se dice que hay que esperar.
+  const [invitationUnread, setInvitationUnread] = useState(false);
+  const [forgotHref, setForgotHref] = useState("/auth/forgot-password");
   const router = useRouter();
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const search = new URLSearchParams(window.location.search);
+      const wantsRegister = search.get("mode") === "register";
+      const token = invitationTokenFromNext(search.get("next"));
+      const handed = handedUsername();
+      const read = token ? await readInvitation(token) : null;
+      if (cancelled) return;
+      const info = read?.state === "found" ? read.info : null;
+      if (read?.state === "busy") setInvitationUnread(true);
+
+      // Se olvida DESPUÉS de usarlo, no al leerlo: en desarrollo React ejecuta
+      // este efecto dos veces y la primera se cancela; borrarlo al leer dejaba
+      // el campo vacío (lo encontró la prueba en navegador real).
+      if (handed) {
+        setUsername(handed);
+        forgetHandedUsername();
+      }
+      if (token) setForgotHref(`/auth/forgot-password?next=${encodeURIComponent(invitationPath(token))}`);
+      if (!token || !info) {
+        if (wantsRegister) setIsLogin(false);
+        return;
+      }
+      if (accountStateOf(info) === "none") {
+        setInvitation({ token, email: info.email });
+        setEmail(info.email);
+        if (wantsRegister) setIsLogin(false);
+      } else if (wantsRegister) {
+        // El registro sólo podía terminar en «ese correo ya está registrado».
+        setNotice("Ya tienes una cuenta con este correo. Inicia sesión para aceptar tu invitación.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     getCurrentUser().then((u) => {
@@ -61,6 +133,10 @@ export default function AuthPage() {
     setError(null);
     setSuccess(null);
     try {
+      if (!isLogin && invitationUnread) {
+        setError("No pudimos comprobar tu invitación ahora mismo. Espera un minuto y vuelve a cargar esta página antes de crear la cuenta.");
+        return;
+      }
       if (isLogin) {
         const data = await login(username, password);
         setUser(data.user);
@@ -70,8 +146,23 @@ export default function AuthPage() {
         window.dispatchEvent(new Event("authChange"));
         router.push(await destinationAfterLogin());
       } else {
-        const result = await register({ username, email, password, password_confirm: passwordConfirm });
+        const result = await register(
+          invitation
+            ? { username, email: invitation.email, password, password_confirm: passwordConfirm, invitation_token: invitation.token }
+            : { username, email, password, password_confirm: passwordConfirm },
+        );
         track({ name: "SIGN_UP", method: "password" });
+        if (invitation && !result.requires_verification) {
+          // La cuenta nació activa: la invitación ya probó el buzón. Se entra
+          // con lo que la persona acaba de escribir y se vuelve a la
+          // invitación, que es adonde iba.
+          const data = await login(username, password);
+          setUser(data.user);
+          forgetInternalAccess();
+          window.dispatchEvent(new Event("authChange"));
+          router.push(await destinationAfterLogin());
+          return;
+        }
         if (result.requires_verification) {
           setSuccess("Registro completado. Revisa tu correo para verificar tu cuenta antes de iniciar sesión.");
         } else {
@@ -232,6 +323,11 @@ export default function AuthPage() {
               </h1>
             </div>
 
+            {notice && isLogin && (
+              <div className="mb-5 rounded-xl border border-bd-border bg-surface p-4 text-sm text-foreground">
+                {notice}
+              </div>
+            )}
             {error && (
               <div className="mb-5 rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger">
                 {error}
@@ -254,6 +350,9 @@ export default function AuthPage() {
                   autoComplete="username"
                   placeholder="Tu nombre de usuario"
                 />
+                {!isLogin && (
+                  <p className="mt-1.5 text-xs text-muted">Con este nombre iniciarás sesión.</p>
+                )}
               </div>
 
               {!isLogin && (
@@ -261,13 +360,19 @@ export default function AuthPage() {
                   <label htmlFor="auth-page-correo-electronico" className={labelClass}>Correo electrónico</label>
                   <input id="auth-page-correo-electronico"
                     type="email"
-                    value={email}
+                    value={invitation ? invitation.email : email}
                     onChange={(e) => setEmail(e.target.value)}
+                    readOnly={invitation !== null}
                     className={inputClass}
                     required
                     autoComplete="email"
                     placeholder="correo@ejemplo.com"
                   />
+                  {invitation && (
+                    <p className="mt-1.5 text-xs text-muted">
+                      Es el correo al que se envió tu invitación. La cuenta se crea con él.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -320,7 +425,7 @@ export default function AuthPage() {
               </div>
               {isLogin && (
                 <div>
-                  <a href="/auth/forgot-password" className="text-muted transition hover:text-foreground">
+                  <a href={forgotHref} className="text-muted transition hover:text-foreground">
                     ¿Olvidaste tu contraseña?
                   </a>
                 </div>

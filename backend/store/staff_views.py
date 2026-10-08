@@ -35,7 +35,7 @@ from .models import AdminAuditLog, StaffInvitation
 from .permissions import HasCompanyMembership
 from .staff_services import (
     StaffConflict, StaffError, StaffIdentityError, accept_invitation,
-    create_invitation, find_invitation, requires_authentication,
+    account_state, create_invitation, find_invitation, requires_authentication,
     resend_invitation, revoke_invitation,
 )
 from .throttles import StaffInviteThrottle, StaffAcceptThrottle
@@ -323,6 +323,9 @@ class StaffInvitationAcceptView(APIView):
             'expires_at': invitation.expires_at,
             # Le dice a la pantalla qué pedir: iniciar sesión o crear la cuenta.
             'requires_authentication': requires_authentication(invitation),
+            # Y con más precisión, para no ofrecer un camino que no puede
+            # terminar: `none`, `active` o `unverified`.
+            'account_state': account_state(invitation),
         })
 
     def post(self, request):

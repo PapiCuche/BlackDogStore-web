@@ -618,7 +618,9 @@ function AddWorkerForm({
       <div>
         <h2 className="text-sm font-semibold text-foreground">Añadir trabajador</h2>
         <p className="mt-1 text-xs text-muted">
-          Se le enviará una invitación. No tendrá acceso hasta que la acepte.
+          Se enviará una invitación a su correo. La persona creará o recuperará su
+          propia contraseña —tú no la eliges ni la ves— y no tendrá acceso hasta que
+          acepte la invitación.
         </p>
       </div>
 

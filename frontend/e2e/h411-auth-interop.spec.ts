@@ -413,11 +413,19 @@ test.describe("H4.1.1 · web ↔ v1 interno", () => {
     const visitor = await browser.newContext({ baseURL });
     const guest = await visitor.newPage();
     await guest.goto(`/invitacion?token=${encodeURIComponent(token!)}`, { waitUntil: "networkidle" });
-    const toAuth = guest.getByRole("link", { name: /Crear cuenta|Iniciar sesión/ }).first();
+    // STAFF-ONBOARDING-01: sin cuenta para ese correo la invitación ofrece
+    // «Crear mi cuenta» y abre el registro. Lo que aquí se examina es que el
+    // `next` sobreviva al LOGIN, así que desde ahí se pasa al inicio de sesión.
+    const toAuth = guest.getByRole("link", { name: "Crear mi cuenta" });
     await expect(toAuth).toBeVisible({ timeout: 20_000 });
     await toAuth.click();
     await guest.waitForURL((url) => url.pathname === "/auth" && url.searchParams.has("next"));
     await guest.waitForLoadState("networkidle");
+    // El registro se abre cuando la página ha leído la invitación: se espera a
+    // verlo, y entonces se cambia al inicio de sesión.
+    await expect(guest.getByRole("heading", { name: "Crear cuenta" })).toBeVisible({ timeout: 20_000 });
+    await guest.getByRole("button", { name: "Iniciar sesión", exact: true }).click();
+    await expect(guest.getByRole("heading", { name: "Iniciar sesión" })).toBeVisible();
 
     await signInHere(guest, "dev_customer");
     await expect(guest, "tras el login no volvió a la invitación").toHaveURL(/\/invitacion\?token=/);

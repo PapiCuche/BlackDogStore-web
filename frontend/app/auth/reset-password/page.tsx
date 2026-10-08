@@ -4,14 +4,22 @@ import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { confirmPasswordReset } from "../../lib/auth";
+import { invitationPath, invitationTokenFromNext } from "../../lib/invitation";
 
 function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
+  // El enlace de recuperación trae de vuelta a una invitación cuando la persona
+  // lo pidió desde una. A una invitación y a nada más: lo demás se ignora.
+  const invitationToken = invitationTokenFromNext(searchParams.get("next"));
+  const loginHref = invitationToken
+    ? `/auth?next=${encodeURIComponent(invitationPath(invitationToken))}`
+    : "/auth";
 
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [success, setSuccess] = useState(false);
+  const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,7 +32,19 @@ function ResetPasswordContent() {
     }
     setLoading(true);
     try {
-      await confirmPasswordReset(token, newPassword);
+      const result = await confirmPasswordReset(token, newPassword);
+      // Quien nunca eligió una contraseña —una cuenta de Google, alguien
+      // invitado— puede no saber con qué usuario se entra. Se le dice, y se le
+      // deja escrito en la pantalla siguiente.
+      const name = typeof result?.username === "string" ? result.username : "";
+      setUsername(name);
+      if (name) {
+        try {
+          window.sessionStorage.setItem("bd.auth.username", name);
+        } catch {
+          // Sin almacenamiento de sesión la persona lo escribe: lo tiene delante.
+        }
+      }
       setSuccess(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "No se pudo restablecer la contraseña.");
@@ -71,8 +91,14 @@ function ResetPasswordContent() {
               <p className="font-semibold text-foreground">Contraseña restablecida</p>
               <p className="mt-3 text-sm leading-6 text-muted">
                 Ya puedes iniciar sesión con la nueva contraseña.
+                {invitationToken ? " Al entrar volverás a tu invitación para aceptarla." : ""}
               </p>
-              <Link href="/auth" className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90">
+              {username ? (
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  Tu usuario es <strong className="font-semibold text-foreground">{username}</strong>
+                </p>
+              ) : null}
+              <Link href={loginHref} className="mt-6 inline-flex rounded-full bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:bg-foreground/90">
                 Iniciar sesión
               </Link>
             </div>

@@ -10,25 +10,33 @@
  * EL TOKEN NO SE GUARDA. Vive en la barra de direcciones mientras dura la
  * pantalla. No va a `localStorage` ni a ninguna otra parte: un enlace de acceso
  * persistido en el navegador sobrevive a la sesión que lo necesitaba.
+ *
+ * LO QUE SE OFRECE ES EL CAMINO QUE TERMINA. El servidor dice qué pasa con la
+ * cuenta de ese correo (`account_state`) y esta pantalla ofrece eso y no otra
+ * cosa: crearla, iniciar sesión, o establecer la contraseña. Ofrecía «Crear
+ * cuenta» a quien ya tenía una a medias, y esa persona acababa ante «ese correo
+ * ya está registrado» sin poder entrar con nada.
+ *
+ * LA CONTRASEÑA ES DE LA PERSONA. Aquí nadie la escribe por ella: quien no la
+ * conoce recibe en su correo el mismo enlace de recuperación que cualquiera, y
+ * ese enlace la trae de vuelta a esta invitación.
  */
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { API_BASE } from "../lib/api";
-import { fetchWithAuth, getCurrentUser } from "../lib/auth";
+import { fetchWithAuth, getCurrentUser, logout, requestPasswordReset } from "../lib/auth";
+import {
+  accountStateOf, invitationPath, readInvitation, type InvitationInfo,
+} from "../lib/invitation";
 
-type InvitationInfo = {
-  company_name: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  role_name: string;
-  area_name: string;
-  expires_at: string;
-  /** La cuenta ya existe: hay que demostrar que es suya. */
-  requires_authentication: boolean;
-};
+/**
+ * Cada lectura de la invitación cuenta contra un cupo por red (es lo que frena
+ * a quien prueba enlaces al azar). Volver a la pestaña no puede gastarlo: se
+ * vuelve a preguntar, como mucho, una vez cada tanto.
+ */
+const ASK_AGAIN_AFTER_MS = 15_000;
 
 export default function InvitationPage() {
   return (
@@ -37,6 +45,11 @@ export default function InvitationPage() {
     </Suspense>
   );
 }
+
+const primaryButton =
+  "inline-flex min-h-11 items-center rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-60";
+const secondaryButton =
+  "inline-flex min-h-11 items-center rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60";
 
 function InvitationScreen() {
   const params = useSearchParams();
@@ -47,11 +60,42 @@ function InvitationScreen() {
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // Se pidió el enlace para establecer la contraseña. Se dice que se envió, no
+  // si la cuenta existe: eso ya lo sabe quien tiene esta invitación.
+  const [linkRequested, setLinkRequested] = useState(false);
   // El correo de la sesión abierta, si hay alguna. Sirve para NO ofrecer un
   // botón que sólo puede terminar en error: aceptar exige haber iniciado sesión
   // con el correo invitado, y el servidor lo comprueba de todas formas.
   // Comparar aquí no relaja nada; sólo evita el clic inútil.
   const [sessionEmail, setSessionEmail] = useState<string | null | undefined>(undefined);
+  // Se vuelve a preguntar al regresar a la pestaña o al volver atrás: entre
+  // tanto la persona pudo crear la cuenta o iniciar sesión en otra parte, y lo
+  // que esta pantalla ofrecía dejó de ser cierto.
+  const [asked, setAsked] = useState(0);
+  const lastAsked = useRef(0);
+  const known = useRef(false);
+
+  useEffect(() => {
+    const askAgain = () => {
+      lastAsked.current = Date.now();
+      setAsked((n) => n + 1);
+    };
+    // Volver atrás a una página guardada por el navegador: lo que muestra es de
+    // antes. Una carga normal ya pregunta por sí sola.
+    const whenRestored = (event: Event) => {
+      if ((event as PageTransitionEvent).persisted) askAgain();
+    };
+    const whenVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastAsked.current >= ASK_AGAIN_AFTER_MS) askAgain();
+    };
+    window.addEventListener("pageshow", whenRestored);
+    document.addEventListener("visibilitychange", whenVisible);
+    return () => {
+      window.removeEventListener("pageshow", whenRestored);
+      document.removeEventListener("visibilitychange", whenVisible);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,31 +104,36 @@ function InvitationScreen() {
       if (!cancelled) setSessionEmail(user?.email?.toLowerCase() ?? null);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [asked]);
 
   useEffect(() => {
     let cancelled = false;
+    lastAsked.current = Date.now();
     void (async () => {
-      try {
-        const res = await fetch(
-          `${API_BASE}/staff/invitations/accept/?token=${encodeURIComponent(token)}`,
-        );
-        if (!res.ok) throw new Error("inválida");
-        const body = (await res.json()) as InvitationInfo;
-        if (!cancelled) setInfo(body);
-      } catch {
-        if (!cancelled) {
-          // UN SOLO MENSAJE para inexistente, alterada, caducada y revocada:
-          // distinguirlos diría a quien prueba enlaces si acertó el formato o
-          // sólo el plazo.
-          setError("Esta invitación no es válida o ya expiró.");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+      const read = await readInvitation(token);
+      if (cancelled) return;
+      if (read.state === "found") {
+        known.current = true;
+        setInfo(read.info);
+      } else if (read.state === "invalid") {
+        // UN SOLO MENSAJE para inexistente, alterada, caducada y revocada:
+        // distinguirlos diría a quien prueba enlaces si acertó el formato o
+        // sólo el plazo.
+        known.current = false;
+        setInfo(null);
+        setError("Esta invitación no es válida o ya expiró.");
+      } else if (!known.current) {
+        // No se pudo saber, y no hay nada anterior que enseñar. No es lo mismo
+        // que inválida, y no se dice que lo sea.
+        setInfo(null);
+        setError("No pudimos comprobar la invitación ahora mismo. Espera un minuto y vuelve a abrir el enlace.");
       }
+      // Si ya se sabía y esta vez no hubo respuesta, se deja lo que había: una
+      // invitación que servía hace un momento no deja de servir por eso.
+      setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [token]);
+  }, [token, asked]);
 
   const accept = useCallback(async () => {
     if (sending) return;
@@ -115,6 +164,32 @@ function InvitationScreen() {
     }
   }, [token, sending]);
 
+  const requestLink = useCallback(async () => {
+    if (sending || !info) return;
+    setSending(true);
+    setError(null);
+    try {
+      await requestPasswordReset(info.email, invitationPath(token));
+      setLinkRequested(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo enviar el enlace.");
+    } finally {
+      setSending(false);
+    }
+  }, [info, token, sending]);
+
+  const leave = useCallback(async () => {
+    if (sending) return;
+    setSending(true);
+    try {
+      await logout().catch(() => {});
+      window.dispatchEvent(new Event("authChange"));
+      setSessionEmail(null);
+    } finally {
+      setSending(false);
+    }
+  }, [sending]);
+
   // `undefined` es «todavía no se sabe»; `null` es «no hay sesión». Mientras no
   // se sepa, no se ofrece aceptar: un botón que parpadea de estado es peor que
   // uno que aparece un momento después.
@@ -123,6 +198,9 @@ function InvitationScreen() {
     sessionEmail !== null &&
     info !== null &&
     sessionEmail === info.email.toLowerCase();
+
+  const account = info ? accountStateOf(info) : "none";
+  const back = encodeURIComponent(invitationPath(token));
 
   return (
     <main className="mx-auto w-full max-w-md px-4 py-16">
@@ -135,15 +213,12 @@ function InvitationScreen() {
         ) : accepted ? (
           <>
             <h1 className="font-display text-xl text-foreground">
-              Ya formas parte de {accepted}
+              Tu acceso ha sido configurado correctamente
             </h1>
             <p className="mt-2 text-sm text-muted">
-              Tu acceso está activo. Puedes entrar al control interno.
+              Ya formas parte de {accepted}. Puedes entrar al control interno.
             </p>
-            <Link
-              href="/admin"
-              className="mt-4 inline-flex min-h-11 items-center rounded-lg bg-foreground px-4 text-sm font-semibold text-background"
-            >
+            <Link href="/admin" className={`mt-4 ${primaryButton}`}>
               Ir al panel
             </Link>
           </>
@@ -181,10 +256,10 @@ function InvitationScreen() {
             ) : null}
 
             {/*
-              QUÉ SE OFRECE DEPENDE DE QUIÉN ESTÉ CONECTADO. Aceptar sólo
-              funciona si la sesión abierta es la del correo invitado, así que
-              en los demás casos se dice qué falta en vez de ofrecer un botón
-              que acaba en un error.
+              QUÉ SE OFRECE DEPENDE DE QUIÉN ESTÉ CONECTADO Y DE QUÉ CUENTA
+              HAYA. Aceptar sólo funciona si la sesión abierta es la del correo
+              invitado, así que en los demás casos se dice qué falta y se ofrece
+              lo único que lo resuelve.
             */}
             {puedeAceptar ? (
               <>
@@ -197,30 +272,96 @@ function InvitationScreen() {
                     type="button"
                     onClick={() => void accept()}
                     disabled={sending}
-                    className="min-h-11 rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-40"
+                    className={primaryButton}
                   >
                     {sending ? "Aceptando…" : "Aceptar invitación"}
                   </button>
                 </div>
               </>
-            ) : (
+            ) : sessionEmail ? (
               <>
                 <p className="mt-4 text-xs leading-relaxed text-muted">
-                  {sessionEmail
-                    ? `Ahora mismo estás dentro como ${sessionEmail}. Esta invitación es para ${info.email}: cierra sesión y entra con ese correo para aceptarla.`
-                    : info.requires_authentication
-                      ? "Ya existe una cuenta con este correo. Inicia sesión con ella para aceptar: tener el enlace no basta para vincular una cuenta."
-                      : "Crea tu cuenta con este correo y vuelve a este enlace para aceptar."}
+                  Ahora mismo estás dentro como {sessionEmail}. Esta invitación
+                  es para {info.email}, que es otra cuenta: cierra esta sesión y
+                  entra con ese correo para aceptarla.
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Link
-                    href={`/auth?next=${encodeURIComponent(`/invitacion?token=${token}`)}`}
-                    className="inline-flex min-h-11 items-center rounded-lg bg-foreground px-4 text-sm font-semibold text-background transition hover:bg-foreground/90"
+                  <button
+                    type="button"
+                    onClick={() => void leave()}
+                    disabled={sending}
+                    className={primaryButton}
                   >
-                    {info.requires_authentication || sessionEmail
-                      ? "Iniciar sesión"
-                      : "Crear cuenta"}
+                    Cerrar sesión
+                  </button>
+                </div>
+              </>
+            ) : linkRequested ? (
+              <div className="mt-4 rounded-lg border border-bd-border bg-background px-3 py-2.5">
+                <p className="text-sm font-semibold text-foreground">Te enviamos un enlace</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Revisa el buzón de {info.email} (también el correo no deseado).
+                  Ábrelo, elige tu contraseña y volverás a esta invitación para
+                  aceptarla. El enlace dura una hora.
+                </p>
+              </div>
+            ) : account === "none" ? (
+              <>
+                <p className="mt-4 text-sm font-semibold text-foreground">
+                  Crea tu cuenta para continuar
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Elegirás tu propia contraseña. Nadie más la ve ni la decide.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link href={`/auth?mode=register&next=${back}`} className={primaryButton}>
+                    Crear mi cuenta
                   </Link>
+                </div>
+              </>
+            ) : account === "unverified" ? (
+              <>
+                <p className="mt-4 text-sm font-semibold text-foreground">
+                  Ya tienes una cuenta con este correo
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Está a medio terminar: todavía no puede iniciar sesión.
+                  Establece tu contraseña con un enlace que te enviaremos a ese
+                  correo y quedará lista.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void requestLink()}
+                    disabled={sending}
+                    className={primaryButton}
+                  >
+                    Establecer mi contraseña
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="mt-4 text-sm font-semibold text-foreground">
+                  Ya tienes una cuenta con este correo
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Inicia sesión con ella para aceptar: tener el enlace no basta
+                  para vincular una cuenta. Si no conoces tu contraseña, te
+                  enviamos un enlace a ese correo para que elijas una.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link href={`/auth?next=${back}`} className={primaryButton}>
+                    Iniciar sesión
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => void requestLink()}
+                    disabled={sending}
+                    className={secondaryButton}
+                  >
+                    No conozco mi contraseña
+                  </button>
                 </div>
               </>
             )}
@@ -228,14 +369,16 @@ function InvitationScreen() {
         ) : (
           <>
             <h1 className="font-display text-xl text-foreground">
-              Invitación no válida
+              {error?.startsWith("No pudimos") ? "Invitación sin comprobar" : "Invitación no válida"}
             </h1>
             <p className="mt-2 text-sm text-muted">
               {error ?? "Esta invitación no es válida o ya expiró."}
             </p>
-            <p className="mt-3 text-xs text-muted">
-              Pide a la empresa que te envíe una nueva.
-            </p>
+            {error?.startsWith("No pudimos") ? null : (
+              <p className="mt-3 text-xs text-muted">
+                Pide a la empresa que te envíe una nueva.
+              </p>
+            )}
           </>
         )}
       </div>

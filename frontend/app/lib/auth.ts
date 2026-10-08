@@ -360,6 +360,11 @@ export async function register(data: {
   password_confirm: string;
   first_name?: string;
   last_name?: string;
+  /**
+   * La invitación con la que llega la persona. Con una válida para ESE correo,
+   * el servidor crea la cuenta ya activa: el enlace prueba el buzón.
+   */
+  invitation_token?: string;
 }): Promise<{ detail: string; requires_verification: boolean; user?: AuthUser }> {
   // Con una sesión abierta en otra pestaña la cookie de acceso viaja sola, y
   // con ella el servidor exige el token CSRF también aquí.
@@ -420,7 +425,11 @@ export async function resendVerification(email: string): Promise<{ detail: strin
   return res.json();
 }
 
-export async function requestPasswordReset(email: string): Promise<{ detail: string }> {
+/**
+ * `next` es adónde volver después: sólo la dirección de una invitación. El
+ * servidor lo vuelve a comprobar y descarta cualquier otra cosa.
+ */
+export async function requestPasswordReset(email: string, next?: string): Promise<{ detail: string }> {
   const csrf = await ensureCsrfToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (csrf) headers["X-CSRFToken"] = csrf;
@@ -428,7 +437,7 @@ export async function requestPasswordReset(email: string): Promise<{ detail: str
     method: "POST",
     headers,
     credentials: "include",
-    body: JSON.stringify({ email }),
+    body: JSON.stringify(next ? { email, next } : { email }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => null);
@@ -440,7 +449,7 @@ export async function requestPasswordReset(email: string): Promise<{ detail: str
 export async function confirmPasswordReset(
   token: string,
   new_password: string
-): Promise<{ detail: string }> {
+): Promise<{ detail: string; username?: string }> {
   const csrf = await ensureCsrfToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (csrf) headers["X-CSRFToken"] = csrf;
