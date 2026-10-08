@@ -588,7 +588,8 @@ class AdminProductTemplateView(APIView):
         company, error = _context(request, CAP_PRODUCTS)
         if error:
             return error
-        return _xlsx(import_exports.product_template_bytes(), 'plantilla-productos.xlsx')
+        # Of THIS company: its categories go in the «Categorías» sheet.
+        return _xlsx(import_exports.product_template_bytes(company), 'plantilla-productos.xlsx')
 
 
 class AdminInventoryExportView(APIView):

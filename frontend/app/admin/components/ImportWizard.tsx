@@ -609,3 +609,72 @@ export function rowImagesLabel(row: { data: Record<string, unknown> }): string {
   const rest = images.length - 1;
   return `${primary ? "★ " : ""}${first.name}${rest ? ` + ${rest}` : ""}`;
 }
+
+// ---------------------------------------------------------------------------
+// PRODUCT-DESTINATION-01
+// ---------------------------------------------------------------------------
+
+const DESTINATION_LABELS: Record<string, string> = {
+  online: "Publicar en e-commerce",
+  internal: "Solo stock interno",
+};
+
+/**
+ * A dónde irá el producto de una fila, con las palabras de la plantilla.
+ *
+ * Una celda vacía en un producto que ya existe NO decide nada: se dice «Sin
+ * cambios», no un destino que el servidor no va a tocar. Una fila que no crea
+ * ni actualiza no tiene destino que mostrar.
+ */
+export function destinationLabel(row: { action: string; data: Record<string, unknown> }): string {
+  const value = String(row.data?.destination ?? "");
+  if (DESTINATION_LABELS[value]) return DESTINATION_LABELS[value];
+  return row.action === "update" ? "Sin cambios" : "";
+}
+
+/**
+ * La categoría para las filas que no traen una. Las opciones son las
+ * categorías de la empresa, tal como las devuelve el servidor: ninguna está
+ * escrita aquí, y el servidor vuelve a comprobar que la elegida es suya.
+ */
+export function DefaultCategoryField({
+  categories,
+  value,
+  onChange,
+}: {
+  /** `null`: no se pudieron leer. No es lo mismo que no tener ninguna. */
+  categories: { id: number; name: string }[] | null;
+  value: number | null;
+  onChange: (categoryId: number | null) => void;
+}) {
+  if (categories === null) {
+    return (
+      <p className="text-muted">
+        No se pudieron leer las categorías de la empresa: las filas sin categoría quedarán sin ella.
+      </p>
+    );
+  }
+  if (!categories.length) {
+    return (
+      <p className="text-muted">
+        Tu empresa todavía no tiene categorías: las filas sin categoría quedarán sin ella.
+      </p>
+    );
+  }
+  return (
+    <label className="flex flex-wrap items-center gap-2">
+      <span>Categoría para las filas que no traen una</span>
+      <select
+        value={value === null ? "" : String(value)}
+        onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
+        className="rounded-lg border border-bd-border bg-surface px-2 py-1 text-sm text-foreground"
+      >
+        <option value="">Dejarlas sin categoría</option>
+        {categories.map((category) => (
+          <option key={category.id} value={category.id}>{category.name}</option>
+        ))}
+      </select>
+      <span className="text-muted">— no cambia la de un producto que ya tiene una</span>
+    </label>
+  );
+}

@@ -93,7 +93,7 @@ export function ProductsTable({ products, canManage, onChanged }: Props) {
                 >
                   {product.inventory}
                 </td>
-                <td className="px-4 py-3"><ProductStatusBadge isActive={product.is_active} /></td>
+                <td className="px-4 py-3"><ProductStatusBadge isActive={product.is_active} publishedOnline={product.is_published_online} /></td>
                 {canManage ? (
                   <td className="px-4 py-3 text-right">
                     <Link href={`/admin/products/${product.id}`} className="mr-4 text-xs font-semibold text-muted transition hover:text-foreground hover:underline">

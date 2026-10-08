@@ -110,7 +110,7 @@ def _public_payload(campaign) -> dict:
     # El producto enlazado viaja REDUCIDO: lo justo para pintar un enlace. Ni
     # coste interno, ni stock, ni identificadores que el catálogo público no dé
     # ya por su cuenta.
-    if campaign.product_id and campaign.product.is_active:
+    if campaign.product_id and campaign.product.is_sold_online:
         data['product'] = {
             'slug': campaign.product.slug,
             'name': campaign.product.name,

@@ -85,7 +85,69 @@ PRODUCT_FIELDS = {
     'image_files': {'label': 'Imágenes (archivos, separados por |)', 'required': False},
     'slug':        {'label': 'Slug',                'required': False},
     'is_active':   {'label': 'Activo',              'required': False},
+    # PRODUCT-DESTINATION-01: «Publicar en e-commerce» o «Solo stock interno».
+    'destination': {'label': 'Destino (e-commerce o sólo stock interno)', 'required': False},
 }
+
+# =============================================================================
+# Where a product goes — PRODUCT-DESTINATION-01
+# =============================================================================
+#
+# The two values the template offers in its drop-down, and what a cell is taken
+# to mean. Read forgivingly — case, accents, spacing — because the cell is typed
+# by a person; but only these, because a guess here publishes something on the
+# web that somebody meant to keep off it.
+
+DESTINATION_ONLINE, DESTINATION_INTERNAL = 'online', 'internal'
+DESTINATION_LABELS = {
+    DESTINATION_ONLINE: 'Publicar en e-commerce',
+    DESTINATION_INTERNAL: 'Solo stock interno',
+}
+_DESTINATION_WORDS = {
+    'publicar en e commerce': DESTINATION_ONLINE,
+    'publicar en ecommerce': DESTINATION_ONLINE,
+    'e commerce': DESTINATION_ONLINE,
+    'ecommerce': DESTINATION_ONLINE,
+    'solo stock interno': DESTINATION_INTERNAL,
+    'stock interno': DESTINATION_INTERNAL,
+}
+
+
+#: A header is the destination column when it IS one of these, or starts with
+#: the first: «Destino», «Destino (pendiente web)», «Destino web», «Destino:».
+DESTINATION_HEADERS = ('destino', 'destino pendiente web')
+
+
+def find_destination_column(headers, taken=()) -> int | None:
+    """
+    The column whose header says it is the destination, or None.
+
+    WHY THIS IS NOT LEFT TO THE MAPPING. A mapping can arrive without it for
+    reasons nobody chose: the screen remembers the one it used for this shape
+    of file before the column existed; a format's preset never had it; somebody
+    assigned columns by hand and skipped it. In every one of those the cells say
+    «Solo stock interno», nobody reads them, and the product is published. So
+    the column is looked for by its header whenever the mapping does not name one.
+    """
+    taken = set(taken)
+    exact = None
+    for index, header in enumerate(headers):
+        if index in taken:
+            continue
+        key = normalize_header(header)
+        if key in DESTINATION_HEADERS:
+            return index
+        if exact is None and (key == 'destino' or key.startswith('destino ')):
+            exact = index
+    return exact
+
+
+def parse_destination(text) -> str | None:
+    """'online', 'internal', '' for an empty cell — or None for anything else."""
+    key = normalize_header(text)
+    if not key:
+        return ''
+    return _DESTINATION_WORDS.get(key)
 
 STOCK_FIELDS = {
     'external_id': {'label': 'ID del sistema origen', 'required': False},
@@ -203,6 +265,9 @@ def _preset_products_platform():
             'image_url': 'url de imagen',
             'image_main': 'imagen principal',
             'image_files': 'imagenes',
+            # Both spellings: as the template names it now, and as the owner's
+            # planning sheet named it while the feature did not exist.
+            'destination': DESTINATION_HEADERS,
         },
         'notes': [],
     }
@@ -284,9 +349,12 @@ def detect(import_type: str, sheet_name: str, headers):
             continue
 
         mapping = {}
-        for field, header_key in preset['mapping'].items():
-            if header_key in normalized:
-                mapping[field] = normalized.index(header_key)
+        for field, header_keys in preset['mapping'].items():
+            # One header, or several spellings of it: the first that is there.
+            for header_key in ([header_keys] if isinstance(header_keys, str) else header_keys):
+                if header_key in normalized:
+                    mapping[field] = normalized.index(header_key)
+                    break
 
         for field, regex in (preset.get('dynamic') or {}).items():
             for index, key in enumerate(normalized):
