@@ -32,7 +32,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   comprobación «sin Continuar con Google» buscaba la palabra en toda la página de
   acceso, y el aviso de cookies nombra a Google Analytics. Ahora busca el botón.
 
-Sin migraciones. Sin desplegar.
+Sin migraciones. En `master` con #100 (`36c2fa4`) y **desplegado el 2026-10-08**: el
+servidor pasó de `9fd9536` a `36c2fa4`, con copia previa y sin migraciones que aplicar.
 
 ## 2026-10-07 — Aviso de privacidad y cookies para medición
 
