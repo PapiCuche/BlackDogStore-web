@@ -31,8 +31,42 @@ La guía de bloques de quien diseñó la plantilla está junto a ella:
 | Aviso (notificación) | `notification` | principal · progreso (sólo al cliente) · botón | `store/notification_services.py` |
 | Prueba del servidor de correo | `smtp_test` | principal · aviso | `store/integrations/providers/smtp.py` |
 
-La verificación va por enlace, no por código: el bloque `codigo` de la plantilla no
-aparece en ese correo.
+### El correo de verificación: enlace y código
+
+El **enlace** es el camino principal: un token que nadie adivina, vigente 24 horas. A su
+lado va un **código de 6 dígitos** (bloque `codigo`) para quien lee el correo en un
+dispositivo y se registra en otro. El código es un secreto mucho más pequeño, así que
+tiene reglas propias (`store/verification_codes.py`):
+
+| Regla | Valor |
+|---|---|
+| Vigencia del código | 15 minutos |
+| Intentos fallidos | 5; después el código muere (el enlace sigue sirviendo) |
+| Código nuevo | Anula el anterior |
+| Entre dos códigos de una cuenta | 60 segundos |
+| Códigos por cuenta en 24 horas | 5, contando el del registro |
+| Intentos por dirección de red | 10 por minuto |
+
+- Se guarda sólo un HMAC del código, ligado a la cuenta; nunca el código.
+- Toda negativa responde lo mismo: no dice si la cuenta existe, si el código estaba
+  cerca ni qué regla lo rechazó.
+- El código no va en el asunto ni en ningún registro.
+- Usar el enlace gasta el código, y al revés: verificar por código gasta todos los
+  enlaces que esa cuenta tenga pendientes.
+- Sólo termina una cuenta **registrada y nunca verificada**. Una cuenta que alguien
+  apagó después no se reenciende con un código, ni recibe uno.
+- **Un correo que no salió no cuesta nada.** Si al reenviar el servidor de correo falla,
+  el código nuevo se retira: la espera, el tope del día y el código anterior quedan
+  como estaban. El registro es la excepción: su fila se conserva aunque el correo
+  falle, porque es lo que dice que esa cuenta está pendiente de verificar.
+- El correo pide no compartir el código.
+- Un código agotado (5 intentos) deja una línea en el registro de seguridad, con el
+  número de cuenta y sin el correo ni lo que se escribió.
+- Quien se registra con una invitación válida no recibe ni enlace ni código: la
+  invitación ya probó el buzón (STAFF-ONBOARDING-01).
+
+Con esos números, a una cuenta se le pueden probar 25 códigos al día: una posibilidad
+entre cuarenta mil.
 
 ### Los avisos
 
