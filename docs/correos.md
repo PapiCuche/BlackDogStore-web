@@ -28,9 +28,33 @@ La guía de bloques de quien diseñó la plantilla está junto a ella:
 | Invitación de personal | `staff_invitation` | principal · datos · aviso · botón con enlace | `store/staff_views.py` |
 | Compra confirmada | `order_confirmation` | principal · detalle · datos · aviso · botón, y el PDF adjunto | `store/email_services.py` |
 | Aviso interno de pedido | `internal_order` | principal · detalle · datos · botón | `store/email_services.py` |
+| Aviso (notificación) | `notification` | principal · progreso (sólo al cliente) · botón | `store/notification_services.py` |
+| Prueba del servidor de correo | `smtp_test` | principal · aviso | `store/integrations/providers/smtp.py` |
 
 La verificación va por enlace, no por código: el bloque `codigo` de la plantilla no
 aparece en ese correo.
+
+### Los avisos
+
+`notification_services` decide qué eventos merecen un correo, a quién y que cada uno
+salga una sola vez; la plantilla no cambia nada de eso. Hoy van por correo cuatro
+(`EMAIL_WORTHY_EVENTS`): cotización disponible, equipo listo para recoger, pedido listo
+para recoger y pedido enviado. Los demás se quedan en la campana del panel o de la
+cuenta; si mañana uno más va por correo, sale ya con la plantilla.
+
+Un aviso dice lo que decía y lleva un botón a donde está el detalle: la página del
+cliente (`/repairs`, `/orders`) o el panel, si es para el personal. **No lleva el
+detalle**: ni precios, ni diagnóstico, ni datos del equipo. Eso sigue detrás de su
+propia autorización. Por eso el correo de cotización no usa el bloque `detalle` del
+ejemplo `03-cotizacion.json`.
+
+El progreso del cliente sólo muestra pasos que son ciertos pase lo que pase antes:
+«Equipo recibido · Listo para recoger · Entregado». Un equipo puede estar listo sin
+haberse reparado.
+
+La prueba del servidor de correo (Panel › Configuración › Integraciones) sale con la
+plantilla donde la tienda de la instalación la tiene: sirve para verla en un buzón real.
+No lleva botón ni ningún enlace de acceso.
 
 ## 3. De quién es la plantilla
 
@@ -149,5 +173,5 @@ y la razón social y el RUC de la empresa.
 ## 8. Pruebas
 
 ```
-python manage.py test store.test_mail
+python manage.py test store.test_mail store.test_mail_notifications
 ```

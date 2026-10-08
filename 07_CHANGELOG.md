@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 2)
+
+**Changed**
+- Los avisos que van por correo (cotización disponible, equipo listo para recoger,
+  pedido listo para recoger, pedido enviado) salen con la plantilla cuando son de la
+  empresa a la que pertenece, con un botón a la página donde está el detalle: la del
+  cliente o el panel, según a quién vaya. Al cliente le muestran además en qué paso está.
+- La prueba del servidor de correo de la consola de integraciones sale con la plantilla
+  donde la tienda de la instalación la tiene. Sigue sin llevar ningún enlace de acceso.
+
+No cambia qué eventos envían correo, a quién, ni que cada uno salga una vez. Un aviso
+sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No desplegado.
+
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1)
 
 **Added**
