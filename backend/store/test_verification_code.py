@@ -553,9 +553,13 @@ class GuardsTest(_Base):
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
 )
 class ConcurrencyTest(TransactionTestCase):
-    """Real commits and real row locks: what a `TestCase` cannot see."""
+    """
+    Real commits and real row locks: what a `TestCase` cannot see.
 
-    serialized_rollback = True
+    It needs nothing a migration seeds — an account and its codes — so it does
+    not ask for the database to be put back (`serialized_rollback`), which in
+    this suite collides with rows other transactional tests leave behind.
+    """
 
     def setUp(self):
         cache.clear()
