@@ -340,6 +340,25 @@ de dominios en `docs/analytics-marketing.md` §7.
   viva la contraseña de quien la registró); un segundo sistema de credenciales para
   invitados; una identidad por empresa.
 
+### DEC-REGISTER-01 · Que un correo tenga una sola cuenta lo garantiza la base
+
+- **Preguntar y después escribir no basta.** Entre la pregunta y la escritura cabe otra
+  petición. La única regla que dos peticiones simultáneas no pueden saltarse es una
+  restricción de la base.
+- **Sin distinguir mayúsculas**, porque así se compara un correo en todo el código
+  (`email__iexact`). El índice es sobre `LOWER(email)` y deja fuera las cuentas sin
+  correo, que pueden ser varias.
+- **El modelo de usuario es el de Django**, así que la regla va en una migración con SQL
+  y no en el modelo. Funciona igual en PostgreSQL y en SQLite.
+- **Lo que ya exista duplicado no se toca.** La migración se detiene y dice cuántos; no
+  fusiona, no borra y no nombra a nadie (su texto acaba en un registro de despliegue).
+  Cuál de dos cuentas se conserva lo decide una persona: una puede tener los pedidos y
+  la otra la contraseña que alguien recuerda.
+- **Perder la carrera no es un error.** Se responde lo que se habría respondido un
+  instante después, con las mismas palabras del formulario.
+- **Las defensas contra duplicados se conservan** (`accounts.with_email`, las respuestas
+  silenciosas): una instalación puede traerlos de su pasado.
+
 ### DEC-PRODUCT-DEST-01 · «Sólo stock interno» es otro dato que «activo»
 
 - **Por qué un campo y no reutilizar `is_active`.** Inactivo saca el producto de todo:

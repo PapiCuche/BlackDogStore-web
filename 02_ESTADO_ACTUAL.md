@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-08 — REGISTER-RACE-01: un correo, una cuenta, también en la base
+
+Rama `fix/register-race`, apilada sobre `feat/product-visibility-import`. **Con
+migración** (`0115_user_email_unique_ci`). Decisión: DEC-REGISTER-01. No desplegado.
+
+**Qué pasaba.** El registro preguntaba «¿este correo ya está?» y después creaba la
+cuenta. Dos peticiones en el mismo instante oían «no» las dos y creaban una cada una.
+Desde ahí ese correo no podía verificarse, ni pedir otra verificación, ni recuperar la
+contraseña: todo eso se niega a elegir entre dos cuentas. Una ráfaga dejaba un correo
+bloqueado para siempre. Reproducido: cinco registros simultáneos, cinco cuentas.
+
+**Qué hay ahora.**
+- La base rechaza una segunda cuenta con el mismo correo, sin distinguir mayúsculas
+  (índice único sobre `LOWER(email)`). Las cuentas sin correo no cuentan.
+- Quien pierde la carrera recibe la misma respuesta que quien llega tarde: «Este correo
+  ya está registrado». Sin error 500 y sin nada a medio escribir. Lo mismo con un nombre
+  de usuario, y con la entrada con Google.
+- La migración **se detiene** si ya hay duplicados: dice cuántos, no cuáles, y no fusiona
+  ni borra nada.
+- `python manage.py list_duplicate_emails` los lista para que una persona decida (sólo
+  lectura; el correo sale enmascarado).
+
+**Producción, consultado el 2026-10-08 (sólo lectura):** 6 cuentas, **0 correos
+duplicados**, ninguna sin correo. La migración no encontraría nada que la detenga.
+
 ## 2026-10-08 — PRODUCT-DESTINATION-01: «sólo stock interno» y la plantilla de carga masiva
 
 Rama `feat/product-visibility-import`, apilada sobre `feat/mail-verification-code`. **Con migración**

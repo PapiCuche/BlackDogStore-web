@@ -3,6 +3,25 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — REGISTER-RACE-01
+
+**Fixed**
+- Varios registros simultáneos del mismo correo creaban varias cuentas, y ese correo
+  quedaba sin poder verificarse ni recuperar su contraseña.
+
+**Added**
+- Índice único del correo de las cuentas, sin distinguir mayúsculas
+  (`0115_user_email_unique_ci`). La migración se detiene si encuentra duplicados y no
+  fusiona nada.
+- `python manage.py list_duplicate_emails`: lista, en sólo lectura, las cuentas que
+  comparten correo.
+
+**Changed**
+- Un registro que pierde la carrera —por el correo o por el nombre de usuario— responde
+  como uno que llega tarde, no con un error 500. La entrada con Google, igual.
+
+No desplegado.
+
 ## 2026-10-08 — PRODUCT-DESTINATION-01
 
 **Added**
