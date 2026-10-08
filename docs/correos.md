@@ -42,19 +42,31 @@ salga una sola vez; la plantilla no cambia nada de eso. Hoy van por correo cuatr
 para recoger y pedido enviado. Los demás se quedan en la campana del panel o de la
 cuenta; si mañana uno más va por correo, sale ya con la plantilla.
 
-Un aviso dice lo que decía y lleva un botón a donde está el detalle: la página del
-cliente (`/repairs`, `/orders`) o el panel, si es para el personal. **No lleva el
-detalle**: ni precios, ni diagnóstico, ni datos del equipo. Eso sigue detrás de su
+Un aviso dice lo que decía y lleva un botón a donde está el detalle: la página de
+seguimiento de la reparación, «Mis pedidos», o el panel si es para el personal. **No
+lleva el detalle**: ni precios, ni diagnóstico, ni datos del equipo. Eso sigue detrás de su
 propia autorización. Por eso el correo de cotización no usa el bloque `detalle` del
 ejemplo `03-cotizacion.json`.
 
-**El botón sólo aparece si lleva a algo.** `/repairs` y `/orders` muestran lo que
-pertenece a una cuenta. Quien dejó un equipo en el mostrador o compró sin registrarse no
-tiene cuenta, y un pedido vendido en caja no está en la de nadie: esos avisos salen con
-la plantilla y sin botón, en vez de con un botón a una pantalla de acceso y una lista
-vacía. Para ellos el detalle está en el enlace de seguimiento de la reparación, que hoy
-**no** viaja por correo (deuda MAIL-TRACKING-LINK: lo decide el propietario, porque ese
-enlace permite aprobar una cotización).
+**A dónde lleva el botón** (`notification_services._destination`):
+
+| Aviso | Lleva a |
+|---|---|
+| Al personal | La orden, el pedido o el comunicado en el panel |
+| Al cliente, de una reparación | Su **enlace de seguimiento** (`/seguimiento/…`), tenga cuenta o no |
+| Al cliente, de un pedido hecho desde su cuenta | «Mis pedidos» (`/orders`) |
+| Al cliente, de un pedido vendido en caja o comprado sin cuenta | Sin botón: ninguna página se lo mostraría |
+
+El enlace de seguimiento es una forma de entrar: en esa página se lee y se responde una
+cotización. Lo decidió el propietario (MAIL-TRACKING-LINK), porque la mayoría de quienes
+dejan un equipo no tienen cuenta. Por eso:
+
+- sólo se envía al cliente de **esa** reparación; un aviso que nombre una reparación
+  ajena no lo lleva;
+- un enlace que alguien revocó sigue revocado: el correo no crea otro. Con cuenta, el
+  botón lleva entonces a «Mis reparaciones»; sin cuenta, no hay botón;
+- la copia del personal nunca lo lleva;
+- no se escribe en ningún registro ni en el motivo de un envío fallido.
 
 El progreso del cliente sólo muestra pasos que son ciertos pase lo que pase antes:
 «Equipo recibido · Listo para recoger · Entregado». Un equipo puede estar listo sin

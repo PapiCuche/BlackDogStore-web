@@ -39,12 +39,11 @@ con el servidor de correo mudo).
 `notification_services` y la prueba del servidor de correo salen con la plantilla. De
 los 15 eventos, hoy van por correo cuatro (`EMAIL_WORTHY_EVENTS`); esa decisión no se
 toca. Un aviso lleva un botón a donde está el detalle, nunca el detalle; y sólo cuando
-esa página se lo va a mostrar a quien lo recibe (cliente con cuenta, pedido de su cuenta).
+esa página se lo va a mostrar a quien lo recibe.
 
-**Deuda que deja a la vista (MAIL-TRACKING-LINK):** el aviso «tienes una cotización» a
-un cliente sin cuenta no lleva cómo verla. El enlace de seguimiento de la reparación la
-resolvería, pero permite aprobar la cotización y hoy sólo se entrega a mano y con
-registro: enviarlo por correo es decisión del propietario.
+**MAIL-TRACKING-LINK (decidido por el propietario el 2026-10-08):** el aviso de una
+reparación lleva al cliente su enlace de seguimiento, tenga cuenta o no. Sólo al cliente
+de esa reparación; un enlace revocado no se recrea; la copia del personal no lo lleva.
 
 **Falta:** fase 3, garantía, posventa, promociones con baja y código de 6 dígitos.
 
