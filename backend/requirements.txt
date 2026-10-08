@@ -21,6 +21,11 @@ PyJWT==2.13.0
 # Environment variable management
 django-environ==0.14.0
 
+# Mustache, for the one e-mail template every message is rendered with
+# (store/mail). Pure Python, no dependencies of its own. It escapes `{{ }}` and
+# the template has no `{{{ }}}`: a customer's text never reaches the HTML raw.
+chevron==0.14.0
+
 # Database adapters
 psycopg2-binary==2.9.13
 

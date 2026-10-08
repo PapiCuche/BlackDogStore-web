@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!-- Black Dog Store · Plantilla maestra de correo · v1
+     [Corchetes]  = se reemplaza UNA vez al instalar (logo, web, YouTube, razón social, RUC).
+     {{llaves}}   = la web lo llena en cada envío (sintaxis Mustache / Handlebars).
+     Cada BLOQUE es opcional: si la variable no se envía, el bloque no aparece. -->
+<html lang="es" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{{asunto}}</title>
+<!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><style>body,table,td,p,a,h1,div{font-family:Arial,Helvetica,sans-serif!important;}</style><![endif]-->
+<!--[if !mso]><!--><link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"><!--<![endif]-->
+<style>
+body{margin:0!important;padding:0!important;width:100%!important;background-color:#D9D9D9;}
+table{border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;}
+img{-ms-interpolation-mode:bicubic;}
+a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important;}
+@media only screen and (max-width:620px){
+ .container{width:100%!important;}
+ .px{padding-left:24px!important;padding-right:24px!important;}
+ .stack{display:block!important;width:100%!important;}
+ .hide-sm{display:none!important;max-height:0!important;overflow:hidden!important;}
+ .h1{font-size:24px!important;line-height:30px!important;}
+ .logo{width:150px!important;}
+ .btn{display:block!important;}
+ .col{display:block!important;width:100%!important;min-width:0!important;}
+}</style>
+</head>
+<body style="margin:0;padding:0;background-color:#D9D9D9;">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{{preheader}}&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#D9D9D9" style="background-color:#D9D9D9;">
+<tr><td align="center" style="padding:24px 12px;">
+<!--[if mso]><table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+<!-- ═══ HEADER (fijo) ═══ -->
+<tr><td class="px" style="background-color:#F2F2F2;padding:32px 40px 24px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td valign="middle" style="vertical-align:middle;"><a href="[URL del sitio web]" target="_blank" style="text-decoration:none;"><img src="[URL pública del logo]" width="180" height="62" alt="Black Dog Store" class="logo" style="display:block;width:180px;max-width:180px;height:auto;border:0;outline:none;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:18px;font-weight:700;color:#0D0D0D;"></a></td>
+<td class="hide-sm" valign="middle" align="right" style="vertical-align:middle;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:16px;letter-spacing:1.5px;text-transform:uppercase;color:#2E2E2E;">Especialistas Apple<br>Arequipa</td>
+</tr></table></td></tr>
+<tr><td class="px" style="background-color:#F2F2F2;padding:0 40px;">{{#momento_oro}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td height="2" style="height:2px;background-color:#B38845;font-size:0;line-height:0;mso-line-height-rule:exactly;">&nbsp;</td></tr></table>{{/momento_oro}}{{^momento_oro}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td height="2" style="height:2px;background-color:#8C6A34;font-size:0;line-height:0;mso-line-height-rule:exactly;">&nbsp;</td></tr></table>{{/momento_oro}}</td></tr>
+<!-- ═══ BLOQUE imagen · imagen destacada (promociones, lanzamientos, invitaciones) ═══ -->
+{{#imagen}}<tr><td class="px" style="background-color:#F2F2F2;padding:32px 40px 0 40px;"><a href="{{imagen.enlace}}" target="_blank" style="text-decoration:none;"><img src="{{imagen.url}}" width="520" alt="{{imagen.alt}}" style="display:block;width:100%;max-width:520px;height:auto;border:0;border-radius:10px;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;color:#2E2E2E;"></a></td></tr>{{/imagen}}
+<!-- ═══ BLOQUE principal · eyebrow + título + saludo + párrafos (siempre) ═══ -->
+<tr><td class="px" style="background-color:#F2F2F2;padding:36px 40px 8px 40px;">
+{{#etiqueta}}<p style="margin:0 0 12px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:12px;line-height:16px;letter-spacing:2px;text-transform:uppercase;color:#2E2E2E;">{{etiqueta}}</p>{{/etiqueta}}
+<h1 class="h1" style="margin:0 0 20px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:28px;line-height:34px;font-weight:700;letter-spacing:-0.3px;color:#0D0D0D;">{{titulo}}</h1>
+{{#saludo}}<p style="margin:0 0 16px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:26px;color:#2E2E2E;">{{saludo}}</p>{{/saludo}}
+{{#parrafos}}<p style="margin:0 0 16px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:26px;color:#2E2E2E;">{{.}}</p>{{/parrafos}}
+</td></tr>
+<!-- ═══ BLOQUE codigo · código de verificación / OTP / cupón ═══ -->
+{{#codigo}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #0D0D0D;border-radius:10px;"><tr><td align="center" style="padding:24px 16px;">
+<p style="margin:0 0 6px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:2px;text-transform:uppercase;color:#2E2E2E;">{{codigo.etiqueta}}</p>
+<p style="margin:4px 0 0 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:32px;line-height:40px;font-weight:600;letter-spacing:8px;color:#0D0D0D;">{{codigo.valor}}</p>
+{{#codigo.nota}}<p style="margin:10px 0 0 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:13px;line-height:20px;color:#2E2E2E;">{{codigo.nota}}</p>{{/codigo.nota}}
+</td></tr></table></td></tr>{{/codigo}}
+<!-- ═══ BLOQUE progreso · línea de estado (servicio técnico, envío, pedido) ═══ -->
+{{#progreso}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px;">
+<p style="margin:0 0 6px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:2px;text-transform:uppercase;color:#2E2E2E;margin-bottom:12px;">{{progreso.titulo}}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+{{#progreso.pasos}}<tr>
+<td width="28" valign="top" style="width:28px;padding:12px 0 0 0;line-height:0;font-size:0;vertical-align:top;">{{#hecho}}<span style="display:inline-block;width:14px;height:14px;background-color:#0D0D0D;border-radius:50%;font-size:0;line-height:0;">&nbsp;</span>{{/hecho}}{{#actual}}<span style="display:inline-block;width:10px;height:10px;background-color:#F2F2F2;border:2px solid #8C6A34;border-radius:50%;font-size:0;line-height:0;">&nbsp;</span>{{/actual}}{{#pendiente}}<span style="display:inline-block;width:12px;height:12px;border:1px solid #8C8C8C;border-radius:50%;font-size:0;line-height:0;">&nbsp;</span>{{/pendiente}}</td>
+<td valign="top" style="padding:8px 0;border-bottom:1px solid #D9D9D9;vertical-align:top;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:15px;line-height:22px;color:#2E2E2E;">{{#actual}}<strong style="color:#0D0D0D;">{{texto}}</strong> <span style="font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#8C6A34;">· En curso</span>{{/actual}}{{^actual}}{{texto}}{{/actual}}</td>
+<td align="right" valign="top" style="padding:8px 0;border-bottom:1px solid #D9D9D9;vertical-align:top;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:13px;line-height:22px;color:#2E2E2E;white-space:nowrap;">{{fecha}}</td>
+</tr>{{/progreso.pasos}}
+</table></td></tr>{{/progreso}}
+<!-- ═══ BLOQUE detalle · líneas de pedido, venta o cotización + resumen + total ═══ -->
+{{#detalle}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px;">
+<p style="margin:0 0 6px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:2px;text-transform:uppercase;color:#2E2E2E;margin-bottom:4px;">{{detalle.titulo}}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #0D0D0D;">
+{{#detalle.items}}<tr><td style="padding:14px 12px 14px 0;border-bottom:1px solid #D9D9D9;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:15px;line-height:22px;color:#0D0D0D;">{{nombre}}{{#nota}}<br><span style="font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:12px;line-height:18px;color:#2E2E2E;">{{nota}}</span>{{/nota}}</td><td align="right" valign="top" style="padding:14px 0;border-bottom:1px solid #D9D9D9;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:14px;line-height:22px;color:#0D0D0D;white-space:nowrap;">{{valor}}</td></tr>{{/detalle.items}}
+{{#detalle.resumen}}<tr><td style="padding:10px 0 0 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:14px;line-height:20px;color:#2E2E2E;">{{nombre}}</td><td align="right" style="padding:10px 0 0 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:14px;line-height:20px;color:#2E2E2E;white-space:nowrap;">{{valor}}</td></tr>{{/detalle.resumen}}
+{{#detalle.total}}<tr><td style="padding:16px 0 0 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:24px;font-weight:700;color:#0D0D0D;">{{detalle.total.nombre}}</td><td align="right" style="padding:16px 0 0 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:20px;line-height:24px;font-weight:600;color:#0D0D0D;white-space:nowrap;">{{detalle.total.valor}}</td></tr>{{/detalle.total}}
+</table></td></tr>{{/detalle}}
+<!-- ═══ BLOQUE datos · tarjeta negra de datos (ficha técnica, evento, envío, garantía) ═══ -->
+{{#datos}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0D0D0D" style="background-color:#0D0D0D;border-radius:10px;"><tr><td style="padding:24px 24px 6px 24px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0 0 18px 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td width="16" valign="middle" style="width:16px;vertical-align:middle;font-size:0;line-height:0;"><table role="presentation" width="16" cellpadding="0" cellspacing="0" border="0"><tr><td height="2" style="height:2px;background-color:#B38845;font-size:0;line-height:0;mso-line-height-rule:exactly;">&nbsp;</td></tr></table></td><td style="padding-left:10px;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:2px;text-transform:uppercase;color:#B38845;">{{datos.titulo}}</td></tr></table></td></tr></table>
+<!--[if mso]><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><![endif]-->
+{{#datos.campos}}<!--[if mso]><td width="50%" valign="top"><![endif]--><div class="col" style="display:inline-block;width:49%;min-width:220px;vertical-align:top;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0 12px 18px 0;"><p style="margin:0 0 4px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:1.5px;text-transform:uppercase;color:#8C8C8C;">{{nombre}}</p><p style="margin:0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:15px;line-height:22px;color:#F2F2F2;">{{valor}}</p></td></tr></table></div><!--[if mso]></td><![endif]-->{{/datos.campos}}
+<!--[if mso]></tr></table><![endif]-->
+{{#datos.destacados}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0 0 18px 0;"><p style="margin:0 0 4px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;letter-spacing:1.5px;text-transform:uppercase;color:#8C8C8C;">{{nombre}}</p><p style="margin:0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:17px;line-height:24px;letter-spacing:1px;color:#F2F2F2;">{{valor}}</p></td></tr></table>{{/datos.destacados}}
+</td></tr></table></td></tr>{{/datos}}
+<!-- ═══ BLOQUE aviso · aviso destacado (una sola indicación) ═══ -->
+{{#aviso}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#D9D9D9" style="background-color:#D9D9D9;border-radius:10px;"><tr><td style="padding:20px 24px;">
+<p style="margin:0 0 6px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:14px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#0D0D0D;">{{aviso.etiqueta}}</p>
+<p style="margin:0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:15px;line-height:23px;color:#2E2E2E;">{{aviso.texto}}</p>
+</td></tr></table></td></tr>{{/aviso}}
+<!-- ═══ BLOQUE boton · CTA en HTML; oro solo si momento_oro ═══ -->
+{{#boton}}<tr><td class="px" style="background-color:#F2F2F2;padding:16px 40px 8px 40px;">
+{{#momento_oro}}<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" bgcolor="#B38845" style="border-radius:6px;background-color:#B38845;">
+<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{boton.url}}" style="height:52px;v-text-anchor:middle;width:300px;" arcsize="12%" stroke="f" fillcolor="#B38845"><w:anchorlock/><center style="color:#0D0D0D;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">{{boton.texto}}</center></v:roundrect><![endif]-->
+<!--[if !mso]><!--><a href="{{boton.url}}" target="_blank" class="btn" style="display:inline-block;padding:16px 32px;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:20px;font-weight:600;color:#0D0D0D;text-decoration:none;border-radius:6px;background-color:#B38845;mso-hide:all;">{{boton.texto}}</a><!--<![endif]-->
+</td></tr></table>{{/momento_oro}}{{^momento_oro}}<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" bgcolor="#0D0D0D" style="border-radius:6px;background-color:#0D0D0D;">
+<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{boton.url}}" style="height:52px;v-text-anchor:middle;width:300px;" arcsize="12%" stroke="f" fillcolor="#0D0D0D"><w:anchorlock/><center style="color:#F2F2F2;font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">{{boton.texto}}</center></v:roundrect><![endif]-->
+<!--[if !mso]><!--><a href="{{boton.url}}" target="_blank" class="btn" style="display:inline-block;padding:16px 32px;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:20px;font-weight:600;color:#F2F2F2;text-decoration:none;border-radius:6px;background-color:#0D0D0D;mso-hide:all;">{{boton.texto}}</a><!--<![endif]-->
+</td></tr></table>{{/momento_oro}}
+{{#boton.mostrar_enlace}}<p style="margin:16px 0 0 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:13px;line-height:20px;color:#2E2E2E;">Si el botón no funciona, copia este enlace en tu navegador:<br><a href="{{boton.url}}" target="_blank" style="font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:12px;color:#0D0D0D;word-break:break-all;">{{boton.url}}</a></p>{{/boton.mostrar_enlace}}
+</td></tr>{{/boton}}
+<!-- ═══ BLOQUE secundario · enlace de texto secundario (p. ej. WhatsApp) ═══ -->
+{{#secundario}}<tr><td class="px" style="background-color:#F2F2F2;padding:8px 40px 0 40px;"><p style="margin:0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:15px;line-height:22px;color:#2E2E2E;">{{secundario.texto}} <a href="{{secundario.url}}" target="_blank" style="color:#0D0D0D;font-weight:600;text-decoration:underline;">{{secundario.enlace}}</a></p></td></tr>{{/secundario}}
+<!-- ═══ BLOQUE firma · cierre ═══ -->
+<tr><td class="px" style="background-color:#F2F2F2;padding:28px 40px 40px 40px;"><p style="margin:0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:16px;line-height:26px;color:#2E2E2E;">{{#firma}}{{firma.cierre}}<br><strong style="color:#0D0D0D;">{{firma.nombre}}</strong><br>{{/firma}}Equipo Black Dog Store</p></td></tr>
+<!-- ═══ FOOTER (fijo) ═══ -->
+<tr><td class="px" style="background-color:#0D0D0D;padding:40px 40px 36px 40px;">
+<table role="presentation" width="24" cellpadding="0" cellspacing="0" border="0"><tr><td height="2" style="height:2px;background-color:#B38845;font-size:0;line-height:0;mso-line-height-rule:exactly;">&nbsp;</td></tr></table>
+<p style="margin:16px 0 4px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:22px;line-height:28px;font-weight:700;letter-spacing:-0.2px;color:#F2F2F2;">Compra con respaldo.</p>
+<p style="margin:0 0 24px 0;font-family:'JetBrains Mono', 'Courier New', Courier, monospace;font-size:11px;line-height:16px;letter-spacing:1.5px;text-transform:uppercase;color:#8C8C8C;">Black Dog Store · Especialistas Apple · Arequipa</p>
+<p style="margin:0 0 6px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:14px;line-height:22px;color:#D9D9D9;">Octavio Muñoz Najar 238, Tienda 104, Arequipa</p>
+<p style="margin:0 0 20px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:14px;line-height:22px;color:#D9D9D9;">WhatsApp <a href="https://wa.me/51936449536" target="_blank" style="font-family:'JetBrains Mono', 'Courier New', Courier, monospace;color:#B38845;text-decoration:none;font-weight:600;">936 449 536</a></p>
+<p style="margin:0 0 28px 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:14px;line-height:22px;color:#F2F2F2;"><a href="https://www.instagram.com/blackdogstore_pe" target="_blank" style="color:#F2F2F2;text-decoration:underline;">Instagram</a><span style="color:#B38845;">&nbsp;·&nbsp;</span><a href="https://www.tiktok.com/@black.dog.store.p" target="_blank" style="color:#F2F2F2;text-decoration:underline;">TikTok</a><span style="color:#B38845;">&nbsp;·&nbsp;</span><a href="[URL del canal de YouTube]" target="_blank" style="color:#F2F2F2;text-decoration:underline;">YouTube</a></p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td height="1" style="height:1px;background-color:#2E2E2E;font-size:0;line-height:0;mso-line-height-rule:exactly;">&nbsp;</td></tr></table>
+<p style="margin:20px 0 0 0;font-family:'Archivo', Arial, Helvetica, sans-serif;font-size:12px;line-height:18px;color:#8C8C8C;">{{motivo}}{{#baja_url}} <a href="{{baja_url}}" target="_blank" style="color:#D9D9D9;text-decoration:underline;">Dejar de recibir estos correos</a>{{/baja_url}}<br>© {{anio}} Black Dog Store · [Razón social] · RUC [RUC]</p>
+</td></tr>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td></tr></table>
+</body>
+</html>

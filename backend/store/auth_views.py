@@ -83,7 +83,7 @@ class RegisterView(generics.CreateAPIView):
                 raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
 
         if needs_verification:
-            send_verification_email(user, raw_token)
+            send_verification_email(user, raw_token, request=request)
             return Response(
                 {
                     'detail': 'Registro completado. Revisa tu correo para verificar tu cuenta.',
@@ -393,7 +393,7 @@ class ResendVerificationView(APIView):
         user = waiting[0]
 
         raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
-        send_verification_email(user, raw_token)
+        send_verification_email(user, raw_token, request=request)
         return Response(self._GENERIC_RESPONSE)
 
 
@@ -424,7 +424,7 @@ class PasswordResetRequestView(APIView):
         next_path = _invitation_return(serializer.validated_data.get('next'), user)
 
         raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
-        send_password_reset_email(user, raw_token, next_path=next_path)
+        send_password_reset_email(user, raw_token, next_path=next_path, request=request)
         return Response(self._GENERIC_RESPONSE)
 
 

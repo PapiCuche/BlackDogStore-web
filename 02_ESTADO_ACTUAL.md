@@ -3,6 +3,50 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1 de 3): los correos llevan la plantilla de la tienda
+
+Rama `feat/mail-template`, desde `master` `6266402` (#101). Sin migraciones y sin
+variables de entorno nuevas. Decisión: DEC-MAIL-01. **No desplegado.**
+
+**Qué hay.** Un motor de correo (`backend/store/mail/`) que rellena una sola plantilla
+HTML —la que entregó el propietario, sin editar— con un diccionario de datos, y produce
+con los mismos datos la versión de texto plano. Cinco correos lo usan ya: verificar
+correo, restablecer contraseña, invitación de personal, compra confirmada (con su PDF) y
+aviso interno de pedido. Guía: `docs/correos.md`.
+
+**De quién es la plantilla.** Su pie lleva el nombre, la dirección, el teléfono y las
+redes de una tienda; `store/mail/plantilla/marca.json` dice de cuál. La usan los correos
+de esa empresa, y los de plataforma sólo si `DEFAULT_STOREFRONT_COMPANY_SLUG` es esa
+empresa (en producción lo es) y la persona no lo pidió desde la dirección de otra.
+Cualquier otra empresa conserva el correo neutro de antes.
+
+**Un correo no se pierde por cómo se ve.** Si la plantilla no se puede rellenar —falta
+la razón social o el RUC, un dato no cumple el contrato, falla el motor— sale el correo
+neutro y queda un error en el registro, sin el cuerpo. Enviar se intenta una sola vez,
+con o sin plantilla.
+
+**Revisión independiente antes del PR:** sin hallazgos graves; dos defectos (un correo
+podía salir dos veces si el servidor fallaba al confirmar; la plantilla en correos de
+cuenta pedidos desde la dirección de otra empresa) y cinco menores, todos corregidos con
+su prueba. El ensayo de producción detectó por su cuenta el primero (el doble de espera
+con el servidor de correo mudo).
+
+**Vista previa**, sólo con `DEBUG`: `/api/dev/mail-preview/`. En producción responde 404.
+
+**Dependencia nueva:** `chevron==0.14.0` (Mustache en Python puro, MIT).
+
+**Fase 2** (rama `feat/mail-template-notifications`, sobre la fase 1): los avisos de
+`notification_services` y la prueba del servidor de correo salen con la plantilla. De
+los 15 eventos, hoy van por correo cuatro (`EMAIL_WORTHY_EVENTS`); esa decisión no se
+toca. Un aviso lleva un botón a donde está el detalle, nunca el detalle; y sólo cuando
+esa página se lo va a mostrar a quien lo recibe.
+
+**MAIL-TRACKING-LINK (decidido por el propietario el 2026-10-08):** el aviso de una
+reparación lleva al cliente su enlace de seguimiento, tenga cuenta o no. Sólo al cliente
+de esa reparación; un enlace revocado no se recrea; la copia del personal no lo lleva.
+
+**Falta:** fase 3, garantía, posventa, promociones con baja y código de 6 dígitos.
+
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 
 Rama `fix/staff-invitation-onboarding`, desde `master` `54b26ac` (#98). Sin migraciones.
