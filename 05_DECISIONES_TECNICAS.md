@@ -340,6 +340,43 @@ de dominios en `docs/analytics-marketing.md` §7.
   viva la contraseña de quien la registró); un segundo sistema de credenciales para
   invitados; una identidad por empresa.
 
+### DEC-MAIL-01 · Una plantilla de correo es de una empresa; el correo neutro queda detrás
+
+- **La plantilla no es de la plataforma.** Su pie nombra una tienda, con su dirección,
+  su teléfono y sus redes. `store/mail/plantilla/marca.json` dice de qué empresa es, por
+  su `slug`. La llevan los correos de esa empresa; los de plataforma (cuenta,
+  contraseña), sólo cuando la tienda de la instalación es esa empresa y la persona no lo
+  pidió desde la dirección de otra. Otra empresa nunca firma con los datos de la
+  primera: sigue con el correo de texto que tenía.
+- **El archivo de la plantilla no se edita.** Sus `[corchetes]` se rellenan al cargarla:
+  la web desde `FRONTEND_URL`, la razón social y el RUC desde los ajustes de la empresa,
+  el logotipo y YouTube desde `marca.json`. Si falta uno, la plantilla no se usa: un pie
+  con «[RUC]» impreso es peor que el correo neutro.
+- **Los datos tienen contrato y se comprueban antes de rellenar.** Claves desconocidas,
+  números sin formatear y enlaces que no sean `https://` o la propia web se rechazan; lo
+  vacío se omite, y con ello su bloque. Todo dato se escapa (`{{ }}`).
+- **Un correo no se pierde por cómo se ve.** Cualquier fallo al componer la plantilla
+  deja salir el correo neutro y un error en el registro. El cuerpo no se registra nunca:
+  varios correos llevan un enlace que es el acceso.
+- **Componer y enviar son dos pasos, y el respaldo es sólo del primero.** Un envío que
+  falla no se repite sin plantilla: un servidor que aceptó el mensaje y no llegó a
+  confirmarlo ya lo entregó, y el segundo correo llevaría el mismo enlace. Además
+  duplicaba la espera de la petición con el servidor caído.
+- **Los valores fijos entran como texto, no como plantilla.** Se insertan en el fuente
+  antes de rellenarlo; una razón social con `{{` dentro sería Mustache. Las llaves se
+  escriben como entidades.
+- **El pie de texto dice lo que imprime la plantilla**, no lo que hay en los ajustes: el
+  pie HTML está escrito en el archivo, y las dos mitades de un correo no pueden firmar
+  distinto. `marca.json` lo repite y una prueba exige que coincida.
+- **El texto plano sale de los mismos datos**, no de quitar etiquetas al HTML: no puede
+  decir otra cosa ni llevar otro enlace.
+- **Motor:** Mustache con `chevron`, porque la plantilla entregada es Mustache y la del
+  propietario no se reescribe a la sintaxis de Django.
+- **Descartado:** una plantilla por tipo de correo; meter la marca en variables de
+  entorno (son datos de una empresa, ya están en sus ajustes); usar la plantilla para
+  todas las empresas con los datos de cada una (el diseño, los colores y las redes son
+  de una marca: otra empresa necesitará la suya, con su propio `marca.json`).
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay
