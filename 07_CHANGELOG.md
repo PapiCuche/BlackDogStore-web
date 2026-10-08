@@ -3,6 +3,102 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 3A): código de verificación
+
+**Added**
+- El correo de verificación lleva, además del enlace, un código de 6 dígitos. Pantalla
+  para escribirlo al terminar el registro y en `/auth/verify-email`: se puede pegar con
+  espacios o guiones, se comprueba solo al completarlo y el móvil lo reconoce como código.
+- `POST /api/auth/verify-email/code/` (correo y código).
+
+**Changed**
+- Tras registrarse, la pantalla pide el código en vez de mostrar sólo «revisa tu correo».
+- Reenviar la verificación: una cuenta recibe como mucho un código por minuto y cinco
+  en 24 horas. La respuesta es la misma se haya enviado o no.
+
+El enlace sigue siendo el camino principal y no cambia. Reglas del código: 15 minutos,
+5 intentos, uno nuevo anula el anterior; sólo se guarda su HMAC.
+
+**De la revisión de seguridad independiente, antes de publicar el cambio**
+- Un código correcto que llegaba a la vez que un «enviar otro» se interbloqueaba y uno
+  de los dos respondía 500. Las dos operaciones bloquean ahora en el mismo orden.
+- Con el servidor de correo fallando, cada reenvío gastaba la espera y el tope del día y
+  mataba el código anterior sin entregar nada: 24 horas sin verificación. Un código cuyo
+  correo no salió se retira.
+- Las columnas nuevas no tenían valor por defecto en la base: durante un despliegue, o
+  tras volver atrás, la versión anterior fallaba al crear tokens.
+- El código reactivaba cuentas inactivas por otro motivo. Sólo termina las nunca
+  verificadas, y reenviar sólo emite para ellas.
+- Verificar por código dejaba vivos los enlaces anteriores de esa cuenta.
+- Un byte nulo en el correo respondía 500; un número JSON se aceptaba como código.
+- La pantalla decía «el anterior ya no sirve» aunque el servidor no hubiera enviado
+  nada, y dejaba pedir otro código mientras comprobaba uno.
+- El correo no pedía no compartir el código; un código agotado no dejaba rastro.
+- Seis pruebas que no podían fallar, rehechas; pruebas de concurrencia nuevas.
+
+**Migración** `0113_account_token_code`: tres columnas nuevas en `AccountToken`, con
+valor por defecto también en la base; no toca filas existentes. No desplegado.
+
+**Deuda que la revisión dejó a la vista, anterior a este cambio (REGISTER-RACE):** varios
+registros simultáneos del mismo correo crean varias cuentas (no hay restricción única en
+el correo), y desde ahí ese correo no puede verificar, reenviar ni recuperar. No se
+arregla aquí.
+
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 2)
+
+**Changed**
+- Los avisos que van por correo (cotización disponible, equipo listo para recoger,
+  pedido listo para recoger, pedido enviado) salen con la plantilla cuando son de la
+  empresa a la que pertenece, con un botón a la página donde está el detalle: la del
+  cliente o el panel, según a quién vaya. Al cliente le muestran además en qué paso está.
+- **El aviso de una reparación lleva al cliente su enlace de seguimiento**
+  (MAIL-TRACKING-LINK, decisión del propietario): ahí se lee y se responde la
+  cotización, sin necesidad de cuenta. Sólo al cliente de esa reparación; un enlace
+  revocado no se vuelve a crear.
+- La prueba del servidor de correo de la consola de integraciones sale con la plantilla
+  donde la tienda de la instalación la tiene. Sigue sin llevar ningún enlace de acceso.
+
+No cambia qué eventos envían correo, a quién, ni que cada uno salga una vez. Un aviso
+sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No desplegado.
+
+**De la revisión independiente, antes de publicar el cambio**
+- El botón del cliente llevaba a `/repairs` o `/orders` aunque esa persona no tuviera
+  cuenta, o el pedido no fuera de la suya: una pantalla de acceso y una lista vacía.
+  Ahora el botón sólo sale cuando esa página le va a mostrar lo que el aviso anuncia, y
+  el de una reparación lleva a su seguimiento.
+- El mensaje de prueba del servidor de correo podía fallar al armarse en vez de salir
+  sin plantilla.
+- Un aviso de algo sin página conocida mostraba el progreso sin etiqueta ni botón.
+
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1)
+
+**Added**
+- `store/mail/`: una plantilla HTML para todos los correos de la tienda, un constructor
+  de datos por tipo de correo y `mail.send(tipo, destinatario, datos)`, que envía HTML y
+  texto plano con los mismos datos.
+- Vista previa de cada correo sin enviarlo, sólo en desarrollo: `/api/dev/mail-preview/`.
+- `docs/correos.md`.
+- Dependencia `chevron==0.14.0`.
+
+**Changed**
+- Verificar correo, restablecer contraseña, invitación de personal, compra confirmada y
+  aviso interno de pedido salen con la plantilla cuando son de la empresa a la que
+  pertenece. Montos como `S/ 1,234.00`, fechas `DD/MM/AAAA`.
+- El resto de empresas, y la plataforma cuando la tienda de la instalación es otra,
+  conservan el correo de texto que tenían.
+
+**De la revisión independiente, antes de publicar el cambio**
+- Un correo de cuenta o una invitación que el servidor no aceptaba se intentaba dos
+  veces, con y sin plantilla: dos correos con el mismo enlace si el servidor lo había
+  tomado, y el doble de espera si estaba caído. Ahora hay un solo intento.
+- Una razón social con `{{` dentro se ejecutaba como plantilla. Entra como texto.
+- Un correo de cuenta pedido desde la dirección de otra empresa llevaba la plantilla.
+- Los enlaces aceptaban `https://tienda@otro-sitio` y hosts ilegibles.
+- El pie de texto salía de los ajustes y el HTML de la plantilla: podían firmar distinto.
+- Dos pruebas de neutralidad dependían de una variable del entorno.
+
+Sin migraciones ni variables de entorno nuevas. No desplegado.
+
 ## 2026-10-07 — STAFF-ONBOARDING-01
 
 **Fixed**

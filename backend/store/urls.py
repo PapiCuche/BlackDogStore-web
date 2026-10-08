@@ -33,7 +33,7 @@ from .views import (
 )
 from .auth_views import (
     RegisterView, UserDetailView, LoginView, RefreshView, LogoutView, CsrfView,
-    VerifyEmailView, ResendVerificationView,
+    VerifyEmailView, VerifyEmailCodeView, ResendVerificationView,
     PasswordResetRequestView, PasswordResetConfirmView,
     ChangePasswordView,
 )
@@ -117,6 +117,7 @@ from .print_views import (
     AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
     AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
 )
+from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
@@ -168,11 +169,15 @@ urlpatterns = [
         'dev/demo-accounts/',
         DevDemoAccountsView.as_view(), name='dev-demo-accounts',
     ),
+    # Vista previa de los correos. Sólo con DEBUG=True; si no, 404. Ver el módulo.
+    path('dev/mail-preview/', MailPreviewIndexView.as_view(), name='dev-mail-preview'),
+    path('dev/mail-preview/<slug:example>/', MailPreviewView.as_view(), name='dev-mail-preview-example'),
     path('auth/google/config/', GoogleConfigView.as_view(), name='auth-google-config'),
     path('auth/google/', GoogleSignInView.as_view(), name='auth-google'),
     path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
+    path('auth/verify-email/code/', VerifyEmailCodeView.as_view(), name='auth-verify-email-code'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
     path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='auth-password-reset-request'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),

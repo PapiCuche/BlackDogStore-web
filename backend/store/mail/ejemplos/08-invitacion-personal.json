@@ -1,0 +1,42 @@
+{
+  "anio": "2026",
+  "asunto": "Invitación para unirte a Black Dog Store",
+  "preheader": "Te invitaron al equipo de Black Dog Store. Configura tu acceso antes del [DD/MM/AAAA].",
+  "etiqueta": "Equipo",
+  "titulo": "Te invitaron al equipo de Black Dog Store",
+  "saludo": "Hola, [Nombre]:",
+  "parrafos": [
+    "Abre el enlace para crear tu cuenta o iniciar sesión con la que ya tengas. La contraseña la eliges tú: nadie más la ve ni la decide."
+  ],
+  "datos": {
+    "titulo": "Tu invitación",
+    "campos": [
+      {
+        "nombre": "Empresa",
+        "valor": "Black Dog Store"
+      },
+      {
+        "nombre": "Rol",
+        "valor": "[Rol]"
+      },
+      {
+        "nombre": "Área",
+        "valor": "[Área]"
+      },
+      {
+        "nombre": "Vence",
+        "valor": "[DD/MM/AAAA]"
+      }
+    ]
+  },
+  "aviso": {
+    "etiqueta": "Vigencia",
+    "texto": "El enlace caduca el [DD/MM/AAAA]. Si no esperabas este correo, puedes ignorarlo."
+  },
+  "boton": {
+    "texto": "Configurar mi acceso",
+    "url": "https://[tu-dominio]/invitacion?token=[token]",
+    "mostrar_enlace": true
+  },
+  "motivo": "Recibes este correo porque Black Dog Store te invitó a formar parte de su equipo."
+}

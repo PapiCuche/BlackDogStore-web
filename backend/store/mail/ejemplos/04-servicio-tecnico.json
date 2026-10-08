@@ -1,0 +1,73 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Tu equipo está en reparación · Orden [Número]",
+  "preheader": "Actualizamos el estado de tu servicio técnico.",
+  "etiqueta": "Servicio técnico · Orden [Número]",
+  "titulo": "Tu equipo está en reparación",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Nuestro técnico ya está trabajando en tu equipo. Te escribiremos apenas esté listo para recoger."
+  ],
+  "progreso": {
+    "titulo": "Estado del servicio",
+    "pasos": [
+      {
+        "texto": "Equipo recibido",
+        "fecha": "[DD/MM]",
+        "hecho": true
+      },
+      {
+        "texto": "Diagnóstico",
+        "fecha": "[DD/MM]",
+        "hecho": true
+      },
+      {
+        "texto": "En reparación",
+        "fecha": "[DD/MM]",
+        "actual": true
+      },
+      {
+        "texto": "Listo para recoger",
+        "fecha": "—",
+        "pendiente": true
+      }
+    ]
+  },
+  "datos": {
+    "titulo": "Datos del equipo",
+    "campos": [
+      {
+        "nombre": "Modelo",
+        "valor": "iPhone [Modelo]"
+      },
+      {
+        "nombre": "Servicio",
+        "valor": "[Tipo de reparación]"
+      },
+      {
+        "nombre": "Entrega estimada",
+        "valor": "[DD/MM/AAAA]"
+      },
+      {
+        "nombre": "Costo",
+        "valor": "S/ [Monto]"
+      }
+    ],
+    "destacados": [
+      {
+        "nombre": "IMEI",
+        "valor": "[IMEI]"
+      }
+    ]
+  },
+  "secundario": {
+    "texto": "¿Tienes alguna consulta?",
+    "enlace": "Escríbenos por WhatsApp",
+    "url": "https://wa.me/51936449536"
+  },
+  "motivo": "Recibes este correo porque dejaste un equipo en servicio técnico en Black Dog Store."
+}
