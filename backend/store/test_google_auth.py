@@ -252,6 +252,9 @@ class ExistingAccountTest(GoogleBase):
         self.assertEqual(missing.json(), wrong.json())
 
     def test_an_email_shared_by_two_accounts_cannot_be_linked_by_guessing_which(self):
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         User.objects.create_user(username='ana2', email='ana@example.com', password='Pass123!segura')
 
         self.assertEqual(self.sign_in().status_code, 409)

@@ -3,7 +3,7 @@ import re
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import AuthenticationFailed
@@ -15,7 +15,7 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from .auth_serializers import (
-    RegisterSerializer, UserSerializer,
+    EMAIL_TAKEN, RegisterSerializer, UserSerializer,
     VerifyEmailSerializer, ResendVerificationSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
@@ -58,6 +58,26 @@ def _set_auth_cookies(response, access_token, refresh_token=None):
         )
 
 
+def _already_taken(data) -> dict:
+    """
+    What the registration form answers when its address or its name is taken —
+    said again for a request that only found out when the database refused it.
+
+    Looked up in the database, which is what refused: the address first (it
+    is the one the unique rule is about), then the name. The words are the
+    form's own.
+    """
+    get = data.get if hasattr(data, 'get') else (lambda _key, default='': default)
+    email, username = get('email', ''), get('username', '')
+    if isinstance(email, str) and email.strip() and accounts.with_email(email):
+        return {'email': [EMAIL_TAKEN]}
+    if isinstance(username, str) and User.objects.filter(username=username).exists():
+        return {'username': [str(User._meta.get_field('username').error_messages['unique'])]}
+    # Neither is there any more (the other request failed too, or was undone):
+    # still not a 500, and still nothing was created.
+    return {'detail': 'No se pudo completar el registro. Inténtalo de nuevo.'}
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
@@ -77,10 +97,18 @@ class RegisterView(generics.CreateAPIView):
             request, serializer.validated_data['email'],
         )
         issued = None
-        with transaction.atomic():
-            user = serializer.save(is_active=not needs_verification)
-            if needs_verification:
-                issued = verification_codes.issue(user)
+        try:
+            with transaction.atomic():
+                user = serializer.save(is_active=not needs_verification)
+                if needs_verification:
+                    issued = verification_codes.issue(user)
+        except IntegrityError:
+            # REGISTER-RACE-01. The form asked «is it taken?» a moment before
+            # another request saved the same address or the same name. The
+            # database refused the second one; this request is told what it
+            # would have been told had it arrived a moment later. Nothing of it
+            # was written: the transaction above took it all back.
+            return Response(_already_taken(request.data), status=status.HTTP_400_BAD_REQUEST)
 
         if needs_verification:
             # Its row stays even if the mail fails: it is what marks the account

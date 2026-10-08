@@ -45,3 +45,24 @@ def with_email(email: str) -> list:
     if not email:
         return []
     return list(get_user_model().objects.filter(email__iexact=email).order_by('pk'))
+
+
+def duplicate_email_groups(model=None) -> list:
+    """
+    Accounts that share one address, grouped — the past the unique rule cannot accept.
+
+    Compared as people write an address: no capitals, no stray spaces. Accounts
+    WITHOUT an address are not a group: there may be many and that is allowed.
+
+    Read-only. Which account of a group stays is a person's decision: one may
+    hold the orders and another the password somebody remembers.
+    """
+    from collections import defaultdict
+
+    model = model or get_user_model()
+    groups = defaultdict(list)
+    for user in model.objects.exclude(email='').order_by('pk'):
+        key = (user.email or '').strip().lower()
+        if key:
+            groups[key].append(user)
+    return [users for _key, users in sorted(groups.items()) if len(users) > 1]
