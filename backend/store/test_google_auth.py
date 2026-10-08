@@ -251,6 +251,38 @@ class ExistingAccountTest(GoogleBase):
         self.assertEqual(missing.status_code, wrong.status_code)
         self.assertEqual(missing.json(), wrong.json())
 
+    def test_losing_the_race_to_a_password_registration_asks_to_link_like_arriving_late(self):
+        """
+        REGISTER-RACE-01. The address was free when this sign-in looked, and
+        somebody registered it with a password before this one saved. The
+        database refuses a second account; the answer is the one given when
+        that account was already there — and no identity is linked to it.
+        """
+        from store import google_views
+        from store.models import ExternalIdentity
+
+        User.objects.create_user(username='ana_clave', email='nueva@example.com', password='Pass123!segura')
+
+        # The race, held still: the «is there an account?» of this sign-in ran a
+        # moment before that account was saved, so its first look finds nobody.
+        real_filter = User.objects.filter
+        looks = []
+
+        def first_look_is_blind(*args, **kwargs):
+            if 'email__iexact' in kwargs and not looks:
+                looks.append(kwargs)
+                return User.objects.none()
+            return real_filter(*args, **kwargs)
+
+        with mock.patch.object(google_views.User.objects, 'filter', side_effect=first_look_is_blind):
+            response = self.sign_in(email='nueva@example.com', sub='200000000001')
+
+        self.assertEqual(len(looks), 1)
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'link_required')
+        self.assertEqual(User.objects.filter(email__iexact='nueva@example.com').count(), 1)
+        self.assertFalse(ExternalIdentity.objects.filter(subject='200000000001').exists())
+
     def test_an_email_shared_by_two_accounts_cannot_be_linked_by_guessing_which(self):
         # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
         from store.test_register_race import before_the_rule

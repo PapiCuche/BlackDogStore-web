@@ -17,7 +17,8 @@ from store.models import Membership, Order
 def _masked(email: str) -> str:
     email = (email or '').strip().lower()
     name, _, domain = email.partition('@')
-    return f'{name[:2]}***@{domain}' if domain else f'{name[:2]}***'
+    # One letter, whatever the length: «al@…» shown as «al***» is shown whole.
+    return f'{name[:1]}***@{domain}' if domain else f'{name[:1]}***'
 
 
 class Command(BaseCommand):

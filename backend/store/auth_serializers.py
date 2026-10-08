@@ -64,6 +64,15 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         normalized = value.lower().strip()
+        # REGISTER-RACE-01. Plain letters only. «ınfo@tienda.com» and
+        # «ana@gmaıl.com» pass for an address and read like another one; the
+        # database compares addresses with UPPER(), where «ı» IS «I». Whoever
+        # registered the look-alike first left the real owner unable to
+        # register, with their recovery mail going to the look-alike.
+        if not normalized.isascii():
+            raise serializers.ValidationError(
+                'Escribe el correo sin tildes ni caracteres especiales.'
+            )
         if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError(EMAIL_TAKEN)
         return normalized

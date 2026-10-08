@@ -19,6 +19,7 @@ What these tests hold:
 """
 import io
 import threading
+from unittest import skipUnless
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -49,6 +50,8 @@ def before_the_rule():
     may answer 500. They build such a pair with this. DDL is transactional on
     the databases the suite runs on: the rule is back when the test ends.
     """
+    # From a transactional test the drop would be COMMITTED, for every test after it.
+    assert connection.in_atomic_block, 'before_the_rule() is for a TestCase, where it is undone'
     with connection.cursor() as cursor:
         cursor.execute(f'DROP INDEX {INDEX}')
 
@@ -71,6 +74,25 @@ class TheDatabaseRuleTest(TestCase):
         for position in range(3):
             User.objects.create_user(f'sin_correo_{position}', '', PASSWORD)
         self.assertEqual(User.objects.filter(email='').count(), 3)
+
+    def test_the_rule_compares_as_every_lookup_in_the_code_does(self):
+        """
+        `email__iexact` is UPPER(email) = UPPER(%s) in PostgreSQL. An index on
+        LOWER(email) is NOT the same rule: on a UTF-8 database «ınfo@» and
+        «info@» are one address for every lookup (UPPER of both is «INFO@») and
+        two for LOWER — two accounts, and the address locked out again. The
+        index has to be on the expression the lookups use.
+        """
+        if connection.vendor != 'postgresql':
+            self.skipTest('the expression is checked where production runs')
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT indexdef FROM pg_indexes WHERE indexname = %s', [INDEX])
+            definition = cursor.fetchone()[0].lower()
+        self.assertIn('upper(', definition)
+        self.assertNotIn('lower(', definition)
+        self.assertIn('unique', definition)
+        # …and the lookups still compile to that same expression.
+        self.assertIn('UPPER(', str(User.objects.filter(email__iexact='x@y.z').query).upper())
 
     def test_another_address_is_another_account(self):
         User.objects.create_user('ana', 'ana@correo.test', PASSWORD)
@@ -123,6 +145,43 @@ class RegisteringTest(TestCase):
         self.assertEqual(lost.json(), taken)
         self.assertFalse(User.objects.filter(email='tercera@correo.test').exists())
 
+    def test_an_address_is_plain_letters(self):
+        """
+        «ınfo@tienda.com» and «ana@gmaıl.com» pass for an address and read like
+        another one. Whoever registers the look-alike first leaves the real
+        owner unable to register, and the recovery mail of the real address
+        goes to the look-alike. An account's address is ASCII.
+        """
+        for position, address in enumerate(('ınfo@correo.test', 'ana@gmaıl.test', 'ſara@correo.test', 'peña@correo.test', 'ＡＮＡ@correo.test')):
+            with self.subTest(address):
+                response = self.register(f'rara{position}', address)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('email', response.json())
+                self.assertNotEqual(response.json(), TAKEN)                 # it is not «taken»: it is not accepted
+        self.assertFalse(User.objects.filter(username__startswith='rara').exists())
+        self.assertEqual(self.register('normal', 'Ana.Torres+tienda@correo.test').status_code, 201)
+
+    def test_something_else_the_database_refuses_is_not_disguised_as_taken(self):
+        """
+        Only the two rules about WHO it is are answered as «ya existe». Any other
+        refusal of the database is a fault of ours: it must be loud, not a
+        polite 400 that would hide a registration broken for everybody.
+        """
+        from django.db import IntegrityError as DatabaseRefusal
+
+        with mock.patch('store.verification_codes.issue', side_effect=DatabaseRefusal('null value in column "x" violates not-null constraint')):
+            self.client.raise_request_exception = False
+            response = self.register('ana', 'ana@correo.test')
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(User.objects.filter(username='ana').exists())      # and still nothing half written
+
+    def test_the_answer_uses_what_the_form_understood_not_what_was_typed(self):
+        self.assertEqual(self.register('ana', 'ana@correo.test').status_code, 201)
+        with mock.patch.object(RegisterSerializer, 'validate_email', lambda self, value: value.lower().strip()):
+            lost = self.register('ana2', '  ANA@Correo.Test  ')
+        self.assertEqual(lost.status_code, 400)
+        self.assertEqual(lost.json(), TAKEN)
+
     def test_after_losing_the_address_still_works_for_its_one_account(self):
         self.register('ana', 'ana@correo.test')
         with mock.patch.object(RegisterSerializer, 'validate_email', lambda self, value: value.lower().strip()):
@@ -136,6 +195,7 @@ class RegisteringTest(TestCase):
 
 
 @override_settings(REQUIRE_EMAIL_VERIFICATION=True, EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+@skipUnless(connection.vendor == 'postgresql', 'several writers at once need a database that takes them')
 class AtTheSameInstantTest(TransactionTestCase):
     """The real thing: several requests at once, real commits."""
 
@@ -208,10 +268,10 @@ class WhatIsAlreadyThereTest(TestCase):
 
         self.duplicates()
         migration = importlib.import_module('store.migrations.0115_user_email_unique_ci')
-        with self.assertRaises(Exception) as stopped:
-            migration.refuse_duplicates(apps, None)
+        with self.assertRaises(RuntimeError) as stopped, connection.schema_editor(atomic=False) as editor:
+            migration.create_rule(apps, editor)
         message = str(stopped.exception)
-        self.assertIn('1', message)
+        self.assertRegex(message, r'\b1 correo\(s\)')
         self.assertIn('list_duplicate_emails', message)
         for personal in ('ana@correo.test', 'ANA@correo.test', 'ana_otra'):
             self.assertNotIn(personal, message)
@@ -222,8 +282,29 @@ class WhatIsAlreadyThereTest(TestCase):
 
         from django.apps import apps
 
+        before_the_rule()
         User.objects.create_user('ana', 'ana@correo.test', PASSWORD)
-        importlib.import_module('store.migrations.0115_user_email_unique_ci').refuse_duplicates(apps, None)
+        with connection.schema_editor(atomic=False) as editor:
+            importlib.import_module('store.migrations.0115_user_email_unique_ci').create_rule(apps, editor)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            User.objects.create_user('ana2', 'ANA@correo.test', PASSWORD)      # the rule is there again
+
+    def test_a_duplicate_that_appears_while_migrating_stops_it_without_naming_anybody(self):
+        """Between counting and creating the rule the old web is still serving."""
+        import importlib
+
+        from django.apps import apps
+
+        migration = importlib.import_module('store.migrations.0115_user_email_unique_ci')
+        self.duplicates()
+        with mock.patch.object(migration, '_repeated', return_value=0), \
+                self.assertRaises(RuntimeError) as stopped, transaction.atomic(), \
+                connection.schema_editor(atomic=False) as editor:
+            migration.create_rule(apps, editor)
+        message = str(stopped.exception) + repr(stopped.exception.__cause__) + repr(stopped.exception.__context__ if not stopped.exception.__suppress_context__ else '')
+        for personal in ('ana@correo.test', 'ANA@CORREO.TEST', 'ANA@correo.test'):
+            self.assertNotIn(personal, message)
+        self.assertIn('list_duplicate_emails', str(stopped.exception))
 
     def test_the_command_lists_them_for_a_person_to_decide(self):
         first, second = self.duplicates()
@@ -234,11 +315,21 @@ class WhatIsAlreadyThereTest(TestCase):
         self.assertIn('1 correo', text)
         self.assertIn(f'id={first.pk}', text)
         self.assertIn(f'id={second.pk}', text)
-        self.assertIn('an***@correo.test', text)                           # recognisable to its owner, not copied whole
+        self.assertIn('a***@correo.test', text)                            # recognisable to its owner, not copied whole
         for whole in ('ana@correo.test', 'ANA@correo.test'):
             self.assertNotIn(whole, text)
         self.assertNotIn('luis', text)
         self.assertEqual(User.objects.count(), 5)                          # read-only
+
+    def test_a_short_name_is_not_printed_whole(self):
+        before_the_rule()
+        User.objects.create_user('x1', 'al@correo.test', PASSWORD)
+        User.objects.create_user('x2', 'AL@correo.test', PASSWORD)
+        out = io.StringIO()
+        call_command('list_duplicate_emails', stdout=out)
+        self.assertIn('a***@correo.test', out.getvalue())
+        self.assertNotIn('al***', out.getvalue())
+        self.assertNotIn('al@', out.getvalue().lower())
 
     def test_the_command_says_so_when_there_are_none(self):
         User.objects.create_user('ana', 'ana@correo.test', PASSWORD)
