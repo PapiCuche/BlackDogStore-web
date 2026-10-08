@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 KINDS = frozenset({
     'verify_email', 'password_reset', 'staff_invitation',
     'order_confirmation', 'internal_order',
+    'notification', 'smtp_test',
 })
 # Kinds nobody asked for by doing something: they must say how to stop them.
 MARKETING_KINDS = frozenset()

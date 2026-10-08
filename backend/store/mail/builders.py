@@ -197,3 +197,98 @@ def internal_order(ctx: dict, *, admin_url: str) -> dict:
         'motivo': f'Recibes este correo porque esta dirección recibe los avisos de pedidos de {ctx["store_name"]}.',
         'anio': fmt.year(),
     }
+
+
+# --- notices -----------------------------------------------------------------
+#
+# A notice is «something happened, go and look». Its words were written where
+# the event was emitted, from material that is safe to send; this adds a label,
+# where to look, and — for the customer — which step that is. It reads nothing
+# of the order or the repair: the detail stays behind its own authorisation.
+
+# (audience, what it is about) → (label, button, where the detail lives)
+_WHERE = {
+    ('customer', 'repair_order'): ('Servicio técnico', 'Ver mi equipo', '/repairs'),
+    ('customer', 'order'): ('Pedido · N.º {id}', 'Ver mi pedido', '/orders'),
+    ('internal', 'repair_order'): ('Servicio técnico', 'Abrir en el panel', '/admin/service/orders/{id}'),
+    ('internal', 'order'): ('Pedido · N.º {id}', 'Abrir en el panel', '/admin/orders'),
+    ('internal', 'announcement'): ('Comunicado', 'Leer el comunicado', '/admin/communications/{id}'),
+}
+
+# event → the steps a customer sees, and which one this is. Only steps that are
+# true whatever happened before: a device can be ready without a repair.
+_STEPS = {
+    'service.quote.available': (('Equipo recibido', 'Cotización por revisar'), 1),
+    'service.ready_for_pickup': (('Equipo recibido', 'Listo para recoger', 'Entregado'), 1),
+    'commerce.fulfillment.ready': (('Pedido recibido', 'Listo para recoger', 'Entregado'), 1),
+    'commerce.fulfillment.shipped': (('Pedido recibido', 'Enviado', 'Entregado'), 1),
+}
+
+_ABOUT = {
+    'repair_order': 'tienes un servicio técnico en {company}',
+    'order': 'tienes un pedido en {company}',
+}
+
+
+def _preheader(text: str, filler: str) -> str:
+    """The line beside the subject in an inbox: 40 to 90 characters."""
+    text = ' '.join(text.split())
+    if len(text) < 40:
+        text = f'{text} {filler}'.strip()
+    return text if len(text) <= 90 else text[:89].rstrip() + '…'
+
+
+def _progress(event_type: str):
+    steps, current = _STEPS.get(event_type, ((), 0))
+    if not steps:
+        return None
+    return {
+        'titulo': 'Estado',
+        'pasos': [
+            {'texto': text, 'hecho' if position < current else 'actual' if position == current else 'pendiente': True}
+            for position, text in enumerate(steps)
+        ],
+    }
+
+
+def notification(*, company: str, title: str, body: str, audience: str, event_type: str,
+                 target_type: str, target_id, site: str) -> dict:
+    """One notice of `notification_services`, for one recipient. 10-aviso."""
+    customer = audience == 'customer'
+    label, button, path = _WHERE.get((audience, target_type), ('', '', ''))
+    has_target = bool(path) and target_id is not None and bool(site)
+    body = (body or '').strip()
+    if customer:
+        reason = _ABOUT.get(target_type, 'eres cliente de {company}').format(company=company)
+        look = 'Entra a tu cuenta para ver el detalle.'
+    else:
+        reason = f'formas parte del equipo de {company}'
+        look = 'Entra al panel para ver el detalle.'
+    return {
+        'asunto': f'{title} · {company}',
+        'preheader': _preheader(body or title, look),
+        'etiqueta': label.format(id=target_id) if has_target else '',
+        'titulo': title,
+        'parrafos': [body or look],
+        'progreso': _progress(event_type) if customer else None,
+        'boton': {'texto': button, 'url': f'{site.rstrip("/")}{path.format(id=target_id)}'} if has_target else None,
+        'motivo': f'Recibes este correo porque {reason}.',
+        'anio': fmt.year(),
+    }
+
+
+def smtp_test(*, brand: str) -> dict:
+    """What a MASTER sends to see the mail server works. Nothing to press. 11-prueba-de-correo."""
+    return {
+        'asunto': f'Prueba de correo · {brand}',
+        'preheader': 'Este mensaje comprueba que la tienda puede enviar correo.',
+        'etiqueta': 'Configuración',
+        'titulo': 'Prueba de correo',
+        'parrafos': [
+            'Este mensaje comprueba que la plataforma puede enviar correo con esta configuración.',
+            'No contiene ningún enlace de acceso ni requiere ninguna acción.',
+        ],
+        'aviso': {'etiqueta': 'Así se ven', 'texto': 'Los correos de la tienda llevan este mismo diseño.'},
+        'motivo': f'Recibes este correo porque alguien que administra {brand} pidió una prueba a esta dirección.',
+        'anio': fmt.year(),
+    }

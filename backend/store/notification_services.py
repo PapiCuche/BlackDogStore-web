@@ -382,6 +382,14 @@ def _send(notification, address):
     from django.conf import settings as dj_settings
     from django.utils.html import escape
 
+    from . import mail
+
+    dressed = _dressed(notification)
+    if dressed is not None:
+        # One attempt, dressed or not: `deliver_email` writes down how it went.
+        mail.deliver(dressed, address)
+        return
+
     company_name = notification.company.name
     subject = f'{company_name} · {notification.title}'
     text = f'{notification.title}\n\n{notification.body}\n\n— {company_name}'
@@ -400,6 +408,38 @@ def _send(notification, address):
     )
     message.attach_alternative(html, 'text/html')
     message.send(fail_silently=False)
+
+
+def _dressed(notification):
+    """
+    The notice in its company's e-mail template, or None.
+
+    None is «send the one it always was»: that company has no template, or it
+    could not be filled. It only renders, and it reads nothing but the notice —
+    the words were chosen where the event was emitted, and the template adds a
+    way to the page where the detail lives, not the detail.
+    """
+    from django.conf import settings as dj_settings
+
+    from . import mail
+
+    company = notification.company
+    try:
+        if not mail.available(company):
+            return None
+        return mail.render('notification', mail.builders.notification(
+            company=company.name,
+            title=notification.title,
+            body=notification.body,
+            audience=notification.audience,
+            event_type=notification.event.event_type if notification.event_id else '',
+            target_type=notification.target_type,
+            target_id=notification.target_id,
+            site=getattr(dj_settings, 'FRONTEND_URL', '') or '',
+        ), company=company)
+    except Exception:  # noqa: BLE001
+        logger.exception('la notificación %s no se pudo componer con la plantilla', notification.pk)
+        return None
 
 
 def retry_failed_delivery(delivery) -> NotificationDelivery:

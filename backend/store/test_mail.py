@@ -212,7 +212,7 @@ class ExamplesTest(_Base):
         from store.mail_preview_views import _with_working_links
 
         names = sorted(path.stem for path in EXAMPLES.glob('*.json'))
-        self.assertGreaterEqual(len(names), 9)
+        self.assertGreaterEqual(len(names), 11)
         for name in names:
             with self.subTest(name):
                 data = _with_working_links(example(name))
@@ -428,6 +428,10 @@ class BuildersTest(_Base):
                 company='Black Dog Store', first_name='Ana', role='Ventas', area='Tienda', expires_at=expires, link=f'{SITE}/invitacion?token=T'),
             ('order_confirmation', '02-confirmacion-compra'): builders.order_confirmation(ORDER_CTX, orders_url=f'{SITE}/orders', receipt_attached=True),
             ('internal_order', '09-aviso-interno-pedido'): builders.internal_order(ORDER_CTX, admin_url=f'{SITE}/admin/orders/1234'),
+            ('notification', '10-aviso'): builders.notification(
+                company='Black Dog Store', title='Tu equipo está listo para recoger', body='Puedes pasar a retirarlo. Orden ST-000042.',
+                audience='customer', event_type='service.ready_for_pickup', target_type='repair_order', target_id=42, site=SITE),
+            ('smtp_test', '11-prueba-de-correo'): builders.smtp_test(brand='Black Dog Store'),
         }
 
     def test_every_kind_that_is_sent_has_a_builder_and_an_example(self):
