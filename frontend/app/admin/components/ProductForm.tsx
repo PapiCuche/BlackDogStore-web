@@ -19,6 +19,7 @@ type FormData = {
   image_url: string;
   category: string;
   is_active: boolean;
+  destination: "online" | "internal";
 };
 
 type Props = {
@@ -38,6 +39,8 @@ export function ProductForm({ product, categories, onSaved }: Props) {
     image_url: product?.images?.length ? "" : product?.image_url ?? "",
     category: product?.category_id ? String(product.category_id) : "",
     is_active: product?.is_active ?? true,
+    // Sin el dato (un producto nuevo, o uno leído antes de esta columna): a la web.
+    destination: product?.is_published_online === false ? "internal" : "online",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +100,11 @@ export function ProductForm({ product, categories, onSaved }: Props) {
       ...(typesAddress ? { image_url: form.image_url.trim() } : {}),
       category: form.category ? parseInt(form.category, 10) : null,
       is_active: form.is_active,
+      // En un producto que ya existe, sólo si la persona lo cambió: una pestaña
+      // abierta desde antes no decide a dónde va lo que otro movió entretanto.
+      ...(!product || (form.destination === "online") !== (product.is_published_online !== false)
+        ? { is_published_online: form.destination === "online" }
+        : {}),
     };
 
     setSaving(true);
@@ -300,8 +308,29 @@ export function ProductForm({ product, categories, onSaved }: Props) {
           className="accent-current"
         />
         <label htmlFor="is_active" className="text-sm text-foreground">
-          Producto activo (visible en catálogo y disponible en checkout)
+          Producto activo (en uso: se vende y se cuenta en inventario)
         </label>
+      </div>
+      <div>
+        {/* PRODUCT-DESTINATION-01. Otro dato que «activo»: un repuesto está en
+            uso y no se vende por la web. */}
+        <label htmlFor="product-destination" className="block text-xs text-muted mb-1.5">Destino</label>
+        <select
+          id="product-destination"
+          name="destination"
+          value={form.destination}
+          onChange={(e) => set("destination", e.target.value === "internal" ? "internal" : "online")}
+          disabled={saving}
+          className={inputCls}
+        >
+          <option value="online">Publicar en e-commerce</option>
+          <option value="internal">Solo stock interno</option>
+        </select>
+        <p className="mt-1.5 text-xs text-muted">
+          {form.destination === "online"
+            ? "Aparece en la tienda en línea y se puede comprar por la web, mientras esté activo."
+            : "No aparece en la tienda en línea ni se puede comprar por la web. Sigue en inventario y se vende en caja y en servicio técnico, según los permisos de cada persona."}
+        </p>
       </div>
 
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}

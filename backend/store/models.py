@@ -211,6 +211,16 @@ class Product(models.Model):
     )
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     is_active = models.BooleanField(default=True, db_index=True)
+    # PRODUCT-DESTINATION-01. Whether the product is offered in the public
+    # online shop. ANOTHER FACT THAN `is_active`: a spare part or a device sold
+    # only over the counter is in use — sold at the till, counted in inventory,
+    # used on the bench — and simply not for the web. False = «sólo stock
+    # interno». What the public may see or buy is `is_sold_online`, and its
+    # queryset twin `tenancy.company_storefront_products`.
+    #
+    # `db_default` too: the release before this column keeps inserting products
+    # while a deployment migrates, and after a rollback.
+    is_published_online = models.BooleanField(default=True, db_default=True)
     # SERIALIZED-STOCK. Each unit of this product is tracked by its own serial
     # number (`StockUnit`). Its `BranchStock.quantity` is then never typed: it is
     # always the number of AVAILABLE units in that branch. Changed only through
@@ -232,6 +242,17 @@ class Product(models.Model):
             models.Index(fields=['company', 'is_active']),
             models.Index(fields=['company', 'category']),
         ]
+
+    @property
+    def is_sold_online(self) -> bool:
+        """
+        Whether a visitor of the public shop may see it and buy it.
+
+        The ONE definition, for a product already in hand (a cart line, a
+        campaign). Its queryset twin is `tenancy.company_storefront_products`;
+        a third copy somewhere else is how a hidden product ends up for sale.
+        """
+        return bool(self.is_active and self.is_published_online)
 
     def __str__(self):
         return self.name
@@ -1163,6 +1184,17 @@ class AccountToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
+
+    # The 6-digit code a verification e-mail carries beside its link (see
+    # `store.verification_codes`, the only writer). A keyed hash, never the
+    # code; '' when the row has none or its code was replaced by a newer one.
+    #
+    # `db_default` as well as `default`: the release BEFORE this column exists
+    # keeps inserting rows while a deployment migrates, and after a rollback.
+    # Without a default in the database those inserts fail on NOT NULL.
+    code_hash = models.CharField(max_length=64, blank=True, default='', db_default='')
+    code_expires_at = models.DateTimeField(null=True, blank=True)
+    code_attempts = models.PositiveSmallIntegerField(default=0, db_default=0)
 
     class Meta:
         indexes = [

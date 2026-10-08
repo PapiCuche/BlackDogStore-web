@@ -334,7 +334,37 @@ DEFAULT_OPTIONS = {
     'create_missing_categories': False,  # §33 — default FALSE, deliberately
     'blank_means': 'skip_field',         # §37
     'code_as_barcode': True,             # §27
+    # PRODUCT-DESTINATION-01: the category for rows that name none. One of the
+    # company's own, checked before anything is staged. None = leave them without.
+    'default_category_id': None,
 }
+
+
+def _default_category(company, raw):
+    """
+    The category chosen on the screen for rows without one, or None.
+
+    Checked against THIS company's categories. Another tenant's id, a number
+    that is nobody's and a value that is not a number are one error, worded the
+    same: the answer must not say that a category exists somewhere else.
+    """
+    if raw in (None, '', 0):
+        return None
+    try:
+        if isinstance(raw, (bool, float)) and raw != int(raw):
+            raise ValueError
+        category_id = int(raw)
+        if isinstance(raw, bool) or not 0 < category_id < 2 ** 31:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        category_id = None
+    # Active, like the ones the template and the screen offer.
+    category = (
+        Category.objects.filter(company=company, pk=category_id, is_active=True).first() if category_id else None
+    )
+    if category is None:
+        raise ImportError_('La categoría elegida para las filas sin categoría no existe en esta empresa.')
+    return category
 
 
 def _row_values(values, mapping, headers):
@@ -395,6 +425,10 @@ class _GalleryIndex:
 def _preview_products(*, company, actor, upload, filename, sheet_name, header_row,
                       mapping, options, stager):
     options = {**DEFAULT_OPTIONS, **(options or {})}
+    # Before the file is even opened: an option that names another company's
+    # category refuses the whole request, and leaves no job behind.
+    default_category = _default_category(company, options.get('default_category_id'))
+    options['default_category_id'] = default_category.pk if default_category else None
     data = xlsx_reader.check_upload(upload, filename=filename)
     sha256 = _sha256(data)
     workbook, reader_notes = xlsx_reader.load_workbook(data)
@@ -447,6 +481,18 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         workbook, sheet_name, header_row=header_row, mode=xlsx_reader.FULL_IMPORT,
     )
 
+    # PRODUCT-DESTINATION-01. A «Destino» column is never left unread because
+    # the mapping that arrived does not know it: see `find_destination_column`.
+    destination_note = ''
+    if 'destination' not in mapping:
+        found = import_formats.find_destination_column(headers, taken=mapping.values())
+        if found is not None:
+            mapping['destination'] = found
+            destination_note = (
+                f'La columna «{str(headers[found]).strip()}» se lee como el destino de cada producto '
+                f'(e-commerce o sólo stock interno).'
+            )
+
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
         original_filename=_safe_filename(filename),
@@ -461,6 +507,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     )
 
     index = CatalogueIndex(company)
+    # Products that already have a category: the one chosen on the screen for
+    # «rows without one» fills a gap and does not move these.
+    already_filed = set(
+        Product.objects.filter(company=company, category__isnull=False).values_list('pk', flat=True)
+    ) if default_category is not None else set()
     galleries = _GalleryIndex(company)
     already_present = 0
     staged = []
@@ -479,7 +530,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             continue
 
         fields, formulas = _row_values(values, mapping, headers)
-        if import_exports.is_template_help_row(fields):
+        # Only the row right under the headers: that is where a template has it.
+        if row_number == header_row + 1 and import_exports.is_template_help_row(fields):
             staged.append(BulkImportRow(
                 job=job, sheet_name=sheet_name, row_number=row_number,
                 action=BulkImportRow.SKIP, normalized_data={},
@@ -553,6 +605,29 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         warnings.extend(match_warnings)
         if match_error:
             errors.append(match_error)
+
+        # The category chosen on the screen, for a row that names none. Marked
+        # as such: on a product that already has a category it changes nothing.
+        # What the preview says is what apply will do: a product that already
+        # has a category keeps it, so the row does not claim the chosen one.
+        category_is_default = False
+        if not category_name and default_category is not None and product_id not in already_filed:
+            category_id = default_category.pk
+            category_is_default = True
+
+        # PRODUCT-DESTINATION-01. An empty cell decides nothing: what is new is
+        # published, what exists stays where it is.
+        destination = import_formats.parse_destination(fields.get('destination', ''))
+        if destination is None:
+            labels = import_formats.DESTINATION_LABELS
+            errors.append(
+                f'«{fields.get("destination", "").strip()}» no es un destino. Escribe '
+                f'«{labels[import_formats.DESTINATION_ONLINE]}» o '
+                f'«{labels[import_formats.DESTINATION_INTERNAL]}», o deja la celda vacía.'
+            )
+            destination = ''
+        elif not destination and not product_id:
+            destination = import_formats.DESTINATION_ONLINE
 
         # §18 — a code this row would WRITE that another product already holds.
         #
@@ -652,6 +727,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         normalized = {
             'name': name, 'code': code, 'barcode': barcode,
             'category': category_name, 'category_id': category_id,
+            'category_default': default_category.name if category_is_default else '',
+            'destination': destination,
             'price': str(price) if price is not None else '',
             'description': fields.get('description', ''),
             'image_url': image_url,
@@ -706,7 +783,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     job.summary = {
         'reader_notes': reader_notes,
         'detected': (detected or {}).get('label', ''),
-        'format_notes': (detected or {}).get('notes', []),
+        'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else [])],
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
         'media': media_summary,
@@ -746,6 +823,7 @@ def apply_products(*, job, actor):
     index = CatalogueIndex(company)
     taken_slugs: set[str] = set()
     created = updated = images_added = 0
+    moved = []          # (product id, published): existing products this job sent to the web or took off it
 
     rows = list(
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
@@ -833,9 +911,20 @@ def apply_products(*, job, actor):
                 if value and getattr(product, field) != value:
                     setattr(product, field, value)
                     changes.append(field)
-            if category_id and product.category_id != category_id:
+            # The screen's category for rows without one fills a gap; it does
+            # not move a product somebody already filed.
+            fills_a_gap = bool(data.get('category_default'))
+            if category_id and product.category_id != category_id and not (fills_a_gap and product.category_id):
                 product.category_id = category_id
                 changes.append('category')
+            # A job previewed before this column existed has no key: no change.
+            wanted = data.get('destination', '')
+            if wanted in (import_formats.DESTINATION_ONLINE, import_formats.DESTINATION_INTERNAL):
+                publish = wanted == import_formats.DESTINATION_ONLINE
+                if product.is_published_online != publish:
+                    product.is_published_online = publish
+                    changes.append('is_published_online')
+                    moved.append((product.pk, publish))
             if name and product.name != name:
                 product.name = name
                 changes.append('name')
@@ -853,6 +942,7 @@ def apply_products(*, job, actor):
                 price=price if price is not None else Decimal('0.00'),
                 image_url=data.get('image_url', ''),
                 category_id=category_id,
+                is_published_online=data.get('destination', '') != import_formats.DESTINATION_INTERNAL,
             )
             product.full_clean()
             product.save()
@@ -880,11 +970,23 @@ def apply_products(*, job, actor):
         if placed and not counted:
             updated += 1
 
+    # One line per product that changed destination. «Applied an import» does
+    # not say which products left the web; the panel's own edit does, and so
+    # does this.
+    from .models import AdminAuditLog
+
+    for product_pk, published in moved:
+        AdminAuditLog.log(
+            actor=actor, action='product_destination_changed', target_type='product', target_id=product_pk,
+            metadata={'is_published_online': published, 'import_job_id': job.pk}, company=company,
+        )
+
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
     job.summary = {**(job.summary or {}), 'applied': {
         'created': created, 'updated': updated, 'images_added': images_added,
+        'destination_changed': len(moved),
     }}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     return job, True

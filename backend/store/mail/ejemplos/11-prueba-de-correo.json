@@ -1,0 +1,16 @@
+{
+  "anio": "2026",
+  "asunto": "Prueba de correo · [Nombre de la tienda]",
+  "preheader": "Este mensaje comprueba que la tienda puede enviar correo.",
+  "etiqueta": "Configuración",
+  "titulo": "Prueba de correo",
+  "parrafos": [
+    "Este mensaje comprueba que la plataforma puede enviar correo con esta configuración.",
+    "No contiene ningún enlace de acceso ni requiere ninguna acción."
+  ],
+  "aviso": {
+    "etiqueta": "Así se ven",
+    "texto": "Los correos de la tienda llevan este mismo diseño."
+  },
+  "motivo": "Recibes este correo porque alguien que administra [Nombre de la tienda] pidió una prueba a esta dirección."
+}

@@ -4,16 +4,16 @@ import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { verifyEmail } from "../../lib/auth";
+import { VerificationCode } from "../VerificationCode";
 
 function VerifyEmailContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token");
-  const missingTokenMessage =
-    "No se encontró el token en la URL. Usa el enlace recibido por correo.";
-  const [state, setState] = useState<"loading" | "success" | "error">(
-    token ? "loading" : "error",
+  // Sin enlace no hay nada que comprobar solo: se ofrece escribir el código.
+  const [state, setState] = useState<"loading" | "success" | "error" | "code">(
+    token ? "loading" : "code",
   );
-  const [message, setMessage] = useState(token ? "" : missingTokenMessage);
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
     if (!token) return;
@@ -41,6 +41,23 @@ function VerifyEmailContent() {
             <div className="mt-6 flex items-center justify-center gap-3 text-sm text-muted">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
               Comprobando el enlace…
+            </div>
+          </div>
+        ) : state === "code" ? (
+          <div className="text-left">
+            <div className="text-center">
+              <span className="section-label">Verificación</span>
+              <h1 className="mt-2 text-2xl font-semibold text-foreground">
+                Verifica tu correo
+              </h1>
+            </div>
+            <div className="mt-6">
+              <VerificationCode
+                onVerified={(detail) => {
+                  setMessage(detail);
+                  setState("success");
+                }}
+              />
             </div>
           </div>
         ) : state === "success" ? (

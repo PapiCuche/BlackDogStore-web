@@ -124,6 +124,10 @@ class ResendVerificationThrottle(AnonRateThrottle):
     scope = 'resend_verification'
 
 
+class VerifyEmailCodeThrottle(AnonRateThrottle):
+    scope = 'verify_email_code'
+
+
 class PasswordResetRequestThrottle(AnonRateThrottle):
     scope = 'password_reset_request'
 

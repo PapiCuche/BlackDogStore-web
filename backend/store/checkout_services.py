@@ -220,9 +220,15 @@ def resolve_lines_from_intents(company, intents) -> list[CheckoutLine]:
         # what the shopper meant; taking the last would silently drop the first.
         wanted[slug] = wanted.get(slug, 0) + quantity
 
+    # From what the web SELLS, not from everything the company keeps: a slug
+    # of a product that is internal stock only — or switched off — must answer
+    # exactly like one that does not exist. Resolving it and refusing it later
+    # by name told whoever guessed a slug what the shop has in the back.
+    from .tenancy import company_storefront_products
+
     products = {
         product.slug: product
-        for product in Product.objects.filter(company=company, slug__in=list(wanted))
+        for product in company_storefront_products(company).filter(slug__in=list(wanted))
     }
 
     lines = []
@@ -276,7 +282,9 @@ def validate_lines_and_subtotal(branch, lines: list[CheckoutLine]) -> Decimal:
     subtotal = Decimal('0.00')
     for line in lines:
         product = line.product
-        if not product.is_active:
+        # Not active, or no longer offered on the web: it could be in a cart
+        # from before. The same sentence for both — why is the shop's business.
+        if not product.is_sold_online:
             errors.append(f'{product.name} ya no está disponible.')
             continue
         if line.quantity <= 0:

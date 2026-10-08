@@ -5,6 +5,7 @@ The adapter the rest of the application reaches through Django's mail API (see
 `store.integrations.mail`): verification, password recovery, order mail,
 invitations and notifications all leave through whatever is active here.
 """
+import logging
 import smtplib
 import socket
 import ssl
@@ -16,6 +17,8 @@ from django.conf import settings
 from .. import registry
 from ..registry import ConfigError, Field, Provider, TestOutcome
 
+logger = logging.getLogger(__name__)
+
 STARTTLS, IMPLICIT_TLS, PLAIN = 'starttls', 'ssl', 'none'
 LOOPBACK = {'localhost', '127.0.0.1', '::1'}
 SMTP_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -26,6 +29,43 @@ def sender(public: dict) -> str:
     name = (public.get('from_name') or '').strip()
     address = (public.get('from_email') or '').strip()
     return formataddr((name, address)) if name else address
+
+
+def test_message(*, sender: str, send_to: str) -> EmailMessage:
+    """
+    The message that proves the server delivers.
+
+    Where this installation's storefront has an e-mail template it goes dressed
+    in it, so whoever asked sees in a real inbox what customers will see. It has
+    nothing to press and no link that gives access to anything. Anywhere else,
+    and if the template cannot be filled, it is the two plain lines it was: the
+    test is of the server, not of the design.
+    """
+    def envelope() -> EmailMessage:
+        message = EmailMessage()
+        message['From'] = sender
+        message['To'] = send_to
+        return message
+
+    try:
+        from ... import mail
+
+        if mail.available():
+            dressed = mail.render('smtp_test', mail.builders.smtp_test(brand=mail.brand()))
+            # Assembled in here too: a subject the mail library refuses is one
+            # more way the design can fail, and it must not fail the test.
+            message = envelope()
+            message['Subject'] = dressed.subject
+            message.set_content(dressed.text)
+            message.add_alternative(dressed.html, subtype='html')
+            return message
+    except Exception:  # noqa: BLE001
+        logger.exception('el mensaje de prueba no se pudo componer con la plantilla')
+    message = envelope()
+    message['Subject'] = 'Prueba de correo'
+    message.set_content('Este mensaje comprueba que la plataforma puede enviar correo con esta '
+                        'configuración.\nNo contiene ningún enlace ni requiere ninguna acción.\n')
+    return message
 
 
 def connect(public: dict, password: str):
@@ -126,12 +166,7 @@ class SmtpProvider(Provider):
         try:
             if not send_to:
                 return TestOutcome(True, 'ok', 'Conexión correcta: el servidor aceptó el cifrado y las credenciales.')
-            message = EmailMessage()
-            message['From'] = sender(public)
-            message['To'] = send_to
-            message['Subject'] = 'Prueba de correo'
-            message.set_content('Este mensaje comprueba que la plataforma puede enviar correo con esta '
-                                'configuración.\nNo contiene ningún enlace ni requiere ninguna acción.\n')
+            message = test_message(sender=sender(public), send_to=send_to)
             try:
                 refused = server.send_message(message)
             except (smtplib.SMTPException, OSError):
