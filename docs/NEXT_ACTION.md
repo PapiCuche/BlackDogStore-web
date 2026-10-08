@@ -13,7 +13,7 @@ ni activar el borrador del secreto API. La configuración de producción queda i
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: baseline del servidor `c5f8c935a8b16072a6424184fc814efbe1babaf1` (#95), 2026-10-07.
+master: el servidor sirve `36c2fa458a067fe652b325335e7b3b9e3e4b48e1` (#100, STAFF-ONBOARDING-01), desplegado el 2026-10-08.
 Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
 actualizan automáticamente la copia desplegable del servidor.
 

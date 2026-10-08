@@ -6,7 +6,25 @@ documentación real, sin reemplazar su historial.
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 
 Rama `fix/staff-invitation-onboarding`, desde `master` `54b26ac` (#98). Sin migraciones.
-Decisión: DEC-ONBOARD-01. No se desplegó nada: llevarlo al servidor es un paso aparte.
+Decisión: DEC-ONBOARD-01. En `master` desde el 2026-10-08: PR #100, merge `36c2fa4`.
+
+**Desplegado el 2026-10-08, 10:09 (Lima).** El servidor pasó de `9fd9536` a `36c2fa4`
+siguiendo `docs/despliegue-produccion.md` §7: copia previa `db-20261008-100724.sql.gz`
+y `evidence-20261008-100724.tar.gz`, imágenes construidas con la web en línea,
+`migrate --plan` sin operaciones, `check --deploy` con el único aviso esperado
+(`security.W008`), contenedores reemplazados y sanos, sin errores en el registro.
+
+Comprobado en producción después: tienda, acceso, registro, invitación, recuperación y
+privacidad responden 200; `/api/dev/demo-accounts` 404; una invitación inexistente
+responde 404 con un solo mensaje; la pantalla de invitación es la nueva. Recuentos
+iguales antes y después: 4 usuarios, 2 de ellos inactivos, 1 superusuario, 0 membresías,
+2 invitaciones pendientes; la verificación de correo sigue activa.
+
+**El caso real, confirmado con los datos del servidor** (sólo recuentos): las dos
+invitaciones pendientes siguen vigentes y la cuenta de cada una estaba registrada y sin
+verificar. Es la primera de las variantes descritas abajo. Con el código nuevo cada
+persona abre su invitación, pide «Establecer mi contraseña», elige una y acepta; no hubo
+que tocar ninguna cuenta a mano.
 
 **Qué pasaba en producción.** Una persona abría su invitación, veía «Crear cuenta» y al
 registrarse se le decía que la cuenta ya existía. No conocía ninguna contraseña que
