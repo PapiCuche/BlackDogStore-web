@@ -20,7 +20,7 @@ from .auth_serializers import (
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
 )
-from . import accounts, security_log
+from . import accounts, security_log, verification_codes
 from .authentication import enforce_csrf
 from .emails import send_verification_email, send_password_reset_email
 from .models import AccountToken
@@ -28,7 +28,7 @@ from .permissions import get_user_role
 from .token_revocation import refresh_is_revoked, revoke_access_token, revoke_all_tokens
 from .throttles import (
     LoginThrottle, RefreshThrottle, RegisterThrottle,
-    ResendVerificationThrottle, PasswordResetRequestThrottle,
+    ResendVerificationThrottle, VerifyEmailCodeThrottle, PasswordResetRequestThrottle,
     PasswordResetConfirmThrottle, ChangePasswordThrottle,
 )
 
@@ -76,14 +76,17 @@ class RegisterView(generics.CreateAPIView):
         needs_verification = settings.REQUIRE_EMAIL_VERIFICATION and not _vouched_by_invitation(
             request, serializer.validated_data['email'],
         )
-        raw_token = None
+        issued = None
         with transaction.atomic():
             user = serializer.save(is_active=not needs_verification)
             if needs_verification:
-                raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+                issued = verification_codes.issue(user)
 
         if needs_verification:
-            send_verification_email(user, raw_token, request=request)
+            # Its row stays even if the mail fails: it is what marks the account
+            # as registered and never confirmed.
+            if send_verification_email(user, issued.token, code=issued.code, request=request):
+                verification_codes.settle(issued)
             return Response(
                 {
                     'detail': 'Registro completado. Revisa tu correo para verificar tu cuenta.',
@@ -370,6 +373,31 @@ class VerifyEmailView(APIView):
         return Response({'detail': 'Correo verificado correctamente. Ya puedes iniciar sesión.'})
 
 
+class VerifyEmailCodeView(APIView):
+    """
+    POST with {email, code} — the 6-digit code of the verification e-mail.
+
+    The link (`VerifyEmailView`) stays the main way. ONE answer for every
+    refusal: it never says whether the account exists, whether the code was
+    close, or which rule refused it. The rules are in `verification_codes`.
+    """
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [VerifyEmailCodeThrottle]
+
+    _REFUSED = {'detail': 'El código no es válido o ya venció. Pide uno nuevo.'}
+
+    def post(self, request):
+        data = request.data if hasattr(request.data, 'get') else {}
+        user = verification_codes.check(
+            data.get('email'), data.get('code'),
+            on_exhausted=lambda account: security_log.verify_code_exhausted(request, user=account),
+        )
+        if user is None:
+            return Response(self._REFUSED, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': 'Correo verificado correctamente. Ya puedes iniciar sesión.'})
+
+
 class ResendVerificationView(APIView):
     """
     POST with {email} — resends the verification email.
@@ -386,14 +414,23 @@ class ResendVerificationView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
 
-        waiting = [user for user in accounts.with_email(email) if not user.is_active]
+        # Registered and never confirmed — not «inactive for whatever reason»: an
+        # account somebody switched off is not sent a way to switch itself on.
+        waiting = [user for user in accounts.with_email(email) if accounts.is_unverified(user)]
         if len(waiting) != 1:
             # None, or a legacy duplicate: the same quiet answer, not a guess.
             return Response(self._GENERIC_RESPONSE)
         user = waiting[0]
 
-        raw_token, _ = AccountToken.make(user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
-        send_verification_email(user, raw_token, request=request)
+        # None when this account was sent one less than a minute ago, or has had
+        # its codes for the day. Whoever asked is told the same either way.
+        issued = verification_codes.issue(user)
+        if issued is not None:
+            if send_verification_email(user, issued.token, code=issued.code, request=request):
+                verification_codes.settle(issued)
+            else:
+                # Nobody received it: the wait, the day and the previous code stay as they were.
+                verification_codes.withdraw(issued)
         return Response(self._GENERIC_RESPONSE)
 
 

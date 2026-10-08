@@ -18,8 +18,13 @@ def _greeting(name: str) -> str:
     return f'Hola, {name}:' if name else 'Hola:'
 
 
-def verify_email(*, brand: str, name: str, link: str) -> dict:
-    """Somebody registered an account with this address. 01-confirmar-correo, by link."""
+def verify_email(*, brand: str, name: str, link: str, code: str = '') -> dict:
+    """
+    Somebody registered an account with this address. 01-confirmar-correo.
+
+    The button is the way; `code` is the same thing for whoever reads this on
+    another device. Without one the code block is simply not there.
+    """
     return {
         'asunto': f'Confirma tu correo · {brand}',
         'preheader': 'Un paso más para activar tu cuenta y seguir tus pedidos y servicios.',
@@ -31,6 +36,12 @@ def verify_email(*, brand: str, name: str, link: str) -> dict:
             'puedas seguir tus pedidos, garantías y servicios técnicos.',
             'El enlace vence en 24 horas. Si no creaste esta cuenta, ignora este correo.',
         ],
+        'codigo': {
+            'etiqueta': 'Tu código',
+            'valor': code,
+            'nota': 'Si prefieres, escríbelo en la página de verificación. Vence en 15 minutos. '
+                    'No lo compartas con nadie: nunca te lo pediremos.',
+        } if code else None,
         'boton': {'texto': 'Confirmar mi correo', 'url': link, 'mostrar_enlace': True},
         'motivo': f'Recibes este correo porque se registró una cuenta con esta dirección en la web de {brand}.',
         'anio': fmt.year(),

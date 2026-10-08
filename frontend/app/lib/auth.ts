@@ -408,6 +408,31 @@ export async function verifyEmail(token: string): Promise<{ detail: string }> {
   return res.json();
 }
 
+/**
+ * El código de 6 dígitos del correo de verificación. El servidor contesta lo
+ * mismo a todo fallo, y eso es lo que se muestra: no se sabe aquí si la cuenta
+ * existe, si el código estaba cerca o por qué no sirvió.
+ */
+export async function verifyEmailCode(email: string, code: string): Promise<{ detail: string }> {
+  const csrf = await ensureCsrfToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRFToken"] = csrf;
+  const res = await fetch(`${API_BASE}/auth/verify-email/code/`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({ email, code }),
+  });
+  if (res.status === 429) {
+    throw new Error("Demasiados intentos seguidos. Espera un minuto y vuelve a probar.");
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "No pudimos comprobar el código. Inténtalo de nuevo.");
+  }
+  return res.json();
+}
+
 export async function resendVerification(email: string): Promise<{ detail: string }> {
   const csrf = await ensureCsrfToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };

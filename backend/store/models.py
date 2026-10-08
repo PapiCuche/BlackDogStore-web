@@ -1164,6 +1164,17 @@ class AccountToken(models.Model):
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
 
+    # The 6-digit code a verification e-mail carries beside its link (see
+    # `store.verification_codes`, the only writer). A keyed hash, never the
+    # code; '' when the row has none or its code was replaced by a newer one.
+    #
+    # `db_default` as well as `default`: the release BEFORE this column exists
+    # keeps inserting rows while a deployment migrates, and after a rollback.
+    # Without a default in the database those inserts fail on NOT NULL.
+    code_hash = models.CharField(max_length=64, blank=True, default='', db_default='')
+    code_expires_at = models.DateTimeField(null=True, blank=True)
+    code_attempts = models.PositiveSmallIntegerField(default=0, db_default=0)
+
     class Meta:
         indexes = [
             models.Index(fields=['token_hash', 'purpose']),

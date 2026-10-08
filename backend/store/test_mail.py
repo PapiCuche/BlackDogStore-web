@@ -714,6 +714,9 @@ class OtherStorefrontTest(TestCase):
             'first_name': 'Ana', 'last_name': 'Torres',
         }, format='json', HTTP_HOST=host)
         self.assertEqual(res.status_code, 201, res.content)
+        # An account is sent a new verification at most once a minute: let the minute pass.
+        from store.models import AccountToken
+        AccountToken.objects.filter(user__username=name).update(created_at=timezone.now() - datetime.timedelta(minutes=2))
         self.assertEqual(client.post('/api/auth/resend-verification/', {'email': email}, format='json', HTTP_HOST=host).status_code, 200)
         cache.clear()
         self.assertEqual(client.post('/api/auth/password-reset/request/', {'email': email}, format='json', HTTP_HOST=host).status_code, 200)
