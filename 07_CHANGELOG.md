@@ -19,6 +19,17 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Changed**
 - Un registro que pierde la carrera —por el correo o por el nombre de usuario— responde
   como uno que llega tarde, no con un error 500. La entrada con Google, igual.
+- El registro sólo acepta correos con caracteres ASCII.
+
+**De la revisión independiente, antes de publicar el cambio**
+- El índice comparaba con `LOWER` y el código con `UPPER`: en la base de producción
+  seguían cabiendo dos cuentas con direcciones como «ınfo@» e «info@». El índice usa
+  ahora la misma expresión que las búsquedas, y los duplicados se cuentan con ella.
+- Dos pruebas antiguas creaban cuentas duplicadas y quedaban rotas.
+- Un rechazo de la base por otro motivo se respondía como «inténtalo de nuevo» sin
+  dejar rastro; ahora sólo las dos reglas de identidad se responden como «ya existe».
+- Si un duplicado aparecía mientras se migraba, el error de la base citaba el correo.
+- El listado mostraba enteros los nombres de una o dos letras.
 
 No desplegado.
 

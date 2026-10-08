@@ -345,9 +345,15 @@ de dominios en `docs/analytics-marketing.md` §7.
 - **Preguntar y después escribir no basta.** Entre la pregunta y la escritura cabe otra
   petición. La única regla que dos peticiones simultáneas no pueden saltarse es una
   restricción de la base.
-- **Sin distinguir mayúsculas**, porque así se compara un correo en todo el código
-  (`email__iexact`). El índice es sobre `LOWER(email)` y deja fuera las cuentas sin
-  correo, que pueden ser varias.
+- **Sin distinguir mayúsculas, y con la misma expresión que las búsquedas.**
+  `email__iexact` es `UPPER(email) = UPPER(%s)` en PostgreSQL, así que el índice es
+  sobre `UPPER(email)`. Con `LOWER` la regla y las búsquedas no coinciden en una base
+  UTF-8: «ı» sin punto es «I» para `UPPER` y no cambia para `LOWER`. Deja fuera las
+  cuentas sin correo, que pueden ser varias.
+- **Un correo de cuenta es ASCII.** Una dirección con «ı» o «ſ» pasa por otra y la base
+  las trata como la misma; quien registrara la parecida dejaba a la verdadera sin poder
+  registrarse. Los correos con caracteres propios de otro alfabeto son rarísimos y casi
+  ningún proveedor los entrega.
 - **El modelo de usuario es el de Django**, así que la regla va en una migración con SQL
   y no en el modelo. Funciona igual en PostgreSQL y en SQLite.
 - **Lo que ya exista duplicado no se toca.** La migración se detiene y dice cuántos; no
