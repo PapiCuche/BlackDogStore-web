@@ -41,25 +41,30 @@ def test_message(*, sender: str, send_to: str) -> EmailMessage:
     and if the template cannot be filled, it is the two plain lines it was: the
     test is of the server, not of the design.
     """
-    message = EmailMessage()
-    message['From'] = sender
-    message['To'] = send_to
-    dressed = None
+    def envelope() -> EmailMessage:
+        message = EmailMessage()
+        message['From'] = sender
+        message['To'] = send_to
+        return message
+
     try:
         from ... import mail
 
         if mail.available():
             dressed = mail.render('smtp_test', mail.builders.smtp_test(brand=mail.brand()))
+            # Assembled in here too: a subject the mail library refuses is one
+            # more way the design can fail, and it must not fail the test.
+            message = envelope()
+            message['Subject'] = dressed.subject
+            message.set_content(dressed.text)
+            message.add_alternative(dressed.html, subtype='html')
+            return message
     except Exception:  # noqa: BLE001
         logger.exception('el mensaje de prueba no se pudo componer con la plantilla')
-    if dressed is None:
-        message['Subject'] = 'Prueba de correo'
-        message.set_content('Este mensaje comprueba que la plataforma puede enviar correo con esta '
-                            'configuración.\nNo contiene ningún enlace ni requiere ninguna acción.\n')
-        return message
-    message['Subject'] = dressed.subject
-    message.set_content(dressed.text)
-    message.add_alternative(dressed.html, subtype='html')
+    message = envelope()
+    message['Subject'] = 'Prueba de correo'
+    message.set_content('Este mensaje comprueba que la plataforma puede enviar correo con esta '
+                        'configuración.\nNo contiene ningún enlace ni requiere ninguna acción.\n')
     return message
 
 

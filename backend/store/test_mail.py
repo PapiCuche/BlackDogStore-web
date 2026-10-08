@@ -430,7 +430,8 @@ class BuildersTest(_Base):
             ('internal_order', '09-aviso-interno-pedido'): builders.internal_order(ORDER_CTX, admin_url=f'{SITE}/admin/orders/1234'),
             ('notification', '10-aviso'): builders.notification(
                 company='Black Dog Store', title='Tu equipo está listo para recoger', body='Puedes pasar a retirarlo. Orden ST-000042.',
-                audience='customer', event_type='service.ready_for_pickup', target_type='repair_order', target_id=42, site=SITE),
+                audience='customer', event_type='service.ready_for_pickup', target_type='repair_order', target_id=42, site=SITE,
+                has_account=True),
             ('smtp_test', '11-prueba-de-correo'): builders.smtp_test(brand='Black Dog Store'),
         }
 

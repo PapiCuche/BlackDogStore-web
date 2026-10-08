@@ -12,7 +12,6 @@ the code to:
   * any other company's notice is the one it was;
   * the delivery row tells the truth: SENT, FAILED and one attempt each.
 """
-import json
 import re
 from unittest import mock
 
@@ -26,7 +25,7 @@ from store import mail
 from store import notification_events as ev
 from store import notification_services as notif
 from store.mail import builders, contract
-from store.models import Customer, Notification, NotificationDelivery
+from store.models import Company, Customer, Notification, NotificationDelivery
 from store.test_mail import PILOT_MARKS, SITE, _Base, example, other_company, shape, within
 
 User = get_user_model()
@@ -46,10 +45,16 @@ class NotificationEmailTest(_Base):
         self.customer = self.customer_of(self.pilot)
         self.staff = User.objects.create_user('tecnico', 'tecnico@tienda.test', 'x', first_name='Teo')
 
-    def customer_of(self, company, email='ana@correo.test'):
+    def customer_of(self, company, email='ana@correo.test', account=True):
+        user = User.objects.create_user(f'cliente{User.objects.count()}', email, 'x') if account else None
         return Customer.objects.create(
             company=company, first_name='Ana', last_name='Torres', document_type='dni',
-            document_number=str(10000000 + Customer.objects.count()), email=email)
+            document_number=str(10000000 + Customer.objects.count()), email=email, user=user)
+
+    def order_of(self, customer, **extra):
+        from store.tests import _p3_order
+
+        return _p3_order(customer.company, customer=customer, user=customer.user, **extra)
 
     def emit(self, event_type, *, company=None, key='k', title='Tu equipo está listo para recoger',
              body='Puedes pasar a retirarlo cuando quieras. Orden ST-000042.', **who):
@@ -68,6 +73,8 @@ class NotificationEmailTest(_Base):
         for event_type, (target, number, page, step) in CUSTOMER_EVENTS.items():
             with self.subTest(event_type):
                 outbox_module.outbox = []
+                if target == 'order':
+                    number = self.order_of(self.customer).pk
                 self.emit(event_type, key=event_type, customers=[self.customer], target_type=target, target_id=number)
                 message = self.one()
                 html = message.alternatives[0][0]
@@ -84,9 +91,10 @@ class NotificationEmailTest(_Base):
                 self.assertEqual(delivery.status, NotificationDelivery.Status.SENT)
 
     def test_an_order_is_named_by_its_number_and_a_repair_by_what_the_notice_says(self):
-        self.emit(ev.COMMERCE_FULFILLMENT_SHIPPED, customers=[self.customer], target_type='order', target_id=77,
-                  title='Tu pedido fue enviado', body='Va en camino. Pedido #77.')
-        self.assertIn('PEDIDO · N.º 77', self.one().body)
+        order = self.order_of(self.customer)
+        self.emit(ev.COMMERCE_FULFILLMENT_SHIPPED, customers=[self.customer], target_type='order', target_id=order.pk,
+                  title='Tu pedido fue enviado', body=f'Va en camino. Pedido #{order.pk}.')
+        self.assertIn(f'PEDIDO · N.º {order.pk}', self.one().body)
 
         outbox_module.outbox = []
         self.emit(ev.SERVICE_READY_FOR_PICKUP, key='k2', customers=[self.customer], target_type='repair_order', target_id=5)
@@ -117,11 +125,87 @@ class NotificationEmailTest(_Base):
         data = builders.notification(
             company='Black Dog Store', title='Tienes una cotización pendiente de revisión',
             body='Orden ST-000041 · revisa y aprueba o rechaza.', audience=Notification.Audience.CUSTOMER,
-            event_type=ev.SERVICE_QUOTE_AVAILABLE, target_type='repair_order', target_id=41, site=SITE)
+            event_type=ev.SERVICE_QUOTE_AVAILABLE, target_type='repair_order', target_id=41, site=SITE, has_account=True)
         self.assertEqual(within(shape(contract.clean(data)), shape(example('10-aviso'))), [])
-        for block in ('detalle', 'datos', 'codigo', 'imagen', 'aviso'):
+        # … and the example it has to stay inside has no block that could carry a detail.
+        self.assertEqual(set(example('10-aviso')) & {'detalle', 'datos', 'codigo', 'imagen', 'aviso', 'secundario'}, set())
+
+    def test_a_real_order_gives_the_notice_nothing_but_its_number(self):
+        """End to end, through the emitter the shop uses, on an order that has plenty to tell."""
+        from decimal import Decimal
+
+        from store import commerce_notifications
+
+        order = self.order_of(self.customer, total=Decimal('4299.00'), customer_phone='+51 987 654 321',
+                              document_number='45678912', notes='Dejar con el portero')
+        with self.captureOnCommitCallbacks(execute=True):
+            commerce_notifications.emit_fulfillment_changed(order, 'shipped')
+        message = self.one()
+        blob = message.subject + message.body + message.alternatives[0][0]
+        self.assertIn(f'Pedido #{order.pk}', blob)
+        self.assertIn(f'href="{SITE}/orders"', blob)
+        for private in ('4299', '4,299', '987 654 321', '45678912', 'portero', 'Producto '):
+            self.assertNotIn(private, blob)
+
+    def test_a_customer_without_an_account_gets_no_button_to_a_page_they_cannot_open(self):
+        """
+        `/repairs` and `/orders` list what belongs to an ACCOUNT. Somebody who
+        left a device at the counter, or bought without registering, has none:
+        a button there is a login screen and then an empty list.
+        """
+        walk_in = self.customer_of(self.pilot, 'luis@correo.test', account=False)
+        for event_type, target, number in (
+            (ev.SERVICE_QUOTE_AVAILABLE, 'repair_order', 41),
+            (ev.COMMERCE_FULFILLMENT_SHIPPED, 'order', self.order_of(walk_in).pk),
+        ):
+            with self.subTest(event_type):
+                outbox_module.outbox = []
+                # A short body, like the real ones: the line beside the subject is padded, and with what.
+                self.emit(event_type, key=event_type, customers=[walk_in], target_type=target, target_id=number, body='Va en camino.')
+                message = self.one()
+                html = message.alternatives[0][0]
+                self.assertIn('logo-horizontal-on-light.png', html)            # dressed all the same
+                self.assertIn('Va en camino. Es un aviso sobre tu', html)
+                self.assertNotIn('class="btn"', html)
+                for dead_end in ('/repairs', '/orders', 'Entra a tu cuenta'):
+                    self.assertNotIn(dead_end, message.body + html)
+                self.assertIn('[>]', message.body)                             # what step it is at is still true
+
+    def test_an_order_of_another_account_gets_no_button_either(self):
+        """The customer has an account, but this order was not placed from it: `/orders` would not list it."""
+        other_user = User.objects.create_user('otra.cuenta', 'otra@correo.test', 'x')
+        from store.tests import _p3_order
+
+        for label, order in (
+            ('sold at the counter', _p3_order(self.pilot, customer=self.customer, user=None)),
+            ('placed from another account', _p3_order(self.pilot, customer=self.customer, user=other_user)),
+        ):
+            with self.subTest(label):
+                outbox_module.outbox = []
+                self.emit(ev.COMMERCE_FULFILLMENT_READY, key=label, customers=[self.customer], target_type='order', target_id=order.pk)
+                self.assertNotIn('class="btn"', self.one().alternatives[0][0])
+
+    def test_an_order_of_another_company_is_nobodys_button(self):
+        other = other_company()
+        from store.tests import _p3_order
+
+        foreign = _p3_order(Company.objects.get(pk=other.pk), user=self.customer.user)
+        self.emit(ev.COMMERCE_FULFILLMENT_READY, customers=[self.customer], target_type='order', target_id=foreign.pk)
+        self.assertNotIn('class="btn"', self.one().alternatives[0][0])
+
+    def test_a_title_that_cannot_be_a_subject_is_a_failed_delivery_not_a_crash(self):
+        self.emit(ev.SERVICE_READY_FOR_PICKUP, customers=[self.customer], target_type='repair_order', target_id=1,
+                  title='Listo\nBcc: otro@correo.test')
+        self.assertEqual(outbox_module.outbox, [])
+        delivery = NotificationDelivery.objects.get()
+        self.assertEqual((delivery.status, delivery.attempt_count), (NotificationDelivery.Status.FAILED, 1))
+
+    def test_a_target_nobody_mapped_shows_no_half_message(self):
+        data = contract.clean(builders.notification(
+            company='Black Dog Store', title='Aviso', body='Algo pasó.', audience=Notification.Audience.CUSTOMER,
+            event_type=ev.SERVICE_READY_FOR_PICKUP, target_type='otra_cosa', target_id=3, site=SITE, has_account=True))
+        for block in ('progreso', 'boton', 'etiqueta'):
             self.assertNotIn(block, data)
-        self.assertNotRegex(json.dumps(data, ensure_ascii=False), r'S/ ?\d')
 
     def test_what_a_tenant_wrote_is_escaped(self):
         self.emit(ev.SERVICE_READY_FOR_PICKUP, customers=[self.customer], target_type='repair_order', target_id=1,
@@ -165,7 +249,7 @@ class NotificationEmailTest(_Base):
         with mock.patch.object(EmailMessage, 'send', autospec=True, side_effect=TimeoutError('sin respuesta')) as attempt:
             self.emit(ev.SERVICE_READY_FOR_PICKUP, customers=[self.customer], target_type='repair_order', target_id=42)
         self.assertEqual(attempt.call_count, 1)
-        self.assertEqual(len(attempt.call_args.args[0].alternatives), 1)
+        self.assertIn('logo-horizontal-on-light', attempt.call_args.args[0].alternatives[0][0])     # the dressed one
         delivery = NotificationDelivery.objects.get()
         self.assertEqual((delivery.status, delivery.attempt_count), (NotificationDelivery.Status.FAILED, 1))
         self.assertEqual(delivery.failure_reason, 'TimeoutError: sin respuesta')
@@ -181,7 +265,7 @@ class NotificationEmailTest(_Base):
             with self.subTest(len(body)):
                 data = builders.notification(
                     company='Black Dog Store', title='Aviso', body=body, audience=Notification.Audience.INTERNAL,
-                    event_type=ev.COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED, target_type='announcement', target_id=3, site=SITE)
+                    event_type=ev.COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED, target_type='announcement', target_id=3, site=SITE, has_account=True)
                 cleaned = contract.validate(contract.clean(data))
                 self.assertTrue(40 <= len(cleaned['preheader']) <= 90, cleaned['preheader'])
                 self.assertEqual(cleaned['boton']['url'], f'{SITE}/admin/communications/3')
@@ -194,12 +278,12 @@ class NotificationEmailTest(_Base):
         rendered = mail.render('notification', builders.notification(
             company='Black Dog Store', title='Tu pedido fue enviado', body='Va en camino. Pedido #44.',
             audience=Notification.Audience.CUSTOMER, event_type=ev.COMMERCE_FULFILLMENT_SHIPPED,
-            target_type='order', target_id=44, site=SITE), company=self.pilot)
+            target_type='order', target_id=44, site=SITE, has_account=True), company=self.pilot)
         self.assertEqual(rendered.html.count('En curso'), 1)
         self.assertEqual(len(re.findall(r'\[x\] ', rendered.text)), 1)
         self.assertEqual(contract.clean(builders.notification(
             company='X', title='T', body='B', audience=Notification.Audience.CUSTOMER, event_type=ev.SERVICE_DELIVERED,
-            target_type='repair_order', target_id=1, site=SITE))['anio'], str(timezone.localdate().year))
+            target_type='repair_order', target_id=1, site=SITE, has_account=False))['anio'], str(timezone.localdate().year))
 
 
 @override_settings(FRONTEND_URL=SITE)
@@ -232,6 +316,35 @@ class SmtpTestMessageTest(_Base):
         self.assertEqual(message['Subject'], 'Prueba de correo')
         self.assertFalse(message.is_multipart())
         self.assertNotIn('http', message.get_content())
+
+    def test_a_name_that_cannot_be_a_subject_does_not_cost_the_test(self):
+        with mock.patch('store.mail.brand', return_value='Tienda\nBcc: otro@correo.test'), \
+                self.assertLogs('store.integrations.providers.smtp', level='ERROR'):
+            message = self.message()
+        self.assertEqual(message['Subject'], 'Prueba de correo')
+        self.assertFalse(message.is_multipart())
+        self.assertEqual(message['To'], 'prueba@correo.test')
+
+    def test_the_provider_sends_the_dressed_one_through_a_real_conversation(self):
+        from cryptography.fernet import Fernet
+        from rest_framework.test import APIClient
+
+        from store.test_integrations_smtp import PASSWORD, received, start_sink
+
+        with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()):
+            port, folder = start_sink(self, ('tienda', PASSWORD))
+            client = APIClient()
+            client.force_authenticate(User.objects.create_superuser('master', 'master@tienda.test', 'x'))
+            saved = client.put('/api/admin/integrations/smtp/draft/', {
+                'public': {'host': '127.0.0.1', 'port': port, 'security': 'none', 'username': 'tienda',
+                           'from_email': 'tienda@tienda.test', 'from_name': 'Tienda', 'timeout': 3},
+                'secrets': {'password': PASSWORD}}, format='json')
+            self.assertEqual(saved.status_code, 200, saved.content)
+            result = client.post('/api/admin/integrations/smtp/test/', {'send_to': 'prueba@correo.test'}, format='json').json()
+        self.assertEqual(result['status'], 'ok', result)
+        [raw] = received(folder)
+        self.assertIn('multipart/alternative', raw)
+        self.assertIn('logo-horizontal-on-light.png', raw.replace('=\n', ''))
 
     def test_a_template_that_cannot_be_filled_does_not_cost_the_test(self):
         with mock.patch('store.mail.service.chevron.render', side_effect=RuntimeError('boom')), \

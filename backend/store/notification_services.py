@@ -410,12 +410,33 @@ def _send(notification, address):
     message.send(fail_silently=False)
 
 
+def _can_open_it(notification) -> bool:
+    """
+    Whether the customer's page will show this notice's subject to its reader.
+
+    `/repairs` and `/orders` list what belongs to an ACCOUNT. A customer without
+    one, or an order that was not placed from theirs — sold at the counter,
+    bought as a guest — is not there. It asks whose the order is and nothing
+    else about it.
+    """
+    from .models import Order
+
+    customer = notification.customer
+    if customer is None or customer.user_id is None:
+        return False
+    if notification.target_type == 'order':
+        return Order.objects.filter(
+            pk=notification.target_id, company_id=notification.company_id, user_id=customer.user_id,
+        ).exists()
+    return True
+
+
 def _dressed(notification):
     """
     The notice in its company's e-mail template, or None.
 
     None is «send the one it always was»: that company has no template, or it
-    could not be filled. It only renders, and it reads nothing but the notice —
+    could not be filled. It only renders, and it says nothing but the notice —
     the words were chosen where the event was emitted, and the template adds a
     way to the page where the detail lives, not the detail.
     """
@@ -436,6 +457,7 @@ def _dressed(notification):
             target_type=notification.target_type,
             target_id=notification.target_id,
             site=getattr(dj_settings, 'FRONTEND_URL', '') or '',
+            has_account=_can_open_it(notification),
         ), company=company)
     except Exception:  # noqa: BLE001
         logger.exception('la notificación %s no se pudo componer con la plantilla', notification.pk)

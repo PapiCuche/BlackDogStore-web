@@ -229,6 +229,12 @@ _ABOUT = {
     'order': 'tienes un pedido en {company}',
 }
 
+# What is said instead of «go and look» to somebody who has nowhere to look.
+_IT_IS = {
+    'repair_order': 'Es un aviso sobre tu servicio técnico.',
+    'order': 'Es un aviso sobre tu pedido.',
+}
+
 
 def _preheader(text: str, filler: str) -> str:
     """The line beside the subject in an inbox: 40 to 90 characters."""
@@ -252,26 +258,34 @@ def _progress(event_type: str):
 
 
 def notification(*, company: str, title: str, body: str, audience: str, event_type: str,
-                 target_type: str, target_id, site: str) -> dict:
-    """One notice of `notification_services`, for one recipient. 10-aviso."""
+                 target_type: str, target_id, site: str, has_account: bool) -> dict:
+    """
+    One notice of `notification_services`, for one recipient. 10-aviso.
+
+    `has_account` is whether the customer can open the page the button leads
+    to: those pages list what belongs to an account, and somebody who left a
+    device at the counter or bought without registering has none. They get the
+    notice without a button, not a button to a login screen and an empty list.
+    """
     customer = audience == 'customer'
     label, button, path = _WHERE.get((audience, target_type), ('', '', ''))
-    has_target = bool(path) and target_id is not None and bool(site)
+    mapped = bool(path) and target_id is not None
+    can_open = mapped and bool(site) and (has_account or not customer)
     body = (body or '').strip()
     if customer:
         reason = _ABOUT.get(target_type, 'eres cliente de {company}').format(company=company)
-        look = 'Entra a tu cuenta para ver el detalle.'
+        look = 'Entra a tu cuenta para ver el detalle.' if can_open else _IT_IS.get(target_type, f'Es un aviso de {company}.')
     else:
         reason = f'formas parte del equipo de {company}'
         look = 'Entra al panel para ver el detalle.'
     return {
         'asunto': f'{title} · {company}',
         'preheader': _preheader(body or title, look),
-        'etiqueta': label.format(id=target_id) if has_target else '',
+        'etiqueta': label.format(id=target_id) if mapped else '',
         'titulo': title,
         'parrafos': [body or look],
-        'progreso': _progress(event_type) if customer else None,
-        'boton': {'texto': button, 'url': f'{site.rstrip("/")}{path.format(id=target_id)}'} if has_target else None,
+        'progreso': _progress(event_type) if customer and mapped else None,
+        'boton': {'texto': button, 'url': f'{site.rstrip("/")}{path.format(id=target_id)}'} if can_open else None,
         'motivo': f'Recibes este correo porque {reason}.',
         'anio': fmt.year(),
     }
