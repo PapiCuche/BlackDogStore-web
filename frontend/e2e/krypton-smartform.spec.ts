@@ -170,4 +170,32 @@ test.describe("el formulario de Mi Cuenta Web carga dentro de la tienda", () => 
     expect(opened).toBe(2);
     expect(await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp)).toEqual([]);
   });
+
+  test("con claves de prueba activas, a quien compra se le dice que aún no se puede pagar en línea", async ({ page, request }) => {
+    test.setTimeout(120_000);
+    if (!(await seedCart(page, request, `krypton-test-${RUN}`))) {
+      test.skip(true, "la API no devuelve ningún producto con stock");
+    }
+    const fromGateway: string[] = [];
+    page.on("response", (res) => {
+      if (res.url().startsWith(KRYPTON_HOST)) fromGateway.push(res.url());
+    });
+    // Lo que el servidor contesta a un comprador mientras la pasarela está en TEST.
+    await page.route("**/api/payments/create-checkout-session/", (route) =>
+      route.fulfill({
+        status: 503, contentType: "application/json",
+        body: JSON.stringify({ detail: "El pago en línea todavía no está disponible en esta tienda.", code: "payment_test_only" }),
+      }));
+
+    await page.goto("/checkout", { waitUntil: "networkidle" });
+    await fillCheckout(page);
+    await page.locator('form button[type="submit"]').click();
+
+    await expect(page.getByRole("alert").filter({ hasText: "El pago en línea todavía no está disponible en esta tienda." }))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: /continuar al pago/i })).toBeEnabled();
+    await expect(page.getByRole("region", { name: "Pago con tarjeta" })).toHaveCount(0);
+    // Sin sesión de pago no se pide nada a la pasarela.
+    expect(fromGateway).toEqual([]);
+  });
 });
