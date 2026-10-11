@@ -125,6 +125,13 @@ class DocumentBase(UnitsBase):
         for product, quantity in lines:
             OrderItem.objects.create(order=order, product=product, quantity=quantity, price=product.price)
         inventory.record_sale_stock_movements(order, strict=True)
+        # SERIAL-PICK-01: a paper names the devices somebody IDENTIFIED. These
+        # tests are about what the paper looks like, so the devices this sale
+        # took are identified the way a till does it.
+        from store import unit_identification
+        from store.models import StockUnit
+        for unit in StockUnit.objects.filter(order=order).select_related('product').order_by('received_at', 'pk'):
+            unit_identification.record(order=order, unit=unit, method='scanner', actor=self.staff, left=True)
         return order
 
     def now(self):

@@ -53731,6 +53731,10 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
         # Su GET existe SÓLO para responder 405: el handler entero es esa línea.
         # La lectura de un pedido vive en la ruta de detalle.
         'v1-internal-order-fulfillment': {405},
+        # SERIAL-PICK-01: un IMEI o serie que no es de ningún equipo responde
+        # 404 después de buscarlo, en la caja y en un pedido.
+        'v1-internal-pos-unit-lookup': {404},
+        'v1-internal-order-unit-lookup': {404},
     }
 
     def setUp(self):
@@ -53773,16 +53777,21 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'evidence_id': self.evidence.pk,
             # Sólo los alcanza OPTIONS, que no busca el objeto. Cualquier entero.
             'item_id': 999999, 'usage_id': 999999, 'payment_id': 999999,
-            'notification_id': 999999,
+            'notification_id': 999999, 'unit_pk': 999999,
         }
         self.QUERY = {
             'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
             'v1-internal-pos-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE',
+            'v1-internal-pos-unit-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE&method=scanner',
+            'v1-internal-order-unit-lookup': '?code=H411-NO-EXISTE&method=scanner',
             'v1-internal-service-technicians': f'?branch_id={self.branch_a.pk}',
         }
         self.pk_by_name = {
             'v1-internal-order-detail': self.commerce.pk,
             'v1-internal-order-fulfillment': self.commerce.pk,
+            'v1-internal-order-units': self.commerce.pk,
+            'v1-internal-order-unit-lookup': self.commerce.pk,
+            'v1-internal-order-unit-detail': self.commerce.pk,
             'v1-internal-service-device-detail': self.device.pk,
             'v1-internal-announcement': self.announcement.pk,
             'v1-internal-notifications-read': 999999,

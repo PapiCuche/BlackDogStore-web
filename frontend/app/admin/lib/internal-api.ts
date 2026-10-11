@@ -797,9 +797,40 @@ export type PosProduct = {
   price: string;
   available: number;
   barcode: string;
+  /** SERIAL-PICK-01: se vende equipo por equipo; la venta debe decir cuáles. */
+  is_serialized?: boolean;
+  requires_imei?: boolean;
 };
 
-export type PosSaleLine = { product: number; quantity: number };
+export type PosSaleLine = {
+  product: number;
+  quantity: number;
+  /** De cada equipo con serie, cuál es y cómo se identificó. */
+  units?: { id: number; method: "scanner" | "manual" }[];
+};
+
+/** Un equipo que la caja puede vender, descrito para confirmar que es ese. */
+export type PosUnit = {
+  unit_id: number;
+  product_id: number;
+  product_name: string;
+  serial_number: string;
+  imei: string;
+  imei2: string;
+  condition: string;
+  condition_label: string;
+  requires_imei: boolean;
+};
+
+/** El servidor no acepta ese equipo. `code` dice por qué; el mensaje, a la persona. */
+export class PosUnitError extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = "PosUnitError";
+    this.code = code;
+  }
+}
 
 /**
  * El desglose tributario de una venta. TODO son cadenas: estas cifras tienen
@@ -846,7 +877,11 @@ export type PosSaleResult = {
   seller: string;
   customer: string;
   commission: string | null;
-  items: { product: number; name: string; quantity: number; price: string }[];
+  items: {
+    product: number; name: string; quantity: number; price: string;
+    /** Los equipos que salieron en esta línea, como se identificaron. */
+    units?: { serial_number: string; imei: string; imei2: string; method: string }[];
+  }[];
   /** El ticket que la venta dejó en la cola de la impresora del local, si la hay. */
   print_job?: { id: number; status: string; printer: string; agent_online?: boolean } | null;
 };
@@ -892,6 +927,30 @@ export async function posLookup(
   const res = await fetchWithAuth(`${API_BASE}/admin/pos/products/lookup/?${qs}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo leer el código."));
+  return res.json();
+}
+
+/**
+ * SERIAL-PICK-01 — qué equipo es ese IMEI o serie, si se puede vender desde
+ * esta sucursal. `method` es cómo llegó el código: el servidor exige el IMEI,
+ * comprobado, a lo que se escribe a mano.
+ */
+export async function posUnitLookup(
+  companyId: number | null,
+  branchId: number,
+  code: string,
+  method: "scanner" | "manual",
+): Promise<{ unit: PosUnit; product: PosProduct }> {
+  const qs = new URLSearchParams({ branch: String(branchId), code, method });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/units/lookup/?${qs}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new PosUnitError(
+      body?.detail ? String(body.detail) : "No se pudo comprobar ese equipo.",
+      body?.code ? String(body.code) : "",
+    );
+  }
   return res.json();
 }
 
@@ -1231,6 +1290,8 @@ export type ComboOffer = {
     quantity: number;
     available: number;
     price: string;
+    is_serialized?: boolean;
+    requires_imei?: boolean;
   }[];
   regular_amount: string;
   discount_amount: string;

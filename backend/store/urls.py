@@ -43,6 +43,7 @@ from .admin_views import (
     AdminCategoryDetailView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
+    AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
     AdminOrderReprocessStockExitView,
 )
@@ -67,6 +68,7 @@ from .pos_views import (
     AdminPosLookupView,
     AdminPosSaleView,
     AdminPosSearchView,
+    AdminPosUnitLookupView,
     AdminProductBarcodeView,
 )
 from .sales_analytics_views import (
@@ -215,6 +217,10 @@ urlpatterns = [
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
+    # SERIAL-PICK-01: the devices of a web order, identified when it is handed over.
+    path('admin/orders/<int:pk>/units/', AdminOrderUnitsView.as_view(), name='admin-order-units'),
+    path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),
+    path('admin/orders/<int:pk>/units/<int:unit_pk>/', AdminOrderUnitDetailView.as_view(), name='admin-order-unit-detail'),
     path('admin/orders/<int:pk>/reprocess-stock-exit/', AdminOrderReprocessStockExitView.as_view(), name='admin-order-reprocess-stock-exit'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
@@ -359,6 +365,7 @@ urlpatterns = [
     path('admin/pos/context/', AdminPosContextView.as_view(), name='admin-pos-context'),
     path('admin/pos/products/lookup/', AdminPosLookupView.as_view(), name='admin-pos-lookup'),
     path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
+    path('admin/pos/units/lookup/', AdminPosUnitLookupView.as_view(), name='admin-pos-unit-lookup'),
     path('admin/pos/sales/', AdminPosSaleView.as_view(), name='admin-pos-sale'),
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
     path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),

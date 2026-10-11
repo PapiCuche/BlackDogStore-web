@@ -42,7 +42,7 @@ class StockUnitError(InventoryError):
 
     `line` is the 1-based device of a batch; `field` names the input that is
     wrong (`serial_number`, `imei`, `imei2`, `condition`, `cost`,
-    `price_override`, `reason`) so a form can say it next to that input instead
+    `reason`) so a form can say it next to that input instead
     of in a banner the person has to map back by reading.
     """
 
@@ -121,7 +121,6 @@ def _clean_row(product, row: dict) -> dict:
         'imei2': imei2 or None,
         'condition': _condition(row.get('condition')),
         'cost': _money(row.get('cost'), 'El costo', 'cost'),
-        'price_override': _money(row.get('price_override'), 'El precio del equipo', 'price_override'),
         'notes': ' '.join(str(row.get('notes') or '').split())[:300],
     }
 
@@ -328,15 +327,26 @@ def release(unit, *, actor=None, request=None) -> StockUnit:
 
 @transaction.atomic
 def return_unit(unit, *, reason, actor=None, request=None) -> StockUnit:
-    """A sold device comes back: the SAME row, available again."""
+    """
+    A sold device comes back: the SAME row, available again.
+
+    SERIAL-PICK-01: if it had been identified for an order and comes back
+    BEFORE that order left the shop, it stops being the device of that order —
+    the order names nothing again and cannot leave until somebody identifies
+    the one that does. A device that left keeps its record: that sale named it.
+    """
+    from . import unit_identification
+
     current = StockUnit.objects.get(pk=unit.pk)
-    return _move(
+    returned = _move(
         unit, expected=StockUnit.Status.SOLD, to_status=StockUnit.Status.AVAILABLE,
         movement_type=StockMovement.RETURN_ENTRY, reason=_reason(reason), actor=actor,
         action='stock_unit_returned', request=request,
         metadata={'returned_from_order': current.order_id},
         extra_fields={'sold_at': None, 'order': None},
     )
+    unit_identification.released_by_return(returned, current.order_id, actor=actor, request=request)
+    return returned
 
 
 @transaction.atomic
@@ -350,9 +360,6 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
     if 'cost' in fields:
         locked.cost = _money(fields['cost'], 'El costo', 'cost')
         changed.append('cost')
-    if 'price_override' in fields:
-        locked.price_override = _money(fields['price_override'], 'El precio del equipo', 'price_override')
-        changed.append('price_override')
     if 'notes' in fields:
         locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]
         changed.append('notes')
@@ -370,10 +377,17 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
 # ---------------------------------------------------------------------------
 #
 # There is no function here, on purpose. A sale takes its units inside
-# `inventory_services.create_stock_movement(assign_units_for_sale=True)`, under
-# the shelf lock: the oldest AVAILABLE units of the fulfilling branch, marked
-# sold in the same transaction as the Kardex line. Two tills asking for the last
-# device queue on that lock, and the second finds none.
+# `inventory_services.create_stock_movement`, under the shelf lock, in the same
+# transaction as the Kardex line.
+#
+# SERIAL-PICK-01 — WHICH units:
+#   · at the till, the ones the sale NAMES (`sell_units=True`): somebody
+#     identified each device, by scanner or by hand. Two tills naming the same
+#     device queue on that lock, and the second finds it sold;
+#   · for a web payment, the oldest AVAILABLE ones are SET ASIDE
+#     (`assign_units_for_sale=True`) so the shelf count is right. Nobody has
+#     identified them: that happens when the order is handed over
+#     (`unit_identification.identify_for_order`), and may swap them.
 
 
 __all__ = [

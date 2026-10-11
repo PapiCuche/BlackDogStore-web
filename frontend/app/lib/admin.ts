@@ -382,6 +382,33 @@ export async function updateAdminCategory(
 // Admin orders types and helpers
 // ---------------------------------------------------------------------------
 
+/** SERIAL-PICK-01 — un equipo, como se muestra para confirmar que es ese. */
+export type UnitDescription = {
+  unit_id: number;
+  product_id: number;
+  product_name: string;
+  serial_number: string;
+  imei: string;
+  imei2: string;
+  condition: string;
+  condition_label: string;
+  requires_imei: boolean;
+};
+
+/** Un equipo que alguien ya identificó como el de este pedido. */
+export type OrderUnitRecord = {
+  id: number;
+  serial_number: string;
+  imei: string;
+  imei2: string;
+  method: string;
+  method_label: string;
+  identified_at: string;
+  identified_by: string;
+  /** Falso cuando el equipo ya salió con el pedido: no se quita, diga lo que diga el estado. */
+  can_remove?: boolean;
+};
+
 export type AdminOrderItem = {
   id: number;
   product_id: number;
@@ -389,6 +416,12 @@ export type AdminOrderItem = {
   quantity: number;
   price: string;
   subtotal: string;
+  /** Se vende equipo por equipo: hay que identificar cada uno al entregar. */
+  is_serialized?: boolean;
+  /** A mano, sus equipos se identifican por el IMEI. */
+  requires_imei?: boolean;
+  units?: OrderUnitRecord[];
+  units_pending?: number;
 };
 
 export type AdminOrder = {
@@ -456,6 +489,13 @@ export type AdminOrderDetail = AdminOrder & {
   can_reprocess_stock_exit: boolean;
   /** Only on a reprocess response: movements this call created. */
   created_movements?: number;
+  /**
+   * SERIAL-PICK-01: equipos con serie que todavía nadie identificó. Mientras
+   * no sea 0 el servidor rechaza «enviado» y «entregado».
+   */
+  units_pending?: number;
+  /** Si QUIEN CONSULTA puede identificar o quitar equipos. Lo decide el servidor. */
+  units_can_change?: boolean;
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
@@ -539,7 +579,54 @@ export async function updateOrderFulfillment(
     throw new Error(err?.detail ?? 'No tienes permisos para cambiar el estado de despacho.');
   }
   if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 409) {
+    // SERIAL-PICK-01: faltan equipos por identificar. El motivo lo dice el servidor.
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'Este pedido todavía no se puede marcar así.');
+  }
   if (!res.ok) throw new Error('No se pudo actualizar el estado de despacho.');
+  return res.json();
+}
+
+// ── SERIAL-PICK-01: los equipos de un pedido ────────────────────────────────
+
+async function unitRefusal(res: Response, fallback: string): Promise<never> {
+  const err = await res.json().catch(() => null);
+  throw new Error(typeof err?.detail === 'string' ? err.detail : fallback);
+}
+
+/** Qué equipo es ese código, y si puede ser el de este pedido. No cambia nada. */
+export async function lookupOrderUnit(
+  orderId: number,
+  code: string,
+  method: 'scanner' | 'manual',
+): Promise<UnitDescription> {
+  const query = new URLSearchParams({ code, method });
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/units/lookup/?${query}`);
+  if (!res.ok) return unitRefusal(res, 'No se pudo comprobar ese equipo.');
+  return (await res.json()).unit;
+}
+
+/** Registra ese equipo como el de este pedido. Devuelve el pedido como quedó. */
+export async function identifyOrderUnit(
+  orderId: number,
+  code: string,
+  method: 'scanner' | 'manual',
+): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/units/`, {
+    method: 'POST',
+    body: JSON.stringify({ code, method }),
+  });
+  if (!res.ok) return unitRefusal(res, 'No se pudo registrar ese equipo.');
+  return res.json();
+}
+
+/** Quita un equipo identificado por error, mientras el pedido no haya salido. */
+export async function forgetOrderUnit(orderId: number, recordId: number): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/units/${recordId}/`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) return unitRefusal(res, 'No se pudo quitar ese equipo.');
   return res.json();
 }
 

@@ -32,9 +32,13 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   const catalogo = await request.get(`${API}/products/?page_size=50`);
   const cuerpo = await catalogo.json();
   const articulos = Array.isArray(cuerpo) ? cuerpo : (cuerpo.results ?? []);
-  const vendible = articulos.find(
+  // SERIAL-PICK-01: un artículo con serie no se cobra sin identificar su equipo.
+  // Esta prueba es del ticket, no de eso, así que vende uno que se cuenta por
+  // cantidad: prueba candidatos hasta dar con uno cuya línea no pida un equipo.
+  const candidatos = articulos.filter(
     (p: { price: string; inventory: number }) => Number(p.price) > 0 && p.inventory >= 2,
   );
+  let vendible = candidatos[0];
   if (!vendible) {
     test.skip(true, "el catálogo no tiene ningún artículo con stock suficiente");
   }
@@ -74,8 +78,6 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   // pasando por los motivos equivocados.
   const search = page.getByPlaceholder(/por nombre o c/i).first();
   await expect(search, "el punto de venta no cargó").toBeVisible({ timeout: 30_000 });
-  await search.fill(vendible.name.slice(0, 12));
-  await page.waitForTimeout(3000);
 
   // EL RESULTADO DE LA BÚSQUEDA, NO LA TARJETA DEL COMBO — H4.1.2A.
   //
@@ -89,16 +91,29 @@ test("una venta de mostrador muestra su desglose y produce un ticket de 80 mm", 
   //
   // Se pide lo que la prueba quiere de verdad: una fila del catálogo que se
   // puede pulsar y que declara unidades disponibles.
-  const result = page
-    .locator("button:not([disabled])")
-    .filter({ hasText: vendible.name.slice(0, 12) })
-    .filter({ hasText: /\d+\s*disp\./ })
-    .first();
-  if ((await result.count()) === 0) {
-    test.skip(true, "el catálogo no tiene productos con stock en esta sucursal");
+  let enCesta = false;
+  for (const candidato of candidatos.slice(0, 8)) {
+    vendible = candidato;
+    await search.fill(vendible.name.slice(0, 12));
+    await page.waitForTimeout(3000);
+    const result = page
+      .locator("button:not([disabled])")
+      .filter({ hasText: vendible.name.slice(0, 12) })
+      .filter({ hasText: /\d+\s*disp\./ })
+      .first();
+    if ((await result.count()) === 0) continue;
+    await result.click();
+    await page.waitForTimeout(2000);
+    // Una línea que pide su equipo es de un artículo con serie: no es el de esta prueba.
+    if ((await page.getByText(/Falta identificar/).count()) === 0) {
+      enCesta = true;
+      break;
+    }
+    await page.getByRole("button", { name: `Quitar ${vendible.name}`, exact: true }).click();
   }
-  await result.click();
-  await page.waitForTimeout(2000);
+  if (!enCesta) {
+    test.skip(true, "el catálogo no tiene productos sin serie con stock en esta sucursal");
+  }
 
   // EL DESGLOSE, ANTES DE COBRAR. Si el cliente pregunta cuánto es de IGV, la
   // respuesta ya está en pantalla — y es la que va a salir impresa.

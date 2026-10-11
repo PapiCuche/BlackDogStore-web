@@ -49,8 +49,6 @@ def unit_payload(unit) -> dict:
         'status': unit.status,
         'status_label': unit.get_status_display(),
         'cost': None if unit.cost is None else str(unit.cost),
-        'price_override': None if unit.price_override is None else str(unit.price_override),
-        'catalogue_price': str(unit.product.price),
         'received_at': unit.received_at,
         'sold_at': unit.sold_at,
         'order_id': unit.order_id,
@@ -288,14 +286,14 @@ class _UnitMixin:
 
 
 class StockUnitDetailView(_UnitMixin, APIView):
-    """PATCH — condition, cost, price, notes. Never the identifiers or the status."""
+    """PATCH — condition, cost, notes. Never the identifiers or the status."""
 
     def patch(self, request, pk):
         unit, error = self.resolve(request, pk)
         if error:
             return error
         data = request.data if isinstance(request.data, dict) else {}
-        fields = {k: data[k] for k in ('condition', 'cost', 'price_override', 'notes') if k in data}
+        fields = {k: data[k] for k in ('condition', 'cost', 'notes') if k in data}
         try:
             units.update_unit(unit, actor=request.user, request=request, **fields)
         except InventoryError as exc:

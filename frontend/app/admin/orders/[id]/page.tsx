@@ -10,6 +10,7 @@ import { PageHeader, internalButtonClass } from "../../components/internal-ui";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
 import { FulfillmentStatusSelect } from "../../components/FulfillmentStatusSelect";
+import { OrderUnitsPanel } from "../../components/OrderUnitsPanel";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
 import {
@@ -337,6 +338,18 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           </table>
         </section>
 
+        {/* SERIAL-PICK-01: qué equipos salen con este pedido. Sólo aparece
+            cuando el pedido lleva productos con serie. */}
+        {order.items.some((item) => item.is_serialized) ? (
+          <section className="rounded-xl border border-bd-border bg-surface p-6">
+            <h2 className="text-sm font-semibold text-foreground mb-1">Equipos que se entregan</h2>
+            <p className="text-xs text-muted mb-4">
+              Escanea el IMEI o la serie del equipo que entregas. Es el que saldrá en la nota de venta y en la garantía.
+            </p>
+            <OrderUnitsPanel order={order} onChanged={setOrder} />
+          </section>
+        ) : null}
+
         {/* Email status */}
         <section className="rounded-xl border border-bd-border bg-surface p-6">
           <h2 className="text-sm font-semibold text-foreground mb-4">Emails transaccionales</h2>
@@ -393,6 +406,7 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
               onChanged={(newStatus) =>
                 setOrder((prev) => prev ? { ...prev, fulfillment_status: newStatus } : prev)
               }
+              onSaved={setOrder}
             />
           </section>
         )}

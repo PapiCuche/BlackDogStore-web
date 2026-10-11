@@ -383,6 +383,10 @@ def combo_availability(company, branch, *, at=None, limit=20):
                 'quantity': item.quantity,
                 'available': on_hand,
                 'price': str(item.product.price),
+                # SERIAL-PICK-01: a part sold device by device still has to be
+                # identified; the till reads it here to ask for it.
+                'is_serialized': item.product.is_serialized,
+                'requires_imei': item.product.requires_imei,
             })
         regular = _money(sum(
             (Decimal(str(i.product.price)) * i.quantity for i in items),

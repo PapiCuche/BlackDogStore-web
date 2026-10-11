@@ -84,7 +84,7 @@ test('the form asks for what identifies ONE device, in sight from the start', as
 
   // Antes de elegir nada: los campos del equipo ya están ahí.
   for (const label of ['Sucursal', 'Producto / modelo', 'Condición', /^Número de serie/, /^IMEI/, /^IMEI 2/,
-    /^Costo/, /^Precio de este equipo/, /^Motivo o documento de ingreso/]) {
+    /^Costo/, /^Motivo o documento de ingreso/]) {
     expect(screen.getAllByLabelText(label).length).toBeGreaterThan(0);
   }
   // Y ninguna «cantidad»: un equipo es uno.
@@ -101,14 +101,15 @@ test('saving one device sends that device with its own serial and IMEI', async (
   type(/^IMEI \*/, IMEI_A);
   type(/^IMEI 2/, IMEI_B);
   type(/^Costo/, '3800');
-  type(/^Precio de este equipo/, '4400');
+  // SERIAL-PICK-01: un equipo no tiene precio propio; se vende al del producto.
+  expect(screen.queryByLabelText(/Precio/)).toBeNull();
   type(/^Motivo o documento de ingreso/, 'Factura F001-234');
   fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));
 
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   expect(posts()).toEqual([expect.objectContaining({ body: {
     product_id: 10, branch: 1, reason: 'Factura F001-234',
-    units: [{ serial_number: 'F2LXK1AAA1', imei: IMEI_A, imei2: IMEI_B, condition: 'new', cost: '3800', price_override: '4400' }],
+    units: [{ serial_number: 'F2LXK1AAA1', imei: IMEI_A, imei2: IMEI_B, condition: 'new', cost: '3800' }],
   } })]);
   expect(onClose).toHaveBeenCalled();
 });

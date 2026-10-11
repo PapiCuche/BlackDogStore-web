@@ -23,8 +23,6 @@ export type StockUnit = {
   status: "available" | "reserved" | "sold" | "written_off";
   status_label: string;
   cost: string | null;
-  price_override: string | null;
-  catalogue_price: string;
   received_at: string;
   sold_at: string | null;
   order_id: number | null;
@@ -58,11 +56,10 @@ export type UnitProduct = SerializedProduct & {
 /** ONE physical device. There is no quantity: a second device is a second one of these. */
 export type NewUnit = {
   serial_number: string; imei: string; imei2: string; condition: string; cost: string;
-  price_override?: string;
 };
 
 /** The inputs of a device the server can point at. */
-export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "price_override" | "reason";
+export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "reason";
 
 /**
  * A refusal. `line` is the 1-based device of a batch the server turned down and

@@ -28,9 +28,16 @@ WHO DECIDES — TWO AUTHORITY PATHS, NEVER MIXED (H4.1.2, RBAC-LEGACY-01)
 
 WHAT THIS DELIBERATELY DOES NOT DO
 
-No email. No stock movement. No sales note. The legacy view does none of those
-either, and this extraction is not the place to add behaviour: changing what a
-status change *means* would be a business decision, not a refactor.
+No email. No sales note. The legacy view does none of those either, and this
+extraction is not the place to add behaviour: changing what a status change
+*means* would be a business decision, not a refactor.
+
+THE ONE THING A STATUS CHANGE DOES MEAN (SERIAL-PICK-01, an owner's decision)
+
+«Sent» and «delivered» are the moments a device leaves the shop. An order that
+sells serialized devices does not reach them until somebody has identified each
+one, and from then on those devices are not renamed. Both surfaces get the same
+refusal and the same way to identify the device (`unit_identification`).
 """
 from django.db import transaction
 
@@ -62,6 +69,20 @@ class FulfillmentNotAllowed(Exception):
     def __init__(self, detail: str):
         super().__init__(detail)
         self.detail = detail
+
+
+class FulfillmentBlocked(Exception):
+    """
+    The actor may set this status, and the ORDER is not ready for it.
+
+    SERIAL-PICK-01: an order with serialized devices does not leave the shop
+    — shipped or delivered — until somebody has identified each one.
+    """
+
+    def __init__(self, detail: str, *, pending: dict):
+        super().__init__(detail)
+        self.detail = detail
+        self.pending = pending
 
 
 def allowed_fulfillment_statuses(user, company) -> tuple[str, ...]:
@@ -120,10 +141,30 @@ def change_fulfillment_status(
             detail = 'No tienes permiso para cambiar el estado de despacho en esta empresa.'
         raise FulfillmentNotAllowed(detail)
 
+    from . import unit_identification
+
+    leaving = new_status in unit_identification.LEAVING
     previous = order.fulfillment_status
     with transaction.atomic():
+        # SERIAL-PICK-01. As at the till: a device does not leave without
+        # somebody saying which one it is. Getting an order ready is free;
+        # sending it or handing it over is not. Decided with the order LOCKED —
+        # the same lock identifying or taking back a device holds — so nobody
+        # un-names a device between this check and the write below.
+        if leaving:
+            Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
+            pending = unit_identification.pending_units(order)
+            if pending:
+                missing = sum(pending.values())
+                raise FulfillmentBlocked(
+                    f'Falta identificar {missing} equipo(s) de este pedido. Escanea o escribe su IMEI o serie '
+                    f'antes de marcarlo como enviado o entregado.',
+                    pending=pending,
+                )
         order.fulfillment_status = new_status
         order.save(update_fields=['fulfillment_status'])
+        if leaving:
+            unit_identification.mark_left(order)
         AdminAuditLog.log(
             actor=actor,
             action='order_fulfillment_status_changed',

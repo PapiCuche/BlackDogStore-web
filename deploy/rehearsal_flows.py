@@ -343,9 +343,28 @@ def equipment(admin, company):
         'idempotency_key': uuid.uuid4().hex, 'terms_confirmed': True, 'receipt_type': 'sales_note',
         'amount_received': '999.00',
     }
+    # SERIAL-PICK-01: la caja no vende «uno de ellos». Hay que decir cuál.
+    res, refused = admin.json('POST', f'/api/admin/pos/sales/{q}', sale)
+    check('equipos · la caja no vende un equipo sin decir cuál', res.status == 400 and len(units()) == 1
+          and units()[0]['status'] == 'available', f'{res.status} {str(refused)[:120]}')
+    wrong = device_imei[:-1] + str((int(device_imei[-1]) + 1) % 10)
+    res, _ = admin.json('GET', f'/api/admin/pos/units/lookup/{q}&branch={branch}&method=manual&code={wrong}')
+    check('equipos · un IMEI escrito a mano con un dígito cambiado se rechaza', res.status == 400, res.status)
+    res, _ = admin.json('GET', f'/api/admin/pos/units/lookup/{q}&branch={branch}&method=manual&code={serial}')
+    check('equipos · a mano, un equipo con IMEI no se identifica por su serie', res.status == 400, res.status)
+    res, found = admin.json('GET', f'/api/admin/pos/units/lookup/{q}&branch={branch}&method=manual&code={device_imei}')
+    unit = ((found or {}).get('unit') or {})
+    check('equipos · el IMEI escrito a mano muestra qué equipo es, para confirmarlo',
+          res.status == 200 and unit.get('serial_number') == serial and unit.get('product_id') == product,
+          f'{res.status} {str(found)[:120]}')
+    sale = {**sale, 'idempotency_key': uuid.uuid4().hex,
+            'items': [{'product': product, 'quantity': 1, 'units': [{'id': unit.get('unit_id'), 'method': 'manual'}]}]}
     res, sold = admin.json('POST', f'/api/admin/pos/sales/{q}', sale)
-    check('equipos · venta en caja', res.status == 201, f'{res.status} {str(sold)[:160]}')
+    check('equipos · venta en caja del equipo identificado', res.status == 201, f'{res.status} {str(sold)[:160]}')
     order = (sold or {}).get('order_id')
+    named = [u for item in (sold or {}).get('items', []) for u in item.get('units', [])]
+    check('equipos · la venta dice qué equipo salió y que se escribió a mano',
+          [(u.get('imei'), u.get('method')) for u in named] == [(device_imei, 'manual')], named)
     rows = units()
     check('equipos · el equipo queda «vendido»', len(rows) == 1 and rows[0]['status'] == 'sold',
           [r.get('status') for r in rows])

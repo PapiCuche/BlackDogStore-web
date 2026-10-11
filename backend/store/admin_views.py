@@ -919,10 +919,31 @@ def _order_detail_payload(request, order, company):
     does, so the panel no longer keeps its own role-keyed copy of the rule.
     """
     shortfall = order_stock_shortfall(order)
+    data = AdminOrderDetailSerializer(order).data
+    # SERIAL-PICK-01: which lines owe a device, the devices somebody already
+    # identified, and how many are still to be.
+    from . import unit_identification
+
+    view = unit_identification.order_view(order)
+    pending, records = view['pending'], view['records']
+    requires_imei = dict(order.items.values_list('product_id', 'product__requires_imei'))
+    shown = set()
+    for item in data['items']:
+        product_id = item['product_id']
+        item['is_serialized'] = product_id in pending or product_id in records
+        item['requires_imei'] = bool(requires_imei.get(product_id))
+        # Two lines of one product share its devices: shown once, on the first.
+        item['units'] = [] if product_id in shown else records.get(product_id, [])
+        item['units_pending'] = 0 if product_id in shown else pending.get(product_id, 0)
+        shown.add(product_id)
+    transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
     return {
-        **AdminOrderDetailSerializer(order).data,
-        'available_fulfillment_transitions':
-            list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
+        **data,
+        'units_pending': sum(pending.values()),
+        # Whether THIS caller may say which device it is: whoever may change how
+        # the order is dispatched, and only until it has left the shop.
+        'units_can_change': bool(transitions) and not view['left'],
+        'available_fulfillment_transitions': transitions,
         # INV-04: the oversell/shortfall, derived — see order_stock_shortfall.
         'stock_shortfall': shortfall,
         # Whether THIS caller may reprocess the pending exit: a shortfall to
@@ -1266,6 +1287,91 @@ class AdminOrderFulfillmentView(APIView):
             )
         except fulfillment.FulfillmentNotAllowed as exc:
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
+        except fulfillment.FulfillmentBlocked as exc:
+            # SERIAL-PICK-01: allowed, and the order is not ready — a device
+            # does not leave without somebody saying which one it is.
+            return Response(
+                {'detail': exc.detail, 'code': 'units_pending', 'pending': sum(exc.pending.values())},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
+
+
+class _OrderUnitsMixin:
+    """
+    SERIAL-PICK-01 — the devices of a web order. Whoever may change how an
+    order is dispatched may say which device it is handing over; the order is
+    looked up among the ones this person can see, like every other order view.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def resolve(self, request, pk):
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, _LEGACY_MANAGE_ORDERS_ROLES)
+        if error:
+            return None, None, error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return None, None, Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return company, order, None
+
+    def payload(self, request, order, company, *, code=status.HTTP_200_OK):
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company), status=code)
+
+
+class AdminOrderUnitLookupView(_OrderUnitsMixin, APIView):
+    """GET ?code=&method= — the device a code names, if this order is waiting for it. Writes nothing."""
+
+    def get(self, request, pk):
+        from . import unit_identification
+
+        company, order, error = self.resolve(request, pk)
+        if error:
+            return error
+        method = request.query_params.get('method') or unit_identification.SCANNER
+        try:
+            unit = unit_identification.candidate_for_order(
+                order=order, code=request.query_params.get('code', ''), method=method,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return Response({'unit': unit_identification.describe(unit), 'method': method})
+
+
+class AdminOrderUnitsView(_OrderUnitsMixin, APIView):
+    """POST {code, method} — this is the device being handed over."""
+
+    def post(self, request, pk):
+        from . import unit_identification
+
+        company, order, error = self.resolve(request, pk)
+        if error:
+            return error
+        data = request.data if hasattr(request.data, 'get') else {}
+        try:
+            unit_identification.identify_for_order(
+                order=order, code=data.get('code', ''), method=data.get('method'),
+                actor=request.user, request=request,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self.payload(request, order, company, code=status.HTTP_201_CREATED)
+
+
+class AdminOrderUnitDetailView(_OrderUnitsMixin, APIView):
+    """DELETE — take back a device identified by mistake, while it has not left the shop."""
+
+    def delete(self, request, pk, unit_pk):
+        from . import unit_identification
+
+        company, order, error = self.resolve(request, pk)
+        if error:
+            return error
+        try:
+            unit_identification.forget(order=order, order_unit_id=unit_pk, actor=request.user, request=request)
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self.payload(request, order, company)
