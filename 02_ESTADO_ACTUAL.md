@@ -65,10 +65,52 @@ contra la pasarela real, que piden claves). Módulos de pagos, consola y desplie
 errores. La suite completa corrió antes de añadir dos pruebas de regresión, que sólo
 están en la pasada de módulos. Sin Playwright ni ensayo Docker en esta fase.
 
+## 2026-10-11 — #102–#108 en `master` y desplegados
+
+Los siete PR apilados se fusionaron en orden, con commit de merge y CI verde en cada
+cabeza: #102 → #103 → #104 → #105 → #106 → #107 → #108. `master` quedó en `3057dd2`,
+con el mismo árbol que la cabeza de #108 (`7296372`), la que pasó la suite completa y
+el ensayo.
+
+**Desplegado el 2026-10-11, 16:32 (Lima).** El servidor pasó de `36c2fa4` a `3057dd2`
+siguiendo `docs/despliegue-produccion.md` §7: copia previa `db-20261011-162832.sql.gz`
+y `evidence-20261011-162832.tar.gz`, imágenes construidas con la web en línea,
+`migrate --plan` con cuatro operaciones (`0113`–`0116`), `migrate` sin incidencias,
+contenedores reemplazados y sanos, `deploy/healthcheck.sh` en verde, `manage.py check`
+sin incidencias y sin errores en el registro. El `deploy/Caddyfile` local del servidor
+no cambió. No se tocó la pasarela de pago ni ninguna variable.
+
+**Antes de migrar** se leyó producción, sólo lectura: 1 empresa, 6 usuarios, 1 producto,
+0 pedidos, 0 equipos, 0 cobros y ningún correo con más de una cuenta. No había pedidos
+pagados sin entregar, así que ninguno quedó pidiendo identificar su equipo.
+
+**Copia y vuelta atrás, comprobadas.** La copia previa se restauró en un PostgreSQL
+desechable sin red (98 tablas, los mismos recuentos). Sobre esa copia, con la imagen
+nueva, se aplicaron `0113`–`0116`, se deshicieron y se aplicaron otra vez: tras
+deshacerlas el esquema es idéntico al de `0112`. La vuelta atrás es, en este orden:
+`migrate store 0112` con la imagen nueva, `git checkout 36c2fa4`, levantar las imágenes
+guardadas como `rollback-36c2fa4` (o `build`) y `up -d`. Volver al commit anterior no
+deshace el esquema por sí solo. La otra vía es `deploy/restore.sh` con la copia previa.
+
+**Comprobado en producción después**, sin crear cuentas, pedidos ni pagos: tienda,
+producto, carrito, acceso, recuperación, verificación, checkout, servicios y panel
+responden 200; catálogo y categorías 200; las rutas nuevas de plantillas y de
+identificación de equipos responden 401 sin sesión; las rutas de notificación de pago
+responden 405 a una lectura (no se envió ninguna notificación). En la base: índice
+único del correo creado, tabla de equipos identificados vacía, columna `price_override`
+conservada (deuda SERIAL-PRICE-DROP) y fuera del modelo, el producto existente sigue
+publicado. Las dos plantillas salen con una hoja y nueve cabeceras.
+
+**Falta, y sólo puede hacerlo el propietario con su sesión:** entrar, registrar una
+cuenta y verificarla con el código, crear un producto «sólo stock interno», descargar y
+subir las dos plantillas, vender un equipo en caja identificándolo, y entregar un
+pedido web identificando su equipo. La tienda sigue sin poder cobrar en línea: la
+pasarela no tiene credenciales (fase aparte).
+
 ## 2026-10-11 — IMPORT-SPLIT-01: dos cargas diferenciadas, cada una con su plantilla de una hoja
 
 Rama `feat/bulk-import-split`, apilada sobre `feat/serial-pick`. **Sin migración.**
-Decisión: DEC-IMPORT-SPLIT-01. No desplegado.
+Decisión: DEC-IMPORT-SPLIT-01. En `master` y desplegado el 2026-10-11 (`3057dd2`).
 
 Reutiliza lo que ya había: el importador de productos con «Destino» (#105), el de
 equipos (`unit_import_services`) y el Kardex (`receive_units`). No añade un importador
@@ -108,7 +150,7 @@ ni otro camino al stock.
 ## 2026-10-11 — SERIAL-PICK-01: el equipo que sale es el que alguien identificó
 
 Rama `feat/serial-pick`, apilada sobre `fix/register-race`. **Con migración**
-(`0116_serial_pick`). Decisión: DEC-SERIAL-02. No desplegado.
+(`0116_serial_pick`). Decisión: DEC-SERIAL-02. En `master` y desplegado el 2026-10-11 (`3057dd2`).
 
 **Qué pasaba.** Un producto con serie se vendía como «uno de ellos»: el sistema tomaba
 el equipo más antiguo de la sucursal y la nota imprimía ese IMEI, fuera cual fuera el
@@ -157,7 +199,7 @@ tienda y la garantía a nombre de la serie equivocada.
 ## 2026-10-08 — REGISTER-RACE-01: un correo, una cuenta, también en la base
 
 Rama `fix/register-race`, apilada sobre `feat/product-visibility-import`. **Con
-migración** (`0115_user_email_unique_ci`). Decisión: DEC-REGISTER-01. No desplegado.
+migración** (`0115_user_email_unique_ci`). Decisión: DEC-REGISTER-01. En `master` y desplegado el 2026-10-11 (`3057dd2`).
 
 **Qué pasaba.** El registro preguntaba «¿este correo ya está?» y después creaba la
 cuenta. Dos peticiones en el mismo instante oían «no» las dos y creaban una cada una.
@@ -196,8 +238,7 @@ cita el correo (sólo en la terminal de quien administra).
 ## 2026-10-08 — PRODUCT-DESTINATION-01: «sólo stock interno» y la plantilla de carga masiva
 
 Rama `feat/product-visibility-import`, apilada sobre `feat/mail-verification-code`. **Con migración**
-(`0114_product_is_published_online`). Decisión: DEC-PRODUCT-DEST-01. No desplegado, sin
-merge.
+(`0114_product_is_published_online`). Decisión: DEC-PRODUCT-DEST-01. En `master` y desplegado el 2026-10-11 (`3057dd2`).
 
 **Qué hay.** Un producto tiene un dato nuevo, independiente de «activo»:
 `Product.is_published_online`. En `false` es **«sólo stock interno»**: sigue en
@@ -247,7 +288,7 @@ todos corregidos con su prueba.
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1 de 3): los correos llevan la plantilla de la tienda
 
 Rama `feat/mail-template`, desde `master` `6266402` (#101). Sin migraciones y sin
-variables de entorno nuevas. Decisión: DEC-MAIL-01. **No desplegado.**
+variables de entorno nuevas. Decisión: DEC-MAIL-01. En `master` y desplegado el 2026-10-11 (`3057dd2`).
 
 **Qué hay.** Un motor de correo (`backend/store/mail/`) que rellena una sola plantilla
 HTML —la que entregó el propietario, sin editar— con un diccionario de datos, y produce

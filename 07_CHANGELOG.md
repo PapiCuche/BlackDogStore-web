@@ -32,6 +32,25 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Not verified**
 - Nada contra la pasarela real: no hay credenciales. No se hizo ningún cargo.
 
+## 2026-10-11 — Despliegue de #102–#108
+
+**Deployed**
+- `master` `3057dd2` (merge de #108) en producción desde el 2026-10-11, 16:32 (Lima). El
+  servidor pasó de `36c2fa4` a `3057dd2` con copia previa (`db-20261011-162832.sql.gz`,
+  `evidence-20261011-162832.tar.gz`) y las migraciones `0113`–`0116` aplicadas.
+- Entran MAIL-TEMPLATE-01 (fases 1, 2 y 3A), PRODUCT-DESTINATION-01, REGISTER-RACE-01,
+  SERIAL-PICK-01 e IMPORT-SPLIT-01.
+
+**Verified**
+- Copia previa restaurada en un PostgreSQL desechable; `0113`–`0116` aplicadas,
+  deshechas y aplicadas otra vez sobre esa copia, con el esquema de vuelta idéntico al
+  de `0112`.
+- Salud, páginas públicas, catálogo, rutas nuevas, esquema y registro, sin crear datos.
+
+**Not changed**
+- Pasarela de pago, variables de entorno y `deploy/Caddyfile` del servidor.
+- La columna `price_override` sigue en la base (SERIAL-PRICE-DROP).
+
 ## 2026-10-11 — IMPORT-SPLIT-01
 
 **Changed**
@@ -82,7 +101,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   lista, y elegirlo en Excel lo habría escrito como fórmula.
 - El enlace «Descargar errores» de la carga de equipos no llevaba la empresa elegida.
 
-No desplegado.
+Desplegado el 2026-10-11 (`3057dd2`).
 
 ## 2026-10-11 — SERIAL-PICK-01
 
@@ -134,7 +153,7 @@ No desplegado.
 - Una serie de 15 dígitos no se encontraba, y una serie numérica no se podía escribir a mano.
 - Un código pegado después de una lectura heredaba el ritmo del lector.
 
-No desplegado.
+Desplegado el 2026-10-11 (`3057dd2`).
 
 ## 2026-10-08 — REGISTER-RACE-01
 
@@ -164,7 +183,7 @@ No desplegado.
 - Si un duplicado aparecía mientras se migraba, el error de la base citaba el correo.
 - El listado mostraba enteros los nombres de una o dos letras.
 
-No desplegado.
+Desplegado el 2026-10-11 (`3057dd2`).
 
 ## 2026-10-08 — PRODUCT-DESTINATION-01
 
@@ -203,7 +222,7 @@ No desplegado.
   dejaba el destino en el registro de auditoría.
 
 **Migración** `0114_product_is_published_online`: una columna con valor por defecto
-(también en la base). Los productos existentes quedan publicados. No desplegado.
+(también en la base). Los productos existentes quedan publicados. Desplegado el 2026-10-11 (`3057dd2`).
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 3A): código de verificación
 
 **Added**
@@ -238,7 +257,7 @@ El enlace sigue siendo el camino principal y no cambia. Reglas del código: 15 m
 - Seis pruebas que no podían fallar, rehechas; pruebas de concurrencia nuevas.
 
 **Migración** `0113_account_token_code`: tres columnas nuevas en `AccountToken`, con
-valor por defecto también en la base; no toca filas existentes. No desplegado.
+valor por defecto también en la base; no toca filas existentes. Desplegado el 2026-10-11 (`3057dd2`).
 
 **Deuda que la revisión dejó a la vista, anterior a este cambio (REGISTER-RACE):** varios
 registros simultáneos del mismo correo crean varias cuentas (no hay restricción única en
@@ -260,7 +279,7 @@ arregla aquí.
   donde la tienda de la instalación la tiene. Sigue sin llevar ningún enlace de acceso.
 
 No cambia qué eventos envían correo, a quién, ni que cada uno salga una vez. Un aviso
-sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No desplegado.
+sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. Desplegado el 2026-10-11 (`3057dd2`).
 
 **De la revisión independiente, antes de publicar el cambio**
 - El botón del cliente llevaba a `/repairs` o `/orders` aunque esa persona no tuviera
@@ -298,7 +317,7 @@ sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No 
 - El pie de texto salía de los ajustes y el HTML de la plantilla: podían firmar distinto.
 - Dos pruebas de neutralidad dependían de una variable del entorno.
 
-Sin migraciones ni variables de entorno nuevas. No desplegado.
+Sin migraciones ni variables de entorno nuevas. Desplegado el 2026-10-11 (`3057dd2`).
 
 ## 2026-10-07 — STAFF-ONBOARDING-01
 
