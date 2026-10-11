@@ -49,6 +49,11 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name']
 
 
+#: One sentence for «that address has an account», wherever it is found out:
+#: by the form, or by the database when two requests arrive together.
+EMAIL_TAKEN = 'Este correo ya está registrado.'
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
     password_confirm = serializers.CharField(write_only=True, required=True)
@@ -59,8 +64,17 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         normalized = value.lower().strip()
+        # REGISTER-RACE-01. Plain letters only. «ınfo@tienda.com» and
+        # «ana@gmaıl.com» pass for an address and read like another one; the
+        # database compares addresses with UPPER(), where «ı» IS «I». Whoever
+        # registered the look-alike first left the real owner unable to
+        # register, with their recovery mail going to the look-alike.
+        if not normalized.isascii():
+            raise serializers.ValidationError(
+                'Escribe el correo sin tildes ni caracteres especiales.'
+            )
         if User.objects.filter(email__iexact=normalized).exists():
-            raise serializers.ValidationError('Este correo ya está registrado.')
+            raise serializers.ValidationError(EMAIL_TAKEN)
         return normalized
 
     def validate(self, attrs):

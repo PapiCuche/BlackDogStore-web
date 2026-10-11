@@ -654,6 +654,12 @@ $C ps
 Si algo sale mal: `git checkout <commit anterior>`, `$C build`, `$C up -d`. Si
 además una migración cambió datos, restaura la copia del paso 1.
 
+**Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
+no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
+duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista
+las cuentas con `$C run --rm backend python manage.py list_duplicate_emails` (sólo
+lectura), decide con el propietario cuál se conserva en cada grupo y vuelve a migrar.
+
 `docker compose down` conserva los datos. **`docker compose down -v` los borra**:
 elimina el volumen de la base de datos y el de los archivos (evidencias e
 imágenes de la tienda).

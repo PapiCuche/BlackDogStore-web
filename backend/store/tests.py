@@ -19025,6 +19025,9 @@ class V1LoginTest(TestCase):
         # `email` carries NO unique constraint on Django's stock User model, and
         # the registration check has a race. Picking "the first match" would let
         # whoever registered a duplicate address sign in as someone else.
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         _v1_user(username='otro', email='cliente@example.com', password=self.password)
 
         response = self.client.post(
@@ -19034,6 +19037,9 @@ class V1LoginTest(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_a_duplicate_email_looks_like_any_other_failure(self):
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         _v1_user(username='otro', email='cliente@example.com', password=self.password)
 
         duplicate = self.client.post(
@@ -30410,6 +30416,9 @@ class M8CustomerRepairsTest(M8ServiceBase):
     def test_ownership_is_the_foreign_key_and_not_the_email(self):
         # Same email, no Customer link. A household shares an address and often
         # an inbox; matching on one would hand over somebody else's device.
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         impostor = User.objects.create_user(
             username='homonimo', email=self.client_user.email or 'x@example.com',
             password='Pass123!',

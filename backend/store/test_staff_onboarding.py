@@ -442,6 +442,9 @@ class UnknownPasswordTest(_Base):
 
     def test_two_accounts_with_one_address_get_the_same_quiet_answer(self):
         """A legacy duplicate used to be a 500 here."""
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         User.objects.create_user('ana.uno', WORKER, PASSWORD)
         User.objects.create_user('ana.dos', WORKER.upper(), PASSWORD)
         before = len(mail.outbox)
@@ -451,6 +454,9 @@ class UnknownPasswordTest(_Base):
 
 
     def test_asking_again_for_the_verification_of_a_duplicated_address_is_quiet_too(self):
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         User.objects.create_user('ana.uno', WORKER, PASSWORD, is_active=False)
         User.objects.create_user('ana.dos', WORKER.upper(), PASSWORD, is_active=False)
         before = len(mail.outbox)

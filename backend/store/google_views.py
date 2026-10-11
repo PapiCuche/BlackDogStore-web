@@ -168,6 +168,19 @@ class GoogleSignInView(_GoogleMixin, APIView):
                 provider=ExternalIdentity.PROVIDER_GOOGLE, subject=proven.subject,
             ).first()
             if linked is None:
+                # REGISTER-RACE-01. Not two tabs: somebody registered this
+                # address with a password in the same instant, and the database
+                # refused a second account under it. The same answer as when
+                # that account was already there a moment earlier.
+                if User.objects.filter(email__iexact=proven.email).exists():
+                    return Response(
+                        {
+                            'code': 'link_required',
+                            'detail': 'Ya existe una cuenta con este correo. Confirma su contraseña '
+                                      'para entrar con Google a partir de ahora.',
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 return self.refused(request, proven.email)
             return self.session(request, linked.user, proven, created=False)
         return self.session(request, user, proven, created=True)

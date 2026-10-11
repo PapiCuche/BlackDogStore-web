@@ -45,3 +45,25 @@ def with_email(email: str) -> list:
     if not email:
         return []
     return list(get_user_model().objects.filter(email__iexact=email).order_by('pk'))
+
+
+def duplicate_email_groups(model=None) -> list:
+    """
+    Accounts that share one address, grouped — the past the unique rule cannot accept.
+
+    Grouped BY THE DATABASE, with UPPER(email): the expression of the unique
+    rule and of every `email__iexact` in this code. Grouping in Python with
+    `.lower()` would miss the pairs the database does see as one address.
+    Accounts WITHOUT an address are not a group: there may be many.
+
+    Read-only. Which account of a group stays is a person's decision: one may
+    hold the orders and another the password somebody remembers.
+    """
+    from itertools import groupby
+
+    from django.db.models.functions import Upper
+
+    model = model or get_user_model()
+    rows = model.objects.exclude(email='').annotate(address_key=Upper('email')).order_by('address_key', 'pk')
+    groups = [list(users) for _key, users in groupby(rows, key=lambda user: user.address_key)]
+    return [users for users in groups if len(users) > 1]

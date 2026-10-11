@@ -251,6 +251,9 @@ class VerifyingTest(_Base):
     def test_two_accounts_under_one_address_are_not_guessed_between(self):
         self.register('ana')
         code = self.last_code()
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         User.objects.create_user('ana.vieja', 'ANA@correo.test', PASSWORD, is_active=False)
         self.assert_refused(self.verify('ana@correo.test', code))
 

@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-08 — REGISTER-RACE-01: un correo, una cuenta, también en la base
+
+Rama `fix/register-race`, apilada sobre `feat/product-visibility-import`. **Con
+migración** (`0115_user_email_unique_ci`). Decisión: DEC-REGISTER-01. No desplegado.
+
+**Qué pasaba.** El registro preguntaba «¿este correo ya está?» y después creaba la
+cuenta. Dos peticiones en el mismo instante oían «no» las dos y creaban una cada una.
+Desde ahí ese correo no podía verificarse, ni pedir otra verificación, ni recuperar la
+contraseña: todo eso se niega a elegir entre dos cuentas. Una ráfaga dejaba un correo
+bloqueado para siempre. Reproducido: cinco registros simultáneos, cinco cuentas.
+
+**Qué hay ahora.**
+- La base rechaza una segunda cuenta con el mismo correo, sin distinguir mayúsculas
+  (índice único sobre `UPPER(email)`, la misma expresión con que el código compara un
+  correo). Las cuentas sin correo no cuentan.
+- Un correo de cuenta se escribe con letras sin tildes ni caracteres especiales: una
+  dirección como «ınfo@tienda.com» (con «ı» sin punto) pasa por otra y la base las
+  considera la misma.
+- Quien pierde la carrera recibe la misma respuesta que quien llega tarde: «Este correo
+  ya está registrado». Sin error 500 y sin nada a medio escribir. Lo mismo con un nombre
+  de usuario, y con la entrada con Google.
+- La migración **se detiene** si ya hay duplicados: dice cuántos, no cuáles, y no fusiona
+  ni borra nada.
+- `python manage.py list_duplicate_emails` los lista para que una persona decida (sólo
+  lectura; el correo sale enmascarado).
+
+**Producción, consultado el 2026-10-08 (sólo lectura):** 6 cuentas, **0 correos
+duplicados**, ninguna sin correo y ninguna con caracteres no ASCII. La migración no
+encontraría nada que la detenga. La base usa `en_US.utf8`.
+
+**Revisión independiente antes del PR:** la primera versión ponía el índice sobre
+`LOWER(email)`. El código compara con `UPPER`, y en una base UTF-8 —la de producción lo
+es— «ınfo@» e «info@» son la misma dirección para `UPPER` y distintas para `LOWER`: dos
+cuentas seguían cabiendo. Corregido, con dos pruebas antiguas que la regla rompía y
+que la corrida parcial no había ejecutado.
+
+**Deuda:** `createsuperuser` con un correo ya usado termina en un error de la base que
+cita el correo (sólo en la terminal de quien administra).
+
 ## 2026-10-08 — PRODUCT-DESTINATION-01: «sólo stock interno» y la plantilla de carga masiva
 
 Rama `feat/product-visibility-import`, apilada sobre `feat/mail-verification-code`. **Con migración**

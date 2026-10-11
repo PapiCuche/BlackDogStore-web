@@ -3,7 +3,7 @@ import re
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import AuthenticationFailed
@@ -15,7 +15,7 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from .auth_serializers import (
-    RegisterSerializer, UserSerializer,
+    EMAIL_TAKEN, RegisterSerializer, UserSerializer,
     VerifyEmailSerializer, ResendVerificationSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     ChangePasswordSerializer,
@@ -58,6 +58,35 @@ def _set_auth_cookies(response, access_token, refresh_token=None):
         )
 
 
+#: The two rules of the database about who an account is, by the name each
+#: carries in the refusal — the index of REGISTER-RACE-01 and Django's own
+#: unique username (PostgreSQL names the constraint; SQLite names the column).
+_ADDRESS_RULE = 'store_user_email_ci_uniq'
+_USERNAME_RULES = ('auth_user_username_key', 'auth_user.username')
+
+
+def _already_taken(refused, validated) -> dict | None:
+    """
+    What the registration form answers when its address or its name is taken —
+    said again for a request that only found out when the database refused it.
+
+    Decided by WHICH rule refused, read from the refusal itself and never
+    quoted: its text carries the address. None when it was neither rule.
+    The words are the form's own, on what the form understood (`validated`).
+    """
+    said = str(refused)
+    if _ADDRESS_RULE in said:
+        return {'email': [EMAIL_TAKEN]}
+    if any(rule in said for rule in _USERNAME_RULES):
+        return {'username': [str(User._meta.get_field('username').error_messages['unique'])]}
+    # The refusal did not say which (another driver, another wording): look.
+    if accounts.with_email(validated.get('email', '')):
+        return {'email': [EMAIL_TAKEN]}
+    if User.objects.filter(username=validated.get('username', '')).exists():
+        return {'username': [str(User._meta.get_field('username').error_messages['unique'])]}
+    return None
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
@@ -77,10 +106,24 @@ class RegisterView(generics.CreateAPIView):
             request, serializer.validated_data['email'],
         )
         issued = None
-        with transaction.atomic():
-            user = serializer.save(is_active=not needs_verification)
-            if needs_verification:
-                issued = verification_codes.issue(user)
+        try:
+            with transaction.atomic():
+                user = serializer.save(is_active=not needs_verification)
+                if needs_verification:
+                    issued = verification_codes.issue(user)
+        except IntegrityError as refused:
+            # REGISTER-RACE-01. The form asked «is it taken?» a moment before
+            # another request saved the same address or the same name. The
+            # database refused the second one; this request is told what it
+            # would have been told had it arrived a moment later. Nothing of it
+            # was written: the transaction above took it all back.
+            taken = _already_taken(refused, serializer.validated_data)
+            if taken is None:
+                # Not one of the two rules about WHO this is. That is a fault
+                # of ours, and a polite 400 would hide a registration broken
+                # for everybody: it stays an error.
+                raise
+            return Response(taken, status=status.HTTP_400_BAD_REQUEST)
 
         if needs_verification:
             # Its row stays even if the mail fails: it is what marks the account
