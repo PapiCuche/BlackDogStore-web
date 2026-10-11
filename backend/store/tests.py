@@ -30416,6 +30416,9 @@ class M8CustomerRepairsTest(M8ServiceBase):
     def test_ownership_is_the_foreign_key_and_not_the_email(self):
         # Same email, no Customer link. A household shares an address and often
         # an inbox; matching on one would hand over somebody else's device.
+        # REGISTER-RACE-01: the database refuses this pair now; it is a pair from before the rule.
+        from store.test_register_race import before_the_rule
+        before_the_rule()
         impostor = User.objects.create_user(
             username='homonimo', email=self.client_user.email or 'x@example.com',
             password='Pass123!',
