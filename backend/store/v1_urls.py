@@ -104,6 +104,7 @@ from .v1_pos_views import (
     V1PosContextView,
     V1PosPreviewView,
     V1PosProductLookupView,
+    V1PosUnitLookupView,
     V1PosProductSearchView,
     V1PosSaleView,
 )
@@ -114,6 +115,7 @@ from .v1_inventory_views import (
 from .v1_internal_views import (
     V1InternalContextView, V1InternalOrderDetailView,
     V1InternalOrderFulfillmentView, V1InternalOrderListView,
+    V1InternalOrderUnitDetailView, V1InternalOrderUnitLookupView, V1InternalOrderUnitsView,
 )
 from .v1_views import (
     V1StorefrontCategoryViewSet, V1StorefrontConfigView, V1StorefrontProductViewSet,
@@ -200,6 +202,19 @@ urlpatterns = [
         'internal/<slug:company_slug>/orders/<int:pk>/fulfillment/',
         V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
     ),
+    # SERIAL-PICK-01 — which device is handed over with a web order.
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/units/',
+        V1InternalOrderUnitsView.as_view(), name='v1-internal-order-units',
+    ),
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/units/lookup/',
+        V1InternalOrderUnitLookupView.as_view(), name='v1-internal-order-unit-lookup',
+    ),
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/units/<int:unit_pk>/',
+        V1InternalOrderUnitDetailView.as_view(), name='v1-internal-order-unit-detail',
+    ),
     # INTERNAL inventory. Tenant-scoped AND branch-scoped.
     # ── IP1A — the counter till, for native clients ──────────────────────────
     # Five routes, matching the five the Web till uses and not one more. They
@@ -217,6 +232,10 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/sales/pos/products/lookup/',
         V1PosProductLookupView.as_view(), name='v1-internal-pos-lookup',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/units/lookup/',
+        V1PosUnitLookupView.as_view(), name='v1-internal-pos-unit-lookup',
     ),
     path(
         'internal/<slug:company_slug>/sales/pos/preview/',

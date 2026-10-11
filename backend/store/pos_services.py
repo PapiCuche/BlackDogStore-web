@@ -255,6 +255,10 @@ def normalize_items(raw_items) -> list[dict]:
         raise PosValidationError(f'Demasiadas líneas (máximo {MAX_LINES}).')
 
     merged: dict[int, int] = {}
+    # SERIAL-PICK-01: the devices of a line, as `{unit id: how it was identified}`.
+    # Kept per product, like the quantity, so two lines of one product are one
+    # line with both devices.
+    devices: dict[int, dict[int, str]] = {}
     for entry in raw_items:
         if not isinstance(entry, dict):
             raise PosValidationError('Formato de línea inválido.')
@@ -263,6 +267,10 @@ def normalize_items(raw_items) -> list[dict]:
             quantity = int(entry.get('quantity', 1))
         except (TypeError, ValueError):
             raise PosValidationError('Producto o cantidad inválidos.')
+        for unit in _line_units(entry.get('units')):
+            if unit['id'] in devices.setdefault(product_id, {}):
+                raise PosValidationError('El mismo equipo está dos veces en la venta.')
+            devices[product_id][unit['id']] = unit['method']
         if quantity <= 0:
             raise PosValidationError('La cantidad debe ser mayor que cero.')
         if quantity > MAX_QUANTITY_PER_LINE:
@@ -278,9 +286,58 @@ def normalize_items(raw_items) -> list[dict]:
             )
 
     return [
-        {'product': pid, 'quantity': qty}
+        {'product': pid, 'quantity': qty, 'units': [
+            {'id': unit_id, 'method': method} for unit_id, method in sorted(devices.get(pid, {}).items())
+        ]}
         for pid, qty in sorted(merged.items())
     ]
+
+
+def _line_units(raw) -> list[dict]:
+    """
+    The devices a line names: `[{id, method}]`. Nothing for an ordinary product.
+
+    `method` is how each was identified — read by the scanner or typed by
+    hand — and it is one of those two or the sale is refused: it is written
+    down, with who sold, and «unknown» is not something to write down.
+    """
+    from .unit_identification import METHODS
+
+    if raw in (None, ''):
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise PosValidationError('Formato de equipos inválido.')
+    units = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise PosValidationError('Formato de equipos inválido.')
+        unit_id, method = entry.get('id'), entry.get('method')
+        if isinstance(unit_id, bool) or not isinstance(unit_id, int) or unit_id <= 0:
+            raise PosValidationError('Equipo inválido.')
+        if not isinstance(method, str) or method not in METHODS:
+            raise PosValidationError('Indica si cada equipo se leyó con el lector o se escribió a mano.')
+        units.append({'id': unit_id, 'method': method})
+    return units
+
+
+def check_line_units(products, items) -> None:
+    """
+    SERIAL-PICK-01 · NOTHING WITH A SERIAL IS SOLD WITHOUT SAYING WHICH DEVICE.
+
+    A serialized line names exactly as many devices as it sells; an ordinary
+    line names none. Whether each device is on this shelf is checked where the
+    stock is written, under its lock.
+    """
+    for entry in items:
+        product = products[entry['product']]
+        named = len(entry.get('units') or [])
+        if product.is_serialized and named != entry['quantity']:
+            raise PosValidationError(
+                f'Identifica el equipo: «{product.name}» se vende por su IMEI o serie. '
+                f'La venta lleva {entry["quantity"]} y hay {named} identificado(s).'
+            )
+        if not product.is_serialized and named:
+            raise PosValidationError(f'«{product.name}» no se controla por número de serie.')
 
 
 def request_fingerprint(
@@ -335,7 +392,11 @@ def request_fingerprint(
         'seller': int(seller_id) if seller_id not in (None, '') else None,
         'payment_method': str(payment_method),
         'items': [
-            {'p': int(i['product']), 'q': int(i['quantity'])}
+            # `u`: WHICH devices. The same key with another device is another
+            # sale, not a retry. Absent for an ordinary line, so what a basket
+            # without devices hashed to before SERIAL-PICK-01 is unchanged.
+            {'p': int(i['product']), 'q': int(i['quantity']),
+             **({'u': [[u['id'], u['method']] for u in i['units']]} if i.get('units') else {})}
             for i in items
         ],
         # The code AS TYPED, normalised for case and spacing only. Whether it
@@ -820,9 +881,13 @@ def build_pos_sale(
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
     validate_cash: bool = True,
+    require_units: bool = True,
 ):
     """
     Resolve and price a sale WITHOUT writing anything.
+
+    `require_units=False` is the PREVIEW: a basket is priced while its devices
+    are still being scanned. A sale never passes it.
 
     Shared by the preview endpoint and by `create_pos_sale`, so the number the
     operator reads aloud is produced by the same code that later charges it.
@@ -868,6 +933,8 @@ def build_pos_sale(
 
     items = normalize_items(items)
     products = resolve_pos_products(company, items)
+    if require_units:
+        check_line_units(products, items)
     customer = resolve_pos_customer(company, customer)
     seller = resolve_pos_seller(
         company, operator, seller_id, may_assign=may_assign_seller, branch=branch,
@@ -1187,7 +1254,28 @@ def create_pos_sale(
 
     # STRICT: raises InsufficientStockError, which unwinds this whole
     # transaction. Nothing was captured, so nothing needs repairing.
-    inventory_services.record_sale_stock_movements(order, actor=actor, strict=True)
+    #
+    # SERIAL-PICK-01: the devices that leave are the ones this sale named.
+    identified = {
+        entry['product']: [unit['id'] for unit in entry['units']]
+        for entry in normalized_items if entry.get('units')
+    }
+    try:
+        inventory_services.record_sale_stock_movements(
+            order, actor=actor, strict=True, identified=identified,
+        )
+    except inventory_services.InvalidMovementError as exc:
+        # A device that is not on this shelf any more (sold a moment ago at
+        # another till, moved, set aside): the sale is refused whole.
+        raise PosValidationError(str(exc)) from None
+    if identified:
+        from . import unit_identification
+        from .models import StockUnit
+
+        methods = {unit['id']: unit['method'] for entry in normalized_items for unit in entry.get('units') or []}
+        for unit in StockUnit.objects.filter(pk__in=list(methods), order=order).select_related('product'):
+            # A till sale is handed over as it is charged: the device has left.
+            unit_identification.record(order=order, unit=unit, method=methods[unit.pk], actor=actor, left=True)
 
     # THE COMMISSION IS WRITTEN ONLY WHEN THERE IS SOMETHING TO OWE.
     #

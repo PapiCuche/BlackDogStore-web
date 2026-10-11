@@ -52,6 +52,7 @@ import {
 import {
   PosConflictError,
   PosStockError,
+  PosUnitError,
   fetchCombos,
   fetchCustomers,
   fetchPosContext,
@@ -59,26 +60,29 @@ import {
   posPreview,
   posSale,
   posSearch,
+  posUnitLookup,
   type ComboOffer,
   type CustomerRow,
   type PosContext,
   type PosPreview,
   type PosProduct,
   type PosSaleResult,
+  type PosUnit,
 } from "../../lib/internal-api";
+import { UnitConfirmation, UnitEntry } from "../../components/UnitEntry";
+import {
+  newRhythm, pendingUnits, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, saleItems, unitLabel, unitOfLine,
+  withProduct, withQuantity, withUnit, withoutUnit,
+  type EntryMethod, type PosLine,
+} from "../../lib/unit-entry";
 import {
   downloadSalesNotePdf,
   ensureSalesNote,
   printSalesNoteTicket,
 } from "../../../lib/inventory";
 
-type Line = {
-  product: number;
-  name: string;
-  price: string;
-  quantity: number;
-  available: number;
-};
+// SERIAL-PICK-01: una línea con serie lleva los equipos que alguien identificó.
+type Line = PosLine;
 
 type Feedback = { kind: "ok" | "warn" | "error"; text: string } | null;
 
@@ -170,6 +174,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [combos, setCombos] = useState<ComboOffer[]>([]);
 
   const scanRef = useRef<HTMLInputElement | null>(null);
+  // SERIAL-PICK-01: el ritmo de las teclas del campo de escaneo, y el equipo
+  // escrito a mano que espera a que alguien diga «sí, es este».
+  const scanRhythm = useRef(newRhythm());
+  const [unitToConfirm, setUnitToConfirm] = useState<{ unit: PosUnit; product: PosProduct } | null>(null);
+  const linesRef = useRef<Line[]>([]);
   // Held across renders and across retries: the same basket keeps one key.
   const keyRef = useRef<string>(newKey());
 
@@ -216,6 +225,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     };
   }, [branch, companyId, done]);
 
+  useEffect(() => {
+    linesRef.current = lines;
+  }, [lines]);
+
   const focusScan = useCallback(() => {
     // Only when nothing else is deliberately focused — stealing the caret out
     // of the quantity box while somebody edits it is worse than losing a scan.
@@ -225,29 +238,60 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   }, []);
 
   const addProduct = useCallback((p: PosProduct) => {
-    setLines((prev) => {
-      const existing = prev.find((l) => l.product === p.id);
-      if (existing) {
-        return prev.map((l) =>
-          l.product === p.id ? { ...l, quantity: l.quantity + 1, available: p.available } : l,
-        );
-      }
-      return [
-        ...prev,
-        { product: p.id, name: p.name, price: p.price, quantity: 1, available: p.available },
-      ];
-    });
-    setFeedback({ kind: "ok", text: `${p.name} · ${money(p.price)}` });
+    setLines((prev) => withProduct(prev, p));
+    setFeedback(
+      p.is_serialized
+        ? { kind: "warn", text: `${p.name}: escanea el IMEI o la serie del equipo que se lleva.` }
+        : { kind: "ok", text: `${p.name} · ${money(p.price)}` },
+    );
+  }, []);
+
+  /**
+   * SERIAL-PICK-01 — un equipo identificado entra en la línea de su producto.
+   * `withUnit` rechaza el que ya está en la venta; ese motivo se muestra.
+   */
+  const addUnit = useCallback((unit: PosUnit, product: PosProduct, method: EntryMethod) => {
+    // Sobre `linesRef` y no sobre el estado que vio quien llamó: dos lecturas
+    // seguidas llegan con la red de por medio, y la segunda no puede pisar a la primera.
+    try {
+      const next = withUnit(linesRef.current, unit, { ...product, is_serialized: true }, method);
+      linesRef.current = next;
+      setLines(next);
+      setFeedback({ kind: "ok", text: `${product.name} · ${unitLabel(unit)} · ${money(product.price)}` });
+    } catch (err) {
+      setFeedback({
+        kind: "error",
+        text: err instanceof Error ? err.message : "Ese equipo no se pudo añadir.",
+      });
+    }
   }, []);
 
   async function handleScan(code: string) {
     const clean = code.trim();
     if (!clean || branch === null) return;
+    // Cómo llegó el código, medido en sus teclas: lo que se escribe a mano no
+    // se acepta sin validar y confirmar.
+    const method = rhythmMethod(scanRhythm.current, clean);
+    resetRhythm(scanRhythm.current);
     setScan("");
+    setUnitToConfirm(null);
     try {
       const product = await posLookup(companyId, branch, clean);
       if (product === null) {
-        setFeedback({ kind: "error", text: `Código no encontrado: ${clean}` });
+        // No es el código de un producto: puede ser el IMEI o la serie de un equipo.
+        try {
+          const found = await posUnitLookup(companyId, branch, clean, method);
+          if (method === "scanner") addUnit(found.unit, found.product, "scanner");
+          else setUnitToConfirm(found);
+        } catch (err) {
+          const unknown = err instanceof PosUnitError && err.code === "not_found";
+          setFeedback({
+            kind: "error",
+            text: unknown
+              ? `Código no encontrado: ${clean}`
+              : err instanceof Error ? err.message : "No se pudo comprobar ese equipo.",
+          });
+        }
         return;
       }
       if (product.available <= 0) {
@@ -372,12 +416,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const isCash = payment === "cash";
   const change = isCash && received ? Number(received) - total : null;
 
+  const unitsMissing = pendingUnits(lines);
+
   function setQuantity(productId: number, quantity: number) {
-    setLines((prev) =>
-      quantity <= 0
-        ? prev.filter((l) => l.product !== productId)
-        : prev.map((l) => (l.product === productId ? { ...l, quantity } : l)),
-    );
+    setLines((prev) => withQuantity(prev, productId, quantity));
   }
 
   async function charge() {
@@ -392,12 +434,19 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       return;
     }
     if (isCash && (received === "" || Number(received) < total)) return;
+    if (unitsMissing > 0) {
+      setFeedback({
+        kind: "error",
+        text: `Falta identificar ${unitsMissing} equipo${unitsMissing === 1 ? "" : "s"}: escanea su IMEI o su serie.`,
+      });
+      return;
+    }
     setCharging(true);
     setFeedback(null);
     try {
       const result = await posSale(companyId, {
         branch,
-        items: lines.map((l) => ({ product: l.product, quantity: l.quantity })),
+        items: saleItems(lines),
         customer: customer?.id ?? null,
         seller,
         payment_method: payment,
@@ -568,6 +617,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
             <p>Sucursal: {done.branch.name}</p>
+            {done.items.flatMap((item) =>
+              (item.units ?? []).map((sold) => (
+                <p key={`${item.product}-${sold.serial_number}-${sold.imei}`} className="break-all">
+                  {item.name}: <span className="font-mono">{unitLabel(sold)}</span>
+                </p>
+              )),
+            )}
             <p className="pt-2">Subtotal: {money(done.subtotal)}</p>
             {Number(done.discount) > 0 ? (
               <p>
@@ -751,15 +807,40 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 className={`${FIELD} font-mono text-base`}
                 placeholder="Escanea o escribe el código y pulsa Enter"
                 value={scan}
-                onChange={(e) => setScan(e.target.value)}
+                onChange={(e) => {
+                  rhythmChanged(scanRhythm.current, e.target.value);
+                  setScan(e.target.value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
                     void handleScan(scan);
+                    return;
                   }
-                  if (e.key === "Escape") setScan("");
+                  if (e.key === "Escape") {
+                    resetRhythm(scanRhythm.current);
+                    setScan("");
+                    return;
+                  }
+                  rhythmKey(scanRhythm.current, e.key, performance.now());
                 }}
               />
+              {unitToConfirm ? (
+                <div className="mt-3">
+                  <UnitConfirmation
+                    unit={unitToConfirm.unit}
+                    onConfirm={() => {
+                      addUnit(unitToConfirm.unit, unitToConfirm.product, "manual");
+                      setUnitToConfirm(null);
+                      scanRef.current?.focus();
+                    }}
+                    onReject={() => {
+                      setUnitToConfirm(null);
+                      scanRef.current?.focus();
+                    }}
+                  />
+                </div>
+              ) : null}
 
             {feedback ? (
               <p
@@ -822,6 +903,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                           price: c.price,
                           quantity: c.quantity,
                           available: c.available,
+                          // Un componente con serie se identifica igual: el combo
+                          // llena la cesta, no dice qué equipo sale.
+                          isSerialized: Boolean(c.is_serialized),
+                          requiresImei: Boolean(c.requires_imei),
+                          units: [],
                         })),
                       );
                       focusScan();
@@ -932,6 +1018,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         type="number"
                         min={1}
                         value={l.quantity}
+                        aria-label={`Cantidad de ${l.name}`}
                         onChange={(e) => setQuantity(l.product, Number(e.target.value))}
                         className="w-20 rounded border border-bd-border bg-background px-2 py-1 text-sm text-foreground outline-none"
                       />
@@ -939,6 +1026,45 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         {money(Number(l.price) * l.quantity)}
                       </span>
                     </div>
+                    {l.isSerialized ? (
+                      <div className="mt-2 space-y-2 border-t border-bd-border pt-2">
+                        {l.units.map((picked) => (
+                          <div key={picked.id} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="break-all font-mono text-foreground">{unitLabel(picked)}</span>
+                            <span className="shrink-0 text-muted">
+                              {picked.method === "manual" ? "A mano" : "Lector"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setLines((prev) => withoutUnit(prev, l.product, picked.id))}
+                              aria-label={`Quitar el equipo ${picked.imei || picked.serial_number}`}
+                              className="shrink-0 text-muted transition hover:text-danger"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        {l.units.length < l.quantity ? (
+                          <>
+                            <p className="text-[11px] text-warning">
+                              Falta identificar {l.quantity - l.units.length} equipo
+                              {l.quantity - l.units.length === 1 ? "" : "s"}.
+                            </p>
+                            <UnitEntry
+                              requiresImei={l.requiresImei}
+                              disabled={branch === null}
+                              lookup={async (code, method) => {
+                                const found = await posUnitLookup(companyId, branch as number, code, method);
+                                return unitOfLine(found.unit, l);
+                              }}
+                              onPicked={(unit, method) => {
+                                addUnit(unit, { id: l.product, name: l.name, price: l.price, available: l.available, barcode: "" }, method);
+                              }}
+                            />
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {l.quantity > l.available ? (
                       <p className="mt-1.5 text-[11px] text-warning">
                         Sólo hay {l.available} en esta sucursal.
@@ -1308,6 +1434,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 lines.length === 0 ||
                 branch === null ||
                 !terms ||
+                unitsMissing > 0 ||
                 previewError !== null ||
                 (isCash && (received === "" || Number(received) < total))
               }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FULFILLMENT_STATUS_OPTIONS, updateOrderFulfillment } from "../../lib/admin";
+import { FULFILLMENT_STATUS_OPTIONS, updateOrderFulfillment, type AdminOrderDetail } from "../../lib/admin";
 import { internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 type Props = {
@@ -18,9 +18,14 @@ type Props = {
    */
   allowed: readonly string[];
   onChanged: (newStatus: string) => void;
+  /**
+   * El pedido como quedó en el servidor. Un cambio de estado mueve más que el
+   * estado: lo que sale de la tienda ya no admite cambiar sus equipos.
+   */
+  onSaved?: (order: AdminOrderDetail) => void;
 };
 
-export function FulfillmentStatusSelect({ orderId, current, allowed, onChanged }: Props) {
+export function FulfillmentStatusSelect({ orderId, current, allowed, onChanged, onSaved }: Props) {
   const [value, setValue] = useState(current);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
@@ -42,10 +47,11 @@ export function FulfillmentStatusSelect({ orderId, current, allowed, onChanged }
     setError(null);
     setSuccess(false);
     try {
-      await updateOrderFulfillment(orderId, value, note);
+      const saved = await updateOrderFulfillment(orderId, value, note);
       setSuccess(true);
       setNote("");
       onChanged(value);
+      if (saved && onSaved) onSaved(saved);
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar el estado.");
     } finally {

@@ -232,6 +232,7 @@ def create_stock_movement(
     units=None,
     expected_unit_status: str | None = None,
     assign_units_for_sale: bool = False,
+    sell_units: bool = False,
 ) -> StockMovement:
     """
     Apply one stock movement to one branch atomically and return the Kardex row.
@@ -291,7 +292,7 @@ def create_stock_movement(
         unit_ids = _units_for_movement(
             branch=branch, product=product, quantity=quantity, units=units,
             expected_status=expected_unit_status, assign_for_sale=assign_units_for_sale,
-            order=order,
+            order=order, sell=sell_units,
         )
         if unit_ids is not None:
             metadata = {**(metadata or {}), 'unit_ids': unit_ids}
@@ -347,7 +348,7 @@ def create_stock_movement(
 
 
 def _units_for_movement(*, branch, product, quantity, units, expected_status,
-                        assign_for_sale, order):
+                        assign_for_sale, order, sell=False):
     """
     The ids of the units a movement of a serialized product is about, locked.
     None for an ordinary product. Called with the `BranchStock` row locked.
@@ -399,7 +400,15 @@ def _units_for_movement(*, branch, product, quantity, units, expected_status,
                     f'El equipo {unit.serial_number} está {unit.get_status_display().lower()}: '
                     'no admite esta operación.'
                 )
-    return sorted(unit.pk for unit in locked)
+    ids = sorted(unit.pk for unit in locked)
+    if sell:
+        # SERIAL-PICK-01: THESE devices, the ones somebody identified, leave in
+        # this sale — not the oldest of the branch.
+        StockUnit.objects.filter(pk__in=ids).update(
+            status=StockUnit.Status.SOLD, sold_at=timezone.now(), order=order,
+            updated_at=timezone.now(),
+        )
+    return ids
 
 
 def apply_manual_stock_movement(
@@ -473,7 +482,7 @@ def apply_manual_stock_movement(
 
 
 def record_sale_stock_movements(
-    order: Order, *, actor=None, strict: bool = False,
+    order: Order, *, actor=None, strict: bool = False, identified=None,
 ) -> list[StockMovement]:
     """
     Register one `sale_exit` per order item and decrement the FULFILLING branch.
@@ -604,10 +613,18 @@ def record_sale_stock_movements(
                         'branch_id': branch.pk,
                         'unit_price': str(item.price),
                     },
-                    # SERIALIZED-STOCK: a device is sold as a device. The
-                    # writer takes the oldest available units of this branch
-                    # and marks them sold in this same transaction.
-                    assign_units_for_sale=item.product.is_serialized,
+                    # SERIAL-PICK-01. `identified` (product id -> unit ids) is
+                    # what the till knows: the devices somebody identified
+                    # leave, and no other. Without it — a WEB payment — the
+                    # oldest units of the branch are SET ASIDE so the shelf
+                    # count is right; nobody has identified them, and no paper
+                    # names them until somebody does (`unit_identification`).
+                    **(
+                        {'units': list(identified[item.product_id]),
+                         'expected_unit_status': 'available', 'sell_units': True}
+                        if item.product.is_serialized and identified and item.product_id in identified
+                        else {'assign_units_for_sale': item.product.is_serialized}
+                    ),
                 )
             except InsufficientStockError as exc:
                 if strict:

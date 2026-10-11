@@ -91,7 +91,6 @@ export function StockUnitForm({
   const [productId, setProductId] = useState("");
   const [condition, setCondition] = useState(conditions[0]?.value ?? "new");
   const [cost, setCost] = useState("");
-  const [price, setPrice] = useState("");
   const [reason, setReason] = useState("");
   const [rows, setRows] = useState<Row[]>([{ ...BLANK }]);
   const [several, setSeveral] = useState(false);
@@ -152,7 +151,6 @@ export function StockUnitForm({
       imei2: row.imei2.trim(),
       condition,
       cost: cost.trim(),
-      price_override: price.trim(),
     }));
     try {
       await receiveStockUnits({ product_id: product.id, branch: Number(branchId), reason: reason.trim(), units });
@@ -298,13 +296,8 @@ export function StockUnitForm({
         ) : <div key={index}>{fields}</div>;
       })}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <Input label="Costo (opcional)" inputMode="decimal" value={cost} onChange={setCost} error={errorFor("cost")} />
-        <Input
-          label="Precio de este equipo (opcional)" inputMode="decimal" value={price} onChange={setPrice}
-          error={errorFor("price_override")}
-          placeholder={product ? `Catálogo: ${product.price}` : undefined}
-        />
         <Input
           label="Motivo o documento de ingreso *" required value={reason} onChange={setReason}
           error={errorFor("reason")} placeholder="Ej.: factura F001-234 del proveedor"

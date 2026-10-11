@@ -8836,9 +8836,8 @@ class StockUnit(models.Model):
 
     # What this unit cost, when known. Informative: there is no cost model yet.
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    # A price for THIS unit (an open box, a used one). Recorded and shown; the
-    # catalogue price is still what checkout charges until a sale can name a unit.
-    price_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # SERIAL-PICK-01: a device has NO price of its own. It is sold at the
+    # product's price, at the till and on the web (the owner's decision).
 
     received_at = models.DateTimeField(default=timezone.now)
     sold_at = models.DateTimeField(null=True, blank=True)
@@ -8929,6 +8928,59 @@ class ExternalIdentity(models.Model):
     def __str__(self):
         return f'{self.provider}:{self.user_id}'
 
+
+
+class OrderUnit(models.Model):
+    """
+    SERIAL-PICK-01 · the device a PERSON identified as the one of a sale.
+
+    Which unit left in which order, how it was identified — read by a scanner,
+    or typed by hand when the scanner would not read — by whom and when. It is
+    the ONLY thing a document reads to name a device: the note, the ticket and
+    the receipt print what somebody identified, never what the system assumed.
+
+    `StockUnit.order` is a different fact. It says a unit is out of the shelf
+    FOR an order: at the till that is the same moment; for a web order the
+    payment sets a unit aside, and no row exists here until it is handed over.
+
+    A row STAYS when its unit is returned after it left: the paper of that sale
+    named that device and must name it again on a reprint. `left_at` is that
+    moment — a till sale at once, a web order when it is sent or handed over —
+    and from then on the row is not taken back, whatever status the order is
+    moved to. A device returned BEFORE it left is no longer the one of that
+    order, and its row goes.
+
+    `legacy` marks what was sold under the previous rule («the oldest of the
+    branch»), recorded as such when this one arrived. Nobody identified those.
+    """
+
+    class Method(models.TextChoices):
+        SCANNER = 'scanner', 'Lector'
+        MANUAL = 'manual', 'Ingreso manual'
+        LEGACY = 'legacy', 'Asignado por el sistema (regla anterior)'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='order_units')
+    order = models.ForeignKey('store.Order', on_delete=models.PROTECT, related_name='identified_units')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='+')
+    unit = models.ForeignKey('store.StockUnit', on_delete=models.PROTECT, related_name='sale_records')
+    method = models.CharField(max_length=12, choices=Method.choices)
+    identified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    identified_at = models.DateTimeField(default=timezone.now)
+    left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['identified_at', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['order', 'unit'], name='unique_order_unit'),
+        ]
+        indexes = [
+            models.Index(fields=['order', 'product'], name='order_unit_line_idx'),
+        ]
+
+    def __str__(self):
+        return f'pedido {self.order_id} · equipo {self.unit_id} ({self.method})'
 
 
 class IntegrationConfig(models.Model):

@@ -301,16 +301,23 @@ class UnitOperationsTest(UnitsBase):
     def test_details_change_without_touching_stock(self):
         before = StockMovement.objects.count()
         units.update_unit(self.first, actor=self.staff, condition='open_box',
-                          price_override='4200.00', cost='3700.00', notes='Caja abierta')
+                          cost='3700.00', notes='Caja abierta')
 
         self.first.refresh_from_db()
         self.assertEqual(self.first.condition, 'open_box')
-        self.assertEqual(self.first.price_override, Decimal('4200.00'))
+        self.assertEqual(self.first.cost, Decimal('3700.00'))
         self.assertEqual(StockMovement.objects.count(), before)
         with self.assertRaises(units.StockUnitError):
             units.update_unit(self.first, actor=self.staff, condition='inventada')
         with self.assertRaises(units.StockUnitError):
-            units.update_unit(self.first, actor=self.staff, price_override='-1')
+            units.update_unit(self.first, actor=self.staff, cost='-1')
+
+    def test_a_device_has_no_price_of_its_own(self):
+        """SERIAL-PICK-01: it is sold at the product's price, at the till and on the web."""
+        self.assertNotIn('price_override', {field.name for field in StockUnit._meta.get_fields()})
+        units.update_unit(self.first, actor=self.staff, price_override='1.00')     # an old client sending it: ignored
+        self.first.refresh_from_db()
+        self.assertFalse(hasattr(self.first, 'price_override'))
 
 
 class SellingTest(UnitsBase):
@@ -595,7 +602,6 @@ class UnitsApiTest(UnitsBase):
         self.assertEqual(refused(imei2=IMEI_D)['field'], 'imei2')                         # igual al primero
         self.assertEqual(refused(imei2='123')['field'], 'imei2')
         self.assertEqual(refused(cost='-1')['field'], 'cost')
-        self.assertEqual(refused(price_override='caro')['field'], 'price_override')
         self.assertEqual(refused(condition='inventada')['field'], 'condition')
         missing_reason = self.api.post(self.LIST, {
             'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': '',

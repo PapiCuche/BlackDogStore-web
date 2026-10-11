@@ -50,6 +50,10 @@ def product_payload(product, branch, *, barcode=None) -> dict:
         'price': str(product.price),
         'available': inventory_services.branch_quantity(branch, product),
         'barcode': primary.code if primary else '',
+        # SERIAL-PICK-01: a product sold device by device. The till asks for
+        # the IMEI or serial of each one before it can charge.
+        'is_serialized': product.is_serialized,
+        'requires_imei': product.requires_imei,
     }
 
 
@@ -215,6 +219,8 @@ def sale_payload(
     note = getattr(order, 'sales_note', None)
     from .fiscal_services import original_fiscal_documents
     fiscal = original_fiscal_documents(order).order_by('-pk').first() if order.receipt_type else None
+    identified = identified_units(order)
+
     payload = {
         'order_id': order.pk,
         'receipt_type': order.receipt_type or ('sales_note' if note else ''),
@@ -251,6 +257,8 @@ def sale_payload(
                 'name': i.product.name,
                 'quantity': i.quantity,
                 'price': str(i.price),
+                # SERIAL-PICK-01: the devices this sale named, and how each was identified.
+                'units': identified.get(i.product_id, []),
             }
             for i in order.items.select_related('product').all()
         ],
@@ -301,3 +309,37 @@ def other_branches_with_stock(branches, product_ids, *, limit: int = 10) -> list
         }
         for r in rows
     ]
+
+
+def identified_units(order) -> dict:
+    """
+    product id -> the devices somebody identified for this order, for a screen.
+
+    Whole serial and IMEI: this is read by staff at the till or in the panel,
+    who have the device in their hand. `id` is the record's, to take it back.
+    """
+    from .models import OrderUnit
+
+    by_product: dict[int, list[dict]] = {}
+    for row in (
+        OrderUnit.objects.filter(order=order, company_id=order.company_id)
+        .select_related('unit', 'identified_by').order_by('identified_at', 'pk')
+    ):
+        by_product.setdefault(row.product_id, []).append({
+            'serial_number': row.unit.serial_number or '',
+            'imei': row.unit.imei or '',
+            'imei2': row.unit.imei2 or '',
+            'method': row.method,
+        })
+    return by_product
+
+
+def unit_lookup_payload(unit, branch, method) -> dict:
+    """A device the till may sell, with what it is — shown so a person confirms it."""
+    from . import unit_identification
+
+    return {
+        'unit': unit_identification.describe(unit),
+        'product': product_payload(unit.product, branch),
+        'method': method,
+    }

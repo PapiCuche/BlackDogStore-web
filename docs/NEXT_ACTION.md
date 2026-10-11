@@ -35,8 +35,8 @@ No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
 `GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
 A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
-MEAS-PRIVACY-NOTICE bloquean activar analítica. No iniciar SERIAL-PICK ni
-INT-IMPORT-CYCLE-01; no tocar #80/#85.
+MEAS-PRIVACY-NOTICE bloquean activar analítica. SERIAL-PICK-01 hecho en
+`feat/serial-pick` (sin fusionar). No iniciar INT-IMPORT-CYCLE-01; no tocar #80/#85.
 CHECKPOINT 1B cerrado sobre `a1d2a29` (#93); FIX-MEAS-LOG-TEST-01 IMPLEMENTADO.
 FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED con #95 en `c5f8c93`.
 
@@ -64,7 +64,8 @@ current_priority:
    apagada.
 5. Repetir `sh deploy/rehearsal.sh` sobre el commit que se vaya a publicar y recorrer
    `docs/despliegue-produccion.md` §11. Abrir el tráfico es orden del propietario.
-6. Primera fase tras publicar: SERIAL-PICK, cuando el propietario lo ordene.
+6. SERIAL-PICK-01 está hecho en `feat/serial-pick`, a la espera de fusión. Siguen la
+   garantía y posventa (3B) y el plan de códigos promocionales.
 
 validated:
 - CHECKPOINT 1B en `a1d2a29`: backend relevante 445 (2 sandbox BLOCKED/CREDENTIALS),
@@ -120,8 +121,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
   FISCAL-TENANT-SCOPE (pasarela y SUNAT son de la instalación), PAY-SWITCH-PENDING
   (cambiar de producto con cobros abiertos), SUNAT-SOL-CHECK, ENV-FALLBACK-RETIRE,
   INTEGRATION-READ-COST, MAIL-TENANT-SCOPE.
-- SERIAL-PICK (lo primero tras publicar): la caja vende el equipo más antiguo; hay que
-  entregar el que nombra la nota. SERIAL-TRANSFER, SERIAL-COUNT.
+- SERIAL-TRANSFER, SERIAL-COUNT. SERIAL-PRICE-DROP: borrar la columna
+  `price_override` en la versión siguiente a la que publique SERIAL-PICK-01.
 - PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda
   esperando; `healthcheck.sh` lo anota (sin alarma), no lo resuelve.
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».

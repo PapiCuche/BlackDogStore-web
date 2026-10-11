@@ -174,7 +174,9 @@ cantidad de equipos disponibles en ella. Por eso:
 | Registrar equipos (lote) | entran como disponibles; todo el lote o nada | entrada por compra |
 | Apartar / liberar | deja de estar a la venta / vuelve | salida manual / entrada manual |
 | Dar de baja | sale del stock, con motivo | salida por daño |
-| Venta (caja o web) | se asignan los equipos más antiguos de la sucursal | salida por venta |
+| Venta en caja | sale el equipo que se identificó (lector o a mano) | salida por venta |
+| Pago de un pedido web | se aparta un equipo; cuál sale se dice al entregar | salida por venta |
+| Entregar otro equipo del mismo modelo | el apartado vuelve al estante | entrada manual + salida manual |
 | Registrar devolución | el mismo equipo vuelve a estar disponible | entrada por devolución |
 
 - La misma serie o el mismo IMEI no entran dos veces en una empresa, en ningún
@@ -191,17 +193,29 @@ se suma a ellas.
 Registrar un equipo con su formulario y cargar muchos desde Excel están en
 `docs/pagos-equipos-documentos.md` §2 y §3.
 
-**Al vender, el sistema elige el equipo: el más antiguo disponible en la sucursal.**
-La caja no deja escoger cuál. La nota de venta y el ticket imprimen la serie y el
-IMEI del equipo que quedó vendido, y **ése es el que hay que entregar**. Con un solo
-equipo de ese modelo en la tienda no hay nada que mirar; con varios, se entrega el
-que nombra la nota. Si se entrega otro, el sistema dará por vendido un equipo que
-sigue en la tienda y la garantía quedará a nombre de la serie equivocada.
+**Al vender, una persona dice qué equipo sale (SERIAL-PICK-01).**
 
-Todavía no (SERIAL-PICK, SERIAL-TRANSFER, SERIAL-COUNT):
+*En caja.* Escanea el IMEI o la serie del equipo en «Escanear código»: entra a la
+cesta con su modelo. También se puede buscar el modelo por nombre; la línea queda
+pidiendo su equipo y **no se cobra** hasta tenerlo. Si el lector no lee, «El lector no
+lee: escribirlo a mano»: se escribe el IMEI (15 dígitos; un dígito cambiado se rechaza),
+el sistema muestra qué equipo es —modelo, estado, IMEI y serie— y se confirma con el
+equipo en la mano. Queda registrado que se escribió a mano y quién lo hizo.
 
-- elegir o leer con el lector el equipo concreto al vender. Se cobra además el precio
-  de catálogo; el precio propio de un equipo se guarda y se muestra, no se cobra;
+*Pedido web.* El pago aparta un equipo. Al entregar, en la ficha del pedido, «Equipos
+que se entregan»: se identifica igual, con el lector o a mano. Puede ser otro equipo del
+mismo modelo; el apartado vuelve al estante. Con dos pedidos del mismo modelo en espera,
+sirve cualquiera de las dos cajas apartadas. Sin identificarlo, el pedido no se puede
+marcar como enviado ni entregado. Hasta entonces se puede quitar y corregir; después no,
+aunque el pedido se devuelva a un estado anterior. Un equipo devuelto antes de la
+entrega deja de ser el del pedido, que vuelve a pedir uno.
+
+La nota de venta y el ticket imprimen la serie y el IMEI **del equipo identificado**, y
+nada antes de que alguien lo identifique. Se cobra el precio del producto: un equipo no
+tiene precio propio.
+
+Todavía no (SERIAL-TRANSFER, SERIAL-COUNT):
+
 - transferir un equipo entre sucursales. Una empresa con más de una sucursal no puede
   moverlo: la misma serie no entra dos veces;
 - recuento por lectura de series. La lista de Inventario › Equipos sirve de hoja de

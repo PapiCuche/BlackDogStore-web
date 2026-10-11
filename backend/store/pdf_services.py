@@ -93,39 +93,30 @@ def delivery_label(method: str, city: str = '') -> str:
 
 def sold_units(order) -> dict:
     """
-    The serialized devices that left the stock IN THIS SALE: product id -> units.
+    The serialized devices of THIS sale: product id -> units.
 
-    Read from the sale's own Kardex movements (which record the ids of the
-    units they took) and from the units still assigned to the order. The
-    movement is what makes a REPRINT honest: a device returned later is
-    detached from the order, and the paper issued for that sale must still name
-    the device it named.
+    SERIAL-PICK-01: what somebody IDENTIFIED as the device of this order
+    (`OrderUnit`), and nothing else. A web order that was paid and not yet
+    handed over has a unit set aside and names none: the paper must not print
+    an IMEI nobody has checked against the device.
+
+    A row stays when its unit is returned later, which is what makes a REPRINT
+    honest: the paper issued for that sale must still name the device it named.
 
     Never from a product's description or from anything typed into the sale.
     """
-    from .models import StockMovement, StockUnit
-
-    ids = set()
-    for metadata in StockMovement.objects.filter(
-        order=order, movement_type=StockMovement.SALE_EXIT,
-    ).values_list('metadata', flat=True):
-        for unit_id in (metadata or {}).get('unit_ids') or []:
-            if isinstance(unit_id, int):
-                ids.add(unit_id)
-    ids.update(StockUnit.objects.filter(order=order).values_list('pk', flat=True))
-    if not ids:
-        return {}
+    from .models import OrderUnit
 
     by_product: dict[int, list[dict]] = {}
-    # Inside the order's company: an id in a JSON field is never a pass to
-    # another tenant's device.
-    for unit in StockUnit.objects.filter(
-        company_id=order.company_id, pk__in=ids,
-    ).order_by('received_at', 'pk'):
-        by_product.setdefault(unit.product_id, []).append({
-            'serial_number': unit.serial_number or '',
-            'imei': unit.imei or '',
-            'imei2': unit.imei2 or '',
+    # Inside the order's company: a row is never a pass to another tenant's device.
+    for row in (
+        OrderUnit.objects.filter(order=order, company_id=order.company_id, unit__company_id=order.company_id)
+        .select_related('unit').order_by('identified_at', 'pk')
+    ):
+        by_product.setdefault(row.product_id, []).append({
+            'serial_number': row.unit.serial_number or '',
+            'imei': row.unit.imei or '',
+            'imei2': row.unit.imei2 or '',
         })
     return by_product
 

@@ -220,6 +220,33 @@ class V1PosProductLookupView(V1PosSurfaceMixin, APIView):
         )
 
 
+class V1PosUnitLookupView(V1PosSurfaceMixin, APIView):
+    """
+    GET ?code=&method=&branch= — SERIAL-PICK-01. The device a code names, if
+    this branch can sell it. The rule lives in `unit_identification`; this is
+    the same answer the web till gets.
+    """
+
+    def get(self, request, company_slug=None):
+        company = self.get_till(request)
+        try:
+            branch = self.resolve_branch(
+                request, company, request.query_params.get('branch'),
+            )
+        except _BranchRefused as exc:
+            return _branch_error(exc)
+        from . import pos_payloads, unit_identification
+
+        method = request.query_params.get('method') or unit_identification.SCANNER
+        try:
+            unit = unit_identification.sellable_unit(
+                company=company, branch=branch, code=request.query_params.get('code', ''), method=method,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return Response(pos_payloads.unit_lookup_payload(unit, branch, method))
+
+
 class V1PosPreviewView(V1PosSurfaceMixin, APIView):
     """
     POST — what this basket costs, before charging it.
@@ -255,7 +282,7 @@ class V1PosPreviewView(V1PosSurfaceMixin, APIView):
                 manual_discount_type=data.get('manual_discount_type', ''),
                 manual_discount_value=data.get('manual_discount_value'),
                 discount_reason=data.get('discount_reason', ''),
-                validate_cash=False,
+                validate_cash=False, require_units=False,
                 # Authority is resolved HERE, from the caller's capabilities —
                 # never read from the request body. A client that sent
                 # `may_apply_manual_discount: true` changes nothing.

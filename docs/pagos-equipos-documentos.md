@@ -100,8 +100,9 @@ publicada: es la única forma de ver llegar una notificación real.
 Inventario › Equipos › **+ Registrar equipo**.
 
 El formulario muestra desde el principio lo que identifica al equipo: sucursal,
-producto, condición, **número de serie**, **IMEI**, IMEI 2, costo, precio propio y el
-motivo o documento de ingreso. «Guardar y añadir otro» conserva sucursal, producto y
+producto, condición, **número de serie**, **IMEI**, IMEI 2, costo y el motivo o
+documento de ingreso. Un equipo no tiene precio propio: se vende al precio de su
+producto (SERIAL-PICK-01). «Guardar y añadir otro» conserva sucursal, producto y
 motivo para el siguiente.
 
 - **Un equipo es una unidad.** Dos teléfonos del mismo modelo son dos registros, cada

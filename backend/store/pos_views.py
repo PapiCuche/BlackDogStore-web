@@ -209,6 +209,38 @@ class AdminPosLookupView(APIView):
         return Response(_product_payload(entry.product, branch, barcode=entry))
 
 
+class AdminPosUnitLookupView(APIView):
+    """
+    GET /api/admin/pos/units/lookup/?code=&method=&branch=
+
+    SERIAL-PICK-01 — the device a code names (IMEI or serial), if it can be
+    sold from this branch. `method` is how the code arrived: `scanner`, or
+    `manual` when somebody typed it — and then a phone is its IMEI, checked.
+    Refusals say why (`code`): the cashier has the device in hand.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminPosThrottle]
+
+    def get(self, request):
+        company, error = _context(request, CAP_POS)
+        if error:
+            return error
+        branch, error = _branch_or_error(request, company, request.query_params.get('branch'))
+        if error:
+            return error
+        from . import pos_payloads, unit_identification
+
+        method = request.query_params.get('method') or unit_identification.SCANNER
+        try:
+            unit = unit_identification.sellable_unit(
+                company=company, branch=branch, code=request.query_params.get('code', ''), method=method,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return Response(pos_payloads.unit_lookup_payload(unit, branch, method))
+
+
 class AdminPosSearchView(APIView):
     """
     GET /api/admin/pos/products/search/?q=...&branch=...
@@ -563,7 +595,7 @@ class AdminPosPreviewView(APIView):
                 # Cash is NOT validated in a preview: the operator is still
                 # counting it out, and refusing to show the total until they
                 # finish would defeat the purpose. The sale checks it.
-                validate_cash=False,
+                validate_cash=False, require_units=False,
                 may_assign_seller=has_capability(request.user, company, CAP_ASSIGN_SELLER),
                 may_apply_manual_discount=has_capability(
                     request.user, company, CAP_DISCOUNTS,

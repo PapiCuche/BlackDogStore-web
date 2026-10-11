@@ -263,6 +263,10 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
         return Response(self._payload(request, order, company))
 
     def _payload(self, request, order, company):
+        from . import unit_identification
+
+        transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
+        view = unit_identification.order_view(order)
         return {
             **V1InternalOrderDetailSerializer(order).data,
             # The allowed next states, FROM THE SERVER.
@@ -273,8 +277,14 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
             # reads as a broken app rather than as a policy.
             #
             # Presentation input, not permission: the PATCH re-checks.
-            'available_fulfillment_transitions':
-                list(fulfillment.allowed_fulfillment_statuses(request.user, company)),
+            'available_fulfillment_transitions': transitions,
+            # SERIAL-PICK-01, the same facts the web panel shows: the devices
+            # somebody identified, how many are missing per product, and
+            # whether THIS caller may still say which device it is.
+            'units': [record for records in view['records'].values() for record in records],
+            'units_pending': sum(view['pending'].values()),
+            'units_pending_by_product': {str(product_id): count for product_id, count in view['pending'].items()},
+            'units_can_change': bool(transitions) and not view['left'],
         }
 
 
@@ -319,6 +329,90 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
             )
         except fulfillment.FulfillmentNotAllowed as exc:
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
+        except fulfillment.FulfillmentBlocked as exc:
+            # SERIAL-PICK-01, the same answer as the web panel: the devices of
+            # the order have to be identified before it leaves the shop.
+            return Response(
+                {'detail': exc.detail, 'code': 'units_pending', 'pending': sum(exc.pending.values())},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
         return Response(self._payload(request, order, company))
+
+
+class _V1OrderUnitsBase(V1InternalOrderDetailView):
+    """
+    SERIAL-PICK-01 — the devices of an order, from the app.
+
+    ONE RULE, TWO SURFACES: the same service the web panel calls, behind the
+    same capability as the fulfilment change (`sales.orders.manage`) and the
+    same order visibility. The app that is refused «delivered» because a device
+    is missing must be able to say which device it is.
+    """
+
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def manageable_order(self, request, pk):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_MANAGE)
+        return company, _visible_order(request, company, pk)
+
+    def after(self, request, order, company, code=status.HTTP_200_OK):
+        order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
+        return Response(self._payload(request, order, company), status=code)
+
+
+class V1InternalOrderUnitLookupView(_V1OrderUnitsBase):
+    """GET ?code=&method= — the device a code names, if this order is waiting for it. Writes nothing."""
+
+    http_method_names = ['get', 'head', 'options']
+
+    def get(self, request, company_slug=None, pk=None):
+        from . import unit_identification
+
+        company, order = self.manageable_order(request, pk)
+        method = request.query_params.get('method') or unit_identification.SCANNER
+        try:
+            unit = unit_identification.candidate_for_order(
+                order=order, code=request.query_params.get('code', ''), method=method,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return Response({'unit': unit_identification.describe(unit), 'method': method})
+
+
+class V1InternalOrderUnitsView(_V1OrderUnitsBase):
+    """POST {code, method} — this is the device being handed over."""
+
+    http_method_names = ['post', 'options']
+
+    def post(self, request, company_slug=None, pk=None):
+        from . import unit_identification
+
+        company, order = self.manageable_order(request, pk)
+        data = request.data if hasattr(request.data, 'get') else {}
+        try:
+            unit_identification.identify_for_order(
+                order=order, code=data.get('code', ''), method=data.get('method'),
+                actor=request.user, request=request,
+            )
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self.after(request, order, company, status.HTTP_201_CREATED)
+
+
+class V1InternalOrderUnitDetailView(_V1OrderUnitsBase):
+    """DELETE — take back a device identified by mistake, while it has not left the shop."""
+
+    http_method_names = ['delete', 'options']
+
+    def delete(self, request, company_slug=None, pk=None, unit_pk=None):
+        from . import unit_identification
+
+        company, order = self.manageable_order(request, pk)
+        try:
+            unit_identification.forget(order=order, order_unit_id=unit_pk, actor=request.user, request=request)
+        except unit_identification.UnitIdentificationError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self.after(request, order, company)

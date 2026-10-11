@@ -100,13 +100,64 @@ registros DNS only; la apertura pública requiere otra orden del propietario.
   mover un producto con serie sin los equipos de que se trata; como todo cambio de
   stock pasa por ahí, ningún ajuste, carga, transferencia o recuento puede
   desajustar la cifra.
-- **La venta asigna equipos concretos** (los más antiguos de la sucursal) bajo el
-  bloqueo de la fila de stock, en la misma transacción que la salida.
+- **La venta asigna equipos concretos** bajo el bloqueo de la fila de stock, en la
+  misma transacción que la salida. Cuáles, lo dice DEC-SERIAL-02.
 - **Identificadores únicos por empresa, en cualquier estado.** Un equipo vendido
   conserva su fila y, si vuelve, es la misma.
 - **El modo sólo cambia con stock cero**, y el escritor relee el modo cuando ya tiene
   bloqueado el producto.
 - **«Equipos disponibles» es un subconjunto de «Unidades en stock»**, no un sumando.
+
+### DEC-SERIAL-02 · El equipo que sale es el que una persona identificó (SERIAL-PICK-01)
+
+- **En caja, nada con serie se vende sin decir qué equipo.** La venta lleva, por cada
+  unidad, el equipo y cómo se identificó. Sin eso se rechaza entera. Antes el sistema
+  vendía el más antiguo de la sucursal y el papel imprimía ese IMEI, fuera cual fuera
+  el que se entregaba.
+- **Dos formas, y no pesan igual.** `scanner`: el código entra a ráfaga y se acepta.
+  `manual`: cuando el lector no lee. A mano, un equipo que tiene IMEI se identifica por
+  su IMEI (15 dígitos y su dígito de control), no por la serie, y el panel **muestra**
+  el equipo encontrado para que la persona confirme que es ese.
+- **`OrderUnit` es el registro**: qué equipo, de qué pedido, cómo se identificó, quién y
+  cuándo. Es lo único que leen la nota de venta, el ticket y, después, la garantía.
+  Queda además en auditoría (`order_unit_identified`), sin el IMEI en la línea.
+- **Apartar no es identificar.** El pago de un pedido web aparta un equipo
+  (`StockUnit.order`) para que nadie más lo venda; no dice cuál se entrega. Lo dice
+  quien lo entrega, igual que en caja. Si entrega otro del mismo modelo, el apartado
+  vuelve al estante y el cambio queda en el Kardex como una entrada y una salida.
+- **Dos pedidos en espera pueden llevarse la caja del otro.** Mientras nadie lo haya
+  identificado, qué equipo apartó el pago para qué pedido no importa: quien entrega toma
+  cualquiera y los dos pedidos intercambian su apartado, sin línea en el Kardex.
+- **Un pedido con equipos sin identificar no sale.** «Enviado» y «entregado» se rechazan
+  (409) mientras falte alguno. La comprobación se hace con el pedido bloqueado.
+- **Lo que salió no se cambia** (`OrderUnit.left_at`). Se marca al enviar o entregar —y al
+  cobrar, en caja— y no se borra: devolver el pedido a «en preparación» no reabre el
+  equipo que salió.
+- **Un equipo devuelto antes de salir deja de ser el del pedido.** El pedido vuelve a no
+  nombrar ninguno y no sale hasta identificar el que sí se entrega; ese sale con una sola
+  línea de Kardex, porque la devolución ya puso uno de vuelta. Devuelto después de salir,
+  el registro se conserva: el papel de esa venta lo nombró.
+- **Un pedido debe un equipo sólo si su stock salió equipo por equipo.** Si se pagó cuando
+  el producto se contaba por cantidad y el producto pasó a llevar serie después, no hay
+  equipo que ese pedido pueda nombrar.
+- **Cómo llegó el código lo declara el panel** (el ritmo de las teclas del texto que se
+  envía, o el botón «a mano»): un servidor no puede ver un lector. La regla del IMEI
+  para lo escrito a mano se exige donde el servidor recibe el código —la consulta del
+  equipo en caja y la entrega de un pedido—. La venta de caja lleva el equipo ya
+  consultado, por su identificador, y guarda lo que el panel declaró y quién.
+- **Una negativa no dice dónde más está un equipo.** Si no está en la sucursal, se dice
+  eso; ni la otra sucursal ni el producto del equipo.
+- **Una regla, dos superficies.** El panel y la app (API v1) llaman al mismo servicio,
+  tras la misma capacidad que el cambio de despacho.
+- **Bloqueos en el orden del módulo:** pedido, estante, equipos. Una entrega y una venta
+  del mismo modelo no se interbloquean.
+- **Un equipo no tiene precio propio.** Se retira `StockUnit.price_override`: se cobra
+  el precio del producto, en caja y en la web. Dos precios para un mismo modelo son dos
+  productos. La columna sigue en la base una versión más (SERIAL-PRICE-DROP): `migrate`
+  corre con la versión anterior aún en línea, y esa versión la lee.
+- **Las ventas anteriores** quedan registradas con método `legacy`: sus documentos se
+  reimprimen igual, y se distingue lo que una persona identificó de lo que el sistema
+  asignó. No se copian los pedidos que aún esperan entrega: a esos se les aplica la regla.
 
 ### DEC-CUSTOMER-01 · La cuenta es la identidad; no se crean fichas vacías
 

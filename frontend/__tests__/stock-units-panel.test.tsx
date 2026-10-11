@@ -25,7 +25,7 @@ function unit(overrides: Record<string, unknown> = {}) {
     id: 1, product_id: 10, product_name: 'iPhone 16', branch_id: 1, branch_name: 'Centro',
     serial_number: 'F2LXK1ABC1', imei: '356938035643809', imei2: null,
     condition: 'new', condition_label: 'Nuevo', status: 'available', status_label: 'Disponible',
-    cost: '3800.00', price_override: null, catalogue_price: '4500.00',
+    cost: '3800.00',
     received_at: '2026-10-05T15:00:00Z', sold_at: null, order_id: null, notes: '',
     ...overrides,
   };
