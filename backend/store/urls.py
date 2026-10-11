@@ -117,6 +117,7 @@ from .print_views import (
     AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
     AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
 )
+from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
 from .settings_views import (
     AdminCompanySettingsView, AdminSequenceDetailView, AdminSequenceListView,
@@ -168,6 +169,9 @@ urlpatterns = [
         'dev/demo-accounts/',
         DevDemoAccountsView.as_view(), name='dev-demo-accounts',
     ),
+    # Vista previa de los correos. Sólo con DEBUG=True; si no, 404. Ver el módulo.
+    path('dev/mail-preview/', MailPreviewIndexView.as_view(), name='dev-mail-preview'),
+    path('dev/mail-preview/<slug:example>/', MailPreviewView.as_view(), name='dev-mail-preview-example'),
     path('auth/google/config/', GoogleConfigView.as_view(), name='auth-google-config'),
     path('auth/google/', GoogleSignInView.as_view(), name='auth-google'),
     path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),

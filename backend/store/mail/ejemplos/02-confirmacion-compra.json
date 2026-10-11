@@ -1,0 +1,84 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Recibimos tu pedido N.º [Número]",
+  "preheader": "Tu compra está confirmada. Aquí tienes el detalle y tu comprobante.",
+  "etiqueta": "Pedido · N.º [Número]",
+  "titulo": "Tu compra está confirmada",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Gracias por tu compra. Ya estamos preparando tu equipo y te avisaremos apenas esté listo para recoger o en camino."
+  ],
+  "detalle": {
+    "titulo": "Detalle del pedido",
+    "items": [
+      {
+        "nombre": "iPhone [Modelo]",
+        "nota": "[Capacidad] · [Color] · [Nuevo / Seminuevo]",
+        "valor": "S/ [Precio]"
+      },
+      {
+        "nombre": "[Accesorio]",
+        "nota": "Cant. [1]",
+        "valor": "S/ [Precio]"
+      }
+    ],
+    "resumen": [
+      {
+        "nombre": "Subtotal",
+        "valor": "S/ [Subtotal]"
+      },
+      {
+        "nombre": "Envío",
+        "valor": "S/ [Envío]"
+      },
+      {
+        "nombre": "Método de pago",
+        "valor": "[Yape / Plin / Izipay / Web]"
+      }
+    ],
+    "total": {
+      "nombre": "Total pagado",
+      "valor": "S/ [Total]"
+    }
+  },
+  "datos": {
+    "titulo": "Ficha técnica",
+    "campos": [
+      {
+        "nombre": "Modelo",
+        "valor": "iPhone [Modelo]"
+      },
+      {
+        "nombre": "Capacidad",
+        "valor": "[Capacidad]"
+      },
+      {
+        "nombre": "Color",
+        "valor": "[Color]"
+      },
+      {
+        "nombre": "Garantía",
+        "valor": "[1 año / 6 meses]"
+      }
+    ],
+    "destacados": [
+      {
+        "nombre": "IMEI",
+        "valor": "[IMEI]"
+      }
+    ]
+  },
+  "aviso": {
+    "etiqueta": "Comprobante",
+    "texto": "Tu [boleta / factura] electrónica llega adjunta a este correo. Guárdala: la necesitarás para hacer válida tu garantía."
+  },
+  "boton": {
+    "texto": "Ver mi pedido",
+    "url": "https://[tu-dominio]/pedidos/[Número]"
+  },
+  "motivo": "Recibes este correo porque realizaste una compra en Black Dog Store."
+}

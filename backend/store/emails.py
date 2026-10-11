@@ -44,9 +44,62 @@ def _signature() -> str:
     return f'\n\n— {name}' if name else ''
 
 
-def send_verification_email(user, raw_token):
-    link = f"{settings.FRONTEND_URL}/auth/verify-email?token={raw_token}"
+def _another_shops_address(request) -> bool:
+    """
+    Whether the person asked from the address of a company that has no template.
+
+    `DEFAULT_STOREFRONT_COMPANY_SLUG` says which storefront this installation
+    serves by default; a request's host can name another. Somebody who registers
+    at another shop's address is not written to with this shop's name, address
+    and phone. A host that cannot be read is treated as one.
+    """
+    from . import mail
+    from .tenancy import resolve_company_from_host
+
+    if request is None:
+        return False
     try:
+        company = resolve_company_from_host(request.get_host())
+    except Exception:
+        return True
+    return company is not None and not mail.available(company)
+
+
+def _dressed(kind: str, user, build, request):
+    """
+    `kind` rendered with the installation's template, or None.
+
+    None means «send the plain one»: there is no template here — the neutral
+    default of this module — or it could not be filled. An account e-mail that
+    does not go out because of how it looks is the wrong trade.
+
+    It only renders. Sending is the caller's one attempt, dressed or plain: a
+    message the server did not take is not sent a second time in other clothes.
+    """
+    from . import mail
+
+    try:
+        if _another_shops_address(request) or not mail.available():
+            return None
+        name = user.first_name or user.username
+        return mail.render(kind, build(brand=mail.brand(), name=name))
+    except Exception:
+        # Without the body: it carries the link.
+        logger.exception("The %s e-mail could not be dressed with the template for user %s", kind, user.pk)
+        return None
+
+
+def send_verification_email(user, raw_token, *, request=None):
+    """`request` is the one the person made, when there is one: see `_another_shops_address`."""
+    from . import mail
+    from .mail import builders
+
+    link = f"{settings.FRONTEND_URL}/auth/verify-email?token={raw_token}"
+    dressed = _dressed('verify_email', user, lambda **who: builders.verify_email(link=link, **who), request)
+    try:
+        if dressed is not None:
+            mail.deliver(dressed, user.email)
+            return
         send_mail(
             subject=_suffix('Verifica tu cuenta'),
             message=(
@@ -65,18 +118,25 @@ def send_verification_email(user, raw_token):
         logger.exception("Failed to send verification email to user %s", user.pk)
 
 
-def send_password_reset_email(user, raw_token, next_path=None):
+def send_password_reset_email(user, raw_token, next_path=None, *, request=None):
     """
     `next_path` is where the person was going when they found they could not
     log in. The caller has already checked it is the address of an invitation:
     nothing else is ever written into this link.
     """
+    from . import mail
+    from .mail import builders
+
     link = f"{settings.FRONTEND_URL}/auth/reset-password?token={raw_token}"
     if next_path:
         link += f"&next={quote(next_path, safe='')}"
+    dressed = _dressed('password_reset', user, lambda **who: builders.password_reset(link=link, **who), request)
     name = _platform_name()
     subject = f'Recuperación de contraseña — {name}' if name else 'Recuperación de contraseña'
     try:
+        if dressed is not None:
+            mail.deliver(dressed, user.email)
+            return
         send_mail(
             subject=subject,
             message=(

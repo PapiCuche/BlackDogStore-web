@@ -1,0 +1,53 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Tu cotización N.º [Número] · Black Dog Store",
+  "preheader": "Te enviamos la cotización que pediste, válida hasta el [Fecha].",
+  "etiqueta": "Cotización · N.º [Número]",
+  "titulo": "Aquí tienes tu cotización",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Gracias por escribirnos. Te dejamos el detalle con los precios vigentes. Si quieres separar el equipo o tienes alguna duda, respóndenos por WhatsApp."
+  ],
+  "detalle": {
+    "titulo": "Detalle de la cotización",
+    "items": [
+      {
+        "nombre": "iPhone [Modelo]",
+        "nota": "[Capacidad] · [Color] · Cant. [1]",
+        "valor": "S/ [Precio]"
+      },
+      {
+        "nombre": "[Servicio o accesorio]",
+        "nota": "Cant. [1]",
+        "valor": "S/ [Precio]"
+      }
+    ],
+    "resumen": [
+      {
+        "nombre": "Subtotal",
+        "valor": "S/ [Subtotal]"
+      },
+      {
+        "nombre": "Descuento",
+        "valor": "– S/ [Descuento]"
+      }
+    ],
+    "total": {
+      "nombre": "Total",
+      "valor": "S/ [Total]"
+    }
+  },
+  "aviso": {
+    "etiqueta": "Vigencia",
+    "texto": "Precios válidos hasta el [Fecha] o hasta agotar stock. Garantía: nuevos 1 año, seminuevos 6 meses."
+  },
+  "boton": {
+    "texto": "Aceptar por WhatsApp",
+    "url": "https://wa.me/51936449536?text=Hola,%20acepto%20la%20cotizaci%C3%B3n%20[N%C3%BAmero]"
+  },
+  "motivo": "Recibes este correo porque solicitaste una cotización a Black Dog Store."
+}

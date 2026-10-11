@@ -5106,7 +5106,9 @@ class Phase41EmailServiceUnitTest(TestCase):
         send_order_confirmation_email(order)
         msg = mail.outbox[0]
         self.assertIn("MacBook Pro M3", msg.body)
-        self.assertIn("9999.00", msg.body)
+        # MAIL-TEMPLATE-01: this order is the pilot company's, whose e-mails
+        # wear its template, and the template prints money as "S/ 9,999.00".
+        self.assertIn("S/ 9,999.00", msg.body)
 
     def test_pickup_store_email_body_contains_the_pickup_point(self):
         """
@@ -15021,6 +15023,10 @@ class Phase3CrossTenantDocumentTest(TestCase):
         self.assertIn('&lt;iframe', html)
 
 
+# MAIL-TEMPLATE-01: these hold the platform that no shop's template dresses. An
+# environment that names the pilot's storefront (production's own .env does)
+# would otherwise change what they see; `store.test_mail` holds the other case.
+@override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='')
 class Phase3AuthEmailTest(TestCase):
     """
     Account-security emails are PLATFORM emails, not tenant emails.

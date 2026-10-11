@@ -1,0 +1,21 @@
+{
+  "anio": "2026",
+  "asunto": "Restablece tu contraseña · Black Dog Store",
+  "preheader": "Usa este enlace para elegir una contraseña nueva. Vence en 1 hora.",
+  "etiqueta": "Cuenta web",
+  "titulo": "Restablece tu contraseña",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Recibimos una solicitud para restablecer la contraseña de tu cuenta. Usa el botón para elegir una nueva."
+  ],
+  "aviso": {
+    "etiqueta": "Vigencia",
+    "texto": "El enlace vence en 1 hora y sirve una sola vez. Si no lo pediste, ignora este correo: tu contraseña no cambiará."
+  },
+  "boton": {
+    "texto": "Elegir nueva contraseña",
+    "url": "https://[tu-dominio]/auth/reset-password?token=[token]",
+    "mostrar_enlace": true
+  },
+  "motivo": "Recibes este correo porque se pidió restablecer la contraseña de una cuenta de Black Dog Store con esta dirección."
+}

@@ -1,0 +1,26 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Confirma tu correo · Black Dog Store",
+  "preheader": "Un paso más para activar tu cuenta en blackdogstore.",
+  "etiqueta": "Cuenta web",
+  "titulo": "Confirma tu correo",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Creaste una cuenta en nuestra web. Confirma que este correo es tuyo para que puedas seguir tus pedidos, garantías y servicios técnicos."
+  ],
+  "codigo": {
+    "etiqueta": "Tu código",
+    "valor": "[000000]",
+    "nota": "Vence en [15] minutos. Si no fuiste tú, ignora este correo."
+  },
+  "boton": {
+    "texto": "Confirmar mi correo",
+    "url": "https://[tu-dominio]/confirmar?token=[token]",
+    "mostrar_enlace": true
+  },
+  "motivo": "Recibes este correo porque se registró una cuenta con esta dirección en la web de Black Dog Store."
+}

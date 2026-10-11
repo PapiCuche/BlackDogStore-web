@@ -388,6 +388,68 @@ def _build_internal_text(ctx: dict, order_id: int, admin_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The company's own e-mail template, when it has one
+# ---------------------------------------------------------------------------
+
+def _customer_bodies(order, ctx: dict, *, receipt_attached: bool) -> tuple:
+    """
+    (subject, text, html) of the buyer's confirmation.
+
+    Dressed in the template of the order's company if that company has one
+    (`store.mail`); otherwise the neutral message built in this module, which
+    is what every other company sends. A template that cannot be filled falls
+    back to it too: the confirmation of a paid order goes out either way.
+    """
+    from . import mail
+
+    company = getattr(order, "company", None)
+    try:
+        if company is not None and mail.available(company):
+            site = getattr(settings, "FRONTEND_URL", "").rstrip("/")
+            rendered = mail.render("order_confirmation", mail.builders.order_confirmation(
+                ctx, orders_url=f"{site}/orders", receipt_attached=receipt_attached,
+            ), company=company)
+            return rendered.subject, rendered.text, rendered.html
+    except Exception:
+        logger.exception("Order %s: the e-mail template could not be filled; sending the plain confirmation", order.pk)
+    return _order_subject("Confirmación de pedido", order, ctx), _build_customer_text(ctx), _build_customer_html(ctx)
+
+
+def _internal_bodies(order, ctx: dict, admin_url: str) -> tuple:
+    """(subject, text, html or None) of the shop's own notice. Same rule as above."""
+    from . import mail
+
+    company = getattr(order, "company", None)
+    try:
+        if company is not None and mail.available(company):
+            rendered = mail.render("internal_order", mail.builders.internal_order(ctx, admin_url=admin_url), company=company)
+            return rendered.subject, rendered.text, rendered.html
+    except Exception:
+        logger.exception("Order %s: the e-mail template could not be filled; sending the plain notice", order.pk)
+    return _order_subject("Nueva venta pagada", order, ctx), _build_internal_text(ctx, order.id, admin_url), None
+
+
+def _receipt_attachment(order, *, note: str, limit: int, log_message: str):
+    """
+    The PDF receipt as `(filename, bytes)`, or None. Best effort: the e-mail is
+    sent without it, and the skip is recorded where staff can see it.
+    """
+    from .models import Order  # local import to avoid circular
+
+    try:
+        pdf_bytes = _pdf_services.generate_order_receipt_pdf(order)
+        return _pdf_services.get_order_receipt_filename(order), pdf_bytes
+    except Exception:
+        pdf_err = traceback.format_exc(limit=3)
+        logger.exception(log_message, order.pk)
+        existing = Order.objects.filter(pk=order.pk).values_list("email_send_error", flat=True).first() or ""
+        pdf_note = f"{note}: {str(pdf_err)[:limit]}"
+        new_error = (f"{existing}; {pdf_note}" if existing else pdf_note)[:500]
+        Order.objects.filter(pk=order.pk).update(email_send_error=new_error)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Send helpers
 # ---------------------------------------------------------------------------
 
@@ -404,9 +466,12 @@ def send_order_confirmation_email(order) -> bool:
         return False  # idempotency guard
 
     ctx = build_order_confirmation_context(order)
-    subject = _order_subject("Confirmación de pedido", order, ctx)
-    text_body = _build_customer_text(ctx)
-    html_body = _build_customer_html(ctx)
+    # The receipt first: the message says whether it is attached.
+    receipt = _receipt_attachment(
+        order, note="pdf_skip", limit=200,
+        log_message="PDF generation failed for order %s; sending email without attachment",
+    )
+    subject, text_body, html_body = _customer_bodies(order, ctx, receipt_attached=receipt is not None)
 
     msg = EmailMultiAlternatives(
         subject=subject,
@@ -415,19 +480,8 @@ def send_order_confirmation_email(order) -> bool:
         to=[order.customer_email],
     )
     msg.attach_alternative(html_body, "text/html")
-
-    # Attach PDF receipt (best-effort: email is still sent if PDF generation fails)
-    try:
-        pdf_bytes = _pdf_services.generate_order_receipt_pdf(order)
-        msg.attach(_pdf_services.get_order_receipt_filename(order), pdf_bytes, "application/pdf")
-    except Exception:
-        pdf_err = traceback.format_exc(limit=3)
-        logger.exception("PDF generation failed for order %s; sending email without attachment", order.pk)
-        # Record in email_send_error so staff can see PDF was skipped
-        existing = Order.objects.filter(pk=order.pk).values_list("email_send_error", flat=True).first() or ""
-        pdf_note = f"pdf_skip: {str(pdf_err)[:200]}"
-        new_error = (f"{existing}; {pdf_note}" if existing else pdf_note)[:500]
-        Order.objects.filter(pk=order.pk).update(email_send_error=new_error)
+    if receipt is not None:
+        msg.attach(receipt[0], receipt[1], "application/pdf")
 
     msg.send()
     return True
@@ -455,9 +509,12 @@ def resend_order_confirmation_email(order) -> dict:
         )
 
     ctx = build_order_confirmation_context(order)
-    subject = _order_subject("Confirmación de pedido", order, ctx)
-    text_body = _build_customer_text(ctx)
-    html_body = _build_customer_html(ctx)
+    receipt = _receipt_attachment(
+        order, note="resend_pdf_skip", limit=150,
+        log_message="PDF generation failed for order %s during manual resend; sending email without attachment",
+    )
+    had_pdf = receipt is not None
+    subject, text_body, html_body = _customer_bodies(order, ctx, receipt_attached=had_pdf)
 
     msg = EmailMultiAlternatives(
         subject=subject,
@@ -466,22 +523,8 @@ def resend_order_confirmation_email(order) -> dict:
         to=[order.customer_email],
     )
     msg.attach_alternative(html_body, "text/html")
-
-    had_pdf = False
-    try:
-        pdf_bytes = _pdf_services.generate_order_receipt_pdf(order)
-        msg.attach(_pdf_services.get_order_receipt_filename(order), pdf_bytes, "application/pdf")
-        had_pdf = True
-    except Exception:
-        pdf_err = traceback.format_exc(limit=3)
-        logger.exception(
-            "PDF generation failed for order %s during manual resend; sending email without attachment",
-            order.pk,
-        )
-        existing = Order.objects.filter(pk=order.pk).values_list("email_send_error", flat=True).first() or ""
-        pdf_note = f"resend_pdf_skip: {str(pdf_err)[:150]}"
-        new_error = (f"{existing}; {pdf_note}" if existing else pdf_note)[:500]
-        Order.objects.filter(pk=order.pk).update(email_send_error=new_error)
+    if receipt is not None:
+        msg.attach(receipt[0], receipt[1], "application/pdf")
 
     # Raises on SMTP failure — propagated to caller (view returns 502)
     msg.send()
@@ -532,8 +575,7 @@ def send_internal_order_notification(order) -> bool:
     frontend_url = getattr(settings, "FRONTEND_URL", "").rstrip("/")
     admin_url = f"{frontend_url}/admin/orders/{order.id}" if frontend_url else ""
 
-    subject = _order_subject("Nueva venta pagada", order, ctx)
-    text_body = _build_internal_text(ctx, order.id, admin_url)
+    subject, text_body, html_body = _internal_bodies(order, ctx, admin_url)
 
     msg = EmailMultiAlternatives(
         subject=subject,
@@ -541,6 +583,8 @@ def send_internal_order_notification(order) -> bool:
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[notification_email],
     )
+    if html_body:
+        msg.attach_alternative(html_body, "text/html")
     msg.send()
     return True
 

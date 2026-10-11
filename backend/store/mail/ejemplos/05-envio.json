@@ -1,0 +1,72 @@
+{
+  "anio": "2026",
+  "firma": {
+    "cierre": "Gracias por confiar en nosotros,",
+    "nombre": "[Nombre del asesor]"
+  },
+  "asunto": "Tu pedido va en camino · N.º [Número]",
+  "preheader": "Te dejamos los datos para seguir tu envío.",
+  "etiqueta": "Envío · Pedido N.º [Número]",
+  "titulo": "Tu pedido va en camino",
+  "saludo": "Hola, [Nombre del cliente]:",
+  "parrafos": [
+    "Tu pedido ya salió de la tienda. Aquí tienes los datos para seguirlo."
+  ],
+  "progreso": {
+    "titulo": "Estado del envío",
+    "pasos": [
+      {
+        "texto": "Pedido confirmado",
+        "fecha": "[DD/MM]",
+        "hecho": true
+      },
+      {
+        "texto": "Preparado y embalado",
+        "fecha": "[DD/MM]",
+        "hecho": true
+      },
+      {
+        "texto": "En camino",
+        "fecha": "[DD/MM]",
+        "actual": true
+      },
+      {
+        "texto": "Entregado",
+        "fecha": "—",
+        "pendiente": true
+      }
+    ]
+  },
+  "datos": {
+    "titulo": "Datos del envío",
+    "campos": [
+      {
+        "nombre": "Destino",
+        "valor": "[Ciudad], [Departamento]"
+      },
+      {
+        "nombre": "Transportista",
+        "valor": "[Empresa / Delivery Arequipa]"
+      },
+      {
+        "nombre": "Llegada estimada",
+        "valor": "[DD/MM/AAAA]"
+      },
+      {
+        "nombre": "Recibe",
+        "valor": "[Nombre de quien recibe]"
+      }
+    ],
+    "destacados": [
+      {
+        "nombre": "N.º de seguimiento",
+        "valor": "[Código]"
+      }
+    ]
+  },
+  "boton": {
+    "texto": "Seguir mi envío",
+    "url": "[URL de seguimiento]"
+  },
+  "motivo": "Recibes este correo porque realizaste una compra en Black Dog Store."
+}

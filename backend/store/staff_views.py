@@ -373,11 +373,19 @@ def _send_invitation_email(invitation: StaffInvitation, raw_token: str) -> None:
     """
     from django.core.mail import send_mail
 
+    from . import mail
+
     base = getattr(settings, 'FRONTEND_URL', '') or ''
     link = f'{base.rstrip("/")}/invitacion?token={raw_token}'
     empresa = invitation.company.name
 
+    dressed = _dressed_invitation(invitation, link)
     try:
+        if dressed is not None:
+            # Un solo intento, vestido o no: lo que el servidor no tomó no se
+            # envía otra vez con otra ropa.
+            mail.deliver(dressed, invitation.email)
+            return
         send_mail(
             subject=f'Invitación para unirte a {empresa}',
             message=(
@@ -398,6 +406,35 @@ def _send_invitation_email(invitation: StaffInvitation, raw_token: str) -> None:
         logger.exception(
             'No se pudo enviar la invitación %s', invitation.pk,
         )
+
+
+def _dressed_invitation(invitation: StaffInvitation, link: str):
+    """
+    La invitación con la plantilla de correo de la empresa, o `None`.
+
+    `None` es «envía la de texto»: esa empresa no tiene plantilla, o no se pudo
+    rellenar. Sólo viste la plantilla la empresa a la que pertenece: la
+    invitación de otra no lleva la dirección ni el teléfono de nadie más.
+
+    Sólo compone. Enviar es de quien llama, una vez.
+    """
+    from . import mail
+
+    try:
+        if not mail.available(invitation.company):
+            return None
+        return mail.render('staff_invitation', mail.builders.staff_invitation(
+            company=invitation.company.name,
+            first_name=invitation.first_name,
+            role=invitation.role.name if invitation.role_id else '',
+            area=invitation.area.name if invitation.area_id else '',
+            expires_at=invitation.expires_at,
+            link=link,
+        ), company=invitation.company)
+    except Exception:  # noqa: BLE001
+        # Sin el enlace: un registro con el token dentro sería una copia del acceso.
+        logger.exception('No se pudo componer la invitación %s con la plantilla', invitation.pk)
+        return None
 
 
 class AdminStaffListView(APIView):
