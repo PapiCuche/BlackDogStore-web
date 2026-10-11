@@ -44,6 +44,10 @@ PRODUCT_TEMPLATE_HEADERS = [
     'Destino',
 ]
 
+#: IMPORT-SPLIT-01 — the template is ONE sheet: these headers and nothing under
+#: them. What follows (the help row, the example row, the names of the sheets
+#: that only explain) is what the PREVIOUS template carried. It is kept because
+#: people still upload files made with it, and none of it is a product.
 PRODUCT_TEMPLATE_HELP = [
     'Se admite un EAN, un UPC o el código interno de la tienda.',
     'Código interno imprimible. Se registra como código de barras interno.',
@@ -159,137 +163,91 @@ def _header_row(sheet, titles):
         cell.alignment = Alignment(vertical='center')
 
 
-def _instructions_sheet(workbook):
-    from openpyxl.styles import Alignment, Font, PatternFill
-
-    rules = image_rules()
-    sheet = workbook.create_sheet('Instrucciones')
-    sheet.sheet_view.showGridLines = False
-    _autosize(sheet, [4, 34, 78])
-
-    def title(row, text):
-        cell = sheet.cell(row=row, column=2, value=text)
-        cell.font = Font(bold=True, size=14)
-        sheet.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
-
-    def step(row, number, heading, body):
-        sheet.cell(row=row, column=1, value=number).font = Font(bold=True)
-        sheet.cell(row=row, column=2, value=heading).font = Font(bold=True)
-        cell = sheet.cell(row=row, column=3, value=body)
-        cell.alignment = Alignment(wrap_text=True, vertical='top')
-        sheet.cell(row=row, column=2).alignment = Alignment(wrap_text=True, vertical='top')
-        sheet.row_dimensions[row].height = max(30, 15 * (1 + len(body) // 75))
-
-    title(1, 'Cómo cargar productos, con su categoría, su destino y sus imágenes')
-    note = sheet.cell(
-        row=2, column=2,
-        value='Esta hoja, «Categorías» y «Ejemplo» son de ayuda: no se importan. '
-              'Los productos se escriben en la hoja «Productos».',
-    )
-    note.font = Font(italic=True, color='6B7280')
-    sheet.merge_cells(start_row=2, start_column=2, end_row=2, end_column=3)
-
-    separator = rules['separator']
-    formats = ', '.join(rules['formats'])
-    from .import_formats import DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE
-
-    steps = [
-        ('«Categoría» se elige de una lista',
-         'La hoja «Categorías» trae las de tu empresa. Una categoría que no está en la lista '
-         'debe crearse antes en Productos → Categorías, o activar «crear las categorías que '
-         'falten» al importar.'),
-        (f'«Destino»: {DESTINATION_LABELS[DESTINATION_ONLINE]}',
-         'El producto aparece en la tienda en línea y se puede comprar por la web.'),
-        (f'«Destino»: {DESTINATION_LABELS[DESTINATION_INTERNAL]}',
-         'El producto NO aparece en la tienda en línea ni se puede comprar por la web. Sigue '
-         'en inventario y se vende en caja y en servicio técnico, según los permisos de cada '
-         'persona.'),
-        ('«Destino» vacío no cambia nada',
-         'Un producto nuevo se publica en la tienda en línea. Uno que ya existe se queda como '
-         'estaba. Después se cambia desde la ficha del producto.'),
-        ('Las imágenes son opcionales',
-         'Puedes dejar «Imagen principal» e «Imágenes» vacías y añadir o cambiar las fotos '
-         'después, desde la ficha del producto.'),
-        ('Las imágenes NO se pegan dentro de Excel',
-         'Una imagen pegada en una celda no se puede leer. No insertes fotos en este archivo.'),
-        ('Excel guarda sólo los NOMBRES de archivo',
-         'En las columnas de imagen se escribe cómo se llama cada archivo, con su extensión: '
-         'iphone16-front.webp'),
-        ('«Imagen principal» lleva UN nombre',
-         'Es la foto que verá el catálogo. Ejemplo: iphone16-front.webp'),
-        (f'«Imágenes» lleva varios, separados por {separator}',
-         f'Todas las fotos del producto, en el orden en que deben verse: '
-         f'iphone16-front.webp{separator}iphone16-back.webp{separator}iphone16-side.webp'),
-        ('Las imágenes se adjuntan DESPUÉS, junto al Excel',
-         'Al subir este archivo, la pantalla pide los archivos de imagen: sueltos, o todos '
-         'dentro de un ZIP.'),
-        ('Los nombres deben coincidir',
-         'El nombre escrito aquí y el del archivo adjunto tienen que ser el mismo, con su '
-         'extensión. No importan las mayúsculas. La previsualización dice cuál falta.'),
-        ('Formatos admitidos', f'{formats}. Otros (GIF, SVG, HEIC, PDF) se rechazan.'),
-        ('Máximo por producto', f'{rules["max_per_product"]} imágenes por producto.'),
-        ('Tamaño máximo',
-         f'{rules["max_file_mb"]} MB por imagen. En una misma carga, hasta '
-         f'{rules["max_files"]} archivos y {rules["max_total_mb"]} MB en total.'),
-        ('Ejemplo completo',
-         'La hoja «Ejemplo» trae tres productos llenos y la lista de archivos que habría que '
-         'adjuntar con ellos.'),
-    ]
-    for index, (heading, body) in enumerate(steps, start=1):
-        step(3 + index, index, heading, body)
-
-    last = 3 + len(steps) + 2
-    sheet.cell(row=last, column=2, value='En una fila queda así').font = Font(bold=True)
-    box = PatternFill('solid', fgColor='F3F4F6')
-    for offset, (label, value) in enumerate([
-        ('Código', PRODUCT_TEMPLATE_EXAMPLE[1]),
-        ('Nombre', PRODUCT_TEMPLATE_EXAMPLE[2]),
-        ('Imagen principal', PRODUCT_TEMPLATE_EXAMPLE[6]),
-        ('Imágenes', PRODUCT_TEMPLATE_EXAMPLE[7]),
-    ], start=1):
-        left = sheet.cell(row=last + offset, column=2, value=label)
-        right = sheet.cell(row=last + offset, column=3, value=value)
-        left.fill = right.fill = box
-        left.font = Font(bold=True)
-    sheet.cell(
-        row=last + 6, column=2,
-        value='Y se adjuntan estos tres archivos: iphone16-front.webp, iphone16-back.webp, '
-              'iphone16-side.webp',
-    )
-    sheet.merge_cells(start_row=last + 6, start_column=2, end_row=last + 6, end_column=3)
+#: A cell list («data validation») is ONE text, split by commas, of at most
+#: this many characters. A catalogue whose names do not fit gets no list.
+_CELL_LIST_LIMIT = 255
+#: Rows under the headers that carry the lists.
+TEMPLATE_LAST_ROW = _TEMPLATE_ROWS + 1
 
 
-def _example_sheet(workbook):
-    from openpyxl.styles import Font
+def cell_list(names) -> str | None:
+    """
+    `names` as the formula of a cell list, or None when a cell cannot hold them.
 
-    separator = image_rules()['separator']
-    sheet = workbook.create_sheet('Ejemplo')
-    _header_row(sheet, PRODUCT_TEMPLATE_HEADERS)
-    rows = [
-        PRODUCT_TEMPLATE_EXAMPLE,
-        ['', 'FUNDA-16PM-N', 'Funda de silicona negra', 'Para iPhone 16 Pro Max.', 79.90,
-         'Accesorios', 'funda-negra.png', f'funda-negra.png{separator}funda-negra-lateral.png'],
-        ['', 'CABLE-USBC-1M', 'Cable USB-C de 1 metro', '', 49.90, 'Accesorios', '', ''],
-    ]
-    for offset, values in enumerate(rows, start=2):
-        for column, value in enumerate(values, start=1):
-            sheet.cell(row=offset, column=column, value=value)
-    _autosize(sheet, [20, 18, 42, 40, 16, 20, 34, 58])
+    ONE SHEET means the choices live inside the validation itself, not in a
+    second sheet to point at. That is ONE text, wrapped in quotes and split by
+    commas, and PICKING an item is typing it. So a list is left out when a name:
 
-    start = len(rows) + 4
-    sheet.cell(row=start, column=2, value='Archivos que se adjuntan con este Excel').font = Font(bold=True)
-    files = ['iphone16-front.webp', 'iphone16-back.webp', 'iphone16-side.webp',
-             'funda-negra.png', 'funda-negra-lateral.png']
-    for offset, name in enumerate(files, start=1):
-        sheet.cell(row=start + offset, column=2, value=name)
-    sheet.cell(
-        row=start + len(files) + 2, column=2,
-        value='El tercer producto no lleva imagen: sus dos columnas quedan vacías.',
-    ).font = Font(italic=True, color='6B7280')
-    sheet.cell(
-        row=start + len(files) + 3, column=2,
-        value='Esta hoja es un ejemplo y no se importa.',
-    ).font = Font(italic=True, color='6B7280')
+      · carries a comma or a quote — it would split, or end the text;
+      · starts like a formula (`=`, `+`, `-`, `@`) — picked, Excel would run it.
+        These names are a tenant's own, and a template must not hand its users a
+        cell that computes;
+      · holds a control character or a line break — the workbook cannot be
+        written with it at all;
+
+    or when all of them together pass 255 characters as Excel counts them
+    (UTF-16 units). What is not offered is still typed, and still checked when
+    the file is uploaded.
+    """
+    names = [str(name) for name in names if str(name).strip()]
+    if not names:
+        return None
+    for name in names:
+        if ',' in name or '"' in name or name.lstrip()[:1] in ('=', '+', '-', '@'):
+            return None
+        if any(ord(char) < 32 or ord(char) == 127 for char in name):
+            return None
+    joined = ','.join(names)
+    if len(joined.encode('utf-16-le')) // 2 > _CELL_LIST_LIMIT:
+        return None
+    return f'"{joined}"'
+
+
+def add_cell_list(sheet, column: str, formula) -> None:
+    """
+    A drop-down for `column`, rows 2 to the last template row. Nothing when there is no `formula`.
+
+    It OFFERS and never blocks, as in the owner's files. Excel compares what is
+    typed letter by letter — «nuevo» is not «Nuevo» to it — while the upload
+    reads both; and a category that does not exist yet is a legitimate thing to
+    type. What is wrong is said per row when the file is previewed.
+    """
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    if not formula:
+        return
+    rule = DataValidation(type='list', formula1=formula, allow_blank=True, showErrorMessage=False)
+    sheet.add_data_validation(rule)
+    rule.add(f'{column}2:{column}{TEMPLATE_LAST_ROW}')
+
+
+def number_columns(sheet, letters) -> None:
+    """Amounts with two decimals, for the whole column — as in the owner's files."""
+    for letter in letters:
+        sheet.column_dimensions[letter].number_format = '0.00'
+
+
+def header_notes(sheet, notes: dict) -> None:
+    """What goes under each header, as a note ON the header: it explains and is never a row."""
+    from openpyxl.comments import Comment
+
+    for cell in sheet[1]:
+        text = notes.get(cell.value)
+        if text:
+            note = Comment(text, 'Sistema')
+            note.width, note.height = 320, 30 + 16 * (1 + len(text) // 46)
+            cell.comment = note
+
+
+def text_columns(sheet, letters) -> None:
+    """
+    Identifiers as TEXT, for the whole column. A code that is all digits loses
+    its zeros in a general cell, and a 15-digit IMEI turns into 4.90154E+14.
+    Set on the column, not cell by cell: five hundred formatted empty cells are
+    five hundred rows for the importer to read.
+    """
+    for letter in letters:
+        sheet.column_dimensions[letter].number_format = '@'
 
 
 def _company_category_names(company) -> list[str]:
@@ -303,114 +261,81 @@ def _company_category_names(company) -> list[str]:
     )
 
 
-def _categories_sheet(workbook, names):
-    from openpyxl.styles import Alignment, Font
-
-    sheet = workbook.create_sheet('Categorías')
-    _header_row(sheet, ['CATEGORÍAS DE TU EMPRESA', 'CÓMO SE USAN'])
-    sheet.cell(row=2, column=1, value='Nombre exacto de la categoría').font = Font(size=8, italic=True, color='6B7280')
-    note = sheet.cell(row=2, column=2, value=(
-        'Son las categorías activas de tu empresa el día que descargaste esta plantilla. '
-        'En la hoja «Productos», la columna «Categoría» las ofrece en una lista. '
-        'Para una categoría nueva, créala antes en Productos → Categorías, o escribe su nombre '
-        'y activa «crear las categorías que falten» al importar. Esta hoja no se importa.'
-    ))
-    note.font = Font(size=8, italic=True, color='6B7280')
-    note.alignment = Alignment(wrap_text=True, vertical='top')
-    for offset, name in enumerate(names):
-        cell = sheet.cell(row=3 + offset, column=1, value=name)
-        # A name is text whatever it looks like: «=1+1» is a category somebody
-        # typed, not a formula for Excel to run when the file is opened.
-        cell.data_type = 's'
-    if not names:
-        sheet.cell(row=3, column=2, value='Tu empresa todavía no tiene categorías.').font = Font(italic=True, color='6B7280')
-    sheet.freeze_panes = 'A3'
-    _autosize(sheet, [36, 90])
-
-
-def _product_drop_downs(sheet, category_count: int):
-    """
-    The lists of «Categoría» and «Destino», and codes kept as text.
-
-    The category list HELPS and does not forbid: a name that is not in it is
-    how «crear las que falten» is used. The destination list does forbid: it
-    has two values and the importer accepts no third.
-    """
-    from openpyxl.worksheet.datavalidation import DataValidation
-
+def _destination_labels() -> tuple[str, str]:
     from .import_formats import DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE
 
-    first, last = 4, 3 + _TEMPLATE_ROWS
-    if category_count:
-        categories = DataValidation(
-            type='list', formula1=f"'Categorías'!$A$3:$A${2 + category_count}",
-            allow_blank=True, showErrorMessage=False,
-        )
-        categories.add(f'F{first}:F{last}')
-        sheet.add_data_validation(categories)
+    return DESTINATION_LABELS[DESTINATION_ONLINE], DESTINATION_LABELS[DESTINATION_INTERNAL]
 
-    choices = ','.join((DESTINATION_LABELS[DESTINATION_ONLINE], DESTINATION_LABELS[DESTINATION_INTERNAL]))
-    destination = DataValidation(
-        type='list', formula1=f'"{choices}"', allow_blank=True, showErrorMessage=True,
-        errorTitle='Destino', error='Elige «Publicar en e-commerce» o «Solo stock interno», o deja la celda vacía.',
-    )
-    destination.add(f'I{first}:I{last}')
-    sheet.add_data_validation(destination)
 
-    # A barcode read as a number loses its leading zeros and gains an «E+11».
-    # On the COLUMN, not cell by cell: five hundred formatted empty cells are
-    # five hundred «fila vacía» in every preview.
-    for column in ('A', 'B'):
-        sheet.column_dimensions[column].number_format = '@'
+def _product_header_notes() -> dict:
+    rules = image_rules()
+    online, internal = _destination_labels()
+    formats = ', '.join(rules['formats'])
+    return {
+        'Código de barras': 'Opcional. Un EAN, un UPC o el código interno de la tienda. Como texto.',
+        'Código': (
+            'Código interno imprimible. Una fila es un producto del catálogo. '
+            'Esta carga no mueve stock: las cantidades y los equipos con serie se cargan en Inventario.'
+        ),
+        'Nombre': 'Obligatorio.',
+        'Descripción': 'Opcional. Si se deja vacía no se borra la descripción existente.',
+        'Precio de venta': 'Obligatorio para productos nuevos. Usa punto decimal: 149.90',
+        'Categoría': (
+            'Una categoría de tu empresa, con su nombre exacto. Debe existir, salvo que al cargar '
+            'se active «crear las que falten» o se elija una para las filas que no traen.'
+        ),
+        'Imagen principal': (
+            'Opcional. El NOMBRE del archivo, por ejemplo telefono-frontal.webp. La imagen no se pega '
+            'en la celda: se adjunta al cargar. También se puede añadir o cambiar después, en la ficha del producto.'
+        ),
+        'Imágenes': (
+            f'Opcional. Nombres de archivo separados por {rules["separator"]} : frontal.webp|trasera.webp. '
+            f'Los archivos se adjuntan al cargar, sueltos o en un ZIP. Formatos: {formats}. '
+            f'Hasta {rules["max_per_product"]} imágenes por producto, {rules["max_file_mb"]} MB cada una '
+            f'y {rules["max_files"]} archivos por carga.'
+        ),
+        'Destino': (
+            f'Opcional. «{online}» o «{internal}». '
+            'Solo stock interno: sigue en inventario y se vende en caja y en servicio técnico, pero no aparece '
+            'en la tienda en línea. Vacío: lo nuevo se publica y lo existente no cambia. No es lo mismo que «activo».'
+        ),
+    }
 
 
 def product_template_bytes(company=None) -> bytes:
     """
-    A blank, VALID product template — that also explains how images travel.
+    The product template: ONE sheet, «Productos», its headers and nothing under them.
 
-    `company` is whose template it is: its «Categorías» sheet lists THAT
-    company's categories, read when it is downloaded. Without one the sheet is
-    there and empty.
+    IMPORT-SPLIT-01. There used to be a help row, an example row and three more
+    sheets. They are gone from what we hand out: an empty file is exactly what
+    it looks like, and what explained lives where nobody can import it — on the
+    screen, and in a note on each header.
 
-    Deliberately not a copy of the owner's 18-column sheet. That file carries
-    two rows of headers, twenty data validations openpyxl cannot read back, and
-    ten columns this catalogue has nowhere to put — including tax fields for
-    electronic invoicing this platform does not do. Reproducing it would hand
-    people a template whose columns are mostly ignored.
+    `company` is whose template it is: the «Categoría» list is THAT company's
+    active categories, read when it is downloaded (never a fixed list), so a
+    new category can still be typed for «crear las que falten». «Destino» lists
+    its two answers. Both lists offer and neither blocks, as in the owner's file.
 
-    The importer still reads that file. This is what we ASK for; that is what we
-    ACCEPT.
+    This creates and edits the CATALOGUE. It carries no quantity and no serial:
+    stock has its own uploads.
 
-    FOUR SHEETS, AND ONLY THE FIRST IS DATA. «Productos» comes first because
-    a preview without a chosen sheet reads the first one. Its help row and its
-    example row are recognised and skipped, and «Categorías», «Instrucciones»
-    and «Ejemplo» are never offered as product sheets: uploading the template
-    exactly as it was downloaded creates nothing.
+    The importer still reads the previous template and the owner's 18-column
+    sheet. This is what we ASK for; those are what we ACCEPT.
     """
-    from openpyxl.styles import Alignment, Font
-
     workbook = _workbook()
     sheet = workbook.active
     sheet.title = 'Productos'
 
     _header_row(sheet, PRODUCT_TEMPLATE_HEADERS)
-    for column, note in enumerate(PRODUCT_TEMPLATE_HELP, start=1):
-        cell = sheet.cell(row=2, column=column, value=note)
-        cell.font = Font(size=8, italic=True, color='6B7280')
-        cell.alignment = Alignment(wrap_text=True, vertical='top')
-    for column, value in enumerate(PRODUCT_TEMPLATE_EXAMPLE, start=1):
-        cell = sheet.cell(row=3, column=column, value=value)
-        # Grey italics: it reads as an example, and it is skipped on import.
-        cell.font = Font(italic=True, color='6B7280')
+    header_notes(sheet, _product_header_notes())
+    sheet.freeze_panes = 'A2'
+    _autosize(sheet, [22, 19, 42, 47, 18, 28, 31, 46, 28])
+    text_columns(sheet, ('A', 'B'))
 
-    sheet.freeze_panes = 'A3'
-    _autosize(sheet, [20, 18, 42, 40, 16, 24, 34, 58, 26])
+    number_columns(sheet, ('E',))
 
-    categories = _company_category_names(company)
-    _product_drop_downs(sheet, len(categories))
-    _categories_sheet(workbook, categories)
-    _instructions_sheet(workbook)
-    _example_sheet(workbook)
+    add_cell_list(sheet, 'F', cell_list(_company_category_names(company)))
+    add_cell_list(sheet, 'I', cell_list(_destination_labels()))
 
     buffer = io.BytesIO()
     workbook.save(buffer)

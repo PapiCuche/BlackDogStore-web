@@ -232,8 +232,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
   {
     id: "products.import",
     group: "products",
-    label: "Carga masiva",
-    description: "Importar productos desde Excel, con previsualización antes de escribir.",
+    label: "Carga de productos",
+    description: "Crear y editar productos y accesorios desde Excel. No mueve stock.",
     href: "/admin/products/import",
     requiredCapabilities: ["products.manage"],
     status: "implemented",
@@ -267,9 +267,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
   {
     id: "inventory.import",
     group: "inventory",
-    label: "Carga masiva",
-    description: "Ajustar existencias desde Excel. Genera movimientos de Kardex.",
+    label: "Carga de stock",
+    description: "Ajustar cantidades desde Excel. Genera movimientos de Kardex.",
     href: "/admin/inventory/import",
+    requiredCapabilities: ["inventory.adjust"],
+    status: "implemented",
+  },
+  {
+    // IMPORT-SPLIT-01: la carga de equipos tiene su propia entrada. Antes sólo
+    // se llegaba desde un enlace dentro de «Equipos».
+    id: "inventory.units.import",
+    group: "inventory",
+    label: "Carga de equipos",
+    description: "Equipos con serie e IMEI desde Excel: una fila, un equipo.",
+    href: "/admin/inventory/units/import",
     requiredCapabilities: ["inventory.adjust"],
     status: "implemented",
   },

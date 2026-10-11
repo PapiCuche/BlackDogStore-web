@@ -147,11 +147,16 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
         # Errors first: a preview of six hundred rows is read for what is wrong
         # with it, and burying twelve errors under four hundred clean lines is
         # the same as not reporting them.
+        # Then what carries a WARNING: it will be written, and somebody should
+        # see what was said about it. In a long file a warned row past the limit
+        # would otherwise exist only in the database.
         queryset = job.rows.all()
         ordered = list(queryset.filter(action=BulkImportRow.ERROR)[:limit])
-        remaining = limit - len(ordered)
-        if remaining > 0:
-            ordered += list(queryset.exclude(action=BulkImportRow.ERROR)[:remaining])
+        fine = queryset.exclude(action=BulkImportRow.ERROR)
+        for more in (fine.exclude(warnings=[]), fine.filter(warnings=[])):
+            remaining = limit - len(ordered)
+            if remaining > 0:
+                ordered += list(more[:remaining])
         payload['rows'] = [{
             'sheet': r.sheet_name, 'row': r.row_number, 'action': r.action,
             'match_key': r.match_key, 'data': r.normalized_data,
@@ -200,7 +205,7 @@ class AdminImportInspectView(APIView):
 
         sheets = []
         for name in workbook.sheetnames:
-            # The template's own «Instrucciones» / «Ejemplo»: listed, so the
+            # The «Instrucciones» / «Ejemplo» of a previous template: listed, so the
             # screen can say what they are, and never offered as data.
             is_help = (
                 import_type == BulkImportJob.PRODUCTS and import_exports.is_help_sheet(name)
@@ -362,12 +367,16 @@ class AdminUnitImportTemplateView(APIView):
         company, error = _context(request, CAP_STOCK)
         if error:
             return error
-        return _xlsx(unit_import_services.template_bytes(), unit_import_services.TEMPLATE_FILENAME)
+        # The branches THIS person can load into: the list never names another.
+        branches = list(
+            visible_branches(request.user, company).filter(is_active=True).order_by('name').values_list('name', flat=True)
+        )
+        return _xlsx(unit_import_services.template_bytes(branches), unit_import_services.TEMPLATE_FILENAME)
 
 
 class AdminUnitImportPreviewView(APIView):
     """
-    Stage «Equipos serializados.xlsx». Registers nothing.
+    Stage a device file (the «Equipos» template). Registers nothing.
 
     The company comes from the caller; each row's branch is looked up INSIDE
     that company and must be one the caller may operate in. Neither is taken
@@ -588,8 +597,8 @@ class AdminProductTemplateView(APIView):
         company, error = _context(request, CAP_PRODUCTS)
         if error:
             return error
-        # Of THIS company: its categories go in the «Categorías» sheet.
-        return _xlsx(import_exports.product_template_bytes(company), 'plantilla-productos.xlsx')
+        # Of THIS company: its categories are the list under «Categoría».
+        return _xlsx(import_exports.product_template_bytes(company), 'carga-masiva-productos.xlsx')
 
 
 class AdminInventoryExportView(APIView):

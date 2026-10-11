@@ -4,14 +4,14 @@ import { StockUnitImport } from '@/app/admin/components/StockUnitImport';
 import { fetchWithAuth } from '@/app/lib/auth';
 
 /**
- * UNIT-IMPORT · «Equipos serializados.xlsx».
+ * UNIT-IMPORT · la carga de equipos.
  *
  * Una fila es un equipo físico. La pantalla lo dice antes de adjuntar nada,
  * enseña qué haría el servidor con cada fila y sólo entonces ofrece cargar.
  * No valida un IMEI ni cuenta equipos: muestra lo que el servidor respondió.
  */
 
-jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
+jest.mock('@/app/lib/auth', () => ({ ...jest.requireActual('@/app/lib/auth'), fetchWithAuth: jest.fn() }));
 const send = fetchWithAuth as jest.MockedFunction<typeof fetchWithAuth>;
 
 const BRANCHES = [{ id: 1, name: 'Centro' }, { id: 2, name: 'Norte' }];
@@ -64,6 +64,8 @@ test('the screen says one row is one device before anything is attached', () => 
 
   expect(screen.getByText(/Una fila = un equipo físico/)).toBeInTheDocument();
   expect(screen.getByText(/No hay columna de cantidad/)).toBeInTheDocument();
+  // IMPORT-SPLIT-01: y a dónde ir si el producto aún no existe.
+  expect(screen.getByRole('link', { name: 'Carga de productos' })).toHaveAttribute('href', '/admin/products/import');
   const template = screen.getByRole('link', { name: 'Descargar plantilla' });
   expect(template.getAttribute('href')).toMatch(/\/admin\/inventory\/units\/import\/template\/$/);
   expect(screen.getByRole('button', { name: 'Previsualizar' })).toBeDisabled();
@@ -140,4 +142,29 @@ test('what changed between the preview and the load is reported and nothing clai
 
   expect(await screen.findByRole('alert')).toHaveTextContent('No se cargó ningún equipo');
   expect(screen.queryByRole('status')).toBeNull();
+});
+
+test('an IMEI under a product not marked as carrying one is said above the table, with how many', async () => {
+  previewReply = { status: 201, body: job({ summary: { units: 2, imei_on_unmarked_products: 1 }, rows_truncated: true }) };
+  render(<StockUnitImport branches={BRANCHES} />);
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+
+  // Aunque la fila avisada no quepa entre las que se muestran, la cuenta está a la vista.
+  const said = await screen.findByRole('note', { name: 'IMEI en productos sin marca' });
+  expect(said).toHaveTextContent('1 equipo trae IMEI');
+  expect(said).toHaveTextContent('no está marcado «lleva IMEI»');
+  expect(said).toHaveTextContent('El IMEI se guardará');
+  expect(screen.getByText(/las de error primero y las que llevan un aviso después/)).toBeInTheDocument();
+  // No impide registrar: es un aviso.
+  expect(screen.getByRole('button', { name: 'Registrar 2 equipos' })).toBeEnabled();
+});
+
+test('without such rows nothing is said', async () => {
+  previewReply = { status: 201, body: job({ summary: { units: 2, imei_on_unmarked_products: 0 } }) };
+  render(<StockUnitImport branches={BRANCHES} />);
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await screen.findByRole('button', { name: 'Registrar 2 equipos' });
+  expect(screen.queryByRole('note', { name: 'IMEI en productos sin marca' })).toBeNull();
 });

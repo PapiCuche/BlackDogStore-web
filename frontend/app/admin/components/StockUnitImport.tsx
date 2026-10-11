@@ -20,6 +20,7 @@ import {
   type UnitImportJob, type UnitImportRow,
 } from "@/app/lib/stock-units";
 
+import { ImportKindNotice } from "./ImportKindNotice";
 import { Panel, TableWrap, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -79,6 +80,7 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
   const applied = job?.status === "applied";
   const registered = job?.summary.applied?.units ?? 0;
   const rows = job?.rows ?? [];
+  const unmarked = job?.summary.imei_on_unmarked_products ?? 0;
 
   return (
     <div className="space-y-6">
@@ -88,18 +90,7 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
         action={<a className={internalButtonClass} href={unitImportTemplateUrl()}>Descargar plantilla</a>}
       >
         <div className="space-y-4">
-          <div className="rounded-lg border border-bd-border bg-background px-4 py-3 text-sm leading-6 text-foreground">
-            <p className="font-semibold">Una fila = un equipo físico.</p>
-            <p className="text-muted">
-              Dos teléfonos iguales son dos filas, cada una con su número de serie y su IMEI. No hay
-              columna de cantidad: una cantidad no dice qué equipos son. Lo que un equipo no tiene
-              (IMEI 2, por ejemplo) se deja vacío.
-            </p>
-            <p className="mt-2 text-xs text-muted">
-              Columnas: Código · Producto · Sucursal · Número de serie · IMEI · IMEI 2 · Condición ·
-              Costo · Motivo / referencia. El producto debe estar marcado «con número de serie».
-            </p>
-          </div>
+          <ImportKindNotice kind="units" />
 
           <div className="grid gap-3 md:grid-cols-3">
             <label className="block text-xs font-semibold text-muted">
@@ -189,6 +180,17 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
               registra ningún equipo.
             </p>
           ) : null}
+          {unmarked > 0 ? (
+            <p
+              role="note"
+              aria-label="IMEI en productos sin marca"
+              className="mb-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning"
+            >
+              {plural(unmarked, "equipo trae IMEI", "equipos traen IMEI")} y su producto no está marcado
+              «lleva IMEI». El IMEI se guardará, pero no se exigirá al vender. Si alguna fila es de otro
+              producto, corrígela antes de registrar; cada una lleva su aviso.
+            </p>
+          ) : null}
           <TableWrap>
             <caption className="sr-only">Equipos del archivo</caption>
             <thead>
@@ -214,8 +216,8 @@ export function StockUnitImport({ branches }: { branches: { id: number; name: st
           </TableWrap>
           {job.rows_truncated ? (
             <p className="mt-3 text-xs text-muted">
-              Se muestran las primeras filas, con las de error primero. El archivo completo se
-              registra al confirmar.
+              Se muestran las primeras filas: las de error primero y las que llevan un aviso después.
+              El archivo completo se registra al confirmar.
             </p>
           ) : null}
         </Panel>

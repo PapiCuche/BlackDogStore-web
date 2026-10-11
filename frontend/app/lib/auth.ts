@@ -168,7 +168,7 @@ export const SELECTED_COMPANY_KEY = "internal-selected-company";
  * Sólo se toca `/admin/`: el escaparate público resuelve su tenant por el host,
  * y meterle un parámetro de empresa sería justo lo contrario de eso.
  */
-function withSelectedCompany(url: string): string {
+export function withSelectedCompany(url: string): string {
   if (typeof window === "undefined") return url;
   // Las DOS superficies internas. `/me/internal-dashboard/` no lleva «admin»
   // en la ruta y quedaba fuera: el selector de empresa seguía diciendo «elige
