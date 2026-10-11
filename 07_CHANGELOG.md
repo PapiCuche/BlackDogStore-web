@@ -3,6 +3,58 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — PAY-GUARD-01
+
+**Added**
+- Cambios de pasarela con cobros abiertos: el servidor consulta a «Mi Cuenta Web» y
+  rechaza (409) activar el otro producto, apagar, revocar, cambiar de tienda o de
+  entorno mientras un cobro pueda cobrarse todavía o siga sin resolver. La pantalla dice
+  «El cambio no se hizo», cuántos son y cuándo reintentar.
+- Registro de auditoría `payments_interrupted`, por empresa, cuando un cambio se hace
+  sin poder comprobar los cobros abiertos («SDK web», o pasarela que no responde).
+- Con claves de TEST de la consola sólo un MASTER abre un pago; los demás reciben «El
+  pago en línea todavía no está disponible en esta tienda» (503, `payment_test_only`).
+- `PaymentTransaction`: entorno y tienda con que se abrió el intento, cuándo se
+  consultó por última vez, y los estados «Sin intento de pago» y «Cobro duplicado»
+  (migración `0117_payment_attempt_origin`).
+- Registros de auditoría `payment_confirmed_in_test`, `payment_duplicate`,
+  `payment_undecided` y `payment_integrity_failed`, con la empresa del pedido.
+- `reconcile_payments --reference <referencia>`: un solo intento, tenga la antigüedad
+  que tenga.
+- La comprobación de estado da ATENCIÓN por un cobro duplicado y por una respuesta de
+  la pasarela que no se pudo decidir.
+
+**Changed**
+- Renovar contraseña o claves de «Mi Cuenta Web» en la misma tienda y entorno ya no
+  pide `INTERRUMPIR` con cobros abiertos.
+- Una notificación de rechazo de «Mi Cuenta Web» deja el intento esperando mientras su
+  formulario pueda cobrar (30 minutos); antes lo cerraba y el pago que viniera después
+  ya no se consultaba.
+- Un pago autorizado sobre un pedido ya pagado queda como «Cobro duplicado»; antes,
+  como un pago más.
+- La conciliación pregunta primero por quien lleva más sin respuesta (antes, por el más
+  reciente), cierra lo que nadie intentó pagar, y termina si la pasarela rechaza a
+  quien llama.
+- Antes de abrir un segundo formulario para un pedido se pregunta a la pasarela por el
+  anterior.
+- «Dirección de la API» de «Mi Cuenta Web» sólo admite `https://api.micuentaweb.pe`. No
+  se siguen redirecciones.
+- `reconcile_payments --hours` exige 1 o más.
+
+**Fixed**
+- Un pago repetido ya no vuelve a pagar un pedido que dejó de estar pagado.
+- Varias conciliaciones a la vez dejan un solo `payment_reconciled`.
+- Una respuesta cortada o ilegible de la pasarela ya no escapa como excepción.
+
+**Security**
+- Las credenciales de «Mi Cuenta Web» ya no muestran la contraseña al imprimirse.
+- Un intento abierto con una tienda o un entorno no se confirma con otros.
+- Un resultado que no declara haber sido firmado no se registra como firmado.
+
+**Not verified**
+- Nada contra la pasarela real. Lo que la prueba con claves de TEST tiene que contestar
+  está en `docs/pagos-equipos-documentos.md` §1.5.
+
 ## 2026-10-11 — IZIPAY-MCW-AUDIT-01
 
 **Added**

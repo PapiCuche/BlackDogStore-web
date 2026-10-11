@@ -565,6 +565,8 @@ sólo mira.
 | La base de datos no responde | `pg_isready` |
 | Una actualización se quedó a medias | Migraciones sin aplicar |
 | Una notificación de pago que no coincidía con el pedido | Intentos de pago con fallo de integridad, últimas 24 h |
+| La pasarela cobró dos veces el mismo pedido | Intentos «Cobro duplicado», últimas 24 h: hay que devolverlo desde el panel de la pasarela |
+| La pasarela tiene algo que la tienda no puede decidir | Intentos con una respuesta sin decidir (dos cobros, un reembolso o un importe parcial bajo una referencia), últimas 24 h |
 | Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó. Con «Mi Cuenta Web», `reconcile_payments` se lo pregunta a la pasarela cada cinco minutos (§6.1.3c) |
 | WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
 | Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
@@ -742,7 +744,7 @@ Pendiente, y conviene saberlo:
   recoge `reconcile_payments` (§6.1.3c); con el otro producto de Izipay el pedido queda
   esperando. `deploy/healthcheck.sh` anota cuántos pagos siguen sin respuesta, sin dar
   la alarma: no se distingue de una compra abandonada. Si un cliente dice que pagó hace
-  días: `reconcile_payments --hours 72`, o el panel de la pasarela.
+  días: `reconcile_payments --reference <referencia del pago>`, o el panel de la pasarela.
 - Un equipo con serie se vende diciendo cuál: en caja, con el lector o a mano; en un
   pedido web, al entregarlo (SERIAL-PICK-01,
   [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5). Un pedido web
@@ -872,7 +874,8 @@ Qué falta para publicar, y de quién depende.
 | ☐ | Volver atrás | LISTO: copia antes de actualizar, `git checkout` del commit anterior y, si una migración cambió datos, `restore.sh` | §7 |
 | ☐ | Repetir `sh deploy/rehearsal.sh` sobre el commit que se publica | LISTO: es un comando | §9 |
 
-Antes de cobrar de verdad: un pago completo en TEST con la tienda ya publicada. Es
+Antes de cobrar de verdad: un pago completo en TEST con la tienda ya publicada, hecho
+con la sesión de MASTER iniciada (sólo MASTER paga con claves de TEST). Es
 la única forma de ver llegar una notificación real de la pasarela.
 
 ## 11. Antes de abrir la tienda: qué tiene que estar comprobado

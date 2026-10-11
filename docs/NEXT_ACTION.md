@@ -53,7 +53,8 @@ current_priority:
    ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
-3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
+3. Un pago completo en TEST con la tienda publicada y la sesión de MASTER iniciada (a
+   los demás compradores la tienda no les abre el pago mientras las claves sean de TEST): cierra IZIPAY-PRODUCT e
    IZIPAY-TOKEN-CONTRACT.
 4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9). Condiciones para
    activar un proveedor en producción: CSP-01 implantada y validada con los dominios
@@ -126,8 +127,8 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - PAY-RECONCILE: con «Mi Cuenta Web», `reconcile_payments` pregunta a la pasarela
   (`Order/Get`) y paga lo cobrado (DEC-PAY-03); hay que añadir su línea de
   `deploy/crontab.example` al servidor. Con el otro producto sigue como estaba.
-  PAY-TEST-PUBLIC: una tienda publicada con claves de TEST da por pagado lo que se paga
-  con tarjetas de prueba; falta decidir cómo se señala.
+  PAY-TEST-ENV: las claves de TEST puestas por variables del servidor no tienen la
+  restricción de la consola. PAY-TEST-BADGE: el panel no señala un pedido pagado en TEST.
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
 - NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.

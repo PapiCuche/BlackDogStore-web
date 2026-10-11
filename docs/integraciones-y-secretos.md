@@ -138,6 +138,8 @@ Alcance: la instalación. Izipay vende dos productos distintos y **se usa uno**:
 - **Activar uno desactiva el otro**, en el mismo acto. No pueden estar los dos.
 - Las credenciales de un producto no se mezclan con las del otro: son formularios
   distintos y se guardan por separado.
+- **«Dirección de la API» de Mi Cuenta Web** sólo admite `https://api.micuentaweb.pe`, el
+  servidor que nombra su documentación: la contraseña viaja en cada llamada.
 - **TEST y PRODUCCIÓN se distinguen siempre** en pantalla. Mi Cuenta Web lo dice en sus
   propias claves (`testpassword_…` / `prodpassword_…`) y mezclarlas se rechaza.
 - **«Probar conexión» con claves de TEST** pide a la pasarela lo primero que pide un
@@ -152,13 +154,24 @@ Alcance: la instalación. Izipay vende dos productos distintos y **se usa uno**:
   que diga el navegador no marca nada como pagado.
 - La ruta de notificación del producto que no está activo no existe (404).
 
-**Cobros abiertos.** Un pago que se abrió antes de apagar la pasarela, revocarla, cambiar
-de producto o cambiar sus claves, y cuya notificación llega después, ya no se acepta: el
-comprador pagó y el pedido queda sin marcar. La consola cuenta los cobros abiertos en la
-última hora, lo dice y pide escribir `INTERRUMPIR`. Lo sensato es esperar; si no se puede,
-revisa después esos pedidos en el panel de la pasarela (PAY-SWITCH-PENDING, §10). Con «Mi
-Cuenta Web» activo y la misma tienda, `python manage.py reconcile_payments` se lo pregunta
-a la pasarela y paga lo que esté cobrado (`pagos-equipos-documentos.md` §1.5).
+**Cobros abiertos.** Un pago que se abrió antes de activar el otro producto, apagar o
+revocar el que cobra, cambiar de tienda o cambiar de entorno, y que termina después, ya
+no se podría confirmar: el comprador pagó y el pedido queda sin marcar. El servidor no
+hace esos cambios a ciegas (`pagos-equipos-documentos.md` §1.6):
+
+- Con **«Mi Cuenta Web»** pregunta antes a la pasarela por los cobros abiertos y paga lo
+  cobrado. Rechaza el cambio (la pantalla dice «El cambio no se hizo», cuántos cobros
+  son y a qué hora reintentar) mientras alguno pueda cobrarse todavía o siga sin
+  resolver. Escribir `INTERRUMPIR` no lo salta. Sólo si la pasarela no responde se pide
+  la palabra, y los intentos que quedan sin comprobar van a la auditoría.
+- Con **«SDK web / Checkout»**, que no se puede consultar, sigue pidiendo `INTERRUMPIR`
+  con cobros abiertos en la última hora, y deja en la auditoría qué intentos interrumpió.
+- **Renovar las claves de la misma tienda y entorno** de «Mi Cuenta Web» no es uno de
+  esos cambios: se permite sin más.
+
+**Claves de TEST.** Con una configuración de TEST activa en la consola, sólo un MASTER
+con sesión iniciada puede abrir un pago; a los demás la tienda les dice que el pago en
+línea todavía no está disponible (`pagos-equipos-documentos.md` §1.3).
 
 **Lo que sigue abierto.** IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT no se cierran con esta
 fase: hace falta saber qué producto tiene contratado el propietario y validar sus claves
@@ -339,7 +352,8 @@ a ellas por sí sola: el panel la tiene tomada. Revocarla es lo que la devuelve 
 | IZIPAY-PRODUCT, IZIPAY-TOKEN-CONTRACT | siguen abiertas: falta validar claves de TEST reales, desde la consola |
 | PAY-TENANT-SCOPE | la pasarela es de la instalación, no de cada empresa |
 | FISCAL-TENANT-SCOPE | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa |
-| PAY-SWITCH-PENDING | la consola avisa y exige `INTERRUMPIR`. Un cobro abierto antes del cambio sigue sin notificación; `reconcile_payments` lo recupera si sigue activo «Mi Cuenta Web» con la misma tienda, no tras cambiar de producto |
+| PAY-SWITCH-PENDING | RESUELTO para «Mi Cuenta Web»: el servidor consulta y bloquea el cambio (DEC-PAY-04). Con «SDK web / Checkout» sigue siendo una palabra escrita, ahora con registro de lo interrumpido. Un cambio hecho en las variables del servidor no pasa por aquí |
+| PAY-TEST-ENV | las claves de TEST puestas en las variables del servidor (no en la consola) siguen abiertas a cualquier comprador: es como se configuran las pasarelas simuladas |
 | PAY-ROLLBACK | al sustituir unas claves no se conservan las anteriores: no hay «volver a las de antes» en un clic |
 | IZIPAY-MODE-DECLARED | en «SDK web / Checkout» el entorno (TEST o PRODUCCIÓN) lo declara quien configura; nada en las claves lo delata. La dirección del token admite cualquier `https` |
 | SUNAT-SOL-CHECK | la clave SOL sólo se comprueba al emitir |

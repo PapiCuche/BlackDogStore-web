@@ -3,6 +3,67 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — PAY-GUARD-01: cambios de pasarela, claves de TEST y lo que encontró la auditoría
+
+Rama `feat/izipay-smartform-v4`. **Con migración (`0117_payment_attempt_origin`). Sin
+rutas nuevas. Sin dependencias nuevas.** Decisiones: DEC-PAY-04, DEC-PAY-05, DEC-PAY-06.
+No desplegado. **Nada se probó contra la pasarela real: no hay credenciales.**
+
+**1. Un cambio de pasarela que dejaría un cobro sin confirmar no se hace** (DEC-PAY-04).
+Activar el otro producto, apagar o revocar el que cobra, cambiar de tienda o de entorno:
+con «Mi Cuenta Web» cobrando, el servidor pregunta antes a la pasarela por los cobros
+abiertos y rechaza el cambio (409, no cambia nada) mientras alguno pueda cobrarse o siga
+sin resolver. `INTERRUMPIR` ya no lo salta; queda para «SDK web / Checkout», que no se
+puede consultar, y para una pasarela que no responde, y deja en la auditoría los
+intentos interrumpidos. Renovar las claves de la misma tienda y entorno sigue permitido.
+
+**2. Las claves de TEST de la consola no son para compradores** (DEC-PAY-05). Sólo un
+MASTER con sesión abre un pago; a los demás la tienda les dice que el pago en línea
+todavía no está disponible. Un pedido pagado en TEST queda señalado en su intento y en
+la auditoría.
+
+**3. La auditoría independiente de la conciliación** (DEC-PAY-06): doce hallazgos.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| 1 | Tarjeta rechazada y luego aceptada en el mismo formulario, con la notificación del pago perdida: no se conciliaba nunca | CORREGIDO |
+| 2 | Dos cobros de un pedido archivados como un pago normal; segundo formulario sin preguntar por el primero | CORREGIDO |
+| 3 | Veinte compras abandonadas dejaban sin turno a un pago perdido; no se podía consultar una referencia | CORREGIDO |
+| 4 | Una respuesta sin decidir sólo dejaba un aviso en el registro de la tarea | CORREGIDO |
+| 5 | Varias pasadas a la vez escribían varios `payment_reconciled` | CORREGIDO |
+| 6 | Una pasarela que rechaza a quien llama se consultaba por cada intento | CORREGIDO |
+| 7 | Una respuesta cortada escapaba como excepción; lectura sin tope | CORREGIDO |
+| 8 | El intento no guardaba tienda ni entorno | CORREGIDO (intentos anteriores a `0117`: como antes) |
+| 9 | Un pago repetido volvía a pagar un pedido que había dejado de estarlo | CORREGIDO |
+| 10 | Una redirección reenviaba la contraseña | CORREGIDO; servidor de la API fijado al oficial |
+| 11 | Las credenciales se imprimían con su contraseña | CORREGIDO («Mi Cuenta Web»; las de «SDK web»: PAY-SDK-SECRETS-REPR) |
+| 12 | `--hours 0`, firma por defecto, textos y registro de los fallos de integridad | CORREGIDO; los medios de pago de más de 2 h quedan como límite documentado |
+
+**Pruebas que cambiaron, y por qué** (ninguna se relajó): las de la consola y las de
+medición pagaban como comprador anónimo con claves de TEST de la consola; ahora pagan
+como MASTER o con claves de producción simuladas. Un rechazo firmado deja el intento
+esperando en lugar de rechazado (hallazgo 1). El orden de consulta es «quien más lleva
+sin respuesta» en lugar de «el más reciente» (hallazgo 3).
+
+**Para el propietario.** Los pasos de TEST cambiaron: `docs/pagos-equipos-documentos.md`
+§1.3 (el pago de prueba se hace con la sesión de MASTER iniciada). Un cliente que dice
+que pagó: `reconcile_payments --reference <referencia>` (§1.5). Qué hace falta saber
+con claves de TEST: §1.5, al final.
+
+**Deuda que queda registrada** (`docs/AUDIT_MEMORY.md`): PAY-GET-UNKNOWNS,
+PAY-DEFERRED-WINDOW, PAY-TEST-ENV, PAY-TEST-BADGE, PAY-SDK-SECRETS-REPR, KRYPTON-GLUE,
+PAY-RECONCILE-REHEARSAL.
+
+**Pruebas.** RED antes que GREEN en lo nuevo de los cambios de pasarela y de las claves
+de TEST; los hallazgos de la auditoría venían ya demostrados por sus propias sondas.
+Mutaciones, una a una: 41 de las dos primeras partes y 59 de la tercera, todas
+detectadas (cinco sobrevivieron a la primera pasada y obligaron a añadir su prueba).
+Pruebas nuevas: 101 de backend (`test_payment_change_guard`, `test_payment_test_access`,
+`test_payment_hardening`) y 3 de Jest. Módulos de pagos, checkout, consola, medición y
+despliegue: 871, 0 fallos, 3 omitidas (las pruebas contra la pasarela real). Jest 1068
+de 1068, `tsc` y `lint` sin errores. **No se corrió en esta sesión** la suite completa
+de backend, Playwright ni el ensayo Docker.
+
 ## 2026-10-11 — IZIPAY-MCW-AUDIT-01: «Mi Cuenta Web» contra su documentación, y la consulta que faltaba
 
 Rama `feat/izipay-smartform-v4`. **Sin migración. Sin rutas nuevas. Sin dependencias
@@ -52,7 +113,7 @@ Integraciones › «Izipay · Mi Cuenta Web»: los pasos están en
 | Configuración desde Panel › Integraciones | IMPLEMENTADO (INTEGRATIONS-CONSOLE-01, sin cambios) |
 | Conciliación por `Order/Get` | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS |
 | Pruebas y flujo en TEST | IMPLEMENTADO con pasarela falsa; las dos pruebas reales se omiten sin claves |
-| Cambiar de proveedor o de claves sin romper cobros abiertos | PARCIAL: una contraseña renovada en la misma tienda ya no pierde el cobro; un cambio de producto, sí (PAY-SWITCH-PENDING) |
+| Cambiar de proveedor o de claves sin romper cobros abiertos | PARCIAL en esta entrada; resuelto en PAY-GUARD-01 (arriba) |
 
 **Deuda que queda registrada** (`docs/AUDIT_MEMORY.md`): PAY-RECONCILE para el otro
 producto, PAY-TEST-PUBLIC, KRYPTON-GLUE, PAY-RECONCILE-REHEARSAL, PAY-SWITCH-PENDING.
