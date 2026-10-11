@@ -685,6 +685,57 @@ arrancar: es una contradicción del archivo, no una ausencia.
 - Pendiente (PAY-RECONCILE): si la notificación no llega nunca, un pedido cobrado queda
   esperando. La API tiene `Order/Get`; no se usa todavía.
 
+### DEC-IMPORT-SPLIT-01 · Tres cargas, cada una con su plantilla de una hoja
+
+- **Ninguna carga hace el trabajo de otra.** Productos y accesorios: crea y edita el
+  catálogo, no mueve stock. Equipos: una fila = un equipo físico, por el escritor de
+  siempre (`receive_units`). Stock: cantidades de lo que se cuenta por número. Cada
+  pantalla lo dice arriba y enlaza a las otras dos; el menú las nombra distinto
+  («Carga de productos», «Carga de equipos», «Carga de stock»).
+- **Una plantilla es una hoja: sus cabeceras y nada debajo.** Se retiran la fila de
+  ayuda, la fila de ejemplo y las hojas «Categorías», «Instrucciones» y «Ejemplo». Un
+  archivo vacío es lo que parece, y lo que explica vive donde no se puede importar: en
+  la pantalla y en una nota sobre cada cabecera.
+- **Las listas viven dentro de la celda**, porque no hay segunda hoja a la que apuntar.
+  Categorías activas de la empresa y sucursales de quien descarga, leídas al descargar,
+  nunca fijas; «Destino» y «Condición», sus valores. **Ofrecen y no bloquean**, como en
+  los archivos del propietario: Excel compara lo escrito letra por letra («nuevo» no es
+  «Nuevo») y la carga lee los dos; lo que está mal se dice por fila al previsualizar.
+- **Cuándo una lista no sale.** Una lista de celda es un texto de 255 caracteres
+  (contados como los guarda Excel) separado por comas, y elegir un valor es escribirlo.
+  Si los nombres no caben, si uno lleva coma, comillas, un carácter de control o un salto
+  de línea, o si uno empieza como una fórmula (`=`, `+`, `-`, `@`), la plantilla sale sin
+  esa lista. El dato se escribe y se valida al subir. Un nombre así es de la propia
+  empresa, y una plantilla no entrega a sus usuarios una celda que calcula.
+- **Lo que pedimos y lo que aceptamos son cosas distintas.** Los archivos hechos con
+  las plantillas anteriores se siguen leyendo: sus filas de ayuda y de ejemplo y sus
+  hojas de instrucciones no crean nada.
+- **Un archivo de productos con una columna de stock, de serie o de IMEI** no la
+  importa y lo dice a la vista, con a dónde ir. No se rechaza: el catálogo de ese
+  archivo es válido.
+- **Un archivo de equipos con una columna de cantidad o de stock** se rechaza entero.
+  Qué cuenta stock se decide en un solo sitio (`import_formats.counts_stock`), para las
+  dos cargas: una cabecera cuya primera palabra —pasados «Nº de», «Total»— es cantidad,
+  stock, unidades, existencias, inventario, saldo… salvo que lo que sigue diga que
+  cuenta otra cosa («Stock mínimo», «Unidades de medida», «Cantidad de SIM», «Unidades
+  por caja»). No es una lista cerrada: una cabecera que no reconozca se lee de largo.
+- **Un aviso no se entierra.** La previsualización muestra las primeras filas: las de
+  error, después las que llevan un aviso y luego el resto. La cuenta de IMEI bajo
+  productos sin marca va además arriba de la tabla.
+- **Qué lleva un equipo lo dice su producto, con las capacidades que ya existen**
+  (`is_serialized`, `requires_imei`): serie siempre; IMEI obligatorio si el producto
+  está marcado «lleva IMEI»; IMEI 2 opcional y sólo con el primero. No hay una
+  capacidad «doble IMEI» por producto ni se añade ahora (decisión del propietario,
+  2026-10-11). Cuando el IMEI 2 viene, se valida igual que el primero: 15 dígitos,
+  dígito de control y unicidad en la empresa, en cualquiera de las dos columnas.
+- **Un IMEI bajo un producto no marcado «lleva IMEI» se guarda y se avisa** (decisión
+  del propietario, 2026-10-11): es la regla de la pantalla «Registrar equipo» y no
+  cambia. Queda trazado: el aviso en cada fila del trabajo, cuántas filas lo traían en
+  el resumen del trabajo, y cuántos se guardaron en la auditoría de la carga
+  (`imei_on_unmarked_products`), contados al registrar —la marca del producto puede
+  cambiar entre la previsualización y la carga— y sin nombrar ningún equipo.
+- Sin migración. No cambia el escritor del Kardex ni el de productos.
+
 ### DEC-UNIT-IMPORT-01 · Los equipos con serie se cargan de a uno por fila, por el escritor de siempre
 
 - La carga masiva de stock escribe cantidades. Un producto con serie no tiene una

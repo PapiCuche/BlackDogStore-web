@@ -115,10 +115,19 @@ motivo para el siguiente.
 
 ## 3. Cargar muchos equipos desde Excel
 
-Inventario › Equipos › **Cargar desde Excel**.
+Inventario › **Carga de equipos** (también desde Inventario › Equipos › «Cargar desde
+Excel»).
 
-La carga masiva de inventario escribe cantidades y rechaza los productos con serie.
-Para ellos hay una plantilla propia, «Equipos serializados.xlsx»:
+Hay tres cargas y ninguna hace el trabajo de otra (IMPORT-SPLIT-01):
+
+| Carga | Qué hace | Dónde |
+|---|---|---|
+| Productos y accesorios | Crea y edita el catálogo. No mueve stock | Productos › Carga de productos |
+| Equipos | Una fila = un equipo físico, con su serie e IMEI | Inventario › Carga de equipos |
+| Stock | Cantidades de lo que se cuenta por número | Inventario › Carga de stock |
+
+La plantilla de equipos, `carga-masiva-equipos.xlsx`, es una sola hoja, «Equipos»: la
+fila de cabeceras y nada debajo. Cada cabecera lleva una nota con lo que va debajo:
 
 | Columna | Qué lleva |
 |---|---|
@@ -126,17 +135,34 @@ Para ellos hay una plantilla propia, «Equipos serializados.xlsx»:
 | Producto | Nombre exacto, si no hay código |
 | Sucursal | Nombre de la sucursal donde entra |
 | Número de serie | Obligatorio |
-| IMEI | Obligatorio si el producto lleva línea celular |
-| IMEI 2 | Opcional |
+| IMEI | Obligatorio si el producto está marcado «lleva IMEI» |
+| IMEI 2 | Opcional; sólo con el primer IMEI indicado, y distinto de él |
 | Condición | Nuevo, Caja abierta, Reacondicionado o Usado. Vacío = Nuevo |
 | Costo | Opcional |
 | Motivo / referencia | Factura de compra, guía, inventario inicial |
 
-**Una fila = un equipo físico.** No hay columna de cantidad; un archivo que la traiga
-se rechaza entero.
+**Una fila = un equipo físico.** No hay columna de cantidad; un archivo que traiga una
+columna de cantidad o de stock («Cantidad», «Cantidad inicial», «Stock inicial», «Nº de
+unidades», «Inventario»…) se rechaza entero.
 
-1. Descargar la plantilla (trae una fila de ejemplo, que no se carga, y una hoja de
-   instrucciones).
+Tres formas de fila, según lo que lleve el producto: **serie sola**, **serie + IMEI** o
+**serie + dos IMEI**. Si un equipo trae IMEI y su producto no está marcado «lleva IMEI»,
+el IMEI se guarda y la previsualización lo avisa (la fila puede estar bajo el producto
+equivocado).
+
+- `Sucursal` ofrece en una lista las sucursales en las que puede cargar quien descarga
+  la plantilla. `Condición` ofrece las cuatro que conoce el sistema. Las listas ofrecen y
+  no bloquean. Si los nombres de las sucursales no caben en una lista de celda (más de
+  255 caracteres en total, o un nombre con coma, comillas o que empieza por `=`, `+`, `-`
+  o `@`), la plantilla sale sin esa lista y la sucursal se escribe.
+- Si alguna fila trae IMEI y su producto no está marcado «lleva IMEI», la
+  previsualización lo dice arriba de la tabla, con cuántas, y en cada fila.
+- Serie, IMEI y código van como texto: Excel no les quita ceros ni los convierte en
+  número.
+- Un archivo hecho con la plantilla anterior (con su fila de ejemplo y su hoja
+  «Instrucciones») se sigue leyendo.
+
+1. Descargar la plantilla.
 2. Adjuntarla. Se puede elegir una sucursal y un motivo para las filas que no los
    traigan.
 3. **Previsualizar.** No registra nada. Muestra qué pasaría con cada fila y, si alguna

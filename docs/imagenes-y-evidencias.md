@@ -40,7 +40,7 @@ campo «Dirección de imagen externa» sólo se ofrece a productos sin galería.
 
 ## 3. Carga masiva con imágenes
 
-Panel › Productos › **Carga masiva**. El proceso no cambia: archivo → hoja →
+Panel › Productos › **Carga de productos**. El proceso no cambia: archivo → hoja →
 columnas → previsualización → confirmación → resultado. Nada se escribe hasta
 confirmar, y se aplica todo o nada.
 
@@ -63,22 +63,29 @@ Ejemplo de filas:
 - La plantilla descargable ya trae las dos columnas y se reconoce sola al
   subirla.
 
-**La plantilla (`plantilla-productos.xlsx`) tiene tres hojas, y sólo la primera es
-datos:**
+**La plantilla (`carga-masiva-productos.xlsx`) es una sola hoja, «Productos»**
+(IMPORT-SPLIT-01): la fila de cabeceras y nada debajo.
 
-| Hoja | Para qué | ¿Se importa? |
-|---|---|---|
-| `Productos` | Las columnas reales. Fila 2: ayuda por columna. Fila 3: un ejemplo en gris | Sólo las filas que escribas tú |
-| `Instrucciones` | Diez puntos: las imágenes no se pegan en Excel, Excel guarda nombres, cómo separar varias, qué se adjunta después, formatos y límites | No |
-| `Ejemplo` | Tres productos llenos y la lista de archivos que habría que adjuntar | No |
-
-- Subir la plantilla tal cual se descarga no crea nada: la fila de ayuda y la de
-  ejemplo se saltan (lo dice la previsualización), y las hojas `Instrucciones` y
-  `Ejemplo` aparecen marcadas como hojas de ayuda y no se pueden elegir.
-- Sólo se salta la fila de ejemplo EXACTA (mismo nombre y mismo código). Una tienda
-  que vende ese producto con su propio código lo importa con normalidad.
-- Los formatos y los límites que dice la hoja `Instrucciones` se escriben, al
-  descargarla, con los valores que aplica el servidor.
+- Cada cabecera lleva una **nota** con lo que va debajo. Las de `Imagen principal` e
+  `Imágenes` dicen que la imagen no se pega en la celda, cómo separar varias, qué se
+  adjunta después, y los formatos y límites, escritos al descargarla con los valores
+  que aplica el servidor.
+- `Categoría` ofrece en una lista las categorías activas de la empresa, leídas al
+  descargar. La lista ayuda y no impide escribir una nueva. Si los nombres no caben en
+  una lista de celda (más de 255 caracteres en total, o un nombre con coma, comillas o
+  que empieza por `=`, `+`, `-` o `@`), la plantilla sale sin lista y la categoría se
+  escribe; se valida al subir.
+- `Destino` ofrece sus dos valores en una lista, que tampoco bloquea: un valor distinto
+  es un error de fila al subir.
+- Subir la plantilla tal cual se descarga no crea nada.
+- **Los archivos hechos con la plantilla anterior siguen sirviendo.** Su fila de ayuda
+  y su fila de ejemplo se saltan (lo dice la previsualización), y sus hojas
+  `Categorías`, `Instrucciones` y `Ejemplo` aparecen marcadas como hojas de ayuda y no
+  se pueden elegir. Sólo se salta la fila de ejemplo EXACTA (mismo nombre y mismo
+  código).
+- **Esta carga no mueve stock.** Una columna `Stock`, `Cantidad`, `Número de serie` o
+  `IMEI` en un archivo de productos no se importa, y la previsualización lo dice a la
+  vista con a dónde ir: Inventario › Carga de stock o Inventario › Carga de equipos.
 - En la pantalla, «¿Cómo preparo las imágenes?» muestra lo mismo en corto, antes de
   elegir el archivo y otra vez al adjuntar las imágenes.
 - Un Excel sin estas columnas se importa exactamente como antes.
@@ -140,7 +147,7 @@ El reporte descargable (`errors.csv`) incluye los errores de imágenes.
 ### 3.6 Equipos con número de serie
 
 Los equipos con serie no se cargan con el Excel de inventario (escribe cantidades) ni
-con el de productos. Tienen su plantilla, «Equipos serializados.xlsx», una fila por
+con el de productos. Tienen su carga, Inventario › **Carga de equipos**, una fila por
 equipo: `docs/pagos-equipos-documentos.md` §3.
 
 ## 4. Evidencias fotográficas del servicio técnico

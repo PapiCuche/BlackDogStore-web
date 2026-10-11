@@ -3,6 +3,46 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — IMPORT-SPLIT-01: dos cargas diferenciadas, cada una con su plantilla de una hoja
+
+Rama `feat/bulk-import-split`, apilada sobre `feat/serial-pick`. **Sin migración.**
+Decisión: DEC-IMPORT-SPLIT-01. No desplegado.
+
+Reutiliza lo que ya había: el importador de productos con «Destino» (#105), el de
+equipos (`unit_import_services`) y el Kardex (`receive_units`). No añade un importador
+ni otro camino al stock.
+
+**Qué cambia.**
+- **Plantillas de una hoja.** `carga-masiva-productos.xlsx` (hoja «Productos») y
+  `carga-masiva-equipos.xlsx` (hoja «Equipos»): cabeceras y nada debajo. La ayuda pasa a
+  una nota en cada cabecera y a la pantalla.
+- **Productos y accesorios.** Categorías de la empresa en una lista, leída al descargar;
+  imágenes opcionales, editables después en la ficha; «Destino» con sus dos valores,
+  aparte de «activo». No mueve stock: una columna de stock, serie o IMEI se dice a la
+  vista que no entra por ahí.
+- **Equipos.** Una fila por unidad, serie obligatoria; serie sola, serie + IMEI o serie
+  + dos IMEI según lo que lleve el producto. Listas de sucursal (las de quien carga) y
+  de condición. Una columna de cantidad o de stock rechaza el archivo.
+- **Listas que ofrecen y no bloquean**, como en los archivos del propietario. Si los
+  nombres de categorías o sucursales no caben en una lista de celda, la plantilla sale
+  sin ella y el dato se escribe.
+- **Tres entradas en el menú con nombre propio:** «Carga de productos», «Carga de
+  equipos» (nueva) y «Carga de stock». Antes había dos «Carga masiva».
+- **Compatibilidad.** Los archivos hechos con las plantillas anteriores se importan
+  igual.
+
+**Sin cambio:** previsualización, errores por fila, aplicación todo o nada, auditoría
+(`product_import_applied`, `stock_units_import_applied`), permisos (`products.manage`,
+`inventory.adjust`) y aislamiento por empresa y sucursal.
+
+**Decisiones del propietario (2026-10-11).**
+- Un IMEI en una fila cuyo producto no está marcado «lleva IMEI» se guarda y se avisa;
+  no se rechaza. La regla de «Registrar equipo» no cambia. Queda trazado en la fila, en
+  el resumen del trabajo y en la auditoría de la carga, con la cuenta y sin los IMEI.
+- El IMEI 2 es opcional. No se añade una capacidad «doble IMEI» por producto ni una
+  migración. Cuando viene, se valida su formato, su dígito de control y su unicidad.
+- Menú: «Carga de productos», «Carga de equipos» y «Carga de stock».
+
 ## 2026-10-11 — SERIAL-PICK-01: el equipo que sale es el que alguien identificó
 
 Rama `feat/serial-pick`, apilada sobre `fix/register-race`. **Con migración**
