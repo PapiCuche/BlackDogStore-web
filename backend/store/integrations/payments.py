@@ -20,6 +20,7 @@ The code stored on each payment attempt (`PaymentTransaction.provider`) is the
 adapter's `code`, and is what a notification is matched against.
 """
 from django.conf import settings
+from django.db import connection
 
 from ..models import IntegrationConfig
 from ..payments import izipay, micuentaweb
@@ -136,3 +137,67 @@ def active_code() -> str:
     if rows:
         return next((ids[provider] for provider, enabled in rows if enabled), '')
     return (getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower()
+
+
+def environment_of(credentials) -> str:
+    """
+    'test' or 'production', whatever word each product uses for it.
+
+    Anything that does not say PRODUCTION is TEST: a payment is only money when
+    its keys say so.
+    """
+    return 'production' if getattr(credentials, 'environment', '') == 'production' else 'test'
+
+
+def configured_in_console(candidate: PaymentAdapter) -> bool:
+    """Whether what this adapter charges with was put there by a master, in the console."""
+    return IntegrationConfig.objects.filter(
+        provider=candidate.provider_id, slot=IntegrationConfig.SLOT_ACTIVE, company__isnull=True,
+    ).exists()
+
+
+def test_keys_of_the_console(candidate: PaymentAdapter, credentials) -> bool:
+    """
+    TEST keys that a master activated in the console — on a shop that may be
+    published. A payment made with them is not money, and the cards that make
+    one are public: such a configuration is for whoever is testing it, not for
+    buyers.
+
+    Keys read from the ENVIRONMENT are not this: that is how the simulated
+    gateways of the test suites and of the rehearsal are set up, on
+    installations that are not a shop.
+    """
+    return environment_of(credentials) == 'test' and configured_in_console(candidate)
+
+
+#: One number for «the payment configuration of this installation», as
+#: PostgreSQL's advisory locks want it.
+_CONFIGURATION_LOCK = 0x70617931            # 'pay1'
+
+
+def lock_configuration(*, exclusive: bool) -> None:
+    """
+    Hold the payment configuration still until this transaction ends.
+
+    A change of gateway takes it EXCLUSIVE; opening an attempt takes it SHARED.
+    So a change sees every attempt that was opened before it, and an attempt
+    that comes after it is opened against what the change left — never a
+    checkout that read the old gateway and wrote its attempt under the new one.
+
+    PostgreSQL only. Elsewhere (the SQLite of a development machine) it does
+    nothing: there is one writer at a time there anyway, and no shop.
+    """
+    if connection.vendor != 'postgresql':
+        return
+    function = 'pg_advisory_xact_lock' if exclusive else 'pg_advisory_xact_lock_shared'
+    with connection.cursor() as cursor:
+        cursor.execute(f'SELECT {function}(%s)', [_CONFIGURATION_LOCK])
+
+
+def still_charging(credentials) -> bool:
+    """Whether these credentials, loaded a moment ago, are still exactly what charges."""
+    try:
+        candidate = adapter_for(credentials)
+        return active_code() == candidate.code and candidate.load_credentials() == credentials
+    except (LookupError, *ERRORS):
+        return False

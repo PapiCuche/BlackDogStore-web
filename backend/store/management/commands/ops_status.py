@@ -91,6 +91,28 @@ class Command(BaseCommand):
                 f'{"coincidía" if tampered == 1 else "coincidían"} con lo que la tienda abrió, en las últimas 24 h. '
                 'Revisa el registro de auditoría.'
             )
+        # Money the gateway took for an order that was already paid: somebody
+        # has to give it back. And an answer of the gateway nobody could decide
+        # (two debits, a refund, a partial amount): money may be involved.
+        duplicates = PaymentTransaction.objects.filter(
+            status=PaymentTransaction.Status.DUPLICATE, confirmed_at__gte=now - RECENT,
+        ).count()
+        if duplicates:
+            payments.append(
+                f'{_plural(duplicates, "cobro duplicado", "cobros duplicados")} en las últimas 24 h: la pasarela '
+                'cobró otra vez un pedido que ya estaba pagado. Devuélvelo desde el panel de la pasarela; el '
+                'registro de auditoría dice cuál (`payment_duplicate`).'
+            )
+        undecided = PaymentTransaction.objects.filter(
+            status=PaymentTransaction.Status.PENDING, failure_reason__startswith='undecided: ',
+            created_at__gte=now - RECENT,
+        ).count()
+        if undecided:
+            payments.append(
+                f'{_plural(undecided, "pago", "pagos")} con una respuesta de la pasarela que no se pudo decidir '
+                '(dos cobros, un reembolso o un importe parcial bajo la misma referencia), en las últimas 24 h. '
+                'Revísalo en el panel de la pasarela; el registro de auditoría dice cuál (`payment_undecided`).'
+            )
         # A payment still waiting is NOT an alarm. Every checkout opens one, and a
         # buyer who closes the card form leaves it waiting for ever; from here
         # that cannot be told apart from a notification that never arrived. It
@@ -105,7 +127,7 @@ class Command(BaseCommand):
             payment_notes.append(
                 f'{_plural(waiting, "pago", "pagos")} sin respuesta de la pasarela en las últimas 24 h. '
                 'Lo habitual es un comprador que no terminó; si alguien dice que pagó, con «Mi Cuenta Web» '
-                'pregúntaselo a la pasarela (`python manage.py reconcile_payments --hours 24`) y, con el otro '
+                'pregúntaselo a la pasarela (`python manage.py reconcile_payments --reference <referencia>`) y, con el otro '
                 'producto, compruébalo en su panel.'
             )
         report('pagos', payments, 'sin notificaciones rechazadas ni pagos esperando', payment_notes)

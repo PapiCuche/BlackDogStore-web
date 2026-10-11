@@ -115,7 +115,11 @@ class _Base(McwBase):
         return fake
 
     def buy(self, fake):
+        # The keys of these tests are TEST keys put in the console, and such a
+        # configuration only opens a payment for a master (PAY-TEST-PUBLIC): the
+        # one buying here is the master trying the gateway they just configured.
         self.fake = fake
+        self.client.force_authenticate(self.master)
         return self.checkout()
 
 

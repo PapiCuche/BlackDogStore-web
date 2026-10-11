@@ -113,7 +113,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
             return self._replay(existing, fingerprint)
 
         try:
-            credentials = checkout.require_payment_provider_configured()
+            credentials = checkout.require_payment_provider_configured(request.user)
 
             branch = checkout.resolve_fulfillment_branch(company)
             lines = checkout.resolve_lines_from_intents(company, validated['items'])
@@ -219,7 +219,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
             )
 
         try:
-            credentials = checkout.require_payment_provider_configured()
+            credentials = checkout.require_payment_provider_configured(self.request.user)
             payment = checkout.start_payment_attempt(order, credentials=credentials)
         except checkout.CheckoutError:
             # Not fatal: the order exists and the client can read its status. No
@@ -228,6 +228,9 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
                 'v1 checkout replay: no se pudo abrir un intento de pago para el pedido %s',
                 order.id,
             )
+            # Asking the gateway about the earlier form may just have paid the
+            # order: the status sent back is the one it has NOW.
+            order.refresh_from_db(fields=['status'])
             return Response(
                 {'order_id': order.id, 'status': order.status, 'payment': None},
                 status=status.HTTP_200_OK,

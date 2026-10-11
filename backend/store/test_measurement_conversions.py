@@ -29,6 +29,7 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 
 from store.models import CartItem, ConversionDelivery, MeasurementContext, Order, PaymentTransaction
+from store.test_integrations_payments import CHECKOUT_PUBLIC, CHECKOUT_SECRETS, fake_checkout
 from store.test_integrations_payments import _Base as _PaymentsBase
 from store.test_measurement_providers import (
     GA, GA_SECRET, META, META_SECRET, TIKTOK, TIKTOK_SECRET, URLOPEN, http_error, reply,
@@ -51,10 +52,19 @@ OKS = {'graph.facebook.com': {'events_received': 1}, 'business-api.tiktok.com': 
        'www.google-analytics.com': {}}
 
 
+#: A buyer nobody knows pays through PRODUCTION keys: a TEST configuration of the
+#: console only opens a payment for a master (PAY-TEST-PUBLIC), and what these
+#: tests measure is the purchase of an ordinary buyer.
+PRODUCTION_PUBLIC = {**CHECKOUT_PUBLIC, 'environment': 'production'}
+
+
 class _Base(_PaymentsBase):
     def setUp(self):
         super().setUp()
-        self.gateway = self.go_live_with_checkout()
+        self.gateway = fake_checkout(PRODUCTION_PUBLIC)
+        self.assertEqual(self.save('izipay_checkout', PRODUCTION_PUBLIC, CHECKOUT_SECRETS).status_code, 200)
+        self.assertEqual(self.validate('izipay_checkout', self.gateway)['status'], 'unverified')
+        self.assertEqual(self.activate('izipay_checkout', confirm='PRODUCCION').status_code, 200)
         self.sent = []
         self.answers = dict(OKS)
 

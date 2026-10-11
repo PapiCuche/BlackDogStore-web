@@ -376,11 +376,16 @@ class NotificationTest(McwBase):
         self.assert_nothing_paid()
 
     def test_a_refused_payment_leaves_the_order_waiting(self):
+        """
+        Y al intento también, mientras su formulario pueda cobrar: deja
+        reintentar con otra tarjeta bajo la misma referencia. Cerrarlo aquí
+        dejaba sin consulta posible al pago que viniera después.
+        """
         response = self.notify(self.fake.ipn(self.answer(status='UNPAID')))
 
         self.assertEqual(response.status_code, 200)
         self.refresh()
-        self.assertEqual(self.attempt.status, PaymentTransaction.Status.REJECTED)
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.PENDING)
         self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
         self.assert_nothing_paid()
 

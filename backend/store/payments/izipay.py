@@ -318,6 +318,9 @@ class NotificationResult:
     reference_number: str
     unique_id: str
     state_message: str
+    #: Every result of this adapter comes out of a verified signature. Said
+    #: here, so that the code that records it does not have to assume it.
+    signed: bool = True
 
     @property
     def authorized(self) -> bool:

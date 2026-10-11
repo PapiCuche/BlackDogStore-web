@@ -60,6 +60,9 @@ class _IntegrationView(APIView):
         if isinstance(exc, ConfigError):
             return Response({'detail': 'Revisa los campos señalados.', 'errors': exc.errors},
                             status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(exc, service.ChangeBlocked):
+            # Refused, and nothing was changed. Counts and a time; never a value.
+            return Response({'detail': str(exc), **exc.details}, status=status.HTTP_409_CONFLICT)
         if isinstance(exc, service.Conflict):
             return Response({'detail': str(exc), 'version': exc.version}, status=status.HTTP_409_CONFLICT)
         if isinstance(exc, service.NotFound):

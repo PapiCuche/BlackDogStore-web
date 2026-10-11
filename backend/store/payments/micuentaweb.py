@@ -55,11 +55,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -71,6 +74,23 @@ logger = logging.getLogger(__name__)
 PROVIDER = 'micuentaweb'
 
 DEFAULT_API_URL = 'https://api.micuentaweb.pe'
+#: The hosts the official documentation names for the web services (every
+#: request of it goes to `https://api.micuentaweb.pe/api-payment/V4/...`:
+#: rest/V4.0/api/kb/authentication.html, javascript/guide/formToken/presentation.html).
+#: Each call carries the password, so it goes to one of these and nowhere else.
+OFFICIAL_API_HOSTS = ('api.micuentaweb.pe',)
+#: No answer of these web services is anywhere near this big.
+MAX_ANSWER_BYTES = 2 * 1024 * 1024
+#: After this, the form of an attempt cannot charge any more: the formToken
+#: lives 15 minutes and a payment session 10. Until then a refused card is not
+#: an answer — the form lets the buyer try again under the same reference.
+FORM_LIFETIME = timedelta(minutes=30)
+#: Error codes of `Order/Get` that mean «nothing was ever tried under this
+#: reference». EMPTY ON PURPOSE: the documentation does not say which code that
+#: is (PSP_010, «no se encontró la transacción», also covers a transaction of
+#: the other environment or of another shop), so none is taken for it until a
+#: run of the smoke test with TEST keys shows the real answer.
+NO_TRANSACTION_CODES: tuple = ()
 CREATE_PAYMENT_PATH = '/api-payment/V4/Charge/CreatePayment'
 GET_ORDER_PATH = '/api-payment/V4/Order/Get'
 
@@ -99,9 +119,22 @@ class MiCuentaWebUnreachable(MiCuentaWebError):
     """The gateway did not answer, or answered that it is the one that is broken."""
 
 
+class MiCuentaWebRefused(MiCuentaWebError):
+    """
+    The gateway refused US, not the question: credentials it does not accept, a
+    request it calls malformed (`INT_…`, «problema de integración del vendedor»,
+    rest/V4.0/api/errors_int.html), or too many calls. Asking again about
+    another reference gets the same answer.
+    """
+
+
 def _is_refusal(exc) -> bool:
     """An HTTP 4xx is the gateway answering no. Everything else is no answer."""
     return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
+
+
+#: HTTP answers that are about who is calling and how often, never about what was asked.
+_ABOUT_THE_CALLER = (401, 403, 429)
 
 
 @dataclass(frozen=True)
@@ -114,7 +147,9 @@ class MiCuentaWebCredentials:
 
     environment: str        # 'test' | 'production', derived from the keys
     shop_id: str
-    password: str
+    #: Out of `repr()`: an object of this class that reaches a log line, a
+    #: traceback or an assertion message shows no secret.
+    password: str = field(repr=False)
     public_key: str
     api_url: str
     currency: str
@@ -192,6 +227,10 @@ def credentials_from(configured: dict) -> MiCuentaWebCredentials:
     api_url = (configured.get('MICUENTAWEB_API_URL') or DEFAULT_API_URL).strip().rstrip('/')
     if not api_url.startswith('https://'):
         raise MiCuentaWebError('MICUENTAWEB_API_URL debe ser https.')
+    if (urllib.parse.urlsplit(api_url).hostname or '') not in OFFICIAL_API_HOSTS:
+        # The password travels in every call: it goes to the gateway's own
+        # server, whatever somebody typed in this field.
+        raise MiCuentaWebError('MICUENTAWEB_API_URL debe ser la dirección oficial: ' + DEFAULT_API_URL + '.')
 
     return MiCuentaWebCredentials(
         environment=environment, shop_id=shop_id, password=password, public_key=public_key,
@@ -258,6 +297,25 @@ def signed_text(kr_answer: str, kr_hash: str, key: str) -> str | None:
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """
+    A redirect is never followed. Following one would send the request again —
+    with its `Authorization` header, the shop's password — to wherever the
+    answer pointed. The 3xx comes back as what it is: not an answer.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request, timeout):
+    """The one place a socket is opened. Stood in for by the fake gateway of the tests."""
+    return _OPENER.open(request, timeout=timeout)
+
+
 def _post(credentials: MiCuentaWebCredentials, path: str, body: dict, *, timeout: float, doing: str) -> dict:
     """
     One call to a web service of the gateway, and its answer as a dict.
@@ -278,15 +336,23 @@ def _post(credentials: MiCuentaWebCredentials, path: str, body: dict, *, timeout
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode('utf-8', 'replace')
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        logger.error('Mi Cuenta Web: fallo de red al %s (%s)', doing, type(exc).__name__)
+        with _open(request, timeout) as response:
+            payload = response.read(MAX_ANSWER_BYTES + 1)
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        # `HTTPException` too: an answer cut short or garbled is no answer.
+        code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        logger.error('Mi Cuenta Web: fallo de red al %s (%s%s)', doing, type(exc).__name__,
+                     f' {code}' if code else '')
+        if code in _ABOUT_THE_CALLER:
+            raise MiCuentaWebRefused('La pasarela de pago rechazó la llamada.') from None
         kind = MiCuentaWebError if _is_refusal(exc) else MiCuentaWebUnreachable
         raise kind('No se pudo contactar a la pasarela de pago.') from None
+    if len(payload) > MAX_ANSWER_BYTES:
+        logger.error('Mi Cuenta Web: la respuesta al %s es demasiado grande', doing)
+        raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.')
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(payload.decode('utf-8', 'replace'))
     except ValueError:
         logger.error('Mi Cuenta Web: la respuesta al %s no es JSON', doing)
         raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.') from None
@@ -330,8 +396,13 @@ def get_order_transactions(*, credentials: MiCuentaWebCredentials, order_id: str
                    doing='consultar el pedido')
     answer = parsed.get('answer')
     if parsed.get('status') != 'SUCCESS' or not isinstance(answer, dict):
-        code = answer.get('errorCode') if isinstance(answer, dict) else ''
-        logger.warning('Mi Cuenta Web: consulta sin respuesta útil (errorCode=%s)', str(code or '-')[:20])
+        code = str((answer.get('errorCode') if isinstance(answer, dict) else '') or '-')[:20]
+        # The code, never the message: gateway messages can echo the request.
+        logger.warning('Mi Cuenta Web: consulta sin respuesta útil (errorCode=%s)', code)
+        if code in NO_TRANSACTION_CODES:
+            return {'shopId': credentials.shop_id, 'orderId': order_id, 'transactions': []}
+        if code.startswith('INT_'):
+            raise MiCuentaWebRefused('La pasarela de pago rechazó la consulta.')
         raise MiCuentaWebError('La pasarela de pago no respondió a la consulta.')
     return answer
 

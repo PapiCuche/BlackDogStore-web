@@ -36,9 +36,9 @@ from .models import (
     BranchStock, Coupon, Order, OrderItem, PaymentTransaction, Product,
     assert_items_match_order,
 )
-from .payments import izipay, micuentaweb
+from .payments import izipay, micuentaweb, reconcile
 from .integrations import payments as payment_adapters
-from .tenancy import company_fulfillment_branch
+from .tenancy import company_fulfillment_branch, is_platform_admin
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +72,20 @@ class CheckoutError(Exception):
     just because a different view caught it.
     """
 
-    def __init__(self, detail: str, *, status_code: int = 400, errors=None):
+    def __init__(self, detail: str, *, status_code: int = 400, errors=None, code: str = ''):
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
         self.errors = errors or []
+        #: A word a client can tell this refusal by, for the few that have one.
+        self.code = code
 
     def as_payload(self) -> dict:
         payload = {'detail': self.detail}
         if self.errors:
             payload['errors'] = self.errors
+        if self.code:
+            payload['code'] = self.code
         return payload
 
 
@@ -501,13 +505,24 @@ def active_payment_provider() -> str:
     return payment_adapters.active_code()
 
 
-def require_payment_provider_configured():
+#: What a buyer is told while the shop's gateway is still being tested.
+PAYMENT_NOT_YET = 'El pago en línea todavía no está disponible en esta tienda.'
+
+
+def require_payment_provider_configured(buyer=None):
     """
     Load the gateway credentials, or refuse the checkout before creating an order.
 
     Checked FIRST, deliberately. Creating a pending order and only then finding
     out there is no gateway leaves a row nobody can pay and a buyer looking at an
     error, every single time, until someone sets the variable.
+
+    TEST KEYS ARE NOT FOR BUYERS. While what charges is a TEST configuration a
+    master put in the console, only a platform master opens a payment — the
+    same people, and the only ones, who can configure the gateway, because they
+    are who has to try it. Anybody else is told online payment is not available
+    yet, here, before an order exists and before the gateway hears anything.
+    `buyer` is the user of the request; nobody (the default) is a buyer.
     """
     provider = active_payment_provider()
     adapter = payment_adapters.adapter(provider)
@@ -519,13 +534,16 @@ def require_payment_provider_configured():
             'La pasarela de pago no está configurada.', status_code=500,
         )
     try:
-        return adapter.load_credentials()
+        credentials = adapter.load_credentials()
     except payment_adapters.ERRORS as exc:
         # The operator needs the detail; it names variables, never values.
         logger.error('Pasarela de pago mal configurada: %s', exc)
         raise CheckoutError(
             'La pasarela de pago no está configurada.', status_code=500,
         )
+    if payment_adapters.test_keys_of_the_console(adapter, credentials) and not is_platform_admin(buyer):
+        raise CheckoutError(PAYMENT_NOT_YET, status_code=503, code='payment_test_only')
+    return credentials
 
 
 def build_payment_config(
@@ -616,19 +634,49 @@ def start_payment_attempt(order: Order, *, credentials) -> PaymentSession:
     return payment_adapters.adapter_for(credentials).start_attempt(order, credentials)
 
 
+def _open_attempt(order: Order, credentials, *, provider: str, transaction_id: str,
+                  order_number: str) -> PaymentTransaction:
+    """
+    Write down ONE attempt, against the gateway that charges at this instant.
+
+    UNDER THE LOCK A CHANGE OF GATEWAY TAKES. The credentials were loaded when
+    the checkout began; a master may have switched product, shop or environment
+    since. Holding the lock, they are compared with what charges now: if that
+    moved, no attempt is written and the buyer is asked to try again — an
+    attempt opened under a gateway that is no longer listening is a payment
+    nobody would ever hear about. And an attempt that IS written is one the next
+    change will find and wait for.
+
+    The attempt keeps which side of the gateway it was opened against, and
+    into whose account: an answer about it is only believed with those same
+    two still configured.
+    """
+    with transaction.atomic():
+        payment_adapters.lock_configuration(exclusive=False)
+        if not payment_adapters.still_charging(credentials):
+            raise CheckoutError(
+                'La pasarela de pago acaba de cambiar. Vuelve a intentarlo.', status_code=409,
+            )
+        return PaymentTransaction.objects.create(
+            order=order,
+            provider=provider,
+            transaction_id=transaction_id,
+            order_number=order_number,
+            amount=_cents(order.total),
+            currency=credentials.currency,
+            status=PaymentTransaction.Status.PENDING,
+            environment=payment_adapters.environment_of(credentials),
+            shop=credentials.merchant_code[:32],
+        )
+
+
 def _start_izipay_attempt(order: Order, credentials: izipay.IzipayCredentials) -> PaymentSession:
     """The step for «SDK web / Checkout»: a row first, then the session token."""
     transaction_id = izipay.new_transaction_id()
     order_number = izipay.new_order_number()
 
-    attempt = PaymentTransaction.objects.create(
-        order=order,
-        provider=izipay.PROVIDER,
-        transaction_id=transaction_id,
-        order_number=order_number,
-        amount=_cents(order.total),
-        currency=credentials.currency,
-        status=PaymentTransaction.Status.PENDING,
+    attempt = _open_attempt(
+        order, credentials, provider=izipay.PROVIDER, transaction_id=transaction_id, order_number=order_number,
     )
 
     config = build_payment_config(
@@ -676,16 +724,24 @@ def _start_micuentaweb_attempt(
     The amount sent is `Order.total`. The buyer's e-mail goes with it because
     the gateway asks for it; no card data exists on this side to send.
     """
+    # ANOTHER FORM FOR AN ORDER THAT ALREADY HAS ONE. An earlier attempt whose
+    # form can still charge may have been paid a moment ago, its notification
+    # still on the way or lost: a second form would be a second charge. The
+    # gateway is asked first. Paid: there is nothing left to charge. Cannot be
+    # asked: no second form until it can.
+    earlier = reconcile.earlier_attempts(order, credentials)
+    if earlier == 'paid':
+        raise CheckoutError('Este pedido ya está pagado.', status_code=409, code='order_already_paid')
+    if earlier == 'unknown':
+        raise CheckoutError(
+            'Hay un pago de este pedido que todavía no se pudo comprobar. Vuelve a intentarlo en unos minutos.',
+            status_code=409, code='payment_in_progress',
+        )
+
     order_id = micuentaweb.new_order_id()
 
-    attempt = PaymentTransaction.objects.create(
-        order=order,
-        provider=micuentaweb.PROVIDER,
-        transaction_id=order_id,
-        order_number=order_id,
-        amount=_cents(order.total),
-        currency=credentials.currency,
-        status=PaymentTransaction.Status.PENDING,
+    attempt = _open_attempt(
+        order, credentials, provider=micuentaweb.PROVIDER, transaction_id=order_id, order_number=order_id,
     )
 
     try:

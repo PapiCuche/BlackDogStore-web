@@ -27,25 +27,32 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import http.client
 import io
 import json
 import re
 import urllib.error
 from unittest import mock
 
-URLOPEN_PATH = 'urllib.request.urlopen'
+#: The adapter's one socket: `micuentaweb._open(request, timeout)`.
+URLOPEN_PATH = 'store.payments.micuentaweb._open'
 CREATE_PATH = '/api-payment/V4/Charge/CreatePayment'
 GET_ORDER_PATH = '/api-payment/V4/Order/Get'
 #: What the documentation accepts in an `orderId`.
 ORDER_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 
 
+#: How much of each answer the adapter asked to read (None: all of it, however big).
+READ_LIMITS: list = []
+
+
 class _Reply:
     def __init__(self, payload: bytes):
         self._payload = payload
 
-    def read(self):
-        return self._payload
+    def read(self, amount=None):
+        READ_LIMITS.append(amount)
+        return self._payload if amount is None else self._payload[:amount]
 
     def __enter__(self):
         return self
@@ -65,6 +72,12 @@ class FakeMiCuentaWeb:
         'http_error'  HTTP 500
         'unreachable' the connection fails
         'timeout'     the gateway never answers
+        'http_401' / 'http_403' / 'http_404' / 'http_429'   that HTTP status
+        'cut_short'   the answer stops half way (http.client.IncompleteRead)
+        'garbled'     not HTTP at all (http.client.BadStatusLine)
+        'huge'        an answer far bigger than any real one
+        'padded'      a small valid answer followed by megabytes of blanks
+        'int_error'   {"status": "ERROR", "answer": {"errorCode": "INT_905", ...}}
 
     `Order/Get` answers with whatever `hold()` left for that reference: an empty
     list when nothing was ever tried, or — with `order_get_mode = 'error'` — the
@@ -83,6 +96,7 @@ class FakeMiCuentaWeb:
         self.violations: list[str] = []
         self.held: dict[str, list[dict]] = {}
         self.order_get_mode = 'ok'
+        self.order_get_error = 'PSP_000'
 
     @classmethod
     def from_settings(cls, values: dict) -> 'FakeMiCuentaWeb':
@@ -120,6 +134,23 @@ class FakeMiCuentaWeb:
             raise TimeoutError('timed out')
         if self.mode == 'http_error':
             raise urllib.error.HTTPError(request.full_url, 500, 'Server Error', {}, io.BytesIO(b''))
+        if self.mode.startswith('http_'):
+            raise urllib.error.HTTPError(request.full_url, int(self.mode[5:]), 'Refused', {}, io.BytesIO(b''))
+        if self.mode == 'cut_short':
+            raise http.client.IncompleteRead(b'{"status":"SUCC')
+        if self.mode == 'garbled':
+            raise http.client.BadStatusLine('\x16\x03\x01')
+        if self.mode == 'huge':
+            return _Reply(b'{"status":"SUCCESS","answer":{"pad":"' + b'x' * (3 * 1024 * 1024) + b'"}}')
+        if self.mode == 'padded':
+            return _Reply(b'{"status":"SUCCESS","answer":{"formToken":"x","shopId":"' + self.shop_id.encode()
+                          + b'","orderId":"' + str((body or {}).get('orderId', '')).encode()
+                          + b'","transactions":[]}}' + b' ' * (3 * 1024 * 1024))
+        if self.mode == 'int_error':
+            return _Reply(json.dumps({
+                'status': 'ERROR',
+                'answer': {'errorCode': 'INT_905', 'errorMessage': 'invalid user or password: ' + self.password},
+            }).encode())
         if self.mode == 'not_json':
             return _Reply(b'<html><body>502 Bad Gateway</body></html>')
 
@@ -146,7 +177,7 @@ class FakeMiCuentaWeb:
         if self.order_get_mode == 'error':
             return _Reply(json.dumps({
                 'status': 'ERROR',
-                'answer': {'errorCode': 'PSP_000', 'errorMessage': 'no such order'},
+                'answer': {'errorCode': self.order_get_error, 'errorMessage': 'no such order ' + self.password},
             }).encode())
         order_id = body['orderId']
         return _Reply(json.dumps({

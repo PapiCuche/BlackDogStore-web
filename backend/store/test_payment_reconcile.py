@@ -428,9 +428,9 @@ class WhichAttemptsAreAskedTest(ReconcileBase):
         summary = self.ask(limit=2)
 
         self.assertEqual((summary.asked, len(self.asked())), (2, 2))
-        # Los más recientes primero: ahí está el comprador que sigue mirando la pantalla.
+        # Quien lleva más tiempo sin que nadie pregunte por él, primero: así ninguno se queda sin turno.
         self.assertEqual(
-            [r['body']['orderId'] for r in self.asked()], [self.attempt.transaction_id, '30000000000000000000'])
+            [r['body']['orderId'] for r in self.asked()], ['30000000000000000002', '30000000000000000001'])
         # Y lo que quedó sin consultar se dice, para que nadie crea que se miró todo.
         self.assertEqual(summary.left, 2)
         self.assertIn('sin consultar: 2', summary.line())

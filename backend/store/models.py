@@ -873,6 +873,14 @@ class PaymentTransaction(models.Model):
         # gateway saying no, this is the gateway and the database saying
         # different things, and it needs a human rather than a retry.
         INTEGRITY_FAILED = 'integrity_failed', 'Falla de integridad'
+        # Asked of the gateway once the form could no longer charge, and the
+        # gateway held nothing: the buyer opened the form and never tried a
+        # card. Not a decline — nobody said no — and nothing to wait for.
+        ABANDONED = 'abandoned', 'Sin intento de pago'
+        # The gateway took money for an order that was ALREADY paid by another
+        # payment. Authorised there, and exactly what it must never be filed
+        # as here: it is a second charge, and somebody has to give it back.
+        DUPLICATE = 'duplicate', 'Cobro duplicado'
 
     order = models.ForeignKey(
         Order, on_delete=models.PROTECT, related_name='payment_transactions',
@@ -919,6 +927,22 @@ class PaymentTransaction(models.Model):
     # Whether the message that produced this outcome carried a signature that
     # verified. Recorded, not inferred: "we believed it" is an auditable fact.
     signature_verified = models.BooleanField(default=False)
+
+    # Which side of the gateway this attempt was opened against: 'test' or
+    # 'production'. A TEST payment is not money, and an order paid by one has to
+    # be recognisable afterwards. Empty on rows older than this column.
+    # `db_default` too: the release before this column keeps inserting attempts
+    # while a deployment is half way.
+    environment = models.CharField(max_length=12, blank=True, default='', db_default='')
+    # …and into whose account: the shop (merchant) the credentials were of. An
+    # answer about this attempt is only believed with those same two still
+    # configured. Empty, like `environment`, on rows older than the column —
+    # those are judged as they always were.
+    shop = models.CharField(max_length=32, blank=True, default='', db_default='')
+
+    # When the gateway was last ASKED about this attempt (PAY-RECONCILE). Whoever
+    # has waited longest is asked first, so no attempt is starved by newer ones.
+    gateway_checked_at = models.DateTimeField(null=True, blank=True)
 
     # Free text for an operator, e.g. which check failed. Never the payload.
     failure_reason = models.CharField(max_length=200, blank=True)

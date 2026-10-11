@@ -15,10 +15,11 @@ from rest_framework.views import APIView
 
 from .customer_services import link_order_to_customer
 from .models import (
-    BranchStock, Category, Product, Order, OrderItem, CartItem, PaymentTransaction,
+    AdminAuditLog, BranchStock, Category, Product, Order, OrderItem, CartItem, PaymentTransaction,
     Review, Coupon, UserProfile, assert_items_match_order,
 )
 from . import checkout_services as checkout
+from .integrations import payments as payment_adapters
 from . import request_limits
 from .measurement import conversions
 from .payments import izipay, micuentaweb
@@ -217,7 +218,7 @@ class CreateCheckoutSessionView(APIView):
         # Before an Order exists: a checkout that cannot be paid should fail
         # here, not leave an unpayable row behind.
         try:
-            credentials = checkout.require_payment_provider_configured()
+            credentials = checkout.require_payment_provider_configured(request.user)
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
 
@@ -328,8 +329,14 @@ def _signed(result) -> bool:
 
     True for a notification, always: nothing unsigned gets this far. False for
     what the gateway answered when it was asked (`Order/Get`, PAY-RECONCILE).
+    A result that does not say is NOT taken for signed.
     """
-    return getattr(result, 'signed', True)
+    return getattr(result, 'signed', False) is True
+
+
+def _source(result) -> str:
+    """Where a result came from, for a log line."""
+    return 'IPN' if _signed(result) else 'Consulta a la pasarela'
 
 
 class _SignedNotificationMixin:
@@ -381,48 +388,68 @@ class _SignedNotificationMixin:
             return None, too_large
         return body, None
 
+    #: How long the form of an attempt of this product can still charge after a
+    #: refusal — during which a refusal settles nothing — or None when a refusal
+    #: is the end of the attempt.
+    form_lifetime = None
+
     @classmethod
-    def settle_answer(cls, result, credentials) -> Response:
+    def settle_answer(cls, result, credentials) -> str:
         """
         The same decision, for an answer the gateway gave because it was ASKED
         (PAY-RECONCILE). No request is involved; the checks, the lock and the
-        single payment are exactly the ones a notification gets.
+        single payment are exactly the ones a notification gets. Returns what
+        came of it, in the words of `payments.reconcile`.
         """
-        return cls()._settle(result, credentials)
+        return cls()._decide(result, credentials)
 
     def _settle(self, result, credentials) -> Response:
         """Everything here reads ONLY from the result: the signed payload, or the gateway's own answer."""
+        outcome = self._decide(result, credentials)
+        if outcome == 'unknown':
+            return Response({'detail': 'Transacción desconocida.'}, status=status.HTTP_404_NOT_FOUND)
+        if outcome == 'mismatch':
+            return Response({'detail': 'Datos inconsistentes.'}, status=status.HTTP_400_BAD_REQUEST)
+        # A decline is a normal outcome and a well-formed message: 200, so the
+        # gateway does not retry it forever.
+        return Response({'status': 'received'})
+
+    def _decide(self, result, credentials) -> str:
         attempt = PaymentTransaction.objects.filter(
             provider=self.provider, transaction_id=result.transaction_id,
         ).select_related('order').first()
         if attempt is None:
             # Correctly signed but unknown to us. It does NOT create an order and
             # it does not get to pick one. Logged with the identifier only.
-            logger.error(
-                'IPN con transactionId desconocido: %s', result.transaction_id,
-            )
-            return Response({'detail': 'Transacción desconocida.'}, status=status.HTTP_404_NOT_FOUND)
+            logger.error('%s con transactionId desconocido: %s', _source(result), result.transaction_id)
+            return 'unknown'
 
         failure = self._integrity_failure(attempt, result, credentials)
         if failure is not None:
             self._record_integrity_failure(attempt, result, failure)
             logger.error(
-                'IPN con fallo de integridad en la transacción %s: %s',
-                result.transaction_id, failure,
+                '%s con fallo de integridad en la transacción %s: %s',
+                _source(result), result.transaction_id, failure,
             )
-            return Response({'detail': 'Datos inconsistentes.'}, status=status.HTTP_400_BAD_REQUEST)
+            return 'mismatch'
 
         if not result.authorized:
             # News that the payment is still open is not a decline: the attempt
             # keeps waiting for the answer that settles it.
-            if getattr(result, 'settled', True):
-                self._record_rejection(attempt, result)
-            # A decline is a normal outcome and a well-formed message: 200, so
-            # the gateway does not retry it forever.
-            return Response({'status': 'received'})
+            if not getattr(result, 'settled', True):
+                return 'waiting'
+            if self._form_can_still_charge(attempt):
+                # A refusal while the form is alive is not the end either: the
+                # buyer can try another card under the same reference, and if
+                # THAT payment's notification were lost, an attempt already
+                # closed as refused would never be asked about again.
+                return 'waiting'
+            return 'rejected' if self._record_rejection(attempt, result) else 'already'
 
-        self._confirm(attempt, result)
-        return Response({'status': 'received'})
+        return self._confirm(attempt, result)
+
+    def _form_can_still_charge(self, attempt) -> bool:
+        return self.form_lifetime is not None and attempt.created_at > timezone.now() - self.form_lifetime
 
     # -- checks ----------------------------------------------------------------
 
@@ -449,6 +476,18 @@ class _SignedNotificationMixin:
         if result.merchant_code and result.merchant_code != credentials.merchant_code:
             # Another merchant's authorisation cannot pay our order.
             return 'merchant mismatch'
+
+        if attempt.environment and attempt.environment != payment_adapters.environment_of(credentials):
+            # Opened against TEST and answered with production keys configured,
+            # or the reverse. Whatever the signature says, it is not this
+            # configuration's payment. (Attempts older than the column say
+            # nothing here and are judged as they always were.)
+            return 'environment mismatch'
+
+        if attempt.shop and attempt.shop != credentials.merchant_code:
+            # Opened into one shop's account and answered with another shop's
+            # keys configured: the same reference there is another payment.
+            return 'shop mismatch'
 
         expected_currency = (attempt.currency or credentials.currency).upper()
         if result.currency != expected_currency:
@@ -497,9 +536,18 @@ class _SignedNotificationMixin:
                 '(intento=%s, motivo=%s); se rechaza y el registro no cambia.',
                 self.provider, attempt.pk, reason,
             )
+            return
+        # Where the health check sends whoever reads it: once per attempt, under
+        # the order's company, with the reason and no value of the message.
+        AdminAuditLog.log(
+            actor=None, action='payment_integrity_failed', target_type='order', target_id=attempt.order_id,
+            metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'reason': reason[:200],
+                      'source': 'notification' if _signed(result) else 'Order/Get'},
+            company=attempt.order.company,
+        )
 
-    def _record_rejection(self, attempt, result) -> None:
-        PaymentTransaction.objects.filter(
+    def _record_rejection(self, attempt, result) -> int:
+        return PaymentTransaction.objects.filter(
             pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
         ).update(
             status=PaymentTransaction.Status.REJECTED,
@@ -509,9 +557,10 @@ class _SignedNotificationMixin:
             failure_reason=(result.state_message or 'rechazado')[:200],
         )
 
-    def _confirm(self, attempt, result) -> None:
+    def _confirm(self, attempt, result) -> str:
         """
-        Make the order paid — once, whatever happens.
+        Make the order paid — once, whatever happens. Says what IT did:
+        'paid', 'already' (this attempt was settled before) or 'duplicate'.
 
         UNDER A ROW LOCK, because two valid notifications can arrive at the same
         instant and `if order.paid: return` is not a decision, it is a read that
@@ -523,33 +572,56 @@ class _SignedNotificationMixin:
         the lock stops the second one doing the work again; and the sale exits
         are keyed `(order, product)` in the inventory service, so even a replay
         that got past both would not subtract stock twice.
+
+        AN ATTEMPT IS SETTLED ONCE. Read again under the lock: if it already
+        has its payment, a repeated message does NOTHING, whatever became of the
+        order since (cancelled, refunded) — it is the same payment, not news.
+
+        A SECOND PAYMENT IS NOT A PAYMENT OF THE ORDER. If the order is already
+        paid and this is another attempt the gateway also took money for, it is
+        filed as `duplicate`, said in the log and in the audit trail under the
+        order's company, and nothing of the order moves: somebody has to give
+        that money back.
         """
+        Status = PaymentTransaction.Status
         with transaction.atomic():
             order = Order.objects.select_for_update().get(pk=attempt.order_id)
+            current = PaymentTransaction.objects.select_for_update().get(pk=attempt.pk)
+            if current.status in (Status.AUTHORIZED, Status.DUPLICATE):
+                return 'already'
 
-            if order.status == Order.Status.PAID:
-                # Already confirmed — record the attempt's outcome and stop.
-                # No stock, no cart, no second e-mail.
-                PaymentTransaction.objects.filter(
-                    pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
-                ).update(
-                    status=PaymentTransaction.Status.AUTHORIZED,
-                    signature_verified=_signed(result),
-                    response_code=result.response_code[:8],
-                    payment_method=result.pay_method[:32],
-                    authorization_code=result.authorization_code[:32],
-                    reference_number=result.reference_number[:64],
-                    provider_unique_id=result.unique_id[:64],
-                    confirmed_at=timezone.now(),
+            now = timezone.now()
+            said = dict(
+                signature_verified=_signed(result),
+                response_code=result.response_code[:8],
+                payment_method=result.pay_method[:32],
+                authorization_code=result.authorization_code[:32],
+                reference_number=result.reference_number[:64],
+                provider_unique_id=result.unique_id[:64],
+                confirmed_at=now,
+            )
+            source = 'notification' if _signed(result) else 'Order/Get'
+
+            if order.status == Order.Status.PAID or order.paid:
+                PaymentTransaction.objects.filter(pk=attempt.pk).update(
+                    status=Status.DUPLICATE, failure_reason='el pedido ya estaba pagado por otro cobro', **said)
+                AdminAuditLog.log(
+                    actor=None, action='payment_duplicate', target_type='order', target_id=order.pk,
+                    metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'source': source,
+                              'gateway_transaction': result.unique_id[:64]},
+                    company=order.company,
                 )
-                return
+                logger.error(
+                    'Cobro duplicado: el pedido %s ya estaba pagado y la pasarela cobró otra vez (intento %s). '
+                    'Hay que devolverlo desde el panel de la pasarela.', order.pk, attempt.pk,
+                )
+                return 'duplicate'
 
             # Stock and the Kardex in the SAME transaction as the payment.
             # Idempotent per (order, product); a shortfall is recorded on the
             # order rather than raised, because the money is already captured.
             record_sale_stock_movements(order)
 
-            now = timezone.now()
             order.status = Order.Status.PAID
             order.paid = True
             order.paid_at = now
@@ -560,16 +632,20 @@ class _SignedNotificationMixin:
                 'status', 'paid', 'paid_at', 'payment_error',
             ])
 
-            PaymentTransaction.objects.filter(pk=attempt.pk).update(
-                status=PaymentTransaction.Status.AUTHORIZED,
-                signature_verified=_signed(result),
-                response_code=result.response_code[:8],
-                payment_method=result.pay_method[:32],
-                authorization_code=result.authorization_code[:32],
-                reference_number=result.reference_number[:64],
-                provider_unique_id=result.unique_id[:64],
-                confirmed_at=now,
-            )
+            PaymentTransaction.objects.filter(pk=attempt.pk).update(status=Status.AUTHORIZED, **said)
+
+            if not _signed(result):
+                # Paid on the gateway's answer to a question, not on a signed
+                # notification: its own record, in THIS transaction — it exists
+                # exactly when the payment does, and once.
+                AdminAuditLog.log(
+                    actor=None, action='payment_reconciled', target_type='order', target_id=order.pk,
+                    metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'source': source,
+                              'gateway_transaction': result.unique_id[:64], 'mode': getattr(result, 'mode', '')},
+                    company=order.company,
+                )
+                logger.info('Conciliación de pagos: el pedido %s quedó pagado por consulta (intento %s).',
+                            order.pk, attempt.pk)
 
             # ONLY NOW. The cart survives a decline, a cancellation and a forged
             # notification; it is emptied when, and only when, a verified payment
@@ -581,6 +657,14 @@ class _SignedNotificationMixin:
                     session_key=order.cart_session_key,
                     product__company=order.company_id,
                 ).delete()
+
+            if attempt.environment == 'test':
+                # Paid with TEST keys: not money. Said where an owner looks for
+                # what happened to an order, under the order's own company.
+                AdminAuditLog.log(
+                    actor=None, action='payment_confirmed_in_test', target_type='order', target_id=order.pk,
+                    metadata={'provider': attempt.provider, 'attempt': attempt.pk}, company=order.company,
+                )
 
             # M12B — the notification event, recorded INSIDE this transaction
             # so it is exactly as durable as the payment it describes. A
@@ -606,6 +690,7 @@ class _SignedNotificationMixin:
             # After the e-mail, and robust: a provider that is slow or down must
             # neither delay nor cancel what the buyer is waiting for.
             conversions.send_after_commit(conversion_ids)
+            return 'paid'
 
 
 class IzipayNotificationView(_SignedNotificationMixin, APIView):
@@ -706,6 +791,8 @@ class MiCuentaWebNotificationView(_SignedNotificationMixin, APIView):
     permission_classes = [permissions.AllowAny]
     provider = micuentaweb.PROVIDER
     merchant_required = True
+    #: This product's form lets the buyer try again under the same reference.
+    form_lifetime = micuentaweb.FORM_LIFETIME
 
     def post(self, request):
         if not self._is_active():

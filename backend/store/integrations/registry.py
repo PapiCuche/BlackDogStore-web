@@ -127,6 +127,20 @@ class Field:
         return text
 
 
+class ChangeBlocked(Exception):
+    """
+    A change the console may not make RIGHT NOW, whatever is typed: something is
+    in flight that the change would cut off and that can still be waited for.
+
+    `details` is for the screen: counts and a time. Never a value of the
+    configuration.
+    """
+
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
+
+
 @dataclass(frozen=True)
 class TestOutcome:
     """What a connection test found, already safe to show: a code and a sentence."""
@@ -250,6 +264,42 @@ class Provider:
         off, revoked or replaced — as a sentence for the master — or ''.
         """
         return ''
+
+    # -- a change that could cut something off ----------------------------------
+    #
+    # `change` is 'activate', 'disable' or 'revoke'; `public` is the public half
+    # of the draft about to be activated. Three steps, because the first may
+    # talk to somebody else's server and the other two hold a lock:
+
+    def prepare_change(self, company, *, change, public=None):
+        """
+        BEFORE the transaction: whatever has to be found out first and cannot be
+        found out holding a lock. What it returns is handed to `guard_change`.
+        """
+        return None
+
+    def lock_changes(self) -> None:
+        """INSIDE the transaction, first: hold still whatever the decision reads."""
+
+    def guard_change(self, company, *, change, public=None, prepared=None, acknowledged=False):
+        """
+        INSIDE the transaction, before anything is written. One of:
+
+          NotImplemented   no opinion: the console asks for the typed word when
+                           `interruption_warning` says something is in flight
+          raise ChangeBlocked   not now, and no word changes that
+          raise ConfigError({'acknowledge': ...})   it has to be meant: typed
+          a list of `(company, metadata)`   go ahead, and leave these audit
+                           records of what was cut off (may be empty)
+        """
+        return NotImplemented
+
+    def change_notice(self, company=None):
+        """
+        Something a master should read BEFORE changing this provider and that
+        asks for no word: `{'count': n, 'message': '...'}`, or None.
+        """
+        return None
 
     def health_note(self) -> str:
         """Something about THIS SERVER an operator should read beside this provider's state, or ''."""
