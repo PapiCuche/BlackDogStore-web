@@ -322,6 +322,16 @@ def _payment_session_payload(order, payment) -> dict:
 MAX_NOTIFICATION_BYTES = request_limits.PAYMENT_NOTIFICATION_BYTES
 
 
+def _signed(result) -> bool:
+    """
+    Whether this result came out of a message whose signature verified.
+
+    True for a notification, always: nothing unsigned gets this far. False for
+    what the gateway answered when it was asked (`Order/Get`, PAY-RECONCILE).
+    """
+    return getattr(result, 'signed', True)
+
+
 class _SignedNotificationMixin:
     """
     What happens AFTER a gateway notification has proved who sent it.
@@ -371,8 +381,17 @@ class _SignedNotificationMixin:
             return None, too_large
         return body, None
 
+    @classmethod
+    def settle_answer(cls, result, credentials) -> Response:
+        """
+        The same decision, for an answer the gateway gave because it was ASKED
+        (PAY-RECONCILE). No request is involved; the checks, the lock and the
+        single payment are exactly the ones a notification gets.
+        """
+        return cls()._settle(result, credentials)
+
     def _settle(self, result, credentials) -> Response:
-        """Everything here reads ONLY from the signed payload."""
+        """Everything here reads ONLY from the result: the signed payload, or the gateway's own answer."""
         attempt = PaymentTransaction.objects.filter(
             provider=self.provider, transaction_id=result.transaction_id,
         ).select_related('order').first()
@@ -468,7 +487,7 @@ class _SignedNotificationMixin:
             pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
         ).update(
             status=PaymentTransaction.Status.INTEGRITY_FAILED,
-            signature_verified=True,
+            signature_verified=_signed(result),
             response_code=result.response_code[:8],
             failure_reason=reason[:200],
         )
@@ -484,7 +503,7 @@ class _SignedNotificationMixin:
             pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
         ).update(
             status=PaymentTransaction.Status.REJECTED,
-            signature_verified=True,
+            signature_verified=_signed(result),
             response_code=result.response_code[:8],
             payment_method=result.pay_method[:32],
             failure_reason=(result.state_message or 'rechazado')[:200],
@@ -515,7 +534,7 @@ class _SignedNotificationMixin:
                     pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
                 ).update(
                     status=PaymentTransaction.Status.AUTHORIZED,
-                    signature_verified=True,
+                    signature_verified=_signed(result),
                     response_code=result.response_code[:8],
                     payment_method=result.pay_method[:32],
                     authorization_code=result.authorization_code[:32],
@@ -543,7 +562,7 @@ class _SignedNotificationMixin:
 
             PaymentTransaction.objects.filter(pk=attempt.pk).update(
                 status=PaymentTransaction.Status.AUTHORIZED,
-                signature_verified=True,
+                signature_verified=_signed(result),
                 response_code=result.response_code[:8],
                 payment_method=result.pay_method[:32],
                 authorization_code=result.authorization_code[:32],

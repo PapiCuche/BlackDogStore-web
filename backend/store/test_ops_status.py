@@ -98,6 +98,8 @@ class OpsStatusTest(WhatsAppBase):
         self.assertEqual(code, 0, text)
         self.assertIn('NOTA  pagos: 1 pago', text)
         self.assertIn('sin respuesta de la pasarela', text)
+        # What to do about it is said too: the gateway can be asked (PAY-RECONCILE).
+        self.assertIn('reconcile_payments', text)
         self.assertNotIn('ATENCIÓN', text)
 
     def _deliveries(self, count):

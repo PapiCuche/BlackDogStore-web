@@ -93,8 +93,9 @@ class Command(BaseCommand):
             )
         # A payment still waiting is NOT an alarm. Every checkout opens one, and a
         # buyer who closes the card form leaves it waiting for ever; from here
-        # that cannot be told apart from a notification that never arrived
-        # (PAY-RECONCILE). It is said, for the day a customer claims to have paid.
+        # that cannot be told apart from a notification that never arrived. It
+        # is said, for the day a customer claims to have paid, with what asks
+        # the gateway (PAY-RECONCILE; only «Mi Cuenta Web» can be asked).
         payment_notes = []
         waiting = PaymentTransaction.objects.filter(
             status=PaymentTransaction.Status.PENDING,
@@ -103,8 +104,9 @@ class Command(BaseCommand):
         if waiting:
             payment_notes.append(
                 f'{_plural(waiting, "pago", "pagos")} sin respuesta de la pasarela en las últimas 24 h. '
-                'Lo habitual es un comprador que no terminó; si alguien dice que pagó, '
-                'compruébalo en el panel de la pasarela: la tienda no la consulta por su cuenta.'
+                'Lo habitual es un comprador que no terminó; si alguien dice que pagó, con «Mi Cuenta Web» '
+                'pregúntaselo a la pasarela (`python manage.py reconcile_payments --hours 24`) y, con el otro '
+                'producto, compruébalo en su panel.'
             )
         report('pagos', payments, 'sin notificaciones rechazadas ni pagos esperando', payment_notes)
 

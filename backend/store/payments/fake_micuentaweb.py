@@ -17,6 +17,9 @@ Contract source (official): https://secure.micuentaweb.pe/doc/es-PE/rest/V4.0/
   · answer.formToken on success; status "ERROR" with answer.errorCode otherwise
   · IPN: form fields kr-answer, kr-hash, kr-hash-algorithm, kr-hash-key,
     kr-answer-type; kr-hash = hex HMAC-SHA256(kr-answer) with the PASSWORD
+  · POST {server}/api-payment/V4/Order/Get with {"orderId": ...} and the same
+    Authorization; answer.transactions is the list of what the gateway holds
+    for that reference (a `V4/OrderTransactions`, which carries NO orderStatus)
 """
 from __future__ import annotations
 
@@ -26,11 +29,15 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import urllib.error
 from unittest import mock
 
 URLOPEN_PATH = 'urllib.request.urlopen'
 CREATE_PATH = '/api-payment/V4/Charge/CreatePayment'
+GET_ORDER_PATH = '/api-payment/V4/Order/Get'
+#: What the documentation accepts in an `orderId`.
+ORDER_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 
 
 class _Reply:
@@ -58,6 +65,10 @@ class FakeMiCuentaWeb:
         'http_error'  HTTP 500
         'unreachable' the connection fails
         'timeout'     the gateway never answers
+
+    `Order/Get` answers with whatever `hold()` left for that reference: an empty
+    list when nothing was ever tried, or — with `order_get_mode = 'error'` — the
+    error the documentation leaves unspecified for a reference it does not know.
     """
 
     def __init__(self, *, shop_id, password, hmac_key, api_url, currency='PEN'):
@@ -70,6 +81,8 @@ class FakeMiCuentaWeb:
         self.form_token = 'fake-form-token'
         self.requests: list[dict] = []
         self.violations: list[str] = []
+        self.held: dict[str, list[dict]] = {}
+        self.order_get_mode = 'ok'
 
     @classmethod
     def from_settings(cls, values: dict) -> 'FakeMiCuentaWeb':
@@ -110,13 +123,16 @@ class FakeMiCuentaWeb:
         if self.mode == 'not_json':
             return _Reply(b'<html><body>502 Bad Gateway</body></html>')
 
-        broken = self._contract_violations(request, headers, body, timeout)
+        asking = request.full_url.endswith(GET_ORDER_PATH)
+        broken = self._contract_violations(request, headers, body, timeout, asking=asking)
         if broken:
             self.violations.extend(broken)
             return _Reply(json.dumps({
                 'status': 'ERROR',
                 'answer': {'errorCode': 'INT_905', 'errorMessage': 'invalid credentials'},
             }).encode())
+        if asking:
+            return self._order_get(body)
         if self.mode == 'error':
             return _Reply(json.dumps({
                 'status': 'ERROR',
@@ -126,11 +142,29 @@ class FakeMiCuentaWeb:
             'status': 'SUCCESS', 'answer': {'formToken': self.form_token, '_type': 'V4/Charge/PaymentForm'},
         }).encode())
 
-    def _contract_violations(self, request, headers, body, timeout) -> list[str]:
+    def _order_get(self, body) -> _Reply:
+        if self.order_get_mode == 'error':
+            return _Reply(json.dumps({
+                'status': 'ERROR',
+                'answer': {'errorCode': 'PSP_000', 'errorMessage': 'no such order'},
+            }).encode())
+        order_id = body['orderId']
+        return _Reply(json.dumps({
+            'status': 'SUCCESS', 'webService': 'Order/Get',
+            'answer': {
+                'shopId': self.shop_id, 'orderId': order_id,
+                'transactions': self.held.get(order_id, []), '_type': 'V4/OrderTransactions',
+            },
+        }).encode())
+
+    def _contract_violations(self, request, headers, body, timeout, *, asking=False) -> list[str]:
         found = []
         if request.get_method() != 'POST':
-            found.append('the payment is created with POST')
-        if request.full_url != self.api_url + CREATE_PATH:
+            found.append('the web services are called with POST')
+        if asking:
+            if request.full_url != self.api_url + GET_ORDER_PATH:
+                found.append('an order is asked for at {server}/api-payment/V4/Order/Get')
+        elif request.full_url != self.api_url + CREATE_PATH:
             found.append('the payment is created at {server}/api-payment/V4/Charge/CreatePayment')
         if not request.full_url.startswith('https://'):
             found.append('the server is HTTPS')
@@ -143,6 +177,12 @@ class FakeMiCuentaWeb:
             found.append('the call has a timeout')
         if not isinstance(body, dict):
             return found + ['the body is a JSON object']
+        if asking:
+            if not ORDER_ID.match(str(body.get('orderId') or '')):
+                found.append('Order/Get takes the orderId, in the characters the documentation accepts')
+            if set(body) - {'orderId', 'operationType'}:
+                found.append('Order/Get takes orderId and operationType, nothing else')
+            return found
         amount = body.get('amount')
         if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
             found.append('amount is a positive INTEGER in the smallest unit of the currency')
@@ -181,17 +221,54 @@ class FakeMiCuentaWeb:
             '_type': 'V4/Payment',
         }
 
+    # -- what the gateway holds for a reference (Order/Get) ---------------------
+
+    def transaction(self, *, order_id, amount_cents, status='PAID', detailed=None, operation='DEBIT',
+                    currency=None, shop_id=None, mode=None, order_total=None,
+                    uuid='9d6b9c5d4f7e4f0e8a1c2b3d4e5f6a7b') -> dict:
+        """One `V4/Transaction` of the list `Order/Get` returns."""
+        detailed = detailed or {
+            'PAID': 'AUTHORISED', 'UNPAID': 'REFUSED', 'RUNNING': 'AUTHORISED_TO_VALIDATE'}.get(status, status)
+        return {
+            'shopId': shop_id or self.shop_id, 'uuid': uuid, 'paymentMethodType': 'CARD',
+            'status': status, 'detailedStatus': detailed, 'operationType': operation,
+            'amount': amount_cents, 'currency': currency or self.currency,
+            'creationDate': '2026-10-05T15:00:00+00:00',
+            'orderDetails': {
+                'orderTotalAmount': amount_cents if order_total is None else order_total,
+                'orderEffectiveAmount': amount_cents if order_total is None else order_total,
+                'orderCurrency': currency or self.currency, 'mode': mode or self.gateway_mode,
+                'orderId': order_id, '_type': 'V4/OrderDetails',
+            },
+            'transactionDetails': {'cardDetails': {'authorizationResponse': {
+                'authorizationNumber': '3fe205', '_type': 'V4/PaymentMethod/Details/Cards/CardAuthorizationResponse',
+            }}},
+            '_type': 'V4/Transaction',
+        }
+
+    def hold(self, order_id, *transactions) -> None:
+        """What `Order/Get` will list for this reference from now on."""
+        self.held[order_id] = list(transactions)
+
     @staticmethod
     def sign(kr_answer: str, key: str) -> str:
         """Hex HMAC-SHA256 of the exact `kr-answer` string. Computed here, not by the adapter."""
         return hmac.new(key.encode('utf-8'), kr_answer.encode('utf-8'), hashlib.sha256).hexdigest()
 
-    def ipn(self, answer: dict, *, key=None, hash_key='password', algorithm='sha256_hmac') -> dict:
-        """The form fields of an instant payment notification."""
-        kr_answer = json.dumps(answer, separators=(',', ':'), ensure_ascii=False)
+    def ipn(self, answer: dict, *, key=None, hash_key='password', algorithm='sha256_hmac',
+            escaped_slashes=False) -> dict:
+        """
+        The form fields of an instant payment notification.
+
+        `escaped_slashes`: the message travels with `\\/` where the signed text
+        has `/`. The official sample (ipn.php) undoes exactly that before it
+        computes the hash, so the hash here is of the text WITHOUT the escapes.
+        """
+        signed = json.dumps(answer, separators=(',', ':'), ensure_ascii=False)
+        kr_answer = signed.replace('/', '\\/') if escaped_slashes else signed
         return {
             'kr-answer': kr_answer,
-            'kr-hash': self.sign(kr_answer, self.password if key is None else key),
+            'kr-hash': self.sign(signed, self.password if key is None else key),
             'kr-hash-algorithm': algorithm,
             'kr-hash-key': hash_key,
             'kr-answer-type': 'V4/Payment',
