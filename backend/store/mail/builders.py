@@ -197,3 +197,112 @@ def internal_order(ctx: dict, *, admin_url: str) -> dict:
         'motivo': f'Recibes este correo porque esta dirección recibe los avisos de pedidos de {ctx["store_name"]}.',
         'anio': fmt.year(),
     }
+
+
+# --- notices -----------------------------------------------------------------
+#
+# A notice is «something happened, go and look». Its words were written where
+# the event was emitted, from material that is safe to send; this adds a label,
+# where to look, and — for the customer — which step that is. It reads nothing
+# of the order or the repair: the detail stays behind its own authorisation.
+
+# (audience, what it is about) → (label, what its button says)
+_WHAT = {
+    ('customer', 'repair_order'): ('Servicio técnico', 'Ver mi equipo'),
+    ('customer', 'order'): ('Pedido · N.º {id}', 'Ver mi pedido'),
+    ('internal', 'repair_order'): ('Servicio técnico', 'Abrir en el panel'),
+    ('internal', 'order'): ('Pedido · N.º {id}', 'Abrir en el panel'),
+    ('internal', 'announcement'): ('Comunicado', 'Leer el comunicado'),
+}
+
+# event → the steps a customer sees, and which one this is. Only steps that are
+# true whatever happened before: a device can be ready without a repair.
+_STEPS = {
+    'service.quote.available': (('Equipo recibido', 'Cotización por revisar'), 1),
+    'service.ready_for_pickup': (('Equipo recibido', 'Listo para recoger', 'Entregado'), 1),
+    'commerce.fulfillment.ready': (('Pedido recibido', 'Listo para recoger', 'Entregado'), 1),
+    'commerce.fulfillment.shipped': (('Pedido recibido', 'Enviado', 'Entregado'), 1),
+}
+
+_ABOUT = {
+    'repair_order': 'tienes un servicio técnico en {company}',
+    'order': 'tienes un pedido en {company}',
+}
+
+# What is said instead of «go and look» to somebody who has nowhere to look.
+_IT_IS = {
+    'repair_order': 'Es un aviso sobre tu servicio técnico.',
+    'order': 'Es un aviso sobre tu pedido.',
+}
+
+
+def _preheader(text: str, filler: str) -> str:
+    """The line beside the subject in an inbox: 40 to 90 characters."""
+    text = ' '.join(text.split())
+    if len(text) < 40:
+        text = f'{text} {filler}'.strip()
+    return text if len(text) <= 90 else text[:89].rstrip() + '…'
+
+
+def _progress(event_type: str):
+    steps, current = _STEPS.get(event_type, ((), 0))
+    if not steps:
+        return None
+    return {
+        'titulo': 'Estado',
+        'pasos': [
+            {'texto': text, 'hecho' if position < current else 'actual' if position == current else 'pendiente': True}
+            for position, text in enumerate(steps)
+        ],
+    }
+
+
+def notification(*, company: str, title: str, body: str, audience: str, event_type: str,
+                 target_type: str, target_id, link: str) -> dict:
+    """
+    One notice of `notification_services`, for one recipient. 10-aviso.
+
+    `link` is where THIS reader will find the detail, or '' when there is no
+    such place: whoever sends knows who the reader is and which page will show
+    them what the notice announces. Without one the notice goes without a
+    button — not with a button to a login screen and an empty list.
+    """
+    customer = audience == 'customer'
+    label, button = _WHAT.get((audience, target_type), ('', ''))
+    mapped = bool(label) and target_id is not None
+    can_open = mapped and bool(link)
+    body = (body or '').strip()
+    if customer:
+        reason = _ABOUT.get(target_type, 'eres cliente de {company}').format(company=company)
+        look = 'Mira el detalle con el botón de este correo.' if can_open else _IT_IS.get(target_type, f'Es un aviso de {company}.')
+    else:
+        reason = f'formas parte del equipo de {company}'
+        look = 'Entra al panel para ver el detalle.'
+    return {
+        'asunto': f'{title} · {company}',
+        'preheader': _preheader(body or title, look),
+        'etiqueta': label.format(id=target_id) if mapped else '',
+        'titulo': title,
+        'parrafos': [body or look],
+        'progreso': _progress(event_type) if customer and mapped else None,
+        'boton': {'texto': button, 'url': link} if can_open else None,
+        'motivo': f'Recibes este correo porque {reason}.',
+        'anio': fmt.year(),
+    }
+
+
+def smtp_test(*, brand: str) -> dict:
+    """What a MASTER sends to see the mail server works. Nothing to press. 11-prueba-de-correo."""
+    return {
+        'asunto': f'Prueba de correo · {brand}',
+        'preheader': 'Este mensaje comprueba que la tienda puede enviar correo.',
+        'etiqueta': 'Configuración',
+        'titulo': 'Prueba de correo',
+        'parrafos': [
+            'Este mensaje comprueba que la plataforma puede enviar correo con esta configuración.',
+            'No contiene ningún enlace de acceso ni requiere ninguna acción.',
+        ],
+        'aviso': {'etiqueta': 'Así se ven', 'texto': 'Los correos de la tienda llevan este mismo diseño.'},
+        'motivo': f'Recibes este correo porque alguien que administra {brand} pidió una prueba a esta dirección.',
+        'anio': fmt.year(),
+    }

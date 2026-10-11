@@ -377,6 +377,24 @@ de dominios en `docs/analytics-marketing.md` §7.
   todas las empresas con los datos de cada una (el diseño, los colores y las redes son
   de una marca: otra empresa necesitará la suya, con su propio `marca.json`).
 
+### DEC-MAIL-02 · El aviso de una reparación lleva su enlace de seguimiento
+
+Decisión del propietario (2026-10-08). Antes ese enlace sólo se entregaba a mano, y
+quedaba escrito quién lo pidió.
+
+- **Por qué:** el aviso «tienes una cotización pendiente» no decía cómo verla. Las
+  páginas del cliente piden una cuenta, y quien deja un equipo en el mostrador casi
+  nunca la tiene. La página de seguimiento es donde se lee y se responde la cotización.
+- **El enlace es una forma de entrar, y se trata como tal.** Va sólo al correo del
+  cliente de esa reparación (misma empresa, mismo cliente); nunca a la copia del
+  personal; no se escribe en registros ni en el motivo de un envío fallido.
+- **Un enlace revocado sigue revocado.** El correo usa el enlace vivo y no crea otro:
+  revocar es una decisión de alguien, y un aviso no la deshace.
+- **Lo demás no cambia:** el aviso sigue sin llevar precios ni diagnóstico.
+- **Riesgo aceptado:** quien lea ese buzón puede abrir el seguimiento y responder la
+  cotización. Es el mismo alcance que ya tenía quien recibiera el enlace de mano del
+  personal.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay

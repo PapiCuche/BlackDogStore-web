@@ -1,0 +1,32 @@
+{
+  "anio": "2026",
+  "asunto": "Tu equipo está listo para recoger · [Nombre de la tienda]",
+  "preheader": "Puedes pasar a retirarlo cuando quieras. Orden [Número].",
+  "etiqueta": "Servicio técnico",
+  "titulo": "Tu equipo está listo para recoger",
+  "parrafos": [
+    "Puedes pasar a retirarlo cuando quieras. Orden [Número]."
+  ],
+  "progreso": {
+    "titulo": "Estado",
+    "pasos": [
+      {
+        "texto": "Equipo recibido",
+        "hecho": true
+      },
+      {
+        "texto": "Listo para recoger",
+        "actual": true
+      },
+      {
+        "texto": "Entregado",
+        "pendiente": true
+      }
+    ]
+  },
+  "boton": {
+    "texto": "Ver mi equipo",
+    "url": "[URL de mis servicios]"
+  },
+  "motivo": "Recibes este correo porque tienes un servicio técnico en [Nombre de la tienda]."
+}

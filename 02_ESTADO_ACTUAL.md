@@ -35,8 +35,17 @@ con el servidor de correo mudo).
 
 **Dependencia nueva:** `chevron==0.14.0` (Mustache en Python puro, MIT).
 
-**Falta, por orden:** fase 2, los 15 avisos de `notification_services` y el mensaje de
-prueba del SMTP; fase 3, garantía, posventa, promociones con baja y código de 6 dígitos.
+**Fase 2** (rama `feat/mail-template-notifications`, sobre la fase 1): los avisos de
+`notification_services` y la prueba del servidor de correo salen con la plantilla. De
+los 15 eventos, hoy van por correo cuatro (`EMAIL_WORTHY_EVENTS`); esa decisión no se
+toca. Un aviso lleva un botón a donde está el detalle, nunca el detalle; y sólo cuando
+esa página se lo va a mostrar a quien lo recibe.
+
+**MAIL-TRACKING-LINK (decidido por el propietario el 2026-10-08):** el aviso de una
+reparación lleva al cliente su enlace de seguimiento, tenga cuenta o no. Sólo al cliente
+de esa reparación; un enlace revocado no se recrea; la copia del personal no lo lleva.
+
+**Falta:** fase 3, garantía, posventa, promociones con baja y código de 6 dígitos.
 
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 

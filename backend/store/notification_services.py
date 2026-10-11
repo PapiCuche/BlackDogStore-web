@@ -382,6 +382,14 @@ def _send(notification, address):
     from django.conf import settings as dj_settings
     from django.utils.html import escape
 
+    from . import mail
+
+    dressed = _dressed(notification)
+    if dressed is not None:
+        # One attempt, dressed or not: `deliver_email` writes down how it went.
+        mail.deliver(dressed, address)
+        return
+
     company_name = notification.company.name
     subject = f'{company_name} · {notification.title}'
     text = f'{notification.title}\n\n{notification.body}\n\n— {company_name}'
@@ -400,6 +408,95 @@ def _send(notification, address):
     )
     message.attach_alternative(html, 'text/html')
     message.send(fail_silently=False)
+
+
+#: Where staff read what a notice is about. The same pages the bell opens
+#: (`targetHref` in the panel's NotificationBell).
+_PANEL = {
+    'repair_order': '/admin/service/orders/{id}',
+    'order': '/admin/orders',
+    'announcement': '/admin/communications/{id}',
+}
+
+
+def _destination(notification) -> str:
+    """
+    The address where THIS reader finds the detail of the notice, or ''.
+
+    '' is an answer: a button to a login screen and an empty list is worse than
+    no button. It asks whose the order or the repair is, and nothing else about
+    it.
+
+    STAFF go to the panel.
+
+    A CUSTOMER'S REPAIR goes to its tracking page — the owner's decision
+    (MAIL-TRACKING-LINK): that page is where a quote is read and answered, and
+    most people who leave a device have no account to look in. That link is a
+    way in, so it is given only when the repair is this customer's own, and a
+    link somebody revoked stays revoked: then an account still has `/repairs`.
+
+    A CUSTOMER'S ORDER goes to `/orders`, which lists what was bought FROM AN
+    ACCOUNT: an order sold at the counter or bought as a guest is not there.
+    """
+    from django.conf import settings as dj_settings
+
+    from . import tracking_services
+    from .models import Order, RepairOrder
+
+    site = (getattr(dj_settings, 'FRONTEND_URL', '') or '').rstrip('/')
+    target, number = notification.target_type, notification.target_id
+    if not site or number is None:
+        return ''
+    if notification.audience == Notification.Audience.INTERNAL:
+        path = _PANEL.get(target)
+        return f'{site}{path.format(id=number)}' if path else ''
+
+    customer = notification.customer
+    if customer is None:
+        return ''
+    if target == 'repair_order':
+        order = RepairOrder.objects.filter(
+            pk=number, company_id=notification.company_id, customer_id=customer.pk,
+        ).first()
+        if order is None:
+            return ''
+        return tracking_services.url_for(order) or (f'{site}/repairs' if customer.user_id else '')
+    if target == 'order' and customer.user_id and Order.objects.filter(
+        pk=number, company_id=notification.company_id, user_id=customer.user_id,
+    ).exists():
+        return f'{site}/orders'
+    return ''
+
+
+def _dressed(notification):
+    """
+    The notice in its company's e-mail template, or None.
+
+    None is «send the one it always was»: that company has no template, or it
+    could not be filled. It only renders, and it says nothing but the notice —
+    the words were chosen where the event was emitted, and the template adds a
+    way to the page where the detail lives, not the detail.
+    """
+    from . import mail
+
+    company = notification.company
+    try:
+        if not mail.available(company):
+            return None
+        return mail.render('notification', mail.builders.notification(
+            company=company.name,
+            title=notification.title,
+            body=notification.body,
+            audience=notification.audience,
+            event_type=notification.event.event_type if notification.event_id else '',
+            target_type=notification.target_type,
+            target_id=notification.target_id,
+            link=_destination(notification),
+        ), company=company)
+    except Exception:  # noqa: BLE001
+        # Sin el cuerpo: el enlace de seguimiento es una forma de entrar.
+        logger.exception('la notificación %s no se pudo componer con la plantilla', notification.pk)
+        return None
 
 
 def retry_failed_delivery(delivery) -> NotificationDelivery:

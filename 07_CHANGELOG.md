@@ -3,6 +3,32 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 2)
+
+**Changed**
+- Los avisos que van por correo (cotización disponible, equipo listo para recoger,
+  pedido listo para recoger, pedido enviado) salen con la plantilla cuando son de la
+  empresa a la que pertenece, con un botón a la página donde está el detalle: la del
+  cliente o el panel, según a quién vaya. Al cliente le muestran además en qué paso está.
+- **El aviso de una reparación lleva al cliente su enlace de seguimiento**
+  (MAIL-TRACKING-LINK, decisión del propietario): ahí se lee y se responde la
+  cotización, sin necesidad de cuenta. Sólo al cliente de esa reparación; un enlace
+  revocado no se vuelve a crear.
+- La prueba del servidor de correo de la consola de integraciones sale con la plantilla
+  donde la tienda de la instalación la tiene. Sigue sin llevar ningún enlace de acceso.
+
+No cambia qué eventos envían correo, a quién, ni que cada uno salga una vez. Un aviso
+sigue sin llevar precios, diagnóstico ni datos del equipo. Sin migraciones. No desplegado.
+
+**De la revisión independiente, antes de publicar el cambio**
+- El botón del cliente llevaba a `/repairs` o `/orders` aunque esa persona no tuviera
+  cuenta, o el pedido no fuera de la suya: una pantalla de acceso y una lista vacía.
+  Ahora el botón sólo sale cuando esa página le va a mostrar lo que el aviso anuncia, y
+  el de una reparación lleva a su seguimiento.
+- El mensaje de prueba del servidor de correo podía fallar al armarse en vez de salir
+  sin plantilla.
+- Un aviso de algo sin página conocida mostraba el progreso sin etiqueta ni botón.
+
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 1)
 
 **Added**
