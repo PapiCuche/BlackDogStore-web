@@ -435,7 +435,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 
     sheet_name = sheet_name or workbook.sheetnames[0]
     if import_exports.is_help_sheet(sheet_name):
-        # The template's «Instrucciones» and «Ejemplo». Refused before anything
+        # The «Instrucciones» and «Ejemplo» of the previous template. Refused before anything
         # is staged: an example must not become catalogue because somebody
         # picked the wrong tab.
         raise ImportError_(

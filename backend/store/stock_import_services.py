@@ -289,7 +289,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
                 errors.append(
                     'Este producto se controla por número de serie: su stock no se '
                     'carga por cantidad. Registra cada equipo en Inventario › Equipos, o varios '
-                    'con la plantilla «Equipos serializados».'
+                    'a la vez en Inventario › Carga de equipos.'
                 )
 
             if product_id:

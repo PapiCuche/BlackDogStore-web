@@ -391,7 +391,68 @@ def unmapped_notes(headers, mapping):
         if index in used or not str(header).strip():
             continue
         key = normalize_header(header)
-        reason = UNMAPPED_NOTES.get(key)
+        elsewhere = _belongs_to_stock(key)
+        reason = UNMAPPED_NOTES.get(key) or elsewhere
         if reason:
-            out.append({'column': str(header), 'reason': reason})
+            note = {'column': str(header), 'reason': reason}
+            if reason == elsewhere:
+                # Somebody expects this to go in. Said in the open, not folded away.
+                note['important'] = True
+            out.append(note)
     return out
+
+
+#: IMPORT-SPLIT-01 — a product file is the CATALOGUE. A column that counts
+#: things or names a device is not read, and saying so sends it to the upload
+#: that does read it instead of leaving somebody to think stock went in.
+#:
+#: WHAT COUNTS STOCK is one definition, shared with the device upload (which
+#: refuses such a column whole): a header whose first word — past «Nº de»,
+#: «Total» — is one of these, unless what follows says it counts something else.
+#: «Stock mínimo» is a reorder point, «Unidades de medida» a unit, «Cantidad de
+#: SIM» a property of the model, «Unidades por caja» a pack size.
+_COUNT_WORDS = {
+    'stock', 'cantidad', 'cantidades', 'cant', 'unidades', 'qty', 'quantity',
+    'existencia', 'existencias', 'inventario', 'saldo',
+}
+_BEFORE_THE_WORD = {'n', 'no', 'nro', 'num', 'numero', 'total', 'de', 'del'}
+_COUNTS_SOMETHING_ELSE = {
+    'minimo', 'minima', 'maximo', 'maxima', 'min', 'max', 'medida', 'sim', 'sims', 'por',
+    'interno', 'reposicion', 'seguridad',
+}
+#: Headers that name ONE device. Not a bare «Serie»: in a catalogue that is as
+#: often a product line.
+SERIAL_HEADERS = (
+    'numero de serie', 'n de serie', 'no de serie', 'nro de serie', 'num de serie',
+    'numero serie', 'n serie', 'no serie', 'nro serie', 's n',
+)
+_DEVICE_HEADERS = {*SERIAL_HEADERS, 'imei', 'imei 1', 'imei1', 'imei 2', 'imei2', 'segundo imei'}
+#: The quantity columns of an inventory export: «ALMACEN Centro», «Depósito 2».
+_WAREHOUSE = re.compile(r'^(almacen|deposito)\b')
+
+
+def counts_stock(key: str) -> bool:
+    """Whether a header, already folded by `normalize_header`, states HOW MANY there are."""
+    words = key.split(' ')
+    while words and words[0] in _BEFORE_THE_WORD:
+        words = words[1:]
+    if not words or words[0] not in _COUNT_WORDS:
+        return False
+    after = [word for word in words[1:] if word not in ('de', 'del')]
+    return not (after and after[0] in _COUNTS_SOMETHING_ELSE)
+NO_STOCK_HERE = (
+    'Esta carga no mueve stock: sólo crea y edita productos. Las cantidades se cargan en '
+    'Inventario › Carga de stock, y los equipos con serie en Inventario › Carga de equipos.'
+)
+NO_DEVICES_HERE = (
+    'Una serie o un IMEI es de un equipo, no del producto. Los equipos se cargan uno por fila '
+    'en Inventario › Carga de equipos.'
+)
+
+
+def _belongs_to_stock(key: str) -> str:
+    if key in _DEVICE_HEADERS:
+        return NO_DEVICES_HERE
+    if counts_stock(key) or _WAREHOUSE.match(key):
+        return NO_STOCK_HERE
+    return ''

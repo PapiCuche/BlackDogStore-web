@@ -394,7 +394,7 @@ urlpatterns = [
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
     path('admin/inventory/units/products/', SerializedProductListView.as_view(), name='admin-inventory-unit-products'),
     path('admin/inventory/units/products/<int:pk>/serialization/', ProductSerializationView.as_view(), name='admin-inventory-unit-product-serialization'),
-    # UNIT-IMPORT: «Equipos serializados.xlsx». One row, one device.
+    # UNIT-IMPORT: the device upload («Equipos»). One row, one device.
     path('admin/inventory/units/import/template/', AdminUnitImportTemplateView.as_view(), name='admin-unit-import-template'),
     path('admin/inventory/units/import/preview/', AdminUnitImportPreviewView.as_view(), name='admin-unit-import-preview'),
     path('admin/inventory/units/import/<int:pk>/apply/', AdminUnitImportApplyView.as_view(), name='admin-unit-import-apply'),

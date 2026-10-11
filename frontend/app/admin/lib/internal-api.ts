@@ -1443,7 +1443,8 @@ export type ImportJob = {
     detected?: string;
     reader_notes?: string[];
     format_notes?: string[];
-    unmapped?: { column: string; reason: string }[];
+    /** `important`: a column that belongs to ANOTHER upload (stock, devices). Shown in the open. */
+    unmapped?: { column: string; reason: string; important?: boolean }[];
     branches?: { column: string; branch_id: number; branch_name: string }[];
     sheets?: string[];
     applied?: Record<string, number>;

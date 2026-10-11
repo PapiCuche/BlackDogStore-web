@@ -36,6 +36,7 @@ import {
   type InternalContext,
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
+import { ImportKindNotice } from "../../components/ImportKindNotice";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   CountsBar,
@@ -481,9 +482,10 @@ export default function StockImportPage() {
           <div className="space-y-6">
             <PageHeader
               eyebrow="Inventario"
-              title="Carga masiva de inventario"
+              title="Carga de stock"
               description="Una celda vacía deja el stock como está. Un cero escrito lo pone en cero."
             />
+            <ImportKindNotice kind="stock" />
             <StockImportScreen ctx={ctx} />
           </div>
         </AdminShell>

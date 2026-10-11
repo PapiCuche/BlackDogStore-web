@@ -387,91 +387,135 @@ class CategoriesTest(_Base):
 
 
 class TemplateTest(_Base):
+    """
+    IMPORT-SPLIT-01 — ONE sheet, «Productos»: the headers and nothing under them.
+
+    What used to be a help row, an example row and three more sheets is said
+    on the screen and in a note on each header. The category list is still
+    this company's own, now inside the cell list.
+    """
+
     def book(self, company=None):
         return openpyxl.load_workbook(io.BytesIO(import_exports.product_template_bytes(company or self.company)))
 
-    def test_its_sheets_and_columns_are_the_contract(self):
+    def rules(self, company=None):
+        return {str(rule.sqref): rule for rule in self.book(company)['Productos'].data_validations.dataValidation}
+
+    def test_one_sheet_with_the_headers_and_nothing_else(self):
         workbook = self.book()
 
-        self.assertEqual(workbook.sheetnames, ['Productos', 'Categorías', 'Instrucciones', 'Ejemplo'])
-        self.assertEqual([c.value for c in workbook['Productos'][1]], [*HEADERS, 'Destino'])
+        self.assertEqual(workbook.sheetnames, ['Productos'])
+        sheet = workbook['Productos']
+        self.assertEqual([c.value for c in sheet[1]], [*HEADERS, 'Destino'])
         self.assertEqual(import_exports.PRODUCT_TEMPLATE_HEADERS, [*HEADERS, 'Destino'])
+        self.assertEqual(sheet.max_row, 1)                             # no help row, no example row
+        self.assertEqual(sheet.freeze_panes, 'A2')
 
-    def test_it_lists_this_companys_categories_and_nobody_elses(self):
+    def test_the_destination_is_chosen_from_a_list(self):
+        destination = self.rules()['I2:I501']
+
+        self.assertEqual(destination.type, 'list')
+        self.assertEqual(destination.formula1, f'"{ONLINE},{INTERNAL}"')
+        # As in the owner's file: the list offers and does not block; a wrong
+        # value is a row error when the file is uploaded.
+        self.assertFalse(destination.showErrorMessage)
+
+    def test_the_category_list_is_this_companys_and_nobody_elses(self):
         other = _p3_company('destino-otra', 'Otra Tienda')
         Category.objects.create(company=other, name='Sólo de la otra', slug='solo-de-la-otra')
 
-        names = [row[0].value for row in self.book()['Categorías'].iter_rows(min_row=3) if row[0].value]
-
-        self.assertEqual(names, ['Repuestos', 'Teléfonos'])
-        self.assertEqual(
-            [row[0].value for row in self.book(other)['Categorías'].iter_rows(min_row=3) if row[0].value],
-            ['Sólo de la otra'])
-
-    def test_the_category_and_the_destination_are_chosen_from_a_list(self):
-        sheet = self.book()['Productos']
-        rules = {str(rule.sqref): rule for rule in sheet.data_validations.dataValidation}
-
-        destination = next(rule for ref, rule in rules.items() if ref.startswith('I4'))
-        self.assertEqual(destination.type, 'list')
-        self.assertEqual(destination.formula1, f'"{ONLINE},{INTERNAL}"')
-        category = next(rule for ref, rule in rules.items() if ref.startswith('F4'))
+        category = self.rules()['F2:F501']
         self.assertEqual(category.type, 'list')
-        self.assertEqual(category.formula1, "'Categorías'!$A$3:$A$4")
+        self.assertEqual(category.formula1, '"Repuestos,Teléfonos"')
         # Una lista ayuda; no impide escribir una categoría nueva para «crear las que falten».
         self.assertFalse(category.showErrorMessage)
+        self.assertEqual(self.rules(other)['F2:F501'].formula1, '"Sólo de la otra"')
 
-    def test_a_category_name_is_text_whatever_it_looks_like(self):
-        """«=1+1» is a category somebody typed, not a formula for Excel to run."""
-        Category.objects.create(company=self.company, name='=1+1', slug='uno-mas-uno')
-        Category.objects.create(company=self.company, name='+Ofertas, "nuevas"', slug='ofertas-nuevas')
-        import zipfile
+    def test_a_category_switched_off_is_not_offered(self):
+        Category.objects.filter(company=self.company, name='Repuestos').update(is_active=False)
+        self.assertEqual(self.rules()['F2:F501'].formula1, '"Teléfonos"')
 
-        data = import_exports.product_template_bytes(self.company)
-        xml = zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet2.xml').decode()
-        self.assertNotIn('<f>', xml)
-        names = [row[0].value for row in openpyxl.load_workbook(io.BytesIO(data))['Categorías'].iter_rows(min_row=3) if row[0].value]
-        self.assertIn('=1+1', names)
-        self.assertIn('+Ofertas, "nuevas"', names)
+    def test_names_a_cell_list_cannot_hold_leave_the_list_out_and_the_template_whole(self):
+        """
+        A cell list is one text of 255 characters split by commas, and picking
+        an item is typing it. What does not fit, would split, would be read as a
+        formula or cannot be written at all is left to be typed — and checked on upload.
+        """
+        for number, (label, names) in enumerate((
+            ('a comma in a name', ['Cables, cargadores']),
+            ('a quote in a name', ['Pantallas 6"']),
+            ('more than fits', [f'Categoría número {n:02d} de la tienda' for n in range(12)]),
+            ('a name Excel would run', ['=1+1']),
+            ('a name Excel would run', ['+Ofertas']),
+            ('a name Excel would run', ['-Liquidación']),
+            ('a name Excel would run', ['@todos']),
+            ('a control character somebody pasted', ['Fundas\x01']),
+            ('a line break in a name', ['Fundas\ny más']),
+        )):
+            with self.subTest(label=label, names=names[:1]):
+                company = _p3_company(f'destino-lista-{number}', f'Tienda de lista {number}')
+                for index, name in enumerate(names):
+                    Category.objects.create(company=company, name=name, slug=f'cat-{number}-{index}')
+                rules = self.rules(company)
+                self.assertNotIn('F2:F501', rules)
+                self.assertIn('I2:I501', rules)
+                self.assertEqual(self.book(company).sheetnames, ['Productos'])
+
+    def test_a_list_is_measured_the_way_excel_measures_it(self):
+        """255 characters between the quotes, separators included, counted as Excel stores them (UTF-16)."""
+        fits = ['a' * 127, 'b' * 127]                                   # 127 + 1 + 127 = 255
+        self.assertEqual(import_exports.cell_list(fits), f'"{fits[0]},{fits[1]}"')
+        self.assertIsNone(import_exports.cell_list(['a' * 127, 'b' * 128]))
+        self.assertIsNone(import_exports.cell_list(['😀' * 128]))        # 128 signs, 256 units
+        self.assertEqual(import_exports.cell_list(['😀' * 127]), '"' + '😀' * 127 + '"')
+        self.assertIsNone(import_exports.cell_list([]))
+        self.assertIsNone(import_exports.cell_list(['', '   ']))
+
+    def test_the_price_is_a_number_with_two_decimals(self):
+        self.assertEqual(self.book()['Productos'].column_dimensions['E'].number_format, '0.00')
 
     def test_a_company_without_categories_gets_a_template_that_still_opens(self):
         empty = _p3_company('destino-vacia', 'Tienda Vacía')
-        workbook = self.book(empty)
 
-        self.assertEqual(workbook.sheetnames, ['Productos', 'Categorías', 'Instrucciones', 'Ejemplo'])
-        refs = [str(rule.sqref) for rule in workbook['Productos'].data_validations.dataValidation]
-        self.assertFalse([ref for ref in refs if ref.startswith('F')])
-        self.assertTrue([ref for ref in refs if ref.startswith('I')])
+        self.assertEqual(self.book(empty).sheetnames, ['Productos'])
+        self.assertEqual(sorted(self.rules(empty)), ['I2:I501'])
 
-    def test_codes_stay_text_and_images_stay_optional(self):
+    def test_codes_stay_text(self):
         sheet = self.book()['Productos']
-
         for column in ('A', 'B'):
             self.assertEqual(sheet.column_dimensions[column].number_format, '@', column)
-        # …and without five hundred formatted empty rows for the importer to wade through.
-        self.assertLessEqual(sheet.max_row, 3)
-        help_row = dict(zip(import_exports.PRODUCT_TEMPLATE_HEADERS, [c.value for c in sheet[2]]))
-        self.assertTrue(help_row['Imagen principal'].startswith('Opcional'))
-        self.assertTrue(help_row['Imágenes'].startswith('Opcional'))
-        self.assertTrue(help_row['Destino'].startswith('Opcional'))
 
-    def test_the_instructions_say_what_each_destination_means(self):
-        text = '\n'.join(str(c.value) for row in self.book()['Instrucciones'].iter_rows() for c in row if c.value)
+    def test_each_header_says_what_goes_under_it(self):
+        notes = {cell.value: cell.comment.text for cell in self.book()['Productos'][1] if cell.comment}
 
-        self.assertIn(ONLINE, text)
-        self.assertIn(INTERNAL, text)
-        self.assertIn('caja', text)                     # sigue vendiéndose en tienda
+        self.assertEqual(set(notes), set(import_exports.PRODUCT_TEMPLATE_HEADERS))
+        self.assertIn('Obligatorio', notes['Nombre'])
+        for optional in ('Imagen principal', 'Imágenes', 'Destino'):
+            self.assertTrue(notes[optional].startswith('Opcional'), optional)
+        self.assertIn(ONLINE, notes['Destino'])
+        self.assertIn(INTERNAL, notes['Destino'])
+        self.assertIn('caja', notes['Destino'])                         # sigue vendiéndose en tienda
+        # Esta carga no mueve stock: lo dice donde alguien buscaría una cantidad.
+        self.assertIn('stock', notes['Código'].lower())
 
     def test_downloaded_and_uploaded_as_it_is_it_creates_nothing(self):
         res = self.client.get(f'{TEMPLATE}?company={self.company.pk}')
         self.assertEqual(res.status_code, 200)
+        self.assertIn('carga-masiva-productos.xlsx', res['Content-Disposition'])
         data = b''.join(res.streaming_content) if hasattr(res, 'streaming_content') else res.content
 
         body = self.preview(data).json()
-        self.assertEqual((body['counts']['create'], body['counts']['error']), (0, 0), body['rows'])
+        self.assertEqual((body['counts']['total'], body['counts']['create'], body['counts']['error']), (0, 0, 0), body['rows'])
 
-        names = [row[0].value for row in openpyxl.load_workbook(io.BytesIO(data))['Categorías'].iter_rows(min_row=3) if row[0].value]
-        self.assertEqual(names, ['Repuestos', 'Teléfonos'])
+    def test_the_row_right_under_the_headers_is_a_product(self):
+        workbook = self.book()
+        workbook['Productos'].append(product_row('FUNDA-IP16', 'Funda iPhone 16', price=59, category='Teléfonos', destination=INTERNAL))
+        out = io.BytesIO()
+        workbook.save(out)
+
+        body = self.preview(out.getvalue()).json()
+
+        self.assertEqual((body['counts']['create'], body['counts']['error']), (1, 0), body['rows'])
 
     def test_nobody_downloads_another_companys_categories(self):
         other = _p3_company('destino-otra', 'Otra Tienda')
@@ -481,6 +525,74 @@ class TemplateTest(_Base):
 
         self.assertIn(res.status_code, (403, 404))
         self.assertNotIn('spreadsheetml', res.get('Content-Type', ''))                # not a workbook at all
+
+
+class NoStockThroughTheCatalogueTest(_Base):
+    """
+    IMPORT-SPLIT-01 — a product file creates and edits the CATALOGUE. Stock has
+    its own two uploads (quantities, and devices one by one) with their own
+    preview and their own Kardex lines.
+    """
+
+    def test_a_stock_column_is_said_to_be_ignored_and_moves_nothing(self):
+        from store.models import BranchStock, StockMovement
+
+        for header in ('Stock', 'Cantidad', 'Stock inicial', 'Stock inicial - ALMACEN 1 - 11416', 'Unidades'):
+            with self.subTest(header):
+                data = workbook_bytes(
+                    [[*product_row(f'COD-{len(header)}', f'Cable {header}', category='Repuestos'), 7]],
+                    headers=[*HEADERS, 'Destino', header])
+                body = self.preview(data).json()
+
+                self.assertEqual(body['counts']['error'], 0, body['rows'])
+                said = [note for note in body['summary']['unmapped'] if note['column'] == header]
+                self.assertEqual(len(said), 1, body['summary']['unmapped'])
+                self.assertIn('no mueve stock', said[0]['reason'])
+                # Not one more ignored column: somebody expects stock to go in. The screen shows it open.
+                self.assertTrue(said[0]['important'])
+                self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertFalse(StockMovement.objects.filter(company=self.company).exists())
+        self.assertFalse(BranchStock.objects.filter(product__company=self.company, quantity__gt=0).exists())
+
+    def test_what_reads_as_stock_however_it_is_headed(self):
+        for header in ('Nº de unidades', 'Total unidades', 'Inventario', 'Quantity', 'ALMACEN Centro', 'Depósito 2'):
+            with self.subTest(header):
+                data = workbook_bytes(
+                    [[*product_row('COD-ST', 'Cable de stock', category='Repuestos'), 4]], headers=[*HEADERS, 'Destino', header])
+                [note] = self.preview(data).json()['summary']['unmapped']
+                self.assertEqual((note['column'], note.get('important')), (header, True))
+                self.assertIn('no mueve stock', note['reason'])
+
+    def test_a_column_that_is_not_stock_is_not_called_stock(self):
+        """A unit of measure, a pack size, a reorder point, a product line called «Serie»."""
+        for header in ('Unidades de medida', 'Cantidad por caja', 'Unidades por caja', 'Stock mínimo - Almacén 1', 'Stock interno', 'Serie'):
+            with self.subTest(header):
+                data = workbook_bytes(
+                    [[*product_row('COD-NS', 'Cable sin stock', category='Repuestos'), 'x']], headers=[*HEADERS, 'Destino', header])
+                flagged = [note for note in self.preview(data).json()['summary']['unmapped'] if note.get('important')]
+                self.assertEqual(flagged, [])
+
+    def test_a_serial_or_an_imei_column_is_pointed_to_the_device_upload(self):
+        data = workbook_bytes(
+            [[*product_row('IP16-256', 'iPhone 16 256GB', category='Teléfonos'), 'F2LXK1ABC1', '356938035643809']],
+            headers=[*HEADERS, 'Destino', 'Número de serie', 'IMEI'])
+        body = self.preview(data).json()
+
+        notes = {note['column']: note['reason'] for note in body['summary']['unmapped']}
+        self.assertEqual(set(notes), {'Número de serie', 'IMEI'})
+        for header in ('Nº de serie', 'No. de serie', 'Nro. de serie', 'IMEI 2'):
+            other = workbook_bytes(
+                [[*product_row('IP16-512', 'iPhone 16 512GB', category='Teléfonos'), 'X']], headers=[*HEADERS, 'Destino', header])
+            self.assertIn('Carga de equipos', self.preview(other).json()['summary']['unmapped'][0]['reason'], header)
+        for reason in notes.values():
+            self.assertIn('Carga de equipos', reason)
+        self.assertTrue(all(note['important'] for note in body['summary']['unmapped']))
+
+    def test_an_ordinary_ignored_column_is_not_shouted(self):
+        data = workbook_bytes(
+            [[*product_row('COD-M', 'Cable con marca', category='Repuestos'), 'Anker']], headers=[*HEADERS, 'Destino', 'Marca'])
+        [note] = self.preview(data).json()['summary']['unmapped']
+        self.assertEqual((note['column'], note.get('important', False)), ('Marca', False))
 
 
 class AuthorityTest(_Base):

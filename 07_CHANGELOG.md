@@ -3,6 +3,58 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — IMPORT-SPLIT-01
+
+**Changed**
+- Plantilla de productos: una sola hoja, «Productos», con sus cabeceras. Se retiran la
+  fila de ayuda, la de ejemplo y las hojas «Categorías», «Instrucciones» y «Ejemplo».
+  Se descarga como `carga-masiva-productos.xlsx`.
+- Plantilla de equipos: una sola hoja, «Equipos». Se retiran la fila de ejemplo y la
+  hoja «Instrucciones». Se descarga como `carga-masiva-equipos.xlsx`.
+- La categoría se elige de una lista dentro de la celda, con las categorías activas de
+  la empresa. Antes apuntaba a una hoja aparte.
+- Menú: «Carga de productos» y «Carga de stock» en lugar de dos «Carga masiva».
+- Carga de equipos: se rechazan más cabeceras de cantidad o de stock («Cantidad
+  inicial», «Stock inicial», «Nº de unidades», «Inventario»…), no sólo las llamadas
+  exactamente «Cantidad» o «Stock». No se rechazan las que cuentan otra cosa («Stock
+  mínimo», «Unidades de medida», «Cantidad de SIM»).
+- Carga de equipos: la columna de serie se reconoce también como «Nº de serie», «No. de
+  serie», «Nro. de serie» y «S/N».
+- La lista de «Destino» ya no bloquea lo escrito; un valor que no es ninguno de los dos
+  sigue siendo un error de fila al subir.
+- En la previsualización de cualquier carga, las filas con aviso van justo después de
+  las de error.
+
+**Added**
+- Nota en cada cabecera de las dos plantillas con lo que va debajo.
+- Plantilla de equipos: lista de condición y lista de las sucursales de quien descarga.
+- Entrada de menú «Carga de equipos».
+- Cada pantalla de carga dice qué hace y enlaza a las otras dos.
+- Carga de productos: una columna de stock, de serie o de IMEI se avisa a la vista en la
+  previsualización, con a dónde ir.
+- Carga de equipos: aviso en la fila cuando trae IMEI y el producto no está marcado
+  «lleva IMEI». El IMEI se guarda, como en «Registrar equipo». La cuenta de esas filas
+  queda en el resumen del trabajo y en la auditoría de la carga
+  (`imei_on_unmarked_products`).
+
+**Sin cambio**
+- Los archivos hechos con las plantillas anteriores se siguen importando.
+- Sin migración.
+
+**De la auditoría independiente, antes de publicar el cambio**
+- El aviso de IMEI bajo un producto sin marca no se veía en archivos de más de 300
+  filas: la fila avisada quedaba fuera de las mostradas y la cuenta no salía en pantalla.
+- La cuenta de la auditoría era la de la previsualización, no la de lo guardado.
+- El rechazo por columna de cantidad alcanzaba a «Stock mínimo» o «Unidades de medida» y
+  dejaba pasar «Nº de unidades» o «Inventario».
+- Un carácter de control en el nombre de una sucursal hacía fallar la descarga de la
+  plantilla de equipos.
+- Un nombre de categoría o de sucursal que empieza como una fórmula se ofrecía en la
+  lista, y elegirlo en Excel lo habría escrito como fórmula.
+- El enlace «Descargar errores» de la carga de equipos no llevaba la empresa elegida.
+
+No desplegado.
+
 ## 2026-10-11 — SERIAL-PICK-01
 
 **Changed**

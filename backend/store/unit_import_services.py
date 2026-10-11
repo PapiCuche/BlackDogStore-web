@@ -1,5 +1,5 @@
 """
-UNIT-IMPORT — «Equipos serializados.xlsx»: many devices in one upload.
+UNIT-IMPORT — the device upload: many devices in one file.
 
     ONE ROW = ONE PHYSICAL UNIT.
 
@@ -32,13 +32,13 @@ from django.utils import timezone
 
 from . import stock_unit_services, xlsx_reader
 from .import_exports import _autosize, _header_row, _workbook
-from .import_formats import normalize_header
+from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
     AdminAuditLog, Branch, BulkImportJob, BulkImportRow, Product, StockMovement, StockUnit,
 )
 
-TEMPLATE_FILENAME = 'Equipos serializados.xlsx'
+TEMPLATE_FILENAME = 'carga-masiva-equipos.xlsx'
 SHEET = 'Equipos'
 HELP_SHEET = 'Instrucciones'
 
@@ -54,7 +54,8 @@ _ALIASES = {
     'code': ('codigo', 'codigo de barras', 'codigo del producto', 'sku', 'codigo sku', 'codigo producto'),
     'name': ('producto', 'producto modelo', 'modelo', 'nombre', 'nombre del producto'),
     'branch': ('sucursal', 'tienda', 'almacen', 'local'),
-    'serial_number': ('numero de serie', 'n de serie', 'serie', 'serial', 'ns', 'numero serie', 'n serie'),
+    # «Nº de serie», «No. de serie», «Nro. de serie», «S/N»: one column, however it is headed.
+    'serial_number': (*SERIAL_HEADERS, 'serie', 'serial', 'ns'),
     'imei': ('imei', 'imei 1', 'imei1'),
     'imei2': ('imei 2', 'imei2', 'segundo imei'),
     'condition': ('condicion', 'estado'),
@@ -62,13 +63,15 @@ _ALIASES = {
     'reason': ('motivo referencia', 'motivo', 'referencia', 'documento', 'motivo o documento de ingreso',
                'documento de ingreso'),
 }
-_QUANTITY_HEADERS = {'cantidad', 'cant', 'stock', 'unidades', 'qty'}
+#: A header that says HOW MANY refuses the file: «Cantidad», «Cantidad inicial»,
+#: «Stock inicial - Almacén 1», «Nº de unidades». What counts stock is decided in
+#: one place (`import_formats.counts_stock`); «Stock mínimo», «Unidades de
+#: medida» or «Costo unitario» do not.
 
-#: What marks the template's own example row, so that uploading the template
-#: exactly as it was downloaded registers nothing.
+#: What marked the example row of the PREVIOUS template. The template is now one
+#: sheet with nothing under its headers, but files made with the old one are
+#: still uploaded, and that row is not a device.
 EXAMPLE_SERIAL_PREFIX = 'EJEMPLO'
-_EXAMPLE_ROW = ['IP16PM-256-W', 'iPhone 16 Pro Max 256GB White', 'Tienda principal', 'EJEMPLO-F2LXK0PQN7',
-                '490154203237518', '', 'Nuevo', 3999.00, 'Compra factura F001-123']
 
 
 class UnitImportError(Exception):
@@ -88,66 +91,59 @@ def _conditions() -> dict[str, str]:
     return known
 
 
-def template_bytes() -> bytes:
+def _header_notes() -> dict:
+    labels = ', '.join(label for _value, label in StockUnit.Condition.choices)
+    return {
+        'Código': (
+            'Una fila es UN equipo físico: dos teléfonos iguales son dos filas. No hay columna de cantidad. '
+            'Aquí va el código del producto (o su código de barras). El producto debe existir y estar marcado '
+            '«con número de serie» en Inventario › Equipos.'
+        ),
+        'Producto': 'Sólo si no hay código: el nombre exacto del producto.',
+        'Sucursal': 'La sucursal donde entra el equipo, con su nombre tal como aparece en el sistema.',
+        'Número de serie': 'Obligatorio en cada fila. No se repite dentro del mismo producto.',
+        'IMEI': (
+            '15 dígitos. Obligatorio si el producto está marcado «lleva IMEI»; en los demás, vacío '
+            'salvo que el equipo tenga uno. No se repite en ningún equipo de la empresa.'
+        ),
+        'IMEI 2': 'Opcional, sólo para equipos con dos líneas y con el primer IMEI indicado. Distinto del primero.',
+        'Condición': f'{labels}. Vacío = Nuevo.',
+        'Costo': 'Opcional. Lo que costó ese equipo, sin símbolo de moneda.',
+        'Motivo / referencia': (
+            'El documento con el que entró: factura de compra, guía, inventario inicial. '
+            'Queda en el Kardex de cada equipo.'
+        ),
+    }
+
+
+def template_bytes(branches=()) -> bytes:
     """
-    A blank template: the data sheet, with one example row that is recognised
-    and skipped, and a sheet of instructions that is never read as data.
+    The device template: ONE sheet, «Equipos», its headers and nothing under them.
+
+    IMPORT-SPLIT-01. The example row and the sheet of instructions are gone from
+    what we hand out; what they said is on the screen and in a note on each
+    header. A file made with the previous template is still read (`_pick_sheet`,
+    `EXAMPLE_SERIAL_PREFIX`).
+
+    `branches`: the names offered under «Sucursal» — the ones THIS person can
+    load into, so the list never names a branch they do not operate. «Condición»
+    is the list the system knows. Both lists offer and neither blocks, as in the
+    owner's file: the upload is what accepts or refuses a row.
     """
-    from openpyxl.styles import Alignment, Font
+    from .import_exports import add_cell_list, cell_list, header_notes, number_columns, text_columns
 
     workbook = _workbook()
     sheet = workbook.active
     sheet.title = SHEET
     _header_row(sheet, HEADERS)
-    for column, value in enumerate(_EXAMPLE_ROW, start=1):
-        cell = sheet.cell(row=2, column=column, value=value)
-        cell.font = Font(italic=True, color='6B7280')
-    # Identifiers as TEXT. A 15-digit IMEI typed into a general cell becomes
-    # 4.90154E+14 on screen, and a serial that is all digits loses its zeros.
-    for row in range(2, 502):
-        for column in (1, 4, 5, 6):
-            sheet.cell(row=row, column=column).number_format = '@'
+    header_notes(sheet, _header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [18, 34, 22, 22, 20, 20, 16, 12, 34])
+    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48])
+    text_columns(sheet, ('A', 'D', 'E', 'F'))
 
-    notes = workbook.create_sheet(HELP_SHEET)
-    notes.sheet_view.showGridLines = False
-    _autosize(notes, [4, 30, 82])
-    title = notes.cell(row=1, column=2, value='Cómo cargar equipos con número de serie')
-    title.font = Font(bold=True, size=14)
-    rule = notes.cell(row=2, column=2, value='UNA FILA = UNA UNIDAD FÍSICA')
-    rule.font = Font(bold=True, size=12)
-    labels = ', '.join(label for _value, label in StockUnit.Condition.choices)
-    steps = [
-        ('Una fila por equipo',
-         'Dos teléfonos iguales son dos filas, cada una con su número de serie y su IMEI. '
-         'No hay columna de cantidad: una cantidad no dice qué equipos son.'),
-        ('Código o Producto',
-         'El código del producto (o su código de barras). Si no tiene, el nombre exacto del producto. '
-         'El producto debe existir y estar marcado «con número de serie» en Inventario › Equipos.'),
-        ('Sucursal', 'El nombre de la sucursal donde entra el equipo, tal como aparece en el sistema.'),
-        ('Número de serie', 'Obligatorio en cada fila. No se repite dentro del mismo producto.'),
-        ('IMEI',
-         '15 dígitos. Obligatorio si el producto lleva línea celular; en los demás se deja vacío. '
-         'No se repite en ningún equipo de la empresa.'),
-        ('IMEI 2', 'Opcional, sólo para equipos con dos líneas. Distinto del primero.'),
-        ('Lo que no tiene, vacío', 'No escribas «N/A», «no tiene» ni ceros: deja la celda vacía.'),
-        ('Condición', f'{labels}. Vacío = Nuevo.'),
-        ('Costo', 'Opcional. Lo que costó ese equipo, sin símbolo de moneda.'),
-        ('Motivo / referencia',
-         'El documento con el que entró: factura de compra, guía, inventario inicial. '
-         'Queda en el Kardex de cada equipo.'),
-        ('Antes de cargar',
-         f'La fila de ejemplo (serie «{EXAMPLE_SERIAL_PREFIX}…») no se carga. El sistema muestra primero qué '
-         f'haría con cada fila; si una tiene un error, no entra ninguna. Hasta {MAX_UNITS} equipos por archivo.'),
-    ]
-    for offset, (heading, body) in enumerate(steps, start=4):
-        notes.cell(row=offset, column=1, value=offset - 3).font = Font(bold=True)
-        notes.cell(row=offset, column=2, value=heading).font = Font(bold=True)
-        cell = notes.cell(row=offset, column=3, value=body)
-        cell.alignment = Alignment(wrap_text=True, vertical='top')
-        notes.cell(row=offset, column=2).alignment = Alignment(vertical='top')
-        notes.row_dimensions[offset].height = max(18, 15 * (1 + len(body) // 80))
+    number_columns(sheet, ('H',))
+    add_cell_list(sheet, 'C', cell_list(branches))
+    add_cell_list(sheet, 'G', cell_list(label for _value, label in StockUnit.Condition.choices))
 
     out = io.BytesIO()
     workbook.save(out)
@@ -169,12 +165,11 @@ def _columns(headers) -> dict[str, int]:
                 break
     if 'serial_number' not in columns:
         raise UnitImportError(
-            'No se encontró la columna «Número de serie». Descarga la plantilla «Equipos serializados» '
-            'y úsala tal cual.'
+            'No se encontró la columna «Número de serie». Descarga la plantilla de equipos y úsala tal cual.'
         )
     if 'code' not in columns and 'name' not in columns:
         raise UnitImportError('No se encontró la columna «Código» ni «Producto».')
-    extra = sorted({str(headers[i]) for i, key in enumerate(folded) if key in _QUANTITY_HEADERS})
+    extra = sorted({str(headers[i]) for i, key in enumerate(folded) if counts_stock(key)})
     if extra:
         raise UnitImportError(
             f'Esta plantilla no lleva la columna «{extra[0]}»: una fila es un equipo. '
@@ -248,6 +243,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 
     staged, counts = [], dict(create=0, skip=0, error=0)
     seen_serials: dict[tuple[int, str], int] = {}
+    unmarked = 0
     seen_imeis: dict[str, int] = {}
     branch_ids = set()
 
@@ -280,7 +276,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                   warnings=['Fila de ejemplo de la plantilla: no se carga. Reemplázala por tus equipos.'])
             continue
 
-        errors, warnings = [], []
+        errors, warnings, imei_unmarked = [], [], False
         data = {'name': fields['name'] or fields['code']}
 
         # -- which product ----------------------------------------------------
@@ -342,6 +338,16 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 })
             except stock_unit_services.StockUnitError as exc:
                 errors.append(str(exc))
+            else:
+                # IMPORT-SPLIT-01. The rule of the screen stands — an IMEI is
+                # optional for a product not marked as carrying one — but a
+                # file is where a row lands under the wrong product, so it says so.
+                if not product.requires_imei and cleaned['imei']:
+                    imei_unmarked = True
+                    warnings.append(
+                        f'«{product.name}» no está marcado «lleva IMEI»: el IMEI se guarda, pero no se exigirá '
+                        f'al vender. Si la fila es de otro producto, corrígela antes de cargar.'
+                    )
         elif not fields['serial_number']:
             errors.append('Cada equipo lleva su número de serie.')
 
@@ -382,6 +388,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                   errors=errors, warnings=warnings)
             continue
         stage(row_number, BulkImportRow.CREATE, key=cleaned['serial_number'], data=data, warnings=warnings)
+        unmarked += imei_unmarked            # only the rows that will be registered
 
     BulkImportRow.objects.bulk_create(staged, batch_size=500)
     job.rows_total = len(staged)
@@ -389,7 +396,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     job.rows_skip = counts['skip']
     job.rows_error = counts['error']
     job.mapping_snapshot = {**job.mapping_snapshot, 'branch_ids': sorted(branch_ids)}
-    job.summary = {'units': counts['create']}
+    # How many rows carried an IMEI under a product not marked as carrying one:
+    # kept, said on each row, and counted here so the load's audit line can say it.
+    job.summary = {'units': counts['create'], 'imei_on_unmarked_products': unmarked}
     job.save(update_fields=['rows_total', 'rows_create', 'rows_skip', 'rows_error',
                             'mapping_snapshot', 'summary'])
     return job
@@ -449,7 +458,7 @@ def apply_units(*, job, actor, request=None):
             (values['branch_id'], values['product_id'], values.get('reason') or ''), [],
         ).append(row)
 
-    registered, movements = 0, 0
+    registered, movements, unmarked = 0, 0, 0
     for (branch_id, product_id, reason), members in groups.items():
         for start in range(0, len(members), stock_unit_services.MAX_BATCH):
             chunk = members[start:start + stock_unit_services.MAX_BATCH]
@@ -472,12 +481,16 @@ def apply_units(*, job, actor, request=None):
                     f'No se cargó ningún equipo: cambió algo desde la previsualización ({where}). {exc}'
                 ) from None
             registered += len(created)
+            # Counted from what was STORED: «lleva IMEI» may have been switched since the preview.
+            if not products[product_id].requires_imei:
+                unmarked += sum(1 for unit in created if unit.imei)
             movements += 1
 
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
-    job.summary = {**(job.summary or {}), 'applied': {'units': registered, 'movements': movements}}
+    job.summary = {**(job.summary or {}), 'applied': {
+        'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked}}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
 
     AdminAuditLog.log(
@@ -485,7 +498,9 @@ def apply_units(*, job, actor, request=None):
         # How many and where. The identifiers are on the units themselves.
         metadata={'company_id': job.company_id, 'job_id': job.pk, 'units': registered,
                   'movements': movements, 'branch_ids': sorted({key[0] for key in groups}),
-                  'file_sha256': job.file_sha256},
+                  'file_sha256': job.file_sha256,
+                  # IMEIs stored under a product not marked «lleva IMEI»: how many, never which.
+                  'imei_on_unmarked_products': unmarked},
         request=request, company=job.company,
     )
     return job, True

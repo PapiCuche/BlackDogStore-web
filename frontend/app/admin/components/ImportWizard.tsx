@@ -111,8 +111,13 @@ export function CountsBar({ job }: { job: ImportJob }) {
 export function Notices({ job }: { job: ImportJob }) {
   const reader = job.summary?.reader_notes ?? [];
   const format = job.summary?.format_notes ?? [];
-  const unmapped = job.summary?.unmapped ?? [];
-  if (!reader.length && !format.length && !unmapped.length) return null;
+  const every = job.summary?.unmapped ?? [];
+  // IMPORT-SPLIT-01: una columna de stock, de serie o de IMEI en un archivo de
+  // productos no es «una columna más que no se importa». Quien la trae espera
+  // que entre, así que se dice a la vista y no dentro del desplegable.
+  const elsewhere = every.filter((entry) => entry.important);
+  const unmapped = every.filter((entry) => !entry.important);
+  if (!reader.length && !format.length && !every.length) return null;
   // There is no "the preview was truncated" case any more, and that is the
   // point: a file over the row limit is now REFUSED outright by the backend
   // with a 400, instead of being trimmed into a job that reported no errors and
@@ -128,14 +133,25 @@ export function Notices({ job }: { job: ImportJob }) {
           {note}
         </p>
       ))}
+      {elsewhere.length > 0 && (
+        <div role="alert" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-warning">
+          <ul className="space-y-1">
+            {elsewhere.map((entry, index) => (
+              <li key={`${index}-${entry.column}`}>
+                <span className="font-semibold">{entry.column}</span> — {entry.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {unmapped.length > 0 && (
         <details className="rounded-lg border border-bd-border bg-surface px-3 py-2 text-muted">
           <summary className="cursor-pointer text-foreground">
             {unmapped.length} columna(s) reconocidas que NO se importan
           </summary>
           <ul className="mt-2 space-y-1">
-            {unmapped.map((entry) => (
-              <li key={entry.column}>
+            {unmapped.map((entry, index) => (
+              <li key={`${index}-${entry.column}`}>
                 <span className="text-foreground">{entry.column}</span> — {entry.reason}
               </li>
             ))}
@@ -364,8 +380,8 @@ export function ImageHelp({ rules, defaultOpen = false }: { rules: ImageRules | 
           </table>
           <p className="text-xs text-muted">
             Con esa fila se adjuntarían tres archivos: iphone16-front.webp, iphone16-back.webp e
-            iphone16-side.webp. La plantilla trae estas instrucciones y un ejemplo completo en sus
-            hojas «Instrucciones» y «Ejemplo».
+            iphone16-side.webp. En la plantilla, las cabeceras «Imagen principal» e «Imágenes» llevan
+            una nota con estas mismas reglas.
           </p>
           {rules ? (
             <ul className="space-y-1 text-xs text-muted">

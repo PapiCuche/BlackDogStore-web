@@ -2,14 +2,17 @@
 IMPORT-TEMPLATE-HELP — la plantilla de productos explica cómo van las imágenes.
 
 La duda de siempre: «¿pego la foto en el Excel?». No. El Excel guarda NOMBRES
-de archivo, y los archivos se adjuntan después. La plantilla lo dice en una
-hoja de instrucciones, con un ejemplo completo, y la primera hoja trae una fila
-de ejemplo para que se vea la forma.
+de archivo, y los archivos se adjuntan después.
+
+IMPORT-SPLIT-01: la plantilla es UNA hoja con sus cabeceras. Lo que antes
+decían una fila de ayuda, una fila de ejemplo y las hojas «Instrucciones» y
+«Ejemplo» lo dicen ahora la pantalla y una nota en cada cabecera.
 
     NADA DE LA AYUDA SE IMPORTA COMO PRODUCTO.
 
-Ni la fila de ayuda, ni la fila de ejemplo, ni las hojas de instrucciones y de
-ejemplo. Subir la plantilla tal cual se descarga no crea nada.
+Y los archivos hechos con la plantilla anterior —que la gente todavía tiene—
+se siguen leyendo igual: ni su fila de ayuda, ni su fila de ejemplo, ni sus
+hojas de instrucciones crean nada.
 """
 import io
 import json
@@ -33,58 +36,62 @@ def book(data=None):
     return openpyxl.load_workbook(io.BytesIO(data or import_exports.product_template_bytes()))
 
 
-def text_of(sheet) -> str:
-    return '\n'.join(str(c.value) for row in sheet.iter_rows() for c in row if c.value is not None)
+def notes_of(sheet) -> dict:
+    return {cell.value: cell.comment.text for cell in sheet[1] if cell.comment}
+
+
+def legacy_template() -> bytes:
+    """
+    The template as it was before IMPORT-SPLIT-01: a help row and an example
+    row under the headers, and three sheets that only explain.
+    """
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = 'Productos'
+    sheet.append(import_exports.PRODUCT_TEMPLATE_HEADERS)
+    sheet.append(import_exports.PRODUCT_TEMPLATE_HELP)
+    sheet.append(import_exports.PRODUCT_TEMPLATE_EXAMPLE)
+    categories = workbook.create_sheet('Categorías')
+    categories.append(['Categorías de tu empresa'])
+    categories.append(['Nombre exacto'])
+    categories.append(['Teléfonos'])
+    notes = workbook.create_sheet('Instrucciones')
+    notes.append([None, 'Cómo llenar esta plantilla'])
+    example = workbook.create_sheet('Ejemplo')
+    example.append(import_exports.PRODUCT_TEMPLATE_HEADERS)
+    example.append(import_exports.PRODUCT_TEMPLATE_EXAMPLE)
+    out = io.BytesIO()
+    workbook.save(out)
+    return out.getvalue()
 
 
 class TemplateContentTest(TestCase):
-    def test_the_first_sheet_is_the_one_that_gets_imported(self):
+    def test_it_is_one_sheet_and_its_first_row_is_the_headers(self):
         workbook = book()
 
-        # PRODUCT-DESTINATION-01: «Categorías» lists the company's own, for the drop-down.
-        self.assertEqual(workbook.sheetnames, ['Productos', 'Categorías', 'Instrucciones', 'Ejemplo'])
+        self.assertEqual(workbook.sheetnames, ['Productos'])
         sheet = workbook['Productos']
         self.assertEqual([c.value for c in sheet[1]], import_exports.PRODUCT_TEMPLATE_HEADERS)
-        example = dict(zip(import_exports.PRODUCT_TEMPLATE_HEADERS, [c.value for c in sheet[3]]))
-        self.assertEqual(example['Código'], 'IP16PM-256-W')
-        self.assertEqual(example['Nombre'], 'iPhone 16 Pro Max 256GB White')
-        self.assertEqual(example['Imagen principal'], 'iphone16-front.webp')
-        self.assertEqual(example['Imágenes'], 'iphone16-front.webp|iphone16-back.webp|iphone16-side.webp')
+        self.assertEqual(sheet.max_row, 1)
 
-    def test_the_instructions_say_how_images_travel(self):
-        text = text_of(book()['Instrucciones'])
+    def test_the_headers_say_how_images_travel(self):
+        notes = notes_of(book()['Productos'])
 
-        for expected in (
-            'NO se pegan dentro de Excel',            # 1
-            'sólo los NOMBRES',                       # 2
-            'Imagen principal',                       # 3
-            'separados por |',                        # 4
-            'ZIP',                                    # 5
-            'deben coincidir',                        # 6
-            'PNG', 'JPG', 'WEBP',                     # 7
-            'iphone16-front.webp|iphone16-back.webp', # 10
-        ):
-            self.assertIn(expected, text, expected)
+        self.assertIn('NOMBRE del archivo', notes['Imagen principal'])
+        self.assertIn('no se pega', notes['Imagen principal'])
+        self.assertIn('separados por |', notes['Imágenes'])
+        self.assertIn('se adjuntan', notes['Imágenes'])
+        for extension in ('PNG', 'JPG', 'WEBP'):
+            self.assertIn(extension, notes['Imágenes'])
 
     @override_settings(PRODUCT_IMAGE_MAX_PER_PRODUCT=5, STOREFRONT_IMAGE_MAX_UPLOAD_BYTES=3 * 1024 * 1024,
                        IMPORT_IMAGES_MAX_FILES=40)
     def test_the_limits_it_states_are_the_ones_the_server_applies(self):
-        text = text_of(book()['Instrucciones'])
+        text = notes_of(book()['Productos'])['Imágenes']
 
         self.assertIn('5 imágenes por producto', text)
         self.assertIn('3 MB', text)
         self.assertIn('40 archivos', text)
-
-    def test_the_example_sheet_is_a_whole_filled_case(self):
-        sheet = book()['Ejemplo']
-        text = text_of(sheet)
-
-        self.assertEqual(
-            [c.value for c in sheet[1]][:len(import_exports.PRODUCT_TEMPLATE_HEADERS)],
-            import_exports.PRODUCT_TEMPLATE_HEADERS)
-        self.assertGreaterEqual(sheet.max_row, 4)
-        self.assertIn('Archivos que se adjuntan', text)
-        self.assertIn('iphone16-back.webp', text)
 
 
 class TemplateIsNeverImportedTest(TestCase):
@@ -96,7 +103,7 @@ class TemplateIsNeverImportedTest(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.manager)
 
-    def upload(self, data=None, name='plantilla-productos.xlsx'):
+    def upload(self, data=None, name='carga-masiva-productos.xlsx'):
         return SimpleUploadedFile(name, data or import_exports.product_template_bytes(), content_type=XLSX)
 
     def preview(self, data=None, **fields):
@@ -106,16 +113,25 @@ class TemplateIsNeverImportedTest(TestCase):
             format='multipart',
         )
 
-    def test_inspecting_it_offers_one_sheet_and_marks_the_help_ones(self):
+    def test_inspecting_it_offers_its_one_sheet(self):
         res = self.client.post(
             f'{INSPECT}?company={self.company.pk}',
             {'file': self.upload(), 'import_type': 'products'}, format='multipart')
 
         self.assertEqual(res.status_code, 200, res.content)
+        [sheet] = res.json()['sheets']
+        self.assertEqual((sheet['name'], sheet['preset'], sheet['help']), ('Productos', 'products_platform', False))
+
+    def test_inspecting_the_previous_template_marks_its_help_sheets(self):
+        res = self.client.post(
+            f'{INSPECT}?company={self.company.pk}',
+            {'file': self.upload(legacy_template()), 'import_type': 'products'}, format='multipart')
+
+        self.assertEqual(res.status_code, 200, res.content)
         sheets = {s['name']: s for s in res.json()['sheets']}
         self.assertEqual(sheets['Productos']['preset'], 'products_platform')
         self.assertFalse(sheets['Productos']['help'])
-        for name in ('Instrucciones', 'Ejemplo'):
+        for name in ('Categorías', 'Instrucciones', 'Ejemplo'):
             self.assertTrue(sheets[name]['help'], name)
             self.assertEqual(sheets[name]['preset'], '', name)
             self.assertEqual(sheets[name]['detected'], '', name)
@@ -136,6 +152,14 @@ class TemplateIsNeverImportedTest(TestCase):
 
         self.assertEqual(res.status_code, 201, res.content)
         body = res.json()
+        self.assertEqual((body['counts']['total'], body['counts']['create'], body['counts']['error']), (0, 0, 0))
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 0)
+
+    def test_the_previous_template_as_it_was_downloaded_still_creates_nothing(self):
+        res = self.preview(legacy_template())
+
+        self.assertEqual(res.status_code, 201, res.content)
+        body = res.json()
         self.assertEqual(body['counts']['create'], 0, body['rows'])
         self.assertEqual(body['counts']['error'], 0, body['rows'])
         warnings = ' '.join(w for row in body['rows'] for w in row['warnings'])
@@ -144,7 +168,7 @@ class TemplateIsNeverImportedTest(TestCase):
         self.assertEqual(Product.objects.filter(company=self.company).count(), 0)
 
     def test_a_real_row_under_the_example_is_imported_and_the_example_is_not(self):
-        workbook = book()
+        workbook = book(legacy_template())
         sheet = workbook['Productos']
         sheet.append([None, 'COD-REAL-1', 'Funda de silicona', 'Negra', 39.9, 'Accesorios', None, None])
         out = io.BytesIO()
@@ -158,8 +182,8 @@ class TemplateIsNeverImportedTest(TestCase):
         self.assertEqual(created[0]['data']['name'], 'Funda de silicona')
 
     def test_a_shop_that_really_sells_that_phone_is_not_silenced(self):
-        """Sólo se salta la fila EXACTA de la plantilla, no cualquier iPhone."""
-        workbook = book()
+        """Sólo se salta la fila EXACTA de la plantilla anterior, no cualquier iPhone."""
+        workbook = book(legacy_template())
         sheet = workbook['Productos']
         sheet.append([None, 'IP16PM-256-N', 'iPhone 16 Pro Max 256GB White', None, 4500, 'Teléfonos', None, None])
         out = io.BytesIO()
@@ -172,7 +196,7 @@ class TemplateIsNeverImportedTest(TestCase):
     def test_a_help_sheet_cannot_be_chosen_as_the_products(self):
         for name in ('Ejemplo', 'Instrucciones'):
             with self.subTest(name):
-                res = self.preview(sheet_name=name)
+                res = self.preview(legacy_template(), sheet_name=name)
                 self.assertEqual(res.status_code, 400, res.content)
                 self.assertIn('hoja de ayuda', res.json()['detail'])
         self.assertFalse(BulkImportJob.objects.filter(company=self.company).exists())

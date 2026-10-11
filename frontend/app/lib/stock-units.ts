@@ -7,7 +7,7 @@
  */
 
 import { API_BASE } from "./api";
-import { fetchWithAuth } from "./auth";
+import { fetchWithAuth, withSelectedCompany } from "./auth";
 
 export type StockUnit = {
   id: number;
@@ -143,7 +143,7 @@ export const actOnStockUnit = (id: number, action: UnitAction, reason = "") =>
   post<StockUnit>(`/${id}/${action}/`, { reason });
 
 // ---------------------------------------------------------------------------
-// UNIT-IMPORT — «Equipos serializados.xlsx»: one row, one device
+// UNIT-IMPORT — the device upload: one row, one device
 // ---------------------------------------------------------------------------
 
 export type UnitImportRow = {
@@ -172,19 +172,30 @@ export type UnitImportJob = {
   status: "previewed" | "applied" | "failed";
   original_filename: string;
   counts: { total: number; create: number; skip: number; error: number };
-  summary: { units?: number; applied?: { units: number; movements: number } };
+  summary: {
+    units?: number;
+    /** Rows that carry an IMEI under a product not marked «lleva IMEI». Kept, and said. */
+    imei_on_unmarked_products?: number;
+    applied?: { units: number; movements: number; imei_on_unmarked_products?: number };
+  };
   is_applicable: boolean;
   rows?: UnitImportRow[];
   rows_truncated?: boolean;
 };
 
+/**
+ * The template of the company chosen in the switcher: its «Sucursal» list is
+ * that company's branches. A plain link does not pass through `fetchWithAuth`,
+ * so the company is put on the address here.
+ */
 export function unitImportTemplateUrl(): string {
-  return `${BASE}/import/template/`;
+  return withSelectedCompany(`${BASE}/import/template/`);
 }
 
 /** The rows that failed, as a file to read next to the original. */
 export function unitImportErrorsUrl(jobId: number): string {
-  return `${API_BASE}/admin/imports/${jobId}/errors.csv/`;
+  // A plain link too: without the company, somebody working in a second one gets a 403.
+  return withSelectedCompany(`${API_BASE}/admin/imports/${jobId}/errors.csv/`);
 }
 
 /** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */

@@ -42,6 +42,7 @@ import {
   destinationLabel,
   rowImagesLabel,
 } from "../../components/ImportWizard";
+import { ImportKindNotice } from "../../components/ImportKindNotice";
 import { fetchAdminCategories, type AdminCategory } from "../../../lib/admin";
 import {
   applyImport,
@@ -123,7 +124,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
       const result = await inspectImportFile(companyId, selected, "products");
       setFile(selected);
       setInspection(result);
-      // Never a help sheet of the template («Instrucciones», «Ejemplo»).
+      // Never a help sheet of a previous template («Instrucciones», «Ejemplo»).
       const candidates = result.sheets.filter((entry) => !entry.help);
       const preferred = candidates.find((entry) => entry.detected) ?? candidates[0];
       setSheet(preferred ?? null);
@@ -207,12 +208,14 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
             <p className="text-xs text-muted">
               ¿No tienes un archivo? Descarga la plantilla, complétala y vuelve aquí.
             </p>
-            <a className={GHOST} href={productTemplateUrl(companyId)}>
-              Descargar plantilla
-            </a>
+            {/* En su propio bloque: como enlace en línea, el texto de abajo se le montaba encima. */}
+            <div>
+              <a className={GHOST} href={productTemplateUrl(companyId)}>
+                Descargar plantilla
+              </a>
+            </div>
             <p className="text-xs text-muted">
-              La plantilla trae una hoja de instrucciones y un ejemplo completo. Las imágenes no van
-              dentro del Excel: se adjuntan en el paso 3.
+              Las imágenes no van dentro del Excel: se adjuntan en el paso 3.
             </p>
             <ImageHelp rules={null} />
           </div>
@@ -476,9 +479,10 @@ export default function ProductImportPage() {
           <div className="space-y-6">
             <PageHeader
               eyebrow="Catálogo"
-              title="Carga masiva de productos"
+              title="Carga de productos y accesorios"
               description="Sube un Excel, revisa lo que va a pasar y sólo entonces aplícalo."
             />
+            <ImportKindNotice kind="products" />
             <ProductImportScreen ctx={ctx} />
           </div>
         </AdminShell>
