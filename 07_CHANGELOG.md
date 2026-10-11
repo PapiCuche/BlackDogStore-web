@@ -3,6 +3,47 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-08 — MAIL-TEMPLATE-01 (fase 3A): código de verificación
+
+**Added**
+- El correo de verificación lleva, además del enlace, un código de 6 dígitos. Pantalla
+  para escribirlo al terminar el registro y en `/auth/verify-email`: se puede pegar con
+  espacios o guiones, se comprueba solo al completarlo y el móvil lo reconoce como código.
+- `POST /api/auth/verify-email/code/` (correo y código).
+
+**Changed**
+- Tras registrarse, la pantalla pide el código en vez de mostrar sólo «revisa tu correo».
+- Reenviar la verificación: una cuenta recibe como mucho un código por minuto y cinco
+  en 24 horas. La respuesta es la misma se haya enviado o no.
+
+El enlace sigue siendo el camino principal y no cambia. Reglas del código: 15 minutos,
+5 intentos, uno nuevo anula el anterior; sólo se guarda su HMAC.
+
+**De la revisión de seguridad independiente, antes de publicar el cambio**
+- Un código correcto que llegaba a la vez que un «enviar otro» se interbloqueaba y uno
+  de los dos respondía 500. Las dos operaciones bloquean ahora en el mismo orden.
+- Con el servidor de correo fallando, cada reenvío gastaba la espera y el tope del día y
+  mataba el código anterior sin entregar nada: 24 horas sin verificación. Un código cuyo
+  correo no salió se retira.
+- Las columnas nuevas no tenían valor por defecto en la base: durante un despliegue, o
+  tras volver atrás, la versión anterior fallaba al crear tokens.
+- El código reactivaba cuentas inactivas por otro motivo. Sólo termina las nunca
+  verificadas, y reenviar sólo emite para ellas.
+- Verificar por código dejaba vivos los enlaces anteriores de esa cuenta.
+- Un byte nulo en el correo respondía 500; un número JSON se aceptaba como código.
+- La pantalla decía «el anterior ya no sirve» aunque el servidor no hubiera enviado
+  nada, y dejaba pedir otro código mientras comprobaba uno.
+- El correo no pedía no compartir el código; un código agotado no dejaba rastro.
+- Seis pruebas que no podían fallar, rehechas; pruebas de concurrencia nuevas.
+
+**Migración** `0113_account_token_code`: tres columnas nuevas en `AccountToken`, con
+valor por defecto también en la base; no toca filas existentes. No desplegado.
+
+**Deuda que la revisión dejó a la vista, anterior a este cambio (REGISTER-RACE):** varios
+registros simultáneos del mismo correo crean varias cuentas (no hay restricción única en
+el correo), y desde ahí ese correo no puede verificar, reenviar ni recuperar. No se
+arregla aquí.
+
 ## 2026-10-08 — MAIL-TEMPLATE-01 (fase 2)
 
 **Changed**

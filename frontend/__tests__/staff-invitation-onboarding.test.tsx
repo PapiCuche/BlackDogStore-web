@@ -354,7 +354,10 @@ describe('crear la cuenta desde una invitación', () => {
     });
     fireEvent.submit(container.querySelector('form') as HTMLFormElement);
 
-    await screen.findByText(/Revisa tu correo para verificar/);
+    // MAIL-TEMPLATE-01 (3A): en vez del aviso «revisa tu correo», la pantalla pide el
+    // código de ese correo. Sigue sin entrar sola.
+    await screen.findByRole('heading', { name: 'Verifica tu correo' });
+    expect(screen.getByText(/cliente@correo\.test/)).toBeInTheDocument();
     expect(mockRegister).toHaveBeenCalledWith({
       username: 'cliente', email: 'cliente@correo.test', password: 'Una-clave-2026!', password_confirm: 'Una-clave-2026!',
     });

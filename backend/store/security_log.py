@@ -41,6 +41,20 @@ def login_failed(request, *, channel: str, identifier) -> None:
     )
 
 
+def verify_code_exhausted(request, *, user) -> None:
+    """
+    A verification code was tried the five times it allows and is dead.
+
+    Somebody mistyping does this once. Somebody guessing does it to the same
+    account again and again, and this line is the only trace. The account id,
+    never the address and never what was typed.
+    """
+    logger.warning(
+        'verify_code_exhausted ip=%s user_id=%s',
+        get_client_ip(request) or '-', user.pk,
+    )
+
+
 def login_succeeded(request, *, channel: str, user) -> None:
     logger.info(
         'login_ok channel=%s ip=%s user_id=%s',

@@ -15,6 +15,7 @@ import {
   accountStateOf, invitationPath, invitationTokenFromNext, readInvitation,
 } from "../lib/invitation";
 import { DevQuickLogin } from "./components/DevQuickLogin";
+import { VerificationCode } from "./VerificationCode";
 
 /**
  * Adónde lleva un login correcto — H4.1.1.
@@ -71,6 +72,9 @@ export default function AuthPage() {
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // El correo que acaba de registrarse y espera su verificación. Mientras lo
+  // haya, la pantalla pide el código en vez del formulario.
+  const [verifying, setVerifying] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   // Quien llega desde una invitación (`?next=/invitacion?token=…`). Crear la
@@ -164,7 +168,7 @@ export default function AuthPage() {
           return;
         }
         if (result.requires_verification) {
-          setSuccess("Registro completado. Revisa tu correo para verificar tu cuenta antes de iniciar sesión.");
+          setVerifying(invitation ? invitation.email : email);
         } else {
           setSuccess("Registro completado. Ahora inicia sesión.");
           setIsLogin(true);
@@ -316,6 +320,36 @@ export default function AuthPage() {
               />
             </div>
 
+            {verifying !== null ? (
+              <div>
+                <div className="mb-8">
+                  <span className="section-label">Un paso más</span>
+                  <h1 className="font-display mt-2 text-4xl font-semibold uppercase text-foreground">
+                    Verifica tu correo
+                  </h1>
+                </div>
+                <VerificationCode
+                  email={verifying}
+                  onVerified={() => {
+                    // Verificar no inicia sesión: la persona entra con lo que eligió.
+                    setVerifying(null);
+                    setPassword("");
+                    setPasswordConfirm("");
+                    setError(null);
+                    setIsLogin(true);
+                    setSuccess("Correo verificado. Ya puedes iniciar sesión.");
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => { setVerifying(null); setIsLogin(true); setError(null); setSuccess(null); }}
+                  className="mt-6 text-sm text-muted transition hover:text-foreground"
+                >
+                  Volver al inicio de sesión
+                </button>
+              </div>
+            ) : (
+            <>
             <div className="mb-8">
               <span className="section-label">{isLogin ? "Bienvenido" : "Nuevo usuario"}</span>
               <h1 className="font-display mt-2 text-4xl font-semibold uppercase text-foreground">
@@ -443,6 +477,8 @@ export default function AuthPage() {
                   setSuccess(null);
                 }}
               />
+            )}
+            </>
             )}
 
           </div>

@@ -395,6 +395,47 @@ quedaba escrito quién lo pidió.
   cotización. Es el mismo alcance que ya tenía quien recibiera el enlace de mano del
   personal.
 
+### DEC-MAIL-03 · El código de verificación es una comodidad con sus propios límites
+
+El propietario pidió un código de 6 dígitos en el correo de verificación, «que no
+moleste», con estas cifras: 15 minutos, 5 intentos, uno nuevo anula el anterior, 60
+segundos entre reenvíos y un tope diario (se fijó en 5).
+
+- **El enlace sigue siendo la prueba fuerte.** El código prueba lo mismo —que quien lo
+  escribe lee ese buzón— con un secreto de un millón de posibilidades. Verificar un
+  correo ajeno no es inocuo aquí: un buzón verificado es lo que deja aceptar una
+  invitación de personal dirigida a él.
+- **Los límites se cuentan en la cuenta, no en la red.** Intentos por código y códigos
+  por día viven en la fila del token; cambiar de red no los reinicia. El límite por
+  dirección (10 por minuto) es una segunda capa.
+- **Sólo se guarda un HMAC**, con clave derivada de `SECRET_KEY` y ligado a la cuenta.
+  Un hash simple de seis dígitos se revierte probando el millón.
+- **Una sola respuesta para toda negativa.** Ni «la cuenta no existe», ni «código
+  vencido», ni «demasiados intentos». Lo que no es un código (cinco dígitos, letras) no
+  gasta intento.
+- **Una fila, un correo.** El código vive en la misma fila que su enlace
+  (`AccountToken`): usar uno gasta el otro, y no hay un segundo sistema de tokens.
+- **Reenviar no dice si envió.** La espera de 60 segundos y el tope diario se aplican en
+  silencio; la pantalla muestra la cuenta atrás por su lado.
+- **Consecuencia aceptada:** alguien puede gastar los cinco códigos del día de una
+  cuenta ajena pidiendo reenvíos. El enlace del primer correo sigue sirviendo 24 horas,
+  y la recuperación de contraseña también termina la cuenta.
+- **Un mismo orden de bloqueos.** Emitir y comprobar tocan la cuenta y su código; los
+  dos bloquean primero la cuenta. Al revés en uno de ellos, un código correcto que
+  llegaba a la vez que un «enviar otro» se interbloqueaba y uno de los dos respondía 500.
+- **Un código es definitivo cuando su correo salió.** `issue` lo crea, `settle` mata los
+  anteriores una vez entregado, `withdraw` lo retira si el envío falló. Un servidor de
+  correo caído no puede dejar a nadie un día sin verificación.
+- **«Inactiva» no es la pregunta.** El código sólo termina una cuenta registrada y nunca
+  verificada (`accounts.is_unverified`), y reenviar sólo emite para esas.
+- **Las columnas nuevas llevan valor por defecto en la base** (`db_default`). Al
+  desplegar se migra con la versión anterior aún sirviendo; sin él, sus altas de tokens
+  fallaban, y pedir recuperar contraseña respondía 500 sólo para correos existentes.
+- **Lo que tarda dice poco, no nada.** Toda comprobación bloquea una fila de cuenta y
+  una de código y compara un HMAC, exista la cuenta o no. Queda una diferencia de
+  fracciones de milisegundo cuando hay un código vivo. El registro ya dice si un correo
+  está registrado, así que no se añade un dato que no estuviera.
+
 ### DEC-BRAND-ICON-01 · El icono de la pestaña es el isotipo, en dos contrastes
 
 El isotipo es una silueta de un color: el oscuro desaparece en una pestaña oscura. Hay

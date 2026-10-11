@@ -45,7 +45,15 @@ esa página se lo va a mostrar a quien lo recibe.
 reparación lleva al cliente su enlace de seguimiento, tenga cuenta o no. Sólo al cliente
 de esa reparación; un enlace revocado no se recrea; la copia del personal no lo lleva.
 
-**Falta:** fase 3, garantía, posventa, promociones con baja y código de 6 dígitos.
+**Fase 3**, aprobada por el propietario el 2026-10-08, en tres PR:
+
+- **3A · código de verificación** (rama `feat/mail-verification-code`, sobre la fase 2):
+  el correo de verificación lleva enlace y código de 6 dígitos. Migración
+  `0113_account_token_code`. Decisión DEC-MAIL-03.
+- **3B · garantía y posventa:** pendiente. Antes hay que resolver con el propietario el
+  IMEI de la garantía frente a SERIAL-PICK (hoy el pedido registra el equipo más antiguo,
+  no el que se entrega en mano).
+- **3C · promociones con consentimiento y baja:** pendiente.
 
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
 

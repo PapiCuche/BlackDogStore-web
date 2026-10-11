@@ -33,7 +33,7 @@ from .views import (
 )
 from .auth_views import (
     RegisterView, UserDetailView, LoginView, RefreshView, LogoutView, CsrfView,
-    VerifyEmailView, ResendVerificationView,
+    VerifyEmailView, VerifyEmailCodeView, ResendVerificationView,
     PasswordResetRequestView, PasswordResetConfirmView,
     ChangePasswordView,
 )
@@ -177,6 +177,7 @@ urlpatterns = [
     path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
+    path('auth/verify-email/code/', VerifyEmailCodeView.as_view(), name='auth-verify-email-code'),
     path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
     path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='auth-password-reset-request'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
