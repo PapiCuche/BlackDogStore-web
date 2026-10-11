@@ -433,8 +433,13 @@ export default function CheckoutPage() {
             session={payment}
             onSettled={handlePaymentSettled}
             onError={(text) => {
+              // This form will not charge any more. Taking it away gives the
+              // buyer the button back: pressing it opens a new form for the
+              // same basket. The message is at the top, so the page goes there.
               setMessage(text);
               setLoading(false);
+              setPayment(null);
+              window.scrollTo?.({ top: 0, behavior: "smooth" });
             }}
           />
         )}
