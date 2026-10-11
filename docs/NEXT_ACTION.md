@@ -123,8 +123,11 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
   INTEGRATION-READ-COST, MAIL-TENANT-SCOPE.
 - SERIAL-TRANSFER, SERIAL-COUNT. SERIAL-PRICE-DROP: borrar la columna
   `price_override` en la versión siguiente a la que publique SERIAL-PICK-01.
-- PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda
-  esperando; `healthcheck.sh` lo anota (sin alarma), no lo resuelve.
+- PAY-RECONCILE: con «Mi Cuenta Web», `reconcile_payments` pregunta a la pasarela
+  (`Order/Get`) y paga lo cobrado (DEC-PAY-03); hay que añadir su línea de
+  `deploy/crontab.example` al servidor. Con el otro producto sigue como estaba.
+  PAY-TEST-PUBLIC: una tienda publicada con claves de TEST da por pagado lo que se paga
+  con tarjetas de prueba; falta decidir cómo se señala.
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
 - NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.

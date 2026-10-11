@@ -3,6 +3,68 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — IZIPAY-MCW-AUDIT-01: «Mi Cuenta Web» contra su documentación, y la consulta que faltaba
+
+Rama `feat/izipay-smartform-v4`. **Sin migración. Sin rutas nuevas. Sin dependencias
+nuevas.** Decisión: DEC-PAY-03. No desplegado. **Nada se probó contra la pasarela real:
+no hay credenciales.**
+
+Se leyó la documentación oficial de la API REST V4 (inicio rápido del SmartForm, claves,
+`Charge/CreatePayment`, IPN, retorno al navegador, estados, `Order/Get`, reglas de
+notificación del Back Office, tarjetas de prueba, CSP) y se comparó con el código. La
+tabla completa, con la página de cada punto, está en
+`docs/pagos-equipos-documentos.md` §1.1.
+
+**Lo que ya cumplía y no se tocó:** crear el pago (dirección, `Basic`, importe entero
+en céntimos, `PEN`, `orderId` por intento), el guion y el tema oficiales como constantes
+del código, la firma del IPN con la contraseña, el rechazo de la copia del navegador,
+`PAID` como único pagado, la comparación de importe, moneda, tienda y referencia, el
+pago único ante notificaciones repetidas, TEST y PRODUCCIÓN decididos por las claves, y
+la consola (sólo MASTER, secretos cifrados y nunca devueltos).
+
+**Diferencias encontradas y qué se hizo.**
+
+| | Documentación | Antes | Ahora |
+|---|---|---|---|
+| Consulta si el IPN no llega | `Order/Get` devuelve las transacciones de una referencia | No existía (PAY-RECONCILE) | `reconcile_payments`: pregunta y paga por el mismo camino que una notificación |
+| Firma del IPN | el ejemplo oficial calcula el hash tras cambiar `\/` por `/` | sólo la cadena recibida: una notificación con barras escapadas se rechazaba | se acepta también esa lectura, y se interpreta lo que cubrió la firma |
+| Qué respuesta espera el IPN | falla si no es `200`–`206` o `301`/`302`/`303`/`307`/`308` | «sin verificar» | documentado; el código ya respondía así. Sin cambio |
+| React | «requiere» `embedded-form-glue` | guion oficial insertado directamente | sin cambio: no se añaden dependencias (KRYPTON-GLUE) |
+| CSP | abrir `static.micuentaweb.pe` si el sitio usa CSP | la política no restringe guiones ni conexiones | sin cambio: ya estaba fijada por una prueba |
+
+**La consulta, en una frase:** para cada intento de «Mi Cuenta Web» que sigue esperando
+(entre 3 minutos y 2 horas, los más recientes primero, hasta 20 por pasada), el servidor
+pregunta `Order/Get`, sólo cree un cobro pagado y completo de esta tienda, esta
+referencia y este entorno, y lo demás lo deja esperando. Detalle en
+`docs/pagos-equipos-documentos.md` §1.5.
+
+**Para el propietario.** Las claves de TEST se escriben en Configuración ›
+Integraciones › «Izipay · Mi Cuenta Web»: los pasos están en
+`docs/pagos-equipos-documentos.md` §1.3. En el servidor hay que añadir la línea de
+`reconcile_payments` de `deploy/crontab.example`.
+
+**Estado por punto del encargo.**
+
+| Punto | Estado |
+|---|---|
+| SmartForm V4: crear el pago, `Basic`, `formToken`, importes, guion, CSP, errores | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS para la prueba real |
+| IPN: firma, importe, moneda, pedido, tienda, estados, repetición, reintentos | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS |
+| Configuración desde Panel › Integraciones | IMPLEMENTADO (INTEGRATIONS-CONSOLE-01, sin cambios) |
+| Conciliación por `Order/Get` | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS |
+| Pruebas y flujo en TEST | IMPLEMENTADO con pasarela falsa; las dos pruebas reales se omiten sin claves |
+| Cambiar de proveedor o de claves sin romper cobros abiertos | PARCIAL: una contraseña renovada en la misma tienda ya no pierde el cobro; un cambio de producto, sí (PAY-SWITCH-PENDING) |
+
+**Deuda que queda registrada** (`docs/AUDIT_MEMORY.md`): PAY-RECONCILE para el otro
+producto, PAY-TEST-PUBLIC, KRYPTON-GLUE, PAY-RECONCILE-REHEARSAL, PAY-SWITCH-PENDING.
+
+**Pruebas.** RED antes que GREEN en cada regla nueva; después, 34 mutaciones, una a
+una, todas detectadas (tres sobrevivieron a la primera pasada y obligaron a endurecer
+sus pruebas). Backend completo: 6057 pruebas, 0 fallos, 6 omitidas (tres son las pruebas
+contra la pasarela real, que piden claves). Módulos de pagos, consola y despliegue: 232,
+0 fallos, 3 omitidas. Frontend sin cambios: Jest 1059 de 1059, `tsc` y `lint` sin
+errores. La suite completa corrió antes de añadir dos pruebas de regresión, que sólo
+están en la pasada de módulos. Sin Playwright ni ensayo Docker en esta fase.
+
 ## 2026-10-11 — IMPORT-SPLIT-01: dos cargas diferenciadas, cada una con su plantilla de una hoja
 
 Rama `feat/bulk-import-split`, apilada sobre `feat/serial-pick`. **Sin migración.**

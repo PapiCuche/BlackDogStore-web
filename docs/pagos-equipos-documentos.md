@@ -28,24 +28,31 @@ respuesta.
 
 ### 1.1 «Mi Cuenta Web», punto por punto contra la documentación
 
+Revisado el 2026-10-11 contra las páginas oficiales (cada fila dice cuál; todas cuelgan
+de `https://secure.micuentaweb.pe/doc/es-PE/`). El sitio de la documentación es una
+aplicación: su texto se leyó de su propia API de contenido, no de memoria.
+
 | Punto | Lo que dice la documentación | Lo que hace la plataforma |
 |---|---|---|
-| Crear el pago | `POST https://api.micuentaweb.pe/api-payment/V4/Charge/CreatePayment`, desde el servidor | Igual. El servidor es el único que lo llama |
-| Autenticación | `Authorization: Basic base64(usuario:contraseña)` | Igual. La contraseña no sale del backend |
-| Importe | entero en la unidad mínima (`180` = S/ 1,80) | `Order.total` en céntimos, sin pasar por decimales binarios |
-| Moneda, pedido, cliente | `currency`, `orderId`, `customer.email` | `PEN`, un `orderId` nuevo por intento, el correo del pedido |
-| Notificación | `ipnTargetUrl` o la URL del Back Office | `MICUENTAWEB_IPN_URL` si está; si no, la del Back Office |
-| Respuesta | `answer.formToken` (vale 15 minutos) | Se entrega al navegador junto con la clave pública |
-| Navegador | guion `kr-payment-form.min.js` con `kr-public-key`; `<div class="kr-smart-form" kr-form-token>` | Igual. La dirección del guion es una constante del código, nunca un dato de la respuesta |
-| TEST o PRODUCCIÓN | lo decide el par de claves (`testpassword_…` / `prodpassword_…`) | Igual. Un par mezclado impide cobrar; un pago de TEST no paga un pedido con claves de producción |
-| Notificación (IPN) | formulario con `kr-answer`, `kr-hash`, `kr-hash-algorithm`, `kr-hash-key` | Igual |
-| Firma del IPN | HMAC-SHA256 en hexadecimal de `kr-answer`, con la **contraseña** | Igual, sobre la cadena exacta recibida y en tiempo constante |
-| Retorno al navegador | la misma respuesta firmada con la **clave HMAC** | No se usa para confirmar nada. Enviada a la notificación, se rechaza |
-| Pagado | `orderStatus = PAID` | Sólo entonces, y si importe, moneda, tienda y pedido coinciden con lo guardado |
-| `UNPAID` / `RUNNING` | rechazado / en curso | El intento queda rechazado / sigue esperando. El pedido no cambia |
-| Reintentos del IPN | hasta 4, cada 15 minutos | La misma notificación dos veces paga una vez |
-| Consulta si el IPN no llega (`Order/Get`) | disponible | **No implementado** (PAY-RECONCILE) |
-| Respuesta que espera el IPN | no figura en las páginas leídas | Se responde 200 a lo aceptado y 400/404 a lo rechazado. **Sin verificar** |
+| Crear el pago | `POST https://api.micuentaweb.pe/api-payment/V4/Charge/CreatePayment`, desde el servidor (`rest/V4.0/javascript/guide/formToken/presentation.html`) | Igual. El servidor es el único que lo llama |
+| Autenticación | `Authorization: Basic base64(usuario:contraseña)` (`rest/V4.0/api/kb/authentication.html`) | Igual. La contraseña no sale del backend |
+| Importe | entero en la unidad mínima (`30050` = S/ 300,50) (`rest/V4.0/api/playground/Charge/CreatePayment`) | `Order.total` en céntimos, sin pasar por decimales binarios |
+| Moneda, pedido, cliente | `currency` ISO 4217, `orderId` (hasta 64 caracteres: letras, cifras, `_` y `-`), `customer.email` | `PEN`, un `orderId` nuevo de 20 cifras por intento, el correo del pedido |
+| Notificación | `ipnTargetUrl` o la URL del Back Office | La «Dirección de notificación» de la consola si está; si no, la del Back Office |
+| Respuesta | `answer.formToken`, que vale 15 minutos | Se entrega al navegador junto con la clave pública |
+| Navegador | guion `…/krypton-client/V4.0/stable/kr-payment-form.min.js` con `kr-public-key`; tema `…/ext/neon.js` y `…/ext/neon-reset.min.css`; `<div class="kr-smart-form" kr-form-token>` (`rest/V4.0/javascript/redirection/quick_start_smartform.html`) | Igual. Las tres direcciones son constantes del código, nunca un dato de la respuesta |
+| Marcos compilados (React) | «requiere» la biblioteca `embedded-form-glue` (`rest/V4.0/javascript/spa/index_smart.html`) | **Distinto.** Se inserta el mismo guion con los mismos atributos, sin añadir una dependencia. Sin comprobar en un navegador contra la pasarela real (KRYPTON-GLUE) |
+| CSP | sólo si el sitio la usa: `connect-src`, `frame-src` y `script-src` deben admitir `https://static.micuentaweb.pe` (`rest/V4.0/javascript/features/reference.html`) | La política del sitio es `frame-ancestors 'none'; base-uri 'self'`: no limita guiones ni conexiones, así que no hay nada que abrir, y no lleva `*` ni `unsafe-eval`. Una prueba fija esas dos directivas |
+| TEST o PRODUCCIÓN | lo decide el juego de claves (`testpassword_…` / `prodpassword_…`) | Igual. Un par mezclado impide cobrar; un pago de TEST no paga un pedido con claves de producción, ni al revés |
+| Notificación (IPN) | formulario con `kr-answer`, `kr-hash`, `kr-hash-algorithm`, `kr-hash-key`, `kr-answer-type` (`rest/V4.0/api/kb/ipn_usage.html`) | Igual |
+| Firma del IPN | HMAC-SHA256 en hexadecimal de `kr-answer`, con la **contraseña**. El ejemplo oficial lo calcula tras cambiar `\/` por `/` | Igual, en tiempo constante: sobre la cadena recibida o, como el ejemplo, con las barras sin escapar. Se lee lo que cubrió la firma |
+| Retorno al navegador | la misma respuesta firmada con la **clave HMAC**; «los datos recibidos no deben ser procesados» (`rest/V4.0/kb/payment_done.html`, `rest/V4.0/api/kb/ipn.html`) | No se usa para confirmar nada. Enviada a la notificación, se rechaza |
+| Pagado | `orderStatus = PAID` (`rest/V4.0/api/kb/status_reference.html`) | Sólo entonces, y si importe, moneda, tienda y pedido coinciden con lo guardado |
+| `UNPAID` / `RUNNING` / `PARTIALLY_PAID` | rechazado / en curso / pago parcial | El intento queda rechazado / sigue esperando / sigue esperando. El pedido no cambia |
+| Reintentos del formulario | 3 reintentos (4 intentos) con la misma referencia (`rest/V4.0/javascript/features/retry.html`) | Un rechazo seguido de un pago, bajo la misma referencia, paga el pedido |
+| Qué respuesta espera el IPN | falla si la tienda no contesta `200`–`206`, `301`, `302`, `303`, `307` o `308` (`back-office/notification-rules/reejecucion-automatica-en-caso-de-fallo.html`) | `200` a lo aceptado, también a un rechazo o a un pago en curso; `400`, `404`, `413` o `500` a lo que no se cree: la pasarela lo da por fallido y avisa por correo al comercio |
+| Reintentos del IPN | hasta 4, cada 15 minutos, sólo si el comercio marcó «Reejecución automática»; con un `4xx` o un `5xx` «no se puede realizar» (`rest/V4.0/api/kb/ipn.html`) | La misma notificación dos veces paga una vez. Lo que no llegue lo recoge la consulta (§1.5) |
+| Consulta si el IPN no llega | `Order/Get` con el `orderId`: la lista de transacciones de esa referencia. Una llamada por minuto como mucho (`rest/V4.0/api/playground/Order/Get`) | `python manage.py reconcile_payments`, cada cinco minutos (§1.5) |
 
 ### 1.2 Lo que no cambia con ninguno de los dos
 
@@ -59,41 +66,97 @@ respuesta.
   enterarse de que alguien pagó). Lo que la protege es la firma y un tope de 128 KB por
   mensaje.
 
-### 1.3 Configurar «Mi Cuenta Web»
+### 1.3 Configurar «Mi Cuenta Web» en TEST, desde el panel
 
-1. En el Back Office: Configuración › Tienda › Claves de API REST. Copiar usuario,
-   contraseña, clave pública y clave HMAC-SHA-256 **del mismo entorno** (TEST o
-   PRODUCCIÓN).
-2. En el entorno del servidor:
+Lo hace un usuario MASTER. Las claves se escriben en el panel y se guardan cifradas; no
+hace falta tocar el servidor ni enviárselas a nadie.
 
-   ```
-   PAYMENT_PROVIDER=micuentaweb
-   MICUENTAWEB_SHOP_ID=<usuario>
-   MICUENTAWEB_PASSWORD=<contraseña>
-   MICUENTAWEB_PUBLIC_KEY=<usuario>:<clave pública>
-   MICUENTAWEB_HMAC_KEY=<clave HMAC-SHA-256>
-   MICUENTAWEB_IPN_URL=https://<dominio>/api/payments/micuentaweb/notification/
-   ```
+1. **En el Back Office de Izipay** (`https://secure.micuentaweb.pe/vads-merchant/`):
+   Configuración › Tienda › pestaña **Claves de la API REST**. De la columna de **TEST**
+   se necesitan cuatro: usuario, contraseña (`testpassword_…`), clave pública
+   (`testpublickey_…`) y clave HMAC-SHA-256. Si la pestaña no aparece, hay que pedírsela
+   a Izipay.
+2. **En el panel de la tienda:** Configuración › Integraciones › tarjeta **Izipay · Mi
+   Cuenta Web** › «Configurar». Rellenar:
 
-3. En el Back Office: Configuración › Reglas de notificaciones › «URL de notificación
-   al final del pago», la misma dirección, para TEST y para PRODUCCIÓN.
-4. Si el servidor filtra por dirección de origen, permitir `194.50.38.0/24`. La
-   plataforma no filtra por origen: se fía de la firma.
+   | Campo | Qué va |
+   |---|---|
+   | Usuario | el usuario (8 cifras) |
+   | Clave pública | `<usuario>:<clave pública>`, por ejemplo `12345678:testpublickey_…` |
+   | Contraseña | la de TEST. Tras guardarla no se vuelve a mostrar |
+   | Clave HMAC-SHA-256 | la de TEST. Opcional: la tienda no la usa para confirmar pagos |
+   | Dirección de la API | no tocar (`https://api.micuentaweb.pe`) |
+   | Moneda | `PEN` |
+   | Dirección de notificación | `https://<dominio>/api/payments/micuentaweb/notification/` |
+
+3. **Guardar borrador**, **Probar conexión** y **Activar**, en ese orden. La pantalla
+   debe decir **TEST**. La prueba pide a la pasarela un `formToken` de S/ 1,80 y no cobra
+   nada. Activar este producto desactiva el otro de Izipay.
+4. **En el Back Office:** Configuración › Reglas de notificaciones › «URL de notificación
+   al final del pago» › «Gestionar la regla». En «URL de notificación de la API REST»,
+   la misma dirección del paso 2 en el campo de TEST (y más adelante en el de
+   PRODUCCIÓN). Marcar **Reejecución automática en caso de fallo** y escribir un correo
+   para los avisos.
+5. **Un pago completo de prueba** en la tienda publicada, con una tarjeta de la barra de
+   pruebas del formulario (o de `rest/V4.0/api/kb/test_cards.html`; por ejemplo
+   `4970 1000 0000 0055`, aceptada, y `4970 1000 0000 0113`, rechazada). El pedido debe
+   quedar pagado sin recargar nada a mano, y en el Back Office el estado de la URL de
+   notificación de esa transacción debe decir «Enviada».
+6. Izipay exige cuatro pagos de prueba antes de dar las claves de PRODUCCIÓN; la lista
+   está en la misma pestaña de claves (`rest/V4.0/api/kb/testing_phase.html`).
+
+**Mientras estén activas las claves de TEST, la tienda publicada acepta tarjetas de
+prueba: un pedido «pagado» así no es dinero.** No hay que entregar nada de esos pedidos
+(PAY-TEST-PUBLIC). Las claves de PRODUCCIÓN se activan después, escribiendo `PRODUCCION`.
+
+Si el servidor filtra por dirección de origen, hay que permitir `194.50.38.0/24`. La
+plataforma no filtra por origen: se fía de la firma.
+
+Sin consola, la instalación sigue leyendo `PAYMENT_PROVIDER=micuentaweb` y las variables
+`MICUENTAWEB_*` del servidor; en cuanto la consola tiene una configuración activa, manda
+ella.
 
 ### 1.4 Lo que sólo se puede comprobar con credenciales
 
 Todo lo anterior se prueba contra una pasarela falsa que exige el contrato publicado.
-Que el entorno real acepte exactamente esa petición lo comprueba una prueba que se
-omite sin claves:
+Que el entorno real acepte exactamente esas peticiones lo comprueban dos pruebas que se
+omiten sin claves:
 
 ```
 MICUENTAWEB_SANDBOX_SHOP_ID=<usuario> MICUENTAWEB_SANDBOX_PASSWORD=<contraseña de TEST> \
   python manage.py test store.test_micuentaweb.MiCuentaWebSandboxSmokeTest
 ```
 
-Lo mismo vale para el otro producto (`IzipaySandboxSmokeTest`, IZIPAY-TOKEN-CONTRACT).
-Antes de cobrar de verdad hay que hacer además un pago completo en TEST con la tienda
-publicada: es la única forma de ver llegar una notificación real.
+Una pide un `formToken`; la otra pregunta por una referencia que nadie pagó, que es lo
+que la documentación no describe. Lo mismo vale para el otro producto
+(`IzipaySandboxSmokeTest`, IZIPAY-TOKEN-CONTRACT). Ninguna hace un cargo.
+
+Sigue sin verse hasta que haya claves: una notificación real (si llega con las barras
+escapadas, qué `detailedStatus` trae), la respuesta real de `Order/Get` y el formulario
+dibujado en un navegador.
+
+### 1.5 Si la notificación no llega: preguntar a la pasarela
+
+`python manage.py reconcile_payments` pregunta a «Mi Cuenta Web» (`Order/Get`) por los
+pagos que siguen esperando. Está en `deploy/crontab.example`, cada cinco minutos.
+
+- **A quién pregunta.** Sólo con «Mi Cuenta Web» activo, y sólo por sus intentos que
+  siguen sin respuesta, abiertos hace más de 3 minutos y menos de 2 horas. Los más
+  recientes primero, hasta 20 por pasada, de uno en uno. Si la pasarela no contesta, la
+  pasada termina ahí.
+- **Qué cree.** Una respuesta sobre esta tienda y esta referencia, del mismo entorno
+  que las claves (TEST o PRODUCCIÓN), con **un** cobro pagado (`AUTHORISED` o
+  `CAPTURED`) por el importe completo. Después pasa las mismas comprobaciones que una
+  notificación: importe, moneda, tienda y referencia contra lo guardado.
+- **Qué no decide.** Un reembolso, dos cobros pagados, un pago parcial, otro entorno o
+  una respuesta que no entiende: el intento sigue esperando y el registro dice por qué.
+  Un rechazo sólo cierra el intento pasados 30 minutos, cuando el formulario ya no puede
+  cobrar.
+- **Qué deja escrito.** El intento queda autorizado **sin** firma verificada (la
+  respuesta no trae firma) y hay un registro de auditoría `payment_reconciled` con la
+  empresa del pedido. Si la notificación llega después, no paga dos veces.
+- **Un cliente dice que pagó hace días:** `python manage.py reconcile_payments --hours 72`.
+- **El otro producto de Izipay no tiene esta consulta.** Con él, se comprueba en su panel.
 
 ## 2. Inventario › Equipos: registrar un equipo
 

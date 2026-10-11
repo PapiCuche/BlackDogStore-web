@@ -156,7 +156,9 @@ Alcance: la instalación. Izipay vende dos productos distintos y **se usa uno**:
 de producto o cambiar sus claves, y cuya notificación llega después, ya no se acepta: el
 comprador pagó y el pedido queda sin marcar. La consola cuenta los cobros abiertos en la
 última hora, lo dice y pide escribir `INTERRUMPIR`. Lo sensato es esperar; si no se puede,
-revisa después esos pedidos en el panel de la pasarela (PAY-SWITCH-PENDING, §10).
+revisa después esos pedidos en el panel de la pasarela (PAY-SWITCH-PENDING, §10). Con «Mi
+Cuenta Web» activo y la misma tienda, `python manage.py reconcile_payments` se lo pregunta
+a la pasarela y paga lo que esté cobrado (`pagos-equipos-documentos.md` §1.5).
 
 **Lo que sigue abierto.** IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT no se cierran con esta
 fase: hace falta saber qué producto tiene contratado el propietario y validar sus claves
@@ -337,7 +339,7 @@ a ellas por sí sola: el panel la tiene tomada. Revocarla es lo que la devuelve 
 | IZIPAY-PRODUCT, IZIPAY-TOKEN-CONTRACT | siguen abiertas: falta validar claves de TEST reales, desde la consola |
 | PAY-TENANT-SCOPE | la pasarela es de la instalación, no de cada empresa |
 | FISCAL-TENANT-SCOPE | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa |
-| PAY-SWITCH-PENDING | la consola avisa y exige `INTERRUMPIR`, pero un cobro abierto antes del cambio sigue quedándose sin notificación; resolverlo es conciliar con la pasarela (PAY-RECONCILE) |
+| PAY-SWITCH-PENDING | la consola avisa y exige `INTERRUMPIR`. Un cobro abierto antes del cambio sigue sin notificación; `reconcile_payments` lo recupera si sigue activo «Mi Cuenta Web» con la misma tienda, no tras cambiar de producto |
 | PAY-ROLLBACK | al sustituir unas claves no se conservan las anteriores: no hay «volver a las de antes» en un clic |
 | IZIPAY-MODE-DECLARED | en «SDK web / Checkout» el entorno (TEST o PRODUCCIÓN) lo declara quien configura; nada en las claves lo delata. La dirección del token admite cualquier `https` |
 | SUNAT-SOL-CHECK | la clave SOL sólo se comprueba al emitir |

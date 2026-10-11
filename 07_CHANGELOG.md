@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — IZIPAY-MCW-AUDIT-01
+
+**Added**
+- `python manage.py reconcile_payments`: pregunta a «Mi Cuenta Web» (`Order/Get`) por
+  los pagos que siguen sin notificación y paga los que estén cobrados, por el mismo
+  camino y con las mismas comprobaciones que una notificación. Opciones `--hours` y
+  `--limit`. Línea nueva en `deploy/crontab.example`, cada cinco minutos.
+- Registro de auditoría `payment_reconciled`, con la empresa del pedido, por cada pago
+  confirmado así. El intento queda sin firma verificada.
+- La pasarela falsa de las pruebas exige también el contrato publicado de `Order/Get`.
+- Segunda prueba contra el entorno real (se omite sin claves de TEST): qué contesta
+  `Order/Get` de una referencia que nadie pagó.
+
+**Changed**
+- Notificación de «Mi Cuenta Web»: la firma se comprueba sobre la cadena recibida o,
+  como el ejemplo oficial, con `\/` vuelto `/`. Antes, una notificación auténtica con las
+  barras escapadas se rechazaba.
+- La nota «pagos sin respuesta» de la comprobación de estado dice cómo preguntar a la
+  pasarela.
+
+**Docs**
+- `docs/pagos-equipos-documentos.md` §1: comparación punto por punto con la
+  documentación oficial y su página; pasos para escribir las claves de TEST en el
+  panel; la consulta de pagos sin notificación.
+- DEC-PAY-03. Deuda nueva: PAY-TEST-PUBLIC, KRYPTON-GLUE, PAY-RECONCILE-REHEARSAL.
+
+**Not verified**
+- Nada contra la pasarela real: no hay credenciales. No se hizo ningún cargo.
+
 ## 2026-10-11 — IMPORT-SPLIT-01
 
 **Changed**

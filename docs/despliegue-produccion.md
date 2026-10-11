@@ -533,6 +533,21 @@ Es seguro ejecutarla dos veces a la vez y nunca cuenta una venta dos veces: cada
 reintento lleva el mismo identificador. Sin ninguna de esas integraciones activa
 no hay nada que enviar. Un fallo aquí no afecta a ningún pedido.
 
+### 6.1.3c Pagos sin notificación
+
+Con «Mi Cuenta Web» activo, esta tarea pregunta a la pasarela por los pagos que siguen
+esperando su notificación y paga los que estén cobrados
+([pagos-equipos-documentos.md](pagos-equipos-documentos.md) §1.5). Cada cinco minutos,
+no más seguido:
+
+```
+*/5 * * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py reconcile_payments >> backups/reconcile_payments.log 2>&1
+```
+
+Es seguro ejecutarla dos veces a la vez: un pedido se paga una sola vez. Con el otro
+producto de Izipay, o sin pagos esperando, no hace nada. Lo que imprime es una cuenta:
+ni claves ni datos de compradores.
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
@@ -550,7 +565,7 @@ sólo mira.
 | La base de datos no responde | `pg_isready` |
 | Una actualización se quedó a medias | Migraciones sin aplicar |
 | Una notificación de pago que no coincidía con el pedido | Intentos de pago con fallo de integridad, últimas 24 h |
-| Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó, y desde la tienda no se distingue de una notificación perdida (PAY-RECONCILE) |
+| Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó. Con «Mi Cuenta Web», `reconcile_payments` se lo pregunta a la pasarela cada cinco minutos (§6.1.3c) |
 | WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
 | Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
 | La tienda no puede enviar correo, o no puede cobrar | Sin correo activo (ni en el panel ni en el entorno); sin pasarela activa o sin sus credenciales completas |
@@ -723,10 +738,11 @@ Pendiente, y conviene saberlo:
 - Un inicio de sesión fallido deja en el registro lo que se escribió como usuario
   (nunca la contraseña). Sirve para investigar un ataque; quien escriba su
   contraseña en la casilla del usuario la deja ahí.
-- Si un cliente paga y la notificación de la pasarela no llega, el pedido queda
-  esperando (PAY-RECONCILE). `deploy/healthcheck.sh` anota cuántos pagos siguen sin
-  respuesta, sin dar la alarma: no se distingue de una compra abandonada. Si un cliente
-  dice que pagó, se comprueba en el panel de la pasarela.
+- Si un cliente paga y la notificación de la pasarela no llega, con «Mi Cuenta Web» lo
+  recoge `reconcile_payments` (§6.1.3c); con el otro producto de Izipay el pedido queda
+  esperando. `deploy/healthcheck.sh` anota cuántos pagos siguen sin respuesta, sin dar
+  la alarma: no se distingue de una compra abandonada. Si un cliente dice que pagó hace
+  días: `reconcile_payments --hours 72`, o el panel de la pasarela.
 - Un equipo con serie se vende diciendo cuál: en caja, con el lector o a mano; en un
   pedido web, al entregarlo (SERIAL-PICK-01,
   [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5). Un pedido web

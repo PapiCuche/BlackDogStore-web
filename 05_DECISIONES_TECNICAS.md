@@ -682,8 +682,52 @@ arrancar: es una contradicción del archivo, no una ausencia.
 - **TEST o PRODUCCIÓN lo dicen las claves.** No hay variable de entorno para eso en este
   producto. Un par mezclado impide cobrar y un pago de TEST no paga un pedido con claves
   de producción.
-- Pendiente (PAY-RECONCILE): si la notificación no llega nunca, un pedido cobrado queda
-  esperando. La API tiene `Order/Get`; no se usa todavía.
+- PAY-RECONCILE: resuelto para este producto en DEC-PAY-03.
+
+### DEC-PAY-03 · Si la notificación no llega, se pregunta a la pasarela, y se le cree menos
+
+Auditoría de «Mi Cuenta Web» contra su documentación oficial (2026-10-11). La tabla
+completa, con la página de cada punto, está en `docs/pagos-equipos-documentos.md` §1.1.
+
+- **La notificación sigue siendo la que paga.** Pero la pasarela la da por fallida si
+  la tienda no contesta con `200`–`206` o `301`/`302`/`303`/`307`/`308`, la repite como
+  mucho cuatro veces y sólo si el comercio lo activó. Después, el dinero está cobrado y
+  el pedido espera. `Order/Get` existe para eso.
+- **Un solo juez.** `reconcile_payments` no decide si un pedido se paga: reduce la
+  respuesta de `Order/Get` al mismo resultado que da una notificación y lo entrega a
+  `_SignedNotificationMixin`. Mismas comprobaciones, mismo bloqueo de fila, un solo pago.
+- **Se lee con más desconfianza que una notificación**, porque trae menos: no tiene
+  firma ni `orderStatus`, sólo transacciones. Pagado es **un** cobro (`DEBIT`) con
+  `status` `PAID` y `detailedStatus` `AUTHORISED` o `CAPTURED`, por el importe completo,
+  de esta tienda, esta referencia y este entorno. `PAID` lo llevan también una
+  verificación de tarjeta y una preautorización, que no se capturan: no valen.
+- **Lo que no se puede decidir no se decide.** Reembolso, dos cobros, pago parcial, otro
+  entorno, error de la pasarela: el intento sigue esperando y se registra el motivo. No
+  se interpreta ningún código de error como «no hay nada»: la documentación no dice cuál
+  lo es.
+- **Un rechazo temprano no es una respuesta.** El formulario vive 15 minutos y deja
+  reintentar con la misma referencia; un rechazo sólo cierra el intento pasados 30.
+- **No se llama firma a lo que no lo es.** El intento pagado así queda con
+  `signature_verified = False` y deja `payment_reconciled` en la auditoría, con la
+  empresa del pedido.
+- **Sin estado nuevo ni migración.** La ventana (de 3 minutos a 2 horas), el tope por
+  pasada (20, los más recientes primero) y la frecuencia (cada 5 minutos) acotan las
+  llamadas: como mucho 24 por un intento abandonado. La documentación recomienda una
+  consulta por minuto y esperar la respuesta; se entiende por referencia, y las llamadas
+  van de una en una.
+- **La firma del IPN, como el ejemplo oficial.** `ipn.php` calcula el HMAC tras cambiar
+  `\/` por `/`. Se acepta la cadena recibida o esa lectura, y se interpreta la que cubrió
+  la firma: nunca se lee nada sin firmar.
+- **Lo que se dejó como estaba, a propósito.** Los códigos con que responde la
+  notificación (un mensaje que no se cree recibe `4xx`: la pasarela avisa al comercio,
+  que es lo que conviene). El guion se inserta sin `embedded-form-glue`: la regla es no
+  añadir dependencias. La CSP no restringe guiones (FE-AUTH-04), así que no hay orígenes
+  que abrir.
+- **No resuelve:** el otro producto de Izipay (no tiene esta consulta); un cambio de
+  producto con cobros abiertos (PAY-SWITCH-PENDING: hay que volver a activar «Mi Cuenta
+  Web» para poder preguntar); y una tienda publicada con claves de TEST, que da por
+  pagado lo que se paga con tarjetas de prueba (PAY-TEST-PUBLIC, decisión del
+  propietario).
 
 ### DEC-IMPORT-SPLIT-01 · Tres cargas, cada una con su plantilla de una hoja
 

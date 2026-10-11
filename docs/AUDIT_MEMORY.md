@@ -584,7 +584,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | MEAS-CONSENT-LOG | MEDICIÓN | sin registro de consentimientos en el servidor (sólo el del pedido) | Baja | requisito legal, si aparece |
 | PAY-TENANT-SCOPE | PAGOS | la pasarela es de la instalación: checkout, rutas de notificación y frontend asumen un comercio | Media | decisión de producto |
 | FISCAL-TENANT-SCOPE | FISCAL | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa | Media | certificado y credenciales reales |
-| PAY-SWITCH-PENDING | PAGOS | MITIGADO: apagar, revocar, cambiar de producto o de claves con cobros abiertos en la última hora exige escribir `INTERRUMPIR`; el cobro abierto sigue quedándose sin notificación | Media | PAY-RECONCILE |
+| PAY-SWITCH-PENDING | PAGOS | MITIGADO: apagar, revocar, cambiar de producto o de claves con cobros abiertos en la última hora exige escribir `INTERRUMPIR`. Con «Mi Cuenta Web», una contraseña renovada en la misma tienda ya no pierde el cobro: lo recoge `reconcile_payments`. Tras cambiar de producto o de tienda sigue perdiéndose hasta volver a activar el anterior y preguntar | Media | — |
 | PAY-ROLLBACK | PAGOS | sustituir claves no conserva las anteriores | Baja | — |
 | IZIPAY-MODE-DECLARED | PAGOS | en «SDK web / Checkout» el entorno lo declara quien configura; `token_url` admite cualquier https | Baja | claves reales |
 | SUNAT-SOL-CHECK | FISCAL | la prueba de la consola no comprueba la clave SOL (sólo al emitir) | Baja | — |
@@ -608,7 +608,10 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | FISCAL-SERVICE | FISCAL | PENDIENTE: un pago de servicio (`RepairPayment`) no produce comprobante electrónico | Por decidir | decisión fiscal |
 | SVC-POS-DRAFT | FRONTEND | la recepción a medio llenar se pierde al volver a «Productos»; el modo servicio depende de que cargue el contexto de la caja | Baja | — |
 | SVC-ELIGIBLE-COST | SERVICE | la lista de candidatos resuelve capacidades y alcance por cada miembro del personal; el camino de asignar ya consulta a una sola persona | Baja | — |
-| PAY-RECONCILE | PAYMENTS | PENDIENTE: si la notificación (IPN) no llega nunca, un pedido cobrado queda en espera; no se consulta a la pasarela (`Order/Get` en «Mi Cuenta Web») ni hay tarea que lo detecte | Media | credenciales |
+| PAY-RECONCILE | PAYMENTS | IMPLEMENTADO para «Mi Cuenta Web» (DEC-PAY-03): `reconcile_payments` pregunta `Order/Get` y paga por el mismo camino que una notificación. PENDIENTE para «SDK web / Checkout», que no tiene esa consulta. Sin probar contra la pasarela real | Media | credenciales |
+| PAY-TEST-PUBLIC | PAYMENTS | RIESGO: con claves de TEST activas, la tienda publicada marca como pagado lo que se paga con tarjetas de prueba (públicas); el intento no guarda en qué entorno se pagó. Hoy sólo lo dice la consola | Media | decisión del propietario |
+| KRYPTON-GLUE | FRONTEND | la documentación pide `embedded-form-glue` para React; se inserta el guion oficial directamente. Sin comprobar en un navegador contra la pasarela real | Baja | credenciales |
+| PAY-RECONCILE-REHEARSAL | DEPLOY | `reconcile_payments` está en `crontab.example` pero no en `deploy/rehearsal.sh` | Baja | — |
 | NOTE-LINE-DISCOUNT | DOCUMENTS | PENDIENTE: la venta guarda un precio por línea y el descuento del pedido; la columna «Dscto.» de la nota muestra 0.00. La atribución por línea de una promoción sólo existe en el camino fiscal | Baja | — |
 | UNIT-IMPORT-MAPPING | INVENTORY | PROPUESTA: la carga de equipos sólo lee la plantilla (cabeceras conocidas); no tiene asignación manual de columnas ni perfiles como la de stock | Baja | — |
 | DOC-FISCAL-STYLE | DOCUMENTS | PROPUESTA: las representaciones fiscales conservan su trazado propio (regulado); comparten logotipo e identidad pero no el módulo `document_style` | Baja | — |
