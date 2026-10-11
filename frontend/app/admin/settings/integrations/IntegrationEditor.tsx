@@ -131,6 +131,11 @@ export function IntegrationEditor({
   const [revokeWord, setRevokeWord] = useState("");
   const [enableWord, setEnableWord] = useState("");
   const [interruptWord, setInterruptWord] = useState("");
+  // What the server asked to be typed when a change was requested (it found
+  // out then, not before: a gateway that did not answer).
+  const [demanded, setDemanded] = useState("");
+  // A change the server would not make, in its own words. Nothing was changed.
+  const [blocked, setBlocked] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -153,6 +158,7 @@ export function IntegrationEditor({
     setRevokeWord("");
     setEnableWord("");
     setInterruptWord("");
+    setDemanded("");
     setFieldErrors({});
   }, []);
 
@@ -169,14 +175,23 @@ export function IntegrationEditor({
   async function run(action: () => Promise<void>) {
     setWorking(true);
     setError(null);
+    setBlocked("");
     setNotice("");
     setFieldErrors({});
     try {
       await action();
     } catch (err) {
+      if (err instanceof IntegrationError && err.code === "open_payments") {
+        // Refused by the server: charges are open. Nothing changed and nothing
+        // on screen is stale, so what was typed stays where it is.
+        setBlocked(err.message);
+        return;
+      }
       setError(err);
       if (err instanceof IntegrationError) {
         setFieldErrors(err.fields);
+        // The server could not verify what the change would cut off: it has to be typed.
+        if (err.fields.acknowledge) setDemanded(err.fields.acknowledge);
         if (err.status === 409) {
           // Somebody else got there first: what is on screen is no longer what is stored.
           await fetchIntegration(id, companyId).then(show, () => undefined);
@@ -203,7 +218,8 @@ export function IntegrationEditor({
   // Something is in flight that stopping or replacing what runs would cut off.
   const interruption = data.interruption;
   const interrupts = Boolean(interruption && interruptWord !== interruption.word);
-  const acknowledge = interruption ? interruptWord : "";
+  const acknowledge = interruption || demanded ? interruptWord : "";
+  const interruptionMessage = interruption?.message ?? demanded;
   const mode = (draft ?? active)?.mode || data.env?.mode || "";
   const locked = working || !data.store_available;
   const label = (name: string) => fields.find((field) => field.name === name)?.label ?? name;
@@ -338,9 +354,22 @@ export function IntegrationEditor({
         </p>
       ) : null}
 
-      {interruption ? (
+      {blocked ? (
+        <div role="alert" className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3">
+          <p className="text-sm font-semibold text-danger">El cambio no se hizo.</p>
+          <p className="mt-1 text-sm text-danger">{blocked}</p>
+        </div>
+      ) : null}
+
+      {data.change_notice && !interruption ? (
+        <p role="status" className="rounded-xl border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+          {data.change_notice.message}
+        </p>
+      ) : null}
+
+      {interruptionMessage ? (
         <div role="alert" className="rounded-xl border border-warning-border bg-warning-surface px-4 py-3">
-          <p className="text-sm text-warning">{interruption.message}</p>
+          <p className="text-sm text-warning">{interruptionMessage}</p>
           <label htmlFor={`integration-${id}-interrupt`} className={`${LABEL} mt-3`}>Confirmación de la interrupción</label>
           <input
             id={`integration-${id}-interrupt`} value={interruptWord} autoComplete="off" spellCheck={false}

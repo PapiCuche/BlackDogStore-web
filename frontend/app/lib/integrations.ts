@@ -76,6 +76,12 @@ export type Integration = {
    * something already in flight (a buyer at the card form). The word is typed.
    */
   interruption: { word: string; message: string } | null;
+  /**
+   * Something to read before changing this integration that asks for no word:
+   * the server decides when the change is asked for (open charges it will ask
+   * the gateway about first).
+   */
+  change_notice?: { count: number; message: string } | null;
   /** False when the server has no root key: nothing can be stored or read. */
   store_available: boolean;
   fields?: IntegrationField[];
@@ -104,14 +110,17 @@ export type IntegrationTestResult = {
 
 export class IntegrationError extends Error {
   readonly status: number;
+  /** A word the server tells a refusal by ('open_payments': a change it would not make), or ''. */
+  readonly code: string;
   /** Per-field messages of a 400. */
   readonly fields: Record<string, string>;
 
-  constructor(message: string, status: number, fields: Record<string, string> = {}) {
+  constructor(message: string, status: number, fields: Record<string, string> = {}, code = "") {
     super(message);
     this.name = "IntegrationError";
     this.status = status;
     this.fields = fields;
+    this.code = code;
   }
 }
 
@@ -130,7 +139,9 @@ async function read<T>(res: Response, fallback: string): Promise<T> {
       fields[name] = String(message);
     }
   }
-  throw new IntegrationError(body?.detail ? String(body.detail) : fallback, res.status, fields);
+  throw new IntegrationError(
+    body?.detail ? String(body.detail) : fallback, res.status, fields, typeof body?.code === "string" ? body.code : "",
+  );
 }
 
 export async function fetchIntegrations(): Promise<{ results: IntegrationSummary[]; store_available: boolean }> {
