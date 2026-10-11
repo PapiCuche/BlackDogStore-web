@@ -54118,7 +54118,9 @@ class H411CredentialChannelTest(M8ServiceBase):
         # de cotización, enlace de seguimiento (estado, revelar, reemplazar,
         # desactivar), desvincular cuenta, consentimiento y reintento de
         # WhatsApp, y configuración de mensajería.
-        self.assertEqual(internal, 83)
+        # 87 desde SERIAL-PICK-01: consulta de equipo en caja, y consulta,
+        # identificación y retiro del equipo de un pedido.
+        self.assertEqual(internal, 87)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------
