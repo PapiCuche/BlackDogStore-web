@@ -34,7 +34,7 @@ const file = (name: string, type = 'image/png', bytes = 10) =>
 
 const product: admin.AdminProduct = {
   id: 7, name: 'Teléfono', slug: 'telefono', description: '', price: '100.00', inventory: 3,
-  image_url: '', category_id: null, category_name: null, is_active: true,
+  image_url: '', category_id: null, category_name: null, is_active: true, is_published_online: true,
   created_at: '', updated_at: '', images: [],
 };
 

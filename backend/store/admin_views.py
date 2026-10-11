@@ -440,7 +440,8 @@ class AdminAuditLogListView(APIView):
 
 _LOW_STOCK_THRESHOLD = 5
 
-_AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory', 'image_url', 'category_id', 'is_active')
+_AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory', 'image_url', 'category_id', 'is_active',
+                             'is_published_online')
 
 
 def _product_snapshot(product):
@@ -499,6 +500,13 @@ class AdminProductListView(APIView):
             products = products.filter(is_active=True)
         elif is_active_param == 'false':
             products = products.filter(is_active=False)
+
+        # PRODUCT-DESTINATION-01: «en la web» o «sólo stock interno».
+        published_param = request.query_params.get('is_published_online', '').strip().lower()
+        if published_param == 'true':
+            products = products.filter(is_published_online=True)
+        elif published_param == 'false':
+            products = products.filter(is_published_online=False)
 
         stock_param = request.query_params.get('stock', '').strip().lower()
         if stock_param == 'in_stock':
@@ -582,6 +590,7 @@ class AdminProductListView(APIView):
                 'initial_stock_branch_id': branch.pk if branch else None,
                 'category_id': product.category_id,
                 'is_active': product.is_active,
+                'is_published_online': product.is_published_online,
             },
             request=request,
             company=company,

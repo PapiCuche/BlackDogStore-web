@@ -104,6 +104,12 @@ export type AdminProduct = {
   category_id: number | null;
   category_name: string | null;
   is_active: boolean;
+  /**
+   * PRODUCT-DESTINATION-01. `false` = «sólo stock interno»: en uso dentro de la
+   * empresa (caja, inventario, taller) y fuera de la tienda en línea. Otro dato
+   * que `is_active`.
+   */
+  is_published_online: boolean;
   created_at: string;
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
@@ -239,6 +245,7 @@ export async function createAdminProduct(data: {
   image_url?: string;
   category?: number | null;
   is_active?: boolean;
+  is_published_online?: boolean;
 }): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/`, {
     method: 'POST',
@@ -274,6 +281,7 @@ export async function patchAdminProduct(
     image_url: string;
     category: number | null;
     is_active: boolean;
+    is_published_online: boolean;
   }>,
 ): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`, {
@@ -317,8 +325,10 @@ export async function adjustInventory(
   return res.json();
 }
 
-export async function fetchAdminCategories(): Promise<AdminCategory[]> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/categories/`);
+/** Las categorías de una empresa. Sin `companyId`, las de la empresa de quien pregunta. */
+export async function fetchAdminCategories(companyId?: number | null): Promise<AdminCategory[]> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : '';
+  const res = await fetchWithAuth(`${API_BASE}/admin/categories/${qs}`);
   if (res.status === 403) throw new Error('No tienes permisos para ver categorías.');
   if (!res.ok) throw new Error('No se pudieron cargar las categorías.');
   return res.json();

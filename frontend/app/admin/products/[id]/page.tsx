@@ -80,7 +80,7 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
             eyebrow="Catálogo"
             title={product.name}
             description={product.slug}
-            actions={<ProductStatusBadge isActive={product.is_active} />}
+            actions={<ProductStatusBadge isActive={product.is_active} publishedOnline={product.is_published_online} />}
           />
         </div>
 

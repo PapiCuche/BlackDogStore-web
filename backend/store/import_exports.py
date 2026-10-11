@@ -41,6 +41,7 @@ PRODUCT_TEMPLATE_HEADERS = [
     'Categoría',
     'Imagen principal',
     'Imágenes',
+    'Destino',
 ]
 
 PRODUCT_TEMPLATE_HELP = [
@@ -52,7 +53,11 @@ PRODUCT_TEMPLATE_HELP = [
     'Debe existir, salvo que se active «crear las que falten».',
     'Opcional. Nombre del archivo que verá el catálogo: telefono-frontal.webp',
     'Opcional. Nombres de archivo separados por | : frontal.webp|trasera.webp',
+    'Opcional. «Publicar en e-commerce» o «Solo stock interno». Vacío: lo nuevo se publica y lo existente no cambia.',
 ]
+
+#: How many rows below the example get the drop-downs and the text format.
+_TEMPLATE_ROWS = 500
 
 #: What the help row says under «Nombre». A file that still carries the help
 #: row is the template being used as intended; that row is not a product.
@@ -69,14 +74,26 @@ PRODUCT_TEMPLATE_EXAMPLE = [
     'Teléfonos',
     'iphone16-front.webp',
     'iphone16-front.webp|iphone16-back.webp|iphone16-side.webp',
+    'Publicar en e-commerce',
 ]
 
 #: Sheets of the template that explain and are never read as products.
-HELP_SHEETS = frozenset({'instrucciones', 'ejemplo', 'ejemplos', 'ayuda'})
+#: «Categorías» lists the company's categories for the drop-down: a list of
+#: names, not of products.
+HELP_SHEETS = frozenset({'instrucciones', 'ejemplo', 'ejemplos', 'ayuda', 'categorias'})
 
 
 def is_template_help_row(fields: dict) -> bool:
-    return (fields.get('name') or '').strip() == _HELP_UNDER_NAME
+    """
+    The row under the headers that says what each column is.
+
+    «Obligatorio.» as this template writes it, and «OBLIGATORIO» as a copy
+    edited by hand does: a help row is recognised by what it says under «Nombre»,
+    not by its punctuation. No product is called that.
+    """
+    from .import_formats import normalize_header
+
+    return normalize_header(fields.get('name') or '') == 'obligatorio'
 
 
 def is_template_example_row(fields: dict) -> bool:
@@ -163,10 +180,10 @@ def _instructions_sheet(workbook):
         sheet.cell(row=row, column=2).alignment = Alignment(wrap_text=True, vertical='top')
         sheet.row_dimensions[row].height = max(30, 15 * (1 + len(body) // 75))
 
-    title(1, 'Cómo cargar productos con sus imágenes')
+    title(1, 'Cómo cargar productos, con su categoría, su destino y sus imágenes')
     note = sheet.cell(
         row=2, column=2,
-        value='Esta hoja y la hoja «Ejemplo» son de ayuda: no se importan. '
+        value='Esta hoja, «Categorías» y «Ejemplo» son de ayuda: no se importan. '
               'Los productos se escriben en la hoja «Productos».',
     )
     note.font = Font(italic=True, color='6B7280')
@@ -174,7 +191,25 @@ def _instructions_sheet(workbook):
 
     separator = rules['separator']
     formats = ', '.join(rules['formats'])
+    from .import_formats import DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE
+
     steps = [
+        ('«Categoría» se elige de una lista',
+         'La hoja «Categorías» trae las de tu empresa. Una categoría que no está en la lista '
+         'debe crearse antes en Productos → Categorías, o activar «crear las categorías que '
+         'falten» al importar.'),
+        (f'«Destino»: {DESTINATION_LABELS[DESTINATION_ONLINE]}',
+         'El producto aparece en la tienda en línea y se puede comprar por la web.'),
+        (f'«Destino»: {DESTINATION_LABELS[DESTINATION_INTERNAL]}',
+         'El producto NO aparece en la tienda en línea ni se puede comprar por la web. Sigue '
+         'en inventario y se vende en caja y en servicio técnico, según los permisos de cada '
+         'persona.'),
+        ('«Destino» vacío no cambia nada',
+         'Un producto nuevo se publica en la tienda en línea. Uno que ya existe se queda como '
+         'estaba. Después se cambia desde la ficha del producto.'),
+        ('Las imágenes son opcionales',
+         'Puedes dejar «Imagen principal» e «Imágenes» vacías y añadir o cambiar las fotos '
+         'después, desde la ficha del producto.'),
         ('Las imágenes NO se pegan dentro de Excel',
          'Una imagen pegada en una celda no se puede leer. No insertes fotos en este archivo.'),
         ('Excel guarda sólo los NOMBRES de archivo',
@@ -257,9 +292,85 @@ def _example_sheet(workbook):
     ).font = Font(italic=True, color='6B7280')
 
 
-def product_template_bytes() -> bytes:
+def _company_category_names(company) -> list[str]:
+    """The names a row may write under «Categoría»: this company's, active, in order. Never a fixed list."""
+    from .models import Category
+
+    if company is None:
+        return []
+    return list(
+        Category.objects.filter(company=company, is_active=True).order_by('name').values_list('name', flat=True)
+    )
+
+
+def _categories_sheet(workbook, names):
+    from openpyxl.styles import Alignment, Font
+
+    sheet = workbook.create_sheet('Categorías')
+    _header_row(sheet, ['CATEGORÍAS DE TU EMPRESA', 'CÓMO SE USAN'])
+    sheet.cell(row=2, column=1, value='Nombre exacto de la categoría').font = Font(size=8, italic=True, color='6B7280')
+    note = sheet.cell(row=2, column=2, value=(
+        'Son las categorías activas de tu empresa el día que descargaste esta plantilla. '
+        'En la hoja «Productos», la columna «Categoría» las ofrece en una lista. '
+        'Para una categoría nueva, créala antes en Productos → Categorías, o escribe su nombre '
+        'y activa «crear las categorías que falten» al importar. Esta hoja no se importa.'
+    ))
+    note.font = Font(size=8, italic=True, color='6B7280')
+    note.alignment = Alignment(wrap_text=True, vertical='top')
+    for offset, name in enumerate(names):
+        cell = sheet.cell(row=3 + offset, column=1, value=name)
+        # A name is text whatever it looks like: «=1+1» is a category somebody
+        # typed, not a formula for Excel to run when the file is opened.
+        cell.data_type = 's'
+    if not names:
+        sheet.cell(row=3, column=2, value='Tu empresa todavía no tiene categorías.').font = Font(italic=True, color='6B7280')
+    sheet.freeze_panes = 'A3'
+    _autosize(sheet, [36, 90])
+
+
+def _product_drop_downs(sheet, category_count: int):
+    """
+    The lists of «Categoría» and «Destino», and codes kept as text.
+
+    The category list HELPS and does not forbid: a name that is not in it is
+    how «crear las que falten» is used. The destination list does forbid: it
+    has two values and the importer accepts no third.
+    """
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    from .import_formats import DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE
+
+    first, last = 4, 3 + _TEMPLATE_ROWS
+    if category_count:
+        categories = DataValidation(
+            type='list', formula1=f"'Categorías'!$A$3:$A${2 + category_count}",
+            allow_blank=True, showErrorMessage=False,
+        )
+        categories.add(f'F{first}:F{last}')
+        sheet.add_data_validation(categories)
+
+    choices = ','.join((DESTINATION_LABELS[DESTINATION_ONLINE], DESTINATION_LABELS[DESTINATION_INTERNAL]))
+    destination = DataValidation(
+        type='list', formula1=f'"{choices}"', allow_blank=True, showErrorMessage=True,
+        errorTitle='Destino', error='Elige «Publicar en e-commerce» o «Solo stock interno», o deja la celda vacía.',
+    )
+    destination.add(f'I{first}:I{last}')
+    sheet.add_data_validation(destination)
+
+    # A barcode read as a number loses its leading zeros and gains an «E+11».
+    # On the COLUMN, not cell by cell: five hundred formatted empty cells are
+    # five hundred «fila vacía» in every preview.
+    for column in ('A', 'B'):
+        sheet.column_dimensions[column].number_format = '@'
+
+
+def product_template_bytes(company=None) -> bytes:
     """
     A blank, VALID product template — that also explains how images travel.
+
+    `company` is whose template it is: its «Categorías» sheet lists THAT
+    company's categories, read when it is downloaded. Without one the sheet is
+    there and empty.
 
     Deliberately not a copy of the owner's 18-column sheet. That file carries
     two rows of headers, twenty data validations openpyxl cannot read back, and
@@ -270,11 +381,11 @@ def product_template_bytes() -> bytes:
     The importer still reads that file. This is what we ASK for; that is what we
     ACCEPT.
 
-    THREE SHEETS, AND ONLY THE FIRST IS DATA. «Productos» comes first because
+    FOUR SHEETS, AND ONLY THE FIRST IS DATA. «Productos» comes first because
     a preview without a chosen sheet reads the first one. Its help row and its
-    example row are recognised and skipped, and «Instrucciones» and «Ejemplo»
-    are never offered as product sheets: uploading the template exactly as it
-    was downloaded creates nothing.
+    example row are recognised and skipped, and «Categorías», «Instrucciones»
+    and «Ejemplo» are never offered as product sheets: uploading the template
+    exactly as it was downloaded creates nothing.
     """
     from openpyxl.styles import Alignment, Font
 
@@ -293,8 +404,11 @@ def product_template_bytes() -> bytes:
         cell.font = Font(italic=True, color='6B7280')
 
     sheet.freeze_panes = 'A3'
-    _autosize(sheet, [20, 18, 42, 40, 16, 20, 34, 58])
+    _autosize(sheet, [20, 18, 42, 40, 16, 24, 34, 58, 26])
 
+    categories = _company_category_names(company)
+    _product_drop_downs(sheet, len(categories))
+    _categories_sheet(workbook, categories)
     _instructions_sheet(workbook)
     _example_sheet(workbook)
 

@@ -41,7 +41,8 @@ class TemplateContentTest(TestCase):
     def test_the_first_sheet_is_the_one_that_gets_imported(self):
         workbook = book()
 
-        self.assertEqual(workbook.sheetnames, ['Productos', 'Instrucciones', 'Ejemplo'])
+        # PRODUCT-DESTINATION-01: «Categorías» lists the company's own, for the drop-down.
+        self.assertEqual(workbook.sheetnames, ['Productos', 'Categorías', 'Instrucciones', 'Ejemplo'])
         sheet = workbook['Productos']
         self.assertEqual([c.value for c in sheet[1]], import_exports.PRODUCT_TEMPLATE_HEADERS)
         example = dict(zip(import_exports.PRODUCT_TEMPLATE_HEADERS, [c.value for c in sheet[3]]))

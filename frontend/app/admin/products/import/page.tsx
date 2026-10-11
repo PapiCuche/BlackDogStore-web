@@ -29,6 +29,7 @@ import { DashboardSection } from "../../components/dashboard-ui";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   CountsBar,
+  DefaultCategoryField,
   HistoryTable,
   ImageHelp,
   ImportImagesField,
@@ -38,8 +39,10 @@ import {
   PreviewTable,
   STEP_LABELS_PRODUCTS,
   Stepper,
+  destinationLabel,
   rowImagesLabel,
 } from "../../components/ImportWizard";
+import { fetchAdminCategories, type AdminCategory } from "../../../lib/admin";
 import {
   applyImport,
   fetchImportHistory,
@@ -69,6 +72,14 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   const [mapping, setMapping] = useState<Record<string, number>>({});
   const [headerRow, setHeaderRow] = useState(1);
   const [createCategories, setCreateCategories] = useState(false);
+  // PRODUCT-DESTINATION-01: las categorías de ESTA empresa, leídas del
+  // servidor, y la elegida para las filas que no traen una.
+  const [categories, setCategories] = useState<AdminCategory[] | null>([]);
+  // Guardada CON su empresa: al cambiar de empresa la elegida deja de valer
+  // sola, porque era una categoría de la otra.
+  const [chosenCategory, setChosenCategory] = useState<{ companyId: number | null; id: number } | null>(null);
+  const defaultCategory = chosenCategory && chosenCategory.companyId === companyId ? chosenCategory.id : null;
+  const setDefaultCategory = (id: number | null) => setChosenCategory(id === null ? null : { companyId, id });
   const [mode, setMode] = useState<"upsert" | "create_only">("upsert");
   const [images, setImages] = useState<File[]>([]);
   const [imagesZip, setImagesZip] = useState<File | null>(null);
@@ -83,6 +94,14 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
   }, [companyId]);
 
   useEffect(loadHistory, [loadHistory]);
+
+  useEffect(() => {
+    let alive = true;
+    fetchAdminCategories(companyId)
+      .then((rows) => { if (alive) setCategories(rows.filter((row) => row.is_active !== false)); })
+      .catch(() => { if (alive) setCategories(null); });
+    return () => { alive = false; };
+  }, [companyId]);
 
   function reset() {
     setStep(0);
@@ -127,7 +146,7 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
         sheetName: sheet.name,
         headerRow,
         mapping,
-        options: { mode, create_missing_categories: createCategories },
+        options: { mode, create_missing_categories: createCategories, default_category_id: defaultCategory },
         images,
         imagesZip,
       });
@@ -299,8 +318,10 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
                   — si lo dejas apagado, una categoría desconocida es un error de fila
                 </span>
               </label>
+              <DefaultCategoryField categories={categories} value={defaultCategory} onChange={setDefaultCategory} />
               <p className="text-muted">
-                Una celda vacía nunca borra lo que ya está guardado.
+                Una celda vacía nunca borra lo que ya está guardado. En «Destino», vacío publica lo nuevo y
+                deja lo existente como está.
               </p>
             </div>
 
@@ -369,7 +390,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               { key: "code", label: "Código", get: (r) => text(r, "code") },
               { key: "barcode", label: "EAN", get: (r) => text(r, "barcode") },
               { key: "name", label: "Nombre", get: (r) => text(r, "name") },
-              { key: "category", label: "Categoría", get: (r) => text(r, "category") },
+              { key: "category", label: "Categoría", get: (r) => text(r, "category") || text(r, "category_default") },
+              { key: "destination", label: "Destino", get: (r) => destinationLabel(r) },
               { key: "price", label: "Precio", get: (r) => text(r, "price") },
               { key: "images", label: "Imágenes", get: (r) => rowImagesLabel(r) },
             ]}

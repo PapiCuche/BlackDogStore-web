@@ -361,6 +361,8 @@ class AdminProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'description', 'price', 'inventory',
             'image_url', 'category_id', 'category_name', 'is_active',
+            # PRODUCT-DESTINATION-01: offered on the public shop, or internal stock only.
+            'is_published_online',
             # Read-only here. How a product is counted changes only through
             # `stock_unit_services.set_serialized`, which checks the shelf.
             'is_serialized', 'requires_imei',
@@ -404,6 +406,9 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
         queryset=Category.objects.all(), required=False, allow_null=True, default=None
     )
     is_active = serializers.BooleanField(required=False, default=True)
+    # No `default`: a PATCH that does not mention it must not move the product
+    # back to the web. A new product without it takes the model's default.
+    is_published_online = serializers.BooleanField(required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -418,7 +423,8 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields = ['name', 'slug', 'description', 'price', 'inventory', 'image_url', 'category', 'is_active']
+        fields = ['name', 'slug', 'description', 'price', 'inventory', 'image_url', 'category', 'is_active',
+                  'is_published_online']
         extra_kwargs = {
             'slug': {'validators': []},
         }
@@ -473,6 +479,12 @@ class AdminProductWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         company = self._company
+
+        # A request that does not MENTION the destination does not decide it. An
+        # HTML form leaves out what it does not have, and a boolean field reads
+        # that absence as False — which here would hide the product from the web.
+        if 'is_published_online' not in getattr(self, 'initial_data', {}):
+            attrs.pop('is_published_online', None)
 
         # Defence in depth: the queryset above already rejects a foreign category,
         # but the invariant is stated here too so no code path depends on the

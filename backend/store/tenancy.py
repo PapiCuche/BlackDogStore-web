@@ -740,7 +740,12 @@ def company_storefront_products(company):
     if company is None:
         return Product.objects.none()
 
-    qs = Product.objects.filter(company=company, is_active=True)
+    # Active AND published: «sólo stock interno» (PRODUCT-DESTINATION-01) is in
+    # use inside the company and does not exist for the public shop. Every
+    # public surface reads from here — list, detail, search, cart, reviews, the
+    # app's API — so this line is where that is true. `Product.is_sold_online`
+    # says the same of one product already in hand.
+    qs = Product.objects.filter(company=company, is_active=True, is_published_online=True)
     branch = company_fulfillment_branch(company)
     if branch is None:
         return qs.annotate(available_stock=Value(0, output_field=IntegerField()))
