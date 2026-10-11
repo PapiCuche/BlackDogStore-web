@@ -3,6 +3,58 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — SERIAL-PICK-01
+
+**Changed**
+- Caja: un producto con serie no se vende sin identificar el equipo. Se escanea su IMEI
+  o su serie, o se escribe a mano cuando el lector no lee. Antes se vendía el más antiguo
+  de la sucursal sin dejar elegir.
+- A mano: el IMEI se valida (15 dígitos y dígito de control), se muestra qué equipo es y
+  se confirma. Queda registrado que se escribió a mano y quién lo hizo.
+- Pedido web: el equipo que se entrega se identifica en la ficha del pedido. Sin eso el
+  pedido no pasa a «enviado» ni a «entregado» (409). Puede ser otro equipo del mismo
+  modelo que el que apartó el pago.
+- La nota de venta y el ticket imprimen el equipo identificado, y ninguno antes.
+
+**Added**
+- `OrderUnit`: qué equipo, de qué pedido, cómo se identificó, quién y cuándo
+  (`0116_serial_pick`). Auditoría `order_unit_identified` y `order_unit_forgotten`.
+- `GET /api/admin/pos/units/lookup/` y `GET /api/v1/internal/<empresa>/sales/pos/units/lookup/`.
+- `/api/admin/orders/<id>/units/…` y `/api/v1/internal/<empresa>/orders/<id>/units/…` para
+  consultar (GET `lookup/`), identificar (POST) y quitar (DELETE) el equipo de un pedido.
+  El detalle del pedido dice qué falta y qué se puede quitar todavía.
+- La venta de caja acepta `units: [{id, method}]` por línea y la respuesta los devuelve.
+- Los componentes de un combo dicen si llevan serie.
+
+**Removed**
+- `StockUnit.price_override`, el «precio propio» de un equipo. Se cobra el precio del
+  producto. El campo desaparece del formulario de equipos y de la API. La columna sigue
+  en la base una versión más (SERIAL-PRICE-DROP).
+
+**Migración**
+- Lo ya vendido se copia como «asignado por el sistema (regla anterior)» para que sus
+  documentos se reimpriman igual. Un pedido web pagado y aún sin entregar no se copia:
+  pedirá identificar su equipo.
+
+**De la revisión independiente, antes de publicar el cambio**
+- Un equipo identificado y devuelto antes de entregarse seguía contando como
+  identificado: el pedido se podía entregar nombrando un equipo que estaba en el estante.
+- Había pedidos que no se podían entregar nunca: si el equipo apartado se devolvía, o si
+  el producto pasó a llevar serie después de pagarse el pedido.
+- La migración borraba una columna que la versión anterior, aún en línea durante el
+  despliegue, seguía leyendo: errores en caja, inventario y confirmación de pagos hasta
+  levantar la versión nueva. La columna se conserva una versión más.
+- La entrega bloqueaba en orden contrario a una venta: podían interbloquearse.
+- Devolver un pedido entregado a «en preparación» permitía cambiarle el equipo.
+- La app (API v1) recibía la negativa pero no tenía cómo identificar el equipo.
+- Con dos pedidos del mismo modelo en espera, la caja del otro pedido se rechazaba como
+  «vendida».
+- Una negativa nombraba la sucursal donde estaba el equipo.
+- Una serie de 15 dígitos no se encontraba, y una serie numérica no se podía escribir a mano.
+- Un código pegado después de una lectura heredaba el ritmo del lector.
+
+No desplegado.
+
 ## 2026-10-08 — REGISTER-RACE-01
 
 **Fixed**

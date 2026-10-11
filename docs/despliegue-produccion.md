@@ -727,9 +727,14 @@ Pendiente, y conviene saberlo:
   esperando (PAY-RECONCILE). `deploy/healthcheck.sh` anota cuántos pagos siguen sin
   respuesta, sin dar la alarma: no se distingue de una compra abandonada. Si un cliente
   dice que pagó, se comprueba en el panel de la pasarela.
-- La caja no deja elegir qué equipo con serie se vende: asigna el más antiguo y
-  hay que entregar el que nombra la nota (SERIAL-PICK,
-  [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5).
+- Un equipo con serie se vende diciendo cuál: en caja, con el lector o a mano; en un
+  pedido web, al entregarlo (SERIAL-PICK-01,
+  [seguimiento-whatsapp-equipos.md](seguimiento-whatsapp-equipos.md) §5). Un pedido web
+  pagado **antes** de este cambio y aún sin entregar pedirá identificar su equipo, y sus
+  documentos no nombrarán ninguno hasta entonces. Si un pedido se entregó en mano sin
+  marcarlo «entregado», márcalo **antes** de desplegar, o habrá que identificar su equipo
+  después. Conviene no cobrar en caja durante el `migrate`: una venta de la versión
+  anterior que entre en esos segundos queda sin su equipo registrado.
 
 ## 9. Qué se ensayó
 

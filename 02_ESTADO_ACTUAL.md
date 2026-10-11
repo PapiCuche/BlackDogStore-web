@@ -3,6 +3,55 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — SERIAL-PICK-01: el equipo que sale es el que alguien identificó
+
+Rama `feat/serial-pick`, apilada sobre `fix/register-race`. **Con migración**
+(`0116_serial_pick`). Decisión: DEC-SERIAL-02. No desplegado.
+
+**Qué pasaba.** Un producto con serie se vendía como «uno de ellos»: el sistema tomaba
+el equipo más antiguo de la sucursal y la nota imprimía ese IMEI, fuera cual fuera el
+que se entregaba. Si se entregaba otro, quedaba vendido un equipo que seguía en la
+tienda y la garantía a nombre de la serie equivocada.
+
+**Qué hay ahora.**
+- **Caja.** Nada con serie se vende sin decir qué equipo. Se escanea su IMEI o su serie,
+  o se escribe a mano si el lector no lee. A mano: el IMEI se valida (15 dígitos y su
+  dígito de control), el sistema muestra qué equipo es —modelo, estado, IMEI y serie— y
+  la persona lo confirma. Queda registrado que fue a mano y quién lo hizo. Hasta que cada
+  línea con serie tiene sus equipos, «Cobrar» está apagado y el servidor rechaza la venta.
+- **Pedido web.** El pago aparta un equipo; cuál sale lo dice quien lo entrega, en la
+  ficha del pedido («Equipos que se entregan»), con el lector o a mano y la misma
+  validación. Puede ser otro equipo del mismo modelo: el apartado vuelve al estante y el
+  cambio queda en el Kardex. Sin identificar, el pedido no pasa a «enviado» ni a
+  «entregado». Lo entregado ya no se cambia.
+- **Documentos.** La nota de venta y el ticket imprimen el equipo identificado, y nada
+  antes de que alguien lo identifique.
+- **Precio.** Se retira el «precio propio» del equipo: se cobra el del producto.
+- **Dos pedidos del mismo modelo.** Mientras nadie los identifique, cualquiera de las
+  cajas apartadas sirve para cualquiera de los dos pedidos.
+- **Devoluciones.** Un equipo devuelto antes de entregarse deja de ser el del pedido, que
+  vuelve a pedir uno. Devuelto después, la venta lo sigue nombrando.
+- **Lo que salió no se cambia**, aunque el pedido se devuelva a un estado anterior.
+- **La app (API v1)** identifica y quita equipos de un pedido igual que el panel.
+- **Lo anterior.** Las ventas ya entregadas quedan registradas como «asignado por el
+  sistema (regla anterior)» y sus documentos se reimprimen igual. Un pedido web pagado
+  antes del cambio y aún sin entregar pedirá identificar su equipo.
+
+**Lecturas que el propietario debe conocer.**
+- «Igual que en caja al entregar» se aplicó como obligatorio: no hay «enviado» ni
+  «entregado» sin identificar.
+- El producto no tiene campos de modelo ni de color: se muestra su nombre, que los
+  lleva, además del estado, el IMEI y la serie.
+- Si fue lector o a mano lo declara el panel (por el ritmo de las teclas o el botón «a
+  mano»). Un lector lento se trata como escrito a mano: pide confirmar, no deja pasar.
+
+**Deuda.**
+- SERIAL-PRICE-DROP: la columna `price_override` sigue en la base, sin uso. Se borra en
+  la versión siguiente, cuando ninguna versión en línea la lea.
+- La caja registra en auditoría quién identificó cada equipo, sin la dirección de red
+  (las ventas de caja no la llevan en ninguna de sus líneas de auditoría).
+- SERIAL-TRANSFER y SERIAL-COUNT siguen pendientes.
+
 ## 2026-10-08 — REGISTER-RACE-01: un correo, una cuenta, también en la base
 
 Rama `fix/register-race`, apilada sobre `feat/product-visibility-import`. **Con
@@ -140,9 +189,9 @@ de esa reparación; un enlace revocado no se recrea; la copia del personal no lo
 - **3A · código de verificación** (rama `feat/mail-verification-code`, sobre la fase 2):
   el correo de verificación lleva enlace y código de 6 dígitos. Migración
   `0113_account_token_code`. Decisión DEC-MAIL-03.
-- **3B · garantía y posventa:** pendiente. Antes hay que resolver con el propietario el
-  IMEI de la garantía frente a SERIAL-PICK (hoy el pedido registra el equipo más antiguo,
-  no el que se entrega en mano).
+- **3B · garantía y posventa:** pendiente. Va después de SERIAL-PICK-01, que deja
+  registrado qué equipo se entregó: el correo de garantía sólo saldrá con un equipo
+  identificado por una persona.
 - **3C · promociones con consentimiento y baja:** pendiente.
 
 ## 2026-10-07 — STAFF-ONBOARDING-01: una persona invitada siempre puede terminar
@@ -791,7 +840,7 @@ tenían corrección en el código (`f500342`, `e033aee`, `d14a1cd`).
 
 | ID | Qué falta | Qué hacer mientras |
 |---|---|---|
-| SERIAL-PICK | La caja no deja elegir el equipo: vende el más antiguo de la sucursal | Entregar el equipo cuya serie imprime la nota. Con varios equipos del mismo modelo es la regla a seguir; es lo primero a hacer tras publicar |
+| SERIAL-PICK | Resuelto en SERIAL-PICK-01 (2026-10-11): el equipo se identifica al vender o al entregar | — |
 | SERIAL-TRANSFER | Un equipo con serie no se transfiere entre sucursales | No afecta a una empresa con una sucursal |
 | SERIAL-COUNT | No hay recuento por lectura de series | La lista de Inventario › Equipos sirve de hoja de comprobación |
 | PAY-RECONCILE | Si la notificación de la pasarela no llega, el pedido cobrado queda esperando | La comprobación de estado anota cuántos pagos siguen sin respuesta (sin alarma: no se distingue de una compra abandonada); si un cliente dice que pagó, se comprueba en el panel de la pasarela |
