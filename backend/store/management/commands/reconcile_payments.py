@@ -8,8 +8,8 @@ Only «Mi Cuenta Web» has a web service for it (`Order/Get`); with the other
 product active, or with nothing waiting, this does nothing and prints nothing.
 
 Safe to run every five minutes and safe to run twice at once: an order is paid
-under a row lock, once, by the same code that takes a notification. It never
-prints a reference, a key or anything about a buyer.
+under a row lock, once, by the same code that takes a notification. What it
+prints is a count: no reference, no key, nothing about a buyer.
 """
 from datetime import timedelta
 

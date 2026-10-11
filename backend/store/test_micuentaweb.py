@@ -293,6 +293,23 @@ class NotificationTest(McwBase):
         self.assertEqual(self.notify(other).status_code, 400)
         self.assert_nothing_paid()
 
+    def test_what_is_read_from_a_notification_is_the_text_the_signature_covers(self):
+        """
+        Una barra invertida de más delante de una barra deja la firma válida
+        (al deshacer el escape vuelve a ser el texto firmado) y cambiaría el
+        valor si se leyera lo recibido. Se lee lo firmado.
+        """
+        signed = json.dumps(self.answer(shop_id='tienda/8'), separators=(',', ':')).replace('/', '\\/')
+        form = {
+            'kr-answer': signed.replace('\\/', '\\\\/'), 'kr-hash': self.fake.sign(signed, self.fake.password),
+            'kr-hash-algorithm': 'sha256_hmac', 'kr-hash-key': 'password',
+        }
+        self.assertNotEqual(json.loads(form['kr-answer'])['shopId'], 'tienda/8')
+
+        result = micuentaweb.parse_notification(form, micuentaweb.load_credentials())
+
+        self.assertEqual(result.merchant_code, 'tienda/8')
+
     def test_the_same_form_sent_as_multipart_is_read_the_same(self):
         response = self.client.post(IPN_URL, self.fake.ipn(self.answer()), format='multipart')
 
@@ -347,6 +364,15 @@ class NotificationTest(McwBase):
             response = self.notify(gateway.ipn(self.answer(mode='TEST')))
 
         self.assertEqual(response.status_code, 400)
+        self.assert_nothing_paid()
+
+    def test_a_production_payment_never_pays_an_order_of_a_test_shop(self):
+        """Y al revés: con claves de TEST, una respuesta que dice PRODUCCIÓN no es de esta configuración."""
+        for mode in ('PRODUCTION', ''):
+            with self.subTest(mode or 'sin entorno'):
+                answer = self.answer()
+                answer['orderDetails']['mode'] = mode
+                self.assertEqual(self.notify(self.fake.ipn(answer)).status_code, 400)
         self.assert_nothing_paid()
 
     def test_a_refused_payment_leaves_the_order_waiting(self):
