@@ -154,6 +154,9 @@ REST_FRAMEWORK = {
         # Meta reports every sent, delivered and read message here.
         'whatsapp_webhook': '600/min',
         'account_repairs': '60/min',
+        # CLIENT-SEC-01. Guardar el perfil propio, por cuenta: cada guardado
+        # puede preguntar si un documento ya es de otro cliente.
+        'account_profile_write': '20/hour',
         'admin_inventory_reports': '120/min',
         'admin_stock_movements': '60/min',
         'admin_sales_notes': '60/min',

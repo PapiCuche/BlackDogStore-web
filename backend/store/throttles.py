@@ -338,6 +338,18 @@ class AccountRepairsThrottle(UserRateThrottle):
     scope = 'account_repairs'
 
 
+class AccountProfileWriteThrottle(UserRateThrottle):
+    """
+    Saving one's own profile (CLIENT-SEC-01), per account, web and app alike.
+
+    A save that names a document is told whether that document can be kept, and
+    «it cannot» is all it takes to learn that a number is on file in a shop.
+    The sentence says nothing more; this is what keeps it from being asked
+    over and over.
+    """
+    scope = 'account_profile_write'
+
+
 class WhatsAppWebhookThrottle(AnonRateThrottle):
     """El proveedor informa aquí de cada mensaje. La firma decide; esto acota."""
     scope = 'whatsapp_webhook'

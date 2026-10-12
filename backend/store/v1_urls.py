@@ -13,6 +13,7 @@ from .print_views import PrintAgentClaimView, PrintAgentResultView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import (
     V1CustomerOrderViewSet,
+    V1CustomerProfileView,
     V1CustomerRepairQuoteDecisionView,
     V1CustomerRepairPaymentSummaryView,
     V1CustomerRepairQuoteView,
@@ -161,6 +162,11 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/checkout/',
         V1CustomerCheckoutView.as_view(), name='v1-customer-checkout',
+    ),
+    # CLIENT-SEC-01 — my own profile in this company (the web's «Mi cuenta»).
+    path(
+        'customer/<slug:company_slug>/profile/',
+        V1CustomerProfileView.as_view(), name='v1-customer-profile',
     ),
     # CUSTOMER — the quote on my own repair, and my answer to it. Literal
     # sub-paths on the `customer/` prefix, registered BEFORE the router

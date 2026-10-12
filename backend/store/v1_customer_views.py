@@ -26,7 +26,10 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
+from .throttles import (
+    AccountProfileWriteThrottle, AccountRepairsThrottle,
+    AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
+)
 
 from .tenancy import (
     customer_owned_orders,
@@ -89,6 +92,49 @@ class V1CustomerOrderViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewS
             .prefetch_related('items__product')
             .order_by('-created_at')
         )
+
+
+class V1CustomerProfileView(V1CustomerSurfaceMixin, APIView):
+    """
+    GET / PATCH — my own profile in this company. CLIENT-SEC-01.
+
+    THE SAME PROFILE AS THE WEB'S «Mi cuenta», through the same service
+    (`customer_profile`): the same fields, the same judge, the same refusals in
+    the same words, the same audit entry.
+
+    The company is the one in the path, IF this person is a client of it — the
+    gate every view of this surface shares. Somebody who has never bought here
+    finds nothing, and so cannot open a file on themselves in a shop they have
+    no relation with; on the web that shop is the one whose page they are on.
+    """
+
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_throttles(self):
+        if self.request.method == 'PATCH':
+            return [AccountProfileWriteThrottle()]
+        return [AccountRepairsThrottle()]
+
+    def get(self, request, company_slug=None):
+        from . import customer_profile
+        # Imported here: `evidence_views` builds on this module's mixin.
+        from .evidence_views import _no_store
+
+        company = self.get_customer_company()
+        return _no_store(Response(customer_profile.payload(company, request.user)))
+
+    def patch(self, request, company_slug=None):
+        from . import customer_profile
+        from .evidence_views import _no_store
+
+        company = self.get_customer_company()
+        try:
+            body = customer_profile.update(
+                company=company, user=request.user, data=request.data, request=request,
+            )
+        except customer_profile.ProfileError as refused:
+            return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
+        return _no_store(Response(body))
 
 
 class V1CustomerRepairViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewSet):

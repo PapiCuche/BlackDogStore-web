@@ -132,6 +132,7 @@ from .tenant_views import (
     MyMembershipsView,
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
+from .account_views import AccountProfileView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -419,6 +420,8 @@ urlpatterns = [
     # --- TRACKING: the signed-in customer's own repairs ---
     path('account/repairs/', AccountRepairsView.as_view(), name='account-repairs'),
     path('account/repairs/claim/', AccountRepairClaimView.as_view(), name='account-repairs-claim'),
+    # --- CLIENT-SEC-01: the signed-in buyer's own profile in this shop ---
+    path('account/profile/', AccountProfileView.as_view(), name='account-profile'),
 
     # --- SaaS Phase 2E: internal document sequences ---
     # `scope/` before `<int:pk>/` so the literal segment is not swallowed by
