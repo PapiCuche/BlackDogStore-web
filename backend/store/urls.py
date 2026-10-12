@@ -133,6 +133,7 @@ from .tenant_views import (
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
 from .account_views import AccountProfileView
+from .delivery_views import AdminCarrierDetailView, AdminCarrierListView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -422,6 +423,9 @@ urlpatterns = [
     # --- TRACKING: the signed-in customer's own repairs ---
     path('account/repairs/', AccountRepairsView.as_view(), name='account-repairs'),
     path('account/repairs/claim/', AccountRepairClaimView.as_view(), name='account-repairs-claim'),
+    # --- DELIVERY-01: a company's carriers ---
+    path('admin/carriers/', AdminCarrierListView.as_view(), name='admin-carriers'),
+    path('admin/carriers/<int:pk>/', AdminCarrierDetailView.as_view(), name='admin-carrier-detail'),
     # --- CLIENT-SEC-01: the signed-in buyer's own profile in this shop ---
     path('account/profile/', AccountProfileView.as_view(), name='account-profile'),
 

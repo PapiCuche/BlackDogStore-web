@@ -9253,3 +9253,191 @@ class OrderRiskAssessment(models.Model):
         if self.order_id is not None and self.order.company_id != self.company_id:
             raise ValueError('La evaluación tiene que ser de la empresa del pedido.')
         return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DELIVERY-01 (base) — carriers, the buyer's address book, and the delivery
+# record of an order. ADDITIVE: `Order` keeps its own delivery columns, and
+# every document, e-mail and contract that read them still reads them.
+# ---------------------------------------------------------------------------
+
+class Carrier(models.Model):
+    """
+    A carrier ONE company works with: Shalom, Olva, the local motorcycle courier.
+
+    A company's own list — nothing is seeded, and no carrier's name lives in the
+    code. `kind` says how the goods reach the buyer: at the carrier's AGENCY,
+    where the buyer collects them, or at the buyer's door (`courier`).
+
+    `tracking_url_template` is where a waybill can be followed, with `{guia}`
+    where the waybill number goes. https only, and no other placeholder: the
+    result is shown to a buyer as a link.
+
+    Deactivated, never deleted: orders name the carrier they left with.
+    """
+
+    class Kind(models.TextChoices):
+        AGENCY = 'agency', 'Recojo en agencia'
+        COURIER = 'courier', 'Entrega a domicilio'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='carriers')
+    name = models.CharField(max_length=80)
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    tracking_url_template = models.CharField(max_length=300, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'pk']
+        constraints = [
+            # «Shalom» and «SHALOM» are one carrier of a company.
+            models.UniqueConstraint(
+                models.functions.Lower('name'), 'company', name='unique_carrier_name_per_company_ci',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.company_id})'
+
+
+class CustomerAddress(models.Model):
+    """
+    One entry of a buyer's address book IN ONE COMPANY.
+
+    It hangs from the buyer's `Customer` of that company, so two shops keep two
+    books on one person and neither reads the other's. An entry is either an
+    ADDRESS (a door) or an AGENCY (a carrier's office where the buyer collects),
+    and says who receives there — who may be somebody other than the buyer.
+
+    One default among a customer's ACTIVE entries, guaranteed by the database.
+    Deactivated, never deleted. An order copies what it needs when it is made
+    (`OrderDelivery`), so editing or removing an entry never rewrites an order.
+    """
+
+    class Kind(models.TextChoices):
+        ADDRESS = 'address', 'Dirección'
+        AGENCY = 'agency', 'Agencia'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='customer_addresses')
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='addresses')
+    label = models.CharField(max_length=60, blank=True, default='')
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.ADDRESS)
+
+    recipient_name = models.CharField(max_length=255)
+    recipient_document_type = models.CharField(max_length=10, choices=DocumentType.choices, blank=True, default='')
+    recipient_document_number = models.CharField(max_length=20, blank=True, default='')
+    recipient_phone = models.CharField(max_length=30, blank=True, default='')
+
+    address_line = models.CharField(max_length=300, blank=True, default='')
+    district = models.CharField(max_length=100, blank=True, default='')
+    city = models.CharField(max_length=100, blank=True, default='')
+    department = models.CharField(max_length=100, blank=True, default='')
+    reference = models.CharField(max_length=250, blank=True, default='')
+
+    carrier = models.ForeignKey(Carrier, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    agency_name = models.CharField(max_length=120, blank=True, default='')
+    agency_locality = models.CharField(max_length=120, blank=True, default='')
+
+    is_default = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', 'pk']
+        indexes = [models.Index(fields=['customer', 'is_active'], name='customer_address_book_idx')]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['customer'], condition=models.Q(is_default=True, is_active=True),
+                name='one_default_address_per_customer',
+            ),
+        ]
+
+    def __str__(self):
+        return f'dirección {self.pk} · cliente {self.customer_id} ({self.kind})'
+
+    def save(self, *args, **kwargs):
+        # The book is the customer's company's: every filter finds it by both.
+        if self.customer_id is not None and self.customer.company_id != self.company_id:
+            raise ValueError('La dirección tiene que ser de la empresa de su cliente.')
+        return super().save(*args, **kwargs)
+
+
+class OrderDelivery(models.Model):
+    """
+    How ONE order is delivered, as a record of its own — the historical snapshot.
+
+    Made with the order, from the order's own columns, and from then on it is
+    where staff write what the order's columns never had: who receives, which
+    carrier and agency, the freight, the waybill and where to follow it.
+
+    WHAT IT IS NOT. It does not replace `Order.delivery_method` or the order's
+    address columns: documents, e-mails and the checkout contracts read those,
+    and nothing here changes them. And `freight_amount` is INFORMATION — what
+    the carrier charges and who pays it — never part of an order's total.
+
+    COPIES, NOT LINKS. `carrier_name` and the address fields are text copied
+    here; `carrier` and `source_address` only say where the copy came from. A
+    carrier renamed or switched off, an address edited or removed from a
+    buyer's book — the record of an order that already left says what it said.
+
+    No row means the order has no delivery record: a sale at the till, or an
+    order older than this table that had no delivery method.
+    """
+
+    class Mode(models.TextChoices):
+        PICKUP_STORE = 'pickup_store', 'Recojo en tienda'
+        LOCAL_DELIVERY = 'local_delivery', 'Delivery local'
+        NATIONAL_ADDRESS = 'national_address', 'Envío nacional a domicilio'
+        AGENCY_PICKUP = 'agency_pickup', 'Recojo en agencia'
+
+    class FreightPaidBy(models.TextChoices):
+        CUSTOMER_AT_DESTINATION = 'customer_at_destination', 'El cliente, al recibir'
+        STORE = 'store', 'La tienda'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='order_deliveries')
+    order = models.OneToOneField('store.Order', on_delete=models.PROTECT, related_name='delivery_record')
+    mode = models.CharField(max_length=20, choices=Mode.choices, blank=True, default='')
+
+    recipient_name = models.CharField(max_length=255, blank=True, default='')
+    recipient_document_type = models.CharField(max_length=10, choices=DocumentType.choices, blank=True, default='')
+    recipient_document_number = models.CharField(max_length=20, blank=True, default='')
+    recipient_phone = models.CharField(max_length=30, blank=True, default='')
+
+    address_line = models.CharField(max_length=300, blank=True, default='')
+    district = models.CharField(max_length=100, blank=True, default='')
+    city = models.CharField(max_length=100, blank=True, default='')
+    department = models.CharField(max_length=100, blank=True, default='')
+    reference = models.CharField(max_length=250, blank=True, default='')
+
+    carrier = models.ForeignKey(Carrier, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    carrier_name = models.CharField(max_length=80, blank=True, default='')
+    agency_name = models.CharField(max_length=120, blank=True, default='')
+    agency_locality = models.CharField(max_length=120, blank=True, default='')
+
+    freight_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(Decimal('0'))],
+    )
+    freight_paid_by = models.CharField(max_length=30, choices=FreightPaidBy.choices, blank=True, default='')
+    waybill_number = models.CharField(max_length=60, blank=True, default='')
+    tracking_code = models.CharField(max_length=80, blank=True, default='')
+    tracking_url = models.CharField(max_length=500, blank=True, default='')
+    shipped_at = models.DateTimeField(null=True, blank=True)
+
+    source_address = models.ForeignKey(
+        CustomerAddress, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'entrega del pedido {self.order_id} ({self.mode or "sin modalidad"})'
+
+    def save(self, *args, **kwargs):
+        if self.order_id is not None and self.order.company_id != self.company_id:
+            raise ValueError('La entrega tiene que ser de la empresa del pedido.')
+        return super().save(*args, **kwargs)
