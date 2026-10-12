@@ -234,7 +234,7 @@ describe('a page is viewed once and a sale is bought once', () => {
 describe('no provider on a private address', () => {
   const PRIVATE = [
     '/seguimiento/AbCdEf0123456789AbCdEf0123456789', '/auth/reset-password?token=AbCdEf0123456789AbCdEf0123456789',
-    '/auth/verify-email?token=abc', '/invitacion?token=abc', '/admin', '/admin/settings/integrations', '/orders', '/repairs',
+    '/auth/verify-email?token=abc', '/invitacion?token=abc', '/admin', '/admin/settings/integrations', '/orders', '/repairs', '/account',
     '/product?search=ana%40example.com', '/product?search=490154203237518', '/checkout/success?reference=12345678901234567890',
   ];
 

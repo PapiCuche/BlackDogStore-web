@@ -251,6 +251,9 @@ export function Header() {
               <Link href="/repairs" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                 Reparaciones
               </Link>
+              <Link href="/account" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
+                Mi cuenta
+              </Link>
               {internalAccess && (
                 <Link href="/admin" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                   Control interno
@@ -365,6 +368,13 @@ export function Header() {
                   className="rounded-lg px-3 py-2.5 text-muted hover:bg-surface-2 hover:text-foreground"
                 >
                   Mis reparaciones
+                </Link>
+                <Link
+                  href="/account"
+                  onClick={() => setMenuOpen(false)}
+                  className="rounded-lg px-3 py-2.5 text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  Mi cuenta
                 </Link>
                 {internalAccess && (
                   <Link

@@ -111,3 +111,22 @@ describe('Header · Control interno', () => {
     expect(mockHasInternalAccess).not.toHaveBeenCalled();
   });
 });
+
+describe('Header · Mi cuenta (CLIENT-SEC-01)', () => {
+  it('whoever is signed in has a way to their own profile, next to their orders', async () => {
+    mockGetCurrentUser.mockResolvedValue(user({ role: 'customer', is_staff: false }));
+    mockHasInternalAccess.mockResolvedValue(false);
+    renderHeader();
+
+    expect(await screen.findByRole('link', { name: 'Mi cuenta' })).toHaveAttribute('href', '/account');
+    expect(screen.getByRole('link', { name: 'Pedidos' })).toBeInTheDocument();
+  });
+
+  it('a visitor is not offered an account they do not have', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    renderHeader();
+
+    expect(await screen.findByRole('link', { name: 'Ingresar' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Mi cuenta' })).not.toBeInTheDocument();
+  });
+});
