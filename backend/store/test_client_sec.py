@@ -3407,3 +3407,120 @@ class DigitsAtTheCheckoutTest(_CheckoutBase):
         user = User.objects.create_user('compra_app', 'compra_app@correo.test', PASSWORD, first_name='Ana')
         Customer.objects.create(company=self.company, user=user, first_name='Ana')
         self.assertEqual(self.app_checkout(v1_session(user)).status_code, 201)
+
+
+class TheDocumentBudgetIsWrittenDownTest(_ProfileBase):
+    """
+    P2-3 · the day's document attempts are counted from the audit trail, not
+    from a process's memory: a restart, another worker or a full cache does not
+    give them back.
+    """
+
+    ATTEMPT = 'customer_document_change_attempted'
+
+    def try_document(self, number, company=None):
+        return self.patch({'document_type': 'dni', 'document_number': number}, company=company)     # `patch` clears the cache
+
+    def attempts(self):
+        return list(AdminAuditLog.objects.filter(action=self.ATTEMPT).order_by('pk'))
+
+    def test_emptying_the_cache_gives_nothing_back(self):
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number='70000002')
+        answers = [self.try_document(number) for number in ('70000002', '70000003', '70000004')]
+        self.assertEqual([r.status_code for r in answers], [400, 200, 200])
+        for number in ('70000005', '70000002'):
+            cache.clear()
+            spent = self.try_document(number)
+            self.assertEqual(spent.status_code, 400)
+            self.assertIn('mañana', spent.json()['document_number'][0])
+        self.assertEqual(self.record().document_number, '70000004')
+
+    def test_each_attempt_is_an_entry_with_names_and_no_number(self):
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number='70000002')
+        self.try_document('70000002')
+        self.try_document('70000003')
+        refused, accepted = self.attempts()
+        self.assertEqual((refused.actor, refused.company, refused.target_type), (self.user, self.a, 'customer'))
+        self.assertEqual((refused.metadata, accepted.metadata), ({'accepted': False}, {'accepted': True}))
+        self.assertEqual(accepted.target_id, str(self.record().pk))
+        for entry in AdminAuditLog.objects.all():
+            for number in ('70000002', '70000003'):
+                self.assertNotIn(number, json.dumps(entry.metadata) + entry.target_id)
+
+    def test_what_is_over_the_budget_is_refused_without_another_entry(self):
+        for number in ('70000003', '70000004', '70000005'):
+            self.assertEqual(self.try_document(number).status_code, 200)
+        for number in ('70000006', '70000007'):
+            self.assertEqual(self.try_document(number).status_code, 400)
+        self.assertEqual(len(self.attempts()), 3)
+
+    def test_a_day_later_they_are_back(self):
+        for number in ('70000003', '70000004', '70000005'):
+            self.try_document(number)
+        self.assertEqual(self.try_document('70000006').status_code, 400)
+        AdminAuditLog.objects.filter(action=self.ATTEMPT).update(created_at=timezone.now() - timedelta(hours=24, minutes=1))
+        self.assertEqual(self.try_document('70000006').status_code, 200)
+
+    def test_one_of_them_ages_out_at_a_time(self):
+        for number in ('70000003', '70000004', '70000005'):
+            self.try_document(number)
+        oldest = self.attempts()[0]
+        AdminAuditLog.objects.filter(pk=oldest.pk).update(created_at=timezone.now() - timedelta(hours=25))
+        self.assertEqual(self.try_document('70000006').status_code, 200)
+        self.assertEqual(self.try_document('70000007').status_code, 400)
+
+    def test_it_is_the_accounts_in_every_shop_and_nobody_elses(self):
+        for number in ('70000003', '70000004', '70000005'):
+            self.assertEqual(self.try_document(number).status_code, 200)
+        self.assertEqual(self.try_document('70000006', company=self.b).status_code, 400)
+        other = User.objects.create_user('otro', 'otro@correo.test', PASSWORD, first_name='Otro')
+        accounts.mark_email_verified(other)
+        response = self.patch({'document_type': 'dni', 'document_number': '70000007'}, client=web_session(other))
+        self.assertEqual(response.status_code, 200)
+
+    def test_what_never_reaches_the_question_spends_nothing(self):
+        self.assertEqual(self.try_document('123').status_code, 400)                    # not a document
+        self.unverified()
+        self.assertEqual(self.try_document('70000003').status_code, 400)               # nobody proved the mailbox
+        self.assertEqual(self.patch({'phone': '987654321'}).status_code, 200)          # not a document change at all
+        self.assertEqual(self.attempts(), [])
+
+    def test_a_double_tap_on_a_first_save_spends_one(self):
+        from django.db import IntegrityError
+
+        real_save, calls = Customer.save, []
+
+        def racing(record, *args, **kwargs):
+            calls.append(record)
+            if len(calls) == 1:
+                # The other tap got there first: its record exists now.
+                Customer.objects.create(company=self.a, user=self.user, first_name='Ana', last_name='Torres')
+                raise IntegrityError('unique_customer_per_user_per_company')
+            return real_save(record, *args, **kwargs)
+
+        with mock.patch('store.customer_profile.Customer.save', autospec=True, side_effect=racing):
+            response = self.try_document('70000003')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.record().document_number, '70000003')
+        self.assertEqual([entry.metadata for entry in self.attempts()], [{'accepted': True}])
+        # Two changes are left today, not one.
+        self.assertEqual([self.try_document(n).status_code for n in ('70000004', '70000005', '70000006')], [200, 200, 400])
+
+    def test_a_document_somebody_took_a_moment_before_is_an_attempt_too(self):
+        from django.db import IntegrityError
+
+        def taken(record, *args, **kwargs):
+            raise IntegrityError('unique_customer_document_per_company')
+
+        with mock.patch('store.customer_profile.Customer.save', autospec=True, side_effect=taken):
+            response = self.try_document('70000003')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual([entry.metadata for entry in self.attempts()], [{'accepted': False}])
+        self.assertIsNone(self.record())
+
+    def test_nothing_of_it_is_kept_in_the_cache(self):
+        import inspect
+
+        from store import customer_profile
+
+        self.assertNotIn('django.core.cache', inspect.getsource(customer_profile))

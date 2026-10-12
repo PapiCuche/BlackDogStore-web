@@ -21,7 +21,11 @@ account is recovered, which is not something a profile form decides.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from . import accounts
 from . import identity_validation as identity
@@ -48,30 +52,42 @@ DOCUMENT_NEEDS_PROOF = 'Verifica tu correo antes de guardar tu documento. Puedes
 #: shop and through either door, and whether or not the change was accepted.
 DOCUMENT_CHANGES_PER_DAY = 3
 DOCUMENT_BUDGET_SPENT = 'Cambiaste tu documento varias veces hoy. Inténtalo mañana o comunícate con la tienda.'
-_DOCUMENT_BUDGET_SECONDS = 24 * 60 * 60
+_DOCUMENT_BUDGET_WINDOW = timedelta(hours=24)
+#: The audit entry of one attempt, accepted or refused. IT IS THE COUNTER.
+DOCUMENT_ATTEMPT = 'customer_document_change_attempted'
 
 
-def _spend_document_change(user) -> bool:
+def _document_budget_left(user) -> bool:
     """
-    Count one attempt to change a document. False when today's are spent.
+    Whether this account may still try to change a document today.
 
     WHY A BUDGET OF ITS OWN. Saving a document answers «can this document be
     kept?», and «no» is all it takes to learn that a number is on file in a
     shop — and «yes» takes the number. The profile's own limit is sized for
     correcting a phone; this one is sized for how often a person's document
-    really changes. Counted BEFORE the answer is known, so asking costs the
-    same whatever is learned. In this process's memory, like every limit here.
-    """
-    from django.core.cache import cache
+    really changes. Asked BEFORE the answer is known, so asking costs the same
+    whatever is learned.
 
-    key = f'profile-document-changes:{user.pk}'
-    cache.add(key, 0, _DOCUMENT_BUDGET_SECONDS)
-    try:
-        return cache.incr(key) <= DOCUMENT_CHANGES_PER_DAY
-    except ValueError:
-        # The key expired between the two lines: start the day again.
-        cache.set(key, 1, _DOCUMENT_BUDGET_SECONDS)
-        return True
+    COUNTED FROM THE AUDIT TRAIL, not from a process's memory: a restart, a
+    second worker or a store that evicts its keys would each hand the day's
+    attempts back, and three a day would be three per process per restart. The
+    entries are the ones the trail wants anyway — who tried to change a
+    document, when, and whether it was kept — so there is no second table to
+    keep true to it. The caller holds the account's row locked, so two attempts
+    at once are counted one after the other.
+    """
+    since = timezone.now() - _DOCUMENT_BUDGET_WINDOW
+    spent = AdminAuditLog.objects.filter(actor=user, action=DOCUMENT_ATTEMPT, created_at__gt=since).count()
+    return spent < DOCUMENT_CHANGES_PER_DAY
+
+
+def _note_document_attempt(company, user, request, *, accepted: bool, record=None) -> None:
+    """One attempt, written down. The outcome and nothing of the document itself."""
+    AdminAuditLog.log(
+        actor=user, action=DOCUMENT_ATTEMPT, target_type='customer',
+        target_id=getattr(record, 'pk', None) or '',
+        metadata={'accepted': accepted}, request=request, company=company,
+    )
 
 
 def document_locked(record) -> bool:
@@ -190,7 +206,9 @@ def update(*, company, user, data, request=None) -> dict:
                 continue
             # Otherwise somebody took that document between the look and the
             # save, and the database refused the second one. The same answer
-            # as a moment later.
+            # as a moment later — and the same cost: the attempt that was
+            # written went with the transaction, so it is written again.
+            _note_document_attempt(company, user, request, accepted=False)
             raise ProfileError({'document_number': [identity.DOCUMENT_REFUSED]}) from None
 
 
@@ -230,7 +248,12 @@ def ensure_record(*, company, user, request=None):
 
 def _save(company, user, data, request) -> dict:
     """One attempt, in one transaction: the record locked, judged, saved and written down."""
+    refused = None
     with transaction.atomic():
+        if 'document_type' in data or 'document_number' in data:
+            # The account's row first: it is what the day's document attempts
+            # are counted under, in whichever shop they are made.
+            get_user_model().objects.select_for_update().filter(pk=user.pk).first()
         record = Customer.objects.select_for_update().filter(company=company, user=user).first()
         created = record is None
         if created:
@@ -249,7 +272,8 @@ def _save(company, user, data, request) -> dict:
 
         wanted = _wanted(record, data)
 
-        if (wanted['document_type'], wanted['document_number']) != (record.document_type, record.document_number):
+        asking = (wanted['document_type'], wanted['document_number']) != (record.document_type, record.document_number)
+        if asking:
             if document_locked(record):
                 raise ProfileError({'document_number': [DOCUMENT_LOCKED]})
             # Replaced, never erased: a file that had a document keeps having one.
@@ -260,7 +284,7 @@ def _save(company, user, data, request) -> dict:
             # Said before looking, so it is the same for a free and a taken one.
             if accounts.email_verified_at(user) is None:
                 raise ProfileError({'document_number': [DOCUMENT_NEEDS_PROOF]})
-            if not _spend_document_change(user):
+            if not _document_budget_left(user):
                 raise ProfileError({'document_number': [DOCUMENT_BUDGET_SPENT]})
 
         # A document identifies ONE client of a shop. Whose it already is —
@@ -270,26 +294,34 @@ def _save(company, user, data, request) -> dict:
             company=company, document_type=wanted['document_type'],
             document_number=wanted['document_number'],
         ).exclude(pk=record.pk).exists():
-            raise ProfileError({'document_number': [identity.DOCUMENT_REFUSED]})
-
-        changed = sorted(
-            field for field in WRITABLE
-            if created and wanted[field] or not created and getattr(record, field) != wanted[field]
-        )
-        if not created and not changed:
-            return payload(company, user)
-        for field in WRITABLE:
-            setattr(record, field, wanted[field])
-        record.save()
-        AdminAuditLog.log(
-            actor=user,
-            action='customer_profile_updated',
-            target_type='customer',
-            target_id=record.pk,
-            # FIELD NAMES ONLY. Who changed which part of their file, and
-            # when — never the phone or the document itself.
-            metadata={'created': created, 'changed_fields': changed},
-            request=request,
-            company=company,
-        )
+            refused = ProfileError({'document_number': [identity.DOCUMENT_REFUSED]})
+            if asking:
+                # NOT raised in here: the attempt has to be kept, and leaving
+                # this block by an exception would take its entry back.
+                _note_document_attempt(company, user, request, accepted=False, record=record)
+        else:
+            changed = sorted(
+                field for field in WRITABLE
+                if created and wanted[field] or not created and getattr(record, field) != wanted[field]
+            )
+            if not created and not changed:
+                return payload(company, user)
+            for field in WRITABLE:
+                setattr(record, field, wanted[field])
+            record.save()
+            if asking:
+                _note_document_attempt(company, user, request, accepted=True, record=record)
+            AdminAuditLog.log(
+                actor=user,
+                action='customer_profile_updated',
+                target_type='customer',
+                target_id=record.pk,
+                # FIELD NAMES ONLY. Who changed which part of their file, and
+                # when — never the phone or the document itself.
+                metadata={'created': created, 'changed_fields': changed},
+                request=request,
+                company=company,
+            )
+    if refused is not None:
+        raise refused
     return payload(company, user)
