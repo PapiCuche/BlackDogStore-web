@@ -48,15 +48,6 @@ def record_existing_deliveries(apps, schema_editor):
         OrderDelivery.objects.bulk_create(batch, ignore_conflicts=True)
 
 
-def forget_delivery_records(apps, schema_editor):
-    """
-    Backwards: the records go, and the orders are exactly what they were — their
-    own delivery columns were never touched. (The table goes next anyway; this
-    says it in one place, and can be tested.)
-    """
-    apps.get_model('store', 'OrderDelivery').objects.all().delete()
-
-
 class Migration(migrations.Migration):
     """
     The records of the orders that already existed, AFTER the tables (0119) and
@@ -65,6 +56,11 @@ class Migration(migrations.Migration):
     that lock while every existing order is read. Not atomic, so each batch is
     its own short transaction; the step skips what it already wrote and can be
     run again after an interruption.
+
+    BACKWARDS IT DOES NOTHING. Once the shop works with these records they hold
+    what staff wrote — carriers, waybills, freight — and «un-apply the backfill»
+    must not mean «delete all of it». Un-applying 0119 drops the table; that is
+    the step that removes the records, and it says so by what it is.
     """
 
     atomic = False
@@ -74,5 +70,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(record_existing_deliveries, forget_delivery_records),
+        migrations.RunPython(record_existing_deliveries, migrations.RunPython.noop),
     ]

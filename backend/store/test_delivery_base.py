@@ -949,15 +949,20 @@ class RecordsWhenTheTableArrivedTest(TestCase):
             self.arrive()
         self.assertEqual(OrderDelivery.objects.filter(order__in=orders).count(), 8)
 
-    def test_backwards_the_records_go_and_the_orders_are_what_they_were(self):
+    def test_backwards_it_deletes_nothing(self):
+        # The step back is not «delete every record»: by then staff have written waybills
+        # into them. Un-applying 0119 drops the table; this step alone leaves it as it is.
         from django.apps import apps
+        from django.db import migrations
 
         order = self.old(delivery_method='national_shipping', address_line='Av. Uno 1', city='Puno')
         self.arrive()
-        self.module.forget_delivery_records(apps, None)
-        self.assertFalse(OrderDelivery.objects.exists())
-        order.refresh_from_db()
-        self.assertEqual((order.delivery_method, order.address_line, order.city), ('national_shipping', 'Av. Uno 1', 'Puno'))
+        OrderDelivery.objects.filter(order=order).update(waybill_number='G-100')
+        [step] = self.module.Migration.operations
+        self.assertIs(step.reverse_code, migrations.RunPython.noop)
+        step.reverse_code(apps, None)
+        self.assertEqual(OrderDelivery.objects.get(order=order).waybill_number, 'G-100')
+        self.assertNotIn('.delete(', __import__('inspect').getsource(self.module))
 
     def test_the_step_reads_no_live_code_and_its_table_is_todays(self):
         import inspect
@@ -1116,7 +1121,7 @@ class StaffWriteDeliveryTest(_StaffDeliveryBase):
         body = response.json()
         self.assertEqual(set(body), STAFF_KEYS)
         self.assertEqual((body['carrier_name'], body['freight_amount'], body['updated_by'], body['mode_label']),
-                         ('Agencia Uno', '15.50', 'gestora', 'Recojo en agencia'))
+                         ('Agencia Uno', '15.50', 'Personal de la tienda', 'Recojo en agencia'))
 
     def test_nothing_of_the_order_itself_moves(self):
         before = Order.objects.filter(pk=self.order.pk).values().get()
@@ -1651,3 +1656,130 @@ class TheTrackingLinkFollowsWhatItWasMadeFromTest(_StaffDeliveryBase):
         record = self.record()
         self.assertEqual((record.tracking_url, record.tracking_url_typed, record.waybill_number),
                          ('https://rastreo.ejemplo.test/g/G-1', False, 'G-1'))
+
+
+class TheBookOfAnArchivedFileTest(_BookBase):
+    """P3 · a file the shop archived takes nothing new from its subject, and nothing says why."""
+
+    def setUp(self):
+        super().setUp()
+        self.entry = self.add(door())
+        Customer.objects.filter(user=self.ana).update(is_active=False)
+        self.audits = AdminAuditLog.objects.count()
+
+    def assert_quiet(self, response):
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(list(response.json()), ['detail'])
+        for hint in ('archiv', 'is_active', 'inactiv', 'bloque'):
+            self.assertNotIn(hint, response.content.decode().lower())
+
+    def test_it_takes_no_new_entry(self):
+        self.assert_quiet(self.call('post', body=door(label='Otra')))
+        self.assert_quiet(self.call('post', body=self.office()))
+        self.assertEqual(CustomerAddress.objects.count(), 1)
+        self.assertEqual(AdminAuditLog.objects.count(), self.audits)
+
+    def test_nor_a_new_address_written_over_an_old_one(self):
+        kept = CustomerAddress.objects.filter(pk=self.entry.pk).values().get()
+        self.assert_quiet(self.call('patch', f'{self.entry.pk}/', {'address_line': 'Otra calle 9'}))
+        self.assertEqual(CustomerAddress.objects.filter(pk=self.entry.pk).values().get(), kept)
+        self.assertEqual(AdminAuditLog.objects.count(), self.audits)
+
+    def test_what_it_had_is_still_read(self):
+        self.assertEqual([row['id'] for row in self.book()], [self.entry.pk])
+
+    def test_an_account_with_no_file_is_not_mistaken_for_one(self):
+        self.assertEqual(self.call('post', body=door(), client=web_session(self.luis)).status_code, 201)
+
+
+class ABookDoesNotGrowWithoutEndTest(_BookBase):
+    """P3 · removed entries stay as rows: a buyer holds a bounded number of them, kept or removed."""
+
+    def test_there_is_a_ceiling_on_every_row_a_buyer_ever_made(self):
+        self.assertEqual(delivery.MAX_ADDRESS_ROWS, 200)
+        entry = self.add(door())
+        customer = entry.customer
+        CustomerAddress.objects.bulk_create([
+            CustomerAddress(company=self.a, customer=customer, recipient_name='Ana', address_line='x', district='y',
+                            city='z', is_active=False)
+            for _ in range(delivery.MAX_ADDRESS_ROWS - 2)
+        ])
+        self.assertEqual(self.call('post', body=door(label='La última')).status_code, 201)
+        response = self.call('post', body=door(label='Una más'))
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('detail', response.json())
+        self.assertEqual(CustomerAddress.objects.filter(customer=customer).count(), delivery.MAX_ADDRESS_ROWS)
+        # What is there can still be corrected, made the default and removed.
+        self.assertEqual(self.call('patch', f'{entry.pk}/', {'label': 'Corregida'}).status_code, 200)
+        self.assertEqual(self.call('delete', f'{entry.pk}/').status_code, 204)
+
+    def test_another_buyers_rows_do_not_count(self):
+        other = Customer.objects.create(company=self.a, user=self.luis, first_name='Luis')
+        CustomerAddress.objects.bulk_create([
+            CustomerAddress(company=self.a, customer=other, recipient_name='Luis', address_line='x', district='y',
+                            city='z', is_active=False)
+            for _ in range(delivery.MAX_ADDRESS_ROWS)
+        ])
+        self.assertEqual(self.call('post', body=door()).status_code, 201)
+
+
+class AnAgencyEntryOutlivesItsCarrierTest(_BookBase):
+    """P3 · an entry that names an agency no longer offered can still be corrected; it cannot be GIVEN one."""
+
+    def setUp(self):
+        super().setUp()
+        self.entry = self.add(self.office())
+        Carrier.objects.filter(pk=self.agency.pk).update(is_active=False)
+
+    def change(self, body):
+        return self.call('patch', f'{self.entry.pk}/', body)
+
+    def test_everything_but_the_carrier_can_be_corrected(self):
+        for body in ({'label': 'Mi agencia'}, {'agency_name': 'Agencia Norte'}, {'recipient_phone': '987654321'},
+                     {'label': 'Otra', 'carrier': self.agency.pk}):                # the same carrier sent back
+            with self.subTest(body):
+                self.assertEqual(self.change(body).status_code, 200, body)
+        self.entry.refresh_from_db()
+        self.assertEqual((self.entry.label, self.entry.agency_name, self.entry.carrier), ('Otra', 'Agencia Norte', self.agency))
+
+    def test_a_carrier_is_judged_when_it_is_the_carrier_that_changes(self):
+        other = self.carrier(name='Otra Agencia', kind='agency')
+        off = self.carrier(name='Apagada', kind='agency', is_active=False)
+        courier = self.carrier(name='A domicilio', kind='courier')
+        foreign = self.carrier(company=self.b, name='Ajena', kind='agency')
+        for bad in (off.pk, courier.pk, foreign.pk, 999999, None, True, str(self.agency.pk)):
+            with self.subTest(bad):
+                response = self.change({'carrier': bad})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('carrier', response.json())
+        self.assertEqual(self.change({'carrier': other.pk}).status_code, 200)
+        # Once left, the switched-off one cannot be chosen again.
+        self.assertEqual(self.change({'carrier': self.agency.pk}).status_code, 400)
+
+    def test_a_door_cannot_become_an_agency_by_keeping_no_carrier(self):
+        house = self.add(door(label='Casa'))
+        response = self.call('patch', f'{house.pk}/', {'kind': 'agency', 'agency_name': 'Centro', 'agency_locality': 'Puno'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('carrier', response.json())
+
+    def test_a_new_entry_cannot_name_it(self):
+        self.assertEqual(self.call('post', body=self.office(label='Nueva')).status_code, 400)
+
+
+class WhoWroteTheDeliveryTest(_StaffDeliveryBase):
+    """P3 · the card names a person, or nobody in particular — never a login."""
+
+    def test_someone_with_no_name_is_staff_of_the_shop(self):
+        from store import order_risk
+
+        self.manager.first_name = self.manager.last_name = ''
+        self.manager.save()
+        body = self.write(self.manager, {'waybill_number': 'G-1'}).json()
+        self.assertEqual(body['updated_by'], order_risk.STAFF_WITHOUT_NAME)
+        self.assertNotIn(self.manager.username, json.dumps(body))
+        self.assertNotIn(self.manager.username, json.dumps(self.read(self.viewer).json()))
+
+    def test_someone_with_a_name_is_named(self):
+        self.manager.first_name, self.manager.last_name = 'Gema', 'Gestora'
+        self.manager.save()
+        self.assertEqual(self.write(self.manager, {'waybill_number': 'G-1'}).json()['updated_by'], 'Gema Gestora')

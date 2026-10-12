@@ -221,6 +221,14 @@ def update_carrier(*, carrier, company, actor, data, request=None):
 
 #: How many ACTIVE entries one buyer may keep in one shop.
 MAX_ACTIVE_ADDRESSES = 10
+#: Every row one buyer holds in one shop, kept or removed. A removed entry is
+#: switched off, not deleted, so without a ceiling adding and removing would
+#: grow the table for ever. Far above what anybody types in a lifetime of
+#: moving house; beyond it an entry is corrected, not added.
+MAX_ADDRESS_ROWS = 200
+#: What a file the shop archived answers to a write. It says nothing of why:
+#: the shop's decision about a client is not that client's to learn here.
+_BOOK_NOT_SAVED = 'No pudimos guardar esta dirección. Escríbenos y te ayudamos.'
 
 #: What a buyer may write of an entry. An allowlist: whose it is, which shop it
 #: belongs to, whether it is active and whether it is the default are not here.
@@ -357,7 +365,15 @@ def _address_values(company, data, current) -> dict:
     else:
         for field in _AGENCY_FIELDS:
             values[field] = _text(data, field, getattr(current, field), max_length=length(field), required=True)
-        values['carrier'] = _agency_carrier(company, data['carrier'] if 'carrier' in data else current.carrier_id)
+        # The carrier is judged when it is the carrier that changes. An entry
+        # whose agency the shop no longer offers keeps naming it — its label or
+        # its recipient can still be corrected — but no entry can be GIVEN one.
+        raw = data['carrier'] if 'carrier' in data else current.carrier_id
+        kept = (
+            current.kind == CustomerAddress.Kind.AGENCY and current.carrier_id is not None
+            and isinstance(raw, int) and not isinstance(raw, bool) and raw == current.carrier_id
+        )
+        values['carrier'] = current.carrier if kept else _agency_carrier(company, raw)
         values.update({field: '' for field in _DOOR_FIELDS})
         values['department'] = _text(data, 'department', current.department, max_length=length('department'))
     return values
@@ -394,10 +410,16 @@ def create_address(*, company, user, data, request=None):
             customer = customer_profile.ensure_record(company=company, user=user, request=request)
         except customer_profile.ProfileError as refused:
             raise DeliveryError(refused.errors) from None
+        if not customer.is_active:
+            raise DeliveryError({'detail': _BOOK_NOT_SAVED})
         active = CustomerAddress.objects.filter(customer=customer, is_active=True)
         if active.count() >= MAX_ACTIVE_ADDRESSES:
             raise DeliveryError({
                 'detail': f'Puedes guardar hasta {MAX_ACTIVE_ADDRESSES} direcciones. Quita una para agregar otra.',
+            })
+        if CustomerAddress.objects.filter(customer=customer).count() >= MAX_ADDRESS_ROWS:
+            raise DeliveryError({
+                'detail': 'Ya no puedes agregar más direcciones: corrige una de las que tienes.',
             })
         entry = CustomerAddress(company=company, customer=customer)
         for field, value in _address_values(company, data, entry).items():
@@ -427,9 +449,12 @@ def update_address(*, company, user, pk, data, request=None):
     """Correct an entry. None when it is not this buyer's active entry here."""
     data = data if hasattr(data, 'get') else {}
     with transaction.atomic():
-        _customer, entry = _locked_entry(company, user, pk)
+        customer, entry = _locked_entry(company, user, pk)
         if entry is None:
             return None
+        if not customer.is_active:
+            # A new address written over an old one is a new address.
+            raise DeliveryError({'detail': _BOOK_NOT_SAVED})
         values = _address_values(company, data, entry)
         changed = sorted(
             field for field, value in values.items()
@@ -597,6 +622,8 @@ def staff_payload(order, record=None, *, can_edit: bool = False) -> dict:
     online = is_online(order)
     blank = record is None
     record = record if record is not None else OrderDelivery()
+    from .order_risk import STAFF_WITHOUT_NAME
+
     editor = record.updated_by if record.updated_by_id else None
     return {
         'exists': not blank,
@@ -624,7 +651,8 @@ def staff_payload(order, record=None, *, can_edit: bool = False) -> dict:
         'tracking_code': record.tracking_code,
         'tracking_url': record.tracking_url,
         'shipped_at': record.shipped_at,
-        'updated_by': (editor.get_full_name() or editor.get_username()) if editor is not None else None,
+        # A name when the person has one; never the login, which is not a name to show.
+        'updated_by': (editor.get_full_name().strip() or STAFF_WITHOUT_NAME) if editor is not None else None,
         'updated_at': None if blank else record.updated_at,
     }
 
