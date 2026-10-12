@@ -96,7 +96,7 @@ LABELS = {
     SIGNAL_FIRST_ORDER: 'Es la primera compra pagada de este cliente.',
     SIGNAL_HIGH_AMOUNT: 'El total alcanza el monto de revisión de la tienda.',
     SIGNAL_VELOCITY_IP: 'Varios pedidos desde el mismo origen en la última hora.',
-    SIGNAL_VELOCITY_CONTACT: 'El mismo teléfono, correo o documento en pedidos de distintos compradores en 24 horas.',
+    SIGNAL_VELOCITY_CONTACT: 'El mismo teléfono, correo o documento en varios pedidos en 24 horas.',
     SIGNAL_DOCUMENT_MISMATCH: 'El documento del pedido no es el del perfil del cliente.',
     SIGNAL_ARCHIVED_CUSTOMER: 'El cliente está archivado en la tienda.',
 }
@@ -110,16 +110,24 @@ HIGH_SCORE = 60
 #: again is one buyer, however many orders that leaves behind.
 VELOCITY_IP_BUYERS = 3
 VELOCITY_IP_WINDOW = timedelta(hours=1)
+#: …or this many PAID ORDERS from one origin within the window, this one
+#: included, whoever placed them: one browser that keeps buying is as much
+#: «how often» as three that buy once. Paid ones only, so the orders a
+#: declined card leaves behind are still one order.
+VELOCITY_IP_ORDERS = 6
 
 #: This many DIFFERENT buyers sharing a phone, an address or a document within
 #: the window, this one included.
 VELOCITY_CONTACT_BUYERS = 3
 VELOCITY_CONTACT_WINDOW = timedelta(hours=24)
+#: …or this many PAID ORDERS carrying one of them within the window, this one
+#: included, whoever placed them.
+VELOCITY_CONTACT_ORDERS = 6
 #: How many of the company's latest orders that look reads at most.
 _VELOCITY_CONTACT_SCAN = 500
 
-# WHOSE ORDERS THE TWO VELOCITY RULES COUNT. This order's own buyer, always.
-# ANOTHER buyer's order only once it was PAID. An order nobody paid for costs
+# WHOSE ORDERS THE TWO VELOCITY RULES COUNT. This order, always. ANY OTHER
+# order — another buyer's or this buyer's own — only once it was PAID. An order nobody paid for costs
 # nothing to make: counted, anybody could mark a stranger's next order by
 # leaving two unpaid ones with the stranger's phone on them, or fill a shop's
 # review queue from one browser. A paid order cost its buyer money.
@@ -256,13 +264,55 @@ def _review_when_paid(order):
     if order.status != Order.Status.PAID:
         return None
     row = OrderRiskAssessment.objects.select_for_update().filter(order=order).first()
-    if row is None or row.review_status != ReviewStatus.NOT_REQUIRED or not needs_review(row):
+    if row is None or row.review_status != ReviewStatus.NOT_REQUIRED:
+        return None
+    _look_again_at_velocity(order, row)
+    if not needs_review(row):
         return None
     row.review_status = ReviewStatus.PENDING
     row.save(update_fields=['review_status', 'updated_at'])
     # Whoever may decide is told, in the panel. It cannot fail this.
     emit_order_review_needed(order, row)
     return row
+
+
+def _look_again_at_velocity(order, row) -> None:
+    """
+    «How often» asked a second time, now that the order is paid.
+
+    When an order is made, the orders made beside it are mostly unpaid and so
+    not counted; by the time it is paid, they have been. Without this second
+    look, several buyers who all order and then all pay were never noticed.
+
+    It only ADDS: what was noticed when the order was made stays noticed, even
+    if the hour has passed since. The score and the level follow the signals.
+
+    In a savepoint of its own inside the caller's: if this look fails, the
+    order is judged by what was already written — a review that was due is
+    still opened — and the failure is logged by its kind.
+    """
+    try:
+        with transaction.atomic():
+            company = order.company
+            document = (order.document_type or '', normalize_document_number(order.document_number))
+            noticed = set(row.signals or [])
+            if _origin_is_busy(order, company, row.ip_hash):
+                noticed.add(SIGNAL_VELOCITY_IP)
+            if _contact_is_busy(order, company, document):
+                noticed.add(SIGNAL_VELOCITY_CONTACT)
+            signals = [code for code in SIGNALS if code in noticed]
+            if signals == list(row.signals or []):
+                return
+            score = sum(WEIGHTS[code] for code in signals)
+            OrderRiskAssessment.objects.filter(pk=row.pk).update(
+                signals=signals, score=score, level=level_for(score), updated_at=timezone.now(),
+            )
+            row.signals, row.score, row.level = signals, score, level_for(score)
+    except Exception as failed:  # noqa: BLE001 — see docstring
+        logger.error(
+            'velocity could not be looked at again for paid order %s (%s)',
+            getattr(order, 'pk', None), type(failed).__name__,
+        )
 
 
 def _signals(order, company, origin) -> list[str]:
@@ -280,9 +330,9 @@ def _signals(order, company, origin) -> list[str]:
         noticed.add(SIGNAL_FIRST_ORDER)
     if _reaches_review_amount(order, company):
         noticed.add(SIGNAL_HIGH_AMOUNT)
-    if _origin_shared_by_buyers(order, company, origin):
+    if _origin_is_busy(order, company, origin):
         noticed.add(SIGNAL_VELOCITY_IP)
-    if _contact_shared_by_buyers(order, company, document):
+    if _contact_is_busy(order, company, document):
         noticed.add(SIGNAL_VELOCITY_CONTACT)
     if own is not None and own.document_number and (own.document_type, own.document_number) != document:
         noticed.add(SIGNAL_DOCUMENT_MISMATCH)
@@ -310,11 +360,15 @@ def _reaches_review_amount(order, company) -> bool:
     return amount is not None and order.total >= amount
 
 
-def _origin_shared_by_buyers(order, company, origin) -> bool:
-    """This buyer, plus the OTHER buyers whose paid orders came from the same origin in the window."""
+def _origin_is_busy(order, company, origin) -> bool:
+    """
+    Whether too much came from this order's origin in the window: this order
+    plus the PAID orders that came from it — by how many different buyers, or
+    by how many orders.
+    """
     if not origin:
         return False
-    others = (
+    others = list(
         OrderRiskAssessment.objects
         .filter(company=company, ip_hash=origin, created_at__gte=timezone.now() - VELOCITY_IP_WINDOW,
                 order__status=Order.Status.PAID)
@@ -326,7 +380,7 @@ def _origin_shared_by_buyers(order, company, origin) -> bool:
         buyers.add(_buyer_key({
             'pk': row['order_id'], 'user_id': row['order__user_id'], 'cart_session_key': row['order__cart_session_key'],
         }))
-    return len(buyers) >= VELOCITY_IP_BUYERS
+    return len(buyers) >= VELOCITY_IP_BUYERS or 1 + len(others) >= VELOCITY_IP_ORDERS
 
 
 def _buyer_key(row) -> tuple:
@@ -355,7 +409,8 @@ def _contact_keys(phone, email, document_type, document_number) -> set:
     return keys
 
 
-def _contact_shared_by_buyers(order, company, document) -> bool:
+def _contact_is_busy(order, company, document) -> bool:
+    """The same question about this order's phone, address and document."""
     mine = _contact_keys(order.customer_phone, order.customer_email, *document)
     if not mine:
         return False
@@ -368,11 +423,13 @@ def _contact_shared_by_buyers(order, company, document) -> bool:
                 'document_type', 'document_number')[:_VELOCITY_CONTACT_SCAN]
     )
     buyers = {_buyer_key({'pk': order.pk, 'user_id': order.user_id, 'cart_session_key': order.cart_session_key})}
+    orders = 1
     for row in recent:
         theirs = _contact_keys(row['customer_phone'], row['customer_email'], row['document_type'], row['document_number'])
         if mine & theirs:
             buyers.add(_buyer_key(row))
-    return len(buyers) >= VELOCITY_CONTACT_BUYERS
+            orders += 1
+    return len(buyers) >= VELOCITY_CONTACT_BUYERS or orders >= VELOCITY_CONTACT_ORDERS
 
 
 def _archived_here(company, own, document) -> bool:

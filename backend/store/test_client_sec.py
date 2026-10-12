@@ -3524,3 +3524,150 @@ class TheDocumentBudgetIsWrittenDownTest(_ProfileBase):
         from store import customer_profile
 
         self.assertNotIn('django.core.cache', inspect.getsource(customer_profile))
+
+
+class VelocityCountsPaidOrdersAndLooksAgainWhenPaidTest(_RiskBase):
+    """
+    P2-4 · «how often» is about paid orders as well as about different buyers,
+    and it is asked a second time when the order itself is paid — by then the
+    orders made beside it have been paid too.
+    """
+
+    IP = '198.51.100.70'
+
+    def signals(self, order, ip=None):
+        return set(self.assess(order, ip or self.IP).signals)
+
+    def paid_from(self, n, ip=None, **same):
+        """`n` orders that were assessed from `ip` and PAID."""
+        made = []
+        for _ in range(n):
+            order = self.order(paid=True, **same)
+            self.assess(order, ip or self.IP)
+            made.append(order)
+        return made
+
+    # -- paid orders, whoever placed them --------------------------------------
+
+    def test_the_sixth_paid_order_of_one_origin_in_an_hour_is_noticed(self):
+        self.assertEqual(risk.VELOCITY_IP_ORDERS, 6)
+        self.paid_from(4, cart_session_key='una-sola-sesion')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(cart_session_key='una-sola-sesion')))     # the fifth
+        self.paid_from(1, cart_session_key='una-sola-sesion')
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(cart_session_key='una-sola-sesion')))        # the sixth
+
+    def test_the_seventh_order_of_one_guest_session_after_six_paid_ones(self):
+        self.paid_from(6, cart_session_key='una-sola-sesion')
+        row = self.assess(self.order(cart_session_key='una-sola-sesion'), self.IP)
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, row.signals)
+        self.assertNotEqual(row.level, Level.LOW)
+
+    def test_an_account_is_counted_like_a_guest(self):
+        user = self.buyer()
+        for _ in range(5):
+            self.assess(self.order(user=user, paid=True), self.IP)
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(user=user)))
+
+    def test_one_order_retried_is_still_one_order(self):
+        # An honest buyer whose card is declined leaves unpaid orders behind: they are not counted.
+        for _ in range(12):
+            found = self.signals(self.order(cart_session_key='una-sola-sesion'))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, found)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, found)
+
+    def test_paid_orders_of_another_hour_another_origin_or_another_shop_are_not_counted(self):
+        old = self.paid_from(5, cart_session_key='una-sola-sesion')
+        OrderRiskAssessment.objects.filter(order__in=old).update(created_at=timezone.now() - timedelta(minutes=61))
+        self.paid_from(5, ip='198.51.100.71', cart_session_key='una-sola-sesion')
+        for _ in range(5):
+            self.assess(self.order(self.b, paid=True, cart_session_key='una-sola-sesion'), self.IP)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(cart_session_key='una-sola-sesion')))
+
+    def test_the_sixth_paid_order_with_one_contact_in_a_day_is_noticed(self):
+        self.assertEqual(risk.VELOCITY_CONTACT_ORDERS, 6)
+        user = self.buyer()
+        for _ in range(4):
+            self.order(user=user, customer_phone='987111222', paid=True)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(user=user, customer_phone='987 111 222')))
+        self.order(user=user, customer_phone='987111222', paid=True)
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(user=user, customer_phone='+51 987 111 222')))
+
+    def test_paid_orders_with_that_contact_made_at_the_till_or_a_day_ago_are_not_counted(self):
+        old = [self.order(customer_phone='987111222', cart_session_key='c', paid=True) for _ in range(5)]
+        Order.objects.filter(pk__in=[o.pk for o in old]).update(created_at=timezone.now() - timedelta(hours=24, minutes=1))
+        for _ in range(5):
+            self.order(customer_phone='987111222', cart_session_key='c', paid=True, sales_channel='pos')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_phone='987111222', cart_session_key='c')))
+
+    # -- asked again when the order is paid --------------------------------------
+
+    def test_four_guests_on_one_address_who_all_order_and_then_all_pay(self):
+        orders = [self.order() for _ in range(4)]
+        rows = [self.assess(order, self.IP) for order in orders]
+        self.assertFalse(any(risk.SIGNAL_VELOCITY_IP in row.signals for row in rows))      # nobody had paid yet
+        after = [self.paid_now(order) for order in orders]
+        self.assertEqual([risk.SIGNAL_VELOCITY_IP in row.signals for row in after], [False, False, True, True])
+        # The score and the level are those of what is noticed now.
+        for row in after[2:]:
+            self.assertEqual(row.score, sum(risk.WEIGHTS[code] for code in row.signals))
+            self.assertEqual(row.level, risk.level_for(row.score))
+            self.assertEqual(row.signals, [code for code in risk.SIGNALS if code in row.signals])
+        self.assertEqual((after[0].score, after[0].level), (rows[0].score, rows[0].level))
+
+    def test_three_buyers_with_one_phone_who_all_order_and_then_all_pay(self):
+        orders = [self.order(customer_phone='987111222') for _ in range(3)]
+        for order in orders:
+            self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.assess(order, None).signals)
+        after = [self.paid_now(order) for order in orders]
+        self.assertEqual([risk.SIGNAL_VELOCITY_CONTACT in row.signals for row in after], [False, False, True])
+
+    def test_what_the_second_look_finds_can_ask_for_a_person(self):
+        self.amount('500.00')
+        self.paid_from(2)                                                   # two other buyers of this origin, paid meanwhile
+        order = self.order(total='900.00')
+        row = risk.assess(order, from_address('198.51.100.99'))             # made from elsewhere: nothing about the origin
+        OrderRiskAssessment.objects.filter(pk=row.pk).update(ip_hash=risk.origin_hash(self.a, from_address(self.IP)))
+        self.assertEqual((row.level, row.review_status), (Level.MEDIUM, Review.NOT_REQUIRED))
+        row = self.paid_now(order)
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, row.signals)
+        self.assertEqual((row.level, row.review_status), (Level.HIGH, Review.PENDING))
+
+    def test_what_was_noticed_when_it_was_made_stays_noticed(self):
+        others = self.paid_from(2)
+        order = self.order()
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.assess(order, self.IP).signals)
+        OrderRiskAssessment.objects.filter(order__in=others).update(created_at=timezone.now() - timedelta(hours=3))
+        row = self.paid_now(order)                                          # paid three hours later
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, row.signals)
+
+    def test_an_order_without_an_origin_is_not_given_one(self):
+        orders = [self.order() for _ in range(4)]
+        for order in orders:
+            self.assess(order, None)
+        self.assertFalse(any(risk.SIGNAL_VELOCITY_IP in self.paid_now(order).signals for order in orders))
+
+    def test_a_review_already_waiting_or_decided_is_not_looked_at_again(self):
+        self.paid_from(2)
+        order = self.order()
+        row = risk.assess(order, None)
+        OrderRiskAssessment.objects.filter(pk=row.pk).update(
+            ip_hash=risk.origin_hash(self.a, from_address(self.IP)), review_status=Review.APPROVED,
+        )
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.paid_now(order).signals)
+
+    def test_a_second_look_that_breaks_costs_neither_the_payment_nor_a_review_already_due(self):
+        self.amount('100.00')
+        self.paid_from(2)
+        order = self.order(total='900.00')
+        row = self.assess(order, self.IP)                                   # guest + first + amount + origin: high
+        self.assertTrue(risk.needs_review(row))
+
+        def broken(*args, **kwargs):
+            Customer.objects.bulk_create([Customer(company=self.a)])        # refused by the database itself
+
+        with patch('store.order_risk._origin_is_busy', side_effect=broken), \
+                self.assertLogs('store.order_risk', level='ERROR') as logged:
+            row = self.paid_now(order)
+        self.assertEqual(row.review_status, Review.PENDING)
+        self.assertIn('IntegrityError', ' '.join(logged.output))
+        self.assertTrue(Order.objects.filter(pk=order.pk, status=Order.Status.PAID).exists())    # the transaction is usable
