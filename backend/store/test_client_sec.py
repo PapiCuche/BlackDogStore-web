@@ -1113,6 +1113,18 @@ class EachSignalTest(_RiskBase):
             found = self.signals(self.order(user=user), '198.51.100.9')
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, found)
 
+    def test_velocity_ip_counts_another_buyer_once_however_often_they_bought(self):
+        # A regular who paid for three orders from the shop's own Wi-Fi is ONE other buyer.
+        regular = self.buyer('habitual')
+        for _ in range(3):
+            self.assess(self.order(user=regular, paid=True), '198.51.100.7')
+        for _ in range(3):
+            self.assess(self.order(paid=True, cart_session_key='otro-carrito'), '198.51.100.7')
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))          # two others + this one
+        for _ in range(4):
+            self.assess(self.order(user=regular, paid=True), '198.51.100.9')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.9'))       # one other + this one
+
     def test_velocity_ip_counts_other_buyers_only_once_they_paid(self):
         # F3 · orders nobody paid for are free to make: they cannot mark somebody else's order.
         for _ in range(5):

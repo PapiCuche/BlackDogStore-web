@@ -69,6 +69,9 @@ test('the book lists each entry by what a person recognises it by', async () => 
   expect(within(office).getByText('Agencia Uno · Agencia Centro · Juliaca, Puno')).toBeInTheDocument();
   expect(within(office).getByText('Recibe: Rosa Quispe')).toBeInTheDocument();
   expect(within(office).queryByText('Predeterminada')).not.toBeInTheDocument();
+  // Choosing a default is offered for what is not the default already.
+  expect(within(home).queryByRole('button', { name: /como predeterminada/ })).not.toBeInTheDocument();
+  expect(within(office).getByRole('button', { name: /como predeterminada/ })).toBeInTheDocument();
 });
 
 test('an empty book says so', async () => {
