@@ -53794,6 +53794,8 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'v1-internal-order-unit-detail': self.commerce.pk,
             # CLIENT-SEC-01: sólo POST; aquí la alcanza OPTIONS.
             'v1-internal-order-risk-review': self.commerce.pk,
+            # DELIVERY-01: GET lee el registro de entrega; PATCH lo escribe.
+            'v1-internal-order-delivery': self.commerce.pk,
             'v1-internal-service-device-detail': self.device.pk,
             'v1-internal-announcement': self.announcement.pk,
             'v1-internal-notifications-read': 999999,
@@ -54123,7 +54125,8 @@ class H411CredentialChannelTest(M8ServiceBase):
         # 87 desde SERIAL-PICK-01: consulta de equipo en caja, y consulta,
         # identificación y retiro del equipo de un pedido.
         # 88 desde CLIENT-SEC-01: decidir la revisión de un pedido.
-        self.assertEqual(internal, 88)
+        # 89 desde DELIVERY-01: el registro de entrega de un pedido.
+        self.assertEqual(internal, 89)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------

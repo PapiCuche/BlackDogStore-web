@@ -42,7 +42,7 @@ from store import checkout_services as checkout
 from store.integrations import payments as payment_adapters
 from store.integrations import registry, service
 from store.models import (
-    AdminAuditLog, CartItem, Company, IntegrationConfig, Order, OrderRiskAssessment, PaymentTransaction,
+    AdminAuditLog, CartItem, Company, IntegrationConfig, Order, OrderDelivery, OrderRiskAssessment, PaymentTransaction,
 )
 from store.payments.fake_micuentaweb import FakeMiCuentaWeb
 from store.test_integrations_payments import (
@@ -201,6 +201,7 @@ class UnsafeChangeTest(GuardBase):
                 self.reset_console()
                 PaymentTransaction.objects.all().delete()
                 OrderRiskAssessment.objects.all().delete()
+                OrderDelivery.objects.all().delete()
                 Order.objects.all().delete()
                 attempt = self.open_attempt(minutes=45)
                 self.prepare(name)
@@ -237,6 +238,7 @@ class UnsafeChangeTest(GuardBase):
                     self.reset_console()
                     PaymentTransaction.objects.all().delete()
                     OrderRiskAssessment.objects.all().delete()
+                    OrderDelivery.objects.all().delete()
                     Order.objects.all().delete()
                     attempt = self.open_attempt(minutes=45)
                     self.gateway.hold(attempt.transaction_id, *transactions(attempt))

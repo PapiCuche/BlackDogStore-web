@@ -949,6 +949,13 @@ def _risk_block(request, order, company):
     )
 
 
+def _delivery_block(request, order, company):
+    # Imported here: `delivery_views` builds on this module.
+    from .delivery_views import panel_delivery_block
+
+    return panel_delivery_block(request, order, company)
+
+
 def _order_detail_payload(request, order, company):
     """
     The order as the web panel shows it, plus the fulfilment states THIS caller
@@ -979,6 +986,9 @@ def _order_detail_payload(request, order, company):
         # CLIENT-SEC-01: what was noticed about this order and what a person
         # decided, for whoever may see orders; null when it was not assessed.
         'risk': _risk_block(request, order, company),
+        # DELIVERY-01: the order's delivery record (carrier, agency, freight,
+        # waybill), or its empty shape; null for whoever may not see orders.
+        'delivery': _delivery_block(request, order, company),
         'units_pending': sum(pending.values()),
         # Whether THIS caller may say which device it is: whoever may change how
         # the order is dispatched, and only until it has left the shop.

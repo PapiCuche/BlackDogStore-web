@@ -91,3 +91,72 @@ class AdminCarrierDetailView(_CarrierWriteMixin, APIView):
         except delivery.DeliveryError as refused:
             return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
         return Response(delivery.carrier_payload(carrier))
+
+
+# ---------------------------------------------------------------------------
+# The delivery record of an order
+# ---------------------------------------------------------------------------
+
+from .admin_views import (  # noqa: E402
+    CAP_ORDERS_MANAGE, _LEGACY_MANAGE_ORDERS_ROLES, _ORDER_NOT_FOUND,
+)
+from .tenancy import visible_orders  # noqa: E402
+
+
+def panel_delivery_block(request, order, company):
+    """
+    An order's delivery as the panel shows it, for whoever may see orders; None
+    otherwise. On the legacy bridge warehouse staff write it too: the waybill is
+    written by whoever hands the parcel to the carrier.
+    """
+    if not _holds(request.user, company, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES):
+        return None
+    return delivery.staff_payload(
+        order, delivery.record_for(order),
+        can_edit=_holds(request.user, company, CAP_ORDERS_MANAGE, _LEGACY_MANAGE_ORDERS_ROLES),
+    )
+
+
+class AdminOrderDeliveryView(APIView):
+    """
+    GET   /api/admin/orders/{pk}/delivery/ — the order's delivery record, or the
+          same shape empty when it has none. `sales.orders.view`.
+    PATCH — recipient, door or agency, carrier, freight (information), waybill
+          and where to follow it. `sales.orders.manage`.
+
+    Both on an order this person can see. Nothing of the order itself is
+    written: see `delivery_services.update_order_delivery`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        return [AdminOrderStatusChangeThrottle()] if self.request.method == 'PATCH' else [AdminOrdersThrottle()]
+
+    def _order(self, request, capability, legacy_roles, pk):
+        company, error = _company_context(request, capability, legacy_roles)
+        if error:
+            return None, None, error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return None, None, Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return company, order, None
+
+    def get(self, request, pk):
+        company, order, error = self._order(request, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES, pk)
+        if error:
+            return error
+        return Response(panel_delivery_block(request, order, company))
+
+    def patch(self, request, pk):
+        company, order, error = self._order(request, CAP_ORDERS_MANAGE, _LEGACY_MANAGE_ORDERS_ROLES, pk)
+        if error:
+            return error
+        try:
+            record = delivery.update_order_delivery(
+                order=order, company=company, actor=request.user, data=request.data, request=request,
+            )
+        except delivery.NotAnOnlineOrder as refused:
+            return Response({'detail': refused.detail, 'code': refused.code}, status=status.HTTP_409_CONFLICT)
+        except delivery.DeliveryError as refused:
+            return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(delivery.staff_payload(order, record, can_edit=True))

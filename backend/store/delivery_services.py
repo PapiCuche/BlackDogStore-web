@@ -550,3 +550,230 @@ def _snapshot(order):
     record = _from_order(order)
     record.save()
     return record
+
+
+# ---------------------------------------------------------------------------
+# What staff read and write of an order's delivery
+# ---------------------------------------------------------------------------
+
+Mode = OrderDelivery.Mode
+
+#: The two modes staff may move an order between: to a door, or to an agency.
+#: An order to be collected at the shop, or delivered locally, stays what it is.
+_SWITCHABLE = (Mode.NATIONAL_ADDRESS, Mode.AGENCY_PICKUP)
+
+#: What staff may write. An allowlist: the address the buyer typed, the order
+#: itself and who edited are not here.
+STAFF_FIELDS = (
+    'mode', 'recipient_name', 'recipient_document_type', 'recipient_document_number', 'recipient_phone',
+    'carrier', 'agency_name', 'agency_locality', 'freight_amount', 'freight_paid_by',
+    'waybill_number', 'tracking_code', 'tracking_url', 'shipped_at',
+)
+_NO_SUCH_STAFF_CARRIER = 'Elige un transportista activo de la empresa.'
+
+
+class NotAnOnlineOrder(Exception):
+    """A sale at the till has no delivery to record."""
+
+    detail = 'Las ventas de caja no llevan registro de entrega.'
+    code = 'not_online'
+
+
+def allowed_modes(mode: str) -> list[str]:
+    """The modes staff may leave an order in, given the one it has."""
+    if mode in _SWITCHABLE or not mode:
+        return [str(m) for m in _SWITCHABLE]
+    return [mode]
+
+
+def staff_payload(order, record=None, *, can_edit: bool = False) -> dict:
+    """
+    An order's delivery as staff read it — the record, or the same shape empty
+    for an order that has none. `can_edit` is whether THIS reader may write it,
+    and it is never true for a sale at the till.
+    """
+    online = is_online(order)
+    blank = record is None
+    record = record if record is not None else OrderDelivery()
+    editor = record.updated_by if record.updated_by_id else None
+    return {
+        'exists': not blank,
+        'can_edit': bool(can_edit) and online,
+        'mode': record.mode,
+        'mode_label': record.get_mode_display() if record.mode else '',
+        'allowed_modes': allowed_modes(record.mode) if online else [],
+        'recipient_name': record.recipient_name,
+        'recipient_document_type': record.recipient_document_type,
+        'recipient_document_number': record.recipient_document_number,
+        'recipient_phone': record.recipient_phone,
+        'address_line': record.address_line,
+        'district': record.district,
+        'city': record.city,
+        'department': record.department,
+        'reference': record.reference,
+        'carrier': record.carrier_id,
+        # The name the order left with, not today's.
+        'carrier_name': record.carrier_name,
+        'agency_name': record.agency_name,
+        'agency_locality': record.agency_locality,
+        'freight_amount': None if record.freight_amount is None else f'{record.freight_amount:.2f}',
+        'freight_paid_by': record.freight_paid_by,
+        'waybill_number': record.waybill_number,
+        'tracking_code': record.tracking_code,
+        'tracking_url': record.tracking_url,
+        'shipped_at': record.shipped_at,
+        'updated_by': (editor.get_full_name() or editor.get_username()) if editor is not None else None,
+        'updated_at': None if blank else record.updated_at,
+    }
+
+
+def _freight(raw):
+    from decimal import Decimal, InvalidOperation
+
+    if raw is None or raw == '':
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float, Decimal)):
+        _refuse('freight_amount', 'Escribe un monto.')
+    try:
+        amount = Decimal(str(raw).strip().replace(',', '.'))
+    except InvalidOperation:
+        _refuse('freight_amount', 'Escribe un monto.')
+    if not amount.is_finite() or amount < 0:
+        _refuse('freight_amount', 'El flete no puede ser negativo.')
+    if amount != amount.quantize(Decimal('0.01')) or amount >= Decimal('100000000'):
+        _refuse('freight_amount', 'Escribe un monto con dos decimales como máximo.')
+    return amount.quantize(Decimal('0.01'))
+
+
+def _shipped_at(raw):
+    from datetime import datetime
+
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+
+    if raw is None or raw == '':
+        return None
+    try:
+        moment = raw if isinstance(raw, datetime) else parse_datetime(raw) if isinstance(raw, str) else None
+    except ValueError:
+        moment = None
+    if moment is None:
+        _refuse('shipped_at', 'Indica una fecha y hora válidas.')
+    return timezone.make_aware(moment) if timezone.is_naive(moment) else moment
+
+
+def _staff_values(company, data, record) -> dict:
+    """Every staff field as it would be after this save, judged. Only what was sent changes."""
+    length = lambda field: OrderDelivery._meta.get_field(field).max_length  # noqa: E731
+    values = {field: getattr(record, field) for field in STAFF_FIELDS if field != 'carrier'}
+    values['carrier'] = record.carrier
+    values['carrier_name'] = record.carrier_name
+
+    if 'mode' in data:
+        mode = data['mode']
+        if mode not in Mode.values or (mode != record.mode and mode not in allowed_modes(record.mode)):
+            _refuse('mode', 'Esta entrega sólo puede cambiar entre envío a domicilio y recojo en agencia.')
+        values['mode'] = mode
+
+    if 'recipient_name' in data:
+        values['recipient_name'] = _text(data, 'recipient_name', '', max_length=length('recipient_name'), required=True)
+    try:
+        if 'recipient_phone' in data:
+            values['recipient_phone'] = identity.clean_phone(data['recipient_phone'] if data['recipient_phone'] is not None else '')
+        if 'recipient_document_type' in data or 'recipient_document_number' in data:
+            values['recipient_document_type'], values['recipient_document_number'] = identity.clean_document(
+                data.get('recipient_document_type', record.recipient_document_type) or '',
+                data.get('recipient_document_number', record.recipient_document_number) or '',
+            )
+    except identity.IdentityError as refused:
+        raise DeliveryError({f'recipient_{refused.field}': [refused.message]}) from None
+
+    if 'carrier' in data:
+        raw = data['carrier']
+        if raw is None:
+            values['carrier'], values['carrier_name'] = None, ''
+        else:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                _refuse('carrier', _NO_SUCH_STAFF_CARRIER)
+            carrier = Carrier.objects.filter(company=company, pk=raw, is_active=True).first()
+            if carrier is None:
+                # Another company's, a switched-off one, one that never was: one answer.
+                _refuse('carrier', _NO_SUCH_STAFF_CARRIER)
+            # The NAME is copied: the record says what the order left with.
+            values['carrier'], values['carrier_name'] = carrier, carrier.name
+    # Collected at an agency means a carrier that has agencies. Asked of a
+    # carrier being set or of a mode being changed, not of history: an order
+    # that already left keeps its carrier even if the carrier changed since.
+    judged = 'carrier' in data or 'mode' in data
+    if judged and values['mode'] == Mode.AGENCY_PICKUP and values['carrier'] is not None \
+            and values['carrier'].kind != Carrier.Kind.AGENCY:
+        _refuse('carrier', 'Para un recojo en agencia elige un transportista con agencias.')
+
+    for field in ('agency_name', 'agency_locality', 'waybill_number', 'tracking_code'):
+        values[field] = _text(data, field, getattr(record, field), max_length=length(field))
+    if 'freight_amount' in data:
+        values['freight_amount'] = _freight(data['freight_amount'])
+    if 'freight_paid_by' in data:
+        paid_by = data['freight_paid_by'] or ''
+        if paid_by and paid_by not in OrderDelivery.FreightPaidBy.values:
+            _refuse('freight_paid_by', 'Indica quién paga el flete.')
+        values['freight_paid_by'] = paid_by
+    if 'shipped_at' in data:
+        values['shipped_at'] = _shipped_at(data['shipped_at'])
+
+    # Where to follow it. An address somebody typed wins. With none typed, a
+    # waybill given now is followed at the carrier's own page — or nowhere, if
+    # the carrier has none.
+    typed = clean_tracking_url(data['tracking_url'] if data['tracking_url'] is not None else '') if 'tracking_url' in data else None
+    if typed:
+        values['tracking_url'] = typed
+    elif 'waybill_number' in data and values['waybill_number']:
+        values['tracking_url'] = tracking_url_for(values['carrier'], values['waybill_number'])
+    elif typed is not None:
+        values['tracking_url'] = ''
+    return values
+
+
+def update_order_delivery(*, order, company, actor, data, request=None):
+    """
+    Write what staff know about an order's delivery, and answer with the record.
+
+    The caller has established that `actor` may manage orders in `company` and
+    found `order` among the ones they can see. An order with no record gets one
+    here, from its own columns, if it was made online; a sale at the till has
+    no delivery (`NotAnOnlineOrder`).
+
+    IT WRITES THE RECORD AND NOTHING ELSE. Not the order's delivery method or
+    address, not its total — freight is information — and not its dispatch
+    state: «sent» is still said where it always was.
+    """
+    data = data if hasattr(data, 'get') else {}
+    if not is_online(order):
+        raise NotAnOnlineOrder()
+    with transaction.atomic():
+        # The order's row is the lock: two people writing one delivery at once
+        # take turns, and the second one sees what the first one wrote.
+        Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
+        record = OrderDelivery.objects.select_related('carrier').filter(order=order, company=company).first()
+        created = record is None
+        if created:
+            record = _from_order(order)
+        values = _staff_values(company, data, record)
+        changed = sorted(
+            field for field, value in values.items()
+            if (record.carrier_id if field == 'carrier' else getattr(record, field)) != (
+                getattr(value, 'pk', None) if field == 'carrier' else value)
+        )
+        if created or changed:
+            for field in changed:
+                setattr(record, field, values[field])
+            record.updated_by = actor
+            record.save()
+            AdminAuditLog.log(
+                actor=actor, action='order_delivery_updated', target_type='order', target_id=order.pk,
+                # FIELD NAMES ONLY: who changed which part of a delivery — never
+                # the recipient, the waybill or the amount.
+                metadata={'order_id': order.pk, 'created': created, 'changed_fields': changed},
+                request=request, company=company,
+            )
+    return record_for(order)

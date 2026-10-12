@@ -941,3 +941,386 @@ class RecordsWhenTheTableArrivedTest(TestCase):
         self.assertNotIn('from store', source)
         self.assertNotIn('import store', source)
         self.assertEqual(self.module.MODE_BY_METHOD, {k: str(v) for k, v in delivery.MODE_BY_METHOD.items()})
+
+
+# =============================================================================
+# 4 · staff write what the order's columns never had
+# =============================================================================
+
+from django.utils import timezone  # noqa: E402
+from django.utils.dateparse import parse_datetime  # noqa: E402
+
+STAFF_KEYS = {
+    'exists', 'can_edit', 'mode', 'mode_label', 'allowed_modes',
+    'recipient_name', 'recipient_document_type', 'recipient_document_number', 'recipient_phone',
+    'address_line', 'district', 'city', 'department', 'reference',
+    'carrier', 'carrier_name', 'agency_name', 'agency_locality',
+    'freight_amount', 'freight_paid_by', 'waybill_number', 'tracking_code', 'tracking_url', 'shipped_at',
+    'updated_by', 'updated_at',
+}
+
+
+def panel_delivery(pk):
+    return f'/api/admin/orders/{pk}/delivery/'
+
+
+def app_delivery(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/delivery/'
+
+
+class _StaffDeliveryBase(_CompaniesBase):
+    def setUp(self):
+        super().setUp()
+        self.buyer = User.objects.create_user('compradora', 'compradora@correo.test', PASSWORD, first_name='Ana')
+        self.order = self.online(self.a, self.north, user=self.buyer)
+        self.southern = self.online(self.a, self.south)
+        self.foreign = self.online(self.b, None)
+        self.agency = self.carrier(name='Agencia Uno', kind='agency', tracking_url_template='https://rastreo.ejemplo.test/g/{guia}')
+        self.courier = self.carrier(name='A domicilio', kind='courier')
+
+    def online(self, company, branch, *, method='national_shipping', record=True, **extra):
+        order = _order(
+            company, total='900.00', paid=True, fulfillment_branch=branch, delivery_method=method,
+            customer_name='Ana Torres', customer_email='ana.torres@correo.test', customer_phone='987654321',
+            document_type='dni', document_number=DNI, address_line='Av. Siempre Viva 123', district='Juliaca',
+            city='Puno', reference='Puerta azul', **extra,
+        )
+        if record:
+            self.assertIsNotNone(delivery.snapshot_for_order(order))
+        return order
+
+    def url(self, order, surface, slug='envios-a'):
+        return panel_delivery(order.pk) if surface == 'panel' else app_delivery(slug, order.pk)
+
+    def read(self, user, order=None, surface='panel', **kw):
+        return acting(user).get(self.url(order or self.order, surface, **kw))
+
+    def write(self, user, body, order=None, surface='panel', **kw):
+        return acting(user).patch(self.url(order or self.order, surface, **kw), body, format='json')
+
+    def record(self, order=None):
+        return OrderDelivery.objects.filter(order=order or self.order).first()
+
+    def entries(self):
+        return list(AdminAuditLog.objects.filter(action='order_delivery_updated').order_by('pk'))
+
+
+class StaffReadDeliveryTest(_StaffDeliveryBase):
+    def test_the_record_as_staff_read_it(self):
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                response = self.read(self.viewer, surface=surface)
+                self.assertEqual(response.status_code, 200, response.content)
+                body = response.json()
+                self.assertEqual(set(body), STAFF_KEYS)
+                self.assertEqual(
+                    (body['exists'], body['can_edit'], body['mode'], body['mode_label']),
+                    (True, False, 'national_address', 'Envío nacional a domicilio'),
+                )
+                self.assertEqual(body['allowed_modes'], ['national_address', 'agency_pickup'])
+                self.assertEqual((body['recipient_name'], body['recipient_phone'], body['recipient_document_number']),
+                                 ('Ana Torres', '987654321', DNI))
+                self.assertEqual((body['address_line'], body['district'], body['city']), ('Av. Siempre Viva 123', 'Juliaca', 'Puno'))
+                self.assertEqual((body['carrier'], body['carrier_name'], body['freight_amount'], body['shipped_at'], body['updated_by']),
+                                 (None, '', None, None, None))
+                self.assertTrue(self.read(self.manager, surface=surface).json()['can_edit'])
+
+    def test_an_order_without_a_record_answers_the_empty_shape(self):
+        till = self.online(self.a, self.north, record=False, sales_channel='pos')
+        silent = self.online(self.a, self.north, record=False, method='')
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                body = self.read(self.manager, till, surface).json()
+                self.assertEqual(set(body), STAFF_KEYS)
+                self.assertEqual((body['exists'], body['can_edit'], body['mode'], body['allowed_modes'], body['recipient_name']),
+                                 (False, False, '', [], ''))                     # a till sale has no delivery to write
+                body = self.read(self.manager, silent, surface).json()
+                self.assertEqual((body['exists'], body['can_edit'], body['mode']), (False, True, ''))
+        self.assertFalse(OrderDelivery.objects.filter(order__in=[till, silent]).exists())      # reading made nothing
+
+    def test_reading_writes_nothing(self):
+        from django.test.utils import CaptureQueriesContext
+
+        for surface in ('panel', 'app'):
+            client = acting(self.manager)
+            with CaptureQueriesContext(connection) as queries:
+                client.get(self.url(self.order, surface))
+                client.options(self.url(self.order, surface))
+            writes = [q['sql'] for q in queries.captured_queries if q['sql'].lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE'))]
+            self.assertEqual(writes, [])
+
+    def test_the_order_detail_carries_it_too(self):
+        panel = acting(self.viewer).get(f'/api/admin/orders/{self.order.pk}/').json()
+        app = acting(self.viewer).get(f'/api/v1/internal/envios-a/orders/{self.order.pk}/').json()
+        self.assertEqual(panel['delivery'], self.read(self.viewer).json())
+        self.assertEqual(app['delivery'], panel['delivery'])
+
+    def test_who_may_read_it(self):
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                self.assertEqual(self.read(self.outsider, surface=surface).status_code, 403)
+                self.assertEqual(self.read(self.admin_b, surface=surface).status_code, 404)
+                self.assertEqual(self.read(self.manager, self.foreign, surface).status_code, 404)
+                self.assertEqual(self.read(self.northerner, self.southern, surface).status_code, 404)
+                self.assertEqual(APIClient().get(self.url(self.order, surface)).status_code, 401)
+        self.assertEqual(self.read(self.buyer, surface='panel').status_code, 403)
+        self.assertEqual(self.read(self.buyer, surface='app').status_code, 404)
+        self.assertEqual(self.read(self.admin_b, surface='app', slug='envios-b').status_code, 404)
+
+
+class StaffWriteDeliveryTest(_StaffDeliveryBase):
+    def test_an_order_sent_to_an_agency(self):
+        when = '2026-10-12T15:30:00Z'
+        response = self.write(self.manager, {
+            'mode': 'agency_pickup', 'carrier': self.agency.pk, 'agency_name': 'Agencia Centro', 'agency_locality': 'Juliaca, Puno',
+            'recipient_name': 'Rosa Quispe', 'recipient_document_type': 'dni', 'recipient_document_number': '70000002',
+            'recipient_phone': '+51 912 345 678', 'freight_amount': '15.50', 'freight_paid_by': 'customer_at_destination',
+            'waybill_number': ' G 100/7 ', 'tracking_code': 'CLAVE-9', 'shipped_at': when,
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        record = self.record()
+        self.assertEqual((record.mode, record.carrier, record.carrier_name, record.agency_name, record.agency_locality),
+                         (Mode.AGENCY_PICKUP, self.agency, 'Agencia Uno', 'Agencia Centro', 'Juliaca, Puno'))
+        self.assertEqual((record.recipient_name, record.recipient_document_number, record.recipient_phone),
+                         ('Rosa Quispe', '70000002', '+51912345678'))
+        self.assertEqual((record.freight_amount, record.freight_paid_by, record.waybill_number, record.tracking_code),
+                         (Decimal('15.50'), 'customer_at_destination', 'G 100/7', 'CLAVE-9'))
+        # No address was typed: it comes from the carrier's own page, with the waybill encoded.
+        self.assertEqual(record.tracking_url, 'https://rastreo.ejemplo.test/g/G%20100%2F7')
+        self.assertEqual((record.shipped_at, record.updated_by), (parse_datetime(when), self.manager))
+        body = response.json()
+        self.assertEqual(set(body), STAFF_KEYS)
+        self.assertEqual((body['carrier_name'], body['freight_amount'], body['updated_by'], body['mode_label']),
+                         ('Agencia Uno', '15.50', 'gestora', 'Recojo en agencia'))
+
+    def test_nothing_of_the_order_itself_moves(self):
+        before = Order.objects.filter(pk=self.order.pk).values().get()
+        self.write(self.manager, {'mode': 'agency_pickup', 'carrier': self.agency.pk, 'freight_amount': '250.00',
+                                  'freight_paid_by': 'store', 'recipient_name': 'Rosa Quispe', 'shipped_at': '2026-10-12T15:30:00Z'})
+        after = Order.objects.filter(pk=self.order.pk).values().get()
+        self.assertEqual(after, before)                    # method, address, buyer, total, payment, dispatch: all of it
+        self.assertEqual((after['delivery_method'], after['total'], after['fulfillment_status']),
+                         ('national_shipping', Decimal('900.00'), 'pending'))
+
+    def test_a_typed_tracking_address_wins_and_only_https_is_kept(self):
+        typed = self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1', 'tracking_url': 'https://otra.ejemplo.test/ver/G-1'})
+        self.assertEqual(typed.status_code, 200, typed.content)
+        self.assertEqual(self.record().tracking_url, 'https://otra.ejemplo.test/ver/G-1')
+        for bad in ('http://otra.ejemplo.test/G-1', 'javascript:alert(1)', 'otra.ejemplo.test/G-1'):
+            with self.subTest(bad):
+                response = self.write(self.manager, {'tracking_url': bad})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('tracking_url', response.json())
+        self.assertEqual(self.record().tracking_url, 'https://otra.ejemplo.test/ver/G-1')
+        # A new waybill with no address typed is followed at the carrier's again.
+        self.write(self.manager, {'waybill_number': 'G-2', 'tracking_url': ''})
+        self.assertEqual(self.record().tracking_url, 'https://rastreo.ejemplo.test/g/G-2')
+        # A carrier with no page to follow it leaves no link.
+        self.write(self.manager, {'carrier': self.courier.pk, 'waybill_number': 'G-3', 'tracking_url': ''})
+        self.assertEqual(self.record().tracking_url, '')
+
+    def test_the_mode_moves_only_between_a_door_and_an_agency(self):
+        self.assertEqual(self.write(self.manager, {'mode': 'agency_pickup'}).status_code, 200)
+        self.assertEqual(self.write(self.manager, {'mode': 'national_address'}).status_code, 200)
+        self.assertEqual(self.write(self.manager, {'mode': 'national_address'}).status_code, 200)      # the same one
+        for wrong in ('pickup_store', 'local_delivery', 'dron', '', None):
+            with self.subTest(wrong):
+                response = self.write(self.manager, {'mode': wrong})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('mode', response.json())
+        self.assertEqual(self.record().mode, Mode.NATIONAL_ADDRESS)
+
+        for method in ('pickup_store', 'delivery_arequipa'):
+            order = self.online(self.a, self.north, method=method)
+            mode = self.record(order).mode
+            body = self.read(self.manager, order).json()
+            self.assertEqual(body['allowed_modes'], [mode])
+            for target in ('national_address', 'agency_pickup'):
+                with self.subTest(method=method, target=target):
+                    self.assertEqual(self.write(self.manager, {'mode': target}, order).status_code, 400)
+            self.assertEqual(self.write(self.manager, {'mode': mode, 'waybill_number': 'G-9'}, order).status_code, 200)
+            self.assertEqual(self.record(order).mode, mode)
+            order.refresh_from_db()
+            self.assertEqual(order.delivery_method, method)
+
+    def test_a_carrier_is_one_of_this_company_and_fits_the_mode(self):
+        off = self.carrier(name='Apagada', kind='agency', is_active=False)
+        theirs = self.carrier(self.b, name='De la otra', kind='agency')
+        for body in ({'carrier': theirs.pk}, {'carrier': 999999}, {'carrier': off.pk}, {'carrier': 'uno'},
+                     {'mode': 'agency_pickup', 'carrier': self.courier.pk}):
+            with self.subTest(body):
+                response = self.write(self.manager, body)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('carrier', response.json())
+        self.assertEqual(self.write(self.manager, {'carrier': theirs.pk}).json(), self.write(self.manager, {'carrier': 999999}).json())
+        self.assertIsNone(self.record().carrier)
+
+        # To a door, either kind of carrier takes it.
+        self.assertEqual(self.write(self.manager, {'carrier': self.courier.pk}).status_code, 200)
+        self.assertEqual(self.record().carrier_name, 'A domicilio')
+        # An agency pickup with a door-to-door carrier already on it is refused too.
+        self.assertEqual(self.write(self.manager, {'mode': 'agency_pickup'}).status_code, 400)
+        self.assertEqual(self.write(self.manager, {'carrier': None}).status_code, 200)
+        record = self.record()
+        self.assertEqual((record.carrier, record.carrier_name), (None, ''))
+
+    def test_what_is_typed_is_judged(self):
+        for body, field in (
+            ({'recipient_name': ' '}, 'recipient_name'), ({'recipient_phone': '12345'}, 'recipient_phone'),
+            ({'recipient_document_type': 'dni', 'recipient_document_number': '123'}, 'recipient_document_number'),
+            ({'freight_amount': '-1'}, 'freight_amount'), ({'freight_amount': 'mucho'}, 'freight_amount'),
+            ({'freight_amount': '1.999'}, 'freight_amount'), ({'freight_amount': '123456789.00'}, 'freight_amount'),
+            ({'freight_paid_by': 'nadie'}, 'freight_paid_by'), ({'waybill_number': 'x' * 61}, 'waybill_number'),
+            ({'tracking_code': 'x' * 81}, 'tracking_code'), ({'shipped_at': 'ayer'}, 'shipped_at'),
+            ({'agency_name': 'x' * 121}, 'agency_name'),
+        ):
+            with self.subTest(body):
+                response = self.write(self.manager, {**body, 'waybill_number': body.get('waybill_number', 'NO-GUARDADA')})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        record = self.record()
+        self.assertEqual((record.waybill_number, record.recipient_name, record.updated_by), ('', 'Ana Torres', None))
+        self.assertEqual(self.entries(), [])
+
+    def test_freight_and_the_shipping_date_can_be_taken_off(self):
+        self.write(self.manager, {'freight_amount': '0', 'freight_paid_by': 'store', 'shipped_at': '2026-10-12T15:30:00Z'})
+        self.assertEqual(self.record().freight_amount, Decimal('0.00'))
+        self.write(self.manager, {'freight_amount': None, 'freight_paid_by': '', 'shipped_at': None})
+        record = self.record()
+        self.assertEqual((record.freight_amount, record.freight_paid_by, record.shipped_at), (None, '', None))
+
+    def test_what_is_not_staffs_to_write_here_is_not_read(self):
+        entry = CustomerAddress.objects.create(
+            company=self.a, customer=Customer.objects.create(company=self.a, first_name='Otra'),
+            recipient_name='Otra', address_line='x', district='y', city='z',
+        )
+        response = self.write(self.manager, {
+            'waybill_number': 'G-1', 'order': self.southern.pk, 'company': self.b.pk, 'address_line': 'Otra calle 9',
+            'city': 'Lima', 'source_address': entry.pk, 'updated_by': self.viewer.pk, 'carrier_name': 'Inventada',
+            'delivery_method': 'pickup_store', 'exists': False,
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        record = self.record()
+        self.assertEqual((record.order, record.company, record.address_line, record.city, record.source_address,
+                          record.updated_by, record.carrier_name),
+                         (self.order, self.a, 'Av. Siempre Viva 123', 'Puno', None, self.manager, ''))
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.delivery_method, 'national_shipping')
+
+    def test_an_order_without_a_record_gets_one_only_if_it_was_made_online(self):
+        till = self.online(self.a, self.north, record=False, sales_channel='pos')
+        silent = self.online(self.a, self.north, record=False, method='')
+        for surface in ('panel', 'app'):
+            refused = self.write(self.manager, {'waybill_number': 'G-1'}, till, surface)
+            self.assertEqual(refused.status_code, 409)
+            self.assertEqual(refused.json()['code'], 'not_online')
+        self.assertIsNone(self.record(till))
+
+        made = self.write(self.manager, {'mode': 'agency_pickup', 'carrier': self.agency.pk, 'waybill_number': 'G-1'}, silent)
+        self.assertEqual(made.status_code, 200, made.content)
+        record = self.record(silent)
+        self.assertEqual((record.mode, record.recipient_name, record.address_line, record.waybill_number, record.company),
+                         (Mode.AGENCY_PICKUP, 'Ana Torres', 'Av. Siempre Viva 123', 'G-1', self.a))
+        self.assertTrue(self.entries()[-1].metadata['created'])
+
+    def test_who_may_write_it(self):
+        body = {'waybill_number': 'G-1'}
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                self.assertEqual(self.write(self.viewer, body, surface=surface).status_code, 403)
+                self.assertEqual(self.write(self.outsider, body, surface=surface).status_code, 403)
+                self.assertEqual(self.write(self.admin_b, body, surface=surface).status_code, 404)
+                self.assertEqual(self.write(self.manager, body, self.foreign, surface).status_code, 404)
+                self.assertEqual(self.write(self.northerner, body, self.southern, surface).status_code, 404)
+                self.assertEqual(APIClient().patch(self.url(self.order, surface), body, format='json').status_code, 401)
+        self.assertEqual(self.write(self.buyer, body, surface='panel').status_code, 403)
+        self.assertEqual(self.write(self.buyer, body, surface='app').status_code, 404)
+        self.assertEqual(self.write(self.admin_b, body, surface='app', slug='envios-b').status_code, 404)
+        self.assertFalse(OrderDelivery.objects.exclude(waybill_number='').exists())
+        self.assertEqual(self.write(self.northerner, body, surface='app').status_code, 200)
+        self.assertEqual(self.record().waybill_number, 'G-1')
+
+    def test_the_pilots_operators_from_before_companies(self):
+        order = self.online(_pilot_company(), None)
+
+        def legacy(username, role):
+            user = User.objects.create_user(username, f'{username}@correo.test', PASSWORD)
+            user.profile.role = role
+            user.profile.save()
+            return user
+
+        # Warehouse staff hand the parcel to the carrier: the waybill is theirs to write.
+        warehouse = legacy('almacen', UserProfile.ROLE_INVENTORY)
+        self.assertTrue(self.read(warehouse, order).json()['can_edit'])
+        self.assertEqual(self.write(warehouse, {'waybill_number': 'G-1'}, order).status_code, 200)
+        self.assertEqual(self.read(legacy('cliente', UserProfile.ROLE_CUSTOMER), order).status_code, 403)
+
+    def test_it_is_written_down_with_names_and_no_values(self):
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-100', 'recipient_name': 'Rosa Quispe',
+                                  'recipient_phone': '912345678', 'freight_amount': '15.50'})
+        self.write(self.manager, {'waybill_number': 'G-100', 'recipient_name': 'Rosa Quispe'})          # nothing changed
+        [entry] = self.entries()
+        self.assertEqual((entry.actor, entry.company, entry.target_type, entry.target_id), (self.manager, self.a, 'order', str(self.order.pk)))
+        self.assertEqual(entry.metadata, {
+            'order_id': self.order.pk, 'created': False,
+            'changed_fields': ['carrier', 'carrier_name', 'freight_amount', 'recipient_name', 'recipient_phone',
+                               'tracking_url', 'waybill_number'],
+        })
+        written = json.dumps(entry.metadata)
+        for value in ('G-100', 'Rosa', '912345678', '15.50', 'Agencia Uno', 'rastreo'):
+            self.assertNotIn(value, written)
+
+    def test_nothing_personal_reaches_a_log(self):
+        with self.assertLogs(level='DEBUG') as captured:
+            import logging
+            logging.getLogger('store').debug('centinela')
+            self.write(self.manager, {'recipient_name': 'Rosa Quispe', 'recipient_phone': '912345678', 'waybill_number': 'G-100'})
+            self.write(self.manager, {'recipient_phone': '123'})
+        text = '\n'.join(captured.output)
+        for value in ('Rosa Quispe', '912345678', 'Siempre Viva'):
+            self.assertNotIn(value, text)
+
+
+class TheRecordIsACopyTest(_StaffDeliveryBase):
+    """What an order left with is what its record says, whatever happens to the carrier or the address afterwards."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.manager, {'mode': 'agency_pickup', 'carrier': self.agency.pk, 'agency_name': 'Agencia Centro',
+                                  'agency_locality': 'Juliaca', 'waybill_number': 'G-100'})
+
+    def test_a_carrier_renamed_or_switched_off(self):
+        acting(self.admin).patch(carrier_url(self.agency.pk), {'name': 'Agencia Nueva', 'is_active': False,
+                                                              'tracking_url_template': 'https://nueva.ejemplo.test/{guia}'}, format='json')
+        record = self.record()
+        self.assertEqual((record.carrier, record.carrier_name, record.tracking_url),
+                         (self.agency, 'Agencia Uno', 'https://rastreo.ejemplo.test/g/G-100'))
+        self.assertEqual(self.read(self.viewer).json()['carrier_name'], 'Agencia Uno')
+        # Other fields are still written; the carrier it left with is not asked for again.
+        self.assertEqual(self.write(self.manager, {'tracking_code': 'CLAVE-1'}).status_code, 200)
+        self.assertEqual(self.record().carrier_name, 'Agencia Uno')
+
+    def test_a_carrier_that_is_gone(self):
+        Carrier.objects.filter(pk=self.agency.pk).delete()
+        record = self.record()
+        self.assertEqual((record.carrier, record.carrier_name, record.agency_name, record.waybill_number),
+                         (None, 'Agencia Uno', 'Agencia Centro', 'G-100'))
+        self.assertEqual(self.read(self.viewer).json()['carrier_name'], 'Agencia Uno')
+
+    def test_an_address_of_the_book_edited_removed_or_gone(self):
+        customer = Customer.objects.create(company=self.a, user=self.buyer, first_name='Ana')
+        entry = CustomerAddress.objects.create(
+            company=self.a, customer=customer, recipient_name='Ana Torres', address_line='Av. Siempre Viva 123',
+            district='Juliaca', city='Puno', is_default=True,
+        )
+        OrderDelivery.objects.filter(order=self.order).update(source_address=entry)
+        kept = OrderDelivery.objects.filter(order=self.order).values().get()
+
+        delivery.update_address(company=self.a, user=self.buyer, pk=entry.pk, data={'address_line': 'Otra calle 9', 'city': 'Lima'})
+        self.assertEqual(OrderDelivery.objects.filter(order=self.order).values().get(), kept)
+        delivery.deactivate_address(company=self.a, user=self.buyer, pk=entry.pk)
+        self.assertEqual(OrderDelivery.objects.filter(order=self.order).values().get(), kept)
+
+        CustomerAddress.objects.filter(pk=entry.pk).delete()
+        record = self.record()
+        self.assertEqual((record.source_address, record.address_line, record.city), (None, 'Av. Siempre Viva 123', 'Puno'))

@@ -135,7 +135,7 @@ from .tracking_views import AccountRepairClaimView, AccountRepairsView
 from .account_views import (
     AccountAddressDefaultView, AccountAddressDetailView, AccountAddressListView, AccountProfileView,
 )
-from .delivery_views import AdminCarrierDetailView, AdminCarrierListView
+from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -226,6 +226,8 @@ urlpatterns = [
     path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),
     path('admin/orders/<int:pk>/units/<int:unit_pk>/', AdminOrderUnitDetailView.as_view(), name='admin-order-unit-detail'),
     path('admin/orders/<int:pk>/reprocess-stock-exit/', AdminOrderReprocessStockExitView.as_view(), name='admin-order-reprocess-stock-exit'),
+    # DELIVERY-01 — the delivery record of an order: carrier, agency, freight, waybill.
+    path('admin/orders/<int:pk>/delivery/', AdminOrderDeliveryView.as_view(), name='admin-order-delivery'),
     # CLIENT-SEC-01 — a person decides the review an order was waiting for.
     path('admin/orders/<int:pk>/risk-review/', AdminOrderRiskReviewView.as_view(), name='admin-order-risk-review'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),

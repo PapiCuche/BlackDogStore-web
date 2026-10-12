@@ -34,6 +34,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import order_fulfillment_services as fulfillment
+from . import delivery_services as delivery
 from . import order_risk
 from .models import Order
 from .tenancy import (
@@ -302,6 +303,8 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
                 order_risk.for_order(order),
                 can_review=has_capability(request.user, company, CAP_ORDERS_MANAGE),
             ) if has_capability(request.user, company, CAP_ORDERS_VIEW) else None,
+            # DELIVERY-01, the same block the web panel shows.
+            'delivery': _delivery_block(request, order, company),
         }
 
 
@@ -358,6 +361,53 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
         return Response(self._payload(request, order, company))
+
+
+def _delivery_block(request, order, company):
+    """An order's delivery record as staff read it, for `sales.orders.view`; None otherwise."""
+    if not has_capability(request.user, company, CAP_ORDERS_VIEW):
+        return None
+    return delivery.staff_payload(
+        order, delivery.record_for(order),
+        can_edit=has_capability(request.user, company, CAP_ORDERS_MANAGE),
+    )
+
+
+class V1InternalOrderDeliveryView(V1InternalSurfaceMixin, APIView):
+    """
+    GET   — the order's delivery record, or the same shape empty. `sales.orders.view`.
+    PATCH — recipient, door or agency, carrier, freight (information), waybill
+            and where to follow it. `sales.orders.manage`.
+
+    DELIVERY-01. ONE RULE, TWO SURFACES: the service the web panel calls, the
+    same capabilities and the same order visibility. Nothing of the order
+    itself is written — not its delivery method, its total or its dispatch.
+    """
+
+    http_method_names = ['get', 'head', 'patch', 'options']
+
+    def get_throttles(self):
+        return [AdminOrderStatusChangeThrottle()] if self.request.method == 'PATCH' else [AdminOrdersThrottle()]
+
+    def get(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_VIEW)
+        order = _visible_order(request, company, pk)
+        return Response(_delivery_block(request, order, company))
+
+    def patch(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_MANAGE)
+        order = _visible_order(request, company, pk)
+        try:
+            record = delivery.update_order_delivery(
+                order=order, company=company, actor=request.user, data=request.data, request=request,
+            )
+        except delivery.NotAnOnlineOrder as refused:
+            return Response({'detail': refused.detail, 'code': refused.code}, status=status.HTTP_409_CONFLICT)
+        except delivery.DeliveryError as refused:
+            return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(delivery.staff_payload(order, record, can_edit=True))
 
 
 class V1InternalOrderRiskReviewView(V1InternalOrderDetailView):
