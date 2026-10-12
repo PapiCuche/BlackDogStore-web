@@ -257,8 +257,10 @@ class V1MeView(APIView):
     def get(self, request):
         payload = _identity_payload(request.user)
         # CLIENT-SEC-01, an added field of THIS answer: when the mailbox was
-        # proven, or null. `is_email_verified` beside it still means «active».
-        payload['user']['email_verified_at'] = accounts.email_verified_at(request.user)
+        # proven, or null. Beside `user`, not inside it: the user object is the
+        # one login returns, key for key, and `is_email_verified` in it still
+        # means «active».
+        payload['email_verified_at'] = accounts.email_verified_at(request.user)
         return Response(payload)
 
 

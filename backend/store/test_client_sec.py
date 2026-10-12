@@ -241,14 +241,22 @@ class EmailVerifiedIsReportedTest(TestCase):
         self.assertEqual(body['email'], 'ana@correo.test')            # the rest is what it was
 
     def test_the_app_answer_carries_it_and_keeps_the_old_field_as_it_was(self):
+        cache.clear()
+        login = APIClient().post(V1_LOGIN, {'email': self.user.email, 'password': PASSWORD}, format='json').json()
         client = v1_session(self.user)
-        body = client.get(V1_ME).json()['user']
+        body = client.get(V1_ME).json()
+        self.assertIn('email_verified_at', body)
         self.assertIsNone(body['email_verified_at'])
-        # «Active» is still what `is_email_verified` says, verified or not.
-        self.assertTrue(body['is_email_verified'])
+        # «Active» is still what `is_email_verified` says, verified or not, and
+        # the user object is the one login returns, key for key.
+        self.assertTrue(body['user']['is_email_verified'])
+        self.assertEqual(body['user'], login['user'])
+        self.assertNotIn('email_verified_at', login)
 
         accounts.mark_email_verified(self.user)
-        self.assertIsNotNone(client.get(V1_ME).json()['user']['email_verified_at'])
+        body = client.get(V1_ME).json()
+        self.assertEqual(parse_datetime(body['email_verified_at']), verified_at(self.user))
+        self.assertTrue(body['user']['is_email_verified'])
 
 
 class EmailVerifiedWhenTheColumnArrivedTest(TestCase):
@@ -914,7 +922,8 @@ class AssessmentRecordTest(_RiskBase):
     def test_an_order_is_assessed_once(self):
         order = self.order(user=self.returning())
         first = self.assess(order)
-        self.assertIsNone(self.assess(order))
+        with self.assertNoLogs('store.order_risk', level='ERROR'):            # a no-op, not a swallowed refusal
+            self.assertIsNone(self.assess(order))
         self.assertEqual(OrderRiskAssessment.objects.get(order=order).pk, first.pk)
 
 
