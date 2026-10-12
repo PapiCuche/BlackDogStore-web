@@ -777,3 +777,35 @@ def update_order_delivery(*, order, company, actor, data, request=None):
                 request=request, company=company,
             )
     return record_for(order)
+
+
+# ---------------------------------------------------------------------------
+# What the buyer sees
+# ---------------------------------------------------------------------------
+
+def buyer_payload(record):
+    """
+    What the owner of an order is shown of its delivery, or None when it has no
+    record: which carrier, which agency and where, the waybill, and where to
+    follow it. A DECLARED shape, and a short one on purpose.
+
+    NOT the freight (the shop's arrangement with the carrier), NOT who receives
+    (that may be somebody else, with their own document), NOT who wrote it, and
+    not the carrier's pickup code. And the tracking address is only ever given
+    when it is https: a browser will make it a link.
+    """
+    if record is None:
+        return None
+    url = record.tracking_url or ''
+    return {
+        'carrier_name': record.carrier_name,
+        'agency_name': record.agency_name,
+        'agency_locality': record.agency_locality,
+        'waybill_number': record.waybill_number,
+        'tracking_url': url if url.startswith('https://') else '',
+    }
+
+
+def buyer_payload_for(order):
+    """`buyer_payload` of an order whose record was loaded with it (`select_related('delivery_record')`)."""
+    return buyer_payload(getattr(order, 'delivery_record', None))

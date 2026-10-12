@@ -195,6 +195,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    # DELIVERY-01, an added field: where the order went and how to follow it,
+    # or null. A closed shape of its own (`delivery_services.buyer_payload`).
+    delivery = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -211,8 +214,14 @@ class OrderSerializer(serializers.ModelSerializer):
             'paid_at',
             'created_at',
             'items',
+            'delivery',
         ]
         read_only_fields = fields
+
+    def get_delivery(self, obj):
+        from .delivery_services import buyer_payload_for
+
+        return buyer_payload_for(obj)
 
 
 class CartItemSerializer(serializers.ModelSerializer):

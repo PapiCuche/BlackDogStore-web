@@ -46,6 +46,10 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
     delivery_method_label = serializers.CharField(
         source='get_delivery_method_display', read_only=True,
     )
+    # DELIVERY-01, an added field: which carrier and agency, the waybill and an
+    # https address to follow it — or null. Its own closed shape
+    # (`delivery_services.buyer_payload`): no freight, no recipient, no author.
+    delivery = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -66,8 +70,14 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
             'created_at',
             'paid_at',
             'items',
+            'delivery',
         ]
         read_only_fields = fields
+
+    def get_delivery(self, obj):
+        from .delivery_services import buyer_payload_for
+
+        return buyer_payload_for(obj)
 
     # ── What is deliberately ABSENT, and why ────────────────────────────────
     #

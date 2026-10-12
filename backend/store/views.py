@@ -188,7 +188,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         lives at /api/admin/orders/ with its own tenant scoping. The old branch
         would now expose every tenant's orders to any staff user.
         """
-        return storefront_orders(self.request, self.request.user).prefetch_related(
+        return storefront_orders(self.request, self.request.user).select_related('delivery_record').prefetch_related(
             'items__product', 'items__product__images',
         )
 

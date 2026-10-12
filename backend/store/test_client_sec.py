@@ -1685,11 +1685,11 @@ class TheBuyerNeverSeesItTest(_ReviewBase):
         self.assertEqual(V1CustomerOrderSerializer.Meta.fields, [
             'id', 'status', 'status_label', 'fulfillment_status', 'fulfillment_status_label',
             'total', 'discount_amount', 'coupon_code', 'delivery_method', 'delivery_method_label',
-            'created_at', 'paid_at', 'items',
+            'created_at', 'paid_at', 'items', 'delivery',
         ])
         self.assertEqual(OrderSerializer.Meta.fields, [
             'id', 'user', 'customer_name', 'customer_email', 'total', 'discount_amount',
-            'coupon_code', 'status', 'paid', 'paid_at', 'created_at', 'items',
+            'coupon_code', 'status', 'paid', 'paid_at', 'created_at', 'items', 'delivery',
         ])
 
 

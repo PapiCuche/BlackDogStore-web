@@ -88,7 +88,7 @@ class V1CustomerOrderViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewS
         # that could be forgotten, and no query parameter that widens it.
         return (
             customer_owned_orders(self.request.user, self.get_customer_company())
-            .select_related('company')
+            .select_related('company', 'delivery_record')
             .prefetch_related('items__product')
             .order_by('-created_at')
         )

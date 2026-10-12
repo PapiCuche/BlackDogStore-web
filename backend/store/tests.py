@@ -19932,6 +19932,8 @@ class M4CustomerOrderContractTest(TestCase):
                 'total', 'discount_amount', 'coupon_code',
                 'delivery_method', 'delivery_method_label',
                 'created_at', 'paid_at', 'items',
+                # DELIVERY-01, added: where it went and how to follow it.
+                'delivery',
             },
         )
 

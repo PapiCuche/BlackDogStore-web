@@ -1324,3 +1324,104 @@ class TheRecordIsACopyTest(_StaffDeliveryBase):
         CustomerAddress.objects.filter(pk=entry.pk).delete()
         record = self.record()
         self.assertEqual((record.source_address, record.address_line, record.city), (None, 'Av. Siempre Viva 123', 'Puno'))
+
+
+# =============================================================================
+# 5 · what the buyer sees of it
+# =============================================================================
+
+BUYER_KEYS = {'carrier_name', 'agency_name', 'agency_locality', 'waybill_number', 'tracking_url'}
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class WhatTheBuyerSeesTest(_StaffDeliveryBase):
+    def setUp(self):
+        super().setUp()
+        Customer.objects.create(company=self.a, user=self.buyer, first_name='Ana')
+        self.buyer.set_password(PASSWORD)
+        self.buyer.save()
+        self.order.user = self.buyer
+        self.order.save(update_fields=['user'])
+        self.write(self.manager, {
+            'mode': 'agency_pickup', 'carrier': self.agency.pk, 'agency_name': 'Agencia Centro', 'agency_locality': 'Juliaca, Puno',
+            'recipient_name': 'Rosa Quispe', 'recipient_document_type': 'dni', 'recipient_document_number': '70000002',
+            'recipient_phone': '912345678', 'freight_amount': '15.50', 'freight_paid_by': 'customer_at_destination',
+            'waybill_number': 'G-100', 'tracking_code': 'CLAVE-SECRETA-9',
+        })
+
+    def web_rows(self):
+        response = web_session(self.buyer).get('/api/orders/', HTTP_HOST='envios-a.example.com')
+        self.assertEqual(response.status_code, 200, response.content)
+        return response
+
+    def app_rows(self):
+        response = v1_session(self.buyer).get('/api/v1/customer/envios-a/orders/')
+        self.assertEqual(response.status_code, 200, response.content)
+        return response
+
+    def test_their_own_order_says_where_it_went_and_how_to_follow_it(self):
+        expected = {
+            'carrier_name': 'Agencia Uno', 'agency_name': 'Agencia Centro', 'agency_locality': 'Juliaca, Puno',
+            'waybill_number': 'G-100', 'tracking_url': 'https://rastreo.ejemplo.test/g/G-100',
+        }
+        for response in (self.web_rows(), self.app_rows()):
+            row = next(row for row in response.json() if row['id'] == self.order.pk)
+            self.assertEqual(row['delivery'], expected)
+            self.assertEqual(set(row['delivery']), BUYER_KEYS)
+        detail = v1_session(self.buyer).get(f'/api/v1/customer/envios-a/orders/{self.order.pk}/').json()
+        self.assertEqual(detail['delivery'], expected)
+
+    def test_never_the_freight_the_recipient_or_who_wrote_it(self):
+        for response in (self.web_rows(), self.app_rows()):
+            text = response.content.decode()
+            for hidden in ('15.50', 'freight', 'customer_at_destination', 'Rosa Quispe', '70000002', '912345678',
+                           'recipient', 'CLAVE-SECRETA-9', 'tracking_code', 'gestora', 'updated_by', 'source_address'):
+                self.assertNotIn(hidden, text)
+
+    def test_an_order_without_a_record_says_nothing(self):
+        plain = self.online(self.a, self.north, record=False, method='', user=self.buyer)
+        for response in (self.web_rows(), self.app_rows()):
+            row = next(row for row in response.json() if row['id'] == plain.pk)
+            self.assertIsNone(row['delivery'])
+
+    def test_only_an_https_address_is_ever_given_as_a_link(self):
+        for stored in ('http://rastreo.ejemplo.test/G-100', 'javascript:alert(1)', 'rastreo.ejemplo.test/G-100', ' https://x.test/'):
+            OrderDelivery.objects.filter(order=self.order).update(tracking_url=stored)     # written past every rule
+            for response in (self.web_rows(), self.app_rows()):
+                row = next(row for row in response.json() if row['id'] == self.order.pk)
+                self.assertEqual(row['delivery']['tracking_url'], '', stored)
+
+    def test_nobody_else_reads_it(self):
+        other = User.objects.create_user('luis', 'luis@correo.test', PASSWORD, first_name='Luis')
+        _order(self.a, user=other, total='10.00', paid=True)
+        web = web_session(other).get('/api/orders/', HTTP_HOST='envios-a.example.com')
+        app = v1_session(other).get('/api/v1/customer/envios-a/orders/')
+        for response in (web, app):
+            self.assertNotIn(self.order.pk, [row['id'] for row in response.json()])
+            self.assertNotIn('G-100', response.content.decode())
+        self.assertEqual(v1_session(other).get(f'/api/v1/customer/envios-a/orders/{self.order.pk}/').status_code, 404)
+
+    def test_what_a_buyer_reads_of_an_order_is_a_closed_list(self):
+        from store.serializers import OrderSerializer
+        from store.v1_customer_serializers import V1CustomerOrderSerializer
+
+        self.assertEqual(V1CustomerOrderSerializer.Meta.fields, [
+            'id', 'status', 'status_label', 'fulfillment_status', 'fulfillment_status_label',
+            'total', 'discount_amount', 'coupon_code', 'delivery_method', 'delivery_method_label',
+            'created_at', 'paid_at', 'items', 'delivery',
+        ])
+        self.assertEqual(OrderSerializer.Meta.fields, [
+            'id', 'user', 'customer_name', 'customer_email', 'total', 'discount_amount',
+            'coupon_code', 'status', 'paid', 'paid_at', 'created_at', 'items', 'delivery',
+        ])
+        self.assertEqual(set(delivery.buyer_payload(self.record())), BUYER_KEYS)
+
+    def test_the_list_costs_no_query_per_order(self):
+        from django.test.utils import CaptureQueriesContext
+
+        for _ in range(3):
+            self.online(self.a, self.north, user=self.buyer)
+        client = v1_session(self.buyer)
+        with CaptureQueriesContext(connection) as queries:
+            client.get('/api/v1/customer/envios-a/orders/')
+        self.assertEqual([q['sql'] for q in queries.captured_queries if 'FROM "store_orderdelivery"' in q['sql']], [])
