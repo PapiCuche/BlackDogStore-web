@@ -146,7 +146,8 @@ class V1CheckoutSerializer(serializers.Serializer):
         expected = {Order.DocumentType.DNI: 8, Order.DocumentType.RUC: 11}
         length = expected.get(attrs['document_type'])
         if length is not None:
-            if not number.isdigit() or len(number) != length:
+            # ASCII: `isdigit()` alone takes every digit Unicode has.
+            if not (number.isascii() and number.isdigit()) or len(number) != length:
                 errors['document_number'] = f'Debe tener {length} dígitos.'
         elif len(number) < 6:
             errors['document_number'] = 'Documento inválido.'

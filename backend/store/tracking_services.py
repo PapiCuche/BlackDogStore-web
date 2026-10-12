@@ -441,7 +441,12 @@ def _is_empty_record(record) -> bool:
     not made by staff, and no row of any kind that points at it — a purchase, a
     repair, a device, an address, a notice. Asked of every relation the model
     has, so one added later counts without being remembered here.
+
+    A record the shop ARCHIVED is never empty: archiving it was a decision
+    about that person, and deleting the record would undo it.
     """
+    if not record.is_active:
+        return False
     if record.document_number or record.notes or record.business_name:
         return False
     if record.created_by_id is not None and record.created_by_id != record.user_id:

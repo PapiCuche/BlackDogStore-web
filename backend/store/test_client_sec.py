@@ -2889,6 +2889,37 @@ class ClaimAfterOpeningMyAccountTest(TrackingBase):
                 Order.objects.filter(customer=record).delete()
                 Device.objects.filter(customer=record).delete()
 
+    def test_a_record_the_shop_decided_something_about_is_not_empty(self):
+        # Second review · what the shop did to a record counts as much as what hangs from it.
+        staff = _m7_user('quien_atiende')
+        cases = {
+            'archived by the shop': lambda record: Customer.objects.filter(pk=record.pk).update(is_active=False),
+            'made by staff': lambda record: Customer.objects.filter(pk=record.pk).update(created_by=staff),
+            'a business name': lambda record: Customer.objects.filter(pk=record.pk).update(business_name='Comercial de Prueba S.A.C.'),
+        }
+        for label, fill in cases.items():
+            with self.subTest(label):
+                Customer.objects.filter(company=self.company, user=self.elena).delete()
+                Customer.objects.filter(pk=self.walk_in.pk).update(user=None)
+                record = self.own_record()
+                self.assertTrue(tracking._is_empty_record(record))
+                fill(record)
+                record.refresh_from_db()
+                self.assertFalse(tracking._is_empty_record(record))
+                response = self.claim()
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertTrue(Customer.objects.filter(pk=record.pk).exists())
+                self.walk_in.refresh_from_db()
+                self.assertIsNone(self.walk_in.user)
+
+    def test_a_record_she_made_herself_is_empty_whoever_is_written_as_its_maker(self):
+        record = self.own_record()
+        self.assertEqual(record.created_by, self.elena)
+        self.assertTrue(tracking._is_empty_record(record))
+        Customer.objects.filter(pk=record.pk).update(created_by=None)
+        record.refresh_from_db()
+        self.assertTrue(tracking._is_empty_record(record))
+
     def test_without_a_record_of_her_own_it_is_what_it_was(self):
         self.assertEqual(self.claim().status_code, 200)
         self.walk_in.refresh_from_db()
@@ -3330,3 +3361,49 @@ class HalfACharacterInANameTest(_ProfileBase):
         self.assertTrue(identity.has_control_characters('\udfff'))
         self.assertFalse(identity.has_control_characters('Ana \U0001F600 Ñandú'))
         self.assertFalse(identity.has_control_characters('\ud7ff\ue000'))
+
+
+class DigitsAtTheCheckoutTest(_CheckoutBase):
+    """
+    P3 · the rule the profile has (F8) holds at the checkout too: a digit is
+    0-9. A document in other digits is a different text for the same number,
+    and a record under it is a second file for somebody who already has one.
+    """
+
+    ARABIC_INDIC = '٧٠٠٠٠٠٠١'                                               # 70000001
+    FULLWIDTH_RUC = '２０９９９９９９９９０'                                # 20999999990
+
+    def assert_refused(self, response, field):
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn(field, response.json())
+
+    def test_the_web_takes_a_document_in_ascii_digits_only(self):
+        self.assert_refused(self.web_checkout(document_number=self.ARABIC_INDIC), 'document_number')
+        self.assert_refused(self.web_checkout(document_type='ruc', document_number=self.FULLWIDTH_RUC,
+                                              receipt_type='factura'), 'document_number')
+        self.assert_refused(self.web_checkout(customer_phone='٩٨٧٦٥٤٣٢١'), 'customer_phone')
+        self.assert_refused(self.web_checkout(customer_phone='+51 ９87 654 321'), 'customer_phone')
+        self.assertFalse(Order.objects.exists())
+        self.assertFalse(Customer.objects.exists())
+
+    def test_the_app_takes_a_document_in_ascii_digits_only(self):
+        user = User.objects.create_user('compra_app', 'compra_app@correo.test', PASSWORD, first_name='Ana')
+        Customer.objects.create(company=self.company, user=user, first_name='Ana')
+        client = v1_session(user)
+        self.assert_refused(self.app_checkout(client, document_number=self.ARABIC_INDIC), 'document_number')
+        self.assert_refused(self.app_checkout(client, document_type='ruc', document_number=self.FULLWIDTH_RUC,
+                                              receipt_type='factura'), 'document_number')
+        self.assert_refused(self.app_checkout(client, customer_phone='٩٨٧٦٥٤٣٢١'), 'customer_phone')
+        self.assertFalse(Order.objects.exists())
+
+    def test_what_both_always_took_they_still_take(self):
+        for phone in ('987654321', '+51987654321', '+51 987 654 321', '51987654321'):
+            with self.subTest(phone):
+                self.n = getattr(self, 'n', 0) + 1
+                response = self.web_checkout(session=f'carrito-tel-{self.n}', customer_phone=phone)
+                self.assertEqual(response.status_code, 200, response.content)
+        response = self.web_checkout(session='carrito-ce', document_type='ce', document_number='AB123456')
+        self.assertEqual(response.status_code, 200, response.content)
+        user = User.objects.create_user('compra_app', 'compra_app@correo.test', PASSWORD, first_name='Ana')
+        Customer.objects.create(company=self.company, user=user, first_name='Ana')
+        self.assertEqual(self.app_checkout(v1_session(user)).status_code, 201)

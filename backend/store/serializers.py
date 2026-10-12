@@ -237,7 +237,9 @@ class CartItemSerializer(serializers.ModelSerializer):
 # Phase 4.0: Checkout input serializer (commercial fields)
 # ---------------------------------------------------------------------------
 
-_PERU_PHONE_RE = re.compile(r'^\+?51?\s*9\d{2}\s*\d{3}\s*\d{3}$|^9\d{8}$')
+# `[0-9]`, not `\d`: in Python `\d` is every digit Unicode has, and «٩٨٧…» is a
+# different text for the same number (CLIENT-SEC-01).
+_PERU_PHONE_RE = re.compile(r'^\+?51?\s*9[0-9]{2}\s*[0-9]{3}\s*[0-9]{3}$|^9[0-9]{8}$')
 
 # Fields the frontend must never be allowed to set (injected fields)
 _FORBIDDEN_CHECKOUT_FIELDS = frozenset([
@@ -312,10 +314,10 @@ class CheckoutInputSerializer(serializers.Serializer):
 
         # document_number format per type
         if doc_type == Order.DocumentType.DNI:
-            if not re.fullmatch(r'\d{8}', doc_number):
+            if not re.fullmatch(r'[0-9]{8}', doc_number):
                 raise serializers.ValidationError({'document_number': 'El DNI debe tener exactamente 8 dígitos.'})
         elif doc_type == Order.DocumentType.RUC:
-            if not re.fullmatch(r'\d{11}', doc_number):
+            if not re.fullmatch(r'[0-9]{11}', doc_number):
                 raise serializers.ValidationError({'document_number': 'El RUC debe tener exactamente 11 dígitos.'})
         elif doc_type == Order.DocumentType.CE:
             if not re.fullmatch(r'[a-zA-Z0-9]{6,12}', doc_number):
