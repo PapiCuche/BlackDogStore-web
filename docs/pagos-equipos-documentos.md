@@ -110,7 +110,7 @@ hace falta tocar el servidor ni enviárselas a nadie.
    guarda las claves de PRODUCCIÓN en la misma tarjeta, pruébalas y actívalas escribiendo
    `PRODUCCION`. Nada más activarlas, haz un pago real pequeño.
 
-**Mientras estén activas las claves de TEST, sólo un usuario MASTER puede pagar.** A
+**Mientras lo que cobra sean claves de TEST, sólo un usuario MASTER puede pagar.** A
 cualquier otro comprador —con cuenta o sin ella, y también al personal de la tienda— la
 tienda le dice «El pago en línea todavía no está disponible en esta tienda», sin crear
 un pedido y sin hablar con la pasarela: las tarjetas de prueba son públicas y un pedido
@@ -119,10 +119,14 @@ quien la prueba. Un pedido pagado en TEST queda señalado: su intento de pago gu
 entorno y hay un registro de auditoría `payment_confirmed_in_test` con su empresa. Con
 claves de PRODUCCIÓN no cambia nada para nadie.
 
-Esto vale para las claves puestas en la consola. Una instalación que cobra con las
-variables del servidor (`PAYMENT_PROVIDER` y `MICUENTAWEB_*` / `IZIPAY_*`) no tiene esta
-restricción: así se configuran las pasarelas simuladas de las pruebas y del ensayo. En
-una tienda publicada, las claves de TEST van siempre en la consola (PAY-TEST-ENV).
+**Da igual de dónde vengan las claves de TEST:** de la consola o de las variables del
+servidor (`PAYMENT_PROVIDER`, `IZIPAY_*`, `MICUENTAWEB_*`). Lo único que abre los pagos
+de TEST a cualquiera es el interruptor `PAYMENTS_PUBLIC_TEST=1` del servidor, apagado
+por defecto. Es para instalaciones donde la pasarela simulada es justo lo que se prueba
+(las pruebas automáticas lo encienden ellas mismas; la máquina de un desarrollador
+puede). **En una tienda publicada no se enciende nunca:** `deploy/preflight.py` lo
+marca como ATENCIÓN y dice que las claves de TEST en el archivo de variables «no son
+para una tienda publicada».
 
 Si el servidor filtra por dirección de origen, hay que permitir `194.50.38.0/24`. La
 plataforma no filtra por origen: se fía de la firma.
@@ -156,25 +160,33 @@ dibujado en un navegador.
 pagos que siguen esperando. Está en `deploy/crontab.example`, cada cinco minutos.
 
 - **A quién pregunta.** Sólo con «Mi Cuenta Web» activo, y sólo por sus intentos que
-  siguen sin respuesta, abiertos hace más de 3 minutos y menos de 2 horas. Hasta 20 por
-  pasada, de uno en uno, **primero por quien lleva más tiempo sin que nadie pregunte por
-  él**: ninguno se queda sin turno. Si la pasarela no contesta, o rechaza a quien llama
-  (contraseña que no acepta, demasiadas llamadas, petición que dice mal formada: `401`,
-  `403`, `429` o un código `INT_…`), la pasada termina ahí y lo dice.
+  siguen sin respuesta, abiertos hace más de 3 minutos y menos de 2 horas **con esta
+  misma tienda y este mismo entorno**. Hasta 20 por pasada, de uno en uno: primero los
+  que nadie consultó nunca, y una cuarta parte de cada pasada reservada para quien lleva
+  más tiempo sin respuesta, por muchos nuevos que haya. Si la pasarela no contesta, o
+  rechaza a quien llama (contraseña que no acepta, demasiadas llamadas, petición que
+  dice mal formada: `401`, `403`, `429` o un código `INT_…`), la pasada termina ahí y
+  lo dice.
+- **A quién no.** Un intento abierto con otra tienda o en otro entorno se queda como
+  está, sin consultar y sin cerrar: aparece aparte en el resumen («de otra tienda o
+  entorno») y en la comprobación de estado, para revisarlo en la cuenta donde se abrió.
 - **Qué cree.** Una respuesta sobre esta tienda y esta referencia, del mismo entorno
   que las claves (TEST o PRODUCCIÓN), con **un** cobro pagado (`AUTHORISED` o
   `CAPTURED`) por el importe completo. Después pasa las mismas comprobaciones que una
   notificación: importe, moneda, tienda, referencia, y que el intento se abrió con esta
   misma tienda y este mismo entorno.
-- **Qué cierra.** Un intento cuyo formulario ya no puede cobrar (más de 30 minutos) y
-  del que la pasarela no tiene nada queda **«Sin intento de pago»**: el comprador abrió
-  el formulario y no llegó a probar una tarjeta. No vuelve a consultarse solo. Un
-  rechazo cierra el intento pasados esos 30 minutos; antes no, llegue por consulta o por
-  notificación, porque el formulario deja reintentar con otra tarjeta.
+- **Qué cierra.** Un intento del que la pasarela no tiene nada se sigue consultando
+  durante toda su ventana (un medio de pago lento puede aparecer después) y queda **«Sin
+  intento de pago»** en las últimas pasadas de esas dos horas. Un rechazo cierra el
+  intento pasados 30 minutos; antes no, llegue por consulta o por notificación, porque
+  el formulario deja reintentar con otra tarjeta. Mientras tanto el rechazo queda
+  anotado en el intento, que sigue abierto.
 - **Qué no decide, y avisa.** Dos cobros pagados bajo una referencia, un reembolso junto
-  al cobro o un importe parcial: el intento sigue esperando, la primera vez queda un
-  registro de auditoría `payment_undecided` con la empresa del pedido, y la comprobación
-  de estado lo dice como **ATENCIÓN**. Hay que mirarlo en el panel de la pasarela.
+  al cobro o un importe parcial («sin decidir»), o una respuesta que no tiene la forma
+  esperada o habla de otra tienda («ilegible»): el intento sigue esperando, la primera
+  vez queda un registro de auditoría `payment_undecided` con la empresa del pedido y
+  cuál de las dos cosas fue, y la comprobación de estado lo dice como **ATENCIÓN**, con
+  su propia frase. Hay que mirarlo en el panel de la pasarela.
 - **Cobro duplicado.** Si la pasarela cobró un intento de un pedido que ya estaba
   pagado por otro, ese intento queda **«Cobro duplicado»** —no como un pago—, con un
   registro `payment_duplicate` y **ATENCIÓN** en la comprobación de estado. El pedido no
@@ -186,11 +198,18 @@ pagos que siguen esperando. Está en `deploy/crontab.example`, cada cinco minuto
 - **Un cliente dice que pagó:** `python manage.py reconcile_payments --reference
   <referencia>`, con la referencia del pago (las 20 cifras que la pasarela muestra como
   número de pedido). Pregunta por ese intento tenga la antigüedad que tenga, aunque se
-  cerrara como rechazado o sin intento. `--hours N` amplía la ventana para todos.
+  cerrara como rechazado o sin intento, y contesta con una frase: quedó pagado, la
+  pasarela lo tiene rechazado, en curso, no tiene nada bajo esa referencia, se abrió con
+  otra tienda, o «Mi Cuenta Web» no es la pasarela que cobra ahora. `--hours N` amplía la
+  ventana para todos.
 - **Otro formulario para el mismo pedido.** La app puede repetir su petición y pedir un
   formulario nuevo para un pedido que ya tiene uno. Antes de abrirlo se pregunta a la
   pasarela por el anterior: si está pagado, el pedido queda pagado y no hay segundo
-  formulario; si no se puede preguntar, tampoco, hasta que se pueda.
+  formulario; si no se puede preguntar, tampoco, hasta que se pueda. Un pedido no
+  acumula más de tres formularios que aún puedan cobrar, y una cuenta no pide más de
+  diez pagos por minuto. La app recibe por qué no hay formulario en un campo `code`
+  (`order_already_paid`, `payment_in_progress`, `too_many_payment_attempts`,
+  `payment_paused`, `payment_test_only`).
 - **El otro producto de Izipay no tiene esta consulta.** Con él, se comprueba en su panel.
 
 **Límites conocidos.**
@@ -209,17 +228,33 @@ no lo supone):
 
 1. Qué responde `Order/Get` de una referencia sin ninguna transacción: lista vacía o un
    código de error. Si es un código, va en `NO_TRANSACTION_CODES`
-   (`store/payments/micuentaweb.py`); hasta entonces esos intentos no se cierran solos y
-   cuentan como «errores de la pasarela». (`PSP_010`, «no se encontró la transacción»,
-   cubre también una transacción del otro entorno o de otra tienda: por eso no se da
-   por bueno.)
+   (`store/payments/micuentaweb.py`); hasta entonces esos intentos no se cierran solos,
+   cuentan como «errores de la pasarela», un cambio de pasarela los trata como «no se
+   pudo preguntar» (pide `INTERRUMPIR` y los deja en la auditoría, en vez de bloquear), y
+   la app no recibe un segundo formulario mientras el primero pueda cobrar.
+   (`PSP_010`, «no se encontró la transacción», cubre también una transacción del otro
+   entorno o de otra tienda: por eso no se da por bueno.)
 2. Si `Order/Get` sin `operationType` devuelve también reembolsos y verificaciones.
 3. Si cada transacción trae `orderDetails.mode` y `shopId`.
 4. Si se envía una notificación por cada tarjeta rechazada dentro del mismo formulario.
 5. Si `kr-answer` llega con las barras escapadas.
 6. Si «una llamada por minuto» es por referencia o por tienda.
 
-### 1.6 Cambiar de pasarela con cobros abiertos
+### 1.6 Dejar de cobrar, y cambiar de pasarela con cobros abiertos
+
+**Para dejar de abrir pagos ahora mismo: «Pausar pagos nuevos».** En Configuración ›
+Integraciones › la tarjeta de la pasarela que cobra. Es un clic y su «Sí»: no pide
+ninguna palabra, no consulta a la pasarela y nada puede impedirlo. Desde ese momento la
+tienda y la app responden «El pago en línea todavía no está disponible en esta tienda» a
+quien intente pagar, MASTER incluido. **Lo que ya estaba abierto se sigue confirmando**
+(por su notificación o por la consulta de §1.5): la pasarela sigue siendo la misma, sólo
+deja de abrir pagos. «Reanudar pagos» los vuelve a abrir; con claves de PRODUCCIÓN pide
+escribir `PRODUCCION`, como al activarlas.
+
+Pausar es también la forma de poder hacer lo demás: con los pagos en pausa ya no entra
+ninguno nuevo, los abiertos se agotan (como mucho, media hora), y entonces apagar,
+revocar o cambiar de pasarela dejan de estar bloqueados.
+
 
 Un comprador que ya tiene delante el formulario de la tarjeta paga contra la pasarela
 que había cuando lo abrió. Hay cambios después de los cuales ese pago ya no se podría
@@ -236,12 +271,26 @@ Con «Mi Cuenta Web» cobrando, al pedir uno de esos cambios:
    cobro se abrió hace menos de 30 minutos (su formulario aún puede cobrar) o si la
    pasarela lo tiene sin resolver (en curso, o con una respuesta que hay que mirar en su
    panel: un reembolso, dos cobros…). El mensaje dice cuántos son y a partir de qué hora
-   reintentar.
+   reintentar. Para que no entren más mientras tanto: «Pausar pagos nuevos».
 3. Lo hace si no queda ninguno así: los que quedan son antiguos y la pasarela no tiene
    nada de ellos.
-4. Si la pasarela **no responde**, no se puede comprobar: pide escribir `INTERRUMPIR`, y
+4. Si **no se pudo preguntar** —la pasarela no responde, rechaza la consulta, contesta
+   con un error, o no hay credenciales con que preguntar— pide escribir `INTERRUMPIR`, y
    deja en la auditoría (`payments_interrupted`, por empresa) los intentos que quedaron
-   sin comprobar, para revisarlos en el panel de la pasarela.
+   sin comprobar, sean uno o veinte, para revisarlos en el panel de la pasarela. La
+   consulta previa al cambio dura como mucho unos 20 segundos; si no da tiempo a
+   preguntar por todos, el cambio no se hace y hay que repetirlo.
+
+**Revocar no devuelve la tienda a las variables del servidor.** Si al revocar la
+configuración de la consola quedaran cobrando las claves del archivo de variables (otra
+pasarela, quizá de PRODUCCIÓN, que nadie activó desde aquí), no se revoca y se dice por
+qué. Para dejar de cobrar se desactiva o se pausa; para revocar, se quitan antes esas
+variables del servidor.
+
+Los intentos abiertos con otra tienda o en otro entorno (los que dejó atrás un cambio
+hecho con `INTERRUMPIR`) no bloquean el cambio siguiente y no se consultan: la pasarela
+que cobra ahora no sabe nada de ellos. La comprobación de estado los anuncia como
+ATENCIÓN mientras sigan abiertos.
 
 **Renovar la contraseña, la clave pública o la clave HMAC de la misma tienda y el mismo
 entorno no es un cambio de pasarela**: se permite con cobros abiertos, y el comprador

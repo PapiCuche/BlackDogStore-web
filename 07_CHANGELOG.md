@@ -3,6 +3,40 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — PAY-GUARD-02
+
+**Added**
+- «Pausar pagos nuevos» / «Reanudar pagos» en la consola: la pasarela deja de abrir pagos
+  al momento, sin palabra, y sigue confirmando los ya abiertos (`IntegrationConfig.paused`,
+  en la migración `0117`). Registros `integration_paused` e `integration_resumed`.
+- Ajuste `PAYMENTS_PUBLIC_TEST` (apagado por defecto): el único modo de abrir los pagos
+  de TEST a cualquiera. Las pruebas lo encienden en `store.suite_runner` (`TEST_RUNNER`).
+- Límite por usuario en el checkout de la app (`checkout_user`, 10 por minuto) y tope de
+  tres formularios vivos por pedido.
+- Campo `code` en las respuestas de la app que no llevan formulario.
+- `deploy/preflight.py`: ATENCIÓN si `PAYMENTS_PUBLIC_TEST` está encendido.
+
+**Changed**
+- Las claves de TEST no cobran a compradores vengan de la consola o de las variables del
+  servidor. Antes, sólo las de la consola estaban restringidas.
+- Revocar la configuración de pagos de la consola se rechaza si con ello pasaran a cobrar
+  las claves de las variables del servidor.
+- Un cambio de pasarela que no puede consultar los cobros abiertos (pasarela caída, que
+  rechaza, que contesta con error, o sin credenciales) pide `INTERRUMPIR` y los deja en la
+  auditoría, sean cuantos sean. La consulta previa dura como mucho 20 segundos.
+- La conciliación no pregunta por intentos abiertos con otra tienda u otro entorno, cierra
+  lo que nadie intentó pagar al final de su ventana, y reserva una cuarta parte de cada
+  pasada para quien lleva más sin respuesta.
+- Un rechazo con el formulario todavía vivo queda anotado en el intento, que sigue abierto.
+- `reconcile_payments --reference` contesta con una frase que dice qué pasó.
+- `deploy/preflight.py`: las claves de TEST del archivo ya no son «OK» («no para una
+  tienda publicada»), y `MICUENTAWEB_API_URL` tiene que ser la oficial.
+- Un checkout que encuentra la pasarela cambiada o en pausa ya no marca el pedido como
+  fallido.
+
+**Security**
+- Las credenciales de «SDK web / Checkout» ya no muestran sus claves al imprimirse.
+
 ## 2026-10-11 — PAY-GUARD-01
 
 **Added**

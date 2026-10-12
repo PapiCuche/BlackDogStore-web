@@ -3,6 +3,53 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — PAY-GUARD-02: la segunda auditoría — TEST por entorno, pausar pagos, «no se pudo preguntar»
+
+Rama `feat/izipay-smartform-v4`. **Migración `0117_payment_attempt_origin` ampliada**
+(no estaba en ningún historial): añade `IntegrationConfig.paused`. **Sin rutas nuevas**
+(pausar y reanudar son acciones de la ruta de acciones que ya existía). **Un ajuste
+nuevo, `PAYMENTS_PUBLIC_TEST`, apagado por defecto.** Decisión: DEC-PAY-07. No
+desplegado. **Nada se probó contra la pasarela real.**
+
+| | Hallazgo | Estado |
+|---|---|---|
+| 1 | La puerta de TEST ignoraba las claves de las variables del servidor, y revocar la consola volvía a ellas | CORREGIDO: depende del entorno de lo que cobra; `PAYMENTS_PUBLIC_TEST` es la única excepción; revocar no cede la tienda al entorno |
+| 2 | Con la pasarela caída o rechazando, la palabra sólo se ofrecía con un único intento abierto | CORREGIDO |
+| 3 | Un comprador podía mantener bloqueado para siempre apagar, revocar o cambiar | CORREGIDO: «Pausar pagos nuevos» |
+| 4 | Si `Order/Get` contesta con error a una referencia sin usar, cada compra abandonada bloqueaba dos horas | CORREGIDO: es «no se pudo preguntar» (palabra y auditoría) |
+| 5 | La app podía multiplicar sin límite las consultas a la pasarela | CORREGIDO: límite por usuario, tope de formularios, parada al primer fallo |
+| 6 | Se preguntaba a una tienda por intentos abiertos con otra, y se cerraban | CORREGIDO |
+| 7 | Un intento se cerraba al primer «no hay nada» | CORREGIDO: al final de su ventana |
+| 8 | Veinte intentos nuevos por pasada dejaban sin turno a los ya consultados | CORREGIDO: una cuarta parte de la pasada es suya |
+| 9 | Un rechazo con el formulario vivo no dejaba rastro | CORREGIDO |
+| 10 | La tienda se guardaba cortada y se comparaba entera | CORREGIDO |
+| 11 | Las credenciales de «SDK web» se imprimían con sus claves | CORREGIDO |
+| 12 | A la app no se le decía por qué no recibía formulario; un cambio de pasarela fallaba el pedido | CORREGIDO (`code`, campo añadido) |
+| 13 | La consulta previa a un cambio podía durar minutos | CORREGIDO: 20 segundos |
+| 14 | El preflight aceptaba una dirección de API que la aplicación rechaza | CORREGIDO |
+| 15 | Textos para quien opera que no decían lo que había pasado | CORREGIDO |
+
+**Pruebas que cambiaron a propósito:** `KeysFromTheEnvironmentTest` fijaba el hueco del
+hallazgo 1 (las claves de TEST del entorno cobraban a cualquiera) y ahora fija lo
+contrario; tres pruebas del preflight llamaban «completo» a un archivo con claves de
+TEST; las que esperaban el cierre a los 45 minutos lo esperan al final de la ventana; y
+la consulta con credenciales de otra tienda ya no llega a preguntar.
+
+**Para el propietario.** Cómo pausar los pagos y por qué: `docs/pagos-equipos-documentos.md`
+§1.6. Las claves de TEST son sólo para MASTER vengan de donde vengan (§1.3).
+
+**Para quien despliega.** `deploy/rehearsal.sh` no cambia. `deploy/preflight.py` sí:
+`PAYMENTS_PUBLIC_TEST` encendido es ATENCIÓN, las claves de TEST del archivo ya no son
+«OK» y `MICUENTAWEB_API_URL` tiene que ser la oficial.
+
+**Pruebas.** Esta vez, cada prueba se escribió y se vio fallar antes de su corrección.
+Mutaciones, una a una: 60, todas detectadas (una sobrevivió a la primera pasada y obligó
+a añadir su prueba). Pruebas nuevas: 75 en `test_payment_audit2`, 5 en `test_preflight`
+y 4 de Jest. Módulos de pagos, checkout, consola, medición, preflight y despliegue: 996,
+0 fallos, 3 omitidas (las pruebas contra la pasarela real). Jest 1072 de 1072, `tsc` y
+`lint` sin errores. **No se corrió en esta sesión** la suite completa de backend,
+Playwright ni el ensayo Docker.
+
 ## 2026-10-11 — PAY-GUARD-01: cambios de pasarela, claves de TEST y lo que encontró la auditoría
 
 Rama `feat/izipay-smartform-v4`. **Con migración (`0117_payment_attempt_origin`). Sin

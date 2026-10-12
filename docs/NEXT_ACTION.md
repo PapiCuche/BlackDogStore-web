@@ -127,8 +127,9 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
 - PAY-RECONCILE: con «Mi Cuenta Web», `reconcile_payments` pregunta a la pasarela
   (`Order/Get`) y paga lo cobrado (DEC-PAY-03); hay que añadir su línea de
   `deploy/crontab.example` al servidor. Con el otro producto sigue como estaba.
-  PAY-TEST-ENV: las claves de TEST puestas por variables del servidor no tienen la
-  restricción de la consola. PAY-TEST-BADGE: el panel no señala un pedido pagado en TEST.
+  PAY-TEST-BADGE: el panel no señala un pedido pagado en TEST. PAY-PAUSE-ENV: pausar
+  pagos necesita la configuración en la consola. PAY-GET-UNKNOWNS: lo que la prueba con
+  claves de TEST tiene que contestar (`docs/pagos-equipos-documentos.md` §1.5).
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
 - NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.

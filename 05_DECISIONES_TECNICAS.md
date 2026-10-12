@@ -849,6 +849,56 @@ defectos y catorce reglas que ninguna prueba fijaba. Lo que se decidió con cada
   ella: lo confirma su notificación o `--reference`) y la comparación en tiempo
   constante de la firma, que no tiene prueba posible.
 
+### DEC-PAY-07 · Lo que cambió tras la segunda auditoría: el entorno manda, y siempre se puede pausar
+
+Una segunda lectura independiente de DEC-PAY-04/05/06 encontró un fallo grave y cinco
+serios. Cambian tres decisiones anteriores:
+
+- **DEC-PAY-05, corregida: lo que cuenta es el ENTORNO de lo que cobra, no de dónde
+  vienen las claves.** La puerta sólo miraba las claves de TEST de la consola; las de las
+  variables del servidor cobraban a cualquiera, y revocar la consola volvía a ellas. Ahora
+  toda configuración de TEST es sólo para MASTER. La única excepción es un interruptor
+  explícito del servidor, `PAYMENTS_PUBLIC_TEST`, apagado por defecto, para instalaciones
+  donde la pasarela simulada es lo que se prueba. Las pruebas lo encienden en UN sitio
+  (`store.suite_runner`, declarado en `TEST_RUNNER`), no fixture a fixture. El ensayo
+  Docker y Playwright no abren pagos públicos y no lo necesitan.
+- **Revocar no cede la tienda a las variables del servidor.** Si al quitar la última
+  fila activa de la consola quedara cobrando lo que haya en el entorno, se rechaza (409
+  `environment_fallback`) con su motivo. Se eligió rechazar y no «tratarlo como activar»:
+  activar pide probar y, en producción, escribir una palabra en un campo que «revocar»
+  ya usa para la suya; y nadie que pulsa «revocar» está pidiendo poner otra pasarela.
+- **DEC-PAY-04, completada: pausar.** Un comprador que abría un checkout cada 29 minutos
+  mantenía bloqueado para siempre apagar, revocar o cambiar. Ahora existe un estado real,
+  `IntegrationConfig.paused`: la configuración sigue siendo la que corre (notificación y
+  consulta siguen funcionando con sus credenciales) pero no abre nada nuevo. Pausar no
+  pide palabra, no pasa por el guardia y no consulta a nadie: toma el bloqueo y escribe.
+  Es lo que un MASTER puede hacer siempre; lo demás espera a que se agoten los abiertos.
+  Reanudar pide lo que pidió activar. Volver a activar algo desactivado lo deja sin
+  pausa.
+- **«No se pudo preguntar» va antes que «no se comprobó».** Pasarela caída, que rechaza
+  a quien llama, sin credenciales con que preguntar, o que contesta con un error a una
+  referencia cuyo formulario ya no cobra: palabra y auditoría, sean uno o veinte los
+  intentos. Antes sólo se ofrecía la palabra con exactamente un intento. Sigue bloqueando
+  sin palabra lo que SÍ se sabe: un formulario vivo y lo que la pasarela tiene sin
+  resolver. Mientras nadie sepa qué contesta `Order/Get` de una referencia sin usar
+  (`NO_TRANSACTION_CODES` sigue vacío), un error no puede ser un bloqueo de dos horas.
+- **No se pregunta a una tienda por los intentos de otra.** Los que se abrieron con otra
+  tienda u otro entorno quedan abiertos, sin consultar y sin cerrar, contados aparte y
+  anunciados por la comprobación de estado. Tampoco bloquean el cambio siguiente.
+- **DEC-PAY-06, corregida: lo que nadie intentó pagar se cierra al final de su ventana**,
+  no al primer «no hay nada» pasada media hora. Y una cuarta parte de cada pasada es
+  para quien lleva más tiempo sin respuesta.
+- **La app.** Límite por usuario en su checkout (el que había sólo contaba anónimos), tope
+  de tres formularios vivos por pedido, y la consulta previa a un segundo formulario se
+  detiene en cuanto la pasarela no contesta. La app recibe por qué no hay formulario
+  (`code`, campo añadido). Un rechazo con código es «ahora no»: no marca el pedido como
+  fallido.
+- **La consulta previa a un cambio tiene 20 segundos.** Ocurre dentro de la petición del
+  MASTER, en el único proceso que hay.
+- **El preflight dice lo mismo que la aplicación:** el interruptor encendido es ATENCIÓN,
+  las claves de TEST del archivo «no son para una tienda publicada», y la dirección de la
+  API tiene que ser la oficial (una prueba mantiene iguales las dos listas).
+
 ### DEC-IMPORT-SPLIT-01 · Tres cargas, cada una con su plantilla de una hoja
 
 - **Ninguna carga hace el trabajo de otra.** Productos y accesorios: crea y edita el

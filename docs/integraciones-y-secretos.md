@@ -169,9 +169,19 @@ hace esos cambios a ciegas (`pagos-equipos-documentos.md` §1.6):
 - **Renovar las claves de la misma tienda y entorno** de «Mi Cuenta Web» no es uno de
   esos cambios: se permite sin más.
 
-**Claves de TEST.** Con una configuración de TEST activa en la consola, sólo un MASTER
-con sesión iniciada puede abrir un pago; a los demás la tienda les dice que el pago en
-línea todavía no está disponible (`pagos-equipos-documentos.md` §1.3).
+**Pausar pagos nuevos.** En la tarjeta de la pasarela que cobra. Un clic, sin palabra:
+la tienda deja de abrir pagos al momento y los ya abiertos se siguen confirmando. Es lo
+que un MASTER puede hacer siempre; apagar, revocar o cambiar de pasarela esperan a que
+no quede ningún cobro que pueda cobrarse. «Reanudar pagos» pide lo que pidió activar.
+
+**Revocar** la configuración de la consola no se hace si con ello pasaran a cobrar las
+claves de las variables del servidor: se dice por qué, y se desactiva o se pausa.
+
+**Claves de TEST.** Mientras lo que cobra sean claves de TEST —de la consola o de las
+variables del servidor— sólo un MASTER con sesión iniciada puede abrir un pago; a los
+demás la tienda les dice que el pago en línea todavía no está disponible
+(`pagos-equipos-documentos.md` §1.3). El interruptor `PAYMENTS_PUBLIC_TEST` del servidor,
+apagado por defecto, es para instalaciones de prueba y nunca para una tienda publicada.
 
 **Lo que sigue abierto.** IZIPAY-PRODUCT e IZIPAY-TOKEN-CONTRACT no se cierran con esta
 fase: hace falta saber qué producto tiene contratado el propietario y validar sus claves
@@ -353,7 +363,7 @@ a ellas por sí sola: el panel la tiene tomada. Revocarla es lo que la devuelve 
 | PAY-TENANT-SCOPE | la pasarela es de la instalación, no de cada empresa |
 | FISCAL-TENANT-SCOPE | SUNAT es de la instalación y sólo BETA; `fiscal_config` ya recibe la empresa |
 | PAY-SWITCH-PENDING | RESUELTO para «Mi Cuenta Web»: el servidor consulta y bloquea el cambio (DEC-PAY-04). Con «SDK web / Checkout» sigue siendo una palabra escrita, ahora con registro de lo interrumpido. Un cambio hecho en las variables del servidor no pasa por aquí |
-| PAY-TEST-ENV | las claves de TEST puestas en las variables del servidor (no en la consola) siguen abiertas a cualquier comprador: es como se configuran las pasarelas simuladas |
+| PAY-TEST-ENV | RESUELTO: las claves de TEST no cobran a compradores vengan de donde vengan; `PAYMENTS_PUBLIC_TEST` (apagado por defecto) es la única excepción y el preflight la marca |
 | PAY-ROLLBACK | al sustituir unas claves no se conservan las anteriores: no hay «volver a las de antes» en un clic |
 | IZIPAY-MODE-DECLARED | en «SDK web / Checkout» el entorno (TEST o PRODUCCIÓN) lo declara quien configura; nada en las claves lo delata. La dirección del token admite cualquier `https` |
 | SUNAT-SOL-CHECK | la clave SOL sólo se comprueba al emitir |

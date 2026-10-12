@@ -544,6 +544,14 @@ no más seguido:
 */5 * * * * cd /ruta/al/repositorio && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py reconcile_payments >> backups/reconcile_payments.log 2>&1
 ```
 
+**Claves de TEST y `PAYMENTS_PUBLIC_TEST`.** Con claves de TEST —en la consola o en el
+archivo de variables— sólo un MASTER puede pagar. `PAYMENTS_PUBLIC_TEST=1` abre los pagos
+de TEST a cualquiera: es para instalaciones de prueba y **no va en
+`deploy/.env.production`**. `deploy/preflight.py` lo marca como ATENCIÓN si está
+encendido, dice de las claves de TEST del archivo que «no son para una tienda publicada»
+(la tienda arranca; faltan las de PRODUCCIÓN) y rechaza una `MICUENTAWEB_API_URL` que no
+sea la oficial, igual que la aplicación.
+
 Es seguro ejecutarla dos veces a la vez: un pedido se paga una sola vez. Con el otro
 producto de Izipay, o sin pagos esperando, no hace nada. Lo que imprime es una cuenta:
 ni claves ni datos de compradores.
@@ -567,6 +575,9 @@ sólo mira.
 | Una notificación de pago que no coincidía con el pedido | Intentos de pago con fallo de integridad, últimas 24 h |
 | La pasarela cobró dos veces el mismo pedido | Intentos «Cobro duplicado», últimas 24 h: hay que devolverlo desde el panel de la pasarela |
 | La pasarela tiene algo que la tienda no puede decidir | Intentos con una respuesta sin decidir (dos cobros, un reembolso o un importe parcial bajo una referencia), últimas 24 h |
+| La pasarela contestó algo que no se pudo leer | Intentos con una respuesta que habla de otra tienda o no tiene la forma esperada, últimas 24 h |
+| Quedan cobros abiertos con otra tienda u otro entorno | Intentos abiertos con una configuración que ya no es la que cobra: no se consultan; hay que mirarlos en aquella cuenta |
+| Los pagos están en pausa | **Nota**: un MASTER pausó los pagos nuevos; la tienda no abre ninguno hasta que los reanude |
 | Un cliente pagó y la tienda no se enteró | **Nota, no alarma**: cuántos pagos siguen sin respuesta de la pasarela. Lo habitual es un comprador que no terminó. Con «Mi Cuenta Web», `reconcile_payments` se lo pregunta a la pasarela cada cinco minutos (§6.1.3c) |
 | WhatsApp dejó de funcionar | Tres o más mensajes sin entregar en 24 h y ninguno entregado. Uno suelto es una nota: suele ser un número sin WhatsApp |
 | Nadie está enviando los avisos | Mensajes sin enviar desde hace más de 15 minutos |
