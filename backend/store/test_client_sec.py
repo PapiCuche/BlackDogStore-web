@@ -2679,6 +2679,63 @@ class VerifyMyOwnAddressTest(_OwnAddressBase):
         statuses = [self.web.post(WEB_VERIFY_CONFIRM, {'code': '1'}, format='json', **self.host(self.a)).status_code for _ in range(limit + 1)]
         self.assertEqual((set(statuses[:-1]), statuses[-1]), ({400}, 429))
 
+    def test_the_apps_two_steps_are_limited_as_the_webs_are(self):
+        # Second review · the effect, not the class list: the app's doors really stop answering.
+        from store.throttles import AccountVerifyConfirmThrottle, AccountVerifySendThrottle
+
+        _order(self.a, user=self.user, total='10.00', paid=True)
+        app = v1_session(self.user)
+        cache.clear()
+        limit = AccountVerifyConfirmThrottle().num_requests
+        answers = [app.post('/api/v1/customer/perfil-a/verify-email/confirm/', {'code': '1'}, format='json') for _ in range(limit + 1)]
+        self.assertEqual(([r.status_code for r in answers[:-1]], answers[-1].status_code), ([400] * limit, 429))
+        self.assertIn('Retry-After', answers[-1])
+
+        accounts.mark_email_verified(self.user)                             # so every answer but the limit's is a 200
+        cache.clear()
+        limit = AccountVerifySendThrottle().num_requests
+        answers = [app.post('/api/v1/customer/perfil-a/verify-email/send/', {}, format='json') for _ in range(limit + 1)]
+        self.assertEqual(([r.status_code for r in answers[:-1]], answers[-1].status_code), ([200] * limit, 429))
+        self.assertIn('Retry-After', answers[-1])
+        self.assertEqual(django_mail.outbox, [])
+
+    def test_the_webs_send_step_stops_answering_too(self):
+        from store.throttles import AccountVerifySendThrottle
+
+        accounts.mark_email_verified(self.user)
+        cache.clear()
+        limit = AccountVerifySendThrottle().num_requests
+        answers = [self.web.post(WEB_VERIFY_SEND, {}, format='json', **self.host(self.a)) for _ in range(limit + 1)]
+        self.assertEqual(([r.status_code for r in answers[:-1]], answers[-1].status_code), ([200] * limit, 429))
+
+    def test_a_code_tried_to_death_leaves_a_line_in_the_security_log(self):
+        self.send()
+        code = self.code()
+        with self.assertLogs('store.security', level='WARNING') as logged:
+            for _ in range(5):
+                self.confirm(self.wrong())
+        lines = [line for line in logged.output if 'verify_code_exhausted' in line]
+        self.assertEqual(len(lines), 1)                                     # the fifth try, once
+        self.assertIn(f'user_id={self.user.pk}', lines[0])
+        for secret in (code, self.wrong(), 'ana@correo.test'):
+            self.assertNotIn(secret, lines[0])
+        # A dead code tried again is not «exhausted» again.
+        with self.assertNoLogs('store.security', level='WARNING'):
+            self.confirm(code)
+
+    def test_four_wrong_tries_leave_no_such_line(self):
+        self.send()
+        with self.assertNoLogs('store.security', level='WARNING'):
+            for _ in range(4):
+                self.confirm(self.wrong())
+        self.assertEqual(self.confirm(self.code()).status_code, 200)
+
+    def test_a_row_that_ran_out_is_refused_even_with_a_live_code(self):
+        self.send()
+        AccountToken.objects.filter(user=self.user).update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.confirm(self.code()).json(), CODE_REFUSED)
+        self.assertIsNone(verified_at(self.user))
+
     def test_the_app_has_the_same_two_steps(self):
         _order(self.a, user=self.user, total='10.00', paid=True)
         app = v1_session(self.user)
