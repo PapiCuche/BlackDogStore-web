@@ -44,6 +44,11 @@ COMMERCE_FULFILLMENT_READY = 'commerce.fulfillment.ready'
 COMMERCE_FULFILLMENT_SHIPPED = 'commerce.fulfillment.shipped'
 COMMERCE_FULFILLMENT_DELIVERED = 'commerce.fulfillment.delivered'
 COMMERCE_ORDER_CANCELLED = 'commerce.order.cancelled'
+# CLIENT-SEC-01. For STAFF, not for the buyer: an online order was assessed and
+# asks for a person to look before it leaves (`order_risk`). In the panel's
+# bell only — it is not e-mail-worthy, and it says which order and how it
+# looks, never why.
+COMMERCE_ORDER_REVIEW_NEEDED = 'commerce.order.review_needed'
 
 # M12C. The only event a PERSON causes directly rather than a business change.
 # It lives in the same catalogue as the rest because the inbox is the same
@@ -66,6 +71,7 @@ ALL_EVENT_TYPES = frozenset({
     COMMERCE_FULFILLMENT_SHIPPED,
     COMMERCE_FULFILLMENT_DELIVERED,
     COMMERCE_ORDER_CANCELLED,
+    COMMERCE_ORDER_REVIEW_NEEDED,
     COMMUNICATIONS_ANNOUNCEMENT_PUBLISHED,
 })
 

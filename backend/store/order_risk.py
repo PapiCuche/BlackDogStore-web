@@ -44,6 +44,7 @@ from django.utils import timezone
 
 from . import accounts
 from .client_ip import get_client_ip
+from .commerce_notifications import emit_order_review_needed
 from .company_settings import get_company_settings
 from .identity_validation import phone_key
 from .models import (
@@ -186,10 +187,14 @@ def _assess(order, request):
     score = sum(WEIGHTS[code] for code in signals)
     level = level_for(score)
     needs_review = level == Level.HIGH or SIGNAL_ARCHIVED_CUSTOMER in signals
-    return OrderRiskAssessment.objects.create(
+    row = OrderRiskAssessment.objects.create(
         company=company, order=order, level=level, score=score, signals=signals, ip_hash=origin,
         review_status=ReviewStatus.PENDING if needs_review else ReviewStatus.NOT_REQUIRED,
     )
+    if needs_review:
+        # Whoever may decide is told, in the panel. It cannot fail this.
+        emit_order_review_needed(order, row)
+    return row
 
 
 def _signals(order, company, origin) -> list[str]:

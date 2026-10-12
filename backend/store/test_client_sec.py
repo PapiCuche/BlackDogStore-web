@@ -1639,3 +1639,111 @@ class TheBuyerNeverSeesItTest(_ReviewBase):
             'id', 'user', 'customer_name', 'customer_email', 'total', 'discount_amount',
             'coupon_code', 'status', 'paid', 'paid_at', 'created_at', 'items',
         ])
+
+
+# =============================================================================
+# 5 · whoever may decide is told there is something to decide
+# =============================================================================
+
+from store import notification_events as events  # noqa: E402
+from store.models import Notification, NotificationDelivery, NotificationEvent  # noqa: E402
+
+
+class ReviewNeededNotificationTest(_RiskBase):
+    def setUp(self):
+        super().setUp()
+        self.north = _p2d_branch(self.a, 'Norte')
+        self.south = _p2d_branch(self.a, 'Sur')
+        self.manager, _ = _p2d_member(self.a, 'gestora', ['company.view', VIEW, MANAGE])
+        self.northerner, _ = _p2d_member(self.a, 'solo_norte', ['company.view', VIEW, MANAGE], branches=[self.north])
+        self.viewer, _ = _p2d_member(self.a, 'solo_ver', ['company.view', VIEW])
+        self.foreigner, _ = _p2d_member(self.b, 'gestora_b', ['company.view', VIEW, MANAGE])
+        self.master = User.objects.create_superuser('maestra', 'maestra@correo.test', PASSWORD)
+        Customer.objects.create(
+            company=self.a, first_name='Archivada', last_name='Reservada', document_type='dni',
+            document_number='40008888', is_active=False,
+        )
+
+    def suspicious(self, branch, company=None, **extra):
+        """An order that asks for a person: its document is an archived client's."""
+        return self.order(
+            company, fulfillment_branch=branch, total='4321.00', customer_name='Archivada Reservada',
+            customer_email='reservada@correo.test', customer_phone='987000999', document_number='40008888', **extra,
+        )
+
+    def told(self, order):
+        return set(
+            Notification.objects.filter(event__event_type=events.COMMERCE_ORDER_REVIEW_NEEDED, target_id=order.pk)
+            .values_list('user__username', flat=True)
+        )
+
+    def test_the_event_is_in_the_catalogue_and_is_not_a_mail(self):
+        self.assertIn(events.COMMERCE_ORDER_REVIEW_NEEDED, events.ALL_EVENT_TYPES)
+        self.assertNotIn(events.COMMERCE_ORDER_REVIEW_NEEDED, events.EMAIL_WORTHY_EVENTS)
+
+    def test_a_pending_review_tells_whoever_may_decide_it_in_that_branch(self):
+        order = self.suspicious(self.north)
+        row = self.assess(order)
+        self.assertEqual(row.review_status, Review.PENDING)
+
+        self.assertEqual(self.told(order), {'gestora', 'solo_norte'})
+        event = NotificationEvent.objects.get(event_type=events.COMMERCE_ORDER_REVIEW_NEEDED)
+        self.assertEqual((event.company, event.target_type, event.target_id), (self.a, 'order', order.pk))
+        self.assertEqual(event.payload, {'level': row.level})
+
+        notice = Notification.objects.get(user=self.manager)
+        self.assertEqual(
+            (notice.company, notice.audience, notice.priority, notice.target_type, notice.target_id),
+            (self.a, Notification.Audience.INTERNAL, Notification.Priority.WARNING, 'order', order.pk),
+        )
+        self.assertFalse(NotificationDelivery.objects.exists())               # in the panel's bell, nowhere else
+
+    def test_it_says_which_order_and_how_it_looks_and_nothing_about_the_buyer(self):
+        order = self.suspicious(self.north)
+        row = self.assess(order)
+        notice = Notification.objects.get(user=self.manager)
+        text = f'{notice.title} {notice.body}'
+        self.assertIn(f'#{order.pk}', text)
+        self.assertIn(row.get_level_display().lower(), text.lower())
+        event = NotificationEvent.objects.get()
+        said = text + json.dumps(event.payload) + event.event_key
+        for value in ('Archivada', 'Reservada', 'reservada@correo.test', '987000999', '40008888', '4321', 'archiv'):
+            self.assertNotIn(value, said)
+
+    def test_a_branch_scope_holds(self):
+        order = self.suspicious(self.south)
+        self.assess(order)
+        self.assertEqual(self.told(order), {'gestora'})
+
+    def test_an_order_no_branch_answers_for_goes_to_whoever_sees_the_whole_company(self):
+        order = self.suspicious(None)
+        self.assess(order)
+        self.assertEqual(self.told(order), {'gestora'})
+
+    def test_another_companys_staff_are_never_told(self):
+        order = self.suspicious(None, self.b)                                 # that document is archived in A, not here
+        Customer.objects.create(company=self.b, first_name='Otra', document_type='dni', document_number='40008887', is_active=False)
+        theirs = self.order(self.b, document_number='40008887')
+        self.assess(order)
+        self.assess(theirs)
+        self.assertEqual(self.told(order), set())
+        self.assertEqual(self.told(theirs), {'gestora_b'})
+        self.assertFalse(Notification.objects.filter(company=self.a).exists())
+
+    def test_an_order_that_asks_for_nobody_tells_nobody(self):
+        row = self.assess(self.order(fulfillment_branch=self.north))
+        self.assertEqual(row.review_status, Review.NOT_REQUIRED)
+        self.assertFalse(NotificationEvent.objects.exists())
+        self.assertFalse(Notification.objects.exists())
+
+    def test_a_notice_that_cannot_be_written_costs_neither_the_assessment_nor_the_sale(self):
+        def broken(**kwargs):
+            Customer.objects.create(company=kwargs['company'])                # the database refuses, mid-transaction
+
+        order = self.suspicious(self.north)
+        with patch('store.commerce_notifications.notif.emit', side_effect=broken):
+            row = self.assess(order)
+        self.assertIsNotNone(row)
+        self.assertEqual(OrderRiskAssessment.objects.get(order=order).review_status, Review.PENDING)
+        self.assertFalse(Notification.objects.exists())
+        self.assertTrue(Order.objects.filter(pk=order.pk).exists())

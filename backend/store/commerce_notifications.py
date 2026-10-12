@@ -127,3 +127,51 @@ def _emit_fulfillment_changed(order, fulfillment_status):
         customers=[customer],
         priority=Notification.Priority.INFO,
     )
+
+
+#: Who is told an order is waiting for its review: whoever may decide it.
+CAP_ORDERS_MANAGE = 'sales.orders.manage'
+
+
+def emit_order_review_needed(order, assessment):
+    """
+    CLIENT-SEC-01 — tell the staff who may decide that an order waits for them.
+
+    In a SAVEPOINT of its own as well as behind the catch-all: it is called
+    while the order is being made, and a notice that cannot be written must
+    cost neither the assessment nor the sale.
+    """
+    from django.db import transaction
+
+    def emit():
+        with transaction.atomic():
+            return _emit_order_review_needed(order, assessment)
+
+    return _safely(emit)
+
+
+def _emit_order_review_needed(order, assessment):
+    from .tenancy import visible_orders
+
+    company = order.company
+    # Whoever holds the capability AND can see this order: the branch scope of
+    # the panel, asked of the one authority on it. Somebody granted one shop is
+    # not told about another's orders, nor about one no branch answers for.
+    recipients = [
+        user for user in notif.resolve_internal_recipients(company, capability=CAP_ORDERS_MANAGE)
+        if visible_orders(user, company).filter(pk=order.pk).exists()
+    ]
+    return notif.emit(
+        company=company,
+        event_type=ev.COMMERCE_ORDER_REVIEW_NEEDED,
+        event_key=ev.event_key(ev.COMMERCE_ORDER_REVIEW_NEEDED, 'order', order.pk),
+        title='Pedido por revisar',
+        # The order and how it looks. NOT why, and nothing of the buyer: the
+        # reasons are read on the order, by whoever may see it.
+        body=f'El pedido #{order.pk} quedó con nivel de riesgo {assessment.get_level_display().lower()} '
+             f'y espera una revisión.',
+        target_type='order', target_id=order.pk,
+        users=recipients,
+        priority=Notification.Priority.WARNING,
+        payload={'level': assessment.level},
+    )
