@@ -34,6 +34,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import order_fulfillment_services as fulfillment
+from . import order_risk
 from .models import Order
 from .tenancy import (
     Membership,
@@ -49,6 +50,7 @@ from .v1_internal_serializers import (
     V1InternalFulfillmentSerializer,
     V1InternalOrderDetailSerializer,
     V1InternalOrderListSerializer,
+    V1InternalRiskReviewSerializer,
 )
 
 CAP_ORDERS_VIEW = 'sales.orders.view'
@@ -226,15 +228,22 @@ class V1InternalOrderListView(V1InternalSurfaceMixin, APIView):
                 continue
             orders = orders.filter(**{f'created_at__date__{lookup}': parsed})
 
+        # CLIENT-SEC-01, as on the web panel: `?review=pending` narrows to the
+        # orders waiting for a person, and every row says its level and state.
+        orders = order_risk.filter_by_review(orders, params.get('review'))
+
         page, page_size = self._pagination(params)
         total = orders.count()
-        rows = orders[(page - 1) * page_size: page * page_size]
+        rows = V1InternalOrderListSerializer(
+            orders[(page - 1) * page_size: page * page_size], many=True,
+        ).data
+        order_risk.annotate_rows(company, rows)
 
         return Response({
             'count': total,
             'page': page,
             'page_size': page_size,
-            'results': V1InternalOrderListSerializer(rows, many=True).data,
+            'results': rows,
         })
 
     @staticmethod
@@ -285,6 +294,14 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
             'units_pending': sum(view['pending'].values()),
             'units_pending_by_product': {str(product_id): count for product_id, count in view['pending'].items()},
             'units_can_change': bool(transitions) and not view['left'],
+            # CLIENT-SEC-01, the same block the web panel shows: what was
+            # noticed about this order and what a person decided; null when it
+            # was not assessed. For `sales.orders.view`: this payload is also
+            # the answer of routes that ask only for `manage`.
+            'risk': order_risk.describe(
+                order_risk.for_order(order),
+                can_review=has_capability(request.user, company, CAP_ORDERS_MANAGE),
+            ) if has_capability(request.user, company, CAP_ORDERS_VIEW) else None,
         }
 
 
@@ -339,6 +356,44 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)
         return Response(self._payload(request, order, company))
+
+
+class V1InternalOrderRiskReviewView(V1InternalOrderDetailView):
+    """
+    POST {decision: approve|reject, note?} — decide the review an order was
+    waiting for. CLIENT-SEC-01. Requires `sales.orders.manage`.
+
+    ONE RULE, TWO SURFACES: the service the web panel calls
+    (`order_risk.review`), behind the same capability and the same order
+    visibility. Once: a review that is not waiting answers 409. The decision is
+    advice — the order's payment and dispatch are exactly what they were.
+
+    POST ONLY, DECLARED: it builds on the detail view for its payload and would
+    otherwise inherit that view's GET.
+    """
+
+    http_method_names = ['post', 'options']
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, company_slug=None, pk=None):
+        company = self.get_internal_company()
+        self.require_capability(company, CAP_ORDERS_MANAGE)
+
+        serializer = V1InternalRiskReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        order = _visible_order(request, company, pk)
+        try:
+            row = order_risk.review(
+                order=order, company=company, actor=request.user,
+                decision=serializer.validated_data['decision'],
+                note=serializer.validated_data.get('note', ''),
+                request=request,
+            )
+        except order_risk.ReviewError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        # The assessment alone, not the order: `manage` does not imply `view`.
+        return Response({'risk': order_risk.describe(row, can_review=True)})
 
 
 class _V1OrderUnitsBase(V1InternalOrderDetailView):

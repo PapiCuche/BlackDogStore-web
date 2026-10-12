@@ -45,7 +45,7 @@ from .admin_views import (
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
     AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
-    AdminOrderReprocessStockExitView,
+    AdminOrderReprocessStockExitView, AdminOrderRiskReviewView,
 )
 from .inventory_views import (
     AdminBestSellingView, AdminHighStockView, AdminInventorySummaryView,
@@ -223,6 +223,8 @@ urlpatterns = [
     path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),
     path('admin/orders/<int:pk>/units/<int:unit_pk>/', AdminOrderUnitDetailView.as_view(), name='admin-order-unit-detail'),
     path('admin/orders/<int:pk>/reprocess-stock-exit/', AdminOrderReprocessStockExitView.as_view(), name='admin-order-reprocess-stock-exit'),
+    # CLIENT-SEC-01 — a person decides the review an order was waiting for.
+    path('admin/orders/<int:pk>/risk-review/', AdminOrderRiskReviewView.as_view(), name='admin-order-risk-review'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
 

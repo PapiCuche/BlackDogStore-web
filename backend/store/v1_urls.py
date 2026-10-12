@@ -115,7 +115,7 @@ from .v1_inventory_views import (
 )
 from .v1_internal_views import (
     V1InternalContextView, V1InternalOrderDetailView,
-    V1InternalOrderFulfillmentView, V1InternalOrderListView,
+    V1InternalOrderFulfillmentView, V1InternalOrderListView, V1InternalOrderRiskReviewView,
     V1InternalOrderUnitDetailView, V1InternalOrderUnitLookupView, V1InternalOrderUnitsView,
 )
 from .v1_views import (
@@ -207,6 +207,11 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/orders/<int:pk>/fulfillment/',
         V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
+    ),
+    # CLIENT-SEC-01 — a person decides the review an order was waiting for.
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/risk-review/',
+        V1InternalOrderRiskReviewView.as_view(), name='v1-internal-order-risk-review',
     ),
     # SERIAL-PICK-01 — which device is handed over with a web order.
     path(

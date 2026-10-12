@@ -301,3 +301,162 @@ def _archived_here(company, own, document) -> bool:
     return Customer.objects.filter(
         company=company, document_type=document_type, document_number=number, is_active=False,
     ).exists()
+
+
+# ---------------------------------------------------------------------------
+# What staff read
+# ---------------------------------------------------------------------------
+
+def describe(row, *, can_review: bool = False):
+    """
+    The assessment as staff read it, or None for an order that has none.
+
+    The level, the reasons in plain words, and who decided what. NOT the origin
+    hash: it answers a question only this module asks.
+
+    `can_review` is whether THIS reader may decide — said by the server, so no
+    screen keeps its own copy of the rule — and it is only ever true while the
+    review is waiting.
+    """
+    if row is None:
+        return None
+    reviewer = row.reviewed_by
+    return {
+        'level': row.level,
+        'level_label': row.get_level_display(),
+        'score': row.score,
+        'signals': [
+            {'code': code, 'label': LABELS[code]} for code in row.signals if code in LABELS
+        ],
+        'review_status': row.review_status,
+        'review_status_label': row.get_review_status_display(),
+        'reviewed_by': (reviewer.get_full_name() or reviewer.get_username()) if reviewer is not None else None,
+        'reviewed_at': row.reviewed_at,
+        'review_note': row.review_note,
+        'assessed_at': row.created_at,
+        'can_review': bool(can_review) and row.review_status == ReviewStatus.PENDING,
+    }
+
+
+def list_fields(company, order_ids) -> dict:
+    """`{order id: (level, review status)}` for the assessed ones among these orders of `company`."""
+    return {
+        order_id: (level, review_status)
+        for order_id, level, review_status in OrderRiskAssessment.objects.filter(
+            company=company, order_id__in=list(order_ids),
+        ).values_list('order_id', 'level', 'review_status')
+    }
+
+
+def annotate_rows(company, rows) -> None:
+    """Give each row of an order list its `risk_level` and `review_status`; None for the unassessed."""
+    known = list_fields(company, [row['id'] for row in rows])
+    for row in rows:
+        row['risk_level'], row['review_status'] = known.get(row['id'], (None, None))
+
+
+def filter_by_review(orders, raw):
+    """
+    Narrow an order queryset to one review state (`?review=pending`).
+
+    A value that is not a state is ignored, like a date nobody can read: a typo
+    should not empty the screen.
+    """
+    value = (raw or '').strip()
+    if value not in ReviewStatus.values:
+        return orders
+    return orders.filter(risk_assessment__review_status=value)
+
+
+# ---------------------------------------------------------------------------
+# The decision of a person
+# ---------------------------------------------------------------------------
+
+DECISION_APPROVE = 'approve'
+DECISION_REJECT = 'reject'
+#: What a reviewer may answer, and the state each answer leaves.
+DECISIONS = {
+    DECISION_APPROVE: ReviewStatus.APPROVED,
+    DECISION_REJECT: ReviewStatus.REJECTED,
+}
+NOTE_MAX = OrderRiskAssessment._meta.get_field('review_note').max_length
+
+
+class ReviewError(Exception):
+    """A review that cannot be decided. `http_status` and `code` are the answer's."""
+
+    http_status = 400
+    code = 'review_refused'
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+    def body(self) -> dict:
+        return {'detail': self.detail, 'code': self.code}
+
+
+class ReviewNotFound(ReviewError):
+    http_status = 404
+    code = 'not_assessed'
+
+
+class ReviewNotPending(ReviewError):
+    http_status = 409
+    code = 'review_not_pending'
+
+
+def review(*, order, company, actor, decision: str, note: str = '', request=None):
+    """
+    Write down what a person decided about an order that was waiting for it.
+
+    The caller has established that `actor` may manage orders in `company` and
+    found `order` among the ones they can see. What is decided HERE is whether
+    there is anything left to decide: ONE decision per order. A second one —
+    the same or the opposite, by the same person or another — is refused, and
+    the first stands with its author.
+
+    ADVICE. It changes the assessment and nothing else: not the order's
+    payment, not its dispatch, and it cancels and refunds nothing. A company
+    that holds orders until they are reviewed lets them go on EITHER answer —
+    what it waits for is that somebody looked.
+
+    The note stays on the assessment, for whoever reads the order. It is not
+    copied to the audit entry: staff write names and phone numbers in it.
+    """
+    from .models import AdminAuditLog
+
+    if decision not in DECISIONS:
+        raise ReviewError('Indica si apruebas o rechazas la revisión.')
+    with transaction.atomic():
+        row = (
+            OrderRiskAssessment.objects.select_for_update()
+            .filter(order=order, company=company).first()
+        )
+        if row is None:
+            raise ReviewNotFound('Este pedido no tiene una evaluación que revisar.')
+        if row.review_status != ReviewStatus.PENDING:
+            raise ReviewNotPending('La revisión de este pedido no está pendiente: ya se decidió o no hacía falta.')
+        row.review_status = DECISIONS[decision]
+        row.reviewed_by = actor
+        row.reviewed_at = timezone.now()
+        row.review_note = (note or '').strip()[:NOTE_MAX]
+        row.save(update_fields=['review_status', 'reviewed_by', 'reviewed_at', 'review_note', 'updated_at'])
+        AdminAuditLog.log(
+            actor=actor,
+            action='order_risk_reviewed',
+            target_type='order',
+            target_id=order.pk,
+            company=company,
+            # What was decided and about what KIND of order. Nothing of the
+            # buyer, and not the note.
+            metadata={
+                'order_id': order.pk,
+                'decision': row.review_status,
+                'level': row.level,
+                'signals': list(row.signals),
+                'has_note': bool(row.review_note),
+            },
+            request=request,
+        )
+    return row

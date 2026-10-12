@@ -24,7 +24,7 @@ from .models import (
 from .tenancy import (
     BranchAccessError, CATALOG_SOURCE_LEGACY, NoBranchError,
     active_memberships, has_capability, is_platform_admin,
-    resolve_branch_for_user, resolve_catalog_company, visible_companies,
+    resolve_branch_for_user, resolve_catalog_company, uses_legacy_bridge, visible_companies,
     visible_orders,
 )
 from .permissions import (
@@ -38,6 +38,7 @@ from .serializers import (
     AdminProductDetailSerializer, AdminProductSerializer, AdminProductWriteSerializer,
     AdminCategorySerializer,
     CategorySerializer,
+    OrderRiskReviewSerializer,
 )
 from .throttles import (
     AdminAuditLogsThrottle, AdminCategoriesThrottle, AdminInventoryAdjustThrottle,
@@ -110,6 +111,13 @@ _LEGACY_SALES_NOTES_ROLES = frozenset([
 # authority than moving an order through fulfillment.
 _LEGACY_RESEND_EMAIL_ROLES = frozenset([
     UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
+])
+
+# CLIENT-SEC-01. Deciding the review of an order is a judgement about a SALE.
+# On the legacy bridge that is the counter's and the administrators', as with
+# cancelling: warehouse staff move goods.
+_LEGACY_REVIEW_ORDERS_ROLES = frozenset([
+    UserProfile.ROLE_SALES, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
 ])
 
 _NO_CATALOG_CONTEXT = 'No tienes acceso a los datos de ninguna empresa.'
@@ -912,6 +920,35 @@ class AdminCategoryDetailView(APIView):
 _ORDER_NOT_FOUND = 'Orden no encontrada.'
 
 
+def _holds(user, company, capability, legacy_roles) -> bool:
+    """
+    Whether `user` holds `capability` in `company` — by the company's grant, or
+    by their legacy role on the one path where that is still the authority.
+    The same two roads as `_company_context`, for a company already resolved.
+    """
+    if uses_legacy_bridge(user, company):
+        return get_user_role(user) in legacy_roles
+    return has_capability(user, company, capability)
+
+
+def _risk_block(request, order, company):
+    """
+    The assessment of an order as the panel shows it, or None.
+
+    For `sales.orders.view`: this payload is also the answer of endpoints that
+    ask for another capability, and what was noticed about a sale is not theirs
+    to read by that road.
+    """
+    from . import order_risk
+
+    if not _holds(request.user, company, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES):
+        return None
+    return order_risk.describe(
+        order_risk.for_order(order),
+        can_review=_holds(request.user, company, CAP_ORDERS_MANAGE, _LEGACY_REVIEW_ORDERS_ROLES),
+    )
+
+
 def _order_detail_payload(request, order, company):
     """
     The order as the web panel shows it, plus the fulfilment states THIS caller
@@ -939,6 +976,9 @@ def _order_detail_payload(request, order, company):
     transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
     return {
         **data,
+        # CLIENT-SEC-01: what was noticed about this order and what a person
+        # decided, for whoever may see orders; null when it was not assessed.
+        'risk': _risk_block(request, order, company),
         'units_pending': sum(pending.values()),
         # Whether THIS caller may say which device it is: whoever may change how
         # the order is dispatched, and only until it has left the shop.
@@ -1025,6 +1065,12 @@ class AdminOrderListView(APIView):
             paid_ids = orders.filter(status=Order.Status.PAID).values_list('pk', flat=True)
             orders = orders.filter(pk__in=order_ids_with_stock_shortfall(paid_ids))
 
+        # CLIENT-SEC-01: `?review=pending` narrows to the orders waiting for a
+        # person; every row carries its level and review state either way.
+        from . import order_risk
+
+        orders = order_risk.filter_by_review(orders, request.query_params.get('review'))
+
         page_qs, meta = _paginate(orders, request)
         rows = AdminOrderListSerializer(page_qs, many=True).data
         page_short_ids = order_ids_with_stock_shortfall(
@@ -1032,6 +1078,7 @@ class AdminOrderListView(APIView):
         )
         for row in rows:
             row['has_stock_shortfall'] = row['id'] in page_short_ids
+        order_risk.annotate_rows(company, rows)
         return Response({**meta, 'results': rows})
 
 
@@ -1297,6 +1344,44 @@ class AdminOrderFulfillmentView(APIView):
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderRiskReviewView(APIView):
+    """
+    POST /api/admin/orders/{pk}/risk-review/ — {decision: approve|reject, note?}
+
+    CLIENT-SEC-01. A person decides the review an order was waiting for:
+    `sales.orders.manage`, on an order this person can see. Once: a review that
+    is not waiting answers 409. The decision is ADVICE — it changes nothing of
+    the order (see `order_risk.review`).
+
+    Answers with the assessment alone, not with the order: whoever may manage
+    orders without seeing them learns the outcome of what they did and no more.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk):
+        from . import order_risk
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, _LEGACY_REVIEW_ORDERS_ROLES)
+        if error:
+            return error
+        ser = OrderRiskReviewSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            row = order_risk.review(
+                order=order, company=company, actor=request.user,
+                decision=ser.validated_data['decision'], note=ser.validated_data.get('note', ''),
+                request=request,
+            )
+        except order_risk.ReviewError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return Response({'risk': order_risk.describe(row, can_review=True)})
 
 
 class _OrderUnitsMixin:

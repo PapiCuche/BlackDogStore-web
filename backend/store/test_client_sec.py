@@ -1262,3 +1262,380 @@ class AssessedAtCheckoutTest(TestCase):
         order = _order(self.company, total='900.00', paid=True)
         self.assertFalse(OrderRiskAssessment.objects.filter(order=order).exists())
         self.assertIsNone(risk.for_order(order))
+
+
+# =============================================================================
+# 4 · a person decides, once — and staff read what was noticed
+# =============================================================================
+
+from store.models import Membership  # noqa: E402
+from store.tests import _pilot_company  # noqa: E402
+
+VIEW, MANAGE = 'sales.orders.view', 'sales.orders.manage'
+REVIEW_SIGNALS = [risk.SIGNAL_GUEST_CHECKOUT, risk.SIGNAL_HIGH_AMOUNT, risk.SIGNAL_VELOCITY_IP]
+
+
+def panel_review(pk):
+    return f'/api/admin/orders/{pk}/risk-review/'
+
+
+def app_review(slug, pk):
+    return f'/api/v1/internal/{slug}/orders/{pk}/risk-review/'
+
+
+def acting(user):
+    """A client acting as `user`, on whichever surface the URL belongs to."""
+    cache.clear()
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
+class _ReviewBase(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Tienda A', 'revision-a', tax_id='20999999990')
+        self.b = _saas_company('Tienda B', 'revision-b', tax_id='20111111112')
+        self.north = _p2d_branch(self.a, 'Norte')
+        self.south = _p2d_branch(self.a, 'Sur')
+        self.viewer, _ = _p2d_member(self.a, 'solo_ver', ['company.view', VIEW])
+        self.manager, _ = _p2d_member(self.a, 'gestora', ['company.view', VIEW, MANAGE])
+        self.manager.first_name, self.manager.last_name = 'Gema', 'Gestora'
+        self.manager.save(update_fields=['first_name', 'last_name'])
+        self.northerner, _ = _p2d_member(self.a, 'solo_norte', ['company.view', VIEW, MANAGE], branches=[self.north])
+        self.outsider, _ = _p2d_member(self.a, 'sin_ventas', ['company.view'])
+        self.foreigner, _ = _p2d_member(self.b, 'gestora_b', ['company.view', VIEW, MANAGE])
+        self.buyer = User.objects.create_user('compradora', 'compradora@correo.test', PASSWORD, first_name='Ana')
+
+        self.order = self.pending(self.a, self.north, user=self.buyer)
+        self.southern = self.pending(self.a, self.south)
+        self.foreign = self.pending(self.b, None)
+        self.row = self.order.risk_assessment
+
+    def pending(self, company, branch, *, status=Review.PENDING, level=Level.HIGH, user=None, **extra):
+        order = _order(
+            company, user=user, total='900.00', paid=True, fulfillment_branch=branch,
+            customer_name='Ana Torres', customer_email='ana.torres@correo.test', customer_phone='987654321',
+            document_type='dni', document_number=DNI, **extra,
+        )
+        OrderRiskAssessment.objects.create(
+            company=company, order=order, level=level, score=70, signals=list(REVIEW_SIGNALS),
+            ip_hash='a' * 64, review_status=status,
+        )
+        return order
+
+    def decide(self, user, decision='approve', *, order=None, note=None, surface='panel', slug='revision-a'):
+        order = order or self.order
+        body = {'decision': decision}
+        if note is not None:
+            body['note'] = note
+        url = panel_review(order.pk) if surface == 'panel' else app_review(slug, order.pk)
+        return acting(user).post(url, body, format='json')
+
+    def entries(self):
+        return list(AdminAuditLog.objects.filter(action='order_risk_reviewed').order_by('pk'))
+
+
+class ReviewDecisionTest(_ReviewBase):
+    def test_approving_writes_who_when_and_why_and_touches_nothing_else(self):
+        before = timezone.now()
+        response = self.decide(self.manager, 'approve', note='Llamé a la clienta y confirmó la compra.')
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.row.refresh_from_db()
+        self.assertEqual((self.row.review_status, self.row.reviewed_by), (Review.APPROVED, self.manager))
+        self.assertGreaterEqual(self.row.reviewed_at, before)
+        self.assertEqual(self.row.review_note, 'Llamé a la clienta y confirmó la compra.')
+        # What was noticed stays as it was noticed.
+        self.assertEqual((self.row.level, self.row.score, self.row.signals), (Level.HIGH, 70, REVIEW_SIGNALS))
+
+        self.order.refresh_from_db()
+        self.assertEqual(
+            (self.order.status, self.order.paid, self.order.fulfillment_status),
+            (Order.Status.PAID, True, Order.FulfillmentStatus.PENDING),
+        )
+        body = response.json()['risk']
+        self.assertEqual((body['review_status'], body['reviewed_by'], body['can_review']), ('approved', 'Gema Gestora', False))
+
+    def test_rejecting_is_advice_too(self):
+        response = self.decide(self.manager, 'reject', surface='app')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.row.refresh_from_db()
+        self.assertEqual((self.row.review_status, self.row.reviewed_by, self.row.review_note), (Review.REJECTED, self.manager, ''))
+        self.order.refresh_from_db()
+        # Not cancelled, not refunded, still paid, still where it was.
+        self.assertEqual(
+            (self.order.status, self.order.paid, self.order.fulfillment_status),
+            (Order.Status.PAID, True, Order.FulfillmentStatus.PENDING),
+        )
+        self.assertEqual(response.json()['risk']['review_status'], 'rejected')
+
+    def test_a_decision_is_made_once(self):
+        self.assertEqual(self.decide(self.manager, 'approve', note='Primera').status_code, 200)
+        other, _ = _p2d_member(self.a, 'otra_gestora', ['company.view', VIEW, MANAGE])
+
+        for surface in ('panel', 'app'):
+            for decision in ('approve', 'reject'):
+                with self.subTest(surface=surface, decision=decision):
+                    again = self.decide(other, decision, note='Segunda', surface=surface)
+                    self.assertEqual(again.status_code, 409, again.content)
+                    self.assertEqual(again.json()['code'], 'review_not_pending')
+        self.row.refresh_from_db()
+        self.assertEqual((self.row.review_status, self.row.reviewed_by, self.row.review_note), (Review.APPROVED, self.manager, 'Primera'))
+        self.assertEqual(len(self.entries()), 1)
+
+    def test_only_what_is_waiting_can_be_decided(self):
+        quiet = self.pending(self.a, self.north, status=Review.NOT_REQUIRED, level=Level.LOW)
+        self.assertEqual(self.decide(self.manager, order=quiet).status_code, 409)
+        unassessed = _order(self.a, total='10.00', fulfillment_branch=self.north)
+        for surface in ('panel', 'app'):
+            self.assertEqual(self.decide(self.manager, order=unassessed, surface=surface).status_code, 404)
+        self.assertEqual(self.entries(), [])
+        self.assertFalse(OrderRiskAssessment.objects.filter(order=unassessed).exists())
+
+    def test_what_is_not_a_decision_is_refused(self):
+        for surface in ('panel', 'app'):
+            for body in ({}, {'decision': 'approved'}, {'decision': 'cancel'}, {'decision': 'approve', 'note': 'x' * 301}):
+                with self.subTest(surface=surface, body=body):
+                    url = panel_review(self.order.pk) if surface == 'panel' else app_review('revision-a', self.order.pk)
+                    self.assertEqual(acting(self.manager).post(url, body, format='json').status_code, 400)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.review_status, Review.PENDING)
+
+    def test_it_is_written_down_without_anything_personal(self):
+        self.decide(self.manager, 'reject', note='La clienta Ana Torres, DNI 70000001, no contesta al 987654321.')
+        [entry] = self.entries()
+        self.assertEqual((entry.actor, entry.company, entry.target_type, entry.target_id), (self.manager, self.a, 'order', str(self.order.pk)))
+        self.assertEqual(entry.metadata, {
+            'order_id': self.order.pk, 'decision': 'rejected', 'level': 'high',
+            'signals': REVIEW_SIGNALS, 'has_note': True,
+        })
+        written = json.dumps(entry.metadata)
+        for value in ('Ana', 'Torres', DNI, '987654321', 'ana.torres@correo.test', 'contesta', 'a' * 64):
+            self.assertNotIn(value, written)
+
+    def test_nothing_personal_reaches_a_log(self):
+        with self.assertLogs(level='DEBUG') as captured:
+            import logging
+            logging.getLogger('store').debug('centinela')
+            self.decide(self.manager, 'approve', note='Ana Torres confirmó por teléfono 987654321')
+            self.decide(self.manager, 'reject')
+        text = '\n'.join(captured.output)
+        for value in ('Ana Torres', '987654321', DNI, 'ana.torres@correo.test'):
+            self.assertNotIn(value, text)
+
+
+class ReviewPermissionTest(_ReviewBase):
+    def assert_still_pending(self, order=None):
+        row = OrderRiskAssessment.objects.get(order=order or self.order)
+        self.assertEqual((row.review_status, row.reviewed_by), (Review.PENDING, None))
+
+    def test_seeing_orders_is_not_deciding_on_them(self):
+        for surface in ('panel', 'app'):
+            for user in (self.viewer, self.outsider):
+                with self.subTest(surface=surface, user=user.username):
+                    self.assertEqual(self.decide(user, surface=surface).status_code, 403)
+        self.assert_still_pending()
+
+    def test_a_buyer_decides_nothing_not_even_on_their_own_order(self):
+        self.assertEqual(self.decide(self.buyer, surface='panel').status_code, 403)
+        self.assertEqual(self.decide(self.buyer, surface='app').status_code, 404)
+        self.assertIn(APIClient().post(panel_review(self.order.pk), {'decision': 'approve'}, format='json').status_code, (401, 403))
+        self.assertEqual(APIClient().post(app_review('revision-a', self.order.pk), {'decision': 'approve'}, format='json').status_code, 401)
+        self.assert_still_pending()
+
+    def test_another_companys_staff_never_decide_here(self):
+        # Their own company is the one they act in: this order is not in it.
+        self.assertEqual(self.decide(self.foreigner, surface='panel').status_code, 404)
+        # Naming this company does not open it: the panel answers what it always
+        # answers to a company the caller has no access to.
+        self.assertEqual(
+            acting(self.foreigner).post(panel_review(self.order.pk) + f'?company={self.a.pk}', {'decision': 'approve'}, format='json').status_code,
+            403,
+        )
+        self.assertEqual(self.decide(self.foreigner, surface='app', slug='revision-a').status_code, 404)
+        self.assertEqual(self.decide(self.foreigner, surface='app', slug='revision-b').status_code, 404)
+        self.assert_still_pending()
+        # And this company's staff never decide there.
+        self.assertEqual(self.decide(self.manager, order=self.foreign, surface='panel').status_code, 404)
+        self.assertEqual(self.decide(self.manager, order=self.foreign, surface='app').status_code, 404)
+        self.assert_still_pending(self.foreign)
+        self.assertEqual(self.entries(), [])
+
+    def test_a_branch_scope_holds(self):
+        for surface in ('panel', 'app'):
+            self.assertEqual(self.decide(self.northerner, order=self.southern, surface=surface).status_code, 404)
+        self.assert_still_pending(self.southern)
+        self.assertEqual(self.decide(self.northerner, order=self.order).status_code, 200)
+
+    def test_the_pilots_operators_from_before_companies(self):
+        pilot = _pilot_company()
+        order = self.pending(pilot, None)
+
+        def legacy(username, role):
+            user = User.objects.create_user(username, f'{username}@correo.test', PASSWORD)
+            user.profile.role = role
+            user.profile.save()
+            return user
+
+        warehouse, counter = legacy('almacen', UserProfile.ROLE_INVENTORY), legacy('ventas', UserProfile.ROLE_SALES)
+        # Warehouse staff read the order and move the goods; whether a sale
+        # looks right is not theirs to say.
+        seen = acting(warehouse).get(f'/api/admin/orders/{order.pk}/')
+        self.assertEqual(seen.status_code, 200)
+        self.assertEqual((seen.json()['risk']['review_status'], seen.json()['risk']['can_review']), ('pending', False))
+        self.assertEqual(self.decide(warehouse, order=order).status_code, 403)
+        self.assert_still_pending(order)
+
+        self.assertTrue(acting(counter).get(f'/api/admin/orders/{order.pk}/').json()['risk']['can_review'])
+        self.assertEqual(self.decide(counter, order=order).status_code, 200)
+
+
+class RiskReadByStaffTest(_ReviewBase):
+    def detail(self, user, order=None, surface='panel'):
+        order = order or self.order
+        url = f'/api/admin/orders/{order.pk}/' if surface == 'panel' else f'/api/v1/internal/revision-a/orders/{order.pk}/'
+        return acting(user).get(url)
+
+    def test_the_order_shows_what_was_noticed_in_plain_words(self):
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                block = self.detail(self.viewer, surface=surface).json()['risk']
+                self.assertEqual(block, {
+                    'level': 'high', 'level_label': 'Alto', 'score': 70,
+                    'signals': [{'code': code, 'label': risk.LABELS[code]} for code in REVIEW_SIGNALS],
+                    'review_status': 'pending', 'review_status_label': 'Por revisar',
+                    'reviewed_by': None, 'reviewed_at': None, 'review_note': '',
+                    'assessed_at': block['assessed_at'], 'can_review': False,
+                })
+                self.assertEqual(parse_datetime(block['assessed_at']), self.row.created_at)
+                self.assertNotIn('a' * 64, json.dumps(block))                  # the origin hash is nobody's to read
+
+    def test_whoever_may_decide_is_told_so_by_the_server(self):
+        for surface in ('panel', 'app'):
+            self.assertTrue(self.detail(self.manager, surface=surface).json()['risk']['can_review'])
+            self.assertFalse(self.detail(self.viewer, surface=surface).json()['risk']['can_review'])
+        self.decide(self.manager, 'approve', note='Confirmado')
+        for surface in ('panel', 'app'):
+            block = self.detail(self.manager, surface=surface).json()['risk']
+            self.assertEqual(
+                (block['review_status'], block['reviewed_by'], block['review_note'], block['can_review']),
+                ('approved', 'Gema Gestora', 'Confirmado', False),
+            )
+            self.assertIsNotNone(block['reviewed_at'])
+
+    def test_an_order_that_was_not_assessed_says_so(self):
+        plain = _order(self.a, total='10.00', fulfillment_branch=self.north)
+        for surface in ('panel', 'app'):
+            self.assertIsNone(self.detail(self.viewer, plain, surface).json()['risk'])
+
+    def test_without_the_capability_to_see_orders_there_is_nothing_to_read(self):
+        self.assertEqual(self.detail(self.outsider, surface='panel').status_code, 403)
+        self.assertEqual(self.detail(self.outsider, surface='app').status_code, 403)
+        self.assertEqual(self.detail(self.foreigner, surface='panel').status_code, 404)
+        self.assertEqual(self.detail(self.foreigner, surface='app').status_code, 404)
+        self.assertEqual(self.detail(self.northerner, self.southern, 'panel').status_code, 404)
+
+    def rows(self, user, query='', surface='panel'):
+        url = '/api/admin/orders/' if surface == 'panel' else '/api/v1/internal/revision-a/orders/'
+        response = acting(user).get(url + query)
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row['id']: row for row in response.json()['results']}
+
+    def test_the_list_carries_level_and_review_state(self):
+        plain = _order(self.a, total='10.00', fulfillment_branch=self.north)
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                rows = self.rows(self.viewer, surface=surface)
+                self.assertEqual((rows[self.order.pk]['risk_level'], rows[self.order.pk]['review_status']), ('high', 'pending'))
+                self.assertEqual((rows[plain.pk]['risk_level'], rows[plain.pk]['review_status']), (None, None))
+
+    def test_the_list_can_be_narrowed_to_what_is_waiting(self):
+        plain = _order(self.a, total='10.00', fulfillment_branch=self.north)
+        decided = self.pending(self.a, self.north, status=Review.APPROVED)
+        quiet = self.pending(self.a, self.north, status=Review.NOT_REQUIRED, level=Level.MEDIUM)
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                self.assertEqual(set(self.rows(self.viewer, '?review=pending', surface)), {self.order.pk, self.southern.pk})
+                self.assertEqual(set(self.rows(self.viewer, '?review=approved', surface)), {decided.pk})
+                # Not a state: ignored, like a date nobody can read.
+                self.assertEqual(
+                    set(self.rows(self.viewer, '?review=cualquiera', surface)),
+                    {self.order.pk, self.southern.pk, plain.pk, decided.pk, quiet.pk},
+                )
+
+    def test_the_list_never_shows_another_companys_or_another_branchs(self):
+        for surface in ('panel', 'app'):
+            with self.subTest(surface):
+                self.assertNotIn(self.foreign.pk, self.rows(self.viewer, '?review=pending', surface))
+                self.assertEqual(set(self.rows(self.northerner, '?review=pending', surface)), {self.order.pk})
+        theirs = acting(self.foreigner).get('/api/admin/orders/?review=pending').json()['results']
+        self.assertEqual([row['id'] for row in theirs], [self.foreign.pk])
+
+    def test_reading_writes_nothing(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for url in (
+            f'/api/admin/orders/{self.order.pk}/', '/api/admin/orders/?review=pending',
+            f'/api/v1/internal/revision-a/orders/{self.order.pk}/', '/api/v1/internal/revision-a/orders/?review=pending',
+            panel_review(self.order.pk), app_review('revision-a', self.order.pk),
+        ):
+            client = acting(self.manager)
+            with self.subTest(url), CaptureQueriesContext(connection) as queries:
+                client.get(url)
+                client.options(url)
+            writes = [q['sql'] for q in queries.captured_queries if q['sql'].lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE'))]
+            self.assertEqual(writes, [])
+        self.assertEqual(acting(self.manager).get(panel_review(self.order.pk)).status_code, 405)
+        self.assertEqual(acting(self.manager).get(app_review('revision-a', self.order.pk)).status_code, 405)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class TheBuyerNeverSeesItTest(_ReviewBase):
+    HIDDEN = ('risk', 'review', 'signal', 'score', 'ip_hash', 'a' * 64)
+
+    def setUp(self):
+        super().setUp()
+        Customer.objects.create(company=self.a, user=self.buyer, first_name='Ana')
+        self.decide(self.manager, 'reject', note='nota de la tienda')
+
+    def assert_clean(self, response):
+        self.assertEqual(response.status_code, 200, response.content)
+        text = response.content.decode().lower()
+        for word in self.HIDDEN + ('nota de la tienda',):
+            self.assertNotIn(word, text)
+
+    def test_not_in_their_orders_on_the_web(self):
+        client = web_session(self.buyer)
+        listing = client.get('/api/orders/', HTTP_HOST='revision-a.example.com')
+        self.assert_clean(listing)
+        self.assertIn(self.order.pk, [row['id'] for row in listing.json()])
+        self.assert_clean(client.get(f'/api/orders/{self.order.pk}/', HTTP_HOST='revision-a.example.com'))
+
+    def test_not_in_their_orders_in_the_app(self):
+        client = v1_session(self.buyer)
+        listing = client.get('/api/v1/customer/revision-a/orders/')
+        self.assert_clean(listing)
+        self.assert_clean(client.get(f'/api/v1/customer/revision-a/orders/{self.order.pk}/'))
+
+    def test_not_in_their_profile_or_in_who_they_are(self):
+        self.assert_clean(v1_session(self.buyer).get(v1_profile('revision-a')))
+        self.assert_clean(v1_session(self.buyer).get(V1_ME))
+        client = web_session(self.buyer)
+        self.assert_clean(client.get(WEB_PROFILE, HTTP_HOST='revision-a.example.com'))
+        self.assert_clean(client.get(WEB_ME))
+
+    def test_what_a_buyer_reads_of_an_order_is_a_closed_list(self):
+        from store.serializers import OrderSerializer
+        from store.v1_customer_serializers import V1CustomerOrderSerializer
+
+        self.assertEqual(V1CustomerOrderSerializer.Meta.fields, [
+            'id', 'status', 'status_label', 'fulfillment_status', 'fulfillment_status_label',
+            'total', 'discount_amount', 'coupon_code', 'delivery_method', 'delivery_method_label',
+            'created_at', 'paid_at', 'items',
+        ])
+        self.assertEqual(OrderSerializer.Meta.fields, [
+            'id', 'user', 'customer_name', 'customer_email', 'total', 'discount_amount',
+            'coupon_code', 'status', 'paid', 'paid_at', 'created_at', 'items',
+        ])

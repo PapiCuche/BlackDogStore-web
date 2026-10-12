@@ -579,6 +579,15 @@ class AdminOrderFulfillmentSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, max_length=500, default='')
 
 
+class OrderRiskReviewSerializer(serializers.Serializer):
+    """
+    CLIENT-SEC-01 — what a person decided about an order waiting for review.
+    One shape for the panel and the internal surface of v1.
+    """
+    decision = serializers.ChoiceField(choices=['approve', 'reject'])
+    note = serializers.CharField(required=False, allow_blank=True, max_length=300, default='')
+
+
 class AdminCategoryUpdateSerializer(serializers.ModelSerializer):
     """
     What the panel may change on an existing category: how it is presented.

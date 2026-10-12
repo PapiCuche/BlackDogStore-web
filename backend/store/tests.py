@@ -53792,6 +53792,8 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'v1-internal-order-units': self.commerce.pk,
             'v1-internal-order-unit-lookup': self.commerce.pk,
             'v1-internal-order-unit-detail': self.commerce.pk,
+            # CLIENT-SEC-01: sólo POST; aquí la alcanza OPTIONS.
+            'v1-internal-order-risk-review': self.commerce.pk,
             'v1-internal-service-device-detail': self.device.pk,
             'v1-internal-announcement': self.announcement.pk,
             'v1-internal-notifications-read': 999999,
@@ -54120,7 +54122,8 @@ class H411CredentialChannelTest(M8ServiceBase):
         # WhatsApp, y configuración de mensajería.
         # 87 desde SERIAL-PICK-01: consulta de equipo en caja, y consulta,
         # identificación y retiro del equipo de un pedido.
-        self.assertEqual(internal, 87)
+        # 88 desde CLIENT-SEC-01: decidir la revisión de un pedido.
+        self.assertEqual(internal, 88)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------
