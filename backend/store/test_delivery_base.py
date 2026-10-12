@@ -789,9 +789,9 @@ class RecordedAtCheckoutTest(TestCase):
         # Nothing a checkout does not know.
         self.assertEqual(
             (record.carrier, record.carrier_name, record.agency_name, record.freight_amount, record.freight_paid_by,
-             record.waybill_number, record.tracking_code, record.tracking_url, record.shipped_at,
-             record.source_address, record.updated_by),
-            (None, '', '', None, '', '', '', '', None, None, None),
+             record.waybill_number, record.tracking_code, record.tracking_url, record.tracking_url_typed,
+             record.shipped_at, record.updated_by),
+            (None, '', '', None, '', '', '', '', False, None, None),
         )
         # The order itself is what it always was.
         self.assertEqual((order.delivery_method, order.address_line, order.city), ('national_shipping', 'Av. Siempre Viva 123', 'Puno'))
@@ -1226,9 +1226,9 @@ class StaffWriteDeliveryTest(_StaffDeliveryBase):
         })
         self.assertEqual(response.status_code, 200, response.content)
         record = self.record()
-        self.assertEqual((record.order, record.company, record.address_line, record.city, record.source_address,
+        self.assertEqual((record.order, record.company, record.address_line, record.city,
                           record.updated_by, record.carrier_name),
-                         (self.order, self.a, 'Av. Siempre Viva 123', 'Puno', None, self.manager, ''))
+                         (self.order, self.a, 'Av. Siempre Viva 123', 'Puno', self.manager, ''))
         self.order.refresh_from_db()
         self.assertEqual(self.order.delivery_method, 'national_shipping')
 
@@ -1338,7 +1338,6 @@ class TheRecordIsACopyTest(_StaffDeliveryBase):
             company=self.a, customer=customer, recipient_name='Ana Torres', address_line='Av. Siempre Viva 123',
             district='Juliaca', city='Puno', is_default=True,
         )
-        OrderDelivery.objects.filter(order=self.order).update(source_address=entry)
         kept = OrderDelivery.objects.filter(order=self.order).values().get()
 
         delivery.update_address(company=self.a, user=self.buyer, pk=entry.pk, data={'address_line': 'Otra calle 9', 'city': 'Lima'})
@@ -1347,8 +1346,16 @@ class TheRecordIsACopyTest(_StaffDeliveryBase):
         self.assertEqual(OrderDelivery.objects.filter(order=self.order).values().get(), kept)
 
         CustomerAddress.objects.filter(pk=entry.pk).delete()
+        self.assertEqual(OrderDelivery.objects.filter(order=self.order).values().get(), kept)
         record = self.record()
-        self.assertEqual((record.source_address, record.address_line, record.city), (None, 'Av. Siempre Viva 123', 'Puno'))
+        self.assertEqual((record.address_line, record.city), ('Av. Siempre Viva 123', 'Puno'))
+
+    def test_the_record_points_at_no_entry_of_the_book(self):
+        # A copy and nothing else: no code ever wrote such a link, so there is no column for one.
+        linked = [field.name for field in OrderDelivery._meta.get_fields()
+                  if getattr(field, 'related_model', None) is CustomerAddress]
+        self.assertEqual(linked, [])
+        self.assertNotIn('source_address', [field.name for field in OrderDelivery._meta.get_fields()])
 
 
 # =============================================================================

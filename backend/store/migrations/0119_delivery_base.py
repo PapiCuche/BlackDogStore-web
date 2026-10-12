@@ -90,7 +90,6 @@ class Migration(migrations.Migration):
                 ('carrier', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='store.carrier')),
                 ('company', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='order_deliveries', to='store.company')),
                 ('order', models.OneToOneField(on_delete=django.db.models.deletion.PROTECT, related_name='delivery_record', to='store.order')),
-                ('source_address', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='store.customeraddress')),
                 ('updated_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
             ],
         ),

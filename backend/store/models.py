@@ -9384,9 +9384,10 @@ class OrderDelivery(models.Model):
     the carrier charges and who pays it — never part of an order's total.
 
     COPIES, NOT LINKS. `carrier_name` and the address fields are text copied
-    here; `carrier` and `source_address` only say where the copy came from. A
-    carrier renamed or switched off, an address edited or removed from a
-    buyer's book — the record of an order that already left says what it said.
+    here; `carrier` only says where the copy came from, and nothing points at
+    the buyer's book. A carrier renamed or switched off, an address edited or
+    removed from a buyer's book — the record of an order that already left
+    says what it said.
 
     No row means the order has no delivery record: a sale at the till, or an
     order older than this table that had no delivery method.
@@ -9435,9 +9436,6 @@ class OrderDelivery(models.Model):
     tracking_url_typed = models.BooleanField(default=False)
     shipped_at = models.DateTimeField(null=True, blank=True)
 
-    source_address = models.ForeignKey(
-        CustomerAddress, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
-    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
     )
