@@ -44,7 +44,7 @@ la consulta con credenciales de otra tienda ya no llega a preguntar.
 
 **Pruebas.** Esta vez, cada prueba se escribió y se vio fallar antes de su corrección.
 Mutaciones, una a una: 60, todas detectadas (una sobrevivió a la primera pasada y obligó
-a añadir su prueba). Pruebas nuevas: 75 en `test_payment_audit2`, 5 en `test_preflight`
+a añadir su prueba). Pruebas nuevas: 74 en `test_payment_audit2`, 5 en `test_preflight`
 y 4 de Jest. Módulos de pagos, checkout, consola, medición, preflight y despliegue: 996,
 0 fallos, 3 omitidas (las pruebas contra la pasarela real). Jest 1072 de 1072, `tsc` y
 `lint` sin errores. **No se corrió en esta sesión** la suite completa de backend,
