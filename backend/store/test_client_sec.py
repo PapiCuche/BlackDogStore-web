@@ -2309,12 +2309,35 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
 
     def test_a_record_taken_while_the_guest_was_paying_is_not_adopted_either(self):
         # The fallback after a lost race re-reads by the same key: it must ask the same question.
-        user, record = self.squatter()
+        from django.db import IntegrityError
+
         order = _order(self.company, document_type='dni', document_number=self.VICTIM_DNI, customer_name='Víctima Real')
-        with mock.patch('store.customer_services._create_from_order', side_effect=__import__('django').db.IntegrityError('x')):
+        made = []
+
+        def lost_the_race(*args, **kwargs):
+            # Nobody held the document at the first look; an account took it before this record could be written.
+            made.append(self.squatter())
+            raise IntegrityError('unique_customer_document_per_company')
+
+        with mock.patch('store.customer_services._create_from_order', side_effect=lost_the_race):
             self.assertIsNone(customer_services.link_order_to_customer(order))
+        self.assertEqual(len(made), 1)                                      # the fallback WAS reached
         order.refresh_from_db()
         self.assertIsNone(order.customer)
+        self.assertFalse(Order.objects.filter(customer=made[0][1]).exists())
+
+    def test_a_walk_in_record_that_won_the_race_is_still_adopted(self):
+        from django.db import IntegrityError
+
+        order = _order(self.company, document_type='dni', document_number=self.VICTIM_DNI, customer_name='Víctima Real')
+        made = []
+
+        def lost_the_race(*args, **kwargs):
+            made.append(Customer.objects.create(company=self.company, first_name='Clienta', document_type='dni', document_number=self.VICTIM_DNI))
+            raise IntegrityError('unique_customer_document_per_company')
+
+        with mock.patch('store.customer_services._create_from_order', side_effect=lost_the_race):
+            self.assertEqual(customer_services.link_order_to_customer(order), made[0])
 
     def test_the_panel_finds_and_files_that_document_as_before(self):
         user, record = self.squatter()
@@ -2553,6 +2576,8 @@ class VerifyMyOwnAddressTest(_ProfileBase):
         AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(minutes=2))
         self.send()
         new = self.code()
+        # Only the newest row still carries a code at all.
+        self.assertEqual(AccountToken.objects.filter(user=self.user).exclude(code_hash='').count(), 1)
         if old != new:
             self.assertEqual(self.confirm(old).json(), CODE_REFUSED)
         self.assertEqual(self.confirm(new).status_code, 200)
