@@ -898,6 +898,13 @@ class _RiskBase(TestCase):
         self.order(company, user, paid=True)
         return user
 
+    def paid_now(self, order):
+        """The order was just paid: what payment confirmation does about its review."""
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        order.refresh_from_db()
+        risk.review_when_paid(order)
+        return OrderRiskAssessment.objects.get(order=order)
+
     def amount(self, value, company=None):
         CompanySettings.objects.update_or_create(
             company=company or self.a, defaults={'risk_review_amount': Decimal(value)},
@@ -997,6 +1004,17 @@ class EachSignalTest(_RiskBase):
         self.order(self.a, user, paid=True)
         self.assertNotIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))
 
+    def test_first_order_counts_a_paid_order_the_shop_filed_under_the_buyers_record(self):
+        # A purchase made at the counter, or as a guest, that the shop linked to
+        # the file this account owns: `Order.user` is empty, `customer.user` is them.
+        user = self.buyer()
+        record = Customer.objects.create(company=self.a, user=user, first_name='Ana')
+        self.order(customer=record, paid=True)
+        self.assertNotIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))
+        # Somebody else's file is not theirs.
+        other = self.buyer('otra')
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=other)))
+
     def test_first_order_of_a_guest_is_about_the_client_the_shop_matched(self):
         client = Customer.objects.create(company=self.a, first_name='Cliente', document_type='dni', document_number='40007777')
         self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(customer=client)))
@@ -1023,23 +1041,48 @@ class EachSignalTest(_RiskBase):
 
     # -- how often --------------------------------------------------------------
 
-    def test_velocity_ip_from_the_third_order_of_one_address_in_an_hour(self):
-        self.assertEqual(risk.VELOCITY_IP_ORDERS, 3)
+    def others_paid(self, n, ip, company=None, **extra):
+        """`n` OTHER guests whose orders came from `ip`, were assessed, and were PAID."""
+        made = []
+        for _ in range(n):
+            order = self.order(company, paid=True, **extra)
+            self.assess(order, ip)
+            made.append(order)
+        return made
+
+    def test_velocity_ip_from_the_third_buyer_of_one_address_in_an_hour(self):
+        self.assertEqual(risk.VELOCITY_IP_BUYERS, 3)
         self.assertEqual(risk.VELOCITY_IP_WINDOW, timedelta(hours=1))
-        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
-        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+        self.others_paid(1, '198.51.100.7')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))      # two buyers
+        self.others_paid(1, '198.51.100.7')
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.8'))      # another address
-        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))         # the third
+
+    def test_velocity_ip_is_about_different_buyers_not_one_retrying(self):
+        # F3 · a guest whose card is declined tries again from the same browser: one buyer.
+        for _ in range(6):
+            last = self.order(cart_session_key='un-mismo-carrito')
+            found = self.signals(last, '198.51.100.7')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, found)
+        user = self.buyer()
+        for _ in range(6):
+            found = self.signals(self.order(user=user), '198.51.100.9')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, found)
+
+    def test_velocity_ip_counts_other_buyers_only_once_they_paid(self):
+        # F3 · orders nobody paid for are free to make: they cannot mark somebody else's order.
+        for _ in range(5):
+            self.assess(self.order(), '198.51.100.7')                      # five other guests, none paid
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
 
     def test_velocity_ip_forgets_after_the_hour(self):
-        for _ in range(2):
-            self.assess(self.order(), '198.51.100.7')
+        self.others_paid(2, '198.51.100.7')
         OrderRiskAssessment.objects.update(created_at=timezone.now() - timedelta(minutes=61))
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
 
     def test_velocity_ip_never_counts_another_companys_orders(self):
-        for _ in range(4):
-            self.assess(self.order(self.b), '198.51.100.7')
+        self.others_paid(4, '198.51.100.7', self.b)
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(self.a), '198.51.100.7'))
 
     def test_velocity_ip_would_not_count_them_even_under_the_same_hash(self):
@@ -1047,23 +1090,36 @@ class EachSignalTest(_RiskBase):
         # count is asked inside the company all the same.
         here = risk.origin_hash(self.a, from_address('198.51.100.7'))
         for _ in range(4):
-            OrderRiskAssessment.objects.create(company=self.b, order=self.order(self.b), ip_hash=here)
+            OrderRiskAssessment.objects.create(company=self.b, order=self.order(self.b, paid=True), ip_hash=here)
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(self.a), '198.51.100.7'))
 
     def test_velocity_ip_needs_an_address(self):
         for _ in range(4):
-            self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), ip=None))
+            self.assess(self.order(paid=True), ip=None)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), ip=None))
 
-    def shared(self, n, company=None, **same):
-        """`n` orders by `n` different guests that share one contact detail."""
-        return [self.order(company, **same) for _ in range(n)]
+    def test_one_ipv6_household_is_one_origin(self):
+        # F10 · a home is given a whole /64 and its devices move inside it.
+        first = risk.origin_hash(self.a, from_address('2001:db8:aaaa:bbbb::1'))
+        self.assertEqual(first, risk.origin_hash(self.a, from_address('2001:db8:aaaa:bbbb:1234:5678:9abc:def0')))
+        self.assertNotEqual(first, risk.origin_hash(self.a, from_address('2001:db8:aaaa:cccc::1')))
+        # An IPv4 address written the IPv6 way is that IPv4 address.
+        self.assertEqual(risk.origin_hash(self.a, from_address('::ffff:203.0.113.5')),
+                         risk.origin_hash(self.a, from_address('203.0.113.5')))
+        self.assertNotEqual(risk.origin_hash(self.a, from_address('203.0.113.5')),
+                            risk.origin_hash(self.a, from_address('203.0.113.6')))
+        self.assertRegex(risk.origin_hash(self.a, from_address('no-es-una-direccion')), r'^[0-9a-f]{64}$')
+
+    def shared(self, n, company=None, *, paid=True, **same):
+        """`n` orders by `n` different guests that share one contact detail — PAID unless said otherwise."""
+        return [self.order(company, paid=paid, **same) for _ in range(n)]
 
     def test_velocity_contact_from_the_third_buyer_with_one_phone_in_a_day(self):
         self.assertEqual(risk.VELOCITY_CONTACT_BUYERS, 3)
         self.assertEqual(risk.VELOCITY_CONTACT_WINDOW, timedelta(hours=24))
-        self.order(customer_phone='987 111 222')
-        second = self.order(user=self.buyer('otra'), customer_phone='+51987111222')
-        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(second))
+        self.order(customer_phone='987 111 222', paid=True)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_phone='987111222')))
+        self.order(user=self.buyer('otra'), customer_phone='+51987111222', paid=True)
         third = self.order(customer_phone='987111222')                       # written three ways, one number
         self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(third))
 
@@ -1080,13 +1136,21 @@ class EachSignalTest(_RiskBase):
     def test_velocity_contact_is_about_different_buyers_not_one_buying_again(self):
         user = self.buyer()
         for _ in range(4):
-            last = self.order(user=user, customer_phone='987111222')
+            last = self.order(user=user, customer_phone='987111222', paid=True)
         self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(last))
 
         # One browser trying its payment again is one guest.
         for _ in range(4):
-            last = self.order(customer_phone='987333444', cart_session_key='un-mismo-carrito')
+            last = self.order(customer_phone='987333444', cart_session_key='un-mismo-carrito', paid=True)
         self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(last))
+
+    def test_velocity_contact_counts_other_buyers_only_once_they_paid(self):
+        # F3 · two unpaid orders carrying somebody's phone must not mark that person's next order.
+        self.shared(5, paid=False, customer_phone='987111222', customer_email='victima@correo.test',
+                    document_type='dni', document_number='40005555')
+        order = self.order(customer_phone='987111222', customer_email='victima@correo.test',
+                           document_type='dni', document_number='40005555')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(order))
 
     def test_velocity_contact_forgets_after_a_day(self):
         self.shared(2, customer_phone='987111222')
@@ -1105,7 +1169,7 @@ class EachSignalTest(_RiskBase):
         self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_phone='987111222')))
 
     def test_an_empty_detail_is_shared_with_nobody(self):
-        self.shared(4, customer_phone='', customer_email='', document_type='', document_number='')
+        self.shared(4, customer_phone='', customer_email='', document_type='', document_number='')      # paid, and empty
         order = self.order(customer_phone='', customer_email='', document_type='', document_number='')
         self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(order))
 
@@ -1131,11 +1195,13 @@ class EachSignalTest(_RiskBase):
     def test_archived_customer_by_account_asks_for_a_person_whatever_the_score(self):
         user = self.returning()
         Customer.objects.create(company=self.a, user=user, first_name='Ana', is_active=False)
-        row = self.assess(self.order(user=user))
+        order = self.order(user=user)
+        row = self.assess(order)
         self.assertEqual(row.signals, [risk.SIGNAL_ARCHIVED_CUSTOMER])
         self.assertEqual(row.level, risk.level_for(risk.WEIGHTS[risk.SIGNAL_ARCHIVED_CUSTOMER]))
         self.assertNotEqual(row.level, Level.HIGH)
-        self.assertEqual(row.review_status, Review.PENDING)
+        self.assertTrue(risk.needs_review(row))
+        self.assertEqual(self.paid_now(order).review_status, Review.PENDING)
 
     def test_archived_customer_by_document(self):
         Customer.objects.create(
@@ -1198,11 +1264,17 @@ class ScoreAndLevelTest(_RiskBase):
         medium = self.assess(self.order(total='2000.00'))
         self.assertEqual((medium.level, medium.review_status), (Level.MEDIUM, Review.NOT_REQUIRED))
 
+        self.assertFalse(risk.needs_review(medium))
+        self.assertEqual(self.paid_now(medium.order).review_status, Review.NOT_REQUIRED)
+
         for _ in range(2):
-            self.assess(self.order(), '198.51.100.7')
-        high = self.assess(self.order(total='2000.00'), '198.51.100.7')
+            self.assess(self.order(paid=True), '198.51.100.7')
+        order = self.order(total='2000.00')
+        high = self.assess(order, '198.51.100.7')
         self.assertGreaterEqual(high.score, risk.HIGH_SCORE)
-        self.assertEqual((high.level, high.review_status), (Level.HIGH, Review.PENDING))
+        self.assertEqual(high.level, Level.HIGH)
+        self.assertTrue(risk.needs_review(high))
+        self.assertEqual(self.paid_now(order).review_status, Review.PENDING)
 
 
 @override_settings(ALLOWED_HOSTS=['*'], **IZIPAY_TEST_SETTINGS)
@@ -1738,6 +1810,11 @@ class ReviewNeededNotificationTest(_RiskBase):
             customer_email='reservada@correo.test', customer_phone='987000999', document_number='40008888', **extra,
         )
 
+    def flag(self, order):
+        """Assessed when it was made, and then paid: the moment a review can start to wait."""
+        self.assess(order)
+        return self.paid_now(order)
+
     def told(self, order):
         return set(
             Notification.objects.filter(event__event_type=events.COMMERCE_ORDER_REVIEW_NEEDED, target_id=order.pk)
@@ -1750,7 +1827,7 @@ class ReviewNeededNotificationTest(_RiskBase):
 
     def test_a_pending_review_tells_whoever_may_decide_it_in_that_branch(self):
         order = self.suspicious(self.north)
-        row = self.assess(order)
+        row = self.flag(order)
         self.assertEqual(row.review_status, Review.PENDING)
 
         self.assertEqual(self.told(order), {'gestora', 'solo_norte'})
@@ -1767,7 +1844,7 @@ class ReviewNeededNotificationTest(_RiskBase):
 
     def test_it_says_which_order_and_how_it_looks_and_nothing_about_the_buyer(self):
         order = self.suspicious(self.north)
-        row = self.assess(order)
+        row = self.flag(order)
         notice = Notification.objects.get(user=self.manager)
         text = f'{notice.title} {notice.body}'
         self.assertIn(f'#{order.pk}', text)
@@ -1777,28 +1854,81 @@ class ReviewNeededNotificationTest(_RiskBase):
         for value in ('Archivada', 'Reservada', 'reservada@correo.test', '987000999', '40008888', '4321', 'archiv'):
             self.assertNotIn(value, said)
 
+    def test_an_order_nobody_paid_for_asks_for_nobody_and_tells_nobody(self):
+        # F3 · an unpaid order costs nothing to make: it must not fill the queue or ring the bell.
+        orders = [self.suspicious(self.north) for _ in range(10)]
+        rows = [self.assess(order) for order in orders]
+        self.assertTrue(all(risk.needs_review(row) for row in rows))        # what was noticed is still written down
+        self.assertEqual({row.review_status for row in rows}, {Review.NOT_REQUIRED})
+        self.assertFalse(NotificationEvent.objects.exists())
+        self.assertFalse(Notification.objects.exists())
+        # Asked again without a payment, nothing changes.
+        self.assertIsNone(risk.review_when_paid(orders[0]))
+        self.assertEqual(OrderRiskAssessment.objects.get(order=orders[0]).review_status, Review.NOT_REQUIRED)
+        self.assertFalse(Notification.objects.exists())
+
+    def test_paying_it_is_what_puts_it_in_the_queue_once(self):
+        order = self.suspicious(self.north)
+        self.assess(order)
+        row = self.paid_now(order)
+        self.assertEqual(row.review_status, Review.PENDING)
+        self.assertEqual(self.told(order), {'gestora', 'solo_norte'})
+        # A notification replayed, a reconciliation after it: one review, one notice each.
+        risk.review_when_paid(order)
+        risk.review_when_paid(order)
+        self.assertEqual(NotificationEvent.objects.count(), 1)
+        self.assertEqual(Notification.objects.filter(user=self.manager).count(), 1)
+
+    def test_a_decision_already_made_is_not_reopened_by_a_late_confirmation(self):
+        order = self.suspicious(self.north)
+        self.assess(order)
+        self.paid_now(order)
+        risk.review(order=order, company=self.a, actor=self.manager, decision='reject')
+        risk.review_when_paid(order)
+        row = OrderRiskAssessment.objects.get(order=order)
+        self.assertEqual((row.review_status, row.reviewed_by), (Review.REJECTED, self.manager))
+
+    def test_an_order_that_was_never_assessed_is_left_alone(self):
+        order = _order(self.a, total='50.00', paid=True)
+        self.assertIsNone(risk.review_when_paid(order))
+        self.assertFalse(OrderRiskAssessment.objects.filter(order=order).exists())
+
+    def test_it_can_never_fail_what_called_it(self):
+        order = self.suspicious(self.north)
+        self.assess(order)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True)
+        order.refresh_from_db()
+
+        def broken(order):
+            Customer.objects.bulk_create([Customer(company=order.company)])   # the database refuses, mid-transaction
+
+        with patch('store.order_risk._review_when_paid', side_effect=broken), self.assertLogs('store.order_risk', level='ERROR') as logged:
+            self.assertIsNone(risk.review_when_paid(order))
+        self.assertTrue(Order.objects.filter(pk=order.pk, paid=True).exists())          # the transaction is still usable
+        self.assertNotIn('reservada@correo.test', '\n'.join(logged.output))
+
     def test_a_branch_scope_holds(self):
         order = self.suspicious(self.south)
-        self.assess(order)
+        self.flag(order)
         self.assertEqual(self.told(order), {'gestora'})
 
     def test_an_order_no_branch_answers_for_goes_to_whoever_sees_the_whole_company(self):
         order = self.suspicious(None)
-        self.assess(order)
+        self.flag(order)
         self.assertEqual(self.told(order), {'gestora'})
 
     def test_another_companys_staff_are_never_told(self):
         order = self.suspicious(None, self.b)                                 # that document is archived in A, not here
         Customer.objects.create(company=self.b, first_name='Otra', document_type='dni', document_number='40008887', is_active=False)
         theirs = self.order(self.b, document_number='40008887')
-        self.assess(order)
-        self.assess(theirs)
+        self.flag(order)
+        self.flag(theirs)
         self.assertEqual(self.told(order), set())
         self.assertEqual(self.told(theirs), {'gestora_b'})
         self.assertFalse(Notification.objects.filter(company=self.a).exists())
 
     def test_an_order_that_asks_for_nobody_tells_nobody(self):
-        row = self.assess(self.order(fulfillment_branch=self.north))
+        row = self.flag(self.order(fulfillment_branch=self.north))
         self.assertEqual(row.review_status, Review.NOT_REQUIRED)
         self.assertFalse(NotificationEvent.objects.exists())
         self.assertFalse(Notification.objects.exists())
@@ -1810,7 +1940,7 @@ class ReviewNeededNotificationTest(_RiskBase):
 
         order = self.suspicious(self.north)
         with patch('store.commerce_notifications.notif.emit', side_effect=broken):
-            row = self.assess(order)
+            row = self.flag(order)
         self.assertIsNotNone(row)
         self.assertEqual(OrderRiskAssessment.objects.get(order=order).review_status, Review.PENDING)
         self.assertFalse(Notification.objects.exists())
@@ -1872,7 +2002,8 @@ class HoldPendingReviewTest(_ReviewBase):
 
     def test_on_every_other_state_is_free(self):
         self.hold()
-        for status in ('confirmed', 'preparing', 'ready_for_pickup', 'cancelled', 'pending'):
+        self.assertEqual(fulfillment.HELD_WHILE_REVIEW_PENDING, {'ready_for_pickup', 'shipped', 'delivered'})
+        for status in ('confirmed', 'preparing', 'cancelled', 'pending'):
             with self.subTest(status):
                 self.assertEqual(self.move(status).status_code, 200)
                 self.assertEqual(self.state(), status)
@@ -2649,3 +2780,221 @@ class ClaimAfterOpeningMyAccountTest(TrackingBase):
         self.walk_in.refresh_from_db()
         self.assertEqual(self.walk_in.user, self.elena)
         self.assertNotIn('replaced_empty_customer_id', AdminAuditLog.objects.get(action='customer_account_linked').metadata)
+
+
+from store.test_payment_hardening import Base as PaymentBase  # noqa: E402
+
+
+class AReviewStartsWhenTheOrderIsPaidTest(PaymentBase):
+    """F3 · the real roads by which an order becomes paid: the signed notification, and asking the gateway."""
+
+    def setUp(self):
+        super().setUp()
+        row = OrderRiskAssessment.objects.get(order=self.order)             # made by the checkout of the fixture
+        self.assertEqual(row.review_status, Review.NOT_REQUIRED)
+        # What was noticed about it asks for a person.
+        OrderRiskAssessment.objects.filter(pk=row.pk).update(
+            level=Level.HIGH, score=70, signals=[risk.SIGNAL_GUEST_CHECKOUT, risk.SIGNAL_HIGH_AMOUNT, risk.SIGNAL_VELOCITY_IP],
+        )
+        self.manager, _ = _p2d_member(self.order.company, 'gestora_pago', ['company.view', VIEW, MANAGE])
+
+    def state(self):
+        return OrderRiskAssessment.objects.get(order=self.order).review_status
+
+    def notices(self):
+        return Notification.objects.filter(event__event_type=events.COMMERCE_ORDER_REVIEW_NEEDED, target_id=self.order.pk)
+
+    def test_unpaid_it_waits_for_nobody(self):
+        self.assertEqual(self.state(), Review.NOT_REQUIRED)
+        self.assertFalse(self.notices().exists())
+        self.assertEqual(self.notify(status='UNPAID').status_code, 200)     # a declined card
+        self.assertEqual(self.state(), Review.NOT_REQUIRED)
+        self.assertFalse(self.notices().exists())
+
+    def test_the_signed_notification_that_pays_it_starts_the_review(self):
+        self.assertEqual(self.notify().status_code, 200)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        self.assertEqual(self.state(), Review.PENDING)
+        self.assertEqual([n.user for n in self.notices()], [self.manager])
+        # Replayed, it is the same payment: one review, one notice.
+        self.assertEqual(self.notify().status_code, 200)
+        self.assertEqual(self.notices().count(), 1)
+
+    def test_being_paid_by_asking_the_gateway_starts_it_too(self):
+        self.fake.hold(self.attempt.transaction_id, self.paid())
+        self.ask()
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        self.assertEqual(self.state(), Review.PENDING)
+        self.assertEqual(self.notices().count(), 1)
+
+    def test_a_review_that_cannot_start_never_costs_the_payment(self):
+        def broken(order):
+            Customer.objects.bulk_create([Customer(company=order.company)])   # the database refuses, mid-transaction
+
+        with mock.patch('store.order_risk._review_when_paid', side_effect=broken):
+            self.assertEqual(self.notify().status_code, 200)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        self.assertEqual(self.order.status, Order.Status.PAID)
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.AUTHORIZED)
+        self.assertEqual(self.state(), Review.NOT_REQUIRED)
+
+
+from store.models import PaymentTransaction  # noqa: E402
+
+
+class OnlyPaidOrdersWaitForReviewTest(_ReviewBase):
+    """F3, F6 · the queue, the hold and the card are about orders somebody paid for."""
+
+    def unpaid_pending(self):
+        """A row an earlier version could have left: waiting, on an order nobody paid."""
+        order = self.pending(self.a, self.north)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PENDING_PAYMENT, paid=False, paid_at=None)
+        return order
+
+    def test_the_queue_lists_paid_orders_only(self):
+        unpaid = self.unpaid_pending()
+        for url in ('/api/admin/orders/?review=pending', '/api/v1/internal/revision-a/orders/?review=pending'):
+            ids = [row['id'] for row in acting(self.viewer).get(url).json()['results']]
+            self.assertNotIn(unpaid.pk, ids)
+            self.assertIn(self.order.pk, ids)
+
+    def test_the_hold_is_about_paid_orders_only(self):
+        CompanySettings.objects.update_or_create(company=self.a, defaults={'hold_orders_pending_review': True})
+        unpaid = self.unpaid_pending()
+        self.assertFalse(risk.review_holds_dispatch(unpaid, self.a))
+        self.assertTrue(risk.review_holds_dispatch(self.order, self.a))
+
+    def test_with_the_hold_on_the_buyer_is_not_told_to_come_and_collect_it_either(self):
+        # F6 · «listo para retiro» sends the buyer a notice to come: it waits for the review as well.
+        CompanySettings.objects.update_or_create(company=self.a, defaults={'hold_orders_pending_review': True})
+        for surface, url in (('panel', f'/api/admin/orders/{self.order.pk}/fulfillment-status/'),
+                             ('app', f'/api/v1/internal/revision-a/orders/{self.order.pk}/fulfillment/')):
+            with self.subTest(surface):
+                response = acting(self.manager).patch(url, {'fulfillment_status': 'ready_for_pickup'}, format='json')
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertEqual(response.json()['code'], 'review_pending')
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, Order.FulfillmentStatus.PENDING)
+        self.assertFalse(Notification.objects.filter(event__event_type=events.COMMERCE_FULFILLMENT_READY).exists())
+        # The states that send the buyer nothing stay free, and a decision lets it go.
+        self.assertEqual(acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                                                   {'fulfillment_status': 'preparing'}, format='json').status_code, 200)
+        self.decide(self.manager, 'approve')
+        self.assertEqual(acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                                                   {'fulfillment_status': 'ready_for_pickup'}, format='json').status_code, 200)
+
+    def test_off_ready_for_pickup_is_as_free_as_it_always_was(self):
+        response = acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                                              {'fulfillment_status': 'ready_for_pickup'}, format='json')
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_reviewer_without_a_name_is_shown_as_staff_not_by_their_login(self):
+        # F12 · a login name is not a name to show.
+        nameless, _ = _p2d_member(self.a, 'usuario.interno.77', ['company.view', VIEW, MANAGE])
+        response = self.decide(nameless, 'approve')
+        self.assertEqual(response.json()['risk']['reviewed_by'], 'Personal de la tienda')
+        self.assertNotIn('usuario.interno.77', acting(self.viewer).get(f'/api/admin/orders/{self.order.pk}/').content.decode())
+
+    def test_managing_orders_without_seeing_them_does_not_read_what_was_noticed(self):
+        # Routes that ask only for `manage` answer with the order's payload: the risk block is not part of that road.
+        blind, _ = _p2d_member(self.a, 'gestiona_sin_ver', ['company.view', MANAGE])
+        panel = acting(blind).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/', {'fulfillment_status': 'preparing'}, format='json')
+        app = acting(blind).patch(f'/api/v1/internal/revision-a/orders/{self.order.pk}/fulfillment/', {'fulfillment_status': 'confirmed'}, format='json')
+        for response in (panel, app):
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertIn('risk', response.json())
+            self.assertIsNone(response.json()['risk'])
+            self.assertIsNone(response.json()['delivery'])
+            self.assertNotIn(risk.SIGNAL_VELOCITY_IP, response.content.decode())
+        # With `view` as well, the same routes carry it.
+        seen = acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/', {'fulfillment_status': 'pending'}, format='json')
+        self.assertEqual(seen.json()['risk']['level'], 'high')
+
+
+import threading  # noqa: E402
+
+from django.db import connection as db_connection  # noqa: E402
+from django.test import TransactionTestCase  # noqa: E402
+
+
+class TwoAtOnceTest(TransactionTestCase):
+    """
+    Real commits and real row locks, with two connections: what a `TestCase`
+    cannot see. Nothing a migration seeds is needed, so the database is not
+    asked to be put back.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda A', 'dos-a-la-vez', tax_id='20999999990')
+        self.user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD, first_name='Ana')
+        accounts.mark_email_verified(self.user)
+
+    def together(self, jobs):
+        barrier, results = threading.Barrier(len(jobs)), [None] * len(jobs)
+
+        def run(index, job):
+            try:
+                barrier.wait(timeout=10)
+                results[index] = ('ok', job())
+            except Exception as failed:  # noqa: BLE001 — the outcome under test
+                results[index] = ('refused', failed)
+            finally:
+                db_connection.close()
+
+        threads = [threading.Thread(target=run, args=(i, job)) for i, job in enumerate(jobs)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        return results
+
+    def test_two_reviewers_deciding_at_once_leave_one_decision(self):
+        first = User.objects.create_user('una', 'una@tienda.test', PASSWORD)
+        second = User.objects.create_user('otra', 'otra@tienda.test', PASSWORD)
+        for _ in range(5):
+            order = _order(self.company, total='900.00', paid=True)
+            OrderRiskAssessment.objects.create(
+                company=self.company, order=order, level=Level.HIGH, score=70, signals=[], review_status=Review.PENDING,
+            )
+            results = self.together([
+                lambda: risk.review(order=order, company=self.company, actor=first, decision='approve'),
+                lambda: risk.review(order=order, company=self.company, actor=second, decision='reject'),
+            ])
+            outcomes = sorted(kind for kind, _value in results)
+            self.assertEqual(outcomes, ['ok', 'refused'], results)
+            refused = next(value for kind, value in results if kind == 'refused')
+            self.assertIsInstance(refused, risk.ReviewNotPending)
+            row = OrderRiskAssessment.objects.get(order=order)
+            winner = next(value for kind, value in results if kind == 'ok')
+            self.assertEqual((row.review_status, row.reviewed_by_id), (winner.review_status, winner.reviewed_by_id))
+            self.assertEqual(AdminAuditLog.objects.filter(action='order_risk_reviewed', target_id=str(order.pk)).count(), 1)
+
+    def test_two_saves_of_one_profile_at_once_are_both_kept(self):
+        from store import customer_profile
+
+        customer_profile.update(company=self.company, user=self.user, data={'phone': '987654321'})
+        for n in range(5):
+            results = self.together([
+                lambda: customer_profile.update(company=self.company, user=self.user, data={'first_name': f'Ana {n}'}),
+                lambda: customer_profile.update(company=self.company, user=self.user, data={'last_name': f'Torres {n}'}),
+            ])
+            self.assertEqual([kind for kind, _value in results], ['ok', 'ok'], results)
+            record = Customer.objects.get(company=self.company, user=self.user)
+            # Without the lock one save would be made on a stale copy and undo the other.
+            self.assertEqual((record.first_name, record.last_name), (f'Ana {n}', f'Torres {n}'))
+
+    def test_two_first_saves_at_once_make_one_record(self):
+        from store import customer_profile
+
+        other = User.objects.create_user('luis', 'luis@correo.test', PASSWORD, first_name='Luis')
+        results = self.together([
+            lambda: customer_profile.update(company=self.company, user=other, data={'phone': '987654321'}),
+            lambda: customer_profile.update(company=self.company, user=other, data={'last_name': 'Rojas'}),
+        ])
+        self.assertEqual([kind for kind, _value in results], ['ok', 'ok'], results)
+        record = Customer.objects.get(company=self.company, user=other)
+        self.assertEqual((record.phone, record.last_name), ('987654321', 'Rojas'))

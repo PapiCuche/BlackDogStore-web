@@ -69,6 +69,15 @@ INVENTORY_ALLOWED_FULFILLMENT = frozenset([
 
 ALL_FULFILLMENT_STATUSES = tuple(choice[0] for choice in Order.FulfillmentStatus.choices)
 
+#: The states a company's hold keeps an order out of while its review is
+#: pending (CLIENT-SEC-01): the two in which the goods leave, and the one that
+#: tells the buyer to come and collect them.
+HELD_WHILE_REVIEW_PENDING = frozenset([
+    Order.FulfillmentStatus.READY_FOR_PICKUP,
+    Order.FulfillmentStatus.SHIPPED,
+    Order.FulfillmentStatus.DELIVERED,
+])
+
 
 class FulfillmentNotAllowed(Exception):
     """This actor may not set this status. Carries the message the caller shows."""
@@ -167,15 +176,17 @@ def change_fulfillment_status(
         # sending it or handing it over is not. Decided with the order LOCKED —
         # the same lock identifying or taking back a device holds — so nobody
         # un-names a device between this check and the write below.
-        if leaving:
+        if leaving or new_status in HELD_WHILE_REVIEW_PENDING:
             Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
-            # CLIENT-SEC-01. Only where the company asked for it: an order
-            # waiting for its review does not leave until somebody has decided.
-            # Asked with the order locked, like the devices below.
-            if order_risk.review_holds_dispatch(order, company):
-                raise FulfillmentBlocked(
-                    order_risk.REVIEW_PENDING_DETAIL, pending={}, code=FulfillmentBlocked.REVIEW_PENDING,
-                )
+        # CLIENT-SEC-01. Only where the company asked for it: an order waiting
+        # for its review does not leave — nor is its buyer told to come for it —
+        # until somebody has decided. Asked with the order locked, like the
+        # devices below.
+        if new_status in HELD_WHILE_REVIEW_PENDING and order_risk.review_holds_dispatch(order, company):
+            raise FulfillmentBlocked(
+                order_risk.REVIEW_PENDING_DETAIL, pending={}, code=FulfillmentBlocked.REVIEW_PENDING,
+            )
+        if leaving:
             pending = unit_identification.pending_units(order)
             if pending:
                 missing = sum(pending.values())

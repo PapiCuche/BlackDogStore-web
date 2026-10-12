@@ -105,8 +105,10 @@ LABELS = {
 MEDIUM_SCORE = 30
 HIGH_SCORE = 60
 
-#: This many orders from one origin within the window, this one included.
-VELOCITY_IP_ORDERS = 3
+#: This many DIFFERENT buyers from one origin within the window, this one
+#: included. Buyers, not orders: somebody whose card is declined and tries
+#: again is one buyer, however many orders that leaves behind.
+VELOCITY_IP_BUYERS = 3
 VELOCITY_IP_WINDOW = timedelta(hours=1)
 
 #: This many DIFFERENT buyers sharing a phone, an address or a document within
@@ -115,6 +117,12 @@ VELOCITY_CONTACT_BUYERS = 3
 VELOCITY_CONTACT_WINDOW = timedelta(hours=24)
 #: How many of the company's latest orders that look reads at most.
 _VELOCITY_CONTACT_SCAN = 500
+
+# WHOSE ORDERS THE TWO VELOCITY RULES COUNT. This order's own buyer, always.
+# ANOTHER buyer's order only once it was PAID. An order nobody paid for costs
+# nothing to make: counted, anybody could mark a stranger's next order by
+# leaving two unpaid ones with the stranger's phone on them, or fill a shop's
+# review queue from one browser. A paid order cost its buyer money.
 
 
 def level_for(score: int) -> str:
@@ -146,7 +154,26 @@ def origin_hash(company, request) -> str:
     address = get_client_ip(request) if request is not None else None
     if not address:
         return ''
-    return hmac.new(_origin_key(), f'{company.pk}:{address}'.encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.new(_origin_key(), f'{company.pk}:{_origin_of(address)}'.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def _origin_of(address: str) -> str:
+    """
+    What counts as «the same origin». An IPv4 address is itself. An IPv6 one is
+    its /64: a household is given the whole /64 and its devices change address
+    inside it, so the full address would be a different origin every time.
+    """
+    import ipaddress
+
+    try:
+        parsed = ipaddress.ip_address(address.strip())
+    except ValueError:
+        return address
+    if parsed.version == 6:
+        if parsed.ipv4_mapped is not None:
+            return str(parsed.ipv4_mapped)
+        return str(ipaddress.ip_network(f'{parsed}/64', strict=False).network_address)
+    return str(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -186,14 +213,55 @@ def _assess(order, request):
     signals = _signals(order, company, origin)
     score = sum(WEIGHTS[code] for code in signals)
     level = level_for(score)
-    needs_review = level == Level.HIGH or SIGNAL_ARCHIVED_CUSTOMER in signals
-    row = OrderRiskAssessment.objects.create(
+    # NOBODY IS ASKED TO LOOK YET. What was noticed is written down now; a
+    # review starts to wait when the order is PAID (`review_when_paid`). An
+    # order that is never paid never reaches the queue or the bell.
+    return OrderRiskAssessment.objects.create(
         company=company, order=order, level=level, score=score, signals=signals, ip_hash=origin,
-        review_status=ReviewStatus.PENDING if needs_review else ReviewStatus.NOT_REQUIRED,
+        review_status=ReviewStatus.NOT_REQUIRED,
     )
-    if needs_review:
-        # Whoever may decide is told, in the panel. It cannot fail this.
-        emit_order_review_needed(order, row)
+
+
+def needs_review(row) -> bool:
+    """Whether what was noticed about an order asks for a person: a high level, or an archived client."""
+    return row.level == Level.HIGH or SIGNAL_ARCHIVED_CUSTOMER in (row.signals or [])
+
+
+def review_when_paid(order):
+    """
+    An order has just been PAID: if what was noticed about it asks for a
+    person, its review starts to wait now and whoever may decide is told. The
+    row when that happened, else None.
+
+    Called where a payment is confirmed — the signed notification and the
+    answer of the gateway alike. NEVER RAISES and never breaks that
+    transaction: a savepoint, and a failure logged by its kind. A payment is
+    confirmed whether or not its review could be opened.
+
+    Once: a row that is already waiting, or that somebody decided, is left as
+    it is, so a replayed notification changes nothing.
+    """
+    try:
+        with transaction.atomic():
+            return _review_when_paid(order)
+    except Exception as failed:  # noqa: BLE001 — see docstring
+        logger.error(
+            'order review could not be opened for paid order %s (%s)',
+            getattr(order, 'pk', None), type(failed).__name__,
+        )
+        return None
+
+
+def _review_when_paid(order):
+    if order.status != Order.Status.PAID:
+        return None
+    row = OrderRiskAssessment.objects.select_for_update().filter(order=order).first()
+    if row is None or row.review_status != ReviewStatus.NOT_REQUIRED or not needs_review(row):
+        return None
+    row.review_status = ReviewStatus.PENDING
+    row.save(update_fields=['review_status', 'updated_at'])
+    # Whoever may decide is told, in the panel. It cannot fail this.
+    emit_order_review_needed(order, row)
     return row
 
 
@@ -212,7 +280,7 @@ def _signals(order, company, origin) -> list[str]:
         noticed.add(SIGNAL_FIRST_ORDER)
     if _reaches_review_amount(order, company):
         noticed.add(SIGNAL_HIGH_AMOUNT)
-    if _same_origin_too_often(company, origin):
+    if _origin_shared_by_buyers(order, company, origin):
         noticed.add(SIGNAL_VELOCITY_IP)
     if _contact_shared_by_buyers(order, company, document):
         noticed.add(SIGNAL_VELOCITY_CONTACT)
@@ -225,13 +293,14 @@ def _signals(order, company, origin) -> list[str]:
 
 def _has_paid_before(order, company, user) -> bool:
     """An earlier PAID order of this account — or, for a guest, of the client the shop matched."""
+    paid = Order.objects.filter(company=company, status=Order.Status.PAID).exclude(pk=order.pk)
     if user is not None:
-        whose = Q(user=user) | Q(customer__user=user)
-    elif order.customer_id is not None:
-        whose = Q(customer_id=order.customer_id)
-    else:
-        return False
-    return Order.objects.filter(whose, company=company, status=Order.Status.PAID).exclude(pk=order.pk).exists()
+        # Two questions, each on its own index, rather than one OR across a join:
+        # bought with the account, or filed by the shop under the account's record.
+        return paid.filter(user=user).exists() or paid.filter(customer__user=user).exists()
+    if order.customer_id is not None:
+        return paid.filter(customer_id=order.customer_id).exists()
+    return False
 
 
 def _reaches_review_amount(order, company) -> bool:
@@ -241,13 +310,23 @@ def _reaches_review_amount(order, company) -> bool:
     return amount is not None and order.total >= amount
 
 
-def _same_origin_too_often(company, origin) -> bool:
+def _origin_shared_by_buyers(order, company, origin) -> bool:
+    """This buyer, plus the OTHER buyers whose paid orders came from the same origin in the window."""
     if not origin:
         return False
-    earlier = OrderRiskAssessment.objects.filter(
-        company=company, ip_hash=origin, created_at__gte=timezone.now() - VELOCITY_IP_WINDOW,
-    ).count()
-    return earlier + 1 >= VELOCITY_IP_ORDERS
+    others = (
+        OrderRiskAssessment.objects
+        .filter(company=company, ip_hash=origin, created_at__gte=timezone.now() - VELOCITY_IP_WINDOW,
+                order__status=Order.Status.PAID)
+        .exclude(order_id=order.pk)
+        .values('order_id', 'order__user_id', 'order__cart_session_key')
+    )
+    buyers = {_buyer_key({'pk': order.pk, 'user_id': order.user_id, 'cart_session_key': order.cart_session_key})}
+    for row in others:
+        buyers.add(_buyer_key({
+            'pk': row['order_id'], 'user_id': row['order__user_id'], 'cart_session_key': row['order__cart_session_key'],
+        }))
+    return len(buyers) >= VELOCITY_IP_BUYERS
 
 
 def _buyer_key(row) -> tuple:
@@ -282,7 +361,7 @@ def _contact_shared_by_buyers(order, company, document) -> bool:
         return False
     recent = (
         Order.objects
-        .filter(company=company, sales_channel=SalesChannel.ONLINE,
+        .filter(company=company, sales_channel=SalesChannel.ONLINE, status=Order.Status.PAID,
                 created_at__gte=timezone.now() - VELOCITY_CONTACT_WINDOW)
         .exclude(pk=order.pk).order_by('-created_at')
         .values('pk', 'user_id', 'cart_session_key', 'customer_phone', 'customer_email',
@@ -314,7 +393,8 @@ def _archived_here(company, own, document) -> bool:
 
 #: What staff are told when an order cannot leave yet.
 REVIEW_PENDING_DETAIL = (
-    'Este pedido tiene una revisión pendiente. Apruébala o recházala antes de marcarlo como enviado o entregado.'
+    'Este pedido tiene una revisión pendiente. Apruébala o recházala antes de marcarlo como listo para retiro, '
+    'enviado o entregado.'
 )
 
 
@@ -335,13 +415,17 @@ def review_holds_dispatch(order, company) -> bool:
     if not CompanySettings.objects.filter(company=company, hold_orders_pending_review=True).exists():
         return False
     return OrderRiskAssessment.objects.filter(
-        order=order, company=company, review_status=ReviewStatus.PENDING,
+        order=order, company=company, review_status=ReviewStatus.PENDING, order__status=Order.Status.PAID,
     ).exists()
 
 
 # ---------------------------------------------------------------------------
 # What staff read
 # ---------------------------------------------------------------------------
+
+#: How a member of staff with no name on file is shown.
+STAFF_WITHOUT_NAME = 'Personal de la tienda'
+
 
 def describe(row, *, can_review: bool = False):
     """
@@ -366,7 +450,8 @@ def describe(row, *, can_review: bool = False):
         ],
         'review_status': row.review_status,
         'review_status_label': row.get_review_status_display(),
-        'reviewed_by': (reviewer.get_full_name() or reviewer.get_username()) if reviewer is not None else None,
+        # A name when the person has one; never the login, which is not a name to show.
+        'reviewed_by': (reviewer.get_full_name().strip() or STAFF_WITHOUT_NAME) if reviewer is not None else None,
         'reviewed_at': row.reviewed_at,
         'review_note': row.review_note,
         'assessed_at': row.created_at,
@@ -401,7 +486,11 @@ def filter_by_review(orders, raw):
     value = (raw or '').strip()
     if value not in ReviewStatus.values:
         return orders
-    return orders.filter(risk_assessment__review_status=value)
+    orders = orders.filter(risk_assessment__review_status=value)
+    if value == ReviewStatus.PENDING:
+        # The queue is of orders somebody paid for.
+        orders = orders.filter(status=Order.Status.PAID)
+    return orders
 
 
 # ---------------------------------------------------------------------------

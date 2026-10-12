@@ -33,6 +33,7 @@ from .tenancy import (
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .commerce_notifications import emit_payment_confirmed
+from . import order_risk
 from .serializers import (
     CategorySerializer,
     PublicCategorySerializer,
@@ -704,6 +705,12 @@ class _SignedNotificationMixin:
             # exactly once. This adds the in-app record and nothing else;
             # notifications must not become a way to mail people twice.
             emit_payment_confirmed(order)
+
+            # CLIENT-SEC-01 · F3. A review starts to wait when the order is
+            # PAID, here, and not when it was made: an order nobody pays for
+            # never reaches the queue or the staff's bell. In a savepoint and
+            # unable to raise — it decides nothing about this payment.
+            order_risk.review_when_paid(order)
 
             # ANALYTICS-MARKETING — the purchase as a conversion, born HERE and
             # nowhere else: not when a browser opens the success page. One
