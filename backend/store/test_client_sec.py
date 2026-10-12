@@ -2555,3 +2555,97 @@ class ADocumentTakesAProvedAddressAndHasItsOwnBudgetTest(_ProfileBase):
         client = APIClient()
         client.force_authenticate(other)
         self.assertEqual(self.raw_patch({'document_type': 'dni', 'document_number': '70000007'}, client=client).status_code, 200)
+
+
+from store import tracking_services as tracking  # noqa: E402
+from store.models import Device  # noqa: E402
+from store.test_tracking import TrackingBase  # noqa: E402
+from store.tests import _m7_user, _v1_customer  # noqa: E402
+
+
+class ClaimAfterOpeningMyAccountTest(TrackingBase):
+    """
+    F4 · somebody who left a device at the counter opens «Mi cuenta» before
+    claiming the repair. The record that page made for them is EMPTY: it must
+    not stand between them and the file the shop already keeps on them.
+    """
+
+    CLAIM = '/api/account/repairs/claim/'
+    HER_DNI = '45678912'
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.walk_in = _v1_customer(self.company, None, first_name='Elena', last_name='SinCuenta',
+                                    document_type='dni', document_number=self.HER_DNI)
+        device = Device.objects.create(company=self.company, customer=self.walk_in, brand='Genérica', model='X200')
+        self.repair = self.make_order(customer=self.walk_in, device=device)
+        self.elena = _m7_user('elena_registrada')
+        self.elena.first_name = 'Elena'
+        self.elena.save(update_fields=['first_name'])
+
+    def claim(self, user=None, document=None):
+        cache.clear()
+        client = APIClient()
+        client.force_authenticate(user or self.elena)
+        return client.post(self.CLAIM, {'token': tracking.token_for(self.repair), 'document_number': document or self.HER_DNI}, format='json')
+
+    def own_record(self, **data):
+        from store import customer_profile
+
+        customer_profile.update(company=self.company, user=self.elena, data={'first_name': 'Elena', 'phone': '987654321', **data})
+        return Customer.objects.get(company=self.company, user=self.elena)
+
+    def test_an_empty_record_does_not_block_the_claim(self):
+        empty = self.own_record()
+        response = self.claim()
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.walk_in.refresh_from_db()
+        self.assertEqual(self.walk_in.user, self.elena)                      # she is the client the shop knew
+        self.assertFalse(Customer.objects.filter(pk=empty.pk).exists())      # and the empty one is gone
+        self.assertEqual(Customer.objects.filter(company=self.company, user=self.elena).count(), 1)
+        entry = AdminAuditLog.objects.get(action='customer_account_linked')
+        self.assertEqual((entry.actor, entry.company, entry.target_id), (self.elena, self.company, str(self.walk_in.pk)))
+        self.assertEqual(entry.metadata['replaced_empty_customer_id'], empty.pk)
+        self.assertNotIn(self.HER_DNI, json.dumps(entry.metadata))
+        self.assertNotIn('987654321', json.dumps(entry.metadata))
+
+    def test_the_claim_still_has_to_be_proved(self):
+        empty = self.own_record()
+        self.assertEqual(self.claim(document='11111111').status_code, 403)
+        self.assertTrue(Customer.objects.filter(pk=empty.pk).exists())       # nothing moved on a claim that failed
+        self.walk_in.refresh_from_db()
+        self.assertIsNone(self.walk_in.user)
+
+    def test_a_record_that_holds_anything_keeps_the_old_answer(self):
+        from store.models import CustomerAddress
+
+        cases = {
+            'a purchase': lambda record: _order(self.company, user=self.elena, customer=record, total='10.00'),
+            'an address': lambda record: CustomerAddress.objects.create(
+                company=self.company, customer=record, recipient_name='Elena', address_line='x', district='y', city='z'),
+            'a device': lambda record: Device.objects.create(company=self.company, customer=record, brand='Otra', model='Y1'),
+            'a note of the shop': lambda record: Customer.objects.filter(pk=record.pk).update(notes='la tienda escribió aquí'),
+            'a document of its own': lambda record: Customer.objects.filter(pk=record.pk).update(document_type='dni', document_number='40001234'),
+        }
+        for label, fill in cases.items():
+            with self.subTest(label):
+                Customer.objects.filter(company=self.company, user=self.elena).delete()
+                Customer.objects.filter(pk=self.walk_in.pk).update(user=None)
+                record = self.own_record()
+                fill(record)
+                response = self.claim()
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertTrue(Customer.objects.filter(pk=record.pk).exists())
+                self.walk_in.refresh_from_db()
+                self.assertIsNone(self.walk_in.user)
+                # Clean up what this case hung from the record, so the next one starts empty.
+                Order.objects.filter(customer=record).delete()
+                Device.objects.filter(customer=record).delete()
+
+    def test_without_a_record_of_her_own_it_is_what_it_was(self):
+        self.assertEqual(self.claim().status_code, 200)
+        self.walk_in.refresh_from_db()
+        self.assertEqual(self.walk_in.user, self.elena)
+        self.assertNotIn('replaced_empty_customer_id', AdminAuditLog.objects.get(action='customer_account_linked').metadata)
