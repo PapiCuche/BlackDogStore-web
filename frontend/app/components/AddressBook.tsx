@@ -79,8 +79,17 @@ export function AddressBook({ defaultRecipient = "" }: Props) {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await fetchAddressBook();
+        if (!cancelled) setBook(loaded);
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : "No se pudieron cargar tus direcciones.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   function open(target: number | "new", from: AddressDraft) {
     setEditing(target);

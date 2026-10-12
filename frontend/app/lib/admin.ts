@@ -527,6 +527,8 @@ export type AdminOrderDetail = AdminOrder & {
   units_can_change?: boolean;
   /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
   risk?: OrderRisk | null;
+  /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
+  delivery?: import("./delivery").OrderDelivery | null;
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {

@@ -22,6 +22,7 @@ import {
 } from "../../../lib/admin";
 import { StockShortfallPanel } from "../../components/StockShortfallPanel";
 import { OrderRiskCard } from "../../components/OrderRiskCard";
+import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -200,6 +201,15 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           orderId={order.id}
           risk={order.risk}
           onReviewed={(risk) => setOrder((current) => (current ? { ...current, risk } : current))}
+        />
+
+        {/* DELIVERY-01: carrier, agency, freight (information), waybill and
+            where to follow it. The card gets the record the server answered
+            with; the order itself is not touched. */}
+        <OrderDeliveryCard
+          orderId={order.id}
+          delivery={order.delivery}
+          onSaved={(delivery) => setOrder((current) => (current ? { ...current, delivery } : current))}
         />
 
         {/* Customer info */}

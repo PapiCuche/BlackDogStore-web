@@ -28,6 +28,7 @@ import { DashboardSection } from "../components/dashboard-ui";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import { SequenceSettings } from "../components/SequenceSettings";
 import { OrderReviewSettings } from "../components/OrderReviewSettings";
+import { CarrierSettings } from "../components/CarrierSettings";
 import {
   fetchCompanyConfiguration,
   updateCompanyConfiguration,
@@ -480,6 +481,16 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                       canEdit={Boolean(config.can_manage_order_review) && companyWide}
                       onSaved={setConfig}
                     />
+                  </DashboardSection>
+                </div>
+                {/* DELIVERY-01 — the company's carriers. Their own endpoint and
+                    their own save: nothing of the form above travels with them. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Transportistas"
+                    description="Agencias y couriers con los que despacha esta empresa."
+                  >
+                    <CarrierSettings />
                   </DashboardSection>
                 </div>
                 {/* Phase 2E — the counter lives behind its own endpoint, so

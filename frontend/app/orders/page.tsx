@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { API_BASE } from "../lib/api";
 import { getCurrentUser, fetchWithAuth } from "../lib/auth";
 import { formatMoney } from "../lib/format";
+import { OrderDeliveryInfo, type BuyerDelivery } from "../components/OrderDeliveryInfo";
 
 type OrderItem = {
   id: number;
@@ -25,6 +26,8 @@ type Order = {
   paid: boolean;
   created_at: string;
   items: OrderItem[];
+  /** DELIVERY-01: where it went and how to follow it, or null. */
+  delivery?: BuyerDelivery | null;
 };
 
 export default function OrdersPage() {
@@ -162,6 +165,7 @@ export default function OrdersPage() {
 
                   {isExpanded ? (
                     <div className="border-t border-bd-border px-5 pb-5 pt-4 sm:px-6">
+                      <OrderDeliveryInfo delivery={order.delivery} />
                       {order.coupon_code ? (
                         <div className="mb-4 inline-flex rounded-full border border-bd-border px-2.5 py-1 text-xs font-semibold text-muted">
                           Cupón {order.coupon_code} · −S/ {formatMoney(order.discount_amount)}
