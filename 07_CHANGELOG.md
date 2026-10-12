@@ -3,6 +3,37 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-12 — CLIENT-SEC-01 (fase 1)
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Consultivo por defecto: sin tocar la
+configuración, comprar, pagar y despachar funcionan como antes.
+
+**Added**
+- «Mi cuenta»: el comprador ve y corrige su nombre, teléfono y documento en la tienda
+  (`/account`; `GET/PATCH /api/account/profile/` y `/api/v1/customer/<slug>/profile/`). El correo
+  se muestra con «Verificado / Sin verificar» y no se edita ahí.
+- `UserProfile.email_verified_at`: cuándo se probó el buzón de una cuenta. Campo añadido
+  `email_verified_at` en `auth/me/` y `v1/auth/me/`.
+- Evaluación de cada pedido en línea al crearse (`OrderRiskAssessment`): nivel bajo, medio o
+  alto y los motivos, sin datos personales ni la IP.
+- Revisión manual en el panel y en la API interna (`…/orders/<id>/risk-review/`): Aprobar o
+  Rechazar con una nota, una vez por pedido. Es una referencia: no cancela, no devuelve ni
+  cambia el pago o el despacho.
+- En la lista de pedidos: etiqueta de riesgo y filtro «Por revisar» (`?review=pending`).
+- Aviso en el panel «Pedido por revisar» para quien gestiona pedidos en esa sucursal.
+- Configuración › Revisión de pedidos: «Monto de revisión» y «Retener los pedidos por
+  revisar», las dos apagadas al nacer. Con la retención encendida, un pedido con revisión
+  pendiente no se puede marcar como enviado o entregado hasta que alguien decida.
+
+**Changed**
+- El rechazo de «enviado / entregado» dice su motivo en `code`: `units_pending` (como antes) o
+  `review_pending`.
+- Migración `0118_client_sec`.
+
+**Known, not fixed** (`docs/AUDIT_MEMORY.md`)
+- CLIENT-SEC-DOC-CLAIM (alta, anterior a esta fase), CLIENT-SEC-VALIDATORS,
+  CLIENT-SEC-VERIFY-ACTIVE y las demás CLIENT-SEC-* de la tabla de deuda.
+
 ## 2026-10-11 — PAY-GUARD-03
 
 **Fixed**

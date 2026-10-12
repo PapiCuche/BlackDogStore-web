@@ -3,6 +3,65 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-12 — CLIENT-SEC-01 (fase 1): perfil del comprador, correo verificado, evaluación y revisión de pedidos
+
+Rama `feat/client-sec-delivery` (desde `master` `dfc817a`). **Sólo en la rama: sin push, sin
+PR, sin desplegar.** **Una migración, `0118_client_sec`** (aditiva y reversible). Decisión:
+DEC-CLIENT-SEC-01. **Todo es consultivo por defecto:** con los ajustes como nacen, ningún
+checkout, pago o despacho se comporta distinto que antes.
+
+| | Punto | Estado |
+|---|---|---|
+| 1 | El correo verificado es un hecho propio (`UserProfile.email_verified_at`), escrito por los caminos que lo prueban: enlace, código, recuperación que termina una cuenta, Google con esa misma dirección, invitación de personal. La migración copia las pruebas que ya existían; los demás quedan en «desconocido». Campo añadido en `auth/me/` (web) y `v1/auth/me/` | IMPLEMENTADO en la rama |
+| 2 | Perfil propio del comprador: `GET/PATCH /api/account/profile/` (tienda por Host) y `GET/PATCH /api/v1/customer/<slug>/profile/`. Un solo validador (`identity_validation`): celular peruano, DNI de 8 dígitos, RUC de 11 con prefijo y dígito de control, CE de 6 a 12. Un documento que ya es de otro cliente de la tienda se rechaza con UNA frase genérica. Límite propio de guardados (20 por hora y cuenta). Auditoría con nombres de campo. Página «Mi cuenta» | IMPLEMENTADO en la rama. El reenvío de verificación no se ofrece a nadie con sesión: ver «Lo que no se hizo» |
+| 3 | Evaluación de cada pedido de la web y de la app al crearse (`OrderRiskAssessment`, `order_risk.assess`): ocho señales con peso, nivel por umbrales, revisión pendiente con nivel alto o cliente archivado. Guarda códigos, no datos; el origen, como HMAC (`ip_hash`). Nunca hace fallar un checkout. Las ventas de caja no se evalúan | IMPLEMENTADO en la rama |
+| 4 | Revisión manual: `POST /api/admin/orders/<id>/risk-review/` y `POST /api/v1/internal/<slug>/orders/<id>/risk-review/` (`sales.orders.manage`, alcance de `visible_orders`, una decisión por pedido, 409 después). La evaluación aparece en el detalle del pedido (`sales.orders.view`); las listas llevan `risk_level` y `review_status` y aceptan `?review=`. El comprador no ve nada | IMPLEMENTADO en la rama |
+| 5 | Aviso interno `commerce.order.review_needed` (advertencia, sólo en el panel) a quien tiene `sales.orders.manage` y puede ver el pedido: número y nivel, sin motivos ni datos del comprador | IMPLEMENTADO en la rama |
+| 6 | Retención opcional, APAGADA: `CompanySettings.hold_orders_pending_review`. Sólo encendida, «enviado» y «entregado» responden 409 (`review_pending`) mientras la revisión esté pendiente; la levanta aprobar o rechazar. Las dos opciones (con `risk_review_amount`) están en Configuración › Revisión de pedidos | IMPLEMENTADO en la rama |
+| 7 | Panel: etiqueta en la lista de pedidos, filtro «Por revisar», tarjeta «Revisión del pedido» con Aprobar / Rechazar | IMPLEMENTADO en la rama |
+
+**Rutas nuevas:** 4 (dos del comprador, dos de revisión). La superficie interna de v1 pasa de
+87 a 88 rutas. **Capacidades:** ninguna nueva; cambiar las dos opciones exige `company.manage`
+(la de la pantalla) **y además** `settings.manage`. **Un límite nuevo:** `account_profile_write`.
+**Un evento nuevo** en el catálogo de avisos.
+
+**Lo que no se hizo, y por qué.**
+- **Verificar el correo de una cuenta que ya está activa.** La acción existente
+  (`auth/resend-verification/`) sólo atiende cuentas que todavía no pueden entrar. «Mi cuenta»
+  muestra «Sin verificar» y el botón sólo aparece si el servidor dice que serviría de algo, que
+  hoy es nunca para quien tiene sesión (CLIENT-SEC-VERIFY-ACTIVE).
+- **Los tres validadores anteriores** (checkout web, checkout v1, ficha del panel) no se
+  tocaron: siguen juzgando teléfono y documento cada uno a su manera (CLIENT-SEC-VALIDATORS).
+- **El nombre del evento** es `commerce.order.review_needed`, con la forma del catálogo, no
+  `order_review_needed`.
+- **En `v1/auth/me/` el campo va junto a `user`, no dentro:** el objeto `user` es el mismo que
+  devuelve el login, clave por clave, y hay una prueba de contrato que los compara.
+- **Las dos opciones de empresa** van por la API de configuración que ya existía, que pide
+  `company.manage`; `settings.manage` se exige ADEMÁS para cambiarlas (no en su lugar).
+- **En la app el perfil exige ser ya cliente de la empresa** (el portón de toda la superficie
+  `customer/`); en la web basta la sesión, en la tienda que se está mirando.
+- **Google prueba el correo sólo si la dirección que nombra es la de la cuenta**; la migración
+  aplica la misma condición a las identidades ya vinculadas.
+
+**Queda como deuda** (`docs/AUDIT_MEMORY.md`): **CLIENT-SEC-DOC-CLAIM (alta, anterior a esta
+fase)**, CLIENT-SEC-VALIDATORS, CLIENT-SEC-VERIFY-ACTIVE, CLIENT-SEC-RUC-CHECK,
+CLIENT-SEC-RESET-PROOF, CLIENT-SEC-DOC-ORACLE, CLIENT-SEC-V1-FIRST-PROFILE,
+CLIENT-SEC-MEASUREMENT-IP, CLIENT-SEC-ORDER-PROTECT, CLIENT-SEC-APP-UI, CLIENT-SEC-NOTICE-LINK.
+
+**Pruebas.** Cada prueba se vio fallar antes de su código. Backend: `store/test_client_sec.py`,
+155 pruebas; con los módulos de pagos, verificación, Google, invitaciones, registro, equipos
+con serie, límites y correo: 862, 0 fallos, 3 omitidas (las de siempre: credenciales reales
+y el `Caddyfile`). Cambiaron cuatro pruebas existentes: tres de pagos borran la evaluación
+antes que el pedido (la protege, como ya hacían con los intentos de pago) y el contador de
+rutas internas pasa de 87 a 88. Mutaciones de backend: 180, 11 sobrevivieron a la primera
+pasada; 7 se cerraron con pruebas, 1 estaba mal planteada y se sustituyó, y 3 son
+equivalentes (una condición de la migración que el mínimo ya hace, y la comprobación previa
+de documento, que repite la regla de la base). Frontend: Jest 1123 en 107 suites, `tsc` y
+lint sin errores (22 avisos anteriores); 41 mutaciones, 4 sobrevivieron y se cerraron.
+La migración se deshizo y se volvió a aplicar en PostgreSQL. **No se corrió** la suite
+completa del backend, Playwright, `npm run build` ni el ensayo de despliegue; el ancho de
+la cabecera con el enlace nuevo no se midió en un navegador (por eso sólo aparece desde `xl`).
+
 ## 2026-10-11 — PAY-GUARD-03: la tercera auditoría — seis ajustes
 
 Rama `feat/izipay-smartform-v4` (PR #110). **Sin migración, sin rutas, sin ajustes

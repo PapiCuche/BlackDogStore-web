@@ -14,6 +14,59 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-CLIENT-SEC-01 · La revisión de pedidos es un consejo, y de la persona se guarda lo mínimo
+
+Fase 1 de CLIENT-SEC-01 (perfil del comprador, correo verificado, evaluación y revisión
+manual de pedidos). Cuatro reglas que el código cumple y las pruebas vigilan:
+
+- **Consultiva por defecto.** Todo pedido de la web o de la app se evalúa al crearse
+  (`order_risk.assess`, dentro de la transacción del pedido y en un punto de guardado
+  propio: si falla, el pedido queda sin evaluación y la venta sigue). La evaluación no
+  rechaza un checkout, no toca un pago y no cancela nada. La decisión de quien revisa
+  (`order_risk.review`) tampoco: cambia la evaluación y nada más. Lo único que puede
+  retener —«enviado» y «entregado» mientras la revisión está pendiente— es una opción
+  de cada empresa, `hold_orders_pending_review`, **apagada por defecto**; encendida, la
+  levanta cualquiera de las dos respuestas, porque lo que se pide es que alguien mire.
+  Con las dos opciones como nacen, checkout, pago y despacho son los de la versión anterior.
+- **Proporcional.** Ocho señales con nombre y peso (`order_risk.SIGNALS`, `WEIGHTS`) y
+  dos umbrales (`MEDIUM_SCORE`, `HIGH_SCORE`). Lo que parece la mayoría de compradores
+  honestos —primera compra sin cuenta— queda en `low` y no pide a nadie. Se pide una
+  revisión con nivel `high` o cuando el cliente está archivado en la tienda. Todo se
+  calcula **dentro de la empresa del pedido**: ninguna señal cuenta pedidos, clientes u
+  orígenes de otra empresa.
+- **Sin dato personal en la evaluación.** `OrderRiskAssessment.signals` guarda los
+  CÓDIGOS de las reglas, nunca el valor que las activó. El origen se guarda como
+  `ip_hash`: un HMAC de la dirección con una clave derivada de `SECRET_KEY` (etiqueta
+  propia) y ligado a la empresa, de modo que la misma dirección da otro valor en cada
+  tienda. **No se guarda la IP ni el navegador.** La auditoría de la revisión lleva
+  decisión, nivel y códigos; la nota de quien revisa se queda en la evaluación y no se
+  copia a la auditoría ni a los registros. El aviso al personal dice qué pedido y qué
+  nivel, no por qué. El comprador no ve nada de esto en ninguna superficie.
+- **Sin biometría ni fotografías de documentos.** El perfil valida la FORMA de un
+  teléfono y de un documento (`identity_validation`), y la forma no es identidad: nada
+  aquí pide un selfie ni la foto de un DNI, ni de forma general ni por nivel de riesgo.
+  Si algún día hiciera falta, es una decisión del propietario con su base legal, no una
+  consecuencia de esta fase.
+
+**Correo verificado.** `UserProfile.email_verified_at` es un hecho propio: lo escriben
+los caminos que prueban que alguien lee el buzón (enlace, código, enlace de recuperación
+que termina una cuenta, Google cuando nombra esa misma dirección, invitación de personal
+enviada a ella) y ninguno más. `is_active` sigue significando «puede entrar», y
+`is_email_verified` de la API v1 sigue significando lo que significaba. Nulo es
+«desconocido», y desconocido no es verificado.
+
+**Capacidades reutilizadas, catálogo intacto.** Ver la evaluación es `sales.orders.view`;
+decidir la revisión es `sales.orders.manage`, con el alcance por sucursal de
+`visible_orders`. En el puente legacy del piloto deciden ventas y administración, no
+almacén (como cancelar). Las dos opciones de empresa viven en la pantalla de
+Configuración (`company.manage`) y cambiarlas exige además `settings.manage`. No se
+añadió ninguna capacidad ni se tocó ningún rol.
+
+**Lo que esta fase no decide** (queda como deuda en `docs/AUDIT_MEMORY.md`): unificar
+los tres validadores anteriores de teléfono y documento, verificar el correo de una
+cuenta que ya está activa, y la regla por la que un documento escrito por una cuenta
+puede recibir después el pedido de un invitado con ese documento.
+
 ### DEC-CP2-HOST-01 · Lightsail en São Paulo, apertura por separado
 
 Aprobado por el propietario con `GO AWS`, 2026-10-07: instancia Ubuntu 24.04 LTS
