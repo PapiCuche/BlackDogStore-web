@@ -350,6 +350,20 @@ class AccountProfileWriteThrottle(UserRateThrottle):
     scope = 'account_profile_write'
 
 
+class AccountVerifySendThrottle(UserRateThrottle):
+    """
+    Asking for the code that verifies one's own address (CLIENT-SEC-01 · F7).
+    Per account; the code's own rules (one a minute, five a day) are counted on
+    the account and hold whatever this allows.
+    """
+    scope = 'account_verify_send'
+
+
+class AccountVerifyConfirmThrottle(UserRateThrottle):
+    """Typing that code. Per account, besides the five attempts each code takes."""
+    scope = 'account_verify_confirm'
+
+
 class AccountAddressWriteThrottle(UserRateThrottle):
     """Adding, correcting, choosing and removing entries of one's own address book (DELIVERY-01), per account."""
     scope = 'account_address_write'

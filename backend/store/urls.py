@@ -134,6 +134,7 @@ from .tenant_views import (
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
 from .account_views import (
     AccountAddressDefaultView, AccountAddressDetailView, AccountAddressListView, AccountProfileView,
+    AccountVerifyEmailConfirmView, AccountVerifyEmailSendView,
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
@@ -432,6 +433,9 @@ urlpatterns = [
     path('admin/carriers/<int:pk>/', AdminCarrierDetailView.as_view(), name='admin-carrier-detail'),
     # --- CLIENT-SEC-01: the signed-in buyer's own profile in this shop ---
     path('account/profile/', AccountProfileView.as_view(), name='account-profile'),
+    # --- CLIENT-SEC-01 · F7: a signed-in account proves its own mailbox ---
+    path('account/verify-email/send/', AccountVerifyEmailSendView.as_view(), name='account-verify-email-send'),
+    path('account/verify-email/confirm/', AccountVerifyEmailConfirmView.as_view(), name='account-verify-email-confirm'),
     # --- DELIVERY-01: the signed-in buyer's own address book in this shop ---
     path('account/addresses/', AccountAddressListView.as_view(), name='account-addresses'),
     path('account/addresses/<int:pk>/', AccountAddressDetailView.as_view(), name='account-address-detail'),

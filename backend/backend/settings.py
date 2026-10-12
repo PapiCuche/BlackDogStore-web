@@ -157,6 +157,9 @@ REST_FRAMEWORK = {
         # CLIENT-SEC-01. Guardar el perfil propio, por cuenta: cada guardado
         # puede preguntar si un documento ya es de otro cliente.
         'account_profile_write': '20/hour',
+        # CLIENT-SEC-01 · F7. Verificar el correo propio con sesión iniciada.
+        'account_verify_send': '3/min',
+        'account_verify_confirm': '10/min',
         # DELIVERY-01. Escribir en la libreta de direcciones propia, por cuenta.
         'account_address_write': '60/hour',
         'admin_inventory_reports': '120/min',

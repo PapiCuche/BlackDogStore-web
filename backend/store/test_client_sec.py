@@ -448,7 +448,7 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual(AdminAuditLog.objects.filter(action='customer_profile_updated').count(), 0)
         # The account's own name is offered to start from; nothing else is known.
         self.assertEqual(body, {
-            'email': 'ana@correo.test', 'email_verified_at': None, 'email_verification_available': False,
+            'email': 'ana@correo.test', 'email_verified_at': None, 'email_verification_available': True,
             'first_name': 'Ana', 'last_name': 'Torres', 'phone': '',
             'document_type': '', 'document_number': '', 'document_locked': False,
         })
@@ -2257,3 +2257,210 @@ class WhatTheShopRecordedIsNotTheBuyersToRewriteTest(_ProfileBase):
         self.assertEqual(self.record().created_by, self.user)
         self.assertFalse(self.get().json()['document_locked'])
         self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000009'}).status_code, 200)
+
+
+WEB_VERIFY_SEND = '/api/account/verify-email/send/'
+WEB_VERIFY_CONFIRM = '/api/account/verify-email/confirm/'
+CODE_REFUSED = {'detail': 'El código no es válido o ya venció. Pide uno nuevo.'}
+
+
+@override_settings(
+    ALLOWED_HOSTS=['*'], FRONTEND_URL='https://tienda.test',
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+)
+class VerifyMyOwnAddressTest(_ProfileBase):
+    """
+    F7 · an account that can already sign in proves its mailbox: a 6-digit code
+    to ITS OWN address, with the rules the registration code has.
+    """
+
+    def setUp(self):
+        super().setUp()
+        django_mail.outbox = []
+
+    def send(self, client=None, body=None, company=None):
+        cache.clear()
+        return (client or self.web).post(WEB_VERIFY_SEND, body or {}, format='json', **self.host(company or self.a))
+
+    def confirm(self, code, client=None, company=None):
+        cache.clear()
+        return (client or self.web).post(WEB_VERIFY_CONFIRM, {'code': code}, format='json', **self.host(company or self.a))
+
+    def code(self, message=None) -> str:
+        return re.search(r'Tu código: (\d{6})\b', (message or django_mail.outbox[-1]).body).group(1)
+
+    def wrong(self) -> str:
+        return '000000' if self.code() != '000000' else '111111'
+
+    def test_it_is_for_whoever_is_signed_in(self):
+        guest = APIClient()
+        self.assertEqual(guest.post(WEB_VERIFY_SEND, {}, format='json', **self.host(self.a)).status_code, 401)
+        self.assertEqual(guest.post(WEB_VERIFY_CONFIRM, {'code': '123456'}, format='json', **self.host(self.a)).status_code, 401)
+        self.assertEqual(django_mail.outbox, [])
+
+    def test_the_profile_says_when_there_is_something_to_verify(self):
+        self.assertTrue(self.get().json()['email_verification_available'])
+        accounts.mark_email_verified(self.user)
+        self.assertFalse(self.get().json()['email_verification_available'])
+        nameless = User.objects.create_user('sin_correo', '', PASSWORD, first_name='Sin')
+        self.assertFalse(self.get(client=web_session(nameless)).json()['email_verification_available'])
+
+    def test_the_code_goes_to_the_accounts_own_address_and_nowhere_else(self):
+        response = self.send(body={'email': 'otra@correo.test', 'to': 'otra@correo.test', 'user': 999})
+        self.assertEqual(response.status_code, 200, response.content)
+        [message] = django_mail.outbox
+        self.assertEqual(message.to, ['ana@correo.test'])
+        self.assertRegex(self.code(), r'^\d{6}$')
+        self.assertNotIn(self.code(), response.content.decode())            # the answer never carries the code
+        self.assertIsNone(verified_at(self.user))                           # asking proves nothing
+
+        entry = AdminAuditLog.objects.get(action='account_email_verification_sent')
+        self.assertEqual((entry.actor, entry.company, entry.target_type, entry.target_id), (self.user, self.a, 'user', str(self.user.pk)))
+        self.assertNotIn(self.code(), json.dumps(entry.metadata))
+        self.assertNotIn('ana@correo.test', json.dumps(entry.metadata))
+
+    def test_the_right_code_proves_the_mailbox(self):
+        self.send()
+        before = timezone.now()
+        response = self.confirm(f' {self.code()[:3]} {self.code()[3:]} ')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertGreaterEqual(verified_at(self.user), before)
+        self.assertEqual(parse_datetime(response.json()['email_verified_at']), verified_at(self.user))
+        body = self.get().json()
+        self.assertEqual((parse_datetime(body['email_verified_at']), body['email_verification_available']), (verified_at(self.user), False))
+        entry = AdminAuditLog.objects.get(action='account_email_verified')
+        self.assertEqual((entry.actor, entry.company), (self.user, self.a))
+        self.assertNotIn(self.code(), json.dumps(entry.metadata))
+        # Spent: it does not work twice.
+        self.assertEqual(self.confirm(self.code()).json(), CODE_REFUSED)
+
+    def test_one_answer_for_every_refusal_and_five_wrong_tries_kill_the_code(self):
+        self.assertEqual(self.confirm('123456').status_code, 400)           # none was ever sent
+        self.send()
+        for typed in (self.wrong(), '12345', 'abcdef', '', None, 123456):
+            cache.clear()
+            response = self.web.post(WEB_VERIFY_CONFIRM, {'code': typed}, format='json', **self.host(self.a))
+            self.assertEqual((response.status_code, response.json()), (400, CODE_REFUSED), typed)
+        self.assertIsNone(verified_at(self.user))
+        # Not-a-code tries cost nothing; wrong codes do.
+        for _ in range(4):
+            self.confirm(self.wrong())
+        self.assertEqual(self.confirm(self.code()).json(), CODE_REFUSED)    # the fifth wrong try killed it
+        self.assertIsNone(verified_at(self.user))
+
+    def test_a_code_lasts_a_quarter_of_an_hour(self):
+        self.send()
+        AccountToken.objects.filter(user=self.user).update(code_expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.confirm(self.code()).json(), CODE_REFUSED)
+        self.assertIsNone(verified_at(self.user))
+
+    def test_one_code_a_minute_and_five_a_day_whoever_asks(self):
+        self.assertEqual(self.send().status_code, 200)
+        again = self.send()
+        self.assertEqual(again.status_code, 429)
+        self.assertEqual(len(django_mail.outbox), 1)
+        for n in range(4):
+            AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(minutes=5 * (n + 1)))
+            self.assertEqual(self.send().status_code, 200)
+        AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(minutes=30))
+        self.assertEqual(self.send().status_code, 429)                      # the day's five are spent
+        self.assertEqual(len(django_mail.outbox), 5)
+
+    def test_a_new_code_kills_the_one_before(self):
+        self.send()
+        old = self.code()
+        AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(minutes=2))
+        self.send()
+        new = self.code()
+        if old != new:
+            self.assertEqual(self.confirm(old).json(), CODE_REFUSED)
+        self.assertEqual(self.confirm(new).status_code, 200)
+
+    def test_a_code_is_one_accounts_and_no_others(self):
+        other = User.objects.create_user('luis', 'luis@correo.test', PASSWORD, first_name='Luis')
+        self.send(client=web_session(other))
+        his = self.code()
+        self.assertEqual(django_mail.outbox[-1].to, ['luis@correo.test'])
+        self.assertEqual(self.confirm(his).json(), CODE_REFUSED)            # typed into Ana's session
+        self.assertIsNone(verified_at(self.user))
+        self.assertIsNone(verified_at(other))
+
+    def test_an_address_already_verified_is_sent_nothing(self):
+        accounts.mark_email_verified(self.user)
+        response = self.send()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['already_verified'])
+        self.assertEqual(django_mail.outbox, [])
+        self.assertFalse(AccountToken.objects.filter(user=self.user).exists())
+
+    def test_a_mail_that_did_not_leave_costs_nothing(self):
+        with mock.patch('store.account_views.send_verification_email', return_value=False):
+            response = self.send()
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(AccountToken.objects.filter(user=self.user).exists())
+        self.assertEqual(self.send().status_code, 200)                      # no wait was started
+
+    def test_the_link_of_that_mail_proves_it_as_well(self):
+        self.send()
+        token = re.search(r'verify-email\?token=([A-Za-z0-9_-]+)', django_mail.outbox[-1].body).group(1)
+        cache.clear()
+        self.assertEqual(APIClient().post('/api/auth/verify-email/', {'token': token}, format='json').status_code, 200)
+        self.assertIsNotNone(verified_at(self.user))
+
+    def test_the_old_road_for_accounts_that_cannot_sign_in_yet_is_what_it_was(self):
+        # A code sent to a signed-in account does not open the unauthenticated endpoint.
+        self.send()
+        cache.clear()
+        response = APIClient().post('/api/auth/verify-email/code/', json.dumps({'email': 'ana@correo.test', 'code': self.code()}),
+                                    content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(verified_at(self.user))
+
+    def test_both_steps_are_limited_per_account(self):
+        from store.account_views import AccountVerifyEmailConfirmView, AccountVerifyEmailSendView
+        from store.throttles import AccountVerifyConfirmThrottle, AccountVerifySendThrottle
+
+        self.assertEqual([c for c in AccountVerifyEmailSendView.throttle_classes], [AccountVerifySendThrottle])
+        self.assertEqual([c for c in AccountVerifyEmailConfirmView.throttle_classes], [AccountVerifyConfirmThrottle])
+        limit = AccountVerifyConfirmThrottle().num_requests
+        cache.clear()
+        statuses = [self.web.post(WEB_VERIFY_CONFIRM, {'code': '1'}, format='json', **self.host(self.a)).status_code for _ in range(limit + 1)]
+        self.assertEqual((set(statuses[:-1]), statuses[-1]), ({400}, 429))
+
+    def test_the_app_has_the_same_two_steps(self):
+        _order(self.a, user=self.user, total='10.00', paid=True)
+        app = v1_session(self.user)
+        cache.clear()
+        self.assertEqual(app.post('/api/v1/customer/perfil-a/verify-email/send/', {}, format='json').status_code, 200)
+        self.assertEqual(django_mail.outbox[-1].to, ['ana@correo.test'])
+        cache.clear()
+        self.assertEqual(app.post('/api/v1/customer/perfil-a/verify-email/confirm/', {'code': self.wrong()}, format='json').json(), CODE_REFUSED)
+        cache.clear()
+        done = app.post('/api/v1/customer/perfil-a/verify-email/confirm/', {'code': self.code()}, format='json')
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertIsNotNone(verified_at(self.user))
+        cache.clear()
+        self.assertEqual(app.post('/api/v1/customer/perfil-b/verify-email/send/', {}, format='json').status_code, 404)
+        self.assertEqual(self.web.post('/api/v1/customer/perfil-a/verify-email/send/', {}, format='json').status_code, 401)
+
+
+@override_settings(FRONTEND_URL='https://tienda.test', EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class EveryConsumedResetProvesTheMailboxTest(TestCase):
+    """F7 · a recovery link read in the mailbox proves it, whether or not the account was already active."""
+
+    def test_an_active_account_that_resets_its_password_is_verified(self):
+        cache.clear()
+        user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD)
+        self.assertIsNone(verified_at(user))
+        django_mail.outbox = []
+        client = APIClient()
+        client.post('/api/auth/password-reset/request/', {'email': 'ana@correo.test'}, format='json')
+        token = re.search(r'[?&]token=([A-Za-z0-9_\-]+)', django_mail.outbox[-1].body).group(1)
+        cache.clear()
+        bad = client.post('/api/auth/password-reset/confirm/', {'token': 'x' * 40, 'new_password': 'Otra-clave-larga-7'}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        self.assertIsNone(verified_at(user))                                 # a token that was not consumed proves nothing
+        cache.clear()
+        done = client.post('/api/auth/password-reset/confirm/', {'token': token, 'new_password': 'Otra-clave-larga-7'}, format='json')
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertIsNotNone(verified_at(user))

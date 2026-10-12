@@ -11,9 +11,13 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import customer_profile
+from . import accounts, customer_profile, security_log, verification_codes
+from .emails import send_verification_email
+from .models import AdminAuditLog
 from .tenancy import resolve_storefront_company
-from .throttles import AccountProfileWriteThrottle, AccountRepairsThrottle
+from .throttles import (
+    AccountProfileWriteThrottle, AccountRepairsThrottle, AccountVerifyConfirmThrottle, AccountVerifySendThrottle,
+)
 
 
 def _no_store(response):
@@ -61,6 +65,102 @@ class AccountProfileView(APIView):
         except customer_profile.ProfileError as refused:
             return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
         return _no_store(Response(body))
+
+
+# ---------------------------------------------------------------------------
+# CLIENT-SEC-01 · F7 — a signed-in account proves its own mailbox
+# ---------------------------------------------------------------------------
+
+_CODE_REFUSED = {'detail': 'El código no es válido o ya venció. Pide uno nuevo.'}
+
+
+class VerifyOwnEmailActions:
+    """
+    The two steps, once each door has said which shop it is (`shop`): send a
+    6-digit code to the account's OWN address, and take it back.
+
+    The address is never read from the request — it is the account's — and the
+    code is the registration code of `verification_codes`, with every rule it
+    has. The shop only says whose audit trail the act is written in.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def shop(self, request):
+        raise NotImplementedError
+
+    def send_code(self, request):
+        company = self.shop(request)
+        if company is None:
+            return Response({'detail': 'Tienda no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        user = request.user
+        if not accounts.can_verify_own_email(user):
+            # Already proved (or nothing to prove): nothing is sent.
+            return Response({
+                'detail': 'Tu correo ya está verificado.', 'already_verified': True,
+                'email_verified_at': accounts.email_verified_at(user),
+            })
+        issued = verification_codes.issue(user)
+        if issued is None:
+            # One a minute and five a day, counted on the account.
+            return Response(
+                {'detail': 'Ya te enviamos un código hace poco. Espera un minuto antes de pedir otro.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        if not send_verification_email(user, issued.token, code=issued.code, request=request):
+            # Nobody received it: the wait, the day and the previous code stay as they were.
+            verification_codes.withdraw(issued)
+            return Response(
+                {'detail': 'No pudimos enviar el correo. Inténtalo de nuevo en unos minutos.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        verification_codes.settle(issued)
+        AdminAuditLog.log(
+            actor=user, action='account_email_verification_sent', target_type='user', target_id=user.pk,
+            metadata={}, request=request, company=company,
+        )
+        return Response({'detail': 'Te enviamos un código a tu correo.', 'already_verified': False})
+
+    def confirm_code(self, request):
+        company = self.shop(request)
+        if company is None:
+            return Response({'detail': 'Tienda no encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if hasattr(request.data, 'get') else {}
+        user = request.user
+        if not verification_codes.confirm_own(
+            user, data.get('code'),
+            on_exhausted=lambda account: security_log.verify_code_exhausted(request, user=account),
+        ):
+            return Response(_CODE_REFUSED, status=status.HTTP_400_BAD_REQUEST)
+        AdminAuditLog.log(
+            actor=user, action='account_email_verified', target_type='user', target_id=user.pk,
+            metadata={}, request=request, company=company,
+        )
+        return Response({
+            'detail': 'Correo verificado.', 'email_verified_at': accounts.email_verified_at(user),
+        })
+
+
+class _WebShop:
+    def shop(self, request):
+        company = resolve_storefront_company(request)
+        return company if company is not None and company.is_active else None
+
+
+class AccountVerifyEmailSendView(_WebShop, VerifyOwnEmailActions, APIView):
+    """POST — send me the code that proves I read this account's mailbox."""
+    throttle_classes = [AccountVerifySendThrottle]
+
+    def post(self, request):
+        return self.send_code(request)
+
+
+class AccountVerifyEmailConfirmView(_WebShop, VerifyOwnEmailActions, APIView):
+    """POST {code} — this is the code I was sent."""
+    throttle_classes = [AccountVerifyConfirmThrottle]
+
+    def post(self, request):
+        return self.confirm_code(request)
 
 
 # ---------------------------------------------------------------------------

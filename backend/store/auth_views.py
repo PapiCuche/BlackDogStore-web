@@ -550,7 +550,10 @@ class PasswordResetConfirmView(APIView):
                 # somebody switches it off one day.
                 user.is_active = True
                 accounts.mark_verified(user)
-                accounts.mark_email_verified(user)
+            # EVERY consumed recovery link proves the mailbox, whether it
+            # finished an account or served one that was already active: the
+            # link was sent there and nowhere else (CLIENT-SEC-01 · F7).
+            accounts.mark_email_verified(user)
             user.save(update_fields=['password', 'is_active'] if finishing else ['password'])
 
         # H4.1.2B — restablecer la contraseña cierra TODAS las sesiones, que es

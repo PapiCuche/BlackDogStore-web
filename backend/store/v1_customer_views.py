@@ -137,6 +137,34 @@ class V1CustomerProfileView(V1CustomerSurfaceMixin, APIView):
         return _no_store(Response(body))
 
 
+def _verify_view(step):
+    """One step of «verify my own address» from the app, on the surface's own gate."""
+    from .account_views import VerifyOwnEmailActions
+    from .throttles import AccountVerifyConfirmThrottle, AccountVerifySendThrottle
+
+    class View(V1CustomerSurfaceMixin, VerifyOwnEmailActions, APIView):
+        http_method_names = ['post', 'options']
+        authentication_classes = V1CustomerSurfaceMixin.authentication_classes
+        permission_classes = V1CustomerSurfaceMixin.permission_classes
+        throttle_classes = [AccountVerifySendThrottle if step == 'send' else AccountVerifyConfirmThrottle]
+
+        def shop(self, request):
+            return self.get_customer_company()
+
+        def post(self, request, company_slug=None):
+            return self.send_code(request) if step == 'send' else self.confirm_code(request)
+
+    return View
+
+
+class V1CustomerVerifyEmailSendView(_verify_view('send')):
+    """POST — CLIENT-SEC-01 · F7: send the signed-in account the code for its own address."""
+
+
+class V1CustomerVerifyEmailConfirmView(_verify_view('confirm')):
+    """POST {code} — and take it back. The same service and answers as the web's."""
+
+
 class _V1Book(V1CustomerSurfaceMixin):
     """
     DELIVERY-01 — my address book in this company, from the app. The same book

@@ -74,6 +74,17 @@ def email_verified_at(user):
     return UserProfile.objects.filter(user=user).values_list('email_verified_at', flat=True).first()
 
 
+def can_verify_own_email(user) -> bool:
+    """
+    Whether a signed-in account has something to verify and a way to do it: it
+    is active, it has an address, and nobody has proved that address yet.
+    """
+    return bool(
+        user is not None and getattr(user, 'pk', None) and user.is_active
+        and (user.email or '').strip() and email_verified_at(user) is None
+    )
+
+
 def with_email(email: str) -> list:
     """Every account under this address, as people write it: no case, no stray spaces."""
     email = (email or '').strip()

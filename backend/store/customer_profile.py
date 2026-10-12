@@ -86,10 +86,9 @@ def payload(company, user) -> dict:
     return {
         'email': user.email,
         'email_verified_at': accounts.email_verified_at(user),
-        # Whether «send the verification again» would do anything for this
-        # account. That action serves an account registered and never confirmed
-        # — one that cannot sign in yet — so for whoever reads this it is «no».
-        'email_verification_available': accounts.is_unverified(user),
+        # Whether this account has an address nobody has proved yet, and can
+        # prove it now with a code (`account/verify-email/…`).
+        'email_verification_available': accounts.can_verify_own_email(user),
         'first_name': record.first_name if record else (user.first_name or '')[:_NAME_MAX],
         'last_name': record.last_name if record else (user.last_name or '')[:_NAME_MAX],
         'phone': record.phone if record else '',

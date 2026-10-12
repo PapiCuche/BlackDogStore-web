@@ -201,3 +201,47 @@ def check(email, typed, *, on_exhausted=None):
         user.is_active = True
         user.save(update_fields=['is_active'])
     return user
+
+
+def confirm_own(user, typed, *, on_exhausted=None) -> bool:
+    """
+    The code a SIGNED-IN account typed for its own address (CLIENT-SEC-01 · F7).
+
+    `check` above finishes an account that cannot sign in yet, found by the
+    address somebody typed. This one is for an account that already can: the
+    account is the session's, never looked up, and what the code adds is the
+    one fact a session does not prove — that this person reads the mailbox.
+
+    The same code and the same rules: `CODE_TTL`, `MAX_ATTEMPTS`, the newest
+    code only, the HMAC bound to the account, and the same lock order
+    (account first). False for every refusal alike.
+    """
+    code = normalise(typed)
+    now = timezone.now()
+    with transaction.atomic():
+        account = _lock_account(user.pk)
+        row = (
+            AccountToken.objects.select_for_update()
+            .filter(user_id=user.pk, purpose=_PURPOSE, used_at__isnull=True)
+            .exclude(code_hash='')
+            .order_by('-created_at', '-pk')
+            .first()
+        )
+        expected = row.code_hash if row is not None else _mac(_NOBODY, '000000')
+        matches = code is not None and hmac.compare_digest(expected, _mac(user.pk, code))
+        if (
+            account is None or not account.is_active or row is None or code is None
+            or row.code_expires_at is None or row.code_expires_at <= now
+            or row.expires_at <= now or row.code_attempts >= MAX_ATTEMPTS
+        ):
+            return False
+        if not matches:
+            row.code_attempts += 1
+            row.save(update_fields=['code_attempts'])
+            if row.code_attempts >= MAX_ATTEMPTS and on_exhausted is not None:
+                on_exhausted(account)
+            return False
+        # Every link and code the account was sent, not only this one.
+        accounts.mark_verified(account)
+        accounts.mark_email_verified(account)
+    return True

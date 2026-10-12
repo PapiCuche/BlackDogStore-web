@@ -18,6 +18,8 @@ from .v1_customer_views import (
     V1CustomerOrderViewSet,
     V1CustomerProfileView,
     V1CustomerRepairQuoteDecisionView,
+    V1CustomerVerifyEmailConfirmView,
+    V1CustomerVerifyEmailSendView,
     V1CustomerRepairPaymentSummaryView,
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
@@ -171,6 +173,15 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/profile/',
         V1CustomerProfileView.as_view(), name='v1-customer-profile',
+    ),
+    # CLIENT-SEC-01 · F7 — prove my own mailbox with a code.
+    path(
+        'customer/<slug:company_slug>/verify-email/send/',
+        V1CustomerVerifyEmailSendView.as_view(), name='v1-customer-verify-email-send',
+    ),
+    path(
+        'customer/<slug:company_slug>/verify-email/confirm/',
+        V1CustomerVerifyEmailConfirmView.as_view(), name='v1-customer-verify-email-confirm',
     ),
     # DELIVERY-01 — my own address book in this company.
     path(
