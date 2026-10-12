@@ -381,7 +381,7 @@ class IdentityRulesTest(SimpleTestCase):
             ('dni', '7000000'), ('dni', '700000011'), ('dni', '7000000A'),
             ('ruc', '2099999999'), ('ruc', '209999999900'),
             ('ruc', '20999999991'),                       # eleven digits, wrong check digit
-            ('ruc', '30999999997'),                       # right check digit, a prefix nobody is given
+            ('ruc', '30999999995'),                       # right check digit, a prefix nobody is given
             ('ce', 'AB123'), ('ce', 'AB12345678901'), ('ce', 'AB-12345'),
             ('pasaporte', 'AB123456'),                    # not a type this platform knows
             ('dni', ''), ('', DNI),                       # one without the other
@@ -390,7 +390,19 @@ class IdentityRulesTest(SimpleTestCase):
             with self.subTest(kind=kind, typed=typed), self.assertRaises(identity.IdentityError):
                 identity.clean_document(kind, typed)
 
+    def test_a_refusal_names_the_field_and_says_what_is_missing(self):
+        for kind, typed, field, words in (
+            ('', DNI, 'document_type', 'Indica el tipo de documento.'),
+            ('dni', '', 'document_number', 'Indica el número de documento.'),
+            ('pasaporte', 'AB123456', 'document_type', 'Tipo de documento no válido.'),
+            ('ruc', '30999999995', 'document_number', 'El RUC no es válido. Revisa el número.'),
+        ):
+            with self.subTest(kind=kind, typed=typed), self.assertRaises(identity.IdentityError) as refused:
+                identity.clean_document(kind, typed)
+            self.assertEqual((refused.exception.field, refused.exception.message), (field, words))
+
     def test_the_check_digit_of_a_ruc(self):
+        self.assertTrue(identity.ruc_check_digit_matches('30999999995'))      # the digit alone says nothing of the prefix
         self.assertTrue(identity.ruc_check_digit_matches(RUC_COMPANY))
         self.assertTrue(identity.ruc_check_digit_matches('20000000001'))
         for wrong in ('20999999991', '20000000002', '2099999999', 'abcdefghijk'):
@@ -489,6 +501,26 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual(self.user.email, 'ana@correo.test')
         self.assertIsNone(verified_at(self.user))
         self.assertEqual(response.json()['email'], 'ana@correo.test')
+
+    def test_the_record_of_a_business_keeps_its_own_name_and_needs_no_other(self):
+        # Made by a purchase with a RUC: the shop filed it as a business, by its
+        # registered name. That name is not this form's to write.
+        business = User.objects.create_user('empresa', 'compras@empresa.test', PASSWORD)
+        Customer.objects.create(
+            company=self.a, user=business, customer_type='business', business_name='Comercial de Prueba S.A.C.',
+            document_type='ruc', document_number=RUC_COMPANY,
+        )
+        client = web_session(business)
+        body = self.get(client=client).json()
+        self.assertEqual((body['first_name'], body['last_name'], body['document_number']), ('', '', RUC_COMPANY))
+        self.assertNotIn('Comercial', json.dumps(body))
+
+        self.assertEqual(self.patch({'phone': '987654321'}, client=client).status_code, 200)
+        record = self.record(user=business)
+        self.assertEqual(
+            (record.phone, record.customer_type, record.business_name),
+            ('987654321', 'business', 'Comercial de Prueba S.A.C.'),
+        )
 
     def test_a_record_needs_a_name(self):
         nameless = User.objects.create_user('sin_nombre', 'sin@correo.test', PASSWORD)
@@ -679,6 +711,8 @@ class ProfileWriteLimitTest(_ProfileBase):
         from store.throttles import AccountProfileWriteThrottle
 
         limit = AccountProfileWriteThrottle().num_requests
+        # Per hour, not per minute: each save may ask whether a document is on file.
+        self.assertEqual((limit, AccountProfileWriteThrottle().duration), (20, 3600))
         cache.clear()
         statuses = [
             self.web.patch(WEB_PROFILE, {'phone': '987654321'}, format='json', **self.host(self.a)).status_code
@@ -998,6 +1032,14 @@ class EachSignalTest(_RiskBase):
             self.assess(self.order(self.b), '198.51.100.7')
         self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(self.a), '198.51.100.7'))
 
+    def test_velocity_ip_would_not_count_them_even_under_the_same_hash(self):
+        # The hash is bound to the company, so this cannot happen by itself; the
+        # count is asked inside the company all the same.
+        here = risk.origin_hash(self.a, from_address('198.51.100.7'))
+        for _ in range(4):
+            OrderRiskAssessment.objects.create(company=self.b, order=self.order(self.b), ip_hash=here)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(self.a), '198.51.100.7'))
+
     def test_velocity_ip_needs_an_address(self):
         for _ in range(4):
             self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), ip=None))
@@ -1235,8 +1277,9 @@ class AssessedAtCheckoutTest(TestCase):
 
     def test_an_assessment_that_breaks_never_costs_the_sale(self):
         def broken(order, request):
-            # A refusal of the DATABASE, the kind that poisons a transaction.
-            Customer.objects.create(company=order.company)
+            # A refusal of the DATABASE, the kind that poisons a transaction:
+            # a row its own rule forbids, written past the model's checks.
+            Customer.objects.bulk_create([Customer(company=order.company)])
 
         with patch('store.order_risk._assess', side_effect=broken), self.assertLogs('store.order_risk', level='ERROR') as logged:
             response = self.web_checkout()
@@ -1747,7 +1790,8 @@ class ReviewNeededNotificationTest(_RiskBase):
 
     def test_a_notice_that_cannot_be_written_costs_neither_the_assessment_nor_the_sale(self):
         def broken(**kwargs):
-            Customer.objects.create(company=kwargs['company'])                # the database refuses, mid-transaction
+            # The database refuses, mid-transaction (a row past the model's checks).
+            Customer.objects.bulk_create([Customer(company=kwargs['company'])])
 
         order = self.suspicious(self.north)
         with patch('store.commerce_notifications.notif.emit', side_effect=broken):
@@ -1901,6 +1945,7 @@ class ReviewOptionsInCompanySettingsTest(TestCase):
         self.assertIs(body['can_manage_order_review'], False)
         self.assertIs(acting(self.admin).get(SETTINGS_URL).json()['can_manage_order_review'], True)
         self.assertIs(acting(self.company_only).get(SETTINGS_URL).json()['can_manage_order_review'], False)
+        self.assertIs(acting(self.settings_only).get(SETTINGS_URL).json()['can_manage_order_review'], False)
 
     def test_whoever_administers_the_company_and_its_configuration_sets_them(self):
         response = self.patch(self.admin, {'risk_review_amount': '1500.00', 'hold_orders_pending_review': True})

@@ -102,7 +102,9 @@ def _wanted(record, data) -> dict:
             )
     except identity.IdentityError as refused:
         raise ProfileError({refused.field: [refused.message]}) from None
-    if not wanted['first_name'] and not wanted['last_name']:
+    # A person is somebody by a name. A business is somebody by its registered
+    # name, which this form does not write: its contact's name may stay empty.
+    if record.customer_type != Customer.TYPE_BUSINESS and not wanted['first_name'] and not wanted['last_name']:
         raise ProfileError({'first_name': ['Indica al menos un nombre o apellido.']})
     return wanted
 
