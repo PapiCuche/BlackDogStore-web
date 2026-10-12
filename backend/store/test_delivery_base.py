@@ -403,6 +403,14 @@ class AddressBookTest(_BookBase):
         office = self.add(self.office(address_line='Av. Otra 9', district='Cercado', city='Puno'))
         self.assertEqual((office.address_line, office.district), ('', ''))
 
+    def test_an_agency_turned_into_a_door_drops_its_agency(self):
+        entry = self.add(self.office())
+        response = self.call('patch', f'{entry.pk}/', {'kind': 'address', 'address_line': 'Av. Uno 1', 'district': 'Cercado', 'city': 'Puno'})
+        self.assertEqual(response.status_code, 200, response.content)
+        entry.refresh_from_db()
+        self.assertEqual((entry.kind, entry.carrier, entry.agency_name, entry.agency_locality), ('address', None, '', ''))
+        self.assertEqual((response.json()['carrier'], response.json()['carrier_name']), (None, ''))
+
     def test_an_entry_is_corrected(self):
         entry = self.add()
         response = self.call('patch', f'{entry.pk}/', {'label': 'Oficina', 'reference': '', 'recipient_phone': '912345678'})
@@ -560,6 +568,15 @@ class AddressBookOwnershipTest(_BookBase):
             with self.subTest(method=method, tail=tail):
                 self.assertEqual(self.call(method, tail, body, company=self.a).status_code, 404)
         self.assert_untouched()
+
+    def test_my_entry_in_each_shop_is_mine_in_that_shop(self):
+        # One person, two shops, two books: each is written where it lives.
+        self.assertEqual(self.call('patch', f'{self.mine.pk}/', {'label': 'Aquí'}, company=self.a).status_code, 200)
+        self.assertEqual(self.call('patch', f'{self.elsewhere.pk}/', {'label': 'Allá'}, company=self.b).status_code, 200)
+        self.assertEqual(self.call('post', f'{self.elsewhere.pk}/default/', {}, company=self.b).status_code, 200)
+        self.mine.refresh_from_db()
+        self.elsewhere.refresh_from_db()
+        self.assertEqual((self.mine.label, self.elsewhere.label), ('Aquí', 'Allá'))
 
     def test_staff_of_the_shop_have_no_door_into_a_buyers_book(self):
         client = web_session_for(self.admin)
@@ -852,6 +869,11 @@ class RecordedAtCheckoutTest(TestCase):
         order, created = _c1_sale(actor=cashier, company=self.company, branch=self.branch,
                                   items=[{'product': self.product.pk, 'quantity': 1}])
         self.assertTrue(created)
+        self.assertFalse(OrderDelivery.objects.filter(order=order).exists())
+        # Not even if somebody asked for one: a sale at the till has no delivery.
+        Order.objects.filter(pk=order.pk).update(delivery_method='pickup_store')
+        order.refresh_from_db()
+        self.assertIsNone(delivery.snapshot_for_order(order))
         self.assertFalse(OrderDelivery.objects.filter(order=order).exists())
 
     def test_an_order_is_recorded_once(self):
