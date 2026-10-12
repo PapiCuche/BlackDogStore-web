@@ -38,6 +38,8 @@ export type IntegrationRow = {
   public: Record<string, unknown>;
   secrets: Record<string, SecretState>;
   enabled: boolean;
+  /** Still what runs, but taking nothing new (a gateway: no new payment is opened). */
+  paused?: boolean;
   validated: boolean;
   version: number;
   last_tested_at: string | null;
@@ -82,6 +84,8 @@ export type Integration = {
    * the gateway about first).
    */
   change_notice?: { count: number; message: string } | null;
+  /** Whether it can be told to take nothing new while what is in flight finishes. */
+  pausable?: boolean;
   /** False when the server has no root key: nothing can be stored or read. */
   store_available: boolean;
   fields?: IntegrationField[];
@@ -189,6 +193,14 @@ export const activateIntegration = (id: string, version: number, typed: TypedWor
 
 export const setIntegrationEnabled = (id: string, enabled: boolean, typed: TypedWords, companyId?: number | null) =>
   act<Integration>(id, enabled ? "enable" : "disable", words(typed), companyId, "No se pudo cambiar el estado.");
+
+/** Stop taking anything new, at once: no word, and nothing in flight can refuse it. */
+export const pauseIntegration = (id: string, companyId?: number | null) =>
+  act<Integration>(id, "pause", {}, companyId, "No se pudo pausar.");
+
+/** Take new operations again. Asks what activating asked. */
+export const resumeIntegration = (id: string, typed: TypedWords, companyId?: number | null) =>
+  act<Integration>(id, "resume", words(typed), companyId, "No se pudo reanudar.");
 
 export const revokeIntegration = (id: string, typed: TypedWords, companyId?: number | null) =>
   act<Integration>(id, "revoke", words(typed), companyId, "No se pudo revocar.");

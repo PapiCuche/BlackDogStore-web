@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   activateIntegration, fetchIntegration, importIntegrationFromEnvironment, IntegrationError, isUnverified, MODE_LABELS,
+  pauseIntegration, resumeIntegration,
   REVOKE_WORD, revokeIntegration, saveIntegrationDraft, setIntegrationEnabled, STATE_TONES, stateLabel,
   testIntegration, testStatusLabel,
   type Integration, type IntegrationField, type IntegrationRow,
@@ -130,6 +131,7 @@ export function IntegrationEditor({
   const [confirmWord, setConfirmWord] = useState("");
   const [revokeWord, setRevokeWord] = useState("");
   const [enableWord, setEnableWord] = useState("");
+  const [resumeWord, setResumeWord] = useState("");
   const [interruptWord, setInterruptWord] = useState("");
   // What the server asked to be typed when a change was requested (it found
   // out then, not before: a gateway that did not answer).
@@ -157,6 +159,7 @@ export function IntegrationEditor({
     setConfirmWord("");
     setRevokeWord("");
     setEnableWord("");
+    setResumeWord("");
     setInterruptWord("");
     setDemanded("");
     setFieldErrors({});
@@ -181,9 +184,10 @@ export function IntegrationEditor({
     try {
       await action();
     } catch (err) {
-      if (err instanceof IntegrationError && err.code === "open_payments") {
-        // Refused by the server: charges are open. Nothing changed and nothing
-        // on screen is stale, so what was typed stays where it is.
+      if (err instanceof IntegrationError && err.status === 409 && err.code) {
+        // Refused by the server, with its reason (charges are open; revoking
+        // would hand the shop to the server's own keys). Nothing changed and
+        // nothing on screen is stale, so what was typed stays where it is.
         setBlocked(err.message);
         return;
       }
@@ -215,6 +219,9 @@ export function IntegrationEditor({
   const stored: IntegrationRow | null = draft ?? active;
   const confirmation = draft?.activation_confirmation ?? null;
   const reactivation = active && !active.enabled ? active.activation_confirmation : null;
+  const paused = Boolean(active?.enabled && active.paused);
+  // Taking new operations again is starting again: it asks what activating asked.
+  const resumption = paused ? active?.activation_confirmation ?? null : null;
   // Something is in flight that stopping or replacing what runs would cut off.
   const interruption = data.interruption;
   const interrupts = Boolean(interruption && interruptWord !== interruption.word);
@@ -405,6 +412,23 @@ export function IntegrationEditor({
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Button disabled={working} onClick={() => void test("active")}>Probar la configuración en uso</Button>
+            {data.pausable && active.enabled && !paused ? (
+              // Never waits for a word or for what is in flight: it is how new
+              // operations are stopped while the open ones finish.
+              <Confirm
+                label="Pausar pagos nuevos" disabled={working}
+                question="¿Pausar? La tienda deja de abrir pagos nuevos ahora mismo. Los que ya estaban abiertos se siguen confirmando."
+                onConfirm={() => void act(() => pauseIntegration(id, companyId), "Pausa activada.")}
+              />
+            ) : null}
+            {paused ? (
+              <Button
+                tone="primary" disabled={working || Boolean(resumption && resumeWord !== resumption.word)}
+                onClick={() => void act(() => resumeIntegration(id, { confirm: resumption ? resumeWord : "" }, companyId), "Pagos reanudados.")}
+              >
+                Reanudar pagos
+              </Button>
+            ) : null}
             {active.enabled ? (
               <Confirm
                 label="Desactivar" tone="danger" disabled={working || interrupts}
@@ -420,6 +444,25 @@ export function IntegrationEditor({
               </Button>
             )}
           </div>
+          {paused ? (
+            <div role="status" className="mt-4 rounded-xl border border-warning-border bg-warning-surface px-4 py-3">
+              <p className="text-sm font-semibold text-warning">Pagos nuevos en pausa.</p>
+              <p className="mt-1 text-sm text-warning">
+                La tienda no abre ningún pago nuevo. Los pagos que ya estaban abiertos se siguen confirmando; cuando
+                no quede ninguno, se puede desactivar, revocar o cambiar de pasarela.
+              </p>
+              {resumption ? (
+                <>
+                  <p className="mt-3 text-sm text-warning">{resumption.message}</p>
+                  <label htmlFor={`integration-${id}-resume`} className={`${LABEL} mt-3`}>Confirmación para reanudar</label>
+                  <input
+                    id={`integration-${id}-resume`} value={resumeWord} autoComplete="off" spellCheck={false}
+                    onChange={(e) => setResumeWord(e.target.value)} className={`${INPUT} md:w-64`}
+                  />
+                </>
+              ) : null}
+            </div>
+          ) : null}
           {reactivation ? (
             <div className="mt-4">
               <p className="text-sm text-warning">{reactivation.message}</p>
