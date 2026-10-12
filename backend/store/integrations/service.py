@@ -425,8 +425,10 @@ def _activate(provider, company, *, actor, version, payload, request, prepared):
         siblings = siblings.filter(company=company) if company else siblings.filter(company__isnull=True)
         for sibling in siblings:
             sibling.enabled = False
+            # Off is off: a pause it carried does not come back with it later.
+            sibling.paused = False
             sibling.version += 1
-            sibling.save(update_fields=['enabled', 'version', 'updated_at'])
+            sibling.save(update_fields=['enabled', 'paused', 'version', 'updated_at'])
             _audit('integration_disabled', registry.get(sibling.provider), company, actor, request,
                    reason=f'replaced_by:{provider.id}')
 
@@ -435,6 +437,11 @@ def _activate(provider, company, *, actor, version, payload, request, prepared):
     active.public = dict(draft.public)
     active.secret_meta = dict(draft.secret_meta)
     _seal(active, secrets)
+    if not active.enabled:
+        # Starting to run (for the first time, or again after being off) is
+        # starting whole. Only a row that is RUNNING and paused stays paused
+        # through a change of its keys: that must not resume by itself.
+        active.paused = False
     active.enabled = True
     active.validated = True
     active.last_tested_at = draft.last_tested_at

@@ -85,6 +85,8 @@ INSECURE = {'', 'changeme', 'changeme-dev-only', 'changeme-replace-in-production
 SMTP_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 #: Las mismas palabras que Django (django-environ) toma por «sí».
 TRUE = {'true', 'on', 'ok', 'y', 'yes', '1'}
+# Lo único que deja PAYMENTS_PUBLIC_TEST apagado sin lugar a dudas.
+PUBLIC_TEST_OFF = {'', '0', 'false', 'no', 'off'}
 #: Variables cuyo valor es un secreto: un `$` dentro de ellas lo cambiaría Compose.
 SECRET_NAMES = ('SECRET_KEY', 'POSTGRES_PASSWORD', 'APP_CONFIG_ENCRYPTION_KEY', 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS',
                 'EMAIL_HOST_PASSWORD', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY',
@@ -398,7 +400,11 @@ def check_smtp_live(report, values, domain, send_to=None):
 # --- pagos ----------------------------------------------------------------------
 
 def check_payments(report, values, domain):
-    if flag(values, 'PAYMENTS_PUBLIC_TEST'):
+    # ESTE interruptor no se lee con `flag()`. La aplicación lo lee con `env.bool`,
+    # que da por encendido cualquier número distinto de cero («2», «01», «-1»), y
+    # aquí callar es decir que una tienda con los pagos de TEST abiertos está
+    # bien. Se avisa de todo lo que no sea claramente «apagado».
+    if values.get('PAYMENTS_PUBLIC_TEST', '').strip().lower() not in PUBLIC_TEST_OFF:
         # Con él, cualquiera paga con tarjetas de prueba —que son públicas— y el
         # pedido queda pagado. Es para una instalación de pruebas, nunca para una tienda.
         report.bad('PAYMENTS_PUBLIC_TEST está encendido: abre los pagos de TEST a cualquier comprador. '

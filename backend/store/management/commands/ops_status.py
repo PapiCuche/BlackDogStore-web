@@ -16,6 +16,7 @@ the host and calls this.
 """
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import connection
 from django.db.models import Q
@@ -146,6 +147,15 @@ class Command(BaseCommand):
                 'Lo habitual es un comprador que no terminó; si alguien dice que pagó, con «Mi Cuenta Web» '
                 'pregúntaselo a la pasarela (`python manage.py reconcile_payments --reference <referencia>`) y, con el otro '
                 'producto, compruébalo en su panel.'
+            )
+        if getattr(settings, 'PAYMENTS_PUBLIC_TEST', False) and not settings.DEBUG:
+            # The switch for installations where a simulated gateway is the
+            # point, left on where nobody is developing: anybody pays with the
+            # public test cards and the order is «paid».
+            payments.append(
+                'los pagos de TEST están abiertos a cualquier comprador (PAYMENTS_PUBLIC_TEST está encendido en '
+                'este servidor): con claves de TEST, cualquiera paga con tarjetas de prueba y el pedido queda '
+                'pagado. En una tienda publicada tiene que estar apagado: quítalo de las variables del servidor.'
             )
         if payment_adapters.paused():
             payment_notes.append(

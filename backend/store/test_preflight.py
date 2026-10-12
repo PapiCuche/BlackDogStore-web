@@ -239,6 +239,32 @@ class PreflightTest(SimpleTestCase):
                 result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'PAYMENTS_PUBLIC_TEST': value})
                 self.assertEqual(self.lines(result, 'ATENCIÓN'), [], result.stdout)
 
+    def test_whatever_the_application_reads_as_on_is_reported(self):
+        """
+        La aplicación lee el interruptor con `env.bool`, que da por encendido
+        cualquier número distinto de cero («2», «01», «-1»). El preflight sólo
+        conocía «1», «true»…: decía que estaba bien lo que la tienda leía como
+        abierto. Aquí lo lee la propia aplicación, en otro proceso, y lo que
+        ella da por encendido tiene que estar avisado. Y, por si acaso, también
+        todo lo que no sea claramente «apagado».
+        """
+        backend = ROOT / 'backend'
+        code = ('import django; django.setup(); from django.conf import settings; '
+                'print(settings.PAYMENTS_PUBLIC_TEST)')
+        clearly_off = ('', '0', 'false', 'no', 'off', 'False', ' OFF ', 'No')
+        for value in ('2', '01', '-1', '10', '1', 'true', 'TRUE', 'yes', 'on', 'ok', 'y', ' 1 ', 'si', 'maybe', '00',
+                      *clearly_off):
+            with self.subTest(value):
+                env = {k: v for k, v in os.environ.items() if k != 'PAYMENTS_PUBLIC_TEST'}
+                env.update(DJANGO_SETTINGS_MODULE='backend.settings', PAYMENTS_PUBLIC_TEST=value.strip())
+                django_says = subprocess.run([sys.executable, '-c', code], cwd=backend, env=env,
+                                             capture_output=True, text=True).stdout.strip().splitlines()[-1:]
+                result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'PAYMENTS_PUBLIC_TEST': value})
+                reported = any('PAYMENTS_PUBLIC_TEST' in line for line in self.lines(result, 'ATENCIÓN'))
+                if django_says == ['True']:
+                    self.assertTrue(reported, f'la aplicación lo lee encendido y el preflight calla: {value!r}')
+                self.assertEqual(reported, value not in clearly_off, value)
+
     def test_the_api_address_of_mi_cuenta_web_is_the_one_the_application_accepts(self):
         """El checkout rechaza cualquier otro servidor: que esto dijera OK era publicar una tienda que no cobra."""
         self.attention({**BASE, **MICUENTAWEB_PRODUCTION, 'MICUENTAWEB_API_URL': 'https://pasarela.example.com'},

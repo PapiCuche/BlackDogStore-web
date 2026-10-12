@@ -46,7 +46,7 @@ from .serializers import (
 from .throttles import (
     CouponThrottle,
     ReviewCreateThrottle,
-    CheckoutThrottle,
+    CheckoutThrottle, CheckoutUserThrottle,
     CartThrottle,
     PaymentStatusThrottle,
 )
@@ -212,7 +212,10 @@ class CreateCheckoutSessionView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [CheckoutThrottle]
+    # Two limits: `CheckoutThrottle` only counts anonymous callers, so an account
+    # with a session had none at all here — and each call is an order, an
+    # attempt and a request to the gateway.
+    throttle_classes = [CheckoutThrottle, CheckoutUserThrottle]
 
     def post(self, request):
         # Before an Order exists: a checkout that cannot be paid should fail

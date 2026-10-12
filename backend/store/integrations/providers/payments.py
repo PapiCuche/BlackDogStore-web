@@ -137,11 +137,20 @@ class _PaymentProvider(Provider):
             # typing the card, and after the change nobody would hear of it.
             # What a master can always do instead is pause new payments.
             retry_at = max(a.created_at for a in young) + reconcile.FORM_LIFETIME
+            # What a master can do about it depends on where the gateway is
+            # configured: a pause is a state of a console row, and a gateway
+            # that charges from the server's environment has none.
+            way_out = (
+                'Pausa los pagos nuevos para que no entren más y vuelve a intentarlo a partir de las {time}.'
+                if charging.in_console else
+                'Vuelve a intentarlo a partir de las {time}. Esta pasarela cobra con las variables del servidor y '
+                'desde aquí no se puede pausar: para poder pausar los pagos nuevos, lleva antes esa configuración '
+                'a la consola (en su tarjeta, «Configurado mediante entorno», y actívala: con la misma tienda no '
+                'se bloquea).')
             raise _blocked(details, retry_at, (
                 'No se puede hacer este cambio todavía: hay {charges} con {label} cuyo formulario aún puede '
                 'cobrar. Si el comprador pagara después del cambio, su pedido quedaría cobrado y sin confirmar. '
-                'Pausa los pagos nuevos para que no entren más y vuelve a intentarlo a partir de las {time}.'),
-                len(attempts), charging)
+                + way_out), len(attempts), charging)
         if unresolved:
             retry_at = min(a.created_at for a in unresolved) + charging.provider.open_window
             raise _blocked(details, retry_at, (
@@ -207,7 +216,10 @@ class IzipayCheckoutProvider(_PaymentProvider):
         return {name: merged.get(field, '') for field, name in izipay._CONSOLE_FIELDS.items()}
 
     def mode(self, public, secrets):
-        return {'sandbox': 'test', 'production': 'production'}.get(public.get('environment', ''), '')
+        # As the adapter reads it (`izipay.credentials_from`): neither case nor
+        # surrounding blanks make it another environment.
+        word = str(public.get('environment') or '').strip().lower()
+        return {'sandbox': 'test', 'production': 'production'}.get(word, '')
 
     def clean(self, public, secrets):
         if public.get('environment') == 'production' and 'sandbox' in (public.get('token_url') or '').lower():
