@@ -132,7 +132,9 @@ from .tenant_views import (
     MyMembershipsView,
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
-from .account_views import AccountProfileView
+from .account_views import (
+    AccountAddressDefaultView, AccountAddressDetailView, AccountAddressListView, AccountProfileView,
+)
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
@@ -428,6 +430,10 @@ urlpatterns = [
     path('admin/carriers/<int:pk>/', AdminCarrierDetailView.as_view(), name='admin-carrier-detail'),
     # --- CLIENT-SEC-01: the signed-in buyer's own profile in this shop ---
     path('account/profile/', AccountProfileView.as_view(), name='account-profile'),
+    # --- DELIVERY-01: the signed-in buyer's own address book in this shop ---
+    path('account/addresses/', AccountAddressListView.as_view(), name='account-addresses'),
+    path('account/addresses/<int:pk>/', AccountAddressDetailView.as_view(), name='account-address-detail'),
+    path('account/addresses/<int:pk>/default/', AccountAddressDefaultView.as_view(), name='account-address-default'),
 
     # --- SaaS Phase 2E: internal document sequences ---
     # `scope/` before `<int:pk>/` so the literal segment is not swallowed by

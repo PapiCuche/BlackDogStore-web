@@ -350,6 +350,11 @@ class AccountProfileWriteThrottle(UserRateThrottle):
     scope = 'account_profile_write'
 
 
+class AccountAddressWriteThrottle(UserRateThrottle):
+    """Adding, correcting, choosing and removing entries of one's own address book (DELIVERY-01), per account."""
+    scope = 'account_address_write'
+
+
 class WhatsAppWebhookThrottle(AnonRateThrottle):
     """El proveedor informa aquí de cada mensaje. La firma decide; esto acota."""
     scope = 'whatsapp_webhook'

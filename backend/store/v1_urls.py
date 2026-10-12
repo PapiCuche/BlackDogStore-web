@@ -12,6 +12,9 @@ from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .print_views import PrintAgentClaimView, PrintAgentResultView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import (
+    V1CustomerAddressDefaultView,
+    V1CustomerAddressDetailView,
+    V1CustomerAddressListView,
     V1CustomerOrderViewSet,
     V1CustomerProfileView,
     V1CustomerRepairQuoteDecisionView,
@@ -167,6 +170,19 @@ urlpatterns = [
     path(
         'customer/<slug:company_slug>/profile/',
         V1CustomerProfileView.as_view(), name='v1-customer-profile',
+    ),
+    # DELIVERY-01 — my own address book in this company.
+    path(
+        'customer/<slug:company_slug>/addresses/',
+        V1CustomerAddressListView.as_view(), name='v1-customer-addresses',
+    ),
+    path(
+        'customer/<slug:company_slug>/addresses/<int:pk>/',
+        V1CustomerAddressDetailView.as_view(), name='v1-customer-address-detail',
+    ),
+    path(
+        'customer/<slug:company_slug>/addresses/<int:pk>/default/',
+        V1CustomerAddressDefaultView.as_view(), name='v1-customer-address-default',
     ),
     # CUSTOMER — the quote on my own repair, and my answer to it. Literal
     # sub-paths on the `customer/` prefix, registered BEFORE the router

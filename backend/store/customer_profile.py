@@ -131,6 +131,40 @@ def update(*, company, user, data, request=None) -> dict:
             raise ProfileError({'document_number': [identity.DOCUMENT_REFUSED]}) from None
 
 
+def ensure_record(*, company, user, request=None):
+    """
+    This account's record in this shop, LOCKED — made now if there is none.
+
+    For what hangs from the record (the address book, DELIVERY-01): the first
+    entry of a book makes its owner a client of the shop, with the account's
+    name and nothing else. An account with no name is asked for it first: a
+    record has to be somebody.
+
+    Call it inside a transaction; the lock is what serialises whatever the
+    caller does next to this buyer's rows.
+    """
+    record = Customer.objects.select_for_update().filter(company=company, user=user).first()
+    if record is not None:
+        return record
+    record = Customer(
+        company=company, user=user, customer_type=Customer.TYPE_PERSON,
+        first_name=(user.first_name or '').strip()[:_NAME_MAX],
+        last_name=(user.last_name or '').strip()[:_NAME_MAX],
+        email=normalize_customer_email(user.email), created_by=user,
+    )
+    if not record.first_name and not record.last_name:
+        raise ProfileError({'detail': 'Completa tu nombre en «Mi cuenta» antes de guardar una dirección.'})
+    record.save()
+    AdminAuditLog.log(
+        actor=user, action='customer_profile_updated', target_type='customer', target_id=record.pk,
+        metadata={'created': True, 'changed_fields': sorted(
+            field for field in ('first_name', 'last_name') if getattr(record, field)
+        )},
+        request=request, company=company,
+    )
+    return record
+
+
 def _save(company, user, data, request) -> dict:
     """One attempt, in one transaction: the record locked, judged, saved and written down."""
     with transaction.atomic():

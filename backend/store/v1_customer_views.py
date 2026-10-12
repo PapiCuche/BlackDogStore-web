@@ -137,6 +137,52 @@ class V1CustomerProfileView(V1CustomerSurfaceMixin, APIView):
         return _no_store(Response(body))
 
 
+class _V1Book(V1CustomerSurfaceMixin):
+    """
+    DELIVERY-01 — my address book in this company, from the app. The same book
+    and the same answers as the web's (`account_views.AddressBookActions`); the
+    company is the one in the path, IF this person is a client of it — whoever
+    is not gets the 404 of this whole surface before anything is looked up.
+    """
+
+    def book_company(self, request):
+        return self.get_customer_company()
+
+
+def _book_view(*verbs):
+    """A view of the book with exactly these verbs, built on the shared actions."""
+    from .account_views import AddressBookActions
+
+    class View(_V1Book, AddressBookActions, APIView):
+        http_method_names = [*verbs, 'options']
+        # The surface's own gate: Bearer only, and a client of the company.
+        authentication_classes = V1CustomerSurfaceMixin.authentication_classes
+        permission_classes = V1CustomerSurfaceMixin.permission_classes
+
+    return View
+
+
+class V1CustomerAddressListView(_book_view('get', 'head', 'post')):
+    def get(self, request, company_slug=None):
+        return self.list_book(request)
+
+    def post(self, request, company_slug=None):
+        return self.add_entry(request)
+
+
+class V1CustomerAddressDetailView(_book_view('patch', 'delete')):
+    def patch(self, request, company_slug=None, pk=None):
+        return self.change_entry(request, pk)
+
+    def delete(self, request, company_slug=None, pk=None):
+        return self.remove_entry(request, pk)
+
+
+class V1CustomerAddressDefaultView(_book_view('post')):
+    def post(self, request, company_slug=None, pk=None):
+        return self.choose_default(request, pk)
+
+
 class V1CustomerRepairViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewSet):
     """
     A customer's own repair orders in one company. BR-005A, M8.
