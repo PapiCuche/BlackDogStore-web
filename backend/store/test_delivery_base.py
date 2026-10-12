@@ -872,7 +872,7 @@ class RecordsWhenTheTableArrivedTest(TestCase):
     def setUp(self):
         self.a = _saas_company('Tienda A', 'envios-a', tax_id='20999999990')
         self.b = _saas_company('Tienda B', 'envios-b', tax_id='20111111112')
-        self.module = import_module('store.migrations.0119_delivery_base')
+        self.module = import_module('store.migrations.0121_delivery_records_backfill')
 
     def arrive(self):
         from django.apps import apps

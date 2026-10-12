@@ -265,7 +265,7 @@ class EmailVerifiedWhenTheColumnArrivedTest(TestCase):
     def arrive(self):
         from django.apps import apps
 
-        import_module('store.migrations.0118_client_sec').record_verified_addresses(apps, None)
+        import_module('store.migrations.0120_client_sec_verified_backfill').record_verified_addresses(apps, None)
 
     def account(self, username, **extra):
         return User.objects.create_user(username, f'{username}@correo.test', PASSWORD, **extra)
@@ -299,15 +299,58 @@ class EmailVerifiedWhenTheColumnArrivedTest(TestCase):
         self.token(waiting, used_at=None)                             # sent, never used
         switched_off = self.account('apagada', is_active=False)
         self.token(switched_off, used_at=timezone.now())              # proven once, not active today
-        recovered = self.account('recuperada')
-        self.token(recovered, used_at=timezone.now(), purpose=AccountToken.PURPOSE_PASSWORD_RESET)
         moved = self.account('mudada')                                # Google vouched for another address
         ExternalIdentity.objects.create(user=moved, provider='google', subject='g-2', email_at_link='antes@correo.test')
+        unlinked = self.account('sin_direccion')                      # an identity that never recorded an address
+        ExternalIdentity.objects.create(user=unlinked, provider='google', subject='g-3', email_at_link='')
 
         self.arrive()
-        for user in (plain, waiting, switched_off, recovered, moved):
+        for user in (plain, waiting, switched_off, moved, unlinked):
             with self.subTest(user.username):
                 self.assertIsNone(verified_at(user))
+
+    def test_a_used_recovery_link_is_a_proof_as_well(self):
+        # F7 · it was sent to the mailbox and used: the same proof, whichever link it was.
+        when = timezone.now() - timedelta(days=9)
+        user = self.account('recuperada')
+        self.token(user, used_at=when, purpose=AccountToken.PURPOSE_PASSWORD_RESET)
+        self.arrive()
+        self.assertEqual(verified_at(user), when)
+
+    def test_the_earlier_of_two_proofs_is_the_one_kept(self):
+        user = self.account('dos_pruebas')
+        identity = ExternalIdentity.objects.create(user=user, provider='google', subject='g-9', email_at_link='dos_pruebas@correo.test')
+        self.token(user, used_at=identity.created_at + timedelta(days=2))
+        early = self.account('enlace_antes')
+        linked = ExternalIdentity.objects.create(user=early, provider='google', subject='g-8', email_at_link='enlace_antes@correo.test')
+        first = linked.created_at - timedelta(days=30)
+        self.token(early, used_at=first)
+        self.arrive()
+        self.assertEqual(verified_at(user), identity.created_at)
+        self.assertEqual(verified_at(early), first)
+
+    def test_it_is_one_statement_however_many_accounts_there_are(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for n in range(6):
+            self.token(self.account(f'cuenta{n}'), used_at=timezone.now())
+        with CaptureQueriesContext(connection) as queries:
+            self.arrive()
+        self.assertEqual(len(queries.captured_queries), 1)
+        self.assertTrue(queries.captured_queries[0]['sql'].lstrip().upper().startswith('UPDATE'))
+
+    def test_the_tables_and_their_filling_are_separate_migrations(self):
+        # F11 · filling a table inside the migration that alters it keeps the lock for as long as the fill takes.
+        from django.db import migrations as dj_migrations
+
+        for schema in ('0118_client_sec', '0119_delivery_base'):
+            operations = import_module(f'store.migrations.{schema}').Migration.operations
+            self.assertFalse([op for op in operations if isinstance(op, dj_migrations.RunPython)], schema)
+        for data in ('0120_client_sec_verified_backfill', '0121_delivery_records_backfill'):
+            operations = import_module(f'store.migrations.{data}').Migration.operations
+            self.assertTrue(all(isinstance(op, dj_migrations.RunPython) for op in operations), data)
+        self.assertFalse(import_module('store.migrations.0121_delivery_records_backfill').Migration.atomic)
 
     def test_it_can_run_twice_and_keeps_what_is_already_written(self):
         user = self.account('verificada')
@@ -322,7 +365,7 @@ class EmailVerifiedWhenTheColumnArrivedTest(TestCase):
     def test_the_step_reads_no_live_code(self):
         import inspect
 
-        source = inspect.getsource(import_module('store.migrations.0118_client_sec'))
+        source = inspect.getsource(import_module('store.migrations.0120_client_sec_verified_backfill'))
         self.assertNotIn('from store', source)
         self.assertNotIn('import store', source)
 

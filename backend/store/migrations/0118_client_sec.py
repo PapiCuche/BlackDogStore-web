@@ -7,52 +7,6 @@ from django.conf import settings
 from django.db import migrations, models
 
 
-def record_verified_addresses(apps, schema_editor):
-    """
-    `UserProfile.email_verified_at` for the accounts whose mailbox was ALREADY
-    proven when the column arrived. Everybody else stays null: unknown is not
-    verified, and «active» was never the proof (an account is active wherever
-    verification is not asked).
-
-    Two proofs were written down before this column existed:
-
-      * a verification link or code that was USED — its `used_at` — on an
-        account that is active today. A recovery link that finished an account
-        spent its verification links too, so it is here as well;
-      * a Google identity — the day it was linked — while the account still has
-        the address Google vouched for that day.
-
-    The earliest of the two is kept. A profile that already has a date keeps it.
-    """
-    from django.db.models import Min
-
-    AccountToken = apps.get_model('store', 'AccountToken')
-    ExternalIdentity = apps.get_model('store', 'ExternalIdentity')
-    UserProfile = apps.get_model('store', 'UserProfile')
-
-    proven = {}
-    used = (
-        AccountToken.objects
-        .filter(purpose='email_verification', used_at__isnull=False, user__is_active=True)
-        .values('user_id').annotate(first=Min('used_at'))
-    )
-    for row in used.iterator():
-        proven[row['user_id']] = row['first']
-
-    linked = ExternalIdentity.objects.filter(provider='google').select_related('user').order_by('created_at', 'pk')
-    for identity in linked.iterator():
-        address = (identity.user.email or '').strip().lower()
-        if not address or address != (identity.email_at_link or '').strip().lower():
-            continue
-        known = proven.get(identity.user_id)
-        if known is None or identity.created_at < known:
-            proven[identity.user_id] = identity.created_at
-
-    for user_id, when in proven.items():
-        profile, _created = UserProfile.objects.get_or_create(user_id=user_id, defaults={'role': 'customer'})
-        UserProfile.objects.filter(pk=profile.pk, email_verified_at__isnull=True).update(email_verified_at=when)
-
-
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -98,6 +52,4 @@ class Migration(migrations.Migration):
                 'indexes': [models.Index(fields=['company', 'review_status'], name='order_risk_review_idx'), models.Index(fields=['company', 'ip_hash', 'created_at'], name='order_risk_origin_idx')],
             },
         ),
-        # Backwards there is nothing to undo: the column goes with its dates.
-        migrations.RunPython(record_verified_addresses, migrations.RunPython.noop),
     ]
