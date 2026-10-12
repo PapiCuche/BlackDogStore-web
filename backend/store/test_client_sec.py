@@ -3175,6 +3175,31 @@ class TwoAtOnceTest(TransactionTestCase):
             self.assertEqual((row.review_status, row.reviewed_by_id), (winner.review_status, winner.reviewed_by_id))
             self.assertEqual(AdminAuditLog.objects.filter(action='order_risk_reviewed', target_id=str(order.pk)).count(), 1)
 
+    def test_two_document_attempts_at_once_in_two_shops_spend_two(self):
+        # P2-3 · the budget is the account's: its row is what two shops' saves take turns on.
+        from store import customer_profile
+
+        other = _saas_company('Tienda B', 'dos-a-la-vez-b', tax_id='20111111112')
+        for company in (self.company, other):
+            customer_profile.update(company=company, user=self.user, data={'phone': '987654321'})
+        attempts = AdminAuditLog.objects.filter(action=customer_profile.DOCUMENT_ATTEMPT)
+        for n in range(5):
+            attempts.delete()
+            Customer.objects.filter(user=self.user).update(document_type='', document_number='')
+            for spent in range(customer_profile.DOCUMENT_CHANGES_PER_DAY - 1):
+                customer_profile.update(company=self.company, user=self.user,
+                                        data={'document_type': 'dni', 'document_number': f'7100{n}{spent}01'})
+            results = self.together([
+                lambda: customer_profile.update(company=self.company, user=self.user,
+                                                data={'document_type': 'dni', 'document_number': f'7200{n}001'}),
+                lambda: customer_profile.update(company=other, user=self.user,
+                                                data={'document_type': 'dni', 'document_number': f'7300{n}001'}),
+            ])
+            self.assertEqual(sorted(kind for kind, _value in results), ['ok', 'refused'], results)
+            refused = next(value for kind, value in results if kind == 'refused')
+            self.assertIn('mañana', refused.errors['document_number'][0])
+            self.assertEqual(attempts.count(), customer_profile.DOCUMENT_CHANGES_PER_DAY)
+
     def test_two_saves_of_one_profile_at_once_are_both_kept(self):
         from store import customer_profile
 

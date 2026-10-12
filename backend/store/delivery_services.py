@@ -369,10 +369,7 @@ def _address_values(company, data, current) -> dict:
         # whose agency the shop no longer offers keeps naming it — its label or
         # its recipient can still be corrected — but no entry can be GIVEN one.
         raw = data['carrier'] if 'carrier' in data else current.carrier_id
-        kept = (
-            current.kind == CustomerAddress.Kind.AGENCY and current.carrier_id is not None
-            and isinstance(raw, int) and not isinstance(raw, bool) and raw == current.carrier_id
-        )
+        kept = isinstance(raw, int) and not isinstance(raw, bool) and raw == current.carrier_id
         values['carrier'] = current.carrier if kept else _agency_carrier(company, raw)
         values.update({field: '' for field in _DOOR_FIELDS})
         values['department'] = _text(data, 'department', current.department, max_length=length('department'))
@@ -697,13 +694,12 @@ def _shipped_at(raw):
         return None
     try:
         moment = raw if isinstance(raw, datetime) else parse_datetime(raw) if isinstance(raw, str) else None
-        if moment is not None:
-            # In UTC, where it is stored: the edges of the calendar have no such moment.
-            moment = (timezone.make_aware(moment) if timezone.is_naive(moment) else moment).astimezone(utc_zone.utc)
-    except (ValueError, OverflowError):
+    except ValueError:
         moment = None
     if moment is None:
         _refuse('shipped_at', _NO_SUCH_MOMENT)
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment)
     earliest = datetime(*_SHIPPED_NOT_BEFORE, tzinfo=utc_zone.utc)
     if moment < earliest or moment > timezone.now() + timedelta(days=_SHIPPED_AHEAD):
         _refuse('shipped_at', 'Esa fecha no puede ser la de un envío: revisa el año.')
