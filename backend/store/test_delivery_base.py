@@ -159,6 +159,7 @@ class CarrierApiTest(_CompaniesBase):
         for body, field in (
             ({'kind': 'agency'}, 'name'), ({'name': '  ', 'kind': 'agency'}, 'name'), ({'name': 'x' * 81, 'kind': 'agency'}, 'name'),
             ({'name': 'Uno'}, 'kind'), ({'name': 'Uno', 'kind': 'dron'}, 'kind'),
+            ({'name': 'Uno\x00', 'kind': 'agency'}, 'name'),
             ({'name': 'Uno', 'kind': 'agency', 'tracking_url_template': 'http://rastreo.ejemplo.test/{guia}'}, 'tracking_url_template'),
             ({'name': 'Uno', 'kind': 'agency', 'tracking_url_template': 'javascript:alert(1)'}, 'tracking_url_template'),
             ({'name': 'Uno', 'kind': 'agency', 'tracking_url_template': 'https://rastreo.ejemplo.test/{otro}'}, 'tracking_url_template'),
@@ -379,6 +380,8 @@ class AddressBookTest(_BookBase):
             (door(recipient_document_type='dni', recipient_document_number='123'), 'recipient_document_number'),
             (door(recipient_document_number=DNI), 'recipient_document_type'),
             (door(kind='casillero'), 'kind'), (door(label='x' * 61), 'label'),
+            (door(address_line='Av. Uno\x00 1'), 'address_line'), (door(recipient_name='Ana\x00'), 'recipient_name'),
+            (door(reference='línea\ndos'), 'reference'),
             (self.office(agency_name=''), 'agency_name'), (self.office(agency_locality=''), 'agency_locality'),
             (self.office(carrier=None), 'carrier'), (self.office(carrier=999999), 'carrier'),
             (self.office(carrier='uno'), 'carrier'),

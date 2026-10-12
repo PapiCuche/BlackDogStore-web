@@ -2138,3 +2138,40 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
         self.assertEqual(customer_services.resolve_customer(self.company, document_type='dni', document_number=self.VICTIM_DNI), record)
         with self.assertRaises(customer_services.DuplicateCustomerError):
             customer_services.assert_document_available(self.company, 'dni', self.VICTIM_DNI)
+
+
+class OnlyPlainDigitsAndNoControlCharactersTest(_ProfileBase):
+    """F8, F9 · a digit is 0-9, and a name has no control characters in it."""
+
+    ARABIC_DNI = '٧٠٠٠٠٠٠١'                 # «70000001» in Arabic-Indic digits
+    FULLWIDTH_DNI = '７００００００１'
+
+    def test_digits_of_another_script_are_not_a_document(self):
+        for kind, typed in (('dni', self.ARABIC_DNI), ('dni', self.FULLWIDTH_DNI), ('dni', '7000000١'),
+                            ('ruc', '٢٠٩٩٩٩٩٩٩٩٠'), ('ruc', '2099999999٠')):
+            with self.subTest(typed), self.assertRaises(identity.IdentityError):
+                identity.clean_document(kind, typed)
+        self.assertFalse(identity.ruc_check_digit_matches('٢٠٩٩٩٩٩٩٩٩٠'))
+
+    def test_nor_a_phone(self):
+        for typed in ('٩٨٧٦٥٤٣٢١', '98765432١', '+51 ９８７ ６５４ ３２１'):
+            with self.subTest(typed), self.assertRaises(identity.IdentityError):
+                identity.clean_phone(typed)
+        self.assertEqual(identity.phone_key('٩٨٧٦٥٤٣٢١'), '')
+        self.assertEqual(identity.phone_key('987 654 321'), '987654321')
+
+    def test_they_do_not_slip_past_the_rule_of_one_document_per_client(self):
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number=DNI)
+        response = self.patch({'document_type': 'dni', 'document_number': self.ARABIC_DNI})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Customer.objects.filter(document_number=self.ARABIC_DNI).exists())
+
+    def test_a_control_character_in_a_name_is_refused_not_an_error(self):
+        for field, typed in (('first_name', 'Ana\x00'), ('last_name', 'To\x00rres'), ('first_name', 'Ana\x1b[31m'),
+                             ('last_name', 'Torres\r\nX-Cabecera: 1'), ('first_name', 'Ana\x7f')):
+            with self.subTest(typed=typed):
+                response = self.patch({field: typed, 'phone': '987654321'})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        self.assertIsNone(self.record())
+        self.assertEqual(self.patch({'first_name': 'Ana María', 'last_name': "D'Ávila-Ñuñez"}).status_code, 200)

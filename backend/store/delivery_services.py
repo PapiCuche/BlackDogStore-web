@@ -153,7 +153,7 @@ def _carrier_values(company, data, *, current=None) -> dict:
     if 'name' in data or current is None:
         name = data.get('name')
         name = name.strip() if isinstance(name, str) else ''
-        if not name:
+        if not name or identity.has_control_characters(name):
             _refuse('name', 'Indica el nombre del transportista.')
         if len(name) > Carrier._meta.get_field('name').max_length:
             _refuse('name', 'Máximo 80 caracteres.')
@@ -293,6 +293,8 @@ def _text(data, field, current, *, max_length, required=False) -> str:
         if not isinstance(value, str):
             _refuse(field, 'Escribe un texto.')
         value = value.strip()
+        if identity.has_control_characters(value):
+            _refuse(field, 'Hay un carácter que no se puede guardar.')
     if len(value) > max_length:
         _refuse(field, f'Máximo {max_length} caracteres.')
     if required and not value:

@@ -34,10 +34,23 @@ from .serializers import _PERU_PHONE_RE
 #: does not say whose it is, nor whether that somebody has an account.
 DOCUMENT_REFUSED = 'No pudimos guardar ese documento. Revisa los datos o comunícate con la tienda.'
 
-_DNI = re.compile(r'\d{8}')
-_RUC = re.compile(r'(10|15|16|17|20)\d{9}')
+# `[0-9]`, never `\d`: on text `\d` is every digit of every script, and a DNI in
+# Arabic-Indic digits is a different string from the same DNI — it would pass
+# as a document and slip past «one document, one client».
+_DNI = re.compile(r'[0-9]{8}')
+_RUC = re.compile(r'(10|15|16|17|20)[0-9]{9}')
+_ELEVEN_DIGITS = re.compile(r'[0-9]{11}')
 _CE = re.compile(r'[A-Z0-9]{6,12}')
 _RUC_WEIGHTS = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
+
+
+def has_control_characters(text: str) -> bool:
+    """
+    Whether a text carries a character nobody types into a name or an address:
+    NUL (the database refuses it outright), a line break, an escape. Refused
+    where the text is judged, so it is an answer about a field and not a failure.
+    """
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in text)
 
 
 class IdentityError(ValueError):
@@ -62,7 +75,8 @@ def clean_phone(value) -> str:
         raise IdentityError('phone', 'Indica un número de teléfono válido.')
     if not value.strip():
         return ''
-    if not _PERU_PHONE_RE.match(re.sub(r'\s', '', value)):
+    # The checkout's pattern says `\d`; here a digit is 0-9 and nothing else.
+    if not value.isascii() or not _PERU_PHONE_RE.match(re.sub(r'\s', '', value)):
         raise IdentityError(
             'phone',
             'Teléfono inválido. Ejemplos aceptados: 987654321, +51987654321, +51 987 654 321.',
@@ -76,7 +90,7 @@ def phone_key(value) -> str:
     whole of a Peruvian mobile. `987 654 321`, `+51987654321` and `51 987654321`
     are one number written three ways. Never stored, never shown.
     """
-    digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    digits = ''.join(ch for ch in str(value or '') if ch in '0123456789')
     return digits[-9:] if len(digits) >= 9 else ''
 
 
@@ -85,7 +99,7 @@ def ruc_check_digit_matches(number: str) -> bool:
     Whether the eleventh digit of a RUC is the one its first ten produce
     (module 11, weights 5·4·3·2·7·6·5·4·3·2).
     """
-    if not isinstance(number, str) or not re.fullmatch(r'\d{11}', number):
+    if not isinstance(number, str) or not _ELEVEN_DIGITS.fullmatch(number):
         return False
     total = sum(int(digit) * weight for digit, weight in zip(number, _RUC_WEIGHTS))
     expected = 11 - (total % 11)
@@ -118,7 +132,7 @@ def clean_document(document_type, document_number) -> tuple[str, str]:
         if not _DNI.fullmatch(number):
             raise IdentityError('document_number', 'El DNI debe tener exactamente 8 dígitos.')
     elif kind == DocumentType.RUC:
-        if not re.fullmatch(r'\d{11}', number):
+        if not _ELEVEN_DIGITS.fullmatch(number):
             raise IdentityError('document_number', 'El RUC debe tener exactamente 11 dígitos.')
         if not _RUC.fullmatch(number) or not ruc_check_digit_matches(number):
             raise IdentityError('document_number', 'El RUC no es válido. Revisa el número.')

@@ -78,6 +78,8 @@ def _name(data, field, current) -> str:
     if not isinstance(value, str):
         raise ProfileError({field: ['Escribe un texto.']})
     value = value.strip()
+    if identity.has_control_characters(value):
+        raise ProfileError({field: ['Escribe sólo letras: hay un carácter que no se puede guardar.']})
     if len(value) > _NAME_MAX:
         raise ProfileError({field: [f'Máximo {_NAME_MAX} caracteres.']})
     return value
