@@ -1,15 +1,16 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import AccountPage from '@/app/account/page';
-import { fetchWithAuth, getCurrentUser, resendVerification } from '@/app/lib/auth';
+import { fetchWithAuth, getCurrentUser } from '@/app/lib/auth';
 import { isSensitivePath } from '@/app/lib/analytics/privacy';
 
 /**
  * CLIENT-SEC-01 · «Mi cuenta»: the buyer's own profile in this shop.
  *
  * The page shows what the server says and sends back only what changed. The
- * e-mail is the account's: shown with whether it was verified, never edited.
- * Whether «send the verification again» is offered is the server's answer.
+ * e-mail is the account's: shown with whether it was verified, never edited,
+ * and proved with a code sent to it. Whether that is offered, and whether the
+ * document is the buyer's to change, are the server's answers.
  */
 
 // ONE router object, as the real hook gives: the page loads the profile when it
@@ -17,21 +18,24 @@ import { isSensitivePath } from '@/app/lib/analytics/privacy';
 const push = jest.fn();
 const mockRouter = { push };
 jest.mock('next/navigation', () => ({ useRouter: () => mockRouter }));
-jest.mock('@/app/lib/auth', () => ({
-  fetchWithAuth: jest.fn(), getCurrentUser: jest.fn(), resendVerification: jest.fn(),
-}));
+jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn(), getCurrentUser: jest.fn() }));
+// The address book has its own tests; here it would only add requests.
+jest.mock('@/app/components/AddressBook', () => ({ AddressBook: () => null }));
 const send = fetchWithAuth as jest.MockedFunction<typeof fetchWithAuth>;
 const who = getCurrentUser as jest.MockedFunction<typeof getCurrentUser>;
-const resend = resendVerification as jest.MockedFunction<typeof resendVerification>;
 
 const PROFILE = {
-  email: 'ana@correo.test', email_verified_at: null as string | null, email_verification_available: false,
+  // Most of these tests write a document, and that takes a proved address.
+  email: 'ana@correo.test', email_verified_at: '2026-10-01T10:00:00Z' as string | null, email_verification_available: false,
   first_name: 'Ana', last_name: 'Torres', phone: '987654321', document_type: 'dni', document_number: '70000001',
+  document_locked: false,
 };
 
 let profile: typeof PROFILE;
 let answer: { status: number; body: unknown } | null;
 let patched: Record<string, string>[];
+let verification: { send: { status: number; body: unknown }; confirm: { status: number; body: unknown } };
+let verifyCalls: { url: string; body: unknown }[];
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -42,13 +46,22 @@ beforeEach(() => {
   answer = null;
   patched = [];
   push.mockReset();
-  resend.mockReset();
-  resend.mockResolvedValue({ detail: 'ok' });
+  verification = {
+    send: { status: 200, body: { detail: 'Te enviamos un código a tu correo.', already_verified: false } },
+    confirm: { status: 200, body: { detail: 'Correo verificado.', email_verified_at: '2026-10-12T18:00:00Z' } },
+  };
+  verifyCalls = [];
   who.mockReset();
   who.mockResolvedValue({ id: 1, username: 'ana' } as never);
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-    expect(String(input)).toMatch(/\/account\/profile\/$/);
+    const url = String(input);
+    if (url.includes('/account/verify-email/')) {
+      verifyCalls.push({ url, body: JSON.parse(String(init.body)) });
+      const step = url.endsWith('/send/') ? verification.send : verification.confirm;
+      return reply(step.status, step.body);
+    }
+    expect(url).toMatch(/\/account\/profile\/$/);
     if ((init.method ?? 'GET') !== 'PATCH') return reply(200, profile);
     const body = JSON.parse(String(init.body));
     patched.push(body);
@@ -89,39 +102,110 @@ test('the e-mail is shown and cannot be typed over', async () => {
     .not.toContain('email');
 });
 
-test('an address nobody proved says so, and one that was proved says that', async () => {
+function unverified() {
+  profile.email_verified_at = null;
+  profile.email_verification_available = true;
+}
+
+test('an address nobody proved says so', async () => {
+  unverified();
   await opened();
   expect(screen.getByText('Sin verificar')).toBeInTheDocument();
   expect(screen.queryByText('Verificado')).not.toBeInTheDocument();
 });
 
-test('a verified address', async () => {
-  profile.email_verified_at = '2026-10-01T10:00:00Z';
+test('a verified address says that, and is offered nothing', async () => {
   await opened();
   expect(screen.getByText('Verificado')).toBeInTheDocument();
   expect(screen.queryByText('Sin verificar')).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verificar mi correo' })).not.toBeInTheDocument();
+});
+
+test('verifying is offered only when the server says there is something to verify', async () => {
+  profile.email_verified_at = null;
+  profile.email_verification_available = false;
+  await opened();
+  expect(screen.queryByRole('button', { name: 'Verificar mi correo' })).not.toBeInTheDocument();
 });
 
 test('a verified address is never offered a verification, whatever else the server says', async () => {
-  profile.email_verified_at = '2026-10-01T10:00:00Z';
   profile.email_verification_available = true;
   await opened();
-  expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verificar mi correo' })).not.toBeInTheDocument();
 });
 
-test('sending the verification again is offered only when the server says it would do something', async () => {
+test('the code is asked for without saying where to send it, and typed back', async () => {
+  unverified();
   await opened();
-  expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Verificar mi correo' }));
+
+  const field = await screen.findByLabelText('Código de verificación');
+  expect(verifyCalls).toEqual([{ url: expect.stringMatching(/\/account\/verify-email\/send\/$/), body: {} }]);
+  expect(screen.getByRole('button', { name: 'Confirmar código' })).toBeDisabled();       // nothing typed yet
+  fireEvent.change(field, { target: { value: ' 246810 ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar código' }));
+
+  expect(await screen.findByText('Verificado')).toBeInTheDocument();
+  expect(verifyCalls[1]).toEqual({ url: expect.stringMatching(/\/account\/verify-email\/confirm\/$/), body: { code: '246810' } });
+  expect(screen.queryByLabelText('Código de verificación')).not.toBeInTheDocument();
+  // And with the address proved, the document can be written.
+  expect(screen.getByLabelText('Tipo de documento')).toBeEnabled();
 });
 
-test('when it is available, it uses the existing action with the account\'s own address', async () => {
-  profile.email_verification_available = true;
+test('a wrong code is said and can be typed again', async () => {
+  unverified();
+  verification.confirm = { status: 400, body: { detail: 'El código no es válido o ya venció. Pide uno nuevo.' } };
   await opened();
-  fireEvent.click(screen.getByRole('button', { name: 'Reenviar verificación' }));
-  await waitFor(() => expect(resend).toHaveBeenCalledWith('ana@correo.test'));
-  expect(await screen.findByText(/te enviamos un nuevo enlace/)).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Reenviar verificación' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Verificar mi correo' }));
+  fireEvent.change(await screen.findByLabelText('Código de verificación'), { target: { value: '000000' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar código' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('El código no es válido o ya venció');
+  expect(screen.getByText('Sin verificar')).toBeInTheDocument();
+  expect(screen.getByLabelText('Código de verificación')).toHaveValue('000000');
+});
+
+test('asking again too soon is told to wait, in words of ours', async () => {
+  unverified();
+  verification.send = { status: 429, body: { detail: 'Request was throttled. Expected available in 40 seconds.' } };
+  await opened();
+  fireEvent.click(screen.getByRole('button', { name: 'Verificar mi correo' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Espera un minuto');
+  expect(screen.queryByText(/throttled/)).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Código de verificación')).not.toBeInTheDocument();
+});
+
+test('until the address is proved the document is not offered, and the page says why', async () => {
+  unverified();
+  await opened();
+  expect(screen.getByLabelText('Tipo de documento')).toBeDisabled();
+  expect(screen.getByLabelText('Número de documento')).toBeDisabled();
+  expect(screen.getByText('Verifica tu correo para poder guardar tu documento.')).toBeInTheDocument();
+  expect(screen.getByLabelText('Teléfono')).toBeEnabled();
+});
+
+test('a document the shop relies on is shown and not offered', async () => {
+  profile.document_locked = true;
+  await opened();
+  expect(screen.getByLabelText('Tipo de documento')).toBeDisabled();
+  expect(screen.getByLabelText('Número de documento')).toBeDisabled();
+  expect(screen.getByLabelText('Número de documento')).toHaveValue('70000001');
+  expect(screen.getByText(/El documento de tu ficha lo cambia la tienda/)).toBeInTheDocument();
+});
+
+test('a document on file cannot be taken off, only replaced', async () => {
+  await opened();
+  const options = Array.from(screen.getByLabelText('Tipo de documento').querySelectorAll('option')).map((o) => o.textContent);
+  expect(options).toEqual(['DNI', 'RUC', 'Carnet de Extranjería']);
+});
+
+test('a file with no document may stay without one', async () => {
+  profile.document_type = '';
+  profile.document_number = '';
+  await opened();
+  const options = Array.from(screen.getByLabelText('Tipo de documento').querySelectorAll('option')).map((o) => o.textContent);
+  expect(options[0]).toBe('Sin documento');
+  expect(screen.getByLabelText('Número de documento')).toBeDisabled();
 });
 
 test('saving sends only what changed', async () => {
@@ -145,16 +229,6 @@ test('a document travels as its type and its number together', async () => {
   save();
   await screen.findByText('Datos guardados.');
   expect(patched).toEqual([{ document_type: 'dni', document_number: '70000002' }]);
-});
-
-test('choosing no document takes the number off as well', async () => {
-  await opened();
-  fireEvent.change(screen.getByLabelText('Tipo de documento'), { target: { value: '' } });
-  expect(screen.getByLabelText('Número de documento')).toBeDisabled();
-  expect(screen.getByLabelText('Número de documento')).toHaveValue('');
-  save();
-  await screen.findByText('Datos guardados.');
-  expect(patched).toEqual([{ document_type: '', document_number: '' }]);
 });
 
 test('what the server refuses is said next to its field, and nothing is called saved', async () => {

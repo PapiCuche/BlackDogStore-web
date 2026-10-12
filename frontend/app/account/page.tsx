@@ -15,10 +15,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import {
-  PROFILE_FIELDS, ProfileError, fetchProfile, saveProfile,
+  PROFILE_FIELDS, ProfileError, confirmVerificationCode, fetchProfile, saveProfile, sendVerificationCode,
   type AccountProfile, type DocumentType, type ProfileFields,
 } from "../lib/account";
-import { getCurrentUser, resendVerification } from "../lib/auth";
+import { getCurrentUser } from "../lib/auth";
+import { AddressBook } from "../components/AddressBook";
 
 const DOCUMENT_TYPES: { value: DocumentType; label: string }[] = [
   { value: "", label: "Sin documento" },
@@ -49,7 +50,10 @@ export default function AccountPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof ProfileFields, string>>>({});
-  const [resend, setResend] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  // Proving the mailbox: ask for the code, then type it back.
+  const [verify, setVerify] = useState<"idle" | "sending" | "sent" | "confirming">("idle");
+  const [code, setCode] = useState("");
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,14 +115,35 @@ export default function AccountPage() {
     }
   }
 
-  async function sendVerification() {
-    if (!profile) return;
-    setResend("sending");
+  async function askForCode() {
+    setVerify("sending");
+    setVerifyError(null);
     try {
-      await resendVerification(profile.email);
-      setResend("sent");
-    } catch {
-      setResend("failed");
+      if (await sendVerificationCode()) {
+        setVerify("sent");
+      } else {
+        // Somebody proved it meanwhile (another tab, the link of an earlier mail).
+        setProfile(await fetchProfile());
+        setVerify("idle");
+      }
+    } catch (err) {
+      setVerify("idle");
+      setVerifyError(err instanceof Error ? err.message : "No pudimos enviar el código.");
+    }
+  }
+
+  async function confirmCode(event: React.FormEvent) {
+    event.preventDefault();
+    setVerify("confirming");
+    setVerifyError(null);
+    try {
+      const when = await confirmVerificationCode(code.trim());
+      setProfile((current) => (current ? { ...current, email_verified_at: when, email_verification_available: false } : current));
+      setCode("");
+      setVerify("idle");
+    } catch (err) {
+      setVerify("sent");
+      setVerifyError(err instanceof Error ? err.message : "El código no es válido o ya venció.");
     }
   }
 
@@ -135,6 +160,7 @@ export default function AccountPage() {
   }
 
   const verified = Boolean(profile?.email_verified_at);
+  const documentLocked = Boolean(profile?.document_locked);
 
   return (
     <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-10 sm:py-14">
@@ -177,20 +203,42 @@ export default function AccountPage() {
             </p>
             {!verified && profile.email_verification_available ? (
               <div className="mt-3">
-                <button
-                  type="button"
-                  onClick={sendVerification}
-                  disabled={resend === "sending" || resend === "sent"}
-                  className="rounded-full border border-bd-border px-4 py-2 text-xs font-semibold text-foreground transition hover:border-foreground/25 disabled:opacity-60"
-                >
-                  {resend === "sending" ? "Enviando…" : "Reenviar verificación"}
-                </button>
-                {resend === "sent" ? (
-                  <p role="status" className="mt-2 text-xs text-muted">Si el correo está pendiente de verificar, te enviamos un nuevo enlace.</p>
-                ) : null}
-                {resend === "failed" ? (
-                  <p role="alert" className="mt-2 text-xs text-danger">No se pudo enviar el correo. Inténtalo de nuevo.</p>
-                ) : null}
+                {verify === "idle" || verify === "sending" ? (
+                  <button
+                    type="button"
+                    onClick={askForCode}
+                    disabled={verify === "sending"}
+                    className="rounded-full border border-bd-border px-4 py-2 text-xs font-semibold text-foreground transition hover:border-foreground/25 disabled:opacity-60"
+                  >
+                    {verify === "sending" ? "Enviando…" : "Verificar mi correo"}
+                  </button>
+                ) : (
+                  <form onSubmit={confirmCode} noValidate>
+                    <p role="status" className="text-xs text-muted">
+                      Te enviamos un código de 6 dígitos a este correo. Vence en 15 minutos.
+                    </p>
+                    <label className="mt-2 block text-xs text-muted">
+                      Código de verificación
+                      <input
+                        value={code}
+                        onChange={(e) => setCode(e.target.value)}
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={12}
+                        aria-invalid={Boolean(verifyError)}
+                        className={`${inputClass} sm:max-w-[12rem]`}
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={verify === "confirming" || code.trim().length < 6}
+                      className="mt-2 rounded-full border border-bd-border px-4 py-2 text-xs font-semibold text-foreground transition hover:border-foreground/25 disabled:opacity-60"
+                    >
+                      {verify === "confirming" ? "Comprobando…" : "Confirmar código"}
+                    </button>
+                  </form>
+                )}
+                {verifyError ? <p role="alert" className="mt-2 text-xs text-danger">{verifyError}</p> : null}
               </div>
             ) : null}
           </section>
@@ -260,13 +308,17 @@ export default function AccountPage() {
                   <select
                     value={form.document_type}
                     onChange={(e) => change("document_type", e.target.value as DocumentType)}
+                    disabled={documentLocked || !verified}
                     aria-invalid={Boolean(fieldErrors.document_type)}
                     aria-describedby={describedBy("document_type")}
-                    className={inputClass}
+                    className={`${inputClass} disabled:opacity-60`}
                   >
-                    {DOCUMENT_TYPES.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
+                    {DOCUMENT_TYPES
+                      // A document on file is replaced, never taken off: «none» is only for a file that has none.
+                      .filter((option) => option.value !== "" || !profile.document_number)
+                      .map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                   </select>
                 </label>
                 {problem("document_type")}
@@ -277,7 +329,7 @@ export default function AccountPage() {
                   <input
                     value={form.document_type ? form.document_number : ""}
                     onChange={(e) => change("document_number", e.target.value)}
-                    disabled={!form.document_type}
+                    disabled={!form.document_type || documentLocked || !verified}
                     autoComplete="off"
                     spellCheck={false}
                     inputMode={form.document_type === "ce" ? "text" : "numeric"}
@@ -290,6 +342,14 @@ export default function AccountPage() {
                 {problem("document_number")}
               </div>
             </div>
+
+            {documentLocked ? (
+              <p className="mt-2 text-xs text-muted">
+                El documento de tu ficha lo cambia la tienda. Comunícate con ella si necesitas corregirlo.
+              </p>
+            ) : !verified ? (
+              <p className="mt-2 text-xs text-muted">Verifica tu correo para poder guardar tu documento.</p>
+            ) : null}
 
             {error ? (
               <p role="alert" className="mt-3 rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
@@ -306,6 +366,9 @@ export default function AccountPage() {
               {saving ? "Guardando…" : "Guardar"}
             </button>
           </form>
+
+          {/* DELIVERY-01: where this buyer receives their orders in this shop. */}
+          <AddressBook defaultRecipient={`${profile.first_name} ${profile.last_name}`.trim()} />
         </>
       ) : null}
     </main>

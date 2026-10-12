@@ -14,13 +14,15 @@ export type AccountProfile = {
   email: string;
   /** When the mailbox was PROVEN, or null: unknown is not verified. */
   email_verified_at: string | null;
-  /** Whether «send the verification again» would do anything for this account. The server decides. */
+  /** Whether this account has an address nobody proved yet and can prove it now. The server decides. */
   email_verification_available: boolean;
   first_name: string;
   last_name: string;
   phone: string;
   document_type: DocumentType;
   document_number: string;
+  /** The document is the shop's to change: the form shows it and does not offer it. The server decides. */
+  document_locked?: boolean;
 };
 
 export type ProfileFields = Pick<
@@ -79,4 +81,35 @@ export async function saveProfile(changes: Partial<ProfileFields>): Promise<Acco
     res.status,
     fields,
   );
+}
+
+// ── Proving my own mailbox (CLIENT-SEC-01 · F7) ─────────────────────────────
+
+/**
+ * Ask for the 6-digit code. It goes to the account's OWN address: nothing sent
+ * from here says where. `true` when a code is on its way, `false` when the
+ * address was already verified.
+ */
+export async function sendVerificationCode(): Promise<boolean> {
+  const res = await fetchWithAuth(`${API_BASE}/account/verify-email/send/`, { method: "POST", body: "{}" });
+  const body = await res.json().catch(() => null);
+  if (res.ok) return !body?.already_verified;
+  if (res.status === 429) {
+    // The server's own sentence when it has one; never the framework's English.
+    const said = typeof body?.detail === "string" && !/throttled/i.test(body.detail) ? body.detail : "";
+    throw new ProfileError(said || "Pediste un código hace muy poco. Espera un minuto antes de pedir otro.", 429);
+  }
+  throw new ProfileError(body?.detail || "No pudimos enviar el código. Inténtalo de nuevo.", res.status);
+}
+
+/** Type the code back. Answers when the address was proved. */
+export async function confirmVerificationCode(code: string): Promise<string> {
+  const res = await fetchWithAuth(`${API_BASE}/account/verify-email/confirm/`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+  const body = await res.json().catch(() => null);
+  if (res.ok && body?.email_verified_at) return body.email_verified_at as string;
+  if (res.status === 429) throw new ProfileError("Demasiados intentos. Espera un minuto y vuelve a probar.", 429);
+  throw new ProfileError(body?.detail || "El código no es válido o ya venció. Pide uno nuevo.", res.status);
 }
