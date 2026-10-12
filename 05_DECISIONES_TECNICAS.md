@@ -26,8 +26,10 @@ código cumple y las pruebas vigilan:
 - **`OrderDelivery` es una copia, no un enlace.** Nace con el pedido, de las columnas del
   pedido (`delivery_services.snapshot_for_order`, en un punto de guardado que no puede hacer
   fallar un checkout), y guarda en texto lo que necesita: `carrier_name` además de `carrier`,
-  la dirección además de `source_address`. Renombrar o apagar un transportista, editar o
-  quitar una dirección de la libreta, no reescribe la entrega de un pedido que ya salió.
+  y la dirección entera. No apunta a ninguna entrada de la libreta (la columna
+  `source_address`, que ningún código escribió nunca, se retiró). Renombrar o apagar un
+  transportista, editar o quitar una dirección de la libreta, no reescribe la entrega de un
+  pedido que ya salió.
 - **El flete es información.** `freight_amount` y `freight_paid_by` dicen qué cobra el
   transportista y quién lo paga. No entran al total del pedido, a su impuesto ni a su
   comprobante, y el comprador no los ve.
@@ -41,16 +43,36 @@ código cumple y las pruebas vigilan:
   admite un único marcador, `{guia}`, fuera del dominio; el número de guía se escribe
   codificado; y tanto el servidor como las pantallas se niegan a dar como enlace algo que no
   empiece por `https://`.
+- **El enlace de seguimiento sabe de quién es** (`OrderDelivery.tracking_url_typed`). Uno
+  DERIVADO sale de la página del transportista y de la guía: se rehace cuando cambia el
+  transportista o la guía, y queda vacío si falta cualquiera de los dos o el transportista no
+  tiene página. Uno ESCRITO por una persona sólo cambia cuando se envía el propio enlace;
+  enviarlo vacío vuelve al derivado, y escribir exactamente la página del transportista no
+  cuenta como escrito. Un enlace derivado no se rehace mientras su transportista y su guía no
+  cambien: el registro sigue siendo una copia.
+- **Lo que no se puede leer no se guarda.** La fecha de envío vale entre el 2000-01-01 y un
+  año hacia adelante; el flete se acota antes de redondearse; un texto con medio carácter (un
+  sustituto suelto de UTF-16) se rechaza donde ya se rechazaban los caracteres de control; y
+  la escritura del personal se relee dentro de su transacción antes de confirmarse.
 - **La libreta es del comprador en UNA tienda.** Cuelga de su `Customer` de esa empresa; una
   entrada de otro comprador o de otra tienda responde 404 en todos los verbos. Una
   predeterminada entre las activas (regla de la base de datos, movida en una transacción con
   la ficha bloqueada), tope de diez, se desactivan y no se borran. En el checkout sólo RELLENA
-  el formulario en el navegador: lo que se envía al servidor no cambia.
+  el formulario en el navegador: lo que se envía al servidor no cambia. Como las entradas
+  quitadas siguen siendo filas, un comprador tiene como mucho `MAX_ADDRESS_ROWS` (200) entre
+  activas y quitadas; pasado ese número se corrige una entrada, no se añade otra. Una ficha
+  que la tienda archivó no admite una entrada nueva ni una dirección escrita sobre otra, y la
+  respuesta no dice por qué. Una entrada de agencia cuyo transportista se apagó se puede
+  corregir: el transportista sólo se juzga cuando es el transportista lo que cambia.
 
 **Lo que espera al propietario** (no empezado): ofrecer «recojo en agencia» en el checkout,
 cobrar el flete, e imprimir transportista, guía o destinatario en documentos y correos.
-Tampoco se envía al servidor qué dirección de la libreta se usó: `source_address` queda vacío
-hasta que el checkout cambie. El comprador no ve la clave de recojo ni el destinatario.
+Tampoco se envía al servidor qué dirección de la libreta se usó. El comprador no ve la clave
+de recojo ni el destinatario.
+
+**Marcha atrás de las migraciones.** Deshacer `0121` no borra nada: para entonces los
+registros llevan lo que escribió el personal. Quien quita los registros es deshacer `0119`,
+que quita la tabla.
 
 ### DEC-CLIENT-SEC-01 · La revisión de pedidos es un consejo, y de la persona se guarda lo mínimo
 
@@ -121,7 +143,8 @@ añadió ninguna capacidad ni se tocó ningún rol.
   confirmación o una conciliación). Un pedido que nadie paga no llega a la cola ni a la
   campana. La cola y la retención miran sólo pedidos pagados. La retención incluye «listo
   para retiro», porque ese estado avisa al comprador de que venga.
-- **La velocidad cuenta COMPRADORES, y a los demás sólo si pagaron.** `velocity_ip` y
+- **La velocidad cuenta COMPRADORES, y a los demás sólo si pagaron** (ampliado en la segunda
+  revisión, más abajo: también cuenta pedidos pagados). `velocity_ip` y
   `velocity_contact` cuentan compradores distintos (quien reintenta un pago es uno), y el
   pedido de OTRO comprador cuenta sólo si se pagó: un pedido sin pagar no cuesta nada, y
   contarlo dejaba marcar el pedido de un tercero o llenar la cola desde un navegador. El
@@ -139,6 +162,44 @@ añadió ninguna capacidad ni se tocó ningún rol.
 - **Una ficha vacía no bloquea el reclamo de una reparación**: si la cuenta sólo tiene la
   ficha que hizo «Mi cuenta» —sin documento, sin notas, sin nada que apunte a ella—, el
   reclamo probado pasa la cuenta a la ficha reclamada y quita la vacía.
+
+**Enmiendas tras la segunda revisión independiente** (misma rama, antes de publicar):
+
+- **El checkout con sesión no es otra puerta al documento.** La ficha que crea una compra con
+  cuenta toma el documento escrito en el checkout sólo con la regla del perfil: la cuenta
+  probó su correo y nadie en esa tienda tiene ya ese documento
+  (`customer_services._record_may_take_document`). Si no, la ficha nace SIN documento, la
+  venta sigue sin decir nada, y el pedido conserva lo que se escribió. La ficha de un
+  invitado lo toma como siempre. Sin esto, un checkout sin pagar —gratis y repetible— dejaba
+  el DNI de un extraño en la ficha propia, saltándose el correo probado y el cupo.
+- **El código «verificar mi correo» tiene su propio propósito y su correo no lleva enlace.**
+  `AccountToken.PURPOSE_OWN_EMAIL_PROOF`. Un token de verificación es lo que dice «registrada y
+  nunca confirmada» (`accounts.is_unverified`); emitido para una cuenta ACTIVA, hacía que una
+  cuenta apagada después se reactivara sola por la recuperación, por el enlace o por el
+  reenvío público. Ninguno de esos caminos mira el propósito nuevo. El correo lleva sólo el
+  código, que no vale nada sin la sesión que lo pidió, y el código queda ligado a la
+  dirección a la que se envió: si la cuenta cambia de correo, no sirve.
+- **El cupo de documento se cuenta en la auditoría, no en la memoria del proceso.** Cada
+  intento que llega a la pregunta «¿se puede guardar este documento?» —aceptado o
+  rechazado— es una entrada `customer_document_change_attempted` (sólo el resultado, nunca
+  el documento), y el cupo cuenta las de las últimas 24 horas con la fila de la cuenta
+  bloqueada. Se eligió la auditoría y no una tabla propia porque esas entradas son las que
+  la auditoría quiere de todos modos, sin migración y sin un segundo contador que mantener
+  fiel; un intento por encima del cupo no escribe nada, así que son como mucho tres filas al
+  día por cuenta. Un doble toque en el primer guardado gasta un intento. `CACHES` no se
+  tocó: los límites de DRF siguen en la memoria del proceso (THROTTLE-CACHE-01).
+- **La velocidad cuenta también PEDIDOS PAGADOS, y se vuelve a mirar al pagar.** Además de
+  tres compradores distintos, se nota el sexto pedido pagado de un mismo origen en una hora
+  (`VELOCITY_IP_ORDERS`) o con un mismo teléfono, correo o documento en un día
+  (`VELOCITY_CONTACT_ORDERS`), este incluido y lo haga quien lo haga. Los pedidos sin pagar
+  no cuentan nunca, así que quien reintenta el pago de UNA compra sigue siendo una compra.
+  Y al pagarse un pedido (`review_when_paid`) las dos señales se preguntan otra vez —para
+  entonces los pedidos hechos a su lado ya se pagaron—, en un punto de guardado propio
+  dentro del de la revisión: sólo AÑADE a lo anotado, recalcula puntaje y nivel, y si falla
+  la revisión que ya tocaba se abre igual.
+- **Un dígito es 0-9 también en el checkout** (web y v1: documento y teléfono). Nada más de
+  esos dos validadores cambió.
+- **Una ficha archivada nunca es «vacía»**: el reclamo de una reparación no la borra.
 
 **Lo que esta fase no decide** (queda como deuda en `docs/AUDIT_MEMORY.md`): unificar los
 tres validadores anteriores de teléfono y documento, y cuánto tiempo se conserva `ip_hash`.

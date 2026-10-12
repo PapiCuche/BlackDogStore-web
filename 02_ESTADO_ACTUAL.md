@@ -3,6 +3,42 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-12 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la segunda revisión independiente
+
+Misma rama (`feat/client-sec-delivery`). **Sólo en la rama: sin push, sin PR, sin desplegar.**
+Una segunda revisión independiente (`06df091..ba20986`) no dejó ningún hallazgo crítico, pero
+sí dos altos y cuatro medios que impedían fusionar, y una lista de menores. Todos corregidos,
+cada uno con su prueba vista fallar antes. Sin migraciones nuevas: `0118` y `0119` —que no
+están publicadas— cambian (el tercer propósito de `AccountToken`; `OrderDelivery` con
+`tracking_url_typed` y sin `source_address`) y deshacer `0121` ya no borra nada.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| P1-1 | Un checkout con sesión, sin pagar y repetible, dejaba en la ficha de la cuenta el documento de un extraño: sin correo probado y sin cupo | CORREGIDO: la ficha de una cuenta toma el documento del checkout sólo si la cuenta probó su correo y nadie en la tienda lo tiene; si no, nace sin documento y el pedido conserva lo escrito. La ficha de un invitado, como siempre |
+| P1-2 | Una cuenta apagada después de pedir el código de «Verificar mi correo» se reactivaba sola por la recuperación, el enlace o el reenvío | CORREGIDO: ese código tiene su propio propósito de token (`own_email_proof`), que ninguno de esos caminos mira, y su correo no lleva enlace |
+| P2-1 | Una fecha de envío del año 9999 se guardaba y dejaba el pedido ilegible (500 en todas sus lecturas); un flete «1e30» y un texto con medio carácter respondían 500 | CORREGIDO: fecha entre 2000-01-01 y hoy + 1 año; la escritura se relee antes de confirmarse; el flete se acota antes de redondearse; el medio carácter se rechaza donde los caracteres de control |
+| P2-2 | El enlace de seguimiento se quedaba con la página del transportista anterior, o se borraba al corregir la guía | CORREGIDO: `tracking_url_typed` dice si el enlace es escrito o derivado; el derivado sigue a transportista y guía, el escrito sólo cambia al escribirlo |
+| P2-3 | El cupo de documento vivía en la memoria del proceso; un doble toque gastaba dos | CORREGIDO: se cuenta en la auditoría (`customer_document_change_attempted`, sólo el resultado) con la fila de la cuenta bloqueada; el doble toque gasta uno. `CACHES` no se tocó: los límites de DRF siguen en memoria (deuda CLIENT-SEC-THROTTLE-MEMORY, junto a THROTTLE-CACHE-01) |
+| P2-4 | La velocidad ya no veía lo que busca: el séptimo pedido de una sesión tras seis pagados salía `low`; cuatro invitados de una dirección que piden y luego pagan no dejaban señal | CORREGIDO: cuenta también pedidos pagados (el sexto, por origen en una hora o por contacto en un día) y se vuelve a preguntar cuando el pedido se paga. Los pedidos sin pagar siguen sin contar: reintentar UNA compra es una compra |
+| P3 | Dígitos de otros alfabetos en los dos checkout; una ficha archivada se borraba al reclamar una reparación y admitía direcciones; el código no estaba ligado a la dirección; una entrada de agencia con el transportista apagado no se podía corregir; la tarjeta de entrega mostraba el usuario; deshacer `0121` borraba todo; las direcciones quitadas crecían sin tope; `source_address` no la escribía nadie | CORREGIDOS los nueve: 0-9 en documento y teléfono del checkout web y v1; una ficha archivada nunca es «vacía» y su libreta no admite direcciones nuevas (respuesta neutra); la dirección entra en el HMAC del código; el transportista sólo se juzga cuando cambia; «Personal de la tienda»; marcha atrás sin efecto; tope de 200 filas por comprador; columna retirada |
+
+**Reglas que ninguna prueba fijaba, ahora fijadas:** que una ficha hecha por el personal o
+con razón social no es «vacía»; el efecto de los límites de los dos pasos de verificación en
+v1 (dejan de responder, no sólo figuran en la clase); y la línea del registro de seguridad
+cuando un código se agota.
+
+**Lo que se decidió aquí y conviene que el propietario sepa.** (1) Cuando el documento del
+checkout ya está en otra ficha, la ficha de la cuenta nace sin documento y la del titular no
+se toca; nadie recibe un aviso. (2) Los umbrales de «pedidos pagados» son seis y seis. (3) El
+tope de la libreta es de 200 filas y, al llegar, no hay salida sin que la tienda decida borrar
+las quitadas. (4) En una ficha archivada se puede seguir quitando una entrada o cambiando la
+predeterminada; lo que no se puede es añadir o reescribir una dirección. Las cuatro están en
+`docs/AUDIT_MEMORY.md`.
+
+**Rutas, capacidades y límites:** ninguno nuevo. La superficie interna de v1 sigue en 89.
+
+**Pruebas.** Cada corrección empezó por una prueba vista fallar; las reglas que sólo se fijaron se comprobaron rompiéndolas. `store/test_client_sec.py` pasa de 228 a 285 pruebas (una más con dos conexiones reales: dos intentos de documento a la vez en dos tiendas gastan dos) y `store/test_delivery_base.py` de 88 a 117. Cambiaron pruebas existentes: `Phase4OrderLinkTest.test_an_authenticated_buyer_without_a_record_gets_their_own` prueba antes el correo de la cuenta (la ficha ya no toma el documento sin eso); la prueba del enlace del correo de verificación propia se sustituyó por la que exige que NO lleve enlace; la del nombre de quien escribió la entrega espera «Personal de la tienda» y no el usuario; la de la marcha atrás de `0121` espera que no borre; y las que nombraban `source_address` dejaron de hacerlo. Mutaciones de esta ronda: 93 (57 de cuentas, clientes y evaluación; 36 de entrega); 3 sobrevivieron a la primera pasada y las tres se cerraron con pruebas (el titular de un documento se buscaba en cualquier empresa; `confirm_own` podía leer un token de registro; los teléfonos de la prueba del checkout no llegaban al patrón). Corridas finales sobre el código de `36970eb` (PostgreSQL): los dos módulos de la rama, 402; pagos (diez módulos), verificación, Google, invitaciones, registro, equipos con serie, seguimiento, correo, impresión y documentos, 781 y 3 omitidas (las de credenciales reales y el `Caddyfile`); y las clases de checkout, clientes, pedidos, avisos, despacho, v1 y documentos de `store/tests.py`, 2184. Cero fallos. Las migraciones `0118`–`0121` se deshicieron y se volvieron a aplicar en una base de PostgreSQL con un registro de entrega escrito por el personal: deshacer `0121` lo conservó, deshacer hasta `0117` quitó las cuatro tablas, y al volver `OrderDelivery` tiene `tracking_url_typed` y no tiene `source_address`; `makemigrations --check` sin cambios. Frontend (sólo cambió un comentario): Jest 1169 en 110 suites, `tsc` y lint sin errores (22 avisos anteriores). **No se corrió** la suite completa del backend, Playwright, `npm run build` ni el ensayo de despliegue, y nada se miró en un navegador.
+
 ## 2026-10-12 — DELIVERY-01 (base): transportistas, libreta de direcciones y registro de entrega
 
 Rama `feat/client-sec-delivery`, sobre CLIENT-SEC-01. **Sólo en la rama: sin push, sin PR, sin
@@ -27,8 +63,8 @@ ninguna nueva. **Un límite nuevo:** `account_address_write`.
 
 **Lo que no se hizo, y por qué.** Ofrecer «recojo en agencia» en el checkout, cobrar el flete
 e imprimir los datos nuevos en documentos o correos son decisiones del propietario para otra
-fase. El checkout no envía qué dirección de la libreta se usó, así que `source_address` queda
-vacío. El comprador no ve la clave de recojo ni el destinatario del pedido. La app no dibuja
+fase. El checkout no envía qué dirección de la libreta se usó (y el registro de entrega no
+apunta a la libreta). El comprador no ve la clave de recojo ni el destinatario del pedido. La app no dibuja
 nada de esto todavía (las rutas v1 existen y están probadas).
 
 **Pruebas.** Cada prueba se vio fallar antes de su código. `store/test_delivery_base.py`: 88 pruebas, con dos de concurrencia real (dos conexiones) para la dirección predeterminada. Cambiaron pruebas existentes: las tres de pagos que borran pedidos borran antes su registro de entrega; el contador de rutas internas pasa a 89; y las dos pruebas que fijan lo que el comprador lee de un pedido ganan la clave `delivery`. Mutaciones: 94 de backend, 5 sobrevivieron a la primera pasada — 3 se cerraron con pruebas y 2 son equivalentes (la base de datos repite la regla del nombre único, y `ignore_conflicts` la del relleno) —; 65 de frontend con las de la revisión, 1 sobrevivió y se cerró. Corridas finales sobre el código de `b6fa027` (PostgreSQL): los dos módulos de la rama, 316; pagos (diez módulos), verificación, Google, invitaciones, registro, equipos con serie, seguimiento, correo, impresión y documentos, 781 y 3 omitidas (las de credenciales reales y el `Caddyfile`); y las clases de checkout, clientes, pedidos, avisos, despacho, v1 y documentos de `store/tests.py`, 2184. Cero fallos. Las migraciones `0118`–`0121` se deshicieron y se volvieron a aplicar; `makemigrations --check` sin cambios. Frontend: Jest 1169 en 110 suites, `tsc` y lint sin errores (22 avisos anteriores). **No se corrió** la suite completa del backend, Playwright, `npm run build` ni el ensayo de despliegue, y nada se miró en un navegador.

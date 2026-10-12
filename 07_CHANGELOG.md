@@ -3,6 +3,44 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-12 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la segunda revisión
+
+En la rama `feat/client-sec-delivery`; sin desplegar.
+
+**Security**
+- Un checkout con sesión ya no deja en la ficha de la cuenta un documento que el perfil no
+  dejaría guardar: la ficha lo toma sólo si la cuenta probó su correo y nadie en la tienda
+  lo tiene; si no, la ficha nace sin documento y el pedido conserva lo escrito.
+- El código de «Verificar mi correo» tiene un propósito de token propio y su correo no lleva
+  enlace: una cuenta apagada después de pedirlo ya no se reactiva por la recuperación, el
+  enlace o el reenvío. El código queda ligado a la dirección a la que se envió.
+- El cupo de tres cambios de documento al día se cuenta en la auditoría
+  (`customer_document_change_attempted`), no en la memoria del proceso: un reinicio no lo
+  devuelve. Un doble toque en el primer guardado gasta un intento.
+- Los dos checkout (web y v1) sólo admiten los dígitos 0-9 en documento y teléfono.
+- Una ficha archivada no se borra al reclamar una reparación ni admite direcciones nuevas.
+
+**Fixed**
+- Una fecha de envío fuera de 2000-01-01 … hoy + 1 año se rechaza (antes una fecha del año
+  9999 se guardaba y dejaba el pedido ilegible para todos); el flete se acota antes de
+  redondearse; un texto con medio carácter se rechaza en vez de dar error.
+- El enlace de seguimiento sigue al transportista y a la guía cuando es el derivado, y sólo
+  cambia al escribirlo cuando lo escribió una persona (`OrderDelivery.tracking_url_typed`).
+- Una entrada de agencia se puede corregir aunque su transportista se haya apagado.
+- La tarjeta «Entrega» muestra el nombre de quien la escribió o «Personal de la tienda»,
+  nunca el usuario.
+
+**Changed**
+- Las señales de velocidad cuentan también pedidos pagados (el sexto en una hora por origen,
+  o en un día por teléfono, correo o documento) y se vuelven a mirar cuando el pedido se paga.
+- Un comprador tiene como mucho 200 entradas de libreta entre activas y quitadas.
+- Deshacer la migración `0121` ya no borra los registros de entrega.
+- `0118` añade la tercera opción de `AccountToken.purpose`; `0119` crea `OrderDelivery` con
+  `tracking_url_typed` y sin `source_address` (ninguna de las dos estaba publicada).
+
+**Removed**
+- `OrderDelivery.source_address`: ningún código la escribía.
+
 ## 2026-10-12 — DELIVERY-01 (base)
 
 En la rama `feat/client-sec-delivery`; sin desplegar. Aditivo: el checkout, los precios, los
