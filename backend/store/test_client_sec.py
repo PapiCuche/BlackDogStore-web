@@ -417,7 +417,12 @@ class _ProfileBase(TestCase):
         self.a = _saas_company('Tienda A', 'perfil-a', tax_id='20999999990')
         self.b = _saas_company('Tienda B', 'perfil-b', tax_id='20111111112')
         self.user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD, first_name='Ana', last_name='Torres')
+        # Most of these tests write a document, and that takes a proved address (F2).
+        accounts.mark_email_verified(self.user)
         self.web = web_session(self.user)
+
+    def unverified(self):
+        UserProfile.objects.filter(user=self.user).update(email_verified_at=None)
 
     def host(self, company):
         return {'HTTP_HOST': f'{company.slug}.example.com'}
@@ -441,6 +446,7 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual(Customer.objects.count(), 0)
 
     def test_reading_it_creates_nothing(self):
+        self.unverified()
         response = self.get()
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
@@ -506,7 +512,8 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual((record.email, record.notes, record.business_name, record.is_active), ('ana@correo.test', '', '', True))
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, 'ana@correo.test')
-        self.assertIsNone(verified_at(self.user))
+        self.assertLess(verified_at(self.user), parse_datetime('2026-01-01T00:00:00Z') + timedelta(days=36500))
+        self.assertNotEqual(verified_at(self.user), parse_datetime('2026-01-01T00:00:00Z'))
         self.assertEqual(response.json()['email'], 'ana@correo.test')
 
     def test_the_record_of_a_business_keeps_its_own_name_and_needs_no_other(self):
@@ -567,8 +574,7 @@ class OwnProfileTest(_ProfileBase):
         accounts.mark_email_verified(self.user)
         body = self.get().json()
         self.assertEqual(parse_datetime(body['email_verified_at']), verified_at(self.user))
-        # The existing «send it again» only serves an account that is not active
-        # yet, and whoever is signed in is: there is nothing to offer here.
+        # Proved: there is nothing left to offer.
         self.assertFalse(body['email_verification_available'])
 
     def test_an_archived_record_is_still_the_buyers_own_and_stays_archived(self):
@@ -2276,6 +2282,7 @@ class VerifyMyOwnAddressTest(_ProfileBase):
 
     def setUp(self):
         super().setUp()
+        self.unverified()
         django_mail.outbox = []
 
     def send(self, client=None, body=None, company=None):
@@ -2464,3 +2471,87 @@ class EveryConsumedResetProvesTheMailboxTest(TestCase):
         done = client.post('/api/auth/password-reset/confirm/', {'token': token, 'new_password': 'Otra-clave-larga-7'}, format='json')
         self.assertEqual(done.status_code, 200, done.content)
         self.assertIsNotNone(verified_at(user))
+
+
+
+class ADocumentTakesAProvedAddressAndHasItsOwnBudgetTest(_ProfileBase):
+    """
+    F2 · saving a document answers whether that document can be kept, which is
+    a question about the shop's other clients. Only an account with a proved
+    mailbox may ask it, and only a few times a day.
+    """
+
+    NEEDS_PROOF = 'Verifica tu correo'
+
+    def raw_patch(self, body, client=None):
+        """Without clearing the limits between calls."""
+        return (client or self.web).patch(WEB_PROFILE, body, format='json', **self.host(self.a))
+
+    def test_an_account_nobody_proved_keeps_its_name_and_phone_editable_but_not_its_document(self):
+        self.unverified()
+        self.assertEqual(self.patch({'first_name': 'Ana María', 'phone': '987654321'}).status_code, 200)
+        response = self.patch({'document_type': 'dni', 'document_number': DNI, 'phone': '912345678'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.NEEDS_PROOF, response.json()['document_number'][0])
+        record = self.record()
+        self.assertEqual((record.document_number, record.phone, record.first_name), ('', '987654321', 'Ana María'))
+
+    def test_the_refusal_is_the_same_whether_the_document_is_somebodys_or_not(self):
+        self.unverified()
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number='70000002')
+        taken, free = (self.patch({'document_type': 'dni', 'document_number': number}) for number in ('70000002', '70000003'))
+        self.assertEqual((taken.status_code, taken.content), (free.status_code, free.content))
+
+    def test_once_proved_the_document_is_saved(self):
+        self.unverified()
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': DNI}).status_code, 400)
+        accounts.mark_email_verified(self.user)
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': DNI}).status_code, 200)
+
+    def test_the_app_asks_for_the_same(self):
+        self.unverified()
+        _order(self.a, user=self.user, total='10.00', paid=True)
+        cache.clear()
+        response = v1_session(self.user).patch(v1_profile('perfil-a'), {'document_type': 'dni', 'document_number': DNI}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.NEEDS_PROOF, response.json()['document_number'][0])
+
+    def test_a_few_document_changes_a_day_refusals_included(self):
+        from store import customer_profile
+
+        self.assertEqual(customer_profile.DOCUMENT_CHANGES_PER_DAY, 3)
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number='70000002')
+        cache.clear()
+        answers = [
+            self.raw_patch({'document_type': 'dni', 'document_number': '70000002'}),       # somebody's: refused, and counted
+            self.raw_patch({'document_type': 'dni', 'document_number': '70000003'}),       # saved
+            self.raw_patch({'document_type': 'dni', 'document_number': '70000004'}),       # saved
+        ]
+        self.assertEqual([r.status_code for r in answers], [400, 200, 200])
+        for number in ('70000005', '70000002'):
+            spent = self.raw_patch({'document_type': 'dni', 'document_number': number})
+            self.assertEqual(spent.status_code, 400)
+            self.assertIn('mañana', spent.json()['document_number'][0])                   # free or taken: one answer
+        self.assertEqual(self.record().document_number, '70000004')
+        # The rest of the profile is not what was being limited.
+        self.assertEqual(self.raw_patch({'phone': '987654321'}).status_code, 200)
+        self.assertEqual(self.raw_patch({'phone': '912345678', 'document_type': 'dni', 'document_number': '70000004'}).status_code, 200)
+
+    def test_what_is_not_a_document_at_all_spends_nothing(self):
+        cache.clear()
+        for _ in range(6):
+            self.assertEqual(self.raw_patch({'document_type': 'dni', 'document_number': '123'}).status_code, 400)
+        self.assertEqual(self.raw_patch({'document_type': 'dni', 'document_number': DNI}).status_code, 200)
+
+    def test_the_budget_is_each_accounts_own_and_spans_shops_and_doors(self):
+        cache.clear()
+        for number in ('70000003', '70000004', '70000005'):
+            self.assertEqual(self.raw_patch({'document_type': 'dni', 'document_number': number}).status_code, 200)
+        # Another shop, and the app: the same account, the same budget.
+        elsewhere = self.web.patch(WEB_PROFILE, {'document_type': 'dni', 'document_number': '70000006'}, format='json', **self.host(self.b))
+        self.assertEqual(elsewhere.status_code, 400)
+        other = User.objects.create_user('otro', 'otro@correo.test', PASSWORD, first_name='Otro')
+        accounts.mark_email_verified(other)
+        client = APIClient()
+        client.force_authenticate(other)
+        self.assertEqual(self.raw_patch({'document_type': 'dni', 'document_number': '70000007'}, client=client).status_code, 200)

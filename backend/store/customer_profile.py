@@ -42,6 +42,38 @@ DOCUMENT_LOCKED = 'El documento de tu ficha lo cambia la tienda. Comunícate con
 DOCUMENT_STAYS = 'El documento no se puede quitar desde aquí. Si cambió, escribe el nuevo.'
 
 
+#: What an account is told before it has proved its mailbox.
+DOCUMENT_NEEDS_PROOF = 'Verifica tu correo antes de guardar tu documento. Puedes hacerlo aquí mismo, en «Mi cuenta».'
+#: How many times a day one account may try to change its document — in every
+#: shop and through either door, and whether or not the change was accepted.
+DOCUMENT_CHANGES_PER_DAY = 3
+DOCUMENT_BUDGET_SPENT = 'Cambiaste tu documento varias veces hoy. Inténtalo mañana o comunícate con la tienda.'
+_DOCUMENT_BUDGET_SECONDS = 24 * 60 * 60
+
+
+def _spend_document_change(user) -> bool:
+    """
+    Count one attempt to change a document. False when today's are spent.
+
+    WHY A BUDGET OF ITS OWN. Saving a document answers «can this document be
+    kept?», and «no» is all it takes to learn that a number is on file in a
+    shop — and «yes» takes the number. The profile's own limit is sized for
+    correcting a phone; this one is sized for how often a person's document
+    really changes. Counted BEFORE the answer is known, so asking costs the
+    same whatever is learned. In this process's memory, like every limit here.
+    """
+    from django.core.cache import cache
+
+    key = f'profile-document-changes:{user.pk}'
+    cache.add(key, 0, _DOCUMENT_BUDGET_SECONDS)
+    try:
+        return cache.incr(key) <= DOCUMENT_CHANGES_PER_DAY
+    except ValueError:
+        # The key expired between the two lines: start the day again.
+        cache.set(key, 1, _DOCUMENT_BUDGET_SECONDS)
+        return True
+
+
 def document_locked(record) -> bool:
     """
     Whether the document of this record is frozen for its subject.
@@ -223,6 +255,13 @@ def _save(company, user, data, request) -> dict:
             # Replaced, never erased: a file that had a document keeps having one.
             if record.document_number and not wanted['document_number']:
                 raise ProfileError({'document_number': [DOCUMENT_STAYS]})
+            # Only an account with a proved mailbox writes a document (F2):
+            # the answer below says something about the shop's other clients.
+            # Said before looking, so it is the same for a free and a taken one.
+            if accounts.email_verified_at(user) is None:
+                raise ProfileError({'document_number': [DOCUMENT_NEEDS_PROOF]})
+            if not _spend_document_change(user):
+                raise ProfileError({'document_number': [DOCUMENT_BUDGET_SPENT]})
 
         # A document identifies ONE client of a shop. Whose it already is —
         # somebody with an account, a walk-in, an archived file — is not
