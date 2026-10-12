@@ -13,7 +13,7 @@ ni activar el borrador del secreto API. La configuración de producción queda i
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: el servidor sirve `36c2fa458a067fe652b325335e7b3b9e3e4b48e1` (#100, STAFF-ONBOARDING-01), desplegado el 2026-10-08.
+master: el servidor sirve `3057dd2cc6f144d988858d6e6fb1f923b11facbf` (#108, IMPORT-SPLIT-01; incluye #102–#107), desplegado el 2026-10-11.
 Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
 actualizan automáticamente la copia desplegable del servidor.
 
@@ -35,8 +35,8 @@ No hay contenedores, MASTER ni tienda publicada. HTTP/HTTPS cerrados en AWS.
 `GO DNS` pendiente: Cloudflare autenticado, zona sin registros; propuesta A @ y
 A www hacia Static IP, DNS only, TTL Auto; nameservers sin cambios.
 Producción NOT READY. Analítica/marketing e Izipay sin configurar; CSP-01 y
-MEAS-PRIVACY-NOTICE bloquean activar analítica. SERIAL-PICK-01 hecho en
-`feat/serial-pick` (sin fusionar). No iniciar INT-IMPORT-CYCLE-01; no tocar #80/#85.
+MEAS-PRIVACY-NOTICE bloquean activar analítica. SERIAL-PICK-01 e IMPORT-SPLIT-01 en
+`master` y desplegados el 2026-10-11. No iniciar INT-IMPORT-CYCLE-01; no tocar #80/#85.
 CHECKPOINT 1B cerrado sobre `a1d2a29` (#93); FIX-MEAS-LOG-TEST-01 IMPLEMENTADO.
 FRESH-PRODUCTION-DATA-01 IMPLEMENTADO / MERGED con #95 en `c5f8c93`.
 
