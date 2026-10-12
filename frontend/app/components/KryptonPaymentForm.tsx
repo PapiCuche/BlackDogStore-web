@@ -2,7 +2,12 @@
 
 import { useEffect, useRef } from "react";
 
-import { mountKryptonForm, type MiCuentaWebSession } from "../lib/payments";
+import {
+  FORM_IS_OVER_MESSAGE,
+  kryptonFormIsOver,
+  mountKryptonForm,
+  type MiCuentaWebSession,
+} from "../lib/payments";
 
 /**
  * The payment form of «Mi Cuenta Web».
@@ -31,10 +36,22 @@ export default function KryptonPaymentForm({
   useEffect(() => {
     let live = true;
     region.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
-    mountKryptonForm(session, () => {
-      if (live) settled.current();
-    }).catch((error: unknown) => {
-      if (live) failed.current(error instanceof Error ? error.message : "No se pudo abrir el pago.");
+    // The client says a refused token twice when it is already in the tab: to
+    // whoever listens and as a rejection. The page hears about a form once.
+    const fail = (text: string) => {
+      if (!live) return;
+      live = false;
+      failed.current(text);
+    };
+    mountKryptonForm(
+      session,
+      () => {
+        if (live) settled.current();
+      },
+      () => fail(FORM_IS_OVER_MESSAGE),
+    ).catch((error: unknown) => {
+      if (kryptonFormIsOver(error)) fail(FORM_IS_OVER_MESSAGE);
+      else fail(error instanceof Error ? error.message : "No se pudo abrir el pago.");
     });
     return () => {
       live = false;

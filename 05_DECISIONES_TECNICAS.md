@@ -682,8 +682,222 @@ arrancar: es una contradicción del archivo, no una ausencia.
 - **TEST o PRODUCCIÓN lo dicen las claves.** No hay variable de entorno para eso en este
   producto. Un par mezclado impide cobrar y un pago de TEST no paga un pedido con claves
   de producción.
-- Pendiente (PAY-RECONCILE): si la notificación no llega nunca, un pedido cobrado queda
-  esperando. La API tiene `Order/Get`; no se usa todavía.
+- PAY-RECONCILE: resuelto para este producto en DEC-PAY-03.
+
+### DEC-PAY-03 · Si la notificación no llega, se pregunta a la pasarela, y se le cree menos
+
+Auditoría de «Mi Cuenta Web» contra su documentación oficial (2026-10-11). La tabla
+completa, con la página de cada punto, está en `docs/pagos-equipos-documentos.md` §1.1.
+
+- **La notificación sigue siendo la que paga.** Pero la pasarela la da por fallida si
+  la tienda no contesta con `200`–`206` o `301`/`302`/`303`/`307`/`308`, la repite como
+  mucho cuatro veces y sólo si el comercio lo activó. Después, el dinero está cobrado y
+  el pedido espera. `Order/Get` existe para eso.
+- **Un solo juez.** `reconcile_payments` no decide si un pedido se paga: reduce la
+  respuesta de `Order/Get` al mismo resultado que da una notificación y lo entrega a
+  `_SignedNotificationMixin`. Mismas comprobaciones, mismo bloqueo de fila, un solo pago.
+- **Se lee con más desconfianza que una notificación**, porque trae menos: no tiene
+  firma ni `orderStatus`, sólo transacciones. Pagado es **un** cobro (`DEBIT`) con
+  `status` `PAID` y `detailedStatus` `AUTHORISED` o `CAPTURED`, por el importe completo,
+  de esta tienda, esta referencia y este entorno. `PAID` lo llevan también una
+  verificación de tarjeta y una preautorización, que no se capturan: no valen.
+- **Lo que no se puede decidir no se decide.** Reembolso, dos cobros, pago parcial, otro
+  entorno, error de la pasarela: el intento sigue esperando y se registra el motivo. No
+  se interpreta ningún código de error como «no hay nada»: la documentación no dice cuál
+  lo es.
+- **Un rechazo temprano no es una respuesta.** El formulario vive 15 minutos y deja
+  reintentar con la misma referencia; un rechazo sólo cierra el intento pasados 30.
+- **No se llama firma a lo que no lo es.** El intento pagado así queda con
+  `signature_verified = False` y deja `payment_reconciled` en la auditoría, con la
+  empresa del pedido.
+- **Sin estado nuevo ni migración.** La ventana (de 3 minutos a 2 horas), el tope por
+  pasada (20, los más recientes primero) y la frecuencia (cada 5 minutos) acotan las
+  llamadas: como mucho 24 por un intento abandonado. La documentación recomienda una
+  consulta por minuto y esperar la respuesta; se entiende por referencia, y las llamadas
+  van de una en una.
+- **La firma del IPN, como el ejemplo oficial.** `ipn.php` calcula el HMAC tras cambiar
+  `\/` por `/`. Se acepta la cadena recibida o esa lectura, y se interpreta la que cubrió
+  la firma: nunca se lee nada sin firmar.
+- **Lo que se dejó como estaba, a propósito.** Los códigos con que responde la
+  notificación (un mensaje que no se cree recibe `4xx`: la pasarela avisa al comercio,
+  que es lo que conviene). El guion se inserta sin `embedded-form-glue`: la regla es no
+  añadir dependencias. La CSP no restringe guiones (FE-AUTH-04), así que no hay orígenes
+  que abrir.
+- **No resuelve:** el otro producto de Izipay (no tiene esta consulta). Lo que entonces
+  quedaba abierto —un cambio de producto con cobros abiertos y una tienda publicada con
+  claves de TEST— lo cierran DEC-PAY-04 y DEC-PAY-05.
+
+### DEC-PAY-04 · Un cambio de pasarela que dejaría un cobro sin confirmar no se hace
+
+Orden del propietario: «bloquear cambios inseguros o conservar credenciales anteriores
+por intento hasta conciliar». Se eligió **bloquear**: guardar credenciales viejas por
+intento es más secreto guardado, durante más tiempo, para un caso que se resuelve
+esperando media hora.
+
+- **Qué es un cambio inseguro.** Aquél tras el cual un intento abierto ya no se podría
+  confirmar ni consultar: activar el otro producto, apagar o revocar el que cobra,
+  cambiar de tienda (usuario / código de comercio) o de entorno (TEST ↔ PRODUCCIÓN).
+  Renovar contraseña, clave pública o clave HMAC de la misma tienda y entorno **no** lo
+  es: la pasarela firma con la clave nueva y la consulta sigue funcionando.
+- **Decide el producto que cobra**, no el que se toca: activar «SDK web» con «Mi Cuenta
+  Web» cobrando es un cambio a «Mi Cuenta Web». «El que cobra» incluye al configurado
+  por variables del servidor, que antes no avisaba de nada.
+- **«Mi Cuenta Web»: primero se pregunta, con las claves que aún están.** Es
+  `reconcile_micuentaweb`, la misma consulta de DEC-PAY-03, sobre las dos últimas horas.
+  Después: un intento de menos de 30 minutos (su formulario vive) o sin resolver en la
+  pasarela **bloquea** (409, nada cambia, ninguna palabra lo salta). Un intento antiguo
+  del que la pasarela no tiene nada no detiene nada.
+- **`INTERRUMPIR` queda para lo que no se puede comprobar:** «SDK web / Checkout», que
+  no tiene consulta (su comportamiento no cambia), y una pasarela que no responde. En
+  los dos casos queda `payments_interrupted` en la auditoría, un registro por empresa,
+  con los identificadores de los intentos y de sus pedidos. Sin datos personales.
+- **La decisión y el cambio son un solo paso.** La consulta a la pasarela se hace antes
+  de tomar ningún bloqueo (habla con un servidor ajeno). Después, el cambio toma un
+  bloqueo exclusivo (`pg_advisory_xact_lock`) y decide con lo que hay en la base; abrir
+  un intento toma el mismo bloqueo compartido y comprueba que las credenciales con que
+  empezó el checkout siguen siendo las que cobran. Así un cambio ve todo intento
+  anterior, y un intento posterior se abre contra lo que el cambio dejó, o no se abre
+  (409 al comprador, que reintenta). Fuera de PostgreSQL el bloqueo no hace nada: es el
+  SQLite de desarrollo.
+- **Se hace cumplir en el servicio** (`integrations/service.py`: activar, desactivar,
+  revocar), que es el único código que escribe la configuración de pagos. La pantalla
+  sólo lo muestra.
+- **La pasarela es de la instalación** (PAY-TENANT-SCOPE): no hay configuración por
+  empresa que aislar. Lo que sí es por empresa es el registro de sus intentos
+  interrumpidos.
+- **No cubre:** editar `PAYMENT_PROVIDER` o las claves en las variables del servidor y
+  reiniciar. Tampoco un cambio de `Dirección de la API`, que no se trata como cambio de
+  tienda.
+
+### DEC-PAY-05 · Las claves de TEST de la consola no son para compradores
+
+Orden del propietario: «no activar claves TEST para compradores públicos: usar entorno
+aislado o acceso restringido».
+
+- **Acceso restringido, sin interruptor.** Mientras lo que cobra es una configuración
+  de TEST puesta en la consola, sólo un MASTER de la plataforma abre un pago. Se pensó
+  en un ajuste «quién puede pagar en TEST»; no se añadió: sería la casilla con la que
+  una tienda publicada vuelve a aceptar tarjetas de prueba de cualquiera.
+- **Por qué MASTER y no una capacidad de empresa.** La pasarela es de la instalación y
+  sólo `is_platform_admin` puede configurarla (la consola no se abre con ningún rol de
+  empresa). Quien puede poner las claves de TEST es quien tiene que probarlas; un
+  cajero o un administrador de empresa no las ve y no tiene por qué pagar con ellas.
+- **Antes de todo.** La negativa (503, «El pago en línea todavía no está disponible en
+  esta tienda», código `payment_test_only`) sale de
+  `require_payment_provider_configured`, la única puerta de los tres caminos que abren
+  un pago (web, app y reintento de la app): antes de crear el pedido y antes de hablar
+  con la pasarela. Quien llame sin decir quién compra es un comprador.
+- **El entorno aislado es el de las variables del servidor.** Las pasarelas simuladas
+  de las pruebas, del ensayo y de Playwright se configuran por entorno y no cambian.
+  Las pruebas que pagaban como comprador anónimo con claves de TEST de la consola pagan
+  ahora como MASTER, o con claves de producción simuladas: no se relajó ninguna.
+- **Un pedido pagado en TEST se reconoce.** `PaymentTransaction.environment`
+  (migración `0117`, con valor por defecto en la base para que la versión anterior siga
+  insertando durante un despliegue) y un registro `payment_confirmed_in_test` con la
+  empresa del pedido. Además, un intento abierto en un entorno no lo confirma el otro,
+  aunque la firma valga («environment mismatch»): cubre al producto cuyas
+  notificaciones no dicen de qué entorno son.
+- **Queda:** las claves de TEST puestas por variables del servidor en una tienda
+  publicada (PAY-TEST-ENV), y que el panel muestre «pago de prueba» junto al pedido
+  (PAY-TEST-BADGE).
+
+### DEC-PAY-06 · Lo que cambió tras la auditoría independiente de la conciliación
+
+Una segunda lectura del código de DEC-PAY-03, hecha por otra sesión, encontró doce
+defectos y catorce reglas que ninguna prueba fijaba. Lo que se decidió con cada uno:
+
+- **Un rechazo no cierra un intento mientras su formulario viva** (30 minutos). El
+  formulario deja reintentar con otra tarjeta bajo la misma referencia; si ese segundo
+  pago llegaba y su notificación se perdía, un intento ya cerrado como rechazado no se
+  consultaba nunca. Vale para la notificación y para la consulta. «SDK web / Checkout»
+  no cambia.
+- **Un intento se resuelve una vez.** Con el pedido bloqueado se relee el intento: si ya
+  tiene su pago, un mensaje repetido no hace nada, aunque el pedido se haya cancelado o
+  reembolsado después.
+- **Un segundo cobro no es un pago.** Si el pedido ya está pagado y la pasarela cobró
+  otro intento, queda en el estado «Cobro duplicado», con error en el registro,
+  `payment_duplicate` en la auditoría y ATENCIÓN en la comprobación de estado. Antes se
+  archivaba como un pago más. Vale para los dos productos: es el mismo juez.
+- **No se abre un segundo formulario sin preguntar por el primero.** Sólo la app puede
+  pedirlo (repite su petición con la misma clave de idempotencia); la web crea un pedido
+  nuevo cada vez. Pagado: no hay segundo formulario. No se puede preguntar: tampoco.
+- **Turnos.** Se pregunta primero por quien lleva más sin que nadie pregunte por él
+  (`gateway_checked_at`), y lo que ya no puede cobrarse y la pasarela no tiene se cierra
+  como «Sin intento de pago». Con «los más recientes primero» y sin cerrar nada, veinte
+  compras abandonadas dejaban sin turno a un pago perdido.
+- **Lo que no se decide, se dice.** Una respuesta con dos cobros, un reembolso o un
+  importe parcial sigue sin decidirse, pero la primera vez deja `payment_undecided` en
+  la auditoría y da ATENCIÓN.
+- **El registro nace con el pago.** `payment_reconciled` se escribe en la misma
+  transacción que marca el pedido pagado, por quien lo marcó. Tres pasadas a la vez: un
+  pago, un registro, una cuenta.
+- **Si la pasarela rechaza a quien llama, la pasada termina.** `401`, `403`, `429` o un
+  código `INT_…` («problema de integración del vendedor», `rest/V4.0/api/errors_int.html`)
+  no dependen de la referencia. Un error sobre una referencia (`PSP_…`, otro `4xx`) no
+  detiene nada y no se toma por «no hay nada»: `PSP_010` cubre también una transacción
+  de otro entorno o de otra tienda (`rest/V4.0/api/errors_psp.html`).
+- **La contraseña va a un solo sitio.** No se sigue ninguna redirección, y «Dirección
+  de la API» sólo admite `https://api.micuentaweb.pe`, el servidor de todos los ejemplos
+  de la documentación (`rest/V4.0/api/kb/authentication.html`). Una respuesta cortada,
+  ilegible o de más de 2 MB es «no contestó». Las credenciales no se imprimen.
+- **Un intento guarda su tienda y su entorno** (migración `0117`). Con otra tienda u
+  otro entorno configurados no se confirma, llegue por notificación o por consulta. Los
+  intentos anteriores a la migración no guardan nada y se juzgan como antes.
+- **Sin firma no hay «firma verificada».** Un resultado que no dice que fue firmado no
+  se toma por firmado.
+- **Sin cambiar:** la ventana de dos horas (un medio de pago que tarda más sale de
+  ella: lo confirma su notificación o `--reference`) y la comparación en tiempo
+  constante de la firma, que no tiene prueba posible.
+
+### DEC-PAY-07 · Lo que cambió tras la segunda auditoría: el entorno manda, y siempre se puede pausar
+
+Una segunda lectura independiente de DEC-PAY-04/05/06 encontró un fallo grave y cinco
+serios. Cambian tres decisiones anteriores:
+
+- **DEC-PAY-05, corregida: lo que cuenta es el ENTORNO de lo que cobra, no de dónde
+  vienen las claves.** La puerta sólo miraba las claves de TEST de la consola; las de las
+  variables del servidor cobraban a cualquiera, y revocar la consola volvía a ellas. Ahora
+  toda configuración de TEST es sólo para MASTER. La única excepción es un interruptor
+  explícito del servidor, `PAYMENTS_PUBLIC_TEST`, apagado por defecto, para instalaciones
+  donde la pasarela simulada es lo que se prueba. Las pruebas lo encienden en UN sitio
+  (`store.suite_runner`, declarado en `TEST_RUNNER`), no fixture a fixture. El ensayo
+  Docker y Playwright no abren pagos públicos y no lo necesitan.
+- **Revocar no cede la tienda a las variables del servidor.** Si al quitar la última
+  fila activa de la consola quedara cobrando lo que haya en el entorno, se rechaza (409
+  `environment_fallback`) con su motivo. Se eligió rechazar y no «tratarlo como activar»:
+  activar pide probar y, en producción, escribir una palabra en un campo que «revocar»
+  ya usa para la suya; y nadie que pulsa «revocar» está pidiendo poner otra pasarela.
+- **DEC-PAY-04, completada: pausar.** Un comprador que abría un checkout cada 29 minutos
+  mantenía bloqueado para siempre apagar, revocar o cambiar. Ahora existe un estado real,
+  `IntegrationConfig.paused`: la configuración sigue siendo la que corre (notificación y
+  consulta siguen funcionando con sus credenciales) pero no abre nada nuevo. Pausar no
+  pide palabra, no pasa por el guardia y no consulta a nadie: toma el bloqueo y escribe.
+  Es lo que un MASTER puede hacer siempre; lo demás espera a que se agoten los abiertos.
+  Reanudar pide lo que pidió activar. Volver a activar algo desactivado lo deja sin
+  pausa.
+- **«No se pudo preguntar» va antes que «no se comprobó».** Pasarela caída, que rechaza
+  a quien llama, sin credenciales con que preguntar, o que contesta con un error a una
+  referencia cuyo formulario ya no cobra: palabra y auditoría, sean uno o veinte los
+  intentos. Antes sólo se ofrecía la palabra con exactamente un intento. Sigue bloqueando
+  sin palabra lo que SÍ se sabe: un formulario vivo y lo que la pasarela tiene sin
+  resolver. Mientras nadie sepa qué contesta `Order/Get` de una referencia sin usar
+  (`NO_TRANSACTION_CODES` sigue vacío), un error no puede ser un bloqueo de dos horas.
+- **No se pregunta a una tienda por los intentos de otra.** Los que se abrieron con otra
+  tienda u otro entorno quedan abiertos, sin consultar y sin cerrar, contados aparte y
+  anunciados por la comprobación de estado. Tampoco bloquean el cambio siguiente.
+- **DEC-PAY-06, corregida: lo que nadie intentó pagar se cierra al final de su ventana**,
+  no al primer «no hay nada» pasada media hora. Y una cuarta parte de cada pasada es
+  para quien lleva más tiempo sin respuesta.
+- **La app.** Límite por usuario en su checkout (el que había sólo contaba anónimos), tope
+  de tres formularios vivos por pedido, y la consulta previa a un segundo formulario se
+  detiene en cuanto la pasarela no contesta. La app recibe por qué no hay formulario
+  (`code`, campo añadido). Un rechazo con código es «ahora no»: no marca el pedido como
+  fallido.
+- **La consulta previa a un cambio tiene 20 segundos.** Ocurre dentro de la petición del
+  MASTER, en el único proceso que hay.
+- **El preflight dice lo mismo que la aplicación:** el interruptor encendido es ATENCIÓN,
+  las claves de TEST del archivo «no son para una tienda publicada», y la dirección de la
+  API tiene que ser la oficial (una prueba mantiene iguales las dos listas).
 
 ### DEC-IMPORT-SPLIT-01 · Tres cargas, cada una con su plantilla de una hoja
 

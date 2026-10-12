@@ -70,6 +70,16 @@ class AmountTest(SimpleTestCase):
         self.assertFalse(micuentaweb.verify_signature('{"a":2}', expected, 'clave'))
         self.assertFalse(micuentaweb.verify_signature('{"a":1}', 'ñandú', 'clave'))
 
+    def test_what_is_read_is_the_text_the_hash_covers(self):
+        signed = '{"u":"a/b"}'
+        kr_hash = micuentaweb.sign(signed, 'clave')
+        self.assertEqual(micuentaweb.signed_text(signed, kr_hash, 'clave'), signed)
+        # Con las barras escapadas es el mismo mensaje, y lo que se lee es lo firmado.
+        self.assertEqual(micuentaweb.signed_text('{"u":"a\\/b"}', kr_hash, 'clave'), signed)
+        self.assertIsNone(micuentaweb.signed_text('{"u":"a\\/c"}', kr_hash, 'clave'))
+        self.assertIsNone(micuentaweb.signed_text('{"u":"a\\/b"}', kr_hash, 'otra'))
+        self.assertIsNone(micuentaweb.signed_text('{"u":"a\\/b"}', kr_hash, ''))
+
 
 @override_settings(**MCW_SETTINGS)
 class McwBase(TestCase):
@@ -258,6 +268,48 @@ class NotificationTest(McwBase):
                 self.assertEqual(self.notify(form).status_code, 400)
         self.assert_nothing_paid()
 
+    def test_a_notification_with_escaped_slashes_is_verified_as_the_official_sample_does(self):
+        """
+        El ejemplo oficial (ipn.php) calcula el hash después de cambiar `\\/` por
+        `/` en `kr-answer`. Un mensaje auténtico que llega con las barras
+        escapadas es el mismo mensaje: se cree, y se lee lo que se firmó.
+        """
+        form = self.fake.ipn(self.answer(), escaped_slashes=True)
+        self.assertIn('\\/', form['kr-answer'])
+
+        response = self.notify(form)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        self.assertTrue(self.attempt.signature_verified)
+
+    def test_escaping_slashes_does_not_get_an_edited_answer_believed(self):
+        form = self.fake.ipn(self.answer(amount_cents=100), escaped_slashes=True)
+        form['kr-answer'] = form['kr-answer'].replace('"orderTotalAmount":100', '"orderTotalAmount":29800')
+        self.assertEqual(self.notify(form).status_code, 400)
+
+        other = self.fake.ipn(self.answer(), key='otra-clave', escaped_slashes=True)
+        self.assertEqual(self.notify(other).status_code, 400)
+        self.assert_nothing_paid()
+
+    def test_what_is_read_from_a_notification_is_the_text_the_signature_covers(self):
+        """
+        Una barra invertida de más delante de una barra deja la firma válida
+        (al deshacer el escape vuelve a ser el texto firmado) y cambiaría el
+        valor si se leyera lo recibido. Se lee lo firmado.
+        """
+        signed = json.dumps(self.answer(shop_id='tienda/8'), separators=(',', ':')).replace('/', '\\/')
+        form = {
+            'kr-answer': signed.replace('\\/', '\\\\/'), 'kr-hash': self.fake.sign(signed, self.fake.password),
+            'kr-hash-algorithm': 'sha256_hmac', 'kr-hash-key': 'password',
+        }
+        self.assertNotEqual(json.loads(form['kr-answer'])['shopId'], 'tienda/8')
+
+        result = micuentaweb.parse_notification(form, micuentaweb.load_credentials())
+
+        self.assertEqual(result.merchant_code, 'tienda/8')
+
     def test_the_same_form_sent_as_multipart_is_read_the_same(self):
         response = self.client.post(IPN_URL, self.fake.ipn(self.answer()), format='multipart')
 
@@ -314,14 +366,40 @@ class NotificationTest(McwBase):
         self.assertEqual(response.status_code, 400)
         self.assert_nothing_paid()
 
+    def test_a_production_payment_never_pays_an_order_of_a_test_shop(self):
+        """Y al revés: con claves de TEST, una respuesta que dice PRODUCCIÓN no es de esta configuración."""
+        for mode in ('PRODUCTION', ''):
+            with self.subTest(mode or 'sin entorno'):
+                answer = self.answer()
+                answer['orderDetails']['mode'] = mode
+                self.assertEqual(self.notify(self.fake.ipn(answer)).status_code, 400)
+        self.assert_nothing_paid()
+
     def test_a_refused_payment_leaves_the_order_waiting(self):
+        """
+        Y al intento también, mientras su formulario pueda cobrar: deja
+        reintentar con otra tarjeta bajo la misma referencia. Cerrarlo aquí
+        dejaba sin consulta posible al pago que viniera después.
+        """
         response = self.notify(self.fake.ipn(self.answer(status='UNPAID')))
 
         self.assertEqual(response.status_code, 200)
         self.refresh()
-        self.assertEqual(self.attempt.status, PaymentTransaction.Status.REJECTED)
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.PENDING)
         self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)
         self.assert_nothing_paid()
+
+    def test_a_card_refused_and_then_accepted_in_the_same_form_pays_the_order(self):
+        """El formulario deja reintentar bajo la misma referencia: el rechazo no cierra el intento para siempre."""
+        self.notify(self.fake.ipn(self.answer(status='UNPAID', uuid='a' * 32)))
+        response = self.notify(self.fake.ipn(self.answer(uuid='b' * 32)))
+
+        self.assertEqual(response.status_code, 200)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.AUTHORIZED)
+        self.assertEqual(self.attempt.provider_unique_id, 'b' * 32)
+        self.assertEqual(self.stock(), 3)
 
     def test_a_payment_still_in_progress_changes_nothing_yet(self):
         response = self.notify(self.fake.ipn(self.answer(status='RUNNING')))
@@ -415,3 +493,25 @@ class MiCuentaWebSandboxSmokeTest(SimpleTestCase):
             amount=Decimal('1.80'), customer_email='prueba@example.com',
         )
         self.assertTrue(token)
+
+    def test_the_test_environment_answers_a_question_about_a_reference_nobody_paid(self):
+        """
+        Lo que la documentación no dice: qué contesta `Order/Get` de una
+        referencia sin transacciones. Sea una lista vacía o un error, el
+        adaptador no lo toma por un pago ni por un rechazo.
+        """
+        password = os.environ['MICUENTAWEB_SANDBOX_PASSWORD']
+        self.assertTrue(password.startswith('testpassword_'), 'sólo con la contraseña de TEST')
+        credentials = micuentaweb.MiCuentaWebCredentials(
+            environment='test', shop_id=os.environ['MICUENTAWEB_SANDBOX_SHOP_ID'], password=password,
+            public_key='', api_url='https://api.micuentaweb.pe', currency='PEN', ipn_url='',
+        )
+        order_id = micuentaweb.new_order_id()
+        micuentaweb.create_payment(credentials=credentials, order_id=order_id, amount=Decimal('1.80'))
+        try:
+            answer = micuentaweb.get_order_transactions(credentials=credentials, order_id=order_id)
+        except micuentaweb.MiCuentaWebUnreachable:
+            raise
+        except micuentaweb.MiCuentaWebError:
+            return
+        self.assertIsNone(micuentaweb.parse_order_transactions(answer, credentials, order_id))

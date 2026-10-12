@@ -30,9 +30,18 @@ from store.tests import IZIPAY_TEST_SETTINGS, _order, _pay_attempt
 
 
 def run():
+    """
+    The health check of A PUBLISHED SHOP: `PAYMENTS_PUBLIC_TEST` off, as it is
+    there. The test suite itself runs with that switch on (its simulated
+    gateways charge anybody: `store.suite_runner`), and the command — rightly —
+    raises the alarm about that; these tests are about everything else. What
+    the command says with the switch on is tested where it is turned on
+    (`test_payment_audit3`).
+    """
     out = io.StringIO()
     try:
-        call_command('ops_status', stdout=out)
+        with override_settings(PAYMENTS_PUBLIC_TEST=False):
+            call_command('ops_status', stdout=out)
         code = 0
     except SystemExit as exc:
         code = int(exc.code or 0)
@@ -98,6 +107,8 @@ class OpsStatusTest(WhatsAppBase):
         self.assertEqual(code, 0, text)
         self.assertIn('NOTA  pagos: 1 pago', text)
         self.assertIn('sin respuesta de la pasarela', text)
+        # What to do about it is said too: the gateway can be asked (PAY-RECONCILE).
+        self.assertIn('reconcile_payments', text)
         self.assertNotIn('ATENCIÓN', text)
 
     def _deliveries(self, count):
@@ -327,4 +338,7 @@ class ConversionsStatusTest(TestCase):
         self.conversion(status='failed', failure_kind='invalid', provider_code='100')
         _code, text = run()
         self.assertNotIn('purchase.1', text)
-        self.assertNotIn(str(self.order.pk) + ' ', text.split('conversiones:')[1].split('\n')[0].replace('1 conversión', ''))
+        # «24 h» is a fixed phrase of the line, not an identifier: without taking
+        # it out, this failed whenever the order happened to be number 24.
+        line = text.split('conversiones:')[1].split('\n')[0].replace('1 conversión', '').replace('24 h', '')
+        self.assertNotIn(str(self.order.pk) + ' ', line)

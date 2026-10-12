@@ -27,7 +27,7 @@ from rest_framework.views import APIView
 
 from . import checkout_services as checkout
 from .models import Order
-from .throttles import CheckoutThrottle
+from .throttles import CheckoutThrottle, CheckoutUserThrottle
 from .v1_checkout_serializers import V1CheckoutSerializer
 from .v1_customer_views import V1CustomerSurfaceMixin
 
@@ -92,7 +92,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
          against the same order rather than a dead token.
     """
 
-    throttle_classes = [CheckoutThrottle]
+    throttle_classes = [CheckoutThrottle, CheckoutUserThrottle]
 
     def post(self, request, company_slug=None):
         # Resolves the company AND verifies this user is a client of it. Staff
@@ -113,7 +113,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
             return self._replay(existing, fingerprint)
 
         try:
-            credentials = checkout.require_payment_provider_configured()
+            credentials = checkout.require_payment_provider_configured(request.user)
 
             branch = checkout.resolve_fulfillment_branch(company)
             lines = checkout.resolve_lines_from_intents(company, validated['items'])
@@ -172,6 +172,12 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
         try:
             payment = checkout.start_payment_attempt(order, credentials=credentials)
         except checkout.CheckoutError as exc:
+            if exc.code:
+                # «Not now», with its reason (the gateway changed under this
+                # request, payments were paused): nothing went wrong with the
+                # ORDER. It stays payable, and the same request sent again
+                # opens its payment.
+                return Response({**exc.as_payload(), 'order_id': order.id}, status=exc.status_code)
             checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
             return Response(
                 {'detail': 'No pudimos iniciar el pago. Vuelve a intentarlo.'},
@@ -219,19 +225,26 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
             )
 
         try:
-            credentials = checkout.require_payment_provider_configured()
+            credentials = checkout.require_payment_provider_configured(self.request.user)
             payment = checkout.start_payment_attempt(order, credentials=credentials)
-        except checkout.CheckoutError:
+        except checkout.CheckoutError as exc:
             # Not fatal: the order exists and the client can read its status. No
             # identifier is echoed back on failure.
             logger.warning(
-                'v1 checkout replay: no se pudo abrir un intento de pago para el pedido %s',
-                order.id,
+                'v1 checkout replay: no se pudo abrir un intento de pago para el pedido %s (%s)',
+                order.id, exc.code or 'sin código',
             )
-            return Response(
-                {'order_id': order.id, 'status': order.status, 'payment': None},
-                status=status.HTTP_200_OK,
-            )
+            # Asking the gateway about the earlier form may just have paid the
+            # order: the status sent back is the one it has NOW.
+            order.refresh_from_db(fields=['status'])
+            body = {'order_id': order.id, 'status': order.status, 'payment': None}
+            if exc.code:
+                # WHY there is no form, when there is a reason an app can act
+                # on: already paid, an earlier payment still being checked, too
+                # many forms open, payments paused or only for whoever is
+                # testing the gateway. An added field; the rest is unchanged.
+                body['code'] = exc.code
+            return Response(body, status=status.HTTP_200_OK)
 
         return Response(
             _payment_payload(order, payment),

@@ -75,7 +75,13 @@ MICUENTAWEB = {
     'MICUENTAWEB_HMAC_KEY': MCW_HMAC,
     'MICUENTAWEB_IPN_URL': 'https://tienda.example.pe/api/payments/micuentaweb/notification/',
 }
-SECRETS = (SECRET_KEY, DB_PASSWORD, MAIL_PASSWORD, IZIPAY_API_KEY, IZIPAY_HASH_KEY, MCW_PASSWORD, MCW_HMAC, ROOT_KEY)
+MCW_PRODUCTION_PASSWORD = 'prodpassword_NoEsRealNoEsRealNoEsReal'
+#: What a published shop has: production keys. TEST keys only charge for a master.
+IZIPAY_PRODUCTION = {**IZIPAY, 'IZIPAY_ENV': 'production', 'IZIPAY_TOKEN_URL': 'https://api.example.invalid/token'}
+MICUENTAWEB_PRODUCTION = {**MICUENTAWEB, 'MICUENTAWEB_PASSWORD': MCW_PRODUCTION_PASSWORD,
+                          'MICUENTAWEB_PUBLIC_KEY': '90000001:publickey_NoEsRealNoEsReal'}
+SECRETS = (SECRET_KEY, DB_PASSWORD, MAIL_PASSWORD, IZIPAY_API_KEY, IZIPAY_HASH_KEY, MCW_PASSWORD, MCW_HMAC, ROOT_KEY,
+           MCW_PRODUCTION_PASSWORD)
 
 
 @skipUnless(EXAMPLE.exists(), 'deploy/ is not part of this checkout')
@@ -188,17 +194,95 @@ class PreflightTest(SimpleTestCase):
         self.assertIn('cuál de los dos productos', izipay)
 
     def test_a_complete_file_for_the_checkout_product_is_complete_but_for_the_optionals(self):
-        result = self.run_preflight({**BASE, **IZIPAY})
+        # Completo es con claves de PRODUCCIÓN: las de TEST ya no son «OK» (segunda auditoría).
+        result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION})
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.lines(result, 'BLOCKED/OWNER-DATA'), [])
         self.assertEqual(self.lines(result, 'ATENCIÓN'), [])
-        self.assertIn('OK    Izipay «SDK web / Checkout», entorno sandbox', result.stdout)
+        self.assertIn('OK    Izipay «SDK web / Checkout», entorno production', result.stdout)
         self.assertIn('CONFIGURACIÓN: COMPLETA SALVO OPCIONALES', result.stdout)
 
     def test_a_complete_file_for_mi_cuenta_web_says_which_keys_it_holds(self):
-        result = self.run_preflight({**BASE, **MICUENTAWEB})
+        result = self.run_preflight({**BASE, **MICUENTAWEB_PRODUCTION})
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn('OK    Izipay «Mi Cuenta Web», claves de TEST', result.stdout)
+        self.assertIn('OK    Izipay «Mi Cuenta Web», claves de PRODUCCIÓN', result.stdout)
+
+    # -- TEST keys and the switch that opens them to anybody (second audit) -------
+
+    def test_test_keys_in_the_file_are_for_trying_the_gateway_not_for_a_published_shop(self):
+        """Antes decía OK. Con claves de TEST sólo paga un MASTER: la tienda arranca, y no vende en línea."""
+        for values, product in ((IZIPAY, '«SDK web / Checkout»'), (MICUENTAWEB, '«Mi Cuenta Web»')):
+            with self.subTest(product):
+                result = self.run_preflight({**BASE, **values})
+                owed = next(line for line in self.lines(result, 'BLOCKED/OWNER-DATA') if product in line)
+                self.assertIn('no para una tienda publicada', owed)
+                self.assertIn('PRODUCCIÓN', owed)
+                self.assertNotIn(f'OK    Izipay {product}', result.stdout)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn('CONFIGURACIÓN: SUFICIENTE PARA ARRANCAR', result.stdout)
+
+    def test_production_keys_in_the_file_are_what_a_published_shop_has(self):
+        result = self.run_preflight({**BASE, **MICUENTAWEB_PRODUCTION})
+        self.assertIn('OK    Izipay «Mi Cuenta Web», claves de PRODUCCIÓN', result.stdout)
+        result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION})
+        self.assertIn('OK    Izipay «SDK web / Checkout», entorno production', result.stdout)
+        self.assertEqual(self.lines(result, 'BLOCKED/OWNER-DATA'), [])
+
+    def test_the_switch_that_opens_test_payments_to_anybody_is_never_for_a_published_shop(self):
+        for value in ('1', 'true', 'yes', 'on'):
+            with self.subTest(value):
+                result = self.attention({**BASE, **IZIPAY_PRODUCTION, 'PAYMENTS_PUBLIC_TEST': value},
+                                        'PAYMENTS_PUBLIC_TEST')
+                self.assertIn('INCOMPLETA', result.stdout)
+        for value in ('', '0', 'false'):
+            with self.subTest(value):
+                result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'PAYMENTS_PUBLIC_TEST': value})
+                self.assertEqual(self.lines(result, 'ATENCIÓN'), [], result.stdout)
+
+    def test_whatever_the_application_reads_as_on_is_reported(self):
+        """
+        La aplicación lee el interruptor con `env.bool`, que da por encendido
+        cualquier número distinto de cero («2», «01», «-1»). El preflight sólo
+        conocía «1», «true»…: decía que estaba bien lo que la tienda leía como
+        abierto. Aquí lo lee la propia aplicación, en otro proceso, y lo que
+        ella da por encendido tiene que estar avisado. Y, por si acaso, también
+        todo lo que no sea claramente «apagado».
+        """
+        backend = ROOT / 'backend'
+        code = ('import django; django.setup(); from django.conf import settings; '
+                'print(settings.PAYMENTS_PUBLIC_TEST)')
+        clearly_off = ('', '0', 'false', 'no', 'off', 'False', ' OFF ', 'No')
+        for value in ('2', '01', '-1', '10', '1', 'true', 'TRUE', 'yes', 'on', 'ok', 'y', ' 1 ', 'si', 'maybe', '00',
+                      *clearly_off):
+            with self.subTest(value):
+                env = {k: v for k, v in os.environ.items() if k != 'PAYMENTS_PUBLIC_TEST'}
+                env.update(DJANGO_SETTINGS_MODULE='backend.settings', PAYMENTS_PUBLIC_TEST=value.strip())
+                django_says = subprocess.run([sys.executable, '-c', code], cwd=backend, env=env,
+                                             capture_output=True, text=True).stdout.strip().splitlines()[-1:]
+                result = self.run_preflight({**BASE, **IZIPAY_PRODUCTION, 'PAYMENTS_PUBLIC_TEST': value})
+                reported = any('PAYMENTS_PUBLIC_TEST' in line for line in self.lines(result, 'ATENCIÓN'))
+                if django_says == ['True']:
+                    self.assertTrue(reported, f'la aplicación lo lee encendido y el preflight calla: {value!r}')
+                self.assertEqual(reported, value not in clearly_off, value)
+
+    def test_the_api_address_of_mi_cuenta_web_is_the_one_the_application_accepts(self):
+        """El checkout rechaza cualquier otro servidor: que esto dijera OK era publicar una tienda que no cobra."""
+        self.attention({**BASE, **MICUENTAWEB_PRODUCTION, 'MICUENTAWEB_API_URL': 'https://pasarela.example.com'},
+                       'MICUENTAWEB_API_URL')
+        self.attention({**BASE, **MICUENTAWEB_PRODUCTION, 'MICUENTAWEB_API_URL': 'http://api.micuentaweb.pe'},
+                       'MICUENTAWEB_API_URL')
+        fine = self.run_preflight({**BASE, **MICUENTAWEB_PRODUCTION, 'MICUENTAWEB_API_URL': 'https://api.micuentaweb.pe'})
+        self.assertEqual(self.lines(fine, 'ATENCIÓN'), [], fine.stdout)
+
+    def test_the_two_lists_of_official_hosts_are_one_list(self):
+        import importlib.util
+
+        from store.payments import micuentaweb
+
+        spec = importlib.util.spec_from_file_location('preflight_under_test', PREFLIGHT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(tuple(module.MICUENTAWEB_API_HOSTS), tuple(micuentaweb.OFFICIAL_API_HOSTS))
 
     def test_it_never_claims_the_installation_is_ready_to_deploy(self):
         result = self.run_preflight({**BASE, **IZIPAY, 'GOOGLE_OAUTH_CLIENT_ID': '1-x.apps.googleusercontent.com'})
@@ -345,7 +429,7 @@ class PreflightTest(SimpleTestCase):
         self.assertEqual(self.run_preflight({}, text=text).returncode, 0)
 
     def test_the_payment_product_defaults_as_the_application_defaults_it(self):
-        without = {k: v for k, v in {**BASE, **IZIPAY}.items() if k != 'PAYMENT_PROVIDER'}
+        without = {k: v for k, v in {**BASE, **IZIPAY_PRODUCTION}.items() if k != 'PAYMENT_PROVIDER'}
         result = self.run_preflight(without)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('OK    Izipay «SDK web / Checkout»', result.stdout)

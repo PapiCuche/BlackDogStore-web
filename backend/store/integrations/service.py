@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from ..models import AdminAuditLog, IntegrationConfig
 from . import registry, secret_store
-from .registry import ConfigError, Resolved, TestOutcome
+from .registry import ChangeBlocked, ConfigError, Resolved, TestOutcome  # noqa: F401 — re-exported for the views
 
 logger = logging.getLogger('store.integrations')
 
@@ -366,10 +366,45 @@ def _require_acknowledgement(provider, company, payload) -> None:
         raise ConfigError({'acknowledge': warning[1]})
 
 
+def _guard_change(provider, company, payload, *, change, public=None, prepared=None, actor=None, request=None) -> None:
+    """
+    The last question before a change that could cut something off, asked
+    INSIDE its transaction and holding the provider's lock.
+
+    A provider that knows better than a typed word decides here: it may refuse
+    outright (`ChangeBlocked`), ask for the word, or let it through and name
+    what was interrupted — which is then written to the audit trail under the
+    company each interrupted thing belongs to. A provider with no opinion gets
+    the typed word, as before.
+    """
+    interrupted = provider.guard_change(
+        company, change=change, public=public, prepared=prepared,
+        acknowledged=(payload or {}).get('acknowledge') == INTERRUPT_WORD,
+    )
+    if interrupted is NotImplemented:
+        _require_acknowledgement(provider, company, payload)
+        return
+    for owner, metadata in interrupted or ():
+        _audit('payments_interrupted', provider, owner, actor, request, change=change, **metadata)
+
+
 # -- activation ------------------------------------------------------------------
 
-@transaction.atomic
 def activate(provider, company, *, actor, version, payload=None, request=None):
+    # What the provider has to find out before the change is found out HERE,
+    # before any lock is held: it may mean asking somebody else's server. Only
+    # for a draft that could be activated at all; the transaction checks again.
+    draft = row(provider.id, company, DRAFT)
+    prepared = None
+    if draft is not None and draft.validated and version == draft.version:
+        prepared = provider.prepare_change(company, change='activate', public=dict(draft.public))
+    return _activate(provider, company, actor=actor, version=version, payload=payload, request=request,
+                     prepared=prepared)
+
+
+@transaction.atomic
+def _activate(provider, company, *, actor, version, payload, request, prepared):
+    provider.lock_changes()
     draft = row(provider.id, company, DRAFT, lock=True)
     if draft is None:
         raise NotFound('No hay ningún borrador que activar.')
@@ -380,7 +415,8 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
                        draft.version)
     secrets = open_secrets(draft)
     provider.activation_guard(dict(draft.public), secrets, payload or {})
-    _require_acknowledgement(provider, company, payload)
+    _guard_change(provider, company, payload, change='activate', public=dict(draft.public), prepared=prepared,
+                  actor=actor, request=request)
 
     if provider.exclusive_in_category:
         # One provider of this category runs at a time. Switching is this one act.
@@ -389,8 +425,10 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
         siblings = siblings.filter(company=company) if company else siblings.filter(company__isnull=True)
         for sibling in siblings:
             sibling.enabled = False
+            # Off is off: a pause it carried does not come back with it later.
+            sibling.paused = False
             sibling.version += 1
-            sibling.save(update_fields=['enabled', 'version', 'updated_at'])
+            sibling.save(update_fields=['enabled', 'paused', 'version', 'updated_at'])
             _audit('integration_disabled', registry.get(sibling.provider), company, actor, request,
                    reason=f'replaced_by:{provider.id}')
 
@@ -399,6 +437,11 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
     active.public = dict(draft.public)
     active.secret_meta = dict(draft.secret_meta)
     _seal(active, secrets)
+    if not active.enabled:
+        # Starting to run (for the first time, or again after being off) is
+        # starting whole. Only a row that is RUNNING and paused stays paused
+        # through a change of its keys: that must not resume by itself.
+        active.paused = False
     active.enabled = True
     active.validated = True
     active.last_tested_at = draft.last_tested_at
@@ -414,8 +457,15 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
     return active
 
 
-@transaction.atomic
 def set_enabled(provider, company, *, actor, enabled: bool, request=None, payload=None):
+    prepared = None if enabled else provider.prepare_change(company, change='disable')
+    return _set_enabled(provider, company, actor=actor, enabled=enabled, request=request, payload=payload,
+                        prepared=prepared)
+
+
+@transaction.atomic
+def _set_enabled(provider, company, *, actor, enabled: bool, request, payload, prepared):
+    provider.lock_changes()
     active = row(provider.id, company, ACTIVE, lock=True)
     if active is None:
         raise NotFound('Esta integración no tiene una configuración activa.')
@@ -424,7 +474,8 @@ def set_enabled(provider, company, *, actor, enabled: bool, request=None, payloa
             # Switching back on is activating: it asks what activating asked.
             provider.activation_guard(dict(active.public), {}, payload or {})
         else:
-            _require_acknowledgement(provider, company, payload)
+            _guard_change(provider, company, payload, change='disable', prepared=prepared,
+                          actor=actor, request=request)
         if enabled and provider.exclusive_in_category:
             others = [p.id for p in registry.in_category(provider.category) if p.id != provider.id]
             # Locked: two «enable» at once must not both find the category free.
@@ -433,21 +484,62 @@ def set_enabled(provider, company, *, actor, enabled: bool, request=None, payloa
             if any(sibling.enabled for sibling in running):
                 raise Conflict('Ya hay otro proveedor de esta categoría activo. Desactívalo primero.', active.version)
         active.enabled = enabled
+        # Switching on is starting again, whole: a pause does not survive it.
+        active.paused = False
         active.version += 1
         active.updated_by = actor
-        active.save(update_fields=['enabled', 'version', 'updated_by', 'updated_at'])
+        active.save(update_fields=['enabled', 'paused', 'version', 'updated_by', 'updated_at'])
         _audit('integration_enabled' if enabled else 'integration_disabled', provider, company, actor, request)
         transaction.on_commit(lambda: provider.after_change(company))
     return active
 
 
 @transaction.atomic
+def set_paused(provider, company, *, actor, paused: bool, request=None, payload=None):
+    """
+    Stop taking anything NEW, at once — or take it again.
+
+    Pausing asks nothing and waits for nobody: no word, no guard, no call to a
+    third party. It cannot be refused because of what is in flight, because it
+    does not touch what is in flight: the configuration stays the one that
+    runs, so whatever was already open is still answered with it. It is the
+    thing a master can always do; switching off, revoking or replacing can then
+    wait for what is open to finish.
+
+    Resuming is starting to take new operations again: it asks what activating
+    asked (the word for production).
+    """
+    if not provider.pausable:
+        raise NotFound('Esta integración no se puede pausar.')
+    provider.lock_changes()
+    active = row(provider.id, company, ACTIVE, lock=True)
+    if active is None or not active.enabled:
+        raise NotFound('Esta integración no tiene una configuración activa que pausar.')
+    if active.paused != paused:
+        if not paused:
+            provider.activation_guard(dict(active.public), {}, payload or {})
+        active.paused = paused
+        active.version += 1
+        active.updated_by = actor
+        active.save(update_fields=['paused', 'version', 'updated_by', 'updated_at'])
+        _audit('integration_paused' if paused else 'integration_resumed', provider, company, actor, request)
+        transaction.on_commit(lambda: provider.after_change(company))
+    return active
+
+
 def revoke(provider, company, *, actor, request=None, payload=None):
+    prepared = provider.prepare_change(company, change='revoke')
+    return _revoke(provider, company, actor=actor, request=request, payload=payload, prepared=prepared)
+
+
+@transaction.atomic
+def _revoke(provider, company, *, actor, request, payload, prepared):
+    provider.lock_changes()
     rows = IntegrationConfig.objects.select_for_update().filter(provider=provider.id)
     rows = rows.filter(company=company) if company else rows.filter(company__isnull=True)
     if not rows.exists():
         raise NotFound('Esta integración no tiene nada guardado.')
-    _require_acknowledgement(provider, company, payload)
+    _guard_change(provider, company, payload, change='revoke', prepared=prepared, actor=actor, request=request)
     rows.delete()
     _audit('integration_revoked', provider, company, actor, request)
     transaction.on_commit(lambda: provider.after_change(company))
@@ -474,7 +566,7 @@ def _describe_row(provider, config):
         meta = config.secret_meta.get(f.name)
         secrets[f.name] = {'configured': True, **meta} if meta else {'configured': False}
     return {
-        'public': dict(config.public), 'secrets': secrets, 'enabled': config.enabled,
+        'public': dict(config.public), 'secrets': secrets, 'enabled': config.enabled, 'paused': config.paused,
         'validated': config.validated, 'version': config.version,
         'last_tested_at': config.last_tested_at.isoformat() if config.last_tested_at else None,
         'last_test_status': config.last_test_status, 'last_test_message': config.last_test_message,
@@ -512,6 +604,9 @@ def describe(provider, company=None, *, with_fields=True) -> dict:
     warning = interruption(provider, company)
     # What the console has to make a master type before it stops or replaces what runs.
     data['interruption'] = {'word': warning[0], 'message': warning[1]} if warning else None
+    # And what it only has to SAY: the server decides when the change is asked for.
+    data['change_notice'] = provider.change_notice(company)
+    data['pausable'] = provider.pausable
     if with_fields:
         data['fields'] = [f.describe() for f in provider.fields]
         data['test_fields'] = [f.describe() for f in provider.test_fields]

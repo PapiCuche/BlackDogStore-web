@@ -109,6 +109,7 @@ type IzipayConstructor = new (args: { config: Record<string, unknown> }) => {
 /** The part of the Krypton client this page uses. */
 type KryptonClient = {
   onSubmit: (callback: (answer: unknown) => boolean) => unknown;
+  onError?: (callback: (error: unknown) => void) => unknown;
   setFormConfig?: (config: Record<string, string>) => unknown;
   renderElements?: () => unknown;
   removeForms?: () => unknown;
@@ -159,6 +160,33 @@ export const KRYPTON_ASSETS = {
 
 const LOAD_ERROR = "No se pudo cargar el formulario de pago.";
 
+/**
+ * The codes after which THIS form will not charge any more, so the buyer needs
+ * a new one: public key refused, form token refused, form expired (a token
+ * lives 15 minutes), too many attempts.
+ *
+ *   https://secure.micuentaweb.pe/doc/es-PE/rest/V4.0/javascript/features/js_error_management.html
+ *   https://secure.micuentaweb.pe/doc/es-PE/rest/V4.0/api/errors_psp.html
+ *
+ * Every other error — a mistyped card, a refused payment — is shown by the
+ * gateway's form itself, which lets the buyer try again under the same token.
+ * With these four it draws nothing or stops, and says so only to `KR.onError`.
+ */
+export const KRYPTON_FORM_IS_OVER: ReadonlySet<string> = new Set([
+  "CLIENT_004", "CLIENT_100", "PSP_099", "PSP_108",
+]);
+
+/** Whether what the client handed over — to `KR.onError` or as a rejection — is one of those. */
+export function kryptonFormIsOver(error: unknown): boolean {
+  const code = (error as { errorCode?: unknown } | null)?.errorCode;
+  return typeof code === "string" && KRYPTON_FORM_IS_OVER.has(code);
+}
+
+/** What the buyer reads then. No code and no gateway text: those are not for a buyer. */
+export const FORM_IS_OVER_MESSAGE =
+  "El formulario de pago ya no es válido: caducó o no se pudo abrir. No se cobró nada con él. "
+  + "Pulsa «Continuar al pago» para abrir uno nuevo.";
+
 function loadScript(src: string, attributes: Record<string, string> = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     let script = Array.from(document.head.querySelectorAll("script")).find(
@@ -201,13 +229,26 @@ function loadScript(src: string, attributes: Record<string, string> = {}): Promi
  * "PAID" is a hint to change screens, and the callback returns `false` so the
  * client does not post that copy anywhere either. Whether the order is paid is
  * asked of our backend, which hears it from the gateway's server.
+ *
+ * `onOver` IS CALLED WITH NOTHING TOO, when the client says this form will not
+ * charge any more (`KRYPTON_FORM_IS_OVER`). It is subscribed as soon as the
+ * client exists and before anything else is awaited: a token the gateway does
+ * not accept is refused within moments of loading, and nobody listening then
+ * leaves the buyer in front of an empty box.
  */
 export async function mountKryptonForm(
   session: MiCuentaWebSession,
   onSettled: () => void,
+  onOver: () => void = () => {},
 ): Promise<void> {
+  // Not awaited: subscribing is the call itself, and waiting for what it
+  // returns would only open a gap in which the client can speak unheard.
+  const listen = () => window.KR?.onError?.((error) => {
+    if (kryptonFormIsOver(error)) onOver();
+  });
   if (window.KR) {
     // A second payment in the same tab: the client is already here.
+    void listen();
     await window.KR.setFormConfig?.({ formToken: session.form_token });
     await window.KR.renderElements?.();
   } else {
@@ -221,6 +262,7 @@ export async function mountKryptonForm(
       "kr-public-key": session.public_key,
       "kr-language": "es-PE",
     });
+    void listen();
     await loadScript(KRYPTON_ASSETS.theme);
   }
 

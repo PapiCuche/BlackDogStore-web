@@ -36,6 +36,12 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 # desde el servidor no hay nada que enviar y termina al momento.
 */5 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py send_pending_conversions >> backups/send_pending_conversions.log 2>&1
 
+# Pagos que siguen sin notificación de la pasarela: se le pregunta a ella
+# (`Order/Get`, sólo con «Mi Cuenta Web» activo). Cada cinco minutos, no más
+# seguido: la pasarela recomienda una consulta por minuto como mucho. Con el otro
+# producto de Izipay, o sin pagos esperando, no hace nada y termina al momento.
+*/5 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py reconcile_payments >> backups/reconcile_payments.log 2>&1
+
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
 # minutos. No imprime nada si todo está bien; si algo necesita atención lo
 # escribe (y cron lo envía a MAILTO). El registro completo queda en el archivo.

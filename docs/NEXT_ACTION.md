@@ -53,7 +53,8 @@ current_priority:
    ejecutar `python3 deploy/preflight.py` hasta `SUFICIENTE PARA ARRANCAR`.
 2. `docs/despliegue-produccion.md` §4 en orden. Con la cuenta MASTER, en
    Configuración › Integraciones: correo y pasarela (claves de TEST, probar, activar).
-3. Un pago completo en TEST con la tienda publicada: cierra IZIPAY-PRODUCT e
+3. Un pago completo en TEST con la tienda publicada y la sesión de MASTER iniciada (a
+   los demás compradores la tienda no les abre el pago mientras las claves sean de TEST): cierra IZIPAY-PRODUCT e
    IZIPAY-TOKEN-CONTRACT.
 4. Analítica y marketing (opcional; `docs/analytics-marketing.md` §9). Condiciones para
    activar un proveedor en producción: CSP-01 implantada y validada con los dominios
@@ -123,8 +124,12 @@ known_debt (detalle en `docs/AUDIT_MEMORY.md`):
   INTEGRATION-READ-COST, MAIL-TENANT-SCOPE.
 - SERIAL-TRANSFER, SERIAL-COUNT. SERIAL-PRICE-DROP: borrar la columna
   `price_override` en la versión siguiente a la que publique SERIAL-PICK-01.
-- PAY-RECONCILE: si la notificación de la pasarela no llega, un pedido cobrado queda
-  esperando; `healthcheck.sh` lo anota (sin alarma), no lo resuelve.
+- PAY-RECONCILE: con «Mi Cuenta Web», `reconcile_payments` pregunta a la pasarela
+  (`Order/Get`) y paga lo cobrado (DEC-PAY-03); hay que añadir su línea de
+  `deploy/crontab.example` al servidor. Con el otro producto sigue como estaba.
+  PAY-TEST-BADGE: el panel no señala un pedido pagado en TEST. PAY-PAUSE-ENV: pausar
+  pagos necesita la configuración en la consola. PAY-GET-UNKNOWNS: lo que la prueba con
+  claves de TEST tiene que contestar (`docs/pagos-equipos-documentos.md` §1.5).
 - PAY-UNCONFIGURED-500: sin credenciales, pagos responde 500 «no está configurada».
 - NOTE-LINE-DISCOUNT: la nota de venta muestra el descuento del pedido, no por línea.
 - LOGIN-IDENTIFIER-LOG: un inicio de sesión fallido registra lo escrito como usuario.

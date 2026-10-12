@@ -23,17 +23,26 @@ THE FLOW, AS THE DOCUMENTATION STATES IT
              kr-answer (a JSON string), kr-hash, kr-hash-algorithm,
              kr-hash-key, kr-answer-type.
              kr-hash = hex HMAC-SHA256(kr-answer) keyed with the PASSWORD.
+  4. SERVER  when that notification never came: POST {server}/api-payment/V4/
+             Order/Get {"orderId": "..."} with the same Authorization lists
+             the transactions the gateway holds for the reference.
 
 WHAT IS BELIEVED
 ----------------
-Only the IPN, and only after its signature verifies. The browser is ALSO handed
+The IPN, and only after its signature verifies. The browser is ALSO handed
 a signed copy of the answer after paying — signed with a different key, the
 «clave HMAC-SHA-256» — and that copy is for the page, not for the ledger: this
 adapter refuses anything not signed with the password (`kr-hash-key=password`),
 so replaying the browser's copy to the notification endpoint pays nothing.
 
+And what the gateway answers when THIS SERVER asks it (`Order/Get`), over TLS
+and with the password. That answer carries no signature and no `orderStatus`,
+so it is read more narrowly than a notification: see `parse_order_transactions`.
+
 `kr-answer` IS NOT RE-SERIALISED. It is verified as the exact string received;
-parsing and dumping it again would change its bytes and its HMAC.
+parsing and dumping it again would change its bytes and its HMAC. The one
+reading besides that is the official sample's own (ipn.php): `\\/` turned back
+into `/` before the hash. What is parsed is always the text the hash covered.
 
 VERIFIED WITHOUT CREDENTIALS: everything above, against a fake gateway that
 checks the published contract. NOT VERIFIED until somebody runs the smoke test
@@ -46,11 +55,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -62,7 +74,25 @@ logger = logging.getLogger(__name__)
 PROVIDER = 'micuentaweb'
 
 DEFAULT_API_URL = 'https://api.micuentaweb.pe'
+#: The hosts the official documentation names for the web services (every
+#: request of it goes to `https://api.micuentaweb.pe/api-payment/V4/...`:
+#: rest/V4.0/api/kb/authentication.html, javascript/guide/formToken/presentation.html).
+#: Each call carries the password, so it goes to one of these and nowhere else.
+OFFICIAL_API_HOSTS = ('api.micuentaweb.pe',)
+#: No answer of these web services is anywhere near this big.
+MAX_ANSWER_BYTES = 2 * 1024 * 1024
+#: After this, the form of an attempt cannot charge any more: the formToken
+#: lives 15 minutes and a payment session 10. Until then a refused card is not
+#: an answer — the form lets the buyer try again under the same reference.
+FORM_LIFETIME = timedelta(minutes=30)
+#: Error codes of `Order/Get` that mean «nothing was ever tried under this
+#: reference». EMPTY ON PURPOSE: the documentation does not say which code that
+#: is (PSP_010, «no se encontró la transacción», also covers a transaction of
+#: the other environment or of another shop), so none is taken for it until a
+#: run of the smoke test with TEST keys shows the real answer.
+NO_TRANSACTION_CODES: tuple = ()
 CREATE_PAYMENT_PATH = '/api-payment/V4/Charge/CreatePayment'
+GET_ORDER_PATH = '/api-payment/V4/Order/Get'
 
 #: The mode is not a setting of its own: the gateway decides it by which keys
 #: are used. A TEST password with a production public key (or the reverse) is a
@@ -72,6 +102,13 @@ _PASSWORD_PREFIX = {'testpassword_': 'test', 'prodpassword_': 'production'}
 #: `orderStatus` values of the `V4/Payment` object.
 STATUS_PAID = 'PAID'
 STATUS_UNPAID = 'UNPAID'
+STATUS_RUNNING = 'RUNNING'
+
+#: The `detailedStatus` of a debit whose money is held or already captured.
+#: A transaction's `status` is also PAID for a card verification (ACCEPTED) and
+#: for a pre-authorisation (PRE_AUTHORISED), and those are never captured.
+MONEY_STATUSES = ('AUTHORISED', 'CAPTURED')
+OPERATION_DEBIT = 'DEBIT'
 
 
 class MiCuentaWebError(Exception):
@@ -82,9 +119,30 @@ class MiCuentaWebUnreachable(MiCuentaWebError):
     """The gateway did not answer, or answered that it is the one that is broken."""
 
 
+class MiCuentaWebRefused(MiCuentaWebError):
+    """
+    The gateway refused US, not the question: credentials it does not accept, a
+    request it calls malformed (`INT_…`, «problema de integración del vendedor»,
+    rest/V4.0/api/errors_int.html), or too many calls. Asking again about
+    another reference gets the same answer.
+    """
+
+
+class MiCuentaWebUndecided(MiCuentaWebError):
+    """
+    The gateway answered, the answer is about this shop and this reference, and
+    it says money may have moved in a way nobody can settle from here: two paid
+    debits, a refund beside the debit, a partial amount.
+    """
+
+
 def _is_refusal(exc) -> bool:
     """An HTTP 4xx is the gateway answering no. Everything else is no answer."""
     return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
+
+
+#: HTTP answers that are about who is calling and how often, never about what was asked.
+_ABOUT_THE_CALLER = (401, 403, 429)
 
 
 @dataclass(frozen=True)
@@ -97,7 +155,9 @@ class MiCuentaWebCredentials:
 
     environment: str        # 'test' | 'production', derived from the keys
     shop_id: str
-    password: str
+    #: Out of `repr()`: an object of this class that reaches a log line, a
+    #: traceback or an assertion message shows no secret.
+    password: str = field(repr=False)
     public_key: str
     api_url: str
     currency: str
@@ -175,6 +235,10 @@ def credentials_from(configured: dict) -> MiCuentaWebCredentials:
     api_url = (configured.get('MICUENTAWEB_API_URL') or DEFAULT_API_URL).strip().rstrip('/')
     if not api_url.startswith('https://'):
         raise MiCuentaWebError('MICUENTAWEB_API_URL debe ser https.')
+    if (urllib.parse.urlsplit(api_url).hostname or '') not in OFFICIAL_API_HOSTS:
+        # The password travels in every call: it goes to the gateway's own
+        # server, whatever somebody typed in this field.
+        raise MiCuentaWebError('MICUENTAWEB_API_URL debe ser la dirección oficial: ' + DEFAULT_API_URL + '.')
 
     return MiCuentaWebCredentials(
         environment=environment, shop_id=shop_id, password=password, public_key=public_key,
@@ -224,15 +288,88 @@ def verify_signature(kr_answer: str, kr_hash: str, key: str) -> bool:
     return hmac.compare_digest(expected, received)
 
 
-def create_payment(*, credentials: MiCuentaWebCredentials, order_id: str, amount: Decimal,
-                   customer_email: str = '', timeout: float = 15.0) -> str:
+def signed_text(kr_answer: str, kr_hash: str, key: str) -> str | None:
     """
-    Ask the gateway for the `formToken` that lets the browser draw ONE payment.
+    The text this hash covers, or None when it covers nothing that was received.
 
-    The only network call in this module and the only place the password is
+    As received, first. Then as the official sample computes it (ipn.php):
+    `str_replace('\\/', '/', kr-answer)` before the HMAC, because a message may
+    travel with its slashes escaped. Both are the same JSON; whichever one the
+    key signed is the one that gets parsed, so nothing unsigned is ever read.
+    """
+    if verify_signature(kr_answer, kr_hash, key):
+        return kr_answer
+    unescaped = kr_answer.replace('\\/', '/')
+    if unescaped != kr_answer and verify_signature(unescaped, kr_hash, key):
+        return unescaped
+    return None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """
+    A redirect is never followed. Following one would send the request again —
+    with its `Authorization` header, the shop's password — to wherever the
+    answer pointed. The 3xx comes back as what it is: not an answer.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request, timeout):
+    """The one place a socket is opened. Stood in for by the fake gateway of the tests."""
+    return _OPENER.open(request, timeout=timeout)
+
+
+def _post(credentials: MiCuentaWebCredentials, path: str, body: dict, *, timeout: float, doing: str) -> dict:
+    """
+    One call to a web service of the gateway, and its answer as a dict.
+
+    The only network code in this module and the only place the password is
     used. It runs on the server because the password creates payments: a
     browser holding it could create them for any amount.
     """
+    token = base64.b64encode(f'{credentials.shop_id}:{credentials.password}'.encode('utf-8')).decode('ascii')
+    request = urllib.request.Request(
+        credentials.api_url + path,
+        data=json.dumps(body).encode('utf-8'),
+        method='POST',
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': f'Basic {token}',
+        },
+    )
+    try:
+        with _open(request, timeout) as response:
+            payload = response.read(MAX_ANSWER_BYTES + 1)
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        # `HTTPException` too: an answer cut short or garbled is no answer.
+        code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+        logger.error('Mi Cuenta Web: fallo de red al %s (%s%s)', doing, type(exc).__name__,
+                     f' {code}' if code else '')
+        if code in _ABOUT_THE_CALLER:
+            raise MiCuentaWebRefused('La pasarela de pago rechazó la llamada.') from None
+        kind = MiCuentaWebError if _is_refusal(exc) else MiCuentaWebUnreachable
+        raise kind('No se pudo contactar a la pasarela de pago.') from None
+    if len(payload) > MAX_ANSWER_BYTES:
+        logger.error('Mi Cuenta Web: la respuesta al %s es demasiado grande', doing)
+        raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.')
+
+    try:
+        parsed = json.loads(payload.decode('utf-8', 'replace'))
+    except ValueError:
+        logger.error('Mi Cuenta Web: la respuesta al %s no es JSON', doing)
+        raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.') from None
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def create_payment(*, credentials: MiCuentaWebCredentials, order_id: str, amount: Decimal,
+                   customer_email: str = '', timeout: float = 15.0) -> str:
+    """Ask the gateway for the `formToken` that lets the browser draw ONE payment."""
     body = {
         'amount': amount_in_cents(amount),
         'currency': credentials.currency,
@@ -243,39 +380,39 @@ def create_payment(*, credentials: MiCuentaWebCredentials, order_id: str, amount
     if credentials.ipn_url:
         body['ipnTargetUrl'] = credentials.ipn_url
 
-    token = base64.b64encode(f'{credentials.shop_id}:{credentials.password}'.encode('utf-8')).decode('ascii')
-    request = urllib.request.Request(
-        credentials.api_url + CREATE_PAYMENT_PATH,
-        data=json.dumps(body).encode('utf-8'),
-        method='POST',
-        headers={
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Authorization': f'Basic {token}',
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode('utf-8', 'replace')
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        logger.error('Mi Cuenta Web: fallo de red al crear el pago (%s)', type(exc).__name__)
-        kind = MiCuentaWebError if _is_refusal(exc) else MiCuentaWebUnreachable
-        raise kind('No se pudo contactar a la pasarela de pago.') from None
-
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        logger.error('Mi Cuenta Web: la respuesta al crear el pago no es JSON')
-        raise MiCuentaWebUnreachable('Respuesta inválida de la pasarela de pago.') from None
-
-    answer = parsed.get('answer') if isinstance(parsed, dict) else None
+    parsed = _post(credentials, CREATE_PAYMENT_PATH, body, timeout=timeout, doing='crear el pago')
+    answer = parsed.get('answer')
     form_token = answer.get('formToken') if isinstance(answer, dict) else None
-    if not isinstance(parsed, dict) or parsed.get('status') != 'SUCCESS' or not form_token:
+    if parsed.get('status') != 'SUCCESS' or not form_token:
         code = answer.get('errorCode') if isinstance(answer, dict) else ''
         # The code, never the message: gateway messages can echo the request.
         logger.error('Mi Cuenta Web: pago no creado (errorCode=%s)', str(code or '-')[:20])
         raise MiCuentaWebError('La pasarela de pago no creó el pago.')
     return str(form_token)
+
+
+def get_order_transactions(*, credentials: MiCuentaWebCredentials, order_id: str,
+                           timeout: float = 15.0) -> dict:
+    """
+    Ask the gateway what it holds for ONE reference (`Order/Get`).
+
+    Returns its `answer` (a `V4/OrderTransactions`), unread. An answer that is
+    an error is `MiCuentaWebError`: the documentation does not say which error
+    means «nothing under that reference», so none of them is taken for it.
+    """
+    parsed = _post(credentials, GET_ORDER_PATH, {'orderId': order_id}, timeout=timeout,
+                   doing='consultar el pedido')
+    answer = parsed.get('answer')
+    if parsed.get('status') != 'SUCCESS' or not isinstance(answer, dict):
+        code = str((answer.get('errorCode') if isinstance(answer, dict) else '') or '-')[:20]
+        # The code, never the message: gateway messages can echo the request.
+        logger.warning('Mi Cuenta Web: consulta sin respuesta útil (errorCode=%s)', code)
+        if code in NO_TRANSACTION_CODES:
+            return {'shopId': credentials.shop_id, 'orderId': order_id, 'transactions': []}
+        if code.startswith('INT_'):
+            raise MiCuentaWebRefused('La pasarela de pago rechazó la consulta.')
+        raise MiCuentaWebError('La pasarela de pago no respondió a la consulta.')
+    return answer
 
 
 @dataclass(frozen=True)
@@ -299,6 +436,9 @@ class NotificationResult:
     unique_id: str           # the gateway's transaction uuid
     state_message: str       # detailedStatus
     mode: str                # TEST | PRODUCTION
+    #: False for what the gateway answered when asked (`Order/Get`): believed
+    #: for whom it was asked of, not for a signature. Recorded as such.
+    signed: bool = True
 
     @property
     def authorized(self) -> bool:
@@ -330,11 +470,12 @@ def parse_notification(form, credentials: MiCuentaWebCredentials) -> Notificatio
     # believe on this endpoint.
     if field('kr-hash-key') != 'password':
         raise MiCuentaWebError('La notificación no viene firmada con la contraseña.')
-    if not verify_signature(kr_answer, kr_hash, credentials.password):
+    signed = signed_text(kr_answer, kr_hash, credentials.password)
+    if signed is None:
         raise MiCuentaWebError('Firma inválida.')
 
     try:
-        answer = json.loads(kr_answer)
+        answer = json.loads(signed)
     except (ValueError, TypeError):
         raise MiCuentaWebError('kr-answer no es JSON válido.') from None
     if not isinstance(answer, dict):
@@ -385,4 +526,97 @@ def parse_notification(form, credentials: MiCuentaWebCredentials) -> Notificatio
         unique_id=str(last.get('uuid') or '').strip(),
         state_message=str(last.get('detailedStatus') or '').strip(),
         mode=mode,
+    )
+
+
+def parse_order_transactions(answer, credentials: MiCuentaWebCredentials, order_id: str):
+    """
+    Reduce an `Order/Get` answer to the result a notification would have given,
+    or None when the gateway holds nothing for the reference.
+
+    READ MORE NARROWLY THAN A NOTIFICATION, because it has less in it: no
+    signature and no `orderStatus`, only the list of transactions. So it is the
+    transactions that have to say «paid», and anything they leave open raises
+    `MiCuentaWebError` and decides nothing:
+
+      * the answer is about OUR shop and THIS reference, and so is every
+        transaction in it;
+      * every transaction is of the environment the configured keys are of — a
+        TEST transaction is not money for a production shop, nor the reverse;
+      * only debits. A refund or a card verification under the reference is a
+        story this cannot tell on its own;
+      * paid means ONE debit with `status` PAID whose `detailedStatus` says the
+        money is held or captured, for the whole amount of its order.
+
+    The amount, the currency and the shop it returns are then compared with
+    what the shop opened by the same code that judges a notification.
+    """
+    if not isinstance(answer, dict):
+        raise MiCuentaWebError('La respuesta de la consulta no es un objeto.')
+    shop_id = str(answer.get('shopId') or '').strip()
+    if shop_id != credentials.shop_id:
+        raise MiCuentaWebError('La respuesta de la consulta es de otra tienda.')
+    if str(answer.get('orderId') or '').strip() != order_id:
+        raise MiCuentaWebError('La respuesta de la consulta es de otra referencia.')
+    transactions = answer.get('transactions')
+    if not isinstance(transactions, list):
+        raise MiCuentaWebError('La respuesta de la consulta no trae transacciones.')
+    if not transactions:
+        return None
+
+    read = []
+    for transaction in transactions:
+        details = transaction.get('orderDetails') if isinstance(transaction, dict) else None
+        if not isinstance(details, dict):
+            raise MiCuentaWebError('Transacción sin orderDetails en la consulta.')
+        if str(details.get('orderId') or '').strip() != order_id:
+            raise MiCuentaWebError('Transacción de otra referencia en la consulta.')
+        if str(transaction.get('shopId') or shop_id).strip() != shop_id:
+            raise MiCuentaWebError('Transacción de otra tienda en la consulta.')
+        mode = str(details.get('mode') or '').strip().upper()
+        if mode != credentials.gateway_mode:
+            raise MiCuentaWebError('La transacción es de otro entorno (TEST / PRODUCCIÓN).')
+        if str(transaction.get('operationType') or '').strip().upper() != OPERATION_DEBIT:
+            raise MiCuentaWebUndecided('Hay una operación que no es un cobro bajo esta referencia.')
+        cents, total = transaction.get('amount'), details.get('orderTotalAmount')
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in (cents, total)):
+            raise MiCuentaWebError('Importe no entero en la consulta.')
+        read.append((transaction, details, str(transaction.get('status') or '').strip().upper()))
+
+    paid = [entry for entry in read if entry[2] == STATUS_PAID]
+    if len(paid) > 1:
+        raise MiCuentaWebUndecided('Hay más de un cobro pagado bajo esta referencia.')
+    if paid:
+        transaction, details, status = paid[0]
+        if str(transaction.get('detailedStatus') or '').strip().upper() not in MONEY_STATUSES:
+            raise MiCuentaWebUndecided('La transacción pagada no es un cobro autorizado ni capturado.')
+        if transaction['amount'] != details['orderTotalAmount']:
+            raise MiCuentaWebUndecided('El cobro no es por el importe completo del pedido.')
+        charged = str(transaction.get('currency') or '').strip().upper()
+        if charged != str(details.get('orderCurrency') or '').strip().upper():
+            raise MiCuentaWebUndecided('El cobro y su pedido no están en la misma moneda.')
+    elif all(entry[2] == STATUS_UNPAID for entry in read):
+        transaction, details, status = read[-1]
+    else:
+        # Something is still open at the gateway: not an answer yet.
+        transaction, details, status = read[-1][0], read[-1][1], STATUS_RUNNING
+
+    card = (transaction.get('transactionDetails') or {}).get('cardDetails') if isinstance(
+        transaction.get('transactionDetails'), dict) else None
+    authorization = (card or {}).get('authorizationResponse') if isinstance(card, dict) else None
+    return NotificationResult(
+        transaction_id=order_id,
+        order_number=order_id,
+        amount=(Decimal(details['orderTotalAmount']) / 100).quantize(Decimal('0.01')),
+        currency=str(details.get('orderCurrency') or '').strip().upper(),
+        merchant_code=shop_id,
+        response_code=status,
+        pay_method=str(transaction.get('paymentMethodType') or '').strip(),
+        authorization_code=str((authorization or {}).get('authorizationNumber') or '').strip()
+        if isinstance(authorization, dict) else '',
+        reference_number='',
+        unique_id=str(transaction.get('uuid') or '').strip(),
+        state_message=str(transaction.get('detailedStatus') or '').strip(),
+        mode=credentials.gateway_mode,
+        signed=False,
     )

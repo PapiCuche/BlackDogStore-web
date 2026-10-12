@@ -39,7 +39,7 @@ import logging
 import secrets
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -122,8 +122,10 @@ class IzipayCredentials:
 
     environment: str
     merchant_code: str
-    api_key: str
-    hash_key: str
+    #: Out of `repr()`: an object of this class that reaches a log line, a
+    #: traceback or an assertion message shows no secret.
+    api_key: str = field(repr=False)
+    hash_key: str = field(repr=False)
     public_key: str
     token_url: str
     currency: str
@@ -318,6 +320,9 @@ class NotificationResult:
     reference_number: str
     unique_id: str
     state_message: str
+    #: Every result of this adapter comes out of a verified signature. Said
+    #: here, so that the code that records it does not have to assume it.
+    signed: bool = True
 
     @property
     def authorized(self) -> bool:

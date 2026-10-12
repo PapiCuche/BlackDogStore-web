@@ -3,6 +3,141 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — PAY-GUARD-03
+
+**Fixed**
+- El checkout de la web limita también a las cuentas con sesión (10 por minuto, por usuario).
+- «SDK web / Checkout»: `IZIPAY_ENV` con mayúsculas o espacios se lee igual que lo lee
+  el cobro; antes un cambio de pasarela podía pasar con un formulario de producción abierto.
+- Una pausa de pagos ya no vuelve al reactivar una pasarela que se apagó al cambiar de producto.
+- `deploy/preflight.py` avisa de `PAYMENTS_PUBLIC_TEST` con cualquier valor que no sea
+  vacío, `0`, `false`, `no` u `off`.
+- El rechazo de un cambio de pasarela dice qué se puede hacer cuando la pasarela cobra
+  con las variables del servidor (ahí no hay pausa).
+
+**Added**
+- La comprobación de estado da ATENCIÓN si `PAYMENTS_PUBLIC_TEST` está encendido en un
+  servidor que no es de desarrollo.
+
+**Known, not fixed** (`docs/AUDIT_MEMORY.md`)
+- PAY-CAP-ATOMIC, PAY-WEB-ORPHAN-ORDER, PAY-FOREIGN-GOLIVE, PAY-RECONCILE-CAPACITY,
+  PAY-DEFERRED-WINDOW, PAY-NOGATEWAY-500.
+
+## 2026-10-11 — PAY-GUARD-02
+
+**Added**
+- «Pausar pagos nuevos» / «Reanudar pagos» en la consola: la pasarela deja de abrir pagos
+  al momento, sin palabra, y sigue confirmando los ya abiertos (`IntegrationConfig.paused`,
+  en la migración `0117`). Registros `integration_paused` e `integration_resumed`.
+- Ajuste `PAYMENTS_PUBLIC_TEST` (apagado por defecto): el único modo de abrir los pagos
+  de TEST a cualquiera. Las pruebas lo encienden en `store.suite_runner` (`TEST_RUNNER`).
+- Límite por usuario en el checkout de la app (`checkout_user`, 10 por minuto) y tope de
+  tres formularios vivos por pedido.
+- Campo `code` en las respuestas de la app que no llevan formulario.
+- `deploy/preflight.py`: ATENCIÓN si `PAYMENTS_PUBLIC_TEST` está encendido.
+
+**Changed**
+- Las claves de TEST no cobran a compradores vengan de la consola o de las variables del
+  servidor. Antes, sólo las de la consola estaban restringidas.
+- Revocar la configuración de pagos de la consola se rechaza si con ello pasaran a cobrar
+  las claves de las variables del servidor.
+- Un cambio de pasarela que no puede consultar los cobros abiertos (pasarela caída, que
+  rechaza, que contesta con error, o sin credenciales) pide `INTERRUMPIR` y los deja en la
+  auditoría, sean cuantos sean. La consulta previa dura como mucho 20 segundos.
+- La conciliación no pregunta por intentos abiertos con otra tienda u otro entorno, cierra
+  lo que nadie intentó pagar al final de su ventana, y reserva una cuarta parte de cada
+  pasada para quien lleva más sin respuesta.
+- Un rechazo con el formulario todavía vivo queda anotado en el intento, que sigue abierto.
+- `reconcile_payments --reference` contesta con una frase que dice qué pasó.
+- `deploy/preflight.py`: las claves de TEST del archivo ya no son «OK» («no para una
+  tienda publicada»), y `MICUENTAWEB_API_URL` tiene que ser la oficial.
+- Un checkout que encuentra la pasarela cambiada o en pausa ya no marca el pedido como
+  fallido.
+
+**Security**
+- Las credenciales de «SDK web / Checkout» ya no muestran sus claves al imprimirse.
+
+## 2026-10-11 — PAY-GUARD-01
+
+**Added**
+- Cambios de pasarela con cobros abiertos: el servidor consulta a «Mi Cuenta Web» y
+  rechaza (409) activar el otro producto, apagar, revocar, cambiar de tienda o de
+  entorno mientras un cobro pueda cobrarse todavía o siga sin resolver. La pantalla dice
+  «El cambio no se hizo», cuántos son y cuándo reintentar.
+- Registro de auditoría `payments_interrupted`, por empresa, cuando un cambio se hace
+  sin poder comprobar los cobros abiertos («SDK web», o pasarela que no responde).
+- Con claves de TEST de la consola sólo un MASTER abre un pago; los demás reciben «El
+  pago en línea todavía no está disponible en esta tienda» (503, `payment_test_only`).
+- `PaymentTransaction`: entorno y tienda con que se abrió el intento, cuándo se
+  consultó por última vez, y los estados «Sin intento de pago» y «Cobro duplicado»
+  (migración `0117_payment_attempt_origin`).
+- Registros de auditoría `payment_confirmed_in_test`, `payment_duplicate`,
+  `payment_undecided` y `payment_integrity_failed`, con la empresa del pedido.
+- `reconcile_payments --reference <referencia>`: un solo intento, tenga la antigüedad
+  que tenga.
+- La comprobación de estado da ATENCIÓN por un cobro duplicado y por una respuesta de
+  la pasarela que no se pudo decidir.
+
+**Changed**
+- Renovar contraseña o claves de «Mi Cuenta Web» en la misma tienda y entorno ya no
+  pide `INTERRUMPIR` con cobros abiertos.
+- Una notificación de rechazo de «Mi Cuenta Web» deja el intento esperando mientras su
+  formulario pueda cobrar (30 minutos); antes lo cerraba y el pago que viniera después
+  ya no se consultaba.
+- Un pago autorizado sobre un pedido ya pagado queda como «Cobro duplicado»; antes,
+  como un pago más.
+- La conciliación pregunta primero por quien lleva más sin respuesta (antes, por el más
+  reciente), cierra lo que nadie intentó pagar, y termina si la pasarela rechaza a
+  quien llama.
+- Antes de abrir un segundo formulario para un pedido se pregunta a la pasarela por el
+  anterior.
+- «Dirección de la API» de «Mi Cuenta Web» sólo admite `https://api.micuentaweb.pe`. No
+  se siguen redirecciones.
+- `reconcile_payments --hours` exige 1 o más.
+
+**Fixed**
+- Un pago repetido ya no vuelve a pagar un pedido que dejó de estar pagado.
+- Varias conciliaciones a la vez dejan un solo `payment_reconciled`.
+- Una respuesta cortada o ilegible de la pasarela ya no escapa como excepción.
+
+**Security**
+- Las credenciales de «Mi Cuenta Web» ya no muestran la contraseña al imprimirse.
+- Un intento abierto con una tienda o un entorno no se confirma con otros.
+- Un resultado que no declara haber sido firmado no se registra como firmado.
+
+**Not verified**
+- Nada contra la pasarela real. Lo que la prueba con claves de TEST tiene que contestar
+  está en `docs/pagos-equipos-documentos.md` §1.5.
+
+## 2026-10-11 — IZIPAY-MCW-AUDIT-01
+
+**Added**
+- `python manage.py reconcile_payments`: pregunta a «Mi Cuenta Web» (`Order/Get`) por
+  los pagos que siguen sin notificación y paga los que estén cobrados, por el mismo
+  camino y con las mismas comprobaciones que una notificación. Opciones `--hours` y
+  `--limit`. Línea nueva en `deploy/crontab.example`, cada cinco minutos.
+- Registro de auditoría `payment_reconciled`, con la empresa del pedido, por cada pago
+  confirmado así. El intento queda sin firma verificada.
+- La pasarela falsa de las pruebas exige también el contrato publicado de `Order/Get`.
+- Segunda prueba contra el entorno real (se omite sin claves de TEST): qué contesta
+  `Order/Get` de una referencia que nadie pagó.
+
+**Changed**
+- Notificación de «Mi Cuenta Web»: la firma se comprueba sobre la cadena recibida o,
+  como el ejemplo oficial, con `\/` vuelto `/`. Antes, una notificación auténtica con las
+  barras escapadas se rechazaba.
+- La nota «pagos sin respuesta» de la comprobación de estado dice cómo preguntar a la
+  pasarela.
+
+**Docs**
+- `docs/pagos-equipos-documentos.md` §1: comparación punto por punto con la
+  documentación oficial y su página; pasos para escribir las claves de TEST en el
+  panel; la consulta de pagos sin notificación.
+- DEC-PAY-03. Deuda nueva: PAY-TEST-PUBLIC, KRYPTON-GLUE, PAY-RECONCILE-REHEARSAL.
+
+**Not verified**
+- Nada contra la pasarela real: no hay credenciales. No se hizo ningún cargo.
+
 ## 2026-10-11 — Despliegue de #102–#108
 
 **Deployed**

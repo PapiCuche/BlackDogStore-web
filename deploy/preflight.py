@@ -48,6 +48,7 @@ import stat
 import subprocess
 import sys
 from email.message import EmailMessage
+from urllib.parse import urlsplit
 
 #: Toda variable que el archivo de ejemplo ofrece. Una prueba falla si el
 #: ejemplo gana una que no esté aquí: una variable que este programa no conoce
@@ -59,7 +60,7 @@ KNOWN = {
     'EMAIL_BACKEND', 'EMAIL_HOST', 'EMAIL_PORT', 'EMAIL_USE_TLS', 'EMAIL_USE_SSL', 'EMAIL_TIMEOUT',
     'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL', 'ORDER_NOTIFICATION_EMAIL',
     'REQUIRE_EMAIL_VERIFICATION',
-    'PAYMENT_PROVIDER', 'IZIPAY_ENV', 'IZIPAY_MERCHANT_CODE', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_API_KEY',
+    'PAYMENT_PROVIDER', 'PAYMENTS_PUBLIC_TEST', 'IZIPAY_ENV', 'IZIPAY_MERCHANT_CODE', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_API_KEY',
     'IZIPAY_HASH_KEY', 'IZIPAY_TOKEN_URL', 'IZIPAY_CURRENCY', 'IZIPAY_IPN_URL',
     'MICUENTAWEB_SHOP_ID', 'MICUENTAWEB_PUBLIC_KEY', 'MICUENTAWEB_PASSWORD', 'MICUENTAWEB_HMAC_KEY',
     'MICUENTAWEB_API_URL', 'MICUENTAWEB_CURRENCY', 'MICUENTAWEB_IPN_URL',
@@ -75,11 +76,17 @@ IZIPAY_KEYS = ('IZIPAY_MERCHANT_CODE', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_API_KEY', 'I
 #: recibe el navegador, que esta aplicación no usa para confirmar nada.
 MICUENTAWEB_KEYS = ('MICUENTAWEB_SHOP_ID', 'MICUENTAWEB_PASSWORD', 'MICUENTAWEB_PUBLIC_KEY')
 MICUENTAWEB_ANY = MICUENTAWEB_KEYS + ('MICUENTAWEB_HMAC_KEY',)
+# El único servidor al que la aplicación envía la contraseña de «Mi Cuenta Web».
+# La misma lista que `backend/store/payments/micuentaweb.py::OFFICIAL_API_HOSTS`:
+# una prueba (`test_preflight`) mantiene las dos iguales.
+MICUENTAWEB_API_HOSTS = ('api.micuentaweb.pe',)
 MAIL_KEYS = ('EMAIL_HOST', 'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL')
 INSECURE = {'', 'changeme', 'changeme-dev-only', 'changeme-replace-in-production', 'postgres', 'password', 'blackdog'}
 SMTP_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 #: Las mismas palabras que Django (django-environ) toma por «sí».
 TRUE = {'true', 'on', 'ok', 'y', 'yes', '1'}
+# Lo único que deja PAYMENTS_PUBLIC_TEST apagado sin lugar a dudas.
+PUBLIC_TEST_OFF = {'', '0', 'false', 'no', 'off'}
 #: Variables cuyo valor es un secreto: un `$` dentro de ellas lo cambiaría Compose.
 SECRET_NAMES = ('SECRET_KEY', 'POSTGRES_PASSWORD', 'APP_CONFIG_ENCRYPTION_KEY', 'APP_CONFIG_ENCRYPTION_KEYS_PREVIOUS',
                 'EMAIL_HOST_PASSWORD', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY',
@@ -393,6 +400,15 @@ def check_smtp_live(report, values, domain, send_to=None):
 # --- pagos ----------------------------------------------------------------------
 
 def check_payments(report, values, domain):
+    # ESTE interruptor no se lee con `flag()`. La aplicación lo lee con `env.bool`,
+    # que da por encendido cualquier número distinto de cero («2», «01», «-1»), y
+    # aquí callar es decir que una tienda con los pagos de TEST abiertos está
+    # bien. Se avisa de todo lo que no sea claramente «apagado».
+    if values.get('PAYMENTS_PUBLIC_TEST', '').strip().lower() not in PUBLIC_TEST_OFF:
+        # Con él, cualquiera paga con tarjetas de prueba —que son públicas— y el
+        # pedido queda pagado. Es para una instalación de pruebas, nunca para una tienda.
+        report.bad('PAYMENTS_PUBLIC_TEST está encendido: abre los pagos de TEST a cualquier comprador. '
+                   'Es sólo para instalaciones de prueba; en una tienda publicada tiene que estar apagado o no estar')
     # Ausente, la aplicación toma «izipay». Presente, tiene que ser uno de los dos.
     provider = values.get('PAYMENT_PROVIDER', 'izipay').strip().lower()
     izipay_missing = missing(values, IZIPAY_KEYS)
@@ -407,8 +423,9 @@ def check_payments(report, values, domain):
     if not has_izipay and not has_mcw:
         report.console_data(
             'Izipay: cuál de los dos productos tiene contratado («SDK web / Checkout» = izipay, '
-            '«Mi Cuenta Web» = micuentaweb) y sus claves de TEST. Se escriben tras arrancar en '
-            'Configuración › Integraciones › Pagos, o en este archivo',
+            '«Mi Cuenta Web» = micuentaweb) y sus claves. Se escriben tras arrancar en '
+            'Configuración › Integraciones › Pagos: primero las de TEST (con ellas sólo paga un MASTER, '
+            'para probar) y después las de PRODUCCIÓN. En este archivo, sólo las de PRODUCCIÓN',
             'PAYMENT_PROVIDER', 'IZIPAY_* o MICUENTAWEB_*')
         return
     if provider not in ('izipay', 'micuentaweb'):
@@ -436,7 +453,9 @@ def check_payments(report, values, domain):
             report.bad('IZIPAY_ENV=production con un IZIPAY_TOKEN_URL de sandbox')
             coherent = False
         coherent &= _check_ipn(report, values, 'IZIPAY_IPN_URL', domain, 'izipay')
-        if coherent:
+        if coherent and environment != 'production':
+            _test_keys(report, '«SDK web / Checkout»', 'IZIPAY_ENV', 'IZIPAY_*')
+        elif coherent:
             report.ok(f'Izipay «SDK web / Checkout», entorno {environment}')
         return
 
@@ -461,12 +480,33 @@ def check_payments(report, values, domain):
         if environment and public.startswith('testpublickey_') != (environment == 'TEST'):
             report.bad('las claves de Mi Cuenta Web mezclan TEST y PRODUCCIÓN: copia las del mismo entorno')
             coherent = False
-    if not values.get('MICUENTAWEB_API_URL', 'https://api.micuentaweb.pe').strip().startswith('https://'):
+    api_url = values.get('MICUENTAWEB_API_URL', '').strip() or 'https://' + MICUENTAWEB_API_HOSTS[0]
+    if not api_url.startswith('https://'):
         report.bad('MICUENTAWEB_API_URL tiene que ser https')
         coherent = False
+    elif (urlsplit(api_url).hostname or '') not in MICUENTAWEB_API_HOSTS:
+        # La aplicación sólo envía la contraseña al servidor oficial: con otro, el checkout no cobra.
+        report.bad('MICUENTAWEB_API_URL tiene que ser la dirección oficial de la pasarela '
+                   f'(https://{MICUENTAWEB_API_HOSTS[0]}), o no estar: la aplicación rechaza cualquier otra')
+        coherent = False
+        coherent = False
     coherent &= _check_ipn(report, values, 'MICUENTAWEB_IPN_URL', domain, 'micuentaweb')
-    if coherent:
+    if coherent and environment == 'TEST':
+        _test_keys(report, '«Mi Cuenta Web»', 'MICUENTAWEB_PASSWORD', 'MICUENTAWEB_PUBLIC_KEY')
+    elif coherent:
         report.ok(f'Izipay «Mi Cuenta Web», claves de {environment}')
+
+
+def _test_keys(report, product, *variables):
+    """
+    Claves de TEST en este archivo: coherentes, y no son las de una tienda. Con
+    ellas la aplicación sólo deja pagar a un MASTER (son para probar la pasarela);
+    lo que falta son las de PRODUCCIÓN. No impide arrancar.
+    """
+    report.console_data(
+        f'Izipay {product}: las claves de este archivo son de TEST. Sirven para probar la pasarela (con ellas '
+        'sólo paga un MASTER), no para una tienda publicada: faltan las de PRODUCCIÓN. Las de TEST se escriben '
+        'mejor en Configuración › Integraciones › Pagos', *variables)
 
 
 def _check_ipn(report, values, name, domain, provider):

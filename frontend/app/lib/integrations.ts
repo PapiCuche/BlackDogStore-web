@@ -38,6 +38,8 @@ export type IntegrationRow = {
   public: Record<string, unknown>;
   secrets: Record<string, SecretState>;
   enabled: boolean;
+  /** Still what runs, but taking nothing new (a gateway: no new payment is opened). */
+  paused?: boolean;
   validated: boolean;
   version: number;
   last_tested_at: string | null;
@@ -76,6 +78,14 @@ export type Integration = {
    * something already in flight (a buyer at the card form). The word is typed.
    */
   interruption: { word: string; message: string } | null;
+  /**
+   * Something to read before changing this integration that asks for no word:
+   * the server decides when the change is asked for (open charges it will ask
+   * the gateway about first).
+   */
+  change_notice?: { count: number; message: string } | null;
+  /** Whether it can be told to take nothing new while what is in flight finishes. */
+  pausable?: boolean;
   /** False when the server has no root key: nothing can be stored or read. */
   store_available: boolean;
   fields?: IntegrationField[];
@@ -104,14 +114,17 @@ export type IntegrationTestResult = {
 
 export class IntegrationError extends Error {
   readonly status: number;
+  /** A word the server tells a refusal by ('open_payments': a change it would not make), or ''. */
+  readonly code: string;
   /** Per-field messages of a 400. */
   readonly fields: Record<string, string>;
 
-  constructor(message: string, status: number, fields: Record<string, string> = {}) {
+  constructor(message: string, status: number, fields: Record<string, string> = {}, code = "") {
     super(message);
     this.name = "IntegrationError";
     this.status = status;
     this.fields = fields;
+    this.code = code;
   }
 }
 
@@ -130,7 +143,9 @@ async function read<T>(res: Response, fallback: string): Promise<T> {
       fields[name] = String(message);
     }
   }
-  throw new IntegrationError(body?.detail ? String(body.detail) : fallback, res.status, fields);
+  throw new IntegrationError(
+    body?.detail ? String(body.detail) : fallback, res.status, fields, typeof body?.code === "string" ? body.code : "",
+  );
 }
 
 export async function fetchIntegrations(): Promise<{ results: IntegrationSummary[]; store_available: boolean }> {
@@ -178,6 +193,14 @@ export const activateIntegration = (id: string, version: number, typed: TypedWor
 
 export const setIntegrationEnabled = (id: string, enabled: boolean, typed: TypedWords, companyId?: number | null) =>
   act<Integration>(id, enabled ? "enable" : "disable", words(typed), companyId, "No se pudo cambiar el estado.");
+
+/** Stop taking anything new, at once: no word, and nothing in flight can refuse it. */
+export const pauseIntegration = (id: string, companyId?: number | null) =>
+  act<Integration>(id, "pause", {}, companyId, "No se pudo pausar.");
+
+/** Take new operations again. Asks what activating asked. */
+export const resumeIntegration = (id: string, typed: TypedWords, companyId?: number | null) =>
+  act<Integration>(id, "resume", words(typed), companyId, "No se pudo reanudar.");
 
 export const revokeIntegration = (id: string, typed: TypedWords, companyId?: number | null) =>
   act<Integration>(id, "revoke", words(typed), companyId, "No se pudo revocar.");

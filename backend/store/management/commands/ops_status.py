@@ -16,6 +16,7 @@ the host and calls this.
 """
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import connection
 from django.db.models import Q
@@ -23,6 +24,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from store.integrations import health as integration_health
+from store.integrations import payments as payment_adapters
+from store.integrations.providers.payments import attempts_of_another_origin
 from store.integrations import registry
 from store.models import ConversionDelivery, NotificationDelivery, PaymentTransaction
 
@@ -91,10 +94,48 @@ class Command(BaseCommand):
                 f'{"coincidía" if tampered == 1 else "coincidían"} con lo que la tienda abrió, en las últimas 24 h. '
                 'Revisa el registro de auditoría.'
             )
+        # Money the gateway took for an order that was already paid: somebody
+        # has to give it back. And an answer of the gateway nobody could decide
+        # (two debits, a refund, a partial amount): money may be involved.
+        duplicates = PaymentTransaction.objects.filter(
+            status=PaymentTransaction.Status.DUPLICATE, confirmed_at__gte=now - RECENT,
+        ).count()
+        if duplicates:
+            payments.append(
+                f'{_plural(duplicates, "cobro duplicado", "cobros duplicados")} en las últimas 24 h: la pasarela '
+                'cobró otra vez un pedido que ya estaba pagado. Devuélvelo desde el panel de la pasarela; el '
+                'registro de auditoría dice cuál (`payment_duplicate`).'
+            )
+        waiting_recent = PaymentTransaction.objects.filter(
+            status=PaymentTransaction.Status.PENDING, created_at__gte=now - RECENT)
+        undecided = waiting_recent.filter(failure_reason__startswith='undecided: ').count()
+        if undecided:
+            payments.append(
+                f'{_plural(undecided, "pago", "pagos")} con una respuesta de la pasarela que no se pudo decidir '
+                '(dos cobros, un reembolso o un importe parcial bajo la misma referencia), en las últimas 24 h. '
+                'Revísalo en el panel de la pasarela; el registro de auditoría dice cuál (`payment_undecided`).'
+            )
+        unreadable = waiting_recent.filter(failure_reason__startswith='unreadable: ').count()
+        if unreadable:
+            payments.append(
+                f'{_plural(unreadable, "pago", "pagos")} con una respuesta de la pasarela que no se pudo leer '
+                '(habla de otra tienda o de otra referencia, o no tiene la forma esperada), en las últimas 24 h. '
+                'Revísalo en el panel de la pasarela; el registro de auditoría dice cuál (`payment_undecided`).'
+            )
+        # Opened with another shop or in the other environment, and still open:
+        # what charges now is never asked about them. Somebody has to look.
+        foreign = attempts_of_another_origin(now - RECENT).count()
+        if foreign:
+            payments.append(
+                f'{_plural(foreign, "pago abierto", "pagos abiertos")} con otra tienda o en otro entorno que los '
+                'de la pasarela que cobra ahora, en las últimas 24 h: no se consultan. Revísalos en el panel de '
+                'la pasarela con la que se abrieron (la auditoría los lista en `payments_interrupted`).'
+            )
         # A payment still waiting is NOT an alarm. Every checkout opens one, and a
         # buyer who closes the card form leaves it waiting for ever; from here
-        # that cannot be told apart from a notification that never arrived
-        # (PAY-RECONCILE). It is said, for the day a customer claims to have paid.
+        # that cannot be told apart from a notification that never arrived. It
+        # is said, for the day a customer claims to have paid, with what asks
+        # the gateway (PAY-RECONCILE; only «Mi Cuenta Web» can be asked).
         payment_notes = []
         waiting = PaymentTransaction.objects.filter(
             status=PaymentTransaction.Status.PENDING,
@@ -103,8 +144,23 @@ class Command(BaseCommand):
         if waiting:
             payment_notes.append(
                 f'{_plural(waiting, "pago", "pagos")} sin respuesta de la pasarela en las últimas 24 h. '
-                'Lo habitual es un comprador que no terminó; si alguien dice que pagó, '
-                'compruébalo en el panel de la pasarela: la tienda no la consulta por su cuenta.'
+                'Lo habitual es un comprador que no terminó; si alguien dice que pagó, con «Mi Cuenta Web» '
+                'pregúntaselo a la pasarela (`python manage.py reconcile_payments --reference <referencia>`) y, con el otro '
+                'producto, compruébalo en su panel.'
+            )
+        if getattr(settings, 'PAYMENTS_PUBLIC_TEST', False) and not settings.DEBUG:
+            # The switch for installations where a simulated gateway is the
+            # point, left on where nobody is developing: anybody pays with the
+            # public test cards and the order is «paid».
+            payments.append(
+                'los pagos de TEST están abiertos a cualquier comprador (PAYMENTS_PUBLIC_TEST está encendido en '
+                'este servidor): con claves de TEST, cualquiera paga con tarjetas de prueba y el pedido queda '
+                'pagado. En una tienda publicada tiene que estar apagado: quítalo de las variables del servidor.'
+            )
+        if payment_adapters.paused():
+            payment_notes.append(
+                'los pagos nuevos están en pausa: la tienda no abre ninguno hasta que un MASTER los reanude en '
+                'Configuración › Integraciones. Los ya abiertos se siguen confirmando.'
             )
         report('pagos', payments, 'sin notificaciones rechazadas ni pagos esperando', payment_notes)
 

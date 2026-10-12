@@ -508,6 +508,143 @@ test('the word travels with switching off and with revoking too', async () => {
   expect(sent('POST', '/smtp/revoke/')[0].body).toEqual({ confirm: 'REVOCAR', acknowledge: 'INTERRUMPIR' });
 });
 
+test('a change the server will not make with charges open is said plainly, and nothing else moves', async () => {
+  const notice = 'Hay 1 cobro abierto con Izipay · Mi Cuenta Web. Antes de cambiar de producto, el servidor preguntará por él a la pasarela.';
+  const refusal = 'No se puede hacer este cambio todavía: hay 1 cobro abierto cuyo formulario aún puede cobrar. Vuelve a intentarlo a partir de las 10:42.';
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }),
+                               change_notice: { count: 1, message: notice } });
+  respond = (call) => (call.url.includes('/smtp/disable/')
+    ? json(409, { detail: refusal, code: 'open_payments',
+                  open_payments: { open: 1, can_still_charge: 1, unresolved: 0, retry_at: '2026-10-11T10:42:00-05:00' } })
+    : null);
+  await open();
+  // Said before anything is asked for, and no word to type: the server decides.
+  expect(screen.getByRole('status')).toHaveTextContent(notice);
+  expect(screen.queryByLabelText('Confirmación de la interrupción')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Desactivar' })).toBeEnabled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('El cambio no se hizo.');
+  expect(alert).toHaveTextContent(refusal);
+  // Refused is not «somebody else changed it»: nothing is reloaded, and no word is offered as a way round.
+  expect(sent('GET', '/smtp/')).toHaveLength(1);
+  expect(screen.queryByLabelText('Confirmación de la interrupción')).toBeNull();
+  expect(screen.queryByText('Desactivada.')).toBeNull();
+});
+
+test('a refusal goes away when the next attempt is made', async () => {
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }) });
+  let refuse = true;
+  respond = (call) => (refuse && call.url.includes('/smtp/disable/')
+    ? json(409, { detail: 'No se puede hacer este cambio todavía.', code: 'open_payments', open_payments: {} })
+    : null);
+  await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+  expect(await screen.findByText('El cambio no se hizo.')).toBeInTheDocument();
+
+  refuse = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+  expect(await screen.findByText('Desactivada.')).toBeInTheDocument();
+  expect(screen.queryByText('El cambio no se hizo.')).toBeNull();
+});
+
+test('what the server could not verify is asked for when it finds out, and the word travels with the retry', async () => {
+  const demand = 'No se pudo preguntar a la pasarela por 1 cobro abierto: no responde. Escribe INTERRUMPIR para seguir de todos modos.';
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }) });
+  respond = (call) => (call.url.includes('/smtp/disable/') && !call.body?.acknowledge
+    ? json(400, { errors: { acknowledge: demand } })
+    : null);
+  await open();
+  expect(screen.queryByLabelText('Confirmación de la interrupción')).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+  expect(await screen.findByText(demand)).toBeInTheDocument();
+
+  fill('Confirmación de la interrupción', 'INTERRUMPIR');
+  fireEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+  await waitFor(() => expect(sent('POST', '/smtp/disable/')).toHaveLength(2));
+  expect(sent('POST', '/smtp/disable/')[1].body).toEqual({ acknowledge: 'INTERRUMPIR' });
+  expect(await screen.findByText('Desactivada.')).toBeInTheDocument();
+});
+
+// -- pausing what takes new operations (payments) ------------------------------------
+
+function pausing() {
+  respond = (call) => {
+    const item = current.smtp;
+    if (call.url.includes('/smtp/pause/')) item.active = { ...(item.active as object), paused: true } as Row;
+    else if (call.url.includes('/smtp/resume/')) item.active = { ...(item.active as object), paused: false } as Row;
+    else return null;
+    return json(200, item);
+  };
+}
+
+test('new payments can be stopped at once, with no word, whatever else is waiting for one', async () => {
+  // Something is in flight: switching off and revoking wait for the word. Pausing does not.
+  const interruption = { word: 'INTERRUMPIR', message: 'Hay 1 cobro abierto con Izipay en la última hora.' };
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', pausable: true, interruption,
+                               active: row({ validated: true, paused: false }) });
+  pausing();
+  await open();
+  expect(screen.getByRole('button', { name: 'Desactivar' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Pausar pagos nuevos' })).toBeEnabled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Pausar pagos nuevos' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sí' }));
+
+  await waitFor(() => expect(sent('POST', '/smtp/pause/')).toHaveLength(1));
+  expect(sent('POST', '/smtp/pause/')[0].body).toEqual({});
+  expect(await screen.findByText('Pagos nuevos en pausa.')).toBeInTheDocument();
+  expect(screen.getByText(/Los pagos que ya estaban abiertos se siguen confirmando/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Reanudar pagos' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Pausar pagos nuevos' })).toBeNull();
+});
+
+test('resuming asks for the word that activating asked for', async () => {
+  const confirmation = { word: 'PRODUCCION', message: 'Vas a activar claves de PRODUCCIÓN. Escribe PRODUCCION.' };
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', pausable: true,
+                               active: row({ validated: true, paused: true, activation_confirmation: confirmation }) });
+  pausing();
+  await open();
+  expect(screen.getByText('Pagos nuevos en pausa.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Reanudar pagos' })).toBeDisabled();
+
+  fill('Confirmación para reanudar', 'PRODUCCION');
+  fireEvent.click(screen.getByRole('button', { name: 'Reanudar pagos' }));
+
+  await waitFor(() => expect(sent('POST', '/smtp/resume/')).toHaveLength(1));
+  expect(sent('POST', '/smtp/resume/')[0].body).toEqual({ confirm: 'PRODUCCION' });
+  expect(await screen.findByText('Pagos reanudados.')).toBeInTheDocument();
+});
+
+test('what cannot be paused offers no such thing', async () => {
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }) });
+  await open();
+  expect(screen.queryByRole('button', { name: 'Pausar pagos nuevos' })).toBeNull();
+  expect(screen.queryByText('Pagos nuevos en pausa.')).toBeNull();
+});
+
+test('any change the server refuses with a reason is said the same way', async () => {
+  const refusal = 'No se revoca: sin esta configuración la tienda pasaría a cobrar con las claves de las variables del servidor.';
+  current.smtp = integration({ state: 'ACTIVE', source: 'panel', active: row({ validated: true }) });
+  respond = (call) => (call.url.includes('/smtp/revoke/') ? json(409, { detail: refusal, code: 'environment_fallback' }) : null);
+  await open();
+  fill('Escribe REVOCAR para borrar esta configuración', 'REVOCAR');
+  fireEvent.click(screen.getByRole('button', { name: 'Revocar' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('El cambio no se hizo.');
+  expect(alert).toHaveTextContent(refusal);
+  expect(sent('GET', '/smtp/')).toHaveLength(1);
+});
+
 test('switching back on asks for the word that activating asked for', async () => {
   const confirmation = { word: 'EMITIR', message: 'Vas a habilitar la emisión hacia SUNAT. Escribe EMITIR.' };
   current.smtp = integration({ state: 'DISABLED', source: 'panel', active: row({ enabled: false, validated: true, activation_confirmation: confirmation }) });

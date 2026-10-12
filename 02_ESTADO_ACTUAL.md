@@ -3,6 +3,201 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — PAY-GUARD-03: la tercera auditoría — seis ajustes
+
+Rama `feat/izipay-smartform-v4` (PR #110). **Sin migración, sin rutas, sin ajustes
+nuevos.** La auditoría dio por cumplidos los puntos de aceptación; quedaban seis defectos
+pequeños. No desplegado. Nada se probó contra la pasarela real.
+
+| | Defecto | Estado |
+|---|---|---|
+| 1 | El checkout de la web no tenía límite para una cuenta con sesión | CORREGIDO: el mismo límite por usuario que la app |
+| 2 | «SDK web» con `IZIPAY_ENV` en mayúsculas: el guardia buscaba cobros del entorno equivocado | CORREGIDO |
+| 3 | Una pausa volvía sola con una fila apagada por un cambio de producto | CORREGIDO |
+| 4 | El preflight no avisaba de `PAYMENTS_PUBLIC_TEST=2` (y la aplicación lo lee encendido) | CORREGIDO: avisa de todo lo que no sea vacío, `0`, `false`, `no` u `off` |
+| 5 | El servidor en marcha no decía que el interruptor estaba encendido | CORREGIDO: ATENCIÓN en la comprobación de estado |
+| 6 | El rechazo de un cambio ofrecía pausar cuando la pasarela cobra por variables del servidor y no hay nada que pausar | CORREGIDO |
+
+**Queda como deuda** (`docs/AUDIT_MEMORY.md`): PAY-CAP-ATOMIC, PAY-WEB-ORPHAN-ORDER,
+PAY-FOREIGN-GOLIVE, PAY-RECONCILE-CAPACITY, PAY-DEFERRED-WINDOW, PAY-NOGATEWAY-500.
+
+**Pruebas.** Cada prueba se vio fallar antes de su corrección; 12 mutaciones, todas
+detectadas. 13 pruebas nuevas (`test_payment_audit3`, `test_preflight`). Módulos de
+pagos, checkout, consola, medición, preflight, estado y despliegue: 1017, 0 fallos, 3
+omitidas. Las pruebas de la comprobación de estado miran una tienda con el interruptor
+apagado (las pruebas corren con él encendido); una de ellas fallaba cuando el pedido
+era el número 24 y se corrigió. No se corrió la suite completa, Playwright ni el ensayo.
+
+## 2026-10-11 — PAY-GUARD-02: la segunda auditoría — TEST por entorno, pausar pagos, «no se pudo preguntar»
+
+Rama `feat/izipay-smartform-v4`. **Migración `0117_payment_attempt_origin` ampliada**
+(no estaba en ningún historial): añade `IntegrationConfig.paused`. **Sin rutas nuevas**
+(pausar y reanudar son acciones de la ruta de acciones que ya existía). **Un ajuste
+nuevo, `PAYMENTS_PUBLIC_TEST`, apagado por defecto.** Decisión: DEC-PAY-07. No
+desplegado. **Nada se probó contra la pasarela real.**
+
+| | Hallazgo | Estado |
+|---|---|---|
+| 1 | La puerta de TEST ignoraba las claves de las variables del servidor, y revocar la consola volvía a ellas | CORREGIDO: depende del entorno de lo que cobra; `PAYMENTS_PUBLIC_TEST` es la única excepción; revocar no cede la tienda al entorno |
+| 2 | Con la pasarela caída o rechazando, la palabra sólo se ofrecía con un único intento abierto | CORREGIDO |
+| 3 | Un comprador podía mantener bloqueado para siempre apagar, revocar o cambiar | CORREGIDO: «Pausar pagos nuevos» |
+| 4 | Si `Order/Get` contesta con error a una referencia sin usar, cada compra abandonada bloqueaba dos horas | CORREGIDO: es «no se pudo preguntar» (palabra y auditoría) |
+| 5 | La app podía multiplicar sin límite las consultas a la pasarela | CORREGIDO: límite por usuario, tope de formularios, parada al primer fallo |
+| 6 | Se preguntaba a una tienda por intentos abiertos con otra, y se cerraban | CORREGIDO |
+| 7 | Un intento se cerraba al primer «no hay nada» | CORREGIDO: al final de su ventana |
+| 8 | Veinte intentos nuevos por pasada dejaban sin turno a los ya consultados | CORREGIDO: una cuarta parte de la pasada es suya |
+| 9 | Un rechazo con el formulario vivo no dejaba rastro | CORREGIDO |
+| 10 | La tienda se guardaba cortada y se comparaba entera | CORREGIDO |
+| 11 | Las credenciales de «SDK web» se imprimían con sus claves | CORREGIDO |
+| 12 | A la app no se le decía por qué no recibía formulario; un cambio de pasarela fallaba el pedido | CORREGIDO (`code`, campo añadido) |
+| 13 | La consulta previa a un cambio podía durar minutos | CORREGIDO: 20 segundos |
+| 14 | El preflight aceptaba una dirección de API que la aplicación rechaza | CORREGIDO |
+| 15 | Textos para quien opera que no decían lo que había pasado | CORREGIDO |
+
+**Pruebas que cambiaron a propósito:** `KeysFromTheEnvironmentTest` fijaba el hueco del
+hallazgo 1 (las claves de TEST del entorno cobraban a cualquiera) y ahora fija lo
+contrario; tres pruebas del preflight llamaban «completo» a un archivo con claves de
+TEST; las que esperaban el cierre a los 45 minutos lo esperan al final de la ventana; y
+la consulta con credenciales de otra tienda ya no llega a preguntar.
+
+**Para el propietario.** Cómo pausar los pagos y por qué: `docs/pagos-equipos-documentos.md`
+§1.6. Las claves de TEST son sólo para MASTER vengan de donde vengan (§1.3).
+
+**Para quien despliega.** `deploy/rehearsal.sh` no cambia. `deploy/preflight.py` sí:
+`PAYMENTS_PUBLIC_TEST` encendido es ATENCIÓN, las claves de TEST del archivo ya no son
+«OK» y `MICUENTAWEB_API_URL` tiene que ser la oficial.
+
+**Pruebas.** Esta vez, cada prueba se escribió y se vio fallar antes de su corrección.
+Mutaciones, una a una: 60, todas detectadas (una sobrevivió a la primera pasada y obligó
+a añadir su prueba). Pruebas nuevas: 74 en `test_payment_audit2`, 5 en `test_preflight`
+y 4 de Jest. Módulos de pagos, checkout, consola, medición, preflight y despliegue: 996,
+0 fallos, 3 omitidas (las pruebas contra la pasarela real). Jest 1072 de 1072, `tsc` y
+`lint` sin errores. **No se corrió en esta sesión** la suite completa de backend,
+Playwright ni el ensayo Docker.
+
+## 2026-10-11 — PAY-GUARD-01: cambios de pasarela, claves de TEST y lo que encontró la auditoría
+
+Rama `feat/izipay-smartform-v4`. **Con migración (`0117_payment_attempt_origin`). Sin
+rutas nuevas. Sin dependencias nuevas.** Decisiones: DEC-PAY-04, DEC-PAY-05, DEC-PAY-06.
+No desplegado. **Nada se probó contra la pasarela real: no hay credenciales.**
+
+**1. Un cambio de pasarela que dejaría un cobro sin confirmar no se hace** (DEC-PAY-04).
+Activar el otro producto, apagar o revocar el que cobra, cambiar de tienda o de entorno:
+con «Mi Cuenta Web» cobrando, el servidor pregunta antes a la pasarela por los cobros
+abiertos y rechaza el cambio (409, no cambia nada) mientras alguno pueda cobrarse o siga
+sin resolver. `INTERRUMPIR` ya no lo salta; queda para «SDK web / Checkout», que no se
+puede consultar, y para una pasarela que no responde, y deja en la auditoría los
+intentos interrumpidos. Renovar las claves de la misma tienda y entorno sigue permitido.
+
+**2. Las claves de TEST de la consola no son para compradores** (DEC-PAY-05). Sólo un
+MASTER con sesión abre un pago; a los demás la tienda les dice que el pago en línea
+todavía no está disponible. Un pedido pagado en TEST queda señalado en su intento y en
+la auditoría.
+
+**3. La auditoría independiente de la conciliación** (DEC-PAY-06): doce hallazgos.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| 1 | Tarjeta rechazada y luego aceptada en el mismo formulario, con la notificación del pago perdida: no se conciliaba nunca | CORREGIDO |
+| 2 | Dos cobros de un pedido archivados como un pago normal; segundo formulario sin preguntar por el primero | CORREGIDO |
+| 3 | Veinte compras abandonadas dejaban sin turno a un pago perdido; no se podía consultar una referencia | CORREGIDO |
+| 4 | Una respuesta sin decidir sólo dejaba un aviso en el registro de la tarea | CORREGIDO |
+| 5 | Varias pasadas a la vez escribían varios `payment_reconciled` | CORREGIDO |
+| 6 | Una pasarela que rechaza a quien llama se consultaba por cada intento | CORREGIDO |
+| 7 | Una respuesta cortada escapaba como excepción; lectura sin tope | CORREGIDO |
+| 8 | El intento no guardaba tienda ni entorno | CORREGIDO (intentos anteriores a `0117`: como antes) |
+| 9 | Un pago repetido volvía a pagar un pedido que había dejado de estarlo | CORREGIDO |
+| 10 | Una redirección reenviaba la contraseña | CORREGIDO; servidor de la API fijado al oficial |
+| 11 | Las credenciales se imprimían con su contraseña | CORREGIDO («Mi Cuenta Web»; las de «SDK web»: PAY-SDK-SECRETS-REPR) |
+| 12 | `--hours 0`, firma por defecto, textos y registro de los fallos de integridad | CORREGIDO; los medios de pago de más de 2 h quedan como límite documentado |
+
+**Pruebas que cambiaron, y por qué** (ninguna se relajó): las de la consola y las de
+medición pagaban como comprador anónimo con claves de TEST de la consola; ahora pagan
+como MASTER o con claves de producción simuladas. Un rechazo firmado deja el intento
+esperando en lugar de rechazado (hallazgo 1). El orden de consulta es «quien más lleva
+sin respuesta» en lugar de «el más reciente» (hallazgo 3).
+
+**Para el propietario.** Los pasos de TEST cambiaron: `docs/pagos-equipos-documentos.md`
+§1.3 (el pago de prueba se hace con la sesión de MASTER iniciada). Un cliente que dice
+que pagó: `reconcile_payments --reference <referencia>` (§1.5). Qué hace falta saber
+con claves de TEST: §1.5, al final.
+
+**Deuda que queda registrada** (`docs/AUDIT_MEMORY.md`): PAY-GET-UNKNOWNS,
+PAY-DEFERRED-WINDOW, PAY-TEST-ENV, PAY-TEST-BADGE, PAY-SDK-SECRETS-REPR, KRYPTON-GLUE,
+PAY-RECONCILE-REHEARSAL.
+
+**Pruebas.** RED antes que GREEN en lo nuevo de los cambios de pasarela y de las claves
+de TEST; los hallazgos de la auditoría venían ya demostrados por sus propias sondas.
+Mutaciones, una a una: 41 de las dos primeras partes y 59 de la tercera, todas
+detectadas (cinco sobrevivieron a la primera pasada y obligaron a añadir su prueba).
+Pruebas nuevas: 101 de backend (`test_payment_change_guard`, `test_payment_test_access`,
+`test_payment_hardening`) y 3 de Jest. Módulos de pagos, checkout, consola, medición y
+despliegue: 871, 0 fallos, 3 omitidas (las pruebas contra la pasarela real). Jest 1068
+de 1068, `tsc` y `lint` sin errores. **No se corrió en esta sesión** la suite completa
+de backend, Playwright ni el ensayo Docker.
+
+## 2026-10-11 — IZIPAY-MCW-AUDIT-01: «Mi Cuenta Web» contra su documentación, y la consulta que faltaba
+
+Rama `feat/izipay-smartform-v4`. **Sin migración. Sin rutas nuevas. Sin dependencias
+nuevas.** Decisión: DEC-PAY-03. No desplegado. **Nada se probó contra la pasarela real:
+no hay credenciales.**
+
+Se leyó la documentación oficial de la API REST V4 (inicio rápido del SmartForm, claves,
+`Charge/CreatePayment`, IPN, retorno al navegador, estados, `Order/Get`, reglas de
+notificación del Back Office, tarjetas de prueba, CSP) y se comparó con el código. La
+tabla completa, con la página de cada punto, está en
+`docs/pagos-equipos-documentos.md` §1.1.
+
+**Lo que ya cumplía y no se tocó:** crear el pago (dirección, `Basic`, importe entero
+en céntimos, `PEN`, `orderId` por intento), el guion y el tema oficiales como constantes
+del código, la firma del IPN con la contraseña, el rechazo de la copia del navegador,
+`PAID` como único pagado, la comparación de importe, moneda, tienda y referencia, el
+pago único ante notificaciones repetidas, TEST y PRODUCCIÓN decididos por las claves, y
+la consola (sólo MASTER, secretos cifrados y nunca devueltos).
+
+**Diferencias encontradas y qué se hizo.**
+
+| | Documentación | Antes | Ahora |
+|---|---|---|---|
+| Consulta si el IPN no llega | `Order/Get` devuelve las transacciones de una referencia | No existía (PAY-RECONCILE) | `reconcile_payments`: pregunta y paga por el mismo camino que una notificación |
+| Firma del IPN | el ejemplo oficial calcula el hash tras cambiar `\/` por `/` | sólo la cadena recibida: una notificación con barras escapadas se rechazaba | se acepta también esa lectura, y se interpreta lo que cubrió la firma |
+| Qué respuesta espera el IPN | falla si no es `200`–`206` o `301`/`302`/`303`/`307`/`308` | «sin verificar» | documentado; el código ya respondía así. Sin cambio |
+| React | «requiere» `embedded-form-glue` | guion oficial insertado directamente | sin cambio: no se añaden dependencias (KRYPTON-GLUE) |
+| CSP | abrir `static.micuentaweb.pe` si el sitio usa CSP | la política no restringe guiones ni conexiones | sin cambio: ya estaba fijada por una prueba |
+
+**La consulta, en una frase:** para cada intento de «Mi Cuenta Web» que sigue esperando
+(entre 3 minutos y 2 horas, los más recientes primero, hasta 20 por pasada), el servidor
+pregunta `Order/Get`, sólo cree un cobro pagado y completo de esta tienda, esta
+referencia y este entorno, y lo demás lo deja esperando. Detalle en
+`docs/pagos-equipos-documentos.md` §1.5.
+
+**Para el propietario.** Las claves de TEST se escriben en Configuración ›
+Integraciones › «Izipay · Mi Cuenta Web»: los pasos están en
+`docs/pagos-equipos-documentos.md` §1.3. En el servidor hay que añadir la línea de
+`reconcile_payments` de `deploy/crontab.example`.
+
+**Estado por punto del encargo.**
+
+| Punto | Estado |
+|---|---|
+| SmartForm V4: crear el pago, `Basic`, `formToken`, importes, guion, CSP, errores | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS para la prueba real |
+| IPN: firma, importe, moneda, pedido, tienda, estados, repetición, reintentos | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS |
+| Configuración desde Panel › Integraciones | IMPLEMENTADO (INTEGRATIONS-CONSOLE-01, sin cambios) |
+| Conciliación por `Order/Get` | IMPLEMENTADO con pasarela falsa · BLOCKED/CREDENTIALS |
+| Pruebas y flujo en TEST | IMPLEMENTADO con pasarela falsa; las dos pruebas reales se omiten sin claves |
+| Cambiar de proveedor o de claves sin romper cobros abiertos | PARCIAL en esta entrada; resuelto en PAY-GUARD-01 (arriba) |
+
+**Deuda que queda registrada** (`docs/AUDIT_MEMORY.md`): PAY-RECONCILE para el otro
+producto, PAY-TEST-PUBLIC, KRYPTON-GLUE, PAY-RECONCILE-REHEARSAL, PAY-SWITCH-PENDING.
+
+**Pruebas.** RED antes que GREEN en cada regla nueva; después, 34 mutaciones, una a
+una, todas detectadas (tres sobrevivieron a la primera pasada y obligaron a endurecer
+sus pruebas). Backend completo: 6057 pruebas, 0 fallos, 6 omitidas (tres son las pruebas
+contra la pasarela real, que piden claves). Módulos de pagos, consola y despliegue: 232,
+0 fallos, 3 omitidas. Frontend sin cambios: Jest 1059 de 1059, `tsc` y `lint` sin
+errores. La suite completa corrió antes de añadir dos pruebas de regresión, que sólo
+están en la pasada de módulos. Sin Playwright ni ensayo Docker en esta fase.
+
 ## 2026-10-11 — #102–#108 en `master` y desplegados
 
 Los siete PR apilados se fusionaron en orden, con commit de merge y CI verde en cada
