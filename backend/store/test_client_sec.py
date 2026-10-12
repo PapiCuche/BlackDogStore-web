@@ -783,3 +783,482 @@ class ProfileFirstSaveTwiceTest(_ProfileBase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(Customer.objects.filter(user=self.user).count(), 1)
         self.assertEqual(self.record().phone, '987654321')
+
+
+# =============================================================================
+# 3 · every online order is assessed
+# =============================================================================
+
+from decimal import Decimal  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from django.test import RequestFactory  # noqa: E402
+
+from store import order_risk as risk  # noqa: E402
+from store.models import (  # noqa: E402
+    CartItem, CompanySettings, Order, OrderRiskAssessment,
+)
+from store.tests import (  # noqa: E402
+    FAKE_SESSION_TOKEN, IZIPAY_TEST_SETTINGS, SESSION_TOKEN_PATH,
+    _c1_sale, _m5_stock, _p2d_branch, _p2d_member, _prod, _saas_branch,
+)
+
+WEB_CHECKOUT = '/api/payments/create-checkout-session/'
+Level = OrderRiskAssessment.Level
+Review = OrderRiskAssessment.ReviewStatus
+
+
+def from_address(ip='203.0.113.10', agent='Navegador de prueba/1.0'):
+    """The request an order arrived in, as far as an assessment cares."""
+    return RequestFactory().post('/', REMOTE_ADDR=ip, HTTP_USER_AGENT=agent)
+
+
+class _RiskBase(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Tienda A', 'riesgo-a', tax_id='20999999990')
+        self.b = _saas_company('Tienda B', 'riesgo-b', tax_id='20111111112')
+        self.n = 0
+
+    def buyer(self, username='compradora', *, verified=True):
+        user = User.objects.create_user(username, f'{username}@correo.test', PASSWORD, first_name='Ana')
+        if verified:
+            accounts.mark_email_verified(user)
+        return user
+
+    def order(self, company=None, user=None, *, total='100.00', paid=False, **extra):
+        """An online order as checkout leaves it: pending, with what the buyer typed."""
+        self.n += 1
+        extra.setdefault('customer_phone', f'9{self.n:08d}')
+        extra.setdefault('customer_email', f'pedido{self.n}@correo.test')
+        extra.setdefault('document_type', 'dni')
+        extra.setdefault('document_number', f'{40000000 + self.n}')
+        if user is None:
+            extra.setdefault('cart_session_key', f'carrito-{self.n}')
+        return _order(company or self.a, user=user, total=total, paid=paid, **extra)
+
+    def assess(self, order, ip='203.0.113.10'):
+        return risk.assess(order, from_address(ip) if ip else None)
+
+    def returning(self, company=None, username='compradora'):
+        """A verified buyer who has already paid for something here: nothing to notice."""
+        user = self.buyer(username)
+        self.order(company, user, paid=True)
+        return user
+
+    def amount(self, value, company=None):
+        CompanySettings.objects.update_or_create(
+            company=company or self.a, defaults={'risk_review_amount': Decimal(value)},
+        )
+
+
+class AssessmentRecordTest(_RiskBase):
+    def test_an_ordinary_order_is_low_and_asks_for_nobody(self):
+        order = self.order(user=self.returning())
+        row = self.assess(order)
+
+        self.assertEqual(row, OrderRiskAssessment.objects.get(order=order))
+        self.assertEqual((row.company, row.signals, row.score), (self.a, [], 0))
+        self.assertEqual((row.level, row.review_status), (Level.LOW, Review.NOT_REQUIRED))
+        self.assertEqual((row.reviewed_by, row.reviewed_at, row.review_note), (None, None, ''))
+
+    def test_the_address_is_kept_as_a_keyed_hash_and_nothing_else_of_the_request_is(self):
+        row = self.assess(self.order(user=self.returning()), ip='203.0.113.77')
+
+        self.assertRegex(row.ip_hash, r'^[0-9a-f]{64}$')
+        import hashlib
+        self.assertNotEqual(row.ip_hash, hashlib.sha256(b'203.0.113.77').hexdigest())   # keyed, not a bare hash
+        kept = json.dumps({f.name: str(getattr(row, f.name)) for f in OrderRiskAssessment._meta.fields})
+        self.assertNotIn('203.0.113.77', kept)
+        self.assertNotIn('Navegador de prueba', kept)
+        # No column could hold the address or the browser.
+        self.assertEqual({f.name for f in OrderRiskAssessment._meta.fields}, {
+            'id', 'company', 'order', 'level', 'score', 'signals', 'ip_hash', 'review_status',
+            'reviewed_by', 'reviewed_at', 'review_note', 'created_at', 'updated_at',
+        })
+
+    def test_the_same_address_is_another_hash_in_another_shop(self):
+        here = self.assess(self.order(self.a, self.returning(self.a, 'una')), ip='203.0.113.5')
+        there = self.assess(self.order(self.b, self.returning(self.b, 'otra')), ip='203.0.113.5')
+        again = self.assess(self.order(self.a, User.objects.get(username='una')), ip='203.0.113.5')
+        self.assertEqual(here.ip_hash, again.ip_hash)
+        self.assertNotEqual(here.ip_hash, there.ip_hash)
+
+    def test_the_key_is_this_installations_and_its_own(self):
+        order = self.order(user=self.returning())
+        first = risk.origin_hash(self.a, from_address('203.0.113.5'))
+        with override_settings(SECRET_KEY='otra-clave-de-prueba-que-no-es-la-misma'):
+            self.assertNotEqual(risk.origin_hash(self.a, from_address('203.0.113.5')), first)
+        self.assertEqual(risk.origin_hash(self.a, None), '')
+        self.assertEqual(self.assess(order, ip=None).ip_hash, '')
+
+    def test_what_is_kept_is_the_code_of_each_rule_never_what_tripped_it(self):
+        self.amount('50.00')
+        Customer.objects.create(
+            company=self.a, first_name='Archivada', document_type='dni', document_number='40009999', is_active=False,
+        )
+        order = self.order(total='5000.00', document_number='40009999', customer_phone='987000111', customer_email='rara@correo.test')
+        row = self.assess(order)
+
+        self.assertTrue(set(row.signals) <= set(risk.SIGNALS))
+        self.assertEqual(row.signals, sorted(row.signals, key=risk.SIGNALS.index))
+        kept = json.dumps(row.signals)
+        for value in ('40009999', '987000111', 'rara@correo.test', '5000', 'Archivada'):
+            self.assertNotIn(value, kept)
+
+    def test_it_belongs_to_the_company_of_its_order(self):
+        order = self.order(self.a)
+        with self.assertRaises(ValueError):
+            OrderRiskAssessment.objects.create(company=self.b, order=order)
+
+    def test_an_order_is_assessed_once(self):
+        order = self.order(user=self.returning())
+        first = self.assess(order)
+        self.assertIsNone(self.assess(order))
+        self.assertEqual(OrderRiskAssessment.objects.get(order=order).pk, first.pk)
+
+
+class EachSignalTest(_RiskBase):
+    def signals(self, order, ip='203.0.113.10'):
+        return set(self.assess(order, ip).signals)
+
+    # -- who is buying ---------------------------------------------------------
+
+    def test_guest_checkout(self):
+        self.assertIn(risk.SIGNAL_GUEST_CHECKOUT, self.signals(self.order()))
+        self.assertNotIn(risk.SIGNAL_GUEST_CHECKOUT, self.signals(self.order(user=self.buyer())))
+
+    def test_email_unverified_is_about_an_account(self):
+        unknown = self.buyer('sin_verificar', verified=False)
+        self.assertIn(risk.SIGNAL_EMAIL_UNVERIFIED, self.signals(self.order(user=unknown)))
+        self.assertNotIn(risk.SIGNAL_EMAIL_UNVERIFIED, self.signals(self.order(user=self.buyer('verificada'))))
+        # A guest has no account to verify: that is its own signal, not this one.
+        self.assertNotIn(risk.SIGNAL_EMAIL_UNVERIFIED, self.signals(self.order()))
+
+    def test_first_order_of_an_account(self):
+        user = self.buyer()
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))       # that one was never paid
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))
+        self.order(self.b, user, paid=True)                                               # paid, in another shop
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))
+        self.order(self.a, user, paid=True)
+        self.assertNotIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(user=user)))
+
+    def test_first_order_of_a_guest_is_about_the_client_the_shop_matched(self):
+        client = Customer.objects.create(company=self.a, first_name='Cliente', document_type='dni', document_number='40007777')
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(customer=client)))
+        self.order(customer=client, paid=True)
+        self.assertNotIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order(customer=client)))
+        self.assertIn(risk.SIGNAL_FIRST_ORDER, self.signals(self.order()))                # nobody the shop knows
+
+    # -- how much ---------------------------------------------------------------
+
+    def test_high_amount_is_off_until_the_company_names_an_amount(self):
+        self.assertIsNone(CompanySettings.objects.filter(company=self.a).values_list('risk_review_amount', flat=True).first())
+        self.assertNotIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(total='999999.00')))
+
+    def test_high_amount_from_the_companys_own_amount_upwards(self):
+        self.amount('1000.00')
+        self.assertNotIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(total='999.99')))
+        self.assertIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(total='1000.00')))
+        self.assertIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(total='1500.00')))
+
+    def test_high_amount_reads_the_amount_of_the_orders_company(self):
+        self.amount('10.00', self.b)
+        self.assertNotIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(self.a, total='5000.00')))
+        self.assertIn(risk.SIGNAL_HIGH_AMOUNT, self.signals(self.order(self.b, total='5000.00')))
+
+    # -- how often --------------------------------------------------------------
+
+    def test_velocity_ip_from_the_third_order_of_one_address_in_an_hour(self):
+        self.assertEqual(risk.VELOCITY_IP_ORDERS, 3)
+        self.assertEqual(risk.VELOCITY_IP_WINDOW, timedelta(hours=1))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.8'))      # another address
+        self.assertIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+
+    def test_velocity_ip_forgets_after_the_hour(self):
+        for _ in range(2):
+            self.assess(self.order(), '198.51.100.7')
+        OrderRiskAssessment.objects.update(created_at=timezone.now() - timedelta(minutes=61))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), '198.51.100.7'))
+
+    def test_velocity_ip_never_counts_another_companys_orders(self):
+        for _ in range(4):
+            self.assess(self.order(self.b), '198.51.100.7')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(self.a), '198.51.100.7'))
+
+    def test_velocity_ip_needs_an_address(self):
+        for _ in range(4):
+            self.assertNotIn(risk.SIGNAL_VELOCITY_IP, self.signals(self.order(), ip=None))
+
+    def shared(self, n, company=None, **same):
+        """`n` orders by `n` different guests that share one contact detail."""
+        return [self.order(company, **same) for _ in range(n)]
+
+    def test_velocity_contact_from_the_third_buyer_with_one_phone_in_a_day(self):
+        self.assertEqual(risk.VELOCITY_CONTACT_BUYERS, 3)
+        self.assertEqual(risk.VELOCITY_CONTACT_WINDOW, timedelta(hours=24))
+        self.order(customer_phone='987 111 222')
+        second = self.order(user=self.buyer('otra'), customer_phone='+51987111222')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(second))
+        third = self.order(customer_phone='987111222')                       # written three ways, one number
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(third))
+
+    def test_velocity_contact_by_address_and_by_document(self):
+        self.shared(2, customer_email='Compartido@Correo.test')
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_email='compartido@correo.test')))
+
+        self.shared(2, document_type='dni', document_number='40005555')
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(document_type='dni', document_number='40005555')))
+        # The same number under another type is another document.
+        self.shared(2, document_type='ce', document_number='40006666')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(document_type='dni', document_number='40006666')))
+
+    def test_velocity_contact_is_about_different_buyers_not_one_buying_again(self):
+        user = self.buyer()
+        for _ in range(4):
+            last = self.order(user=user, customer_phone='987111222')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(last))
+
+        # One browser trying its payment again is one guest.
+        for _ in range(4):
+            last = self.order(customer_phone='987333444', cart_session_key='un-mismo-carrito')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(last))
+
+    def test_velocity_contact_forgets_after_a_day(self):
+        self.shared(2, customer_phone='987111222')
+        Order.objects.update(created_at=timezone.now() - timedelta(hours=25))
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_phone='987111222')))
+
+    def test_velocity_contact_never_counts_another_companys_orders(self):
+        self.shared(5, self.b, customer_phone='987111222', customer_email='compartido@correo.test',
+                    document_type='dni', document_number='40005555')
+        order = self.order(self.a, customer_phone='987111222', customer_email='compartido@correo.test',
+                           document_type='dni', document_number='40005555')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(order))
+
+    def test_velocity_contact_is_about_online_orders(self):
+        self.shared(4, customer_phone='987111222', sales_channel='pos')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(customer_phone='987111222')))
+
+    def test_an_empty_detail_is_shared_with_nobody(self):
+        self.shared(4, customer_phone='', customer_email='', document_type='', document_number='')
+        order = self.order(customer_phone='', customer_email='', document_type='', document_number='')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(order))
+
+    # -- who the shop knows -------------------------------------------------------
+
+    def test_document_mismatch_between_the_buyers_record_and_the_order(self):
+        user = self.buyer()
+        Customer.objects.create(company=self.a, user=user, first_name='Ana', document_type='dni', document_number='40001111')
+        self.assertIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(user=user, document_number='40002222')))
+        self.assertIn(risk.SIGNAL_DOCUMENT_MISMATCH,
+                      self.signals(self.order(user=user, document_type='ce', document_number='40001111')))
+        self.assertNotIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(user=user, document_number='40001111')))
+
+    def test_document_mismatch_needs_a_record_with_a_document_in_this_company(self):
+        user = self.buyer()
+        self.assertNotIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(user=user)))       # no record
+        Customer.objects.create(company=self.a, user=user, first_name='Ana')                       # a record, no document
+        self.assertNotIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(user=user)))
+        Customer.objects.create(company=self.b, user=user, first_name='Ana', document_type='dni', document_number='40001111')
+        self.assertNotIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(self.a, user=user, document_number='40002222')))
+        self.assertNotIn(risk.SIGNAL_DOCUMENT_MISMATCH, self.signals(self.order(document_number='40002222')))   # a guest
+
+    def test_archived_customer_by_account_asks_for_a_person_whatever_the_score(self):
+        user = self.returning()
+        Customer.objects.create(company=self.a, user=user, first_name='Ana', is_active=False)
+        row = self.assess(self.order(user=user))
+        self.assertEqual(row.signals, [risk.SIGNAL_ARCHIVED_CUSTOMER])
+        self.assertEqual(row.level, risk.level_for(risk.WEIGHTS[risk.SIGNAL_ARCHIVED_CUSTOMER]))
+        self.assertNotEqual(row.level, Level.HIGH)
+        self.assertEqual(row.review_status, Review.PENDING)
+
+    def test_archived_customer_by_document(self):
+        Customer.objects.create(
+            company=self.a, first_name='Archivada', document_type='dni', document_number='40003333', is_active=False,
+        )
+        self.assertIn(risk.SIGNAL_ARCHIVED_CUSTOMER, self.signals(self.order(document_number='40003333')))
+        self.assertNotIn(risk.SIGNAL_ARCHIVED_CUSTOMER,
+                         self.signals(self.order(document_type='ce', document_number='40003333')))
+
+    def test_archived_customer_is_about_this_company_and_about_archived_records(self):
+        user = self.returning()
+        Customer.objects.create(company=self.b, user=user, first_name='Ana', is_active=False)
+        Customer.objects.create(company=self.b, first_name='Otra', document_type='dni', document_number='40003333', is_active=False)
+        Customer.objects.create(company=self.a, first_name='Activa', document_type='dni', document_number='40004444')
+        self.assertNotIn(risk.SIGNAL_ARCHIVED_CUSTOMER, self.signals(self.order(self.a, user=user, document_number='40003333')))
+        self.assertNotIn(risk.SIGNAL_ARCHIVED_CUSTOMER, self.signals(self.order(self.a, document_number='40004444')))
+
+
+class ScoreAndLevelTest(_RiskBase):
+    def test_every_signal_has_a_weight_and_words_for_the_panel(self):
+        self.assertEqual(set(risk.SIGNALS), {
+            'guest_checkout', 'email_unverified', 'first_order', 'high_amount',
+            'velocity_ip', 'velocity_contact', 'document_mismatch', 'archived_customer',
+        })
+        self.assertEqual(set(risk.WEIGHTS), set(risk.SIGNALS))
+        self.assertEqual(set(risk.LABELS), set(risk.SIGNALS))
+        for code in risk.SIGNALS:
+            self.assertGreater(risk.WEIGHTS[code], 0, code)
+            self.assertTrue(risk.LABELS[code].strip(), code)
+
+    def test_the_level_comes_from_the_score_at_two_thresholds(self):
+        self.assertLess(risk.MEDIUM_SCORE, risk.HIGH_SCORE)
+        for score, level in (
+            (0, Level.LOW), (risk.MEDIUM_SCORE - 1, Level.LOW),
+            (risk.MEDIUM_SCORE, Level.MEDIUM), (risk.HIGH_SCORE - 1, Level.MEDIUM),
+            (risk.HIGH_SCORE, Level.HIGH), (risk.HIGH_SCORE + 40, Level.HIGH),
+        ):
+            with self.subTest(score):
+                self.assertEqual(risk.level_for(score), level)
+
+    def test_the_score_is_the_sum_of_what_was_noticed(self):
+        self.amount('1000.00')
+        row = self.assess(self.order(total='2000.00'))
+        self.assertEqual(set(row.signals), {risk.SIGNAL_GUEST_CHECKOUT, risk.SIGNAL_FIRST_ORDER, risk.SIGNAL_HIGH_AMOUNT})
+        self.assertEqual(row.score, sum(risk.WEIGHTS[code] for code in row.signals))
+        self.assertEqual(row.level, risk.level_for(row.score))
+
+    def test_a_first_purchase_without_an_account_is_ordinary(self):
+        # Proportional: what most honest buyers look like must not ask for anybody.
+        row = self.assess(self.order())
+        self.assertEqual(set(row.signals), {risk.SIGNAL_GUEST_CHECKOUT, risk.SIGNAL_FIRST_ORDER})
+        self.assertEqual((row.level, row.review_status), (Level.LOW, Review.NOT_REQUIRED))
+
+        row = self.assess(self.order(user=self.buyer(verified=False)))
+        self.assertEqual(set(row.signals), {risk.SIGNAL_EMAIL_UNVERIFIED, risk.SIGNAL_FIRST_ORDER})
+        self.assertEqual((row.level, row.review_status), (Level.LOW, Review.NOT_REQUIRED))
+
+    def test_a_high_level_asks_for_a_person_and_a_medium_one_does_not(self):
+        self.amount('1000.00')
+        medium = self.assess(self.order(total='2000.00'))
+        self.assertEqual((medium.level, medium.review_status), (Level.MEDIUM, Review.NOT_REQUIRED))
+
+        for _ in range(2):
+            self.assess(self.order(), '198.51.100.7')
+        high = self.assess(self.order(total='2000.00'), '198.51.100.7')
+        self.assertGreaterEqual(high.score, risk.HIGH_SCORE)
+        self.assertEqual((high.level, high.review_status), (Level.HIGH, Review.PENDING))
+
+
+@override_settings(ALLOWED_HOSTS=['*'], **IZIPAY_TEST_SETTINGS)
+class AssessedAtCheckoutTest(TestCase):
+    """Where an online order is made — and only there."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda', 'riesgo-caja', tax_id='20999999990')
+        self.branch = self.company.branches.first() or _saas_branch(self.company)
+        self.company.default_inventory_branch = self.branch
+        self.company.save(update_fields=['default_inventory_branch'])
+        self.product = _prod(self.company, 'Funda', 'funda-riesgo', price='80.00')
+        _m5_stock(self.product, self.branch, 50)
+        self.host = {'HTTP_HOST': 'riesgo-caja.example.com'}
+        patcher = patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def web_body(self, session='carrito-web-1', **overrides):
+        CartItem.objects.get_or_create(session_key=session, product=self.product, defaults={'quantity': 1})
+        body = {
+            'session_key': session, 'customer_name': 'Ana Torres', 'customer_email': 'ana@correo.test',
+            'customer_phone': '987654321', 'document_type': 'dni', 'document_number': DNI,
+            'delivery_method': 'pickup_store', 'receipt_type': 'boleta',
+            'accepted_terms': True, 'accepted_warranty_policy': True,
+        }
+        body.update(overrides)
+        return body
+
+    def web_checkout(self, client=None, **overrides):
+        cache.clear()
+        return (client or APIClient()).post(
+            WEB_CHECKOUT, self.web_body(**overrides), format='json', REMOTE_ADDR='203.0.113.40', **self.host,
+        )
+
+    def app_checkout(self, client, **overrides):
+        cache.clear()
+        body = {
+            'items': [{'product_slug': 'funda-riesgo', 'quantity': 1}], 'customer_name': 'Ana Torres',
+            'customer_phone': '987654321', 'document_type': 'dni', 'document_number': DNI,
+            'delivery_method': 'pickup_store', 'receipt_type': 'boleta', 'accepted_terms': True,
+            'accepted_warranty_policy': True, 'idempotency_key': 'pedido-app-0001',
+        }
+        body.update(overrides)
+        return client.post('/api/v1/customer/riesgo-caja/checkout/', body, format='json', REMOTE_ADDR='203.0.113.41')
+
+    def test_a_guest_on_the_web(self):
+        response = self.web_checkout()
+        self.assertEqual(response.status_code, 200, response.content)
+        row = OrderRiskAssessment.objects.get(order_id=response.json()['order_id'])
+        self.assertEqual(row.company, self.company)
+        self.assertEqual(set(row.signals), {risk.SIGNAL_GUEST_CHECKOUT, risk.SIGNAL_FIRST_ORDER})
+        self.assertEqual(row.ip_hash, risk.origin_hash(self.company, from_address('203.0.113.40')))
+        # The buyer is told nothing about it.
+        self.assertNotIn('risk', response.content.decode().lower())
+        self.assertNotIn('review', response.content.decode().lower())
+
+    def test_a_signed_in_buyer_on_the_web(self):
+        user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD, first_name='Ana')
+        response = self.web_checkout(web_session(user))
+        self.assertEqual(response.status_code, 200, response.content)
+        row = OrderRiskAssessment.objects.get(order_id=response.json()['order_id'])
+        self.assertEqual(set(row.signals), {risk.SIGNAL_EMAIL_UNVERIFIED, risk.SIGNAL_FIRST_ORDER})
+
+    def test_the_app(self):
+        user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD, first_name='Ana')
+        accounts.mark_email_verified(user)
+        Customer.objects.create(company=self.company, user=user, first_name='Ana', document_type='dni', document_number='70000009')
+        client = v1_session(user)
+        response = self.app_checkout(client)
+        self.assertEqual(response.status_code, 201, response.content)
+        row = OrderRiskAssessment.objects.get(order_id=response.json()['order_id'])
+        self.assertEqual(set(row.signals), {risk.SIGNAL_FIRST_ORDER, risk.SIGNAL_DOCUMENT_MISMATCH})
+        self.assertEqual(row.ip_hash, risk.origin_hash(self.company, from_address('203.0.113.41')))
+        self.assertNotIn('risk', response.content.decode().lower())
+
+        # The same request again is the same order, and it is not assessed twice.
+        again = self.app_checkout(client)
+        self.assertEqual(again.json()['order_id'], response.json()['order_id'])
+        self.assertEqual(OrderRiskAssessment.objects.count(), 1)
+
+    def test_an_assessment_that_breaks_never_costs_the_sale(self):
+        def broken(order, request):
+            # A refusal of the DATABASE, the kind that poisons a transaction.
+            Customer.objects.create(company=order.company)
+
+        with patch('store.order_risk._assess', side_effect=broken), self.assertLogs('store.order_risk', level='ERROR') as logged:
+            response = self.web_checkout()
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual(order.items.count(), 1)
+        self.assertEqual(order.status, Order.Status.PENDING_PAYMENT)
+        self.assertFalse(OrderRiskAssessment.objects.exists())                # no row: «not assessed», not «low»
+        text = '\n'.join(logged.output)
+        for value in ('ana@correo.test', '987654321', DNI, 'Ana Torres', '203.0.113.40'):
+            self.assertNotIn(value, text)
+
+    def test_a_python_error_in_it_does_not_cost_the_sale_either(self):
+        with patch('store.order_risk._signals', side_effect=RuntimeError('ana@correo.test 987654321')), \
+                self.assertLogs('store.order_risk', level='ERROR') as logged:
+            response = self.web_checkout()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(OrderRiskAssessment.objects.exists())
+        self.assertNotIn('ana@correo.test', '\n'.join(logged.output))         # the error's own words are not logged
+
+    def test_a_sale_at_the_till_is_not_assessed(self):
+        cashier, _ = _p2d_member(self.company, 'caja_riesgo', ['company.view', 'sales.pos.use'])
+        order, created = _c1_sale(
+            actor=cashier, company=self.company, branch=self.branch,
+            items=[{'product': self.product.pk, 'quantity': 1}],
+        )
+        self.assertTrue(created)
+        self.assertEqual(order.sales_channel, 'pos')
+        self.assertFalse(OrderRiskAssessment.objects.exists())
+
+    def test_an_order_from_before_has_no_row(self):
+        order = _order(self.company, total='900.00', paid=True)
+        self.assertFalse(OrderRiskAssessment.objects.filter(order=order).exists())
+        self.assertIsNone(risk.for_order(order))

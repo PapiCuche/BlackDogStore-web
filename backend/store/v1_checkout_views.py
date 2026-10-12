@@ -157,6 +157,7 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
                 order_user=request.user,
                 cart_session_key='',
                 idempotency=checkout.IdempotencyStamp(key=key, fingerprint=fingerprint),
+                request=request,
             )
         except IntegrityError:
             # Lost the race. Another request with this key committed first, so

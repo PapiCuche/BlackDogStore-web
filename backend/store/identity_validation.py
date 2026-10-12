@@ -70,6 +70,16 @@ def clean_phone(value) -> str:
     return normalize_customer_phone(value)
 
 
+def phone_key(value) -> str:
+    """
+    A phone as something to COMPARE, or '': its last nine digits, which is the
+    whole of a Peruvian mobile. `987 654 321`, `+51987654321` and `51 987654321`
+    are one number written three ways. Never stored, never shown.
+    """
+    digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    return digits[-9:] if len(digits) >= 9 else ''
+
+
 def ruc_check_digit_matches(number: str) -> bool:
     """
     Whether the eleventh digit of a RUC is the one its first ten produce

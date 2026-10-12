@@ -288,6 +288,7 @@ class CreateCheckoutSessionView(APIView):
                 # No idempotency key: the browser contract has none and is not
                 # being changed to acquire one.
                 idempotency=None,
+                request=request,
             )
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
