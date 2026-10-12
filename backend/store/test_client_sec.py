@@ -3309,3 +3309,24 @@ class TheOwnAddressMailTest(SimpleTestCase):
         self.assertNotIn('boton', data)
         self.assertNotIn('secundario', data)
         self.assertNotIn('http', json.dumps(data))
+
+
+class HalfACharacterInANameTest(_ProfileBase):
+    """P2-1 · a lone surrogate in a name is an answer about the field, not an error."""
+
+    def test_it_is_refused_and_nothing_is_written(self):
+        for field in ('first_name', 'last_name'):
+            with self.subTest(field):
+                cache.clear()
+                response = self.web.patch(WEB_PROFILE, data='{"%s": "Ana \\ud83d"}' % field,
+                                          content_type='application/json', **self.host(self.a))
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        self.user.refresh_from_db()
+        self.assertEqual((self.user.first_name, self.record()), ('Ana', None))
+
+    def test_the_rule_is_the_one_control_characters_have(self):
+        self.assertTrue(identity.has_control_characters('Ana \ud800'))
+        self.assertTrue(identity.has_control_characters('\udfff'))
+        self.assertFalse(identity.has_control_characters('Ana \U0001F600 Ñandú'))
+        self.assertFalse(identity.has_control_characters('\ud7ff\ue000'))

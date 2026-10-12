@@ -47,10 +47,12 @@ _RUC_WEIGHTS = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
 def has_control_characters(text: str) -> bool:
     """
     Whether a text carries a character nobody types into a name or an address:
-    NUL (the database refuses it outright), a line break, an escape. Refused
-    where the text is judged, so it is an answer about a field and not a failure.
+    NUL (the database refuses it outright), a line break, an escape — or half
+    a character: a lone surrogate, which JSON can spell (`"\\ud800"`) and no
+    database can store. Refused where the text is judged, so it is an answer
+    about a field and not a failure.
     """
-    return any(ord(ch) < 32 or ord(ch) == 127 for ch in text)
+    return any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in text)
 
 
 class IdentityError(ValueError):

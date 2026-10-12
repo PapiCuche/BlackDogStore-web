@@ -642,13 +642,25 @@ def _freight(raw):
         _refuse('freight_amount', 'Escribe un monto.')
     if not amount.is_finite() or amount < 0:
         _refuse('freight_amount', 'El flete no puede ser negativo.')
-    if amount != amount.quantize(Decimal('0.01')) or amount >= Decimal('100000000'):
+    # The size first: quantizing «1e30» is an arithmetic error, not an answer.
+    if amount >= Decimal('100000000'):
+        _refuse('freight_amount', 'Ese monto es demasiado grande.')
+    if amount != amount.quantize(Decimal('0.01')):
         _refuse('freight_amount', 'Escribe un monto con dos decimales como máximo.')
     return amount.quantize(Decimal('0.01'))
 
 
+# A moment an order can have left the shop: this century, and not further ahead
+# than a date somebody mistyped by a year. Outside it the value is refused — a
+# date near the end of the calendar is stored by the database and then read by
+# nobody (it has no moment in UTC that Python can hold).
+_SHIPPED_NOT_BEFORE = (2000, 1, 1)
+_SHIPPED_AHEAD = 365                     # days
+_NO_SUCH_MOMENT = 'Indica una fecha y hora válidas.'
+
+
 def _shipped_at(raw):
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone as utc_zone
 
     from django.utils import timezone
     from django.utils.dateparse import parse_datetime
@@ -657,11 +669,17 @@ def _shipped_at(raw):
         return None
     try:
         moment = raw if isinstance(raw, datetime) else parse_datetime(raw) if isinstance(raw, str) else None
-    except ValueError:
+        if moment is not None:
+            # In UTC, where it is stored: the edges of the calendar have no such moment.
+            moment = (timezone.make_aware(moment) if timezone.is_naive(moment) else moment).astimezone(utc_zone.utc)
+    except (ValueError, OverflowError):
         moment = None
     if moment is None:
-        _refuse('shipped_at', 'Indica una fecha y hora válidas.')
-    return timezone.make_aware(moment) if timezone.is_naive(moment) else moment
+        _refuse('shipped_at', _NO_SUCH_MOMENT)
+    earliest = datetime(*_SHIPPED_NOT_BEFORE, tzinfo=utc_zone.utc)
+    if moment < earliest or moment > timezone.now() + timedelta(days=_SHIPPED_AHEAD):
+        _refuse('shipped_at', 'Esa fecha no puede ser la de un envío: revisa el año.')
+    return moment
 
 
 def _staff_values(company, data, record) -> dict:
@@ -778,7 +796,9 @@ def update_order_delivery(*, order, company, actor, data, request=None):
                 metadata={'order_id': order.pk, 'created': created, 'changed_fields': changed},
                 request=request, company=company,
             )
-    return record_for(order)
+        # Read back BEFORE the commit: what was written is what the next reader
+        # gets, and a row that cannot be read is never left behind.
+        return record_for(order)
 
 
 # ---------------------------------------------------------------------------

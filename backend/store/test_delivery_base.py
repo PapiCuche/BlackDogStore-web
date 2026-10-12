@@ -1450,3 +1450,106 @@ class WhatTheBuyerSeesTest(_StaffDeliveryBase):
         with CaptureQueriesContext(connection) as queries:
             client.get('/api/v1/customer/envios-a/orders/')
         self.assertEqual([q['sql'] for q in queries.captured_queries if 'FROM "store_orderdelivery"' in q['sql']], [])
+
+
+# ---------------------------------------------------------------------------
+# 7 · after the second independent review
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from django.utils import timezone  # noqa: E402
+
+
+class WhatCannotBeReadIsNotSavedTest(_StaffDeliveryBase):
+    """P2-1 · a value the next reader would choke on is an answer about a field, never a row."""
+
+    def readers_answer(self):
+        self.assertEqual(self.read(self.manager).status_code, 200)
+        self.assertEqual(v1_session(self.buyer).get('/api/v1/customer/envios-a/orders/').status_code, 200)
+
+    def test_a_shipping_moment_is_inside_a_sane_window(self):
+        now = timezone.now()
+        for moment in (
+            '9999-12-31T23:59:59-05:00', '9999-12-31T23:59:59Z', '1999-12-31T23:59:59Z', '0001-01-01T00:00:00+05:00',
+            (now + timedelta(days=366)).isoformat(),
+        ):
+            with self.subTest(moment):
+                response = self.write(self.manager, {'shipped_at': moment, 'waybill_number': 'NO-GUARDADA'})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('shipped_at', response.json())
+        record = self.record()
+        self.assertEqual((record.shipped_at, record.waybill_number), (None, ''))
+        self.readers_answer()
+
+    def test_the_edges_of_that_window_are_inside_it(self):
+        self.assertEqual(self.write(self.manager, {'shipped_at': '2000-01-01T00:00:00Z'}).status_code, 200)
+        soon = timezone.now() + timedelta(days=364)
+        self.assertEqual(self.write(self.manager, {'shipped_at': soon.isoformat()}).status_code, 200)
+        self.assertEqual(self.record().shipped_at, soon)
+        self.readers_answer()
+
+    def test_a_write_that_cannot_be_read_back_is_not_kept(self):
+        client = acting(self.manager)
+        client.raise_request_exception = False
+        with patch.object(delivery, 'record_for', side_effect=OverflowError('date value out of range')):
+            response = client.patch(self.url(self.order, 'panel'), {'waybill_number': 'G-1', 'recipient_name': 'Otra'}, format='json')
+        self.assertEqual(response.status_code, 500)
+        record = self.record()
+        self.assertEqual((record.waybill_number, record.recipient_name, record.updated_by), ('', 'Ana Torres', None))
+        self.assertEqual(self.entries(), [])
+        self.readers_answer()
+
+    def test_a_freight_no_column_holds_is_refused_not_an_error(self):
+        for amount in ('1e30', '1E+30', '9e99999', 1e30, 'Infinity', '-Infinity', 'NaN', '100000000', '1e8'):
+            with self.subTest(amount):
+                response = self.write(self.manager, {'freight_amount': amount})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('freight_amount', response.json())
+        self.assertIsNone(self.record().freight_amount)
+        self.assertEqual(self.write(self.manager, {'freight_amount': '99999999.99'}).status_code, 200)
+        self.assertEqual(self.record().freight_amount, Decimal('99999999.99'))
+        self.assertEqual(self.write(self.manager, {'freight_amount': '1e3'}).status_code, 200)
+        self.assertEqual(self.record().freight_amount, Decimal('1000.00'))
+
+    def test_half_a_character_in_what_staff_type_is_refused(self):
+        client = acting(self.manager)
+        for field in ('recipient_name', 'agency_name', 'agency_locality', 'waybill_number', 'tracking_code'):
+            with self.subTest(field):
+                response = client.patch(self.url(self.order, 'panel'), data='{"%s": "Ana \\ud800"}' % field,
+                                        content_type='application/json')
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        self.assertEqual(self.entries(), [])
+
+    def test_half_a_character_in_a_carriers_name_is_refused(self):
+        response = acting(self.admin).post(CARRIERS, data='{"name": "Agencia \\udfff", "kind": "agency"}',
+                                           content_type='application/json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('name', response.json())
+        self.assertEqual(Carrier.objects.filter(company=self.a).count(), 2)
+
+
+class HalfACharacterInTheBookTest(_BookBase):
+    """P2-1 · a lone surrogate is not text a database stores: refused where control characters are."""
+
+    def test_it_is_refused_in_every_free_text_of_an_entry(self):
+        for field in ('label', 'recipient_name', 'address_line', 'district', 'city', 'department', 'reference'):
+            with self.subTest(field):
+                body = json.dumps({**door(), field: 'Ana MARK'}).replace('MARK', '\\ud800')
+                cache.clear()
+                response = self.web.post(WEB_BOOK, data=body, content_type='application/json', **self.host())
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        for field in ('agency_name', 'agency_locality'):
+            with self.subTest(field):
+                body = json.dumps({**self.office(), field: 'Centro MARK'}).replace('MARK', '\\udc00')
+                cache.clear()
+                response = self.web.post(WEB_BOOK, data=body, content_type='application/json', **self.host())
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json())
+        self.assertFalse(CustomerAddress.objects.exists())
+
+    def test_a_whole_character_outside_the_basic_plane_is_text(self):
+        entry = self.add(door(recipient_name='Ana \U0001F600 Torres'))
+        self.assertEqual(entry.recipient_name, 'Ana \U0001F600 Torres')
