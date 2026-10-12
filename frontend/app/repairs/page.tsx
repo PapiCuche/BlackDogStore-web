@@ -77,6 +77,10 @@ export default function RepairsPage() {
           <Link href="/orders" className="font-semibold text-foreground underline underline-offset-4">
             Ver mis pedidos
           </Link>
+          {" · "}
+          <Link href="/account" className="font-semibold text-foreground underline underline-offset-4">
+            Mi cuenta
+          </Link>
         </p>
       </header>
 

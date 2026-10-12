@@ -88,6 +88,10 @@ export default function OrdersPage() {
             <Link href="/repairs" className="font-semibold text-foreground underline underline-offset-4">
               Ver mis reparaciones
             </Link>
+            {" · "}
+            <Link href="/account" className="font-semibold text-foreground underline underline-offset-4">
+              Mi cuenta
+            </Link>
           </p>
         </header>
 

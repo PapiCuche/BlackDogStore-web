@@ -251,8 +251,11 @@ export function Header() {
               <Link href="/repairs" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
                 Reparaciones
               </Link>
-              <Link href="/account" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
-                Mi cuenta
+              {/* From `xl` up only: at `lg` this row is already full for somebody
+                  who also has «Control interno». Below that, the profile is
+                  reached from «Pedidos» and from the menu. */}
+              <Link href="/account" className="hidden rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground xl:inline-flex">
+                Cuenta
               </Link>
               {internalAccess && (
                 <Link href="/admin" className="rounded-lg px-2.5 py-2 transition hover:bg-surface-2 hover:text-foreground">
