@@ -134,6 +134,19 @@ describe('the review card', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ decision, note: 'La clienta confirmó.' });
   });
 
+  it('while a decision is on its way neither button can be pressed again', async () => {
+    let answer: (value: Response) => void = () => {};
+    send.mockReturnValue(new Promise<Response>((resolve) => { answer = resolve; }));
+    const onReviewed = jest.fn();
+    render(<OrderRiskCard orderId={7} risk={risk()} onReviewed={onReviewed} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rechazar' }));
+
+    expect(await screen.findByRole('button', { name: 'Guardando…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Aprobar' })).toBeDisabled();
+    answer(reply(200, { risk: risk({ review_status: 'rejected', can_review: false }) }));
+    await waitFor(() => expect(onReviewed).toHaveBeenCalledTimes(1));
+  });
+
   it('a review that was already decided shows who, when and why, and no buttons', () => {
     render(
       <OrderRiskCard

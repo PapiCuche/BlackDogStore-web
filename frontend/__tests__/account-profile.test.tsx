@@ -103,6 +103,13 @@ test('a verified address', async () => {
   expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();
 });
 
+test('a verified address is never offered a verification, whatever else the server says', async () => {
+  profile.email_verified_at = '2026-10-01T10:00:00Z';
+  profile.email_verification_available = true;
+  await opened();
+  expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();
+});
+
 test('sending the verification again is offered only when the server says it would do something', async () => {
   await opened();
   expect(screen.queryByRole('button', { name: 'Reenviar verificación' })).not.toBeInTheDocument();

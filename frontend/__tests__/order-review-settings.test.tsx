@@ -110,3 +110,17 @@ test('a refusal for lack of permission shows the server\'s reason', async () => 
   expect(await screen.findByRole('alert')).toHaveTextContent('No tienes permisos para cambiar la revisión de pedidos');
   expect(onSaved).not.toHaveBeenCalled();
 });
+
+test('while a save is on its way it cannot be sent again', async () => {
+  let answer: (value: Response) => void = () => {};
+  send.mockReturnValue(new Promise<Response>((resolve) => { answer = resolve; }));
+  const onSaved = shown();
+  fireEvent.click(hold());
+  save();
+
+  expect(await screen.findByRole('button', { name: 'Guardando…' })).toBeDisabled();
+  expect(hold()).toBeDisabled();
+  answer({ ok: true, status: 200, json: async () => config(null, true) } as Response);
+  await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+  expect(send).toHaveBeenCalledTimes(1);
+});

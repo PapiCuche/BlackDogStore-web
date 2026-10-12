@@ -30,7 +30,6 @@ export function OrderRiskCard({ orderId, risk, onReviewed }: Props) {
   if (!risk) return null;
 
   async function decide(decision: "approve" | "reject") {
-    if (sending) return;  // no double submit
     setSending(decision);
     setError(null);
     try {

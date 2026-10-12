@@ -33,7 +33,6 @@ export function OrderReviewSettings({ companyId, amount, hold, canEdit, onSaved 
   const [amountError, setAmountError] = useState<string | null>(null);
 
   async function save() {
-    if (saving) return;
     setSaving(true);
     setSaved(false);
     setError(null);
