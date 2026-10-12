@@ -108,6 +108,8 @@ REST_FRAMEWORK = {
         'coupon': '20/min',
         'review_create': '5/min',
         'checkout': '10/min',
+        # The same budget for a signed-in customer (the app), counted per user.
+        'checkout_user': '10/min',
         # Cubo PROPIO, separado de 'checkout': cotizar es una lectura que
         # ocurre en cada cambio del carrito, y compartir presupuesto con el
         # cobro dejaba al comprador sin poder pagar por haber mirado.
@@ -411,6 +413,18 @@ JWT_COOKIE_SECURE = not DEBUG
 # payment is waiting for its answer.
 PAYMENT_PROVIDER = env('PAYMENT_PROVIDER', default='izipay')
 
+# TEST keys are for whoever is trying the gateway, not for buyers: while what
+# charges is a TEST (sandbox) configuration — from the console or from this
+# environment — only a platform master opens a payment, and everybody else is
+# told online payment is not available yet. The cards that pay in TEST are
+# public, and an order paid with one is not money.
+#
+# THIS SWITCH OPENS TEST PAYMENTS TO ANYBODY. Off unless set. It belongs where
+# a simulated gateway is the whole point — the test suite turns it on in one
+# place (`store.suite_runner`), a developer's machine may — and NEVER on a
+# published shop: `deploy/preflight.py` reports it as blocking.
+PAYMENTS_PUBLIC_TEST = env.bool('PAYMENTS_PUBLIC_TEST', default=False)
+
 # SANDBOX OR PRODUCTION, SAID OUT LOUD.
 #
 # Never derived from DEBUG. `DEBUG = False` means "this is not a developer's
@@ -710,3 +724,7 @@ DEFAULT_STOREFRONT_COMPANY_SLUG = env('DEFAULT_STOREFRONT_COMPANY_SLUG', default
 # Leaving it unset is safe: the migration refuses and explains, rather than
 # distributing units to a shop that never had them.
 INVENTORY_MIGRATION_BRANCHES: dict[str, str] = {}
+
+# The test suite charges through simulated gateways with TEST keys, as an
+# ordinary buyer, in hundreds of places: it says so once, here.
+TEST_RUNNER = 'store.suite_runner.SimulatedGatewayRunner'

@@ -359,8 +359,8 @@ class NobodyIsStarvedTest(Base):
 
         self.assertEqual((summary.asked, summary.left), (20, 5))
 
-    def test_an_attempt_nobody_tried_is_closed_once_its_form_is_gone_and_asked_about_no_more(self):
-        self.aged(minutes=45)
+    def test_an_attempt_nobody_tried_is_closed_at_the_end_of_its_window_and_asked_about_no_more(self):
+        self.aged(minutes=115)
 
         summary = self.ask()
 
@@ -381,8 +381,8 @@ class NobodyIsStarvedTest(Base):
         self.assertIsNotNone(self.attempt.gateway_checked_at)
 
     def test_a_notification_that_arrives_after_all_still_pays_a_closed_attempt(self):
-        self.aged(minutes=45)
-        self.ask()
+        self.aged(minutes=115)
+        self.assertEqual(self.ask().abandoned, 1)
 
         self.assertEqual(self.notify().status_code, 200)
 
@@ -414,7 +414,7 @@ class OneReferenceTest(Base):
 
         text = self.command('--reference', self.attempt.transaction_id)
 
-        self.assertIn('pagados: 1', text)
+        self.assertIn('El pedido quedó pagado', text)
         self.assertEqual([r['body']['orderId'] for r in self.asked()], [self.attempt.transaction_id])
         self.refresh()
         self.assertTrue(self.order.paid)
@@ -465,7 +465,7 @@ class AnAnswerNobodyCanDecideTest(Base):
         log = self.audits('payment_undecided').get()
         self.assertEqual(log.company_id, self.order.company_id)
         self.assertEqual((log.target_type, log.target_id), ('order', str(self.order.pk)))
-        self.assertEqual(log.metadata, {'provider': 'micuentaweb', 'attempt': self.attempt.pk,
+        self.assertEqual(log.metadata, {'provider': 'micuentaweb', 'attempt': self.attempt.pk, 'kind': 'undecided',
                                         'reason': 'Hay más de un cobro pagado bajo esta referencia.'})
         self.assert_still_waiting()
         self.assertTrue(self.attempt.failure_reason.startswith('undecided: '))
@@ -598,7 +598,9 @@ class AGatewayThatRefusesOrBreaksTest(Base):
                     summary = self.ask()
                 self.assertEqual((summary.asked, summary.errors, len(self.asked())), (2, 2, 2))
                 self.assertFalse(summary.unreachable or summary.refused)
-                self.assertEqual(sorted(summary.unresolved), sorted([self.attempt.pk, self.second.pk]))
+                # No se pudo preguntar por ellos; no es que la pasarela los tenga sin resolver.
+                self.assertEqual(summary.outcomes, {self.attempt.pk: reconcile.ERROR, self.second.pk: reconcile.ERROR})
+                self.assertEqual(summary.unresolved, [])
                 self.assertIn('errores de la pasarela: 2', summary.line())
                 self.assert_still_waiting()
 
@@ -649,13 +651,21 @@ class AnotherConfigurationDoesNotConfirmItTest(Base):
         self.assertEqual((self.attempt.environment, self.attempt.shop), ('test', '69876357'))
 
     def test_the_same_reference_in_another_shop_is_another_payment(self):
+        """
+        La pasada ya ni pregunta por él (`AttemptsOfAnotherShopOrEnvironmentTest`).
+        Y si alguien preguntara de todos modos, el juez no lo da por bueno.
+        """
         with override_settings(**OTHER_SHOP):
             gateway = FakeMiCuentaWeb.from_settings(OTHER_SHOP)
             gateway.hold(self.attempt.transaction_id, self.paid(shop_id='11111111'))
-            with self.assertLogs('store.views', level='ERROR') as logs:
-                summary = self.ask(gateway)
+            summary = self.ask(gateway)
+            self.assertEqual((summary.asked, summary.foreign, summary.paid), (0, 1, 0))
+            self.assert_still_waiting()
 
-        self.assertEqual((summary.paid, summary.mismatched), (0, 1))
+            with self.assertLogs('store.views', level='ERROR') as logs, gateway.online():
+                outcome = reconcile.ask(self.attempt, micuentaweb.load_credentials())
+
+        self.assertEqual(outcome, reconcile.MISMATCHED)
         self.assertIn('Consulta a la pasarela con fallo de integridad', '\n'.join(logs.output))
         self.assert_nothing_paid()
         self.assertEqual((self.attempt.status, self.attempt.failure_reason), (Status.INTEGRITY_FAILED, 'shop mismatch'))
@@ -686,8 +696,9 @@ class AnotherConfigurationDoesNotConfirmItTest(Base):
 
         PaymentTransaction.objects.filter(pk=self.attempt.pk).update(status=Status.PENDING)
         self.fake.hold(self.attempt.transaction_id, self.paid())             # y una transacción de TEST
-        with self.assertLogs('store.views', level='ERROR'):
-            self.assertEqual(self.ask().mismatched, 1)
+        self.assertEqual(self.ask().foreign, 1)                              # la pasada ni pregunta por él
+        with self.assertLogs('store.views', level='ERROR'), self.fake.online():
+            self.assertEqual(reconcile.ask(self.attempt, micuentaweb.load_credentials()), reconcile.MISMATCHED)
         self.assert_nothing_paid()
 
     def test_an_attempt_older_than_these_columns_is_judged_as_it_always_was(self):

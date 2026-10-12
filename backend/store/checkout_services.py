@@ -517,12 +517,15 @@ def require_payment_provider_configured(buyer=None):
     out there is no gateway leaves a row nobody can pay and a buyer looking at an
     error, every single time, until someone sets the variable.
 
-    TEST KEYS ARE NOT FOR BUYERS. While what charges is a TEST configuration a
-    master put in the console, only a platform master opens a payment — the
-    same people, and the only ones, who can configure the gateway, because they
-    are who has to try it. Anybody else is told online payment is not available
-    yet, here, before an order exists and before the gateway hears anything.
-    `buyer` is the user of the request; nobody (the default) is a buyer.
+    TEST KEYS ARE NOT FOR BUYERS. While what charges is a TEST configuration —
+    put in the console or read from the server's environment, it is the same
+    shop — only a platform master opens a payment: the same people, and the
+    only ones, who can configure the gateway, because they are who has to try
+    it. Anybody else is told online payment is not available yet, here, before
+    an order exists and before the gateway hears anything. `buyer` is the user
+    of the request; nobody (the default) is a buyer. The one exception is an
+    installation that says TEST payments are for everybody
+    (`PAYMENTS_PUBLIC_TEST`): the test suite, a developer's machine.
     """
     provider = active_payment_provider()
     adapter = payment_adapters.adapter(provider)
@@ -533,6 +536,10 @@ def require_payment_provider_configured(buyer=None):
         raise CheckoutError(
             'La pasarela de pago no está configurada.', status_code=500,
         )
+    if payment_adapters.paused():
+        # A master stopped new payments. Nobody opens one — not a master either —
+        # while the ones already open are still being confirmed.
+        raise CheckoutError(PAYMENT_NOT_YET, status_code=503, code='payment_paused')
     try:
         credentials = adapter.load_credentials()
     except payment_adapters.ERRORS as exc:
@@ -541,7 +548,7 @@ def require_payment_provider_configured(buyer=None):
         raise CheckoutError(
             'La pasarela de pago no está configurada.', status_code=500,
         )
-    if payment_adapters.test_keys_of_the_console(adapter, credentials) and not is_platform_admin(buyer):
+    if payment_adapters.test_keys_not_for_buyers(credentials) and not is_platform_admin(buyer):
         raise CheckoutError(PAYMENT_NOT_YET, status_code=503, code='payment_test_only')
     return credentials
 
@@ -653,9 +660,13 @@ def _open_attempt(order: Order, credentials, *, provider: str, transaction_id: s
     """
     with transaction.atomic():
         payment_adapters.lock_configuration(exclusive=False)
+        if payment_adapters.paused():
+            # Paused between the start of this checkout and now.
+            raise CheckoutError(PAYMENT_NOT_YET, status_code=503, code='payment_paused')
         if not payment_adapters.still_charging(credentials):
             raise CheckoutError(
                 'La pasarela de pago acaba de cambiar. Vuelve a intentarlo.', status_code=409,
+                code='payment_gateway_changed',
             )
         return PaymentTransaction.objects.create(
             order=order,
@@ -666,7 +677,7 @@ def _open_attempt(order: Order, credentials, *, provider: str, transaction_id: s
             currency=credentials.currency,
             status=PaymentTransaction.Status.PENDING,
             environment=payment_adapters.environment_of(credentials),
-            shop=credentials.merchant_code[:32],
+            shop=payment_adapters.shop_of(credentials),
         )
 
 
@@ -729,6 +740,14 @@ def _start_micuentaweb_attempt(
     # still on the way or lost: a second form would be a second charge. The
     # gateway is asked first. Paid: there is nothing left to charge. Cannot be
     # asked: no second form until it can.
+    if reconcile.open_forms(order) >= reconcile.MAX_OPEN_FORMS:
+        # Each form that can still charge is a question to the gateway before
+        # the next one. An order does not need more than a few; beyond that
+        # nothing is asked and nothing is opened.
+        raise CheckoutError(
+            'Este pedido ya tiene varios formularios de pago abiertos. Termina uno de ellos o vuelve a '
+            'intentarlo en unos minutos.', status_code=409, code='too_many_payment_attempts',
+        )
     earlier = reconcile.earlier_attempts(order, credentials)
     if earlier == 'paid':
         raise CheckoutError('Este pedido ya está pagado.', status_code=409, code='order_already_paid')

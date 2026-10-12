@@ -260,8 +260,8 @@ class UnsafeChangeTest(GuardBase):
         with mock.patch.object(payment_providers, 'GUARD_LIMIT', 1):
             response = self.change('apagar', acknowledge='INTERRUMPIR')
 
-        # Se preguntó por uno (que quedó cerrado: la pasarela no tenía nada); el otro sigue sin comprobar.
-        self.assert_blocked(response, before, open=1, can_still_charge=0)
+        # Se preguntó por uno (la pasarela no tenía nada de él); el otro sigue sin comprobar.
+        self.assert_blocked(response, before, open=2, can_still_charge=0)
         self.assertEqual(len(self.asked()), 1)
 
     def test_a_change_found_unsafe_only_at_the_last_moment_was_not_verified_and_is_not_made(self):

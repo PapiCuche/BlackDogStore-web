@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.http import QueryDict
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -297,7 +297,10 @@ class CreateCheckoutSessionView(APIView):
         try:
             payment = checkout.start_payment_attempt(order, credentials=credentials)
         except checkout.CheckoutError as exc:
-            checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
+            if not exc.code:
+                # A refusal with a code is «not now» (the gateway changed under
+                # this request, payments were paused): the order did not fail.
+                checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
             return Response(exc.as_payload(), status=exc.status_code)
 
         # THE SESSION TOKEN IS NOT A CONFIRMATION. Nothing has been charged, no
@@ -443,10 +446,30 @@ class _SignedNotificationMixin:
                 # buyer can try another card under the same reference, and if
                 # THAT payment's notification were lost, an attempt already
                 # closed as refused would never be asked about again.
+                self._note_decline(attempt, result)
                 return 'waiting'
-            return 'rejected' if self._record_rejection(attempt, result) else 'already'
+            if self._record_rejection(attempt, result) or attempt.status == PaymentTransaction.Status.REJECTED:
+                return 'rejected'
+            return 'already'
 
         return self._confirm(attempt, result)
+
+    def _note_decline(self, attempt, result) -> None:
+        """
+        A card was refused and the attempt stays open: said on the row, so that
+        whoever looks at a payment that is «waiting» sees it was tried and
+        declined. It closes nothing, and it does not cover what an owner has to
+        read first — an answer of the gateway nobody could settle.
+        """
+        PaymentTransaction.objects.filter(
+            pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
+        ).exclude(
+            Q(failure_reason__startswith='undecided: ') | Q(failure_reason__startswith='unreadable: '),
+        ).update(
+            response_code=result.response_code[:8],
+            payment_method=result.pay_method[:32],
+            failure_reason=('rechazado: ' + (result.state_message or '')).strip()[:200],
+        )
 
     def _form_can_still_charge(self, attempt) -> bool:
         return self.form_lifetime is not None and attempt.created_at > timezone.now() - self.form_lifetime
@@ -484,7 +507,7 @@ class _SignedNotificationMixin:
             # nothing here and are judged as they always were.)
             return 'environment mismatch'
 
-        if attempt.shop and attempt.shop != credentials.merchant_code:
+        if attempt.shop and attempt.shop != payment_adapters.shop_of(credentials):
             # Opened into one shop's account and answered with another shop's
             # keys configured: the same reference there is another payment.
             return 'shop mismatch'

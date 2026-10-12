@@ -9040,6 +9040,11 @@ class IntegrationConfig(models.Model):
     slot = models.CharField(max_length=8, choices=SLOT_CHOICES)
     #: Only meaningful on the active row: a disabled integration resolves to nothing.
     enabled = models.BooleanField(default=False)
+    # Still what runs — what is already in flight keeps being answered with it —
+    # but taking NOTHING NEW. For a payment gateway: no new payment is opened,
+    # and the ones already open are still confirmed by their notification or by
+    # asking. `db_default` too: the release before this column keeps writing rows.
+    paused = models.BooleanField(default=False, db_default=False)
     public = models.JSONField(default=dict, blank=True)
     sealed_secrets = models.TextField(blank=True)
     secret_meta = models.JSONField(default=dict, blank=True)

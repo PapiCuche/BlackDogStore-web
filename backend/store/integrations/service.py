@@ -477,10 +477,45 @@ def _set_enabled(provider, company, *, actor, enabled: bool, request, payload, p
             if any(sibling.enabled for sibling in running):
                 raise Conflict('Ya hay otro proveedor de esta categoría activo. Desactívalo primero.', active.version)
         active.enabled = enabled
+        # Switching on is starting again, whole: a pause does not survive it.
+        active.paused = False
         active.version += 1
         active.updated_by = actor
-        active.save(update_fields=['enabled', 'version', 'updated_by', 'updated_at'])
+        active.save(update_fields=['enabled', 'paused', 'version', 'updated_by', 'updated_at'])
         _audit('integration_enabled' if enabled else 'integration_disabled', provider, company, actor, request)
+        transaction.on_commit(lambda: provider.after_change(company))
+    return active
+
+
+@transaction.atomic
+def set_paused(provider, company, *, actor, paused: bool, request=None, payload=None):
+    """
+    Stop taking anything NEW, at once — or take it again.
+
+    Pausing asks nothing and waits for nobody: no word, no guard, no call to a
+    third party. It cannot be refused because of what is in flight, because it
+    does not touch what is in flight: the configuration stays the one that
+    runs, so whatever was already open is still answered with it. It is the
+    thing a master can always do; switching off, revoking or replacing can then
+    wait for what is open to finish.
+
+    Resuming is starting to take new operations again: it asks what activating
+    asked (the word for production).
+    """
+    if not provider.pausable:
+        raise NotFound('Esta integración no se puede pausar.')
+    provider.lock_changes()
+    active = row(provider.id, company, ACTIVE, lock=True)
+    if active is None or not active.enabled:
+        raise NotFound('Esta integración no tiene una configuración activa que pausar.')
+    if active.paused != paused:
+        if not paused:
+            provider.activation_guard(dict(active.public), {}, payload or {})
+        active.paused = paused
+        active.version += 1
+        active.updated_by = actor
+        active.save(update_fields=['paused', 'version', 'updated_by', 'updated_at'])
+        _audit('integration_paused' if paused else 'integration_resumed', provider, company, actor, request)
         transaction.on_commit(lambda: provider.after_change(company))
     return active
 
@@ -524,7 +559,7 @@ def _describe_row(provider, config):
         meta = config.secret_meta.get(f.name)
         secrets[f.name] = {'configured': True, **meta} if meta else {'configured': False}
     return {
-        'public': dict(config.public), 'secrets': secrets, 'enabled': config.enabled,
+        'public': dict(config.public), 'secrets': secrets, 'enabled': config.enabled, 'paused': config.paused,
         'validated': config.validated, 'version': config.version,
         'last_tested_at': config.last_tested_at.isoformat() if config.last_tested_at else None,
         'last_test_status': config.last_test_status, 'last_test_message': config.last_test_message,
@@ -564,6 +599,7 @@ def describe(provider, company=None, *, with_fields=True) -> dict:
     data['interruption'] = {'word': warning[0], 'message': warning[1]} if warning else None
     # And what it only has to SAY: the server decides when the change is asked for.
     data['change_notice'] = provider.change_notice(company)
+    data['pausable'] = provider.pausable
     if with_fields:
         data['fields'] = [f.describe() for f in provider.fields]
         data['test_fields'] = [f.describe() for f in provider.test_fields]

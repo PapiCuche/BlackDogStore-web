@@ -12,10 +12,10 @@ Ahora, mientras lo que cobra es una configuración de TEST puesta en la consola:
   * el intento guarda en qué entorno se abrió, y un pedido pagado en TEST deja
     un registro de auditoría con su empresa.
 
-Con claves de PRODUCCIÓN no cambia nada. Tampoco con una pasarela configurada
-por entorno, que es como se cobran las pasarelas simuladas de las pruebas, del
-ensayo y de Playwright: la consola es el único sitio desde el que una tienda
-publicada llega a tener claves de TEST.
+Con claves de PRODUCCIÓN no cambia nada. Y da igual de dónde vengan las de TEST
+(consola o variables del servidor): ver `test_payment_audit2`. Las pasarelas
+simuladas de las pruebas cobran a cualquiera porque el corredor de pruebas
+enciende `PAYMENTS_PUBLIC_TEST`; estas clases lo apagan, como una tienda publicada.
 """
 from urllib.parse import urlencode
 
@@ -24,19 +24,16 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 
 from store.models import AdminAuditLog, Order, PaymentTransaction
-from store.payments.fake_izipay import FakeIzipay
 from store.payments.fake_micuentaweb import FakeMiCuentaWeb
-from store.test_integrations_payments import (
-    CHECKOUT_PUBLIC, CHECKOUT_SECRETS, MCW_PUBLIC, MCW_SECRETS, _Base, fake_checkout, fake_mcw,
-)
-from store.test_micuentaweb import IPN_URL, MCW_SETTINGS, McwBase
-from store.tests import IZIPAY_TEST_SETTINGS
+from store.test_integrations_payments import CHECKOUT_PUBLIC, CHECKOUT_SECRETS, MCW_PUBLIC, _Base, fake_checkout
+from store.test_micuentaweb import IPN_URL, McwBase
 
 NOT_YET = 'El pago en línea todavía no está disponible en esta tienda.'
 MCW_PRODUCTION = {**MCW_PUBLIC, 'public_key': '90000001:publickey_DelPanelNoEsRealNoEsReal'}
 MCW_PRODUCTION_SECRETS = {'password': 'prodpassword_DelPanelNoEsRealNoEsRealNoEsReal'}
 
 
+@override_settings(PAYMENTS_PUBLIC_TEST=False)
 class TestKeysInTheConsoleTest(_Base):
     def as_buyer(self, user=None):
         self.client = APIClient()
@@ -148,22 +145,29 @@ class TestKeysInTheConsoleTest(_Base):
 
 
 class KeysFromTheEnvironmentTest(McwBase):
-    """La pasarela simulada de las pruebas, del ensayo y de Playwright se configura por entorno: no cambia."""
+    """
+    CAMBIADA A PROPÓSITO (segunda auditoría). Antes fijaba que las claves de TEST
+    de las variables del servidor cobraban a cualquiera: era el hueco. Lo que
+    cobra en TEST no es para compradores venga de donde venga; las pasarelas
+    simuladas de las pruebas cobran porque el corredor de pruebas enciende
+    `PAYMENTS_PUBLIC_TEST`, no porque el entorno sea una excepción.
+    """
 
-    def test_a_buyer_pays_through_the_simulated_gateway_as_before(self):
+    def test_the_suite_pays_through_the_simulated_gateway_because_the_switch_is_on(self):
         response = self.checkout()
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(PaymentTransaction.objects.get().environment, 'test')
 
-    def test_the_other_simulated_gateway_too(self):
-        from store import checkout_services as checkout
+    def test_with_the_switch_off_the_same_keys_do_not_charge_a_buyer(self):
+        with override_settings(PAYMENTS_PUBLIC_TEST=False):
+            response = self.checkout()
 
-        with override_settings(**IZIPAY_TEST_SETTINGS):
-            credentials = checkout.require_payment_provider_configured(None)
-        self.assertEqual(credentials.environment, 'sandbox')
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(PaymentTransaction.objects.exists())
 
 
+@override_settings(PAYMENTS_PUBLIC_TEST=False)
 class OneEnvironmentPerAttemptTest(_Base):
     """Un intento abierto en un entorno no lo confirma el otro, aunque la firma valga."""
 

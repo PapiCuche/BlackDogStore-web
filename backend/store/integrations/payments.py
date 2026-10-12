@@ -149,25 +149,54 @@ def environment_of(credentials) -> str:
     return 'production' if getattr(credentials, 'environment', '') == 'production' else 'test'
 
 
-def configured_in_console(candidate: PaymentAdapter) -> bool:
-    """Whether what this adapter charges with was put there by a master, in the console."""
+def shop_of(credentials) -> str:
+    """
+    Whose account these credentials charge into, AS AN ATTEMPT KEEPS IT: cut to
+    the width of its column. Written and compared through here, so a code
+    longer than the column is the same shop both times.
+    """
+    return (credentials.merchant_code or '')[:32]
+
+
+def test_keys_not_for_buyers(credentials) -> bool:
+    """
+    Whether what charges is a TEST configuration on an installation that has
+    not said TEST payments are for everybody.
+
+    A payment made with TEST keys is not money, and the cards that make one are
+    public: such a configuration is for whoever is testing it — a master — not
+    for buyers. WHEREVER THE KEYS CAME FROM: the console and the server's
+    environment are the same shop to a buyer. The one way out is the explicit
+    switch (`PAYMENTS_PUBLIC_TEST`), off by default, for installations where a
+    simulated gateway is the point.
+    """
+    return environment_of(credentials) == 'test' and not getattr(settings, 'PAYMENTS_PUBLIC_TEST', False)
+
+
+def environment_fallback():
+    """
+    The provider declaration and public values of what the SERVER'S ENVIRONMENT
+    would charge with if the console held no active payment row — or None.
+    """
+    from . import registry
+
+    candidate = adapter((getattr(settings, 'PAYMENT_PROVIDER', '') or '').strip().lower())
+    provider = registry.get(candidate.provider_id) if candidate is not None else None
+    legacy = provider.from_env() if provider is not None else None
+    return (provider, dict(legacy[0])) if legacy is not None else None
+
+
+def paused() -> bool:
+    """Whether a master told the gateway that charges to open no new payment."""
+    return console_rows().filter(enabled=True, paused=True).exists()
+
+
+def console_rows():
+    """The active rows of every payment provider: while one exists, the console decides."""
     return IntegrationConfig.objects.filter(
-        provider=candidate.provider_id, slot=IntegrationConfig.SLOT_ACTIVE, company__isnull=True,
-    ).exists()
-
-
-def test_keys_of_the_console(candidate: PaymentAdapter, credentials) -> bool:
-    """
-    TEST keys that a master activated in the console — on a shop that may be
-    published. A payment made with them is not money, and the cards that make
-    one are public: such a configuration is for whoever is testing it, not for
-    buyers.
-
-    Keys read from the ENVIRONMENT are not this: that is how the simulated
-    gateways of the test suites and of the rehearsal are set up, on
-    installations that are not a shop.
-    """
-    return environment_of(credentials) == 'test' and configured_in_console(candidate)
+        provider__in=[a.provider_id for a in _ADAPTERS.values()],
+        slot=IntegrationConfig.SLOT_ACTIVE, company__isnull=True,
+    )
 
 
 #: One number for «the payment configuration of this installation», as

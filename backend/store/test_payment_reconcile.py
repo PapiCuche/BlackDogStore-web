@@ -248,6 +248,8 @@ class WhatIsNotBelievedTest(ReconcileBase):
                 self.assert_still_waiting()
 
     def test_a_test_transaction_never_pays_with_production_keys(self):
+        # Un intento anterior a la columna de entorno: de él sí se pregunta, y lo decide la respuesta.
+        PaymentTransaction.objects.filter(pk=self.attempt.pk).update(environment='', shop='')
         with override_settings(**PRODUCTION):
             gateway = FakeMiCuentaWeb.from_settings(PRODUCTION)
             gateway.hold(self.attempt.transaction_id, self.paid(mode='TEST'))
@@ -481,12 +483,14 @@ class ChangedKeysTest(ReconcileBase):
                  'MICUENTAWEB_PUBLIC_KEY': '11111111:testpublickey_NoEsRealNoEsRealNoEsRealNoEsReal'}
         with override_settings(**other):
             gateway = FakeMiCuentaWeb.from_settings(other)
-            # La otra tienda tiene, con la misma referencia, un pago que no es de este pedido.
-            gateway.hold(self.attempt.transaction_id, self.paid(amount_cents=100))
-            with self.assertLogs('store', level='WARNING'):
-                self.ask(gateway)
+            # La otra tienda tiene, con la misma referencia, un pago por el mismo importe.
+            gateway.hold(self.attempt.transaction_id, self.paid(shop_id='11111111'))
+            summary = self.ask(gateway)
 
-        self.assert_nothing_paid()
+        # El intento se abrió con otra tienda: a ésta ni se le pregunta por él.
+        self.assertEqual((summary.asked, summary.foreign), (0, 1))
+        self.assertEqual(self.asked(gateway), [])
+        self.assert_still_waiting()
 
     def test_an_attempt_opened_in_test_is_not_confirmed_by_production(self):
         with override_settings(**PRODUCTION):

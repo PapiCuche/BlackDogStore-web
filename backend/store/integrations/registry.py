@@ -181,6 +181,9 @@ class Provider:
     fields: tuple = ()
     #: Activating one provider of an exclusive category switches the others off.
     exclusive_in_category = False
+    #: Whether it can be told to take nothing new while what is in flight
+    #: finishes (`IntegrationConfig.paused`).
+    pausable = False
     #: Modes this provider can run in, for the console to show ('test', 'production'…).
     supported_modes: tuple = ()
     #: What a test may be given besides the configuration (a `Field` each). The

@@ -128,6 +128,14 @@ class MiCuentaWebRefused(MiCuentaWebError):
     """
 
 
+class MiCuentaWebUndecided(MiCuentaWebError):
+    """
+    The gateway answered, the answer is about this shop and this reference, and
+    it says money may have moved in a way nobody can settle from here: two paid
+    debits, a refund beside the debit, a partial amount.
+    """
+
+
 def _is_refusal(exc) -> bool:
     """An HTTP 4xx is the gateway answering no. Everything else is no answer."""
     return isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500
@@ -569,7 +577,7 @@ def parse_order_transactions(answer, credentials: MiCuentaWebCredentials, order_
         if mode != credentials.gateway_mode:
             raise MiCuentaWebError('La transacción es de otro entorno (TEST / PRODUCCIÓN).')
         if str(transaction.get('operationType') or '').strip().upper() != OPERATION_DEBIT:
-            raise MiCuentaWebError('Hay una operación que no es un cobro bajo esta referencia.')
+            raise MiCuentaWebUndecided('Hay una operación que no es un cobro bajo esta referencia.')
         cents, total = transaction.get('amount'), details.get('orderTotalAmount')
         if any(isinstance(value, bool) or not isinstance(value, int) for value in (cents, total)):
             raise MiCuentaWebError('Importe no entero en la consulta.')
@@ -577,16 +585,16 @@ def parse_order_transactions(answer, credentials: MiCuentaWebCredentials, order_
 
     paid = [entry for entry in read if entry[2] == STATUS_PAID]
     if len(paid) > 1:
-        raise MiCuentaWebError('Hay más de un cobro pagado bajo esta referencia.')
+        raise MiCuentaWebUndecided('Hay más de un cobro pagado bajo esta referencia.')
     if paid:
         transaction, details, status = paid[0]
         if str(transaction.get('detailedStatus') or '').strip().upper() not in MONEY_STATUSES:
-            raise MiCuentaWebError('La transacción pagada no es un cobro autorizado ni capturado.')
+            raise MiCuentaWebUndecided('La transacción pagada no es un cobro autorizado ni capturado.')
         if transaction['amount'] != details['orderTotalAmount']:
-            raise MiCuentaWebError('El cobro no es por el importe completo del pedido.')
+            raise MiCuentaWebUndecided('El cobro no es por el importe completo del pedido.')
         charged = str(transaction.get('currency') or '').strip().upper()
         if charged != str(details.get('orderCurrency') or '').strip().upper():
-            raise MiCuentaWebError('El cobro y su pedido no están en la misma moneda.')
+            raise MiCuentaWebUndecided('El cobro y su pedido no están en la misma moneda.')
     elif all(entry[2] == STATUS_UNPAID for entry in read):
         transaction, details, status = read[-1]
     else:

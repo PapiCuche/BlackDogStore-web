@@ -38,10 +38,11 @@ turn from the ones that may hide a payment.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from django.db.models import F
+from django.db.models import Q
 from django.utils import timezone
 
 from ..models import AdminAuditLog, PaymentTransaction
@@ -57,6 +58,15 @@ WINDOW = timedelta(hours=2)
 FORM_LIFETIME = micuentaweb.FORM_LIFETIME
 #: How many attempts one run asks about.
 LIMIT = 20
+#: Of those, how many go to whoever was asked longest ago, however many new
+#: attempts there are: a quarter of the run.
+RESERVED = LIMIT // 4
+#: An attempt nobody tried to pay is closed in the last runs of its window —
+#: not at the first empty answer: a slow means of payment may show up later.
+CLOSING = timedelta(minutes=10)
+
+#: Stood in for by the tests: a run with a time budget looks at this clock.
+_clock = time.monotonic
 
 #: What one question about one attempt came to.
 PAID = 'paid'                   # the order is paid, by this question
@@ -66,16 +76,22 @@ MISMATCHED = 'mismatch'         # the gateway and the shop disagree: integrity f
 ABANDONED = 'abandoned'         # the form is gone and the gateway holds nothing: closed
 WAITING = 'waiting'             # nothing there yet, or a refusal that is not final yet
 RUNNING = 'running'             # the gateway holds something still open
-UNDECIDED = 'undecided'         # an answer this cannot read on its own
+UNDECIDED = 'undecided'         # money may have moved in a way nobody can settle from here
+UNREADABLE = 'unreadable'       # an answer that is not what the documentation describes
+FOREIGN = 'foreign'             # opened with another shop or environment: not ours to ask about
 ERROR = 'error'                 # the gateway answered THIS question with an error
 ALREADY = 'already'             # settled meanwhile by somebody else (its notification)
 UNREACHABLE = 'unreachable'     # the gateway did not answer
 REFUSED = 'refused'             # the gateway refuses the caller, whatever is asked
 
-#: Outcomes after which the attempt is still open and nobody can say why not.
-_UNRESOLVED = (RUNNING, UNDECIDED, ERROR)
-#: How an undecided answer is marked on the attempt, for the health check to count.
+#: The gateway HOLDS something for the attempt and it is not settled: whoever
+#: wants to change gateway waits for these.
+UNRESOLVED = (RUNNING, UNDECIDED, UNREADABLE)
+#: The gateway could not be asked about the attempt. Nobody knows.
+COULD_NOT_ASK = (ERROR, UNREACHABLE, REFUSED)
+#: How an answer nobody could settle is marked on the attempt, for the health check to count.
 UNDECIDED_MARK = 'undecided: '
+UNREADABLE_MARK = 'unreadable: '
 
 
 @dataclass
@@ -87,15 +103,20 @@ class Summary:
     mismatched: int = 0     # the gateway and the shop disagree: integrity failure
     abandoned: int = 0      # closed: nothing was ever tried and the form is gone
     waiting: int = 0        # nothing at the gateway yet, or still open there
-    undecided: int = 0      # an answer this cannot read on its own
+    undecided: int = 0      # two debits, a refund, a partial amount: nobody can settle it from here
+    unreadable: int = 0     # an answer that is not what the documentation describes
     errors: int = 0         # the gateway answered the question with an error
+    foreign: int = 0        # opened with another shop or environment: never asked about
     left: int = 0           # waiting, inside the window, and not asked about in this run
     unreachable: bool = False
     refused: bool = False   # the gateway refuses the caller: the run stopped
+    out_of_time: bool = False   # the run had a time budget and spent it
     unconfigured: bool = False
-    #: Attempts the gateway DOES hold something for, or would not answer about,
-    #: and that are not settled. Kept by id for whoever must wait for them.
+    inactive: bool = False  # «Mi Cuenta Web» is not the product that charges: nothing was asked
+    #: Attempts the gateway DOES hold something for and that are not settled.
     unresolved: list = field(default_factory=list)
+    #: What became of each attempt that was asked about, by id.
+    outcomes: dict = field(default_factory=dict)
 
     def line(self) -> str:
         text = (f'consultados: {self.asked} · pagados: {self.paid} · rechazados: {self.rejected} · '
@@ -104,23 +125,32 @@ class Summary:
             text += f' · COBROS DUPLICADOS: {self.duplicates}'
         if self.abandoned:
             text += f' · cerrados sin intento: {self.abandoned}'
+        if self.unreadable:
+            text += f' · respuestas ilegibles: {self.unreadable}'
         if self.errors:
             text += f' · errores de la pasarela: {self.errors}'
+        if self.foreign:
+            text += f' · de otra tienda o entorno: {self.foreign}'
         if self.left:
             text += f' · sin consultar: {self.left}'
+        if self.out_of_time:
+            text += ' · se agotó el tiempo de la consulta'
         if self.refused:
             text += ' · la pasarela rechazó la consulta (credenciales o límite de llamadas): se detuvo la pasada'
         return text + (' · la pasarela no respondió' if self.unreachable else '')
 
 
 def reconcile_micuentaweb(*, now=None, window: timedelta = WINDOW, limit: int = LIMIT,
-                          reference: str = '') -> Summary:
+                          reference: str = '', budget: timedelta | None = None) -> Summary:
     """
     Ask about the waiting attempts of «Mi Cuenta Web», if it is the product that charges.
 
     `reference`: ONE attempt, by the reference the shop gave it, whatever its
     age and even if it was closed as refused or abandoned — for the customer who
     says they paid. An attempt that already has its payment is not asked about.
+
+    `budget`: how long the run may go on asking. What it did not get to is
+    `left`, and whoever needed every answer has to count it as not verified.
     """
     from ..integrations import payments as payment_adapters
 
@@ -128,6 +158,7 @@ def reconcile_micuentaweb(*, now=None, window: timedelta = WINDOW, limit: int = 
     if payment_adapters.active_code() != micuentaweb.PROVIDER:
         # One product per installation: the other one's keys are not this
         # installation's, and its attempts are not ours to ask about.
+        summary.inactive = True
         return summary
 
     now = now or timezone.now()
@@ -141,12 +172,8 @@ def reconcile_micuentaweb(*, now=None, window: timedelta = WINDOW, limit: int = 
             provider=micuentaweb.PROVIDER, status=Status.PENDING,
             created_at__lte=now - MIN_AGE, created_at__gte=now - window,
         )
-    # Never asked first, then whoever was asked longest ago: nobody is starved.
-    attempts = list(due.select_related('order__company').order_by(
-        F('gateway_checked_at').asc(nulls_first=True), 'created_at')[:max(0, limit)])
-    if not attempts:
+    if not due.exists():
         return summary
-    summary.left = due.count() - len(attempts)
 
     try:
         credentials = micuentaweb.load_credentials()
@@ -156,9 +183,28 @@ def reconcile_micuentaweb(*, now=None, window: timedelta = WINDOW, limit: int = 
         summary.unconfigured = True
         return summary
 
+    # ONLY WHAT WAS OPENED WITH THIS SHOP AND THIS ENVIRONMENT. An attempt of
+    # another shop, or of the other environment, is asked of nobody: this
+    # account knows nothing of it, and «the gateway holds nothing» would be a
+    # lie about a payment that may well exist over there. It stays open, counted
+    # apart, for somebody to look at in the account it belongs to.
+    ours = due.filter(origin_filter(credentials.merchant_code, payment_adapters.environment_of(credentials)))
+    for foreign in due.exclude(pk__in=ours.values('pk')).values_list('pk', flat=True):
+        summary.foreign += 1
+        summary.outcomes[foreign] = FOREIGN
+
+    attempts = _queue(ours, max(0, limit))
+    summary.left = ours.count() - len(attempts)
+
+    started = _clock() if budget is not None else None
     for attempt in attempts:
+        if budget is not None and _clock() - started > budget.total_seconds():
+            summary.out_of_time = True
+            summary.left += len(attempts) - summary.asked
+            break
         summary.asked += 1
         outcome = ask(attempt, credentials, now=now)
+        summary.outcomes[attempt.pk] = outcome
         if outcome in (UNREACHABLE, REFUSED):
             # No point in asking about the next one: the answer is about us.
             summary.unreachable = outcome == UNREACHABLE
@@ -169,8 +215,31 @@ def reconcile_micuentaweb(*, now=None, window: timedelta = WINDOW, limit: int = 
     return summary
 
 
+def origin_filter(shop: str, environment: str) -> Q:
+    """Attempts opened with this shop and this environment — or before either was written down."""
+    return Q(shop__in=('', shop[:32])) & Q(environment__in=('', environment))
+
+
+def _queue(due, limit: int) -> list:
+    """
+    Who is asked in this run, and in which order.
+
+    Those nobody ever asked about go first, oldest first. But a quarter of the
+    run belongs to whoever was asked LONGEST AGO, however many new attempts
+    there are: without it, twenty new checkouts per run would keep an attempt
+    that has since been paid waiting for ever.
+    """
+    due = due.select_related('order__company')
+    waited = list(due.filter(gateway_checked_at__isnull=False).order_by('gateway_checked_at', 'created_at')[:limit])
+    fresh = list(due.filter(gateway_checked_at__isnull=True).order_by('created_at')[:limit])
+    reserved = waited[:limit // 4]
+    first = fresh[:limit - len(reserved)]
+    spare = limit - len(reserved) - len(first)
+    return first + reserved + waited[len(reserved):len(reserved) + spare]
+
+
 def _count(summary: Summary, attempt, outcome: str) -> None:
-    if outcome in _UNRESOLVED:
+    if outcome in UNRESOLVED:
         summary.unresolved.append(attempt.pk)
     if outcome == PAID:
         summary.paid += 1
@@ -184,6 +253,8 @@ def _count(summary: Summary, attempt, outcome: str) -> None:
         summary.abandoned += 1
     elif outcome == UNDECIDED:
         summary.undecided += 1
+    elif outcome == UNREADABLE:
+        summary.unreadable += 1
     elif outcome == ERROR:
         summary.errors += 1
     elif outcome in (WAITING, RUNNING):
@@ -217,14 +288,19 @@ def ask(attempt, credentials, *, now=None) -> str:
 
     try:
         result = micuentaweb.parse_order_transactions(answer, credentials, attempt.transaction_id)
-    except micuentaweb.MiCuentaWebError as exc:
-        _undecided(attempt, exc)
+    except micuentaweb.MiCuentaWebUndecided as exc:
+        _unsettled(attempt, exc, UNDECIDED_MARK, 'undecided')
         return UNDECIDED
+    except micuentaweb.MiCuentaWebError as exc:
+        _unsettled(attempt, exc, UNREADABLE_MARK, 'unreadable')
+        return UNREADABLE
 
     if result is None:
-        if attempt.created_at > now - FORM_LIFETIME:
+        if attempt.created_at > now - (WINDOW - CLOSING):
+            # Nothing there — yet. While its window lasts it is asked again: a
+            # slow means of payment may show up after the form is gone.
             return WAITING
-        # The form can no longer charge and nothing was ever tried: nobody is
+        # The last runs of its window, and nothing was ever tried: nobody is
         # coming back to this one. A notification that did arrive later would
         # still be judged on its own.
         closed = PaymentTransaction.objects.filter(
@@ -243,24 +319,39 @@ def _asked(attempt, now) -> None:
     PaymentTransaction.objects.filter(pk=attempt.pk).update(gateway_checked_at=now)
 
 
-def _undecided(attempt, exc) -> None:
+def _unsettled(attempt, exc, mark: str, kind: str) -> None:
     """
-    An answer that says money may have moved and that this cannot decide: two
-    paid debits, a refund beside the debit, a partial amount. The attempt keeps
-    waiting; the FIRST time, it is written where an owner looks, under the
-    order's company. The reason is one of this adapter's own sentences — nothing
-    the gateway wrote.
+    An answer this cannot settle. Either money may have moved in a way nobody
+    can decide from here (two paid debits, a refund beside the debit, a partial
+    amount: `undecided`), or the answer is not what the documentation describes
+    (another shop or reference in it, no amounts: `unreadable`). The attempt
+    keeps waiting; the FIRST time, it is written where an owner looks, under the
+    order's company, saying which of the two. The reason is one of this
+    adapter's own sentences — nothing the gateway wrote.
     """
     logger.warning('Conciliación de pagos: el intento %s sigue esperando: %s', attempt.pk, exc)
     first = PaymentTransaction.objects.filter(
         pk=attempt.pk, status=PaymentTransaction.Status.PENDING,
-    ).exclude(failure_reason__startswith=UNDECIDED_MARK).update(failure_reason=(UNDECIDED_MARK + str(exc))[:200])
+    ).exclude(failure_reason__startswith=mark).update(failure_reason=(mark + str(exc))[:200])
     if first:
         AdminAuditLog.log(
             actor=None, action='payment_undecided', target_type='order', target_id=attempt.order_id,
-            metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'reason': str(exc)[:200]},
+            metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'kind': kind, 'reason': str(exc)[:200]},
             company=attempt.order.company,
         )
+
+
+#: How many forms that can still charge one order may have at a time.
+MAX_OPEN_FORMS = 3
+
+
+def open_forms(order, *, now=None) -> int:
+    """How many forms of this order can still charge."""
+    now = now or timezone.now()
+    return PaymentTransaction.objects.filter(
+        order=order, provider=micuentaweb.PROVIDER, status=PaymentTransaction.Status.PENDING,
+        created_at__gt=now - FORM_LIFETIME,
+    ).count()
 
 
 def earlier_attempts(order, credentials, *, now=None) -> str:
@@ -272,15 +363,24 @@ def earlier_attempts(order, credentials, *, now=None) -> str:
         'unknown'   the gateway could not be asked, or holds something unsettled
         'clear'     nothing paid under any of them
     """
+    from ..integrations import payments as payment_adapters
+
     now = now or timezone.now()
     earlier = PaymentTransaction.objects.filter(
         order=order, provider=micuentaweb.PROVIDER, status=PaymentTransaction.Status.PENDING,
         created_at__gt=now - FORM_LIFETIME,
     ).select_related('order__company').order_by('created_at')
-    unknown = False
-    for attempt in earlier:
+    ours = earlier.filter(origin_filter(credentials.merchant_code, payment_adapters.environment_of(credentials)))
+    # A form opened with another shop or environment may still charge THERE,
+    # and this account cannot be asked about it: nobody knows.
+    unknown = earlier.count() > ours.count()
+    for attempt in ours:
         outcome = ask(attempt, credentials, now=now)
         if outcome in (PAID, DUPLICATE, ALREADY):
             return 'paid'
-        unknown = unknown or outcome in (UNREACHABLE, REFUSED, *_UNRESOLVED)
+        if outcome in (UNREACHABLE, REFUSED):
+            # The answer is about us, not about the reference: no point in
+            # asking about the next one, and nobody knows.
+            return 'unknown'
+        unknown = unknown or outcome in (ERROR, *UNRESOLVED)
     return 'unknown' if unknown else 'clear'

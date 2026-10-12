@@ -23,6 +23,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from store.integrations import health as integration_health
+from store.integrations import payments as payment_adapters
+from store.integrations.providers.payments import attempts_of_another_origin
 from store.integrations import registry
 from store.models import ConversionDelivery, NotificationDelivery, PaymentTransaction
 
@@ -103,15 +105,30 @@ class Command(BaseCommand):
                 'cobró otra vez un pedido que ya estaba pagado. Devuélvelo desde el panel de la pasarela; el '
                 'registro de auditoría dice cuál (`payment_duplicate`).'
             )
-        undecided = PaymentTransaction.objects.filter(
-            status=PaymentTransaction.Status.PENDING, failure_reason__startswith='undecided: ',
-            created_at__gte=now - RECENT,
-        ).count()
+        waiting_recent = PaymentTransaction.objects.filter(
+            status=PaymentTransaction.Status.PENDING, created_at__gte=now - RECENT)
+        undecided = waiting_recent.filter(failure_reason__startswith='undecided: ').count()
         if undecided:
             payments.append(
                 f'{_plural(undecided, "pago", "pagos")} con una respuesta de la pasarela que no se pudo decidir '
                 '(dos cobros, un reembolso o un importe parcial bajo la misma referencia), en las últimas 24 h. '
                 'Revísalo en el panel de la pasarela; el registro de auditoría dice cuál (`payment_undecided`).'
+            )
+        unreadable = waiting_recent.filter(failure_reason__startswith='unreadable: ').count()
+        if unreadable:
+            payments.append(
+                f'{_plural(unreadable, "pago", "pagos")} con una respuesta de la pasarela que no se pudo leer '
+                '(habla de otra tienda o de otra referencia, o no tiene la forma esperada), en las últimas 24 h. '
+                'Revísalo en el panel de la pasarela; el registro de auditoría dice cuál (`payment_undecided`).'
+            )
+        # Opened with another shop or in the other environment, and still open:
+        # what charges now is never asked about them. Somebody has to look.
+        foreign = attempts_of_another_origin(now - RECENT).count()
+        if foreign:
+            payments.append(
+                f'{_plural(foreign, "pago abierto", "pagos abiertos")} con otra tienda o en otro entorno que los '
+                'de la pasarela que cobra ahora, en las últimas 24 h: no se consultan. Revísalos en el panel de '
+                'la pasarela con la que se abrieron (la auditoría los lista en `payments_interrupted`).'
             )
         # A payment still waiting is NOT an alarm. Every checkout opens one, and a
         # buyer who closes the card form leaves it waiting for ever; from here
@@ -129,6 +146,11 @@ class Command(BaseCommand):
                 'Lo habitual es un comprador que no terminó; si alguien dice que pagó, con «Mi Cuenta Web» '
                 'pregúntaselo a la pasarela (`python manage.py reconcile_payments --reference <referencia>`) y, con el otro '
                 'producto, compruébalo en su panel.'
+            )
+        if payment_adapters.paused():
+            payment_notes.append(
+                'los pagos nuevos están en pausa: la tienda no abre ninguno hasta que un MASTER los reanude en '
+                'Configuración › Integraciones. Los ya abiertos se siguen confirmando.'
             )
         report('pagos', payments, 'sin notificaciones rechazadas ni pagos esperando', payment_notes)
 

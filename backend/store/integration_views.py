@@ -130,7 +130,7 @@ class IntegrationDraftView(_IntegrationView):
 
 
 class IntegrationActionView(_IntegrationView):
-    """POST — test, activate, disable, enable, revoke, or start a draft from the environment."""
+    """POST — test, activate, disable, enable, pause, resume, revoke, or start a draft from the environment."""
 
     http_method_names = ['post', 'options']
 
@@ -159,6 +159,9 @@ class IntegrationActionView(_IntegrationView):
         elif action in ('enable', 'disable'):
             service.set_enabled(provider, company, actor=request.user, request=request, enabled=action == 'enable',
                                 payload=data)
+        elif action in ('pause', 'resume'):
+            service.set_paused(provider, company, actor=request.user, request=request, paused=action == 'pause',
+                               payload=data)
         elif action == 'revoke':
             if data.get('confirm') != service.REVOKE_WORD:
                 raise _Refusal(f'Para revocar esta integración escribe {service.REVOKE_WORD}.')

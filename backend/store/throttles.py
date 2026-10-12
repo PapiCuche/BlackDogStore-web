@@ -93,6 +93,19 @@ class CheckoutThrottle(AnonRateThrottle):
     scope = 'checkout'
 
 
+class CheckoutUserThrottle(UserRateThrottle):
+    """
+    The checkout of somebody who is SIGNED IN (the app).
+
+    `CheckoutThrottle` only counts anonymous callers, so a customer with a
+    session had no limit at all on the one route whose replays open payment
+    forms and make the server ask the gateway about the earlier ones. Counted
+    per user, in this process's memory like every other limit here.
+    """
+
+    scope = 'checkout_user'
+
+
 class CheckoutQuoteThrottle(AnonRateThrottle):
     """
     Cotizar el carrito NO puede gastar el presupuesto de pagar.

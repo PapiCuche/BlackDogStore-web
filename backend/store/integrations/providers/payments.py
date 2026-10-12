@@ -35,11 +35,15 @@ INTERRUPT_WORD = 'INTERRUMPIR'
 IN_FLIGHT = timedelta(hours=1)
 #: How many open attempts one change asks the gateway about before deciding.
 GUARD_LIMIT = 100
+#: …and for how long: the question is asked inside a master's request, on the
+#: one worker there is. What does not fit is not verified, and blocks.
+GUARD_BUDGET = timedelta(seconds=20)
 
 
 class _PaymentProvider(Provider):
     category = 'payments'
     scope = registry.SCOPE_PLATFORM
+    pausable = True
     exclusive_in_category = True
     supported_modes = ('test', 'production')
     #: `PAYMENT_PROVIDER` value of the legacy environment configuration.
@@ -93,12 +97,15 @@ class _PaymentProvider(Provider):
             return None
         # With the credentials that are STILL there: after the change nobody
         # could ask. The same question the scheduled reconciliation asks.
-        return reconcile.reconcile_micuentaweb(window=charging.provider.open_window, limit=GUARD_LIMIT)
+        return reconcile.reconcile_micuentaweb(
+            window=charging.provider.open_window, limit=GUARD_LIMIT, budget=GUARD_BUDGET)
 
     def lock_changes(self) -> None:
         payment_adapters.lock_configuration(exclusive=True)
 
     def guard_change(self, company, *, change, public=None, prepared=None, acknowledged=False):
+        if change == 'revoke':
+            _refuse_environment_fallback(self)
         charging = _charging()
         if charging is None or not _touches(self, change, charging):
             return []
@@ -117,35 +124,45 @@ class _PaymentProvider(Provider):
         if not attempts:
             return []
         young = [a for a in attempts if a.created_at > now - reconcile.FORM_LIFETIME]
-        unresolved = set(getattr(prepared, 'unresolved', ()) or ())
-        waiting = [a for a in attempts if a.pk in unresolved and a not in young]
-        details = {'open': len(attempts), 'can_still_charge': len(young), 'unresolved': len(waiting)}
+        outcomes = getattr(prepared, 'outcomes', None) or {}
+        # The run stopped because nobody could be asked at all: the gateway down,
+        # refusing the caller, or no credentials to ask with.
+        stopped = prepared is not None and (prepared.unreachable or prepared.refused or prepared.unconfigured)
+        unresolved = [a for a in attempts if a not in young and outcomes.get(a.pk) in reconcile.UNRESOLVED]
+        unasked = [a for a in attempts if a not in young and a.pk not in outcomes]
+        unanswered = [a for a in attempts if a not in young and outcomes.get(a.pk) in reconcile.COULD_NOT_ASK]
+        details = {'open': len(attempts), 'can_still_charge': len(young), 'unresolved': len(unresolved)}
         if young:
             # No word gets past this one: the form is alive, the buyer may be
             # typing the card, and after the change nobody would hear of it.
+            # What a master can always do instead is pause new payments.
             retry_at = max(a.created_at for a in young) + reconcile.FORM_LIFETIME
             raise _blocked(details, retry_at, (
                 'No se puede hacer este cambio todavía: hay {charges} con {label} cuyo formulario aún puede '
                 'cobrar. Si el comprador pagara después del cambio, su pedido quedaría cobrado y sin confirmar. '
-                'Vuelve a intentarlo a partir de las {time}.'), len(attempts), charging)
-        if prepared is None or prepared.unconfigured or prepared.left:
-            # Decided to be unsafe only now, or more open attempts than one
-            # change asks about: not verified, so not done.
-            raise _blocked(details, now + reconcile.MIN_AGE, (
-                'No se pudo comprobar con la pasarela el estado de {charges} con {label}. Vuelve a intentarlo '
-                'a partir de las {time}.'), len(attempts), charging)
-        if prepared.unreachable or prepared.refused:
-            return _meant(charging, attempts, 'gateway_unreachable', acknowledged, (
-                'No se pudo preguntar a la pasarela por {charges} con {label}: no responde o rechaza la '
-                'consulta. Vuelve a intentarlo en unos minutos. Si no puedes esperar, esos cobros quedarán '
-                'anotados en la auditoría para revisarlos en el panel de la pasarela.'))
-        if waiting:
-            retry_at = min(a.created_at for a in waiting) + charging.provider.open_window
+                'Pausa los pagos nuevos para que no entren más y vuelve a intentarlo a partir de las {time}.'),
+                len(attempts), charging)
+        if unresolved:
+            retry_at = min(a.created_at for a in unresolved) + charging.provider.open_window
             raise _blocked(details, retry_at, (
                 'No se puede hacer este cambio todavía: la pasarela tiene {charges} con {label} sin resolver '
                 '(en curso, o con una respuesta que hay que revisar en su panel). Dejan de bloquear a las '
                 '{time}; hasta entonces, resuélvelos en el panel de la pasarela y vuelve a intentarlo.'),
-                len(waiting), charging)
+                len(unresolved), charging)
+        if unasked and not stopped:
+            # Decided to be unsafe only now, more open attempts than one change
+            # asks about, or no time left to ask: not verified, so not done.
+            raise _blocked(details, now + reconcile.MIN_AGE, (
+                'No se pudo comprobar con la pasarela el estado de {charges} con {label}. Vuelve a intentarlo '
+                'a partir de las {time}.'), len(unasked), charging)
+        if unasked or unanswered:
+            # COULD NOT ASK. Nobody knows, and waiting does not make anybody
+            # know: it has to be meant, and it leaves the attempts on record.
+            unknown = sorted(unasked + unanswered, key=lambda a: a.pk)
+            return _meant(charging, unknown, 'gateway_unreachable' if stopped else 'gateway_error', acknowledged, (
+                'No se pudo preguntar a la pasarela por {charges} con {label}: no responde, rechaza la consulta '
+                'o contesta con un error. Vuelve a intentarlo en unos minutos. Si no puedes esperar, esos cobros '
+                'quedarán anotados en la auditoría para revisarlos en el panel de la pasarela.'))
         # What is left is old enough that its form cannot charge and the
         # gateway, asked a moment ago, holds nothing for it.
         return []
@@ -343,6 +360,35 @@ def _charging():
     return _Charging(provider, dict(legacy[0]), False) if legacy is not None else None
 
 
+def _refuse_environment_fallback(provider) -> None:
+    """
+    Revoking the LAST active payment row of the console hands the decision back
+    to the server's environment: whatever keys are there would start charging —
+    another gateway, maybe production — without anybody having activated them,
+    tested them or typed a word. That is not what «revocar» says it does, so it
+    is not done: the master switches the configuration off instead, or the
+    server's variables are removed first.
+    """
+    from ...models import IntegrationConfig
+
+    if not IntegrationConfig.objects.filter(
+            provider=provider.id, slot=IntegrationConfig.SLOT_ACTIVE, company__isnull=True).exists():
+        return                                  # only a draft: nothing that decides is being removed
+    if payment_adapters.console_rows().exclude(provider=provider.id).exists():
+        return                                  # the console still decides
+    fallback = payment_adapters.environment_fallback()
+    if fallback is None:
+        return
+    legacy, public = fallback
+    mode = 'PRODUCCIÓN' if legacy.mode(public, {}) == 'production' else 'TEST'
+    raise ChangeBlocked(
+        f'No se revoca: sin esta configuración la tienda pasaría a cobrar con las claves de las variables del '
+        f'servidor ({legacy.label}, {mode}), que nadie activó desde aquí. Para dejar de cobrar, desactívala o '
+        'pausa los pagos. Para revocarla, quita antes esas variables del servidor.',
+        {'code': 'environment_fallback'},
+    )
+
+
 def _touches(provider, change, charging) -> bool:
     """Whether this change is a change to what charges at all."""
     if change == 'activate':
@@ -369,13 +415,38 @@ def _unsafe(provider, change, public, charging) -> bool:
             or provider.mode(public, {}) != charging.provider.mode(charging.public, {}))
 
 
+def _origin(charging):
+    """The shop and the environment of what charges, as an attempt records them."""
+    return charging.provider.shop(charging.public), charging.provider.mode(charging.public, {}) or 'test'
+
+
 def _open_attempts(charging):
+    """
+    The attempts a change of gateway has to look after: opened with the product
+    that charges, with ITS shop and environment. One opened with another shop
+    or in the other environment was already cut off by the change that left it
+    behind (and is on record there): this gateway cannot confirm it, so it is
+    not this change's to wait for.
+    """
     from ...models import PaymentTransaction
 
     return PaymentTransaction.objects.filter(
+        reconcile.origin_filter(*_origin(charging)),
         provider=charging.provider.legacy_code, status=PaymentTransaction.Status.PENDING,
         created_at__gte=timezone.now() - charging.provider.open_window,
     )
+
+
+def attempts_of_another_origin(since):
+    """Open attempts of the product that charges that were opened with ANOTHER shop or environment."""
+    from ...models import PaymentTransaction
+
+    charging = _charging()
+    if charging is None:
+        return PaymentTransaction.objects.none()
+    return PaymentTransaction.objects.filter(
+        provider=charging.provider.legacy_code, status=PaymentTransaction.Status.PENDING, created_at__gte=since,
+    ).exclude(reconcile.origin_filter(*_origin(charging)))
 
 
 def _charges(count: int) -> str:
