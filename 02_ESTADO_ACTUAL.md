@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-11 — PAY-GUARD-03: la tercera auditoría — seis ajustes
+
+Rama `feat/izipay-smartform-v4` (PR #110). **Sin migración, sin rutas, sin ajustes
+nuevos.** La auditoría dio por cumplidos los puntos de aceptación; quedaban seis defectos
+pequeños. No desplegado. Nada se probó contra la pasarela real.
+
+| | Defecto | Estado |
+|---|---|---|
+| 1 | El checkout de la web no tenía límite para una cuenta con sesión | CORREGIDO: el mismo límite por usuario que la app |
+| 2 | «SDK web» con `IZIPAY_ENV` en mayúsculas: el guardia buscaba cobros del entorno equivocado | CORREGIDO |
+| 3 | Una pausa volvía sola con una fila apagada por un cambio de producto | CORREGIDO |
+| 4 | El preflight no avisaba de `PAYMENTS_PUBLIC_TEST=2` (y la aplicación lo lee encendido) | CORREGIDO: avisa de todo lo que no sea vacío, `0`, `false`, `no` u `off` |
+| 5 | El servidor en marcha no decía que el interruptor estaba encendido | CORREGIDO: ATENCIÓN en la comprobación de estado |
+| 6 | El rechazo de un cambio ofrecía pausar cuando la pasarela cobra por variables del servidor y no hay nada que pausar | CORREGIDO |
+
+**Queda como deuda** (`docs/AUDIT_MEMORY.md`): PAY-CAP-ATOMIC, PAY-WEB-ORPHAN-ORDER,
+PAY-FOREIGN-GOLIVE, PAY-RECONCILE-CAPACITY, PAY-DEFERRED-WINDOW, PAY-NOGATEWAY-500.
+
+**Pruebas.** Cada prueba se vio fallar antes de su corrección; 12 mutaciones, todas
+detectadas. 13 pruebas nuevas (`test_payment_audit3`, `test_preflight`). Módulos de
+pagos, checkout, consola, medición, preflight, estado y despliegue: 1017, 0 fallos, 3
+omitidas. Las pruebas de la comprobación de estado miran una tienda con el interruptor
+apagado (las pruebas corren con él encendido); una de ellas fallaba cuando el pedido
+era el número 24 y se corrigió. No se corrió la suite completa, Playwright ni el ensayo.
+
 ## 2026-10-11 — PAY-GUARD-02: la segunda auditoría — TEST por entorno, pausar pagos, «no se pudo preguntar»
 
 Rama `feat/izipay-smartform-v4`. **Migración `0117_payment_attempt_origin` ampliada**

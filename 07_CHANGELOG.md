@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-11 — PAY-GUARD-03
+
+**Fixed**
+- El checkout de la web limita también a las cuentas con sesión (10 por minuto, por usuario).
+- «SDK web / Checkout»: `IZIPAY_ENV` con mayúsculas o espacios se lee igual que lo lee
+  el cobro; antes un cambio de pasarela podía pasar con un formulario de producción abierto.
+- Una pausa de pagos ya no vuelve al reactivar una pasarela que se apagó al cambiar de producto.
+- `deploy/preflight.py` avisa de `PAYMENTS_PUBLIC_TEST` con cualquier valor que no sea
+  vacío, `0`, `false`, `no` u `off`.
+- El rechazo de un cambio de pasarela dice qué se puede hacer cuando la pasarela cobra
+  con las variables del servidor (ahí no hay pausa).
+
+**Added**
+- La comprobación de estado da ATENCIÓN si `PAYMENTS_PUBLIC_TEST` está encendido en un
+  servidor que no es de desarrollo.
+
+**Known, not fixed** (`docs/AUDIT_MEMORY.md`)
+- PAY-CAP-ATOMIC, PAY-WEB-ORPHAN-ORDER, PAY-FOREIGN-GOLIVE, PAY-RECONCILE-CAPACITY,
+  PAY-DEFERRED-WINDOW, PAY-NOGATEWAY-500.
+
 ## 2026-10-11 — PAY-GUARD-02
 
 **Added**

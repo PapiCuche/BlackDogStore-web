@@ -547,8 +547,11 @@ no más seguido:
 **Claves de TEST y `PAYMENTS_PUBLIC_TEST`.** Con claves de TEST —en la consola o en el
 archivo de variables— sólo un MASTER puede pagar. `PAYMENTS_PUBLIC_TEST=1` abre los pagos
 de TEST a cualquiera: es para instalaciones de prueba y **no va en
-`deploy/.env.production`**. `deploy/preflight.py` lo marca como ATENCIÓN si está
-encendido, dice de las claves de TEST del archivo que «no son para una tienda publicada»
+`deploy/.env.production`**. `deploy/preflight.py` lo marca como ATENCIÓN con cualquier
+valor que no sea vacío, `0`, `false`, `no` u `off` (la aplicación da por encendido
+cualquier número distinto de cero), y la comprobación de estado (`ops_status`) da
+ATENCIÓN mientras esté encendido en un servidor que no es de desarrollo. El preflight
+dice de las claves de TEST del archivo que «no son para una tienda publicada»
 (la tienda arranca; faltan las de PRODUCCIÓN) y rechaza una `MICUENTAWEB_API_URL` que no
 sea la oficial, igual que la aplicación.
 
