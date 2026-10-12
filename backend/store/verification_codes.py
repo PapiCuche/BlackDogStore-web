@@ -197,6 +197,7 @@ def check(email, typed, *, on_exhausted=None):
             return None
         # Every link and code the account was sent, not only this one.
         accounts.mark_verified(user)
+        accounts.mark_email_verified(user)
         user.is_active = True
         user.save(update_fields=['is_active'])
     return user

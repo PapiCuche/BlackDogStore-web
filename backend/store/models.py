@@ -1057,6 +1057,17 @@ class UserProfile(models.Model):
     #:
     #: Nulo significa que nunca se revocó nada para esta cuenta.
     tokens_valid_after = models.DateTimeField(null=True, blank=True)
+
+    #: When somebody PROVED they read this account's mailbox (CLIENT-SEC-01).
+    #:
+    #: Not `User.is_active`: that only says the account may sign in, and it is
+    #: true for every account while `REQUIRE_EMAIL_VERIFICATION` is off. This is
+    #: written by the roads that prove the address — the link, the code, a
+    #: recovery link that finishes an account, Google, a staff invitation — and
+    #: by nothing else (`accounts.mark_email_verified`).
+    #:
+    #: Null means UNKNOWN, and unknown is not verified.
+    email_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2838,6 +2849,24 @@ class CompanySettings(models.Model):
     # button. A client that never learned about the policy still cannot deliver
     # an unpaid device in a tenant that switched it on.
     require_service_payment_before_delivery = models.BooleanField(default=False)
+
+    # CLIENT-SEC-01 — reviewing an order before it leaves. BOTH OFF BY DEFAULT:
+    # with these two as they are created, no checkout, payment or dispatch
+    # behaves differently from the release before them.
+    #
+    # `risk_review_amount`: an order of this total or more is worth a second
+    # look (`order_risk.SIGNAL_HIGH_AMOUNT`). Null is «no amount»: the signal is
+    # off. It is the shop's own number — what is a large sale for one business
+    # is an ordinary one for another.
+    risk_review_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    # Whether an order waiting for its review may be sent or handed over.
+    # False: the review is advice. True: «shipped» and «delivered» wait for
+    # somebody to decide (`order_fulfillment_services`). `db_default` too: the
+    # release before this column keeps inserting settings rows.
+    hold_orders_pending_review = models.BooleanField(default=False, db_default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -9157,3 +9186,70 @@ class ConversionDelivery(models.Model):
 
     def __str__(self):
         return f'{self.provider}:{self.event}:{self.order_id}:{self.status}'
+
+
+class OrderRiskAssessment(models.Model):
+    """
+    CLIENT-SEC-01 · what the shop noticed about an online order, and what a
+    person decided after looking.
+
+    ADVICE, NOT A VERDICT. Nothing here cancels, refunds, or changes whether an
+    order is paid; the one thing it can hold back — sending or handing over an
+    order that is waiting for its review — is a company option that is off
+    unless the company turns it on (`CompanySettings.hold_orders_pending_review`).
+
+    WHAT IS KEPT, AND WHAT IS NOT. `signals` is a list of CODES
+    (`order_risk.SIGNALS`): which rules noticed something, never the value that
+    made them notice. No phone, no address, no document. `ip_hash` is a keyed
+    hash of the address the order came from, good for one question — «is this
+    the same origin as that other order?» — and for nothing else: the address
+    itself is not stored, and neither is the browser.
+
+    NO ROW MEANS «NOT ASSESSED»: a sale at the till, an order older than this
+    table, or one whose assessment failed. It never means «low».
+    """
+
+    class Level(models.TextChoices):
+        LOW = 'low', 'Bajo'
+        MEDIUM = 'medium', 'Medio'
+        HIGH = 'high', 'Alto'
+
+    class ReviewStatus(models.TextChoices):
+        NOT_REQUIRED = 'not_required', 'No requiere revisión'
+        PENDING = 'pending', 'Por revisar'
+        APPROVED = 'approved', 'Aprobado'
+        REJECTED = 'rejected', 'Rechazado'
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='order_risk_assessments')
+    order = models.OneToOneField('store.Order', on_delete=models.PROTECT, related_name='risk_assessment')
+    level = models.CharField(max_length=8, choices=Level.choices, default=Level.LOW)
+    score = models.PositiveSmallIntegerField(default=0)
+    signals = models.JSONField(default=list, blank=True)
+    ip_hash = models.CharField(max_length=64, blank=True, default='')
+    review_status = models.CharField(
+        max_length=16, choices=ReviewStatus.choices, default=ReviewStatus.NOT_REQUIRED,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.CharField(max_length=300, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [
+            models.Index(fields=['company', 'review_status'], name='order_risk_review_idx'),
+            models.Index(fields=['company', 'ip_hash', 'created_at'], name='order_risk_origin_idx'),
+        ]
+
+    def __str__(self):
+        return f'pedido {self.order_id} · {self.level} ({self.review_status})'
+
+    def save(self, *args, **kwargs):
+        # The assessment is the order's company's, never somebody else's: the
+        # panel and the app find it through the order, and so must every filter.
+        if self.order_id is not None and self.order.company_id != self.company_id:
+            raise ValueError('La evaluación tiene que ser de la empresa del pedido.')
+        return super().save(*args, **kwargs)

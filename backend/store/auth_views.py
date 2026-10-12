@@ -102,13 +102,17 @@ class RegisterView(generics.CreateAPIView):
         # off afterwards: anything that broke in between — and the invitation
         # look-up could be made to — answered 500 and left an account that
         # worked, on an address nobody had verified (found by the review).
-        needs_verification = settings.REQUIRE_EMAIL_VERIFICATION and not _vouched_by_invitation(
-            request, serializer.validated_data['email'],
-        )
+        # Asked whether or not verification is required here: an invitation
+        # sent to this mailbox has proved the address either way
+        # (`UserProfile.email_verified_at`).
+        vouched = _vouched_by_invitation(request, serializer.validated_data['email'])
+        needs_verification = settings.REQUIRE_EMAIL_VERIFICATION and not vouched
         issued = None
         try:
             with transaction.atomic():
                 user = serializer.save(is_active=not needs_verification)
+                if vouched:
+                    accounts.mark_email_verified(user)
                 if needs_verification:
                     issued = verification_codes.issue(user)
         except IntegrityError as refused:
@@ -387,6 +391,9 @@ class UserDetailView(APIView):
         data = UserSerializer(user).data
         data['role'] = get_user_role(user)
         data['is_staff'] = user.is_staff or user.is_superuser
+        # CLIENT-SEC-01, an added field: when the mailbox was PROVEN, or null.
+        # Not «active»: an account is active wherever verification is not asked.
+        data['email_verified_at'] = accounts.email_verified_at(user)
         return Response(data)
 
 
@@ -412,6 +419,7 @@ class VerifyEmailView(APIView):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
+        accounts.mark_email_verified(user)
 
         return Response({'detail': 'Correo verificado correctamente. Ya puedes iniciar sesión.'})
 
@@ -542,6 +550,7 @@ class PasswordResetConfirmView(APIView):
                 # somebody switches it off one day.
                 user.is_active = True
                 accounts.mark_verified(user)
+                accounts.mark_email_verified(user)
             user.save(update_fields=['password', 'is_active'] if finishing else ['password'])
 
         # H4.1.2B — restablecer la contraseña cierra TODAS las sesiones, que es
