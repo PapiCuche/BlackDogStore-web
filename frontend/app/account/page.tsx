@@ -122,7 +122,7 @@ export default function AccountPage() {
       if (await sendVerificationCode()) {
         setVerify("sent");
       } else {
-        // Somebody proved it meanwhile (another tab, the link of an earlier mail).
+        // Somebody proved it meanwhile (another tab, another device).
         setProfile(await fetchProfile());
         setVerify("idle");
       }

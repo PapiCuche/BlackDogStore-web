@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import accounts, customer_profile, security_log, verification_codes
-from .emails import send_verification_email
+from .emails import send_own_email_code
 from .models import AdminAuditLog
 from .tenancy import resolve_storefront_company
 from .throttles import (
@@ -80,8 +80,10 @@ class VerifyOwnEmailActions:
     6-digit code to the account's OWN address, and take it back.
 
     The address is never read from the request — it is the account's — and the
-    code is the registration code of `verification_codes`, with every rule it
-    has. The shop only says whose audit trail the act is written in.
+    code has every rule the registration code of `verification_codes` has. It
+    is NOT that code: its token has a purpose of its own and its mail has no
+    link, so nothing here can finish, or revive, an account that cannot sign
+    in. The shop only says whose audit trail the act is written in.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -100,14 +102,14 @@ class VerifyOwnEmailActions:
                 'detail': 'Tu correo ya está verificado.', 'already_verified': True,
                 'email_verified_at': accounts.email_verified_at(user),
             })
-        issued = verification_codes.issue(user)
+        issued = verification_codes.issue_own(user)
         if issued is None:
             # One a minute and five a day, counted on the account.
             return Response(
                 {'detail': 'Ya te enviamos un código hace poco. Espera un minuto antes de pedir otro.'},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
-        if not send_verification_email(user, issued.token, code=issued.code, request=request):
+        if not send_own_email_code(user, issued.code, request=request):
             # Nobody received it: the wait, the day and the previous code stay as they were.
             verification_codes.withdraw(issued)
             return Response(

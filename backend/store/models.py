@@ -1204,9 +1204,15 @@ class AccountToken(models.Model):
     """
     PURPOSE_EMAIL_VERIFICATION = 'email_verification'
     PURPOSE_PASSWORD_RESET = 'password_reset'
+    # The code a SIGNED-IN account asks for to prove its own mailbox
+    # (CLIENT-SEC-01). Its own purpose on purpose: a verification token says
+    # «registered and never confirmed» (`accounts.is_unverified`), and that is
+    # not what an account that already signs in is.
+    PURPOSE_OWN_EMAIL_PROOF = 'own_email_proof'
     PURPOSE_CHOICES = [
         (PURPOSE_EMAIL_VERIFICATION, 'Email Verification'),
         (PURPOSE_PASSWORD_RESET, 'Password Reset'),
+        (PURPOSE_OWN_EMAIL_PROOF, 'Own E-mail Proof'),
     ]
 
     user = models.ForeignKey(

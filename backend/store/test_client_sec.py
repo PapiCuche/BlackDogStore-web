@@ -2483,11 +2483,8 @@ CODE_REFUSED = {'detail': 'El código no es válido o ya venció. Pide uno nuevo
     ALLOWED_HOSTS=['*'], FRONTEND_URL='https://tienda.test',
     EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
 )
-class VerifyMyOwnAddressTest(_ProfileBase):
-    """
-    F7 · an account that can already sign in proves its mailbox: a 6-digit code
-    to ITS OWN address, with the rules the registration code has.
-    """
+class _OwnAddressBase(_ProfileBase):
+    """An account that signs in and has not proved its mailbox, and the two steps of F7."""
 
     def setUp(self):
         super().setUp()
@@ -2507,6 +2504,13 @@ class VerifyMyOwnAddressTest(_ProfileBase):
 
     def wrong(self) -> str:
         return '000000' if self.code() != '000000' else '111111'
+
+
+class VerifyMyOwnAddressTest(_OwnAddressBase):
+    """
+    F7 · an account that can already sign in proves its mailbox: a 6-digit code
+    to ITS OWN address, with the rules the registration code has.
+    """
 
     def test_it_is_for_whoever_is_signed_in(self):
         guest = APIClient()
@@ -2612,18 +2616,48 @@ class VerifyMyOwnAddressTest(_ProfileBase):
         self.assertFalse(AccountToken.objects.filter(user=self.user).exists())
 
     def test_a_mail_that_did_not_leave_costs_nothing(self):
-        with mock.patch('store.account_views.send_verification_email', return_value=False):
+        with mock.patch('store.account_views.send_own_email_code', return_value=False):
             response = self.send()
         self.assertEqual(response.status_code, 503)
         self.assertFalse(AccountToken.objects.filter(user=self.user).exists())
         self.assertEqual(self.send().status_code, 200)                      # no wait was started
 
-    def test_the_link_of_that_mail_proves_it_as_well(self):
+    def test_that_mail_carries_the_code_and_no_link(self):
+        # A link in it would be a door for whoever cannot sign in; the code needs the session.
         self.send()
-        token = re.search(r'verify-email\?token=([A-Za-z0-9_-]+)', django_mail.outbox[-1].body).group(1)
-        cache.clear()
-        self.assertEqual(APIClient().post('/api/auth/verify-email/', {'token': token}, format='json').status_code, 200)
-        self.assertIsNotNone(verified_at(self.user))
+        [message] = django_mail.outbox
+        everything = message.body + ''.join(str(body) for body, _kind in getattr(message, 'alternatives', []))
+        self.assertRegex(self.code(), r'^\d{6}$')
+        for forbidden in ('token=', 'verify-email', 'http://', 'https://'):
+            self.assertNotIn(forbidden, everything)
+
+    def test_it_is_a_token_of_its_own_kind(self):
+        self.send()
+        self.assertEqual(
+            list(AccountToken.objects.filter(user=self.user).values_list('purpose', flat=True)),
+            [AccountToken.PURPOSE_OWN_EMAIL_PROOF],
+        )
+        self.assertIn(AccountToken.PURPOSE_OWN_EMAIL_PROOF, dict(AccountToken.PURPOSE_CHOICES))
+
+    def test_the_code_is_for_the_address_it_was_sent_to(self):
+        # The proof is of ONE mailbox: an account that changes its address afterwards has not read the new one.
+        self.send()
+        code = self.code()
+        User.objects.filter(pk=self.user.pk).update(email='otra@correo.test')
+        self.assertEqual(self.confirm(code).json(), CODE_REFUSED)
+        self.assertIsNone(verified_at(self.user))
+        User.objects.filter(pk=self.user.pk).update(email='ANA@correo.test')         # the same mailbox, written otherwise
+        self.assertEqual(self.confirm(code).status_code, 200)
+
+    def test_it_does_not_spend_the_registration_resends(self):
+        from store import verification_codes
+
+        self.send()
+        self.user.is_active = False                                         # only to ask the registration budget
+        self.assertEqual(
+            AccountToken.objects.filter(user=self.user, purpose=AccountToken.PURPOSE_EMAIL_VERIFICATION).count(), 0,
+        )
+        self.assertIsNotNone(verification_codes.issue(self.user))
 
     def test_the_old_road_for_accounts_that_cannot_sign_in_yet_is_what_it_was(self):
         # A code sent to a signed-in account does not open the unauthenticated endpoint.
@@ -3167,3 +3201,111 @@ class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
         response = self.web_checkout(session='carrito-invitado', document_number=self.STRANGERS_DNI)
         order = Order.objects.get(pk=response.json()['order_id'])
         self.assertEqual((order.customer.user, order.customer.document_number), (None, self.STRANGERS_DNI))
+
+
+class ASwitchedOffAccountStaysOffTest(_OwnAddressBase):
+    """
+    P1-2 · asking for the F7 code leaves nothing that reads as «registered and
+    never confirmed». An account somebody switches off afterwards stays off by
+    every road that finishes a half-made account.
+    """
+
+    RESET_REQUEST = '/api/auth/password-reset/request/'
+    RESET_CONFIRM = '/api/auth/password-reset/confirm/'
+
+    def switch_off(self):
+        User.objects.filter(pk=self.user.pk).update(is_active=False)
+        self.user.refresh_from_db()
+
+    def is_on(self) -> bool:
+        return User.objects.get(pk=self.user.pk).is_active
+
+    def ask_reset(self):
+        cache.clear()
+        django_mail.outbox = []
+        APIClient().post(self.RESET_REQUEST, {'email': 'ana@correo.test'}, format='json')
+        return list(django_mail.outbox)
+
+    def test_control_an_account_switched_off_gets_no_recovery_mail(self):
+        self.switch_off()
+        self.assertFalse(accounts.is_unverified(self.user))
+        self.assertEqual(self.ask_reset(), [])
+
+    def test_having_asked_for_a_code_does_not_make_it_a_half_made_account(self):
+        self.assertEqual(self.send().status_code, 200)
+        self.switch_off()
+        self.assertFalse(accounts.is_unverified(self.user))
+        self.assertEqual(self.ask_reset(), [])
+        self.assertFalse(self.is_on())
+
+    def test_a_recovery_link_it_already_had_does_not_switch_it_back_on(self):
+        self.send()
+        raw, _row = AccountToken.make(self.user, AccountToken.PURPOSE_PASSWORD_RESET, ttl_hours=1)
+        self.switch_off()
+        cache.clear()
+        APIClient().post(self.RESET_CONFIRM, {'token': raw, 'new_password': 'Otra-clave-larga-7'}, format='json')
+        self.assertFalse(self.is_on())
+
+    def test_the_token_behind_the_code_is_not_a_verification_link(self):
+        made = []
+        real = AccountToken.make.__func__
+
+        def remember(cls, *args, **kwargs):
+            made.append(real(cls, *args, **kwargs))
+            return made[-1]
+
+        with mock.patch.object(AccountToken, 'make', classmethod(remember)):
+            self.send()
+        [(raw, _row)] = made
+        self.switch_off()
+        cache.clear()
+        response = APIClient().post('/api/auth/verify-email/', {'token': raw}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.is_on())
+        self.assertIsNone(verified_at(self.user))
+
+    def test_the_public_resend_and_the_code_without_a_session_do_nothing_for_it(self):
+        self.send()
+        code = self.code()
+        self.switch_off()
+        AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(days=3))
+        cache.clear()
+        django_mail.outbox = []
+        APIClient().post('/api/auth/resend-verification/', {'email': 'ana@correo.test'}, format='json')
+        self.assertEqual(django_mail.outbox, [])
+        AccountToken.objects.filter(user=self.user).update(created_at=timezone.now())
+        cache.clear()
+        response = APIClient().post('/api/auth/verify-email/code/', {'email': 'ana@correo.test', 'code': code}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.is_on())
+        self.assertIsNone(verified_at(self.user))
+
+    def test_its_own_code_is_worth_nothing_once_it_is_off(self):
+        from store import verification_codes
+
+        self.send()
+        code = self.code()
+        self.switch_off()
+        self.assertFalse(verification_codes.confirm_own(self.user, code))
+        self.assertIsNone(verified_at(self.user))
+
+    def test_an_account_really_registered_and_never_confirmed_is_still_finished_by_its_link(self):
+        self.switch_off()
+        raw, _row = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        self.assertTrue(accounts.is_unverified(self.user))
+        cache.clear()
+        self.assertEqual(APIClient().post('/api/auth/verify-email/', {'token': raw}, format='json').status_code, 200)
+        self.assertTrue(self.is_on())
+
+
+class TheOwnAddressMailTest(SimpleTestCase):
+    """What the F7 mail says when it wears a shop's template: a code, and no way in."""
+
+    def test_it_is_a_valid_message_with_the_code_and_no_button_or_link(self):
+        from store.mail import builders, contract
+
+        data = contract.validate(contract.clean(builders.own_email_code(brand='Tienda Uno', name='Ana', code='042913')))
+        self.assertEqual(data['codigo']['valor'], '042913')
+        self.assertNotIn('boton', data)
+        self.assertNotIn('secundario', data)
+        self.assertNotIn('http', json.dumps(data))

@@ -131,6 +131,43 @@ def send_verification_email(user, raw_token, *, code='', request=None) -> bool:
         return False
 
 
+def send_own_email_code(user, code, *, request=None) -> bool:
+    """
+    The code a signed-in account asked for to prove its own address
+    (CLIENT-SEC-01 · F7). True when the mail was handed to the server.
+
+    A CODE AND NOTHING ELSE. No link, on purpose: a link is good for whoever
+    holds it, signed in or not, and this proof is only worth something typed
+    into the session that asked for it.
+    """
+    from . import mail
+    from .mail import builders
+
+    dressed = _dressed('verify_email', user, lambda **who: builders.own_email_code(code=code, **who), request)
+    try:
+        if dressed is not None:
+            mail.deliver(dressed, user.email)
+            return True
+        send_mail(
+            subject=_suffix('Tu código de verificación'),
+            message=(
+                f"Hola {user.first_name or user.username},\n\n"
+                f"Pediste verificar el correo de tu cuenta. Escribe este código en la página "
+                f"«Mi cuenta» (vence en 15 minutos). No lo compartas con nadie: nunca te lo pediremos.\n"
+                f"Tu código: {code}\n\n"
+                f"Si no lo pediste, ignora este mensaje."
+                f"{_signature()}"
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to send the own-address code to user %s", user.pk)
+        return False
+
+
 def send_password_reset_email(user, raw_token, next_path=None, *, request=None):
     """
     `next_path` is where the person was going when they found they could not

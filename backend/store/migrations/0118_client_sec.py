@@ -30,6 +30,11 @@ class Migration(migrations.Migration):
             name='email_verified_at',
             field=models.DateTimeField(blank=True, null=True),
         ),
+        migrations.AlterField(
+            model_name='accounttoken',
+            name='purpose',
+            field=models.CharField(choices=[('email_verification', 'Email Verification'), ('password_reset', 'Password Reset'), ('own_email_proof', 'Own E-mail Proof')], max_length=32),
+        ),
         migrations.CreateModel(
             name='OrderRiskAssessment',
             fields=[
