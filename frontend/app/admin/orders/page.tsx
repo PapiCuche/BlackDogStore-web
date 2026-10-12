@@ -25,6 +25,7 @@ type Filters = {
   fulfillment_status: string;
   paid: string;
   shortfall: string;
+  review: string;
   date_from: string;
   date_to: string;
 };
@@ -37,6 +38,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     fulfillment_status: "",
     paid: "",
     shortfall: "",
+    review: "",
     date_from: "",
     date_to: "",
   });
@@ -55,6 +57,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         fulfillment_status: filters.fulfillment_status || undefined,
         paid: (filters.paid || undefined) as "true" | "false" | undefined,
         shortfall: (filters.shortfall || undefined) as "true" | undefined,
+        review: (filters.review || undefined) as "pending" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -96,7 +99,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         />
 
         <FilterBar>
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(6,minmax(0,auto))]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(7,minmax(0,auto))]">
             <label>
               <span className="sr-only">Buscar órdenes</span>
               <input
@@ -149,6 +152,16 @@ function OrdersContent({ user }: { user: AuthUser }) {
                 className="accent-warning"
               />
               Solo con faltante de stock
+            </label>
+            {/* CLIENT-SEC-01: the orders waiting for a person to review them. */}
+            <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm text-foreground/85">
+              <input
+                type="checkbox"
+                checked={filters.review === "pending"}
+                onChange={(e) => setFilter("review", e.target.checked ? "pending" : "")}
+                className="accent-warning"
+              />
+              Por revisar
             </label>
           </div>
         </FilterBar>

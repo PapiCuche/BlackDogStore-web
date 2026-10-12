@@ -27,6 +27,7 @@ import { InternalControlGuard, type InternalContext } from "../components/Intern
 import { DashboardSection } from "../components/dashboard-ui";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import { SequenceSettings } from "../components/SequenceSettings";
+import { OrderReviewSettings } from "../components/OrderReviewSettings";
 import {
   fetchCompanyConfiguration,
   updateCompanyConfiguration,
@@ -460,6 +461,24 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                       errors={errors.document_logo_url
                         ? { document_logo_url: [errors.document_logo_url] } : undefined}
                       hint="PNG, JPEG o WebP. Se imprime tal cual sobre papel blanco, sin sombra. Cada comprobante conserva el logotipo con el que se emitió, aunque después lo cambies. Guarda los cambios para aplicarlo."
+                    />
+                  </DashboardSection>
+                </div>
+                {/* CLIENT-SEC-01 — the two order-review options. They save on
+                    their own, with only their two fields: changing them takes a
+                    second capability, and the form above must stay savable by
+                    whoever could save it before. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Revisión de pedidos"
+                    description="Cuándo un pedido en línea pide una segunda mirada, y si puede salir sin ella."
+                  >
+                    <OrderReviewSettings
+                      companyId={companyId}
+                      amount={config.settings.risk_review_amount ?? null}
+                      hold={config.settings.hold_orders_pending_review ?? false}
+                      canEdit={Boolean(config.can_manage_order_review) && companyWide}
+                      onSaved={setConfig}
                     />
                   </DashboardSection>
                 </div>

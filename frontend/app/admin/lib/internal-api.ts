@@ -350,6 +350,13 @@ export type CompanySettingsPayload = {
   terms_url: string;
   privacy_url: string;
   order_notification_email: string;
+  /**
+   * CLIENT-SEC-01: an order of this total or more gets one more reason to be
+   * reviewed. Null: the company has not named an amount and the rule is off.
+   */
+  risk_review_amount: string | null;
+  /** CLIENT-SEC-01: whether an order waiting for its review may be sent or handed over. */
+  hold_orders_pending_review: boolean;
   updated_at: string;
 };
 
@@ -375,6 +382,11 @@ export type CompanyConfiguration = {
   fulfillment_branch: { id: number; name: string } | null;
   status: ConfigurationStatus;
   can_manage: boolean;
+  /**
+   * CLIENT-SEC-01: whether THIS caller may change the two order-review options
+   * (`company.manage` AND `settings.manage`). Decided by the server.
+   */
+  can_manage_order_review?: boolean;
 };
 
 export async function fetchCompanyConfiguration(
@@ -403,7 +415,7 @@ export async function fetchCompanyConfiguration(
  */
 export async function updateCompanyConfiguration(
   companyId: number | null | undefined,
-  data: Record<string, string>,
+  data: Record<string, string | boolean | null>,
 ): Promise<CompanyConfiguration> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   const res = await fetchWithAuth(`${API_BASE}/admin/company-settings/${qs}`, {

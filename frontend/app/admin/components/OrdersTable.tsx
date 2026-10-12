@@ -9,6 +9,19 @@ type Props = {
   orders: AdminOrder[];
 };
 
+const RISK_LEVEL_TEXT: Record<string, string> = { medium: "riesgo medio", high: "riesgo alto" };
+
+/**
+ * CLIENT-SEC-01 — what the list says about an order's assessment, or null.
+ * Only what asks for attention: a review that is waiting, or a level above
+ * low. An ordinary order, and one that was not assessed, say nothing.
+ */
+export function orderRiskBadge(order: Pick<AdminOrder, "risk_level" | "review_status">): string | null {
+  const level = order.risk_level ? RISK_LEVEL_TEXT[order.risk_level] : undefined;
+  if (order.review_status === "pending") return level ? `Por revisar · ${level}` : "Por revisar";
+  return level ? level.charAt(0).toUpperCase() + level.slice(1) : null;
+}
+
 export function OrdersTable({ orders }: Props) {
   if (orders.length === 0) {
     return (
@@ -48,6 +61,18 @@ export function OrdersTable({ orders }: Props) {
                     className="mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-medium text-warning"
                   >
                     Faltante de stock
+                  </span>
+                )}
+                {orderRiskBadge(order) && (
+                  <span
+                    data-testid="order-risk-badge"
+                    className={
+                      order.review_status === "pending"
+                        ? "ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-medium text-warning first:ml-0"
+                        : "ml-1 mt-1 inline-flex items-center rounded border border-bd-border px-2 py-0.5 text-[11px] font-medium text-muted first:ml-0"
+                    }
+                  >
+                    {orderRiskBadge(order)}
                   </span>
                 )}
               </td>
