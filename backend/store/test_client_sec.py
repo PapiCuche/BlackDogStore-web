@@ -2649,6 +2649,14 @@ class VerifyMyOwnAddressTest(_OwnAddressBase):
         User.objects.filter(pk=self.user.pk).update(email='ANA@correo.test')         # the same mailbox, written otherwise
         self.assertEqual(self.confirm(code).status_code, 200)
 
+    def test_a_registration_token_of_the_account_is_not_looked_at(self):
+        self.send()
+        code = self.code()
+        _raw, row = AccountToken.make(self.user, AccountToken.PURPOSE_EMAIL_VERIFICATION, ttl_hours=24)
+        AccountToken.objects.filter(pk=row.pk).update(code_hash='0' * 64, code_expires_at=timezone.now() + timedelta(minutes=15))
+        self.assertEqual(self.confirm(code).status_code, 200)               # the newer row is not this code's
+        self.assertEqual(AccountToken.objects.get(pk=row.pk).code_attempts, 0)
+
     def test_it_does_not_spend_the_registration_resends(self):
         from store import verification_codes
 
@@ -3303,6 +3311,13 @@ class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
         self.assertEqual((holder.user, holder.document_number), (None, self.STRANGERS_DNI))
         self.assertEqual(Customer.objects.filter(company=self.company, document_number=self.STRANGERS_DNI).count(), 1)
 
+    def test_a_document_held_in_another_shop_is_not_held_here(self):
+        other = _saas_company('Otra Tienda', 'riesgo-otra', tax_id='20111111112')
+        Customer.objects.create(company=other, first_name='Titular', document_type='dni', document_number=self.STRANGERS_DNI)
+        user = self.account('verificada', verified=True)
+        self.buy(user)
+        self.assertEqual(Customer.objects.get(company=self.company, user=user).document_number, self.STRANGERS_DNI)
+
     def test_a_business_record_made_without_its_ruc_is_still_a_business(self):
         user = self.account(verified=False)
         self.buy(user, document_type='ruc', document_number='20999999990', receipt_type='factura', customer_name='Comercial de Prueba S.A.C.')
@@ -3463,8 +3478,9 @@ class DigitsAtTheCheckoutTest(_CheckoutBase):
         self.assert_refused(self.web_checkout(document_number=self.ARABIC_INDIC), 'document_number')
         self.assert_refused(self.web_checkout(document_type='ruc', document_number=self.FULLWIDTH_RUC,
                                               receipt_type='factura'), 'document_number')
-        self.assert_refused(self.web_checkout(customer_phone='٩٨٧٦٥٤٣٢١'), 'customer_phone')
-        self.assert_refused(self.web_checkout(customer_phone='+51 ９87 654 321'), 'customer_phone')
+        # The leading 9 is the pattern's own: the digits after it are the ones a «\d» would let through.
+        self.assert_refused(self.web_checkout(customer_phone='9٨٧٦٥٤٣٢١'), 'customer_phone')
+        self.assert_refused(self.web_checkout(customer_phone='+51 9８7 654 321'), 'customer_phone')
         self.assertFalse(Order.objects.exists())
         self.assertFalse(Customer.objects.exists())
 
@@ -3475,7 +3491,7 @@ class DigitsAtTheCheckoutTest(_CheckoutBase):
         self.assert_refused(self.app_checkout(client, document_number=self.ARABIC_INDIC), 'document_number')
         self.assert_refused(self.app_checkout(client, document_type='ruc', document_number=self.FULLWIDTH_RUC,
                                               receipt_type='factura'), 'document_number')
-        self.assert_refused(self.app_checkout(client, customer_phone='٩٨٧٦٥٤٣٢١'), 'customer_phone')
+        self.assert_refused(self.app_checkout(client, customer_phone='9٨٧٦٥٤٣٢١'), 'customer_phone')
         self.assertFalse(Order.objects.exists())
 
     def test_what_both_always_took_they_still_take(self):
