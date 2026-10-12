@@ -284,6 +284,31 @@ def _stamp(order, customer):
     order.save(update_fields=['customer'])
 
 
+def _record_may_take_document(order, company, document_type, document_number) -> bool:
+    """
+    Whether the record a sale is about to make takes the document typed at checkout.
+
+    A GUEST'S record does, as always: it has no account behind it, so the
+    document on it opens nothing for anybody.
+
+    AN ACCOUNT'S record takes it only under the rule its profile has
+    (CLIENT-SEC-01 · P1-1): the account has PROVED its mailbox, and nobody in
+    this shop holds that document. Otherwise a signed-in checkout — unpaid,
+    free to repeat — was a second way to put a stranger's document on one's own
+    record, and the shop then could not file the real person. Nothing is said
+    to the buyer and the sale goes on: the order carries the document itself.
+    """
+    if order.user_id is None or not document_number:
+        return True
+    from . import accounts
+
+    if accounts.email_verified_at(order.user) is None:
+        return False
+    return not Customer.objects.filter(
+        company=company, document_type=document_type, document_number=document_number,
+    ).exists()
+
+
 def _create_from_order(order, company, *, actor=None):
     """
     A new CRM record built from what checkout validated.
@@ -297,6 +322,11 @@ def _create_from_order(order, company, *, actor=None):
 
     name = (order.customer_name or '').strip()
     first_name, _, last_name = name.partition(' ')
+    document_number = normalize_document_number(order.document_number)
+    if not _record_may_take_document(order, company, document_type, document_number):
+        # The ORDER keeps what was typed (its own snapshot); the client's file
+        # does not take it. A business is still filed as one, by its name.
+        document_type, document_number = '', ''
 
     customer = Customer(
         company=company,
@@ -306,7 +336,7 @@ def _create_from_order(order, company, *, actor=None):
         first_name='' if is_business else first_name,
         last_name='' if is_business else last_name.strip(),
         document_type=document_type,
-        document_number=normalize_document_number(order.document_number),
+        document_number=document_number,
         phone=normalize_customer_phone(order.customer_phone),
         email=normalize_customer_email(order.customer_email),
         address_line=order.address_line or '',

@@ -3078,3 +3078,92 @@ class TwoAtOnceTest(TransactionTestCase):
         self.assertEqual([kind for kind, _value in results], ['ok', 'ok'], results)
         record = Customer.objects.get(company=self.company, user=other)
         self.assertEqual((record.phone, record.last_name), ('987654321', 'Rojas'))
+
+
+# =============================================================================
+# 8 · after the second independent review
+# =============================================================================
+
+class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
+    """
+    P1-1 · a signed-in checkout makes the account's record. It must not be a
+    second door to what the profile guards: the record takes the typed document
+    only for an account with a proved mailbox, and only if nobody holds it.
+    """
+
+    STRANGERS_DNI = '70000044'
+
+    def buy(self, user, **overrides):
+        self.n = getattr(self, 'n', 0) + 1
+        overrides.setdefault('document_number', self.STRANGERS_DNI)
+        response = self.web_checkout(web_session(user), session=f'carrito-doc-{self.n}', **overrides)
+        self.assertEqual(response.status_code, 200, response.content)
+        return Order.objects.get(pk=response.json()['order_id'])
+
+    def account(self, username='ocupante', *, verified):
+        user = User.objects.create_user(username, f'{username}@correo.test', PASSWORD, first_name='Otra')
+        if verified:
+            accounts.mark_email_verified(user)
+        return user
+
+    def test_an_unproved_account_gets_a_record_without_the_document(self):
+        user = self.account(verified=False)
+        order = self.buy(user)                                              # never paid: it cost nothing
+
+        record = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual((record.document_type, record.document_number), ('', ''))
+        self.assertEqual(order.customer, record)                            # the sale is still theirs
+        self.assertEqual((order.document_type, order.document_number), ('dni', self.STRANGERS_DNI))   # and keeps what was typed
+        self.assertFalse(Customer.objects.filter(company=self.company, document_number=self.STRANGERS_DNI).exists())
+
+    def test_the_shop_can_then_file_the_real_person_and_the_account_reads_nothing_of_theirs(self):
+        user = self.account(verified=False)
+        self.buy(user)
+        # Staff file the real holder of that DNI: nothing stands in the way.
+        customer_services.assert_document_available(self.company, 'dni', self.STRANGERS_DNI)
+        real = Customer.objects.create(
+            company=self.company, first_name='Titular', last_name='Real', document_type='dni', document_number=self.STRANGERS_DNI,
+        )
+        theirs = self.web_checkout(session='carrito-titular', document_number=self.STRANGERS_DNI, customer_email='titular@correo.test')
+        guest_order = Order.objects.get(pk=theirs.json()['order_id'])
+        self.assertEqual(guest_order.customer, real)
+        listed = web_session(user).get('/api/orders/', HTTP_HOST='riesgo-caja.example.com').json()
+        self.assertNotIn(guest_order.pk, [row['id'] for row in listed])
+
+    def test_it_is_not_a_way_around_the_profiles_budget_either(self):
+        user = self.account(verified=False)
+        for number in ('70000051', '70000052', '70000053', '70000054', '70000055'):
+            self.buy(user, document_number=number)
+        record = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual(record.document_number, '')
+        self.assertEqual(Customer.objects.filter(company=self.company).exclude(document_number='').count(), 0)
+
+    def test_an_account_with_a_proved_mailbox_keeps_what_it_always_had(self):
+        user = self.account('verificada', verified=True)
+        order = self.buy(user)
+        record = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual((record.document_type, record.document_number, order.customer), ('dni', self.STRANGERS_DNI, record))
+
+    def test_a_document_somebody_holds_stays_theirs(self):
+        holder = Customer.objects.create(
+            company=self.company, first_name='Titular', document_type='dni', document_number=self.STRANGERS_DNI,
+        )
+        user = self.account('verificada', verified=True)
+        order = self.buy(user)
+        record = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual((record.document_number, order.customer), ('', record))      # their own record, without it
+        holder.refresh_from_db()
+        self.assertEqual((holder.user, holder.document_number), (None, self.STRANGERS_DNI))
+        self.assertEqual(Customer.objects.filter(company=self.company, document_number=self.STRANGERS_DNI).count(), 1)
+
+    def test_a_business_record_made_without_its_ruc_is_still_a_business(self):
+        user = self.account(verified=False)
+        self.buy(user, document_type='ruc', document_number='20999999990', receipt_type='factura', customer_name='Comercial de Prueba S.A.C.')
+        record = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual((record.customer_type, record.business_name, record.document_number),
+                         ('business', 'Comercial de Prueba S.A.C.', ''))
+
+    def test_a_guest_sale_is_what_it_was(self):
+        response = self.web_checkout(session='carrito-invitado', document_number=self.STRANGERS_DNI)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual((order.customer.user, order.customer.document_number), (None, self.STRANGERS_DNI))
