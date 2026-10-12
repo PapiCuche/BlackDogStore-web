@@ -30,7 +30,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from . import order_risk
+from . import delivery_services, order_risk
 from .company_settings import build_identity_snapshot
 from .customer_services import link_order_to_customer
 from .models import (
@@ -472,6 +472,12 @@ def create_pending_order(
         # decides nothing about this sale, and it cannot fail it — `assess`
         # swallows its own failures and then the order simply has no assessment.
         order_risk.assess(order, request)
+
+        # DELIVERY-01. The order's delivery as a record of its own, copied from
+        # the columns just written above — which stay the ones documents,
+        # e-mails and this contract read. Like the assessment, it cannot fail
+        # the sale: without it the order simply has no record yet.
+        delivery_services.snapshot_for_order(order)
 
     return order
 

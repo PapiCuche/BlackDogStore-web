@@ -705,3 +705,239 @@ class TwoDefaultsAtOnceTest(TransactionTestCase):
         self.assertEqual(Customer.objects.filter(company=self.company, user=other).count(), 1)
         book = CustomerAddress.objects.filter(customer__user=other)
         self.assertEqual((book.count(), book.filter(is_default=True).count()), (2, 1))
+
+
+# =============================================================================
+# 3 · the delivery record of an order
+# =============================================================================
+
+from store.models import CartItem, OrderRiskAssessment  # noqa: E402
+from store.tests import (  # noqa: E402
+    FAKE_SESSION_TOKEN, IZIPAY_TEST_SETTINGS, SESSION_TOKEN_PATH, _c1_sale, _m5_stock, _prod, _saas_branch,
+)
+
+WEB_CHECKOUT = '/api/payments/create-checkout-session/'
+Mode = OrderDelivery.Mode
+
+
+@override_settings(ALLOWED_HOSTS=['*'], **IZIPAY_TEST_SETTINGS)
+class RecordedAtCheckoutTest(TestCase):
+    """Made with the order, from the order's own columns — and only for an online order."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda', 'envios-caja', tax_id='20999999990')
+        self.branch = self.company.branches.first() or _saas_branch(self.company)
+        self.company.default_inventory_branch = self.branch
+        self.company.save(update_fields=['default_inventory_branch'])
+        self.product = _prod(self.company, 'Funda', 'funda-envios', price='80.00')
+        _m5_stock(self.product, self.branch, 50)
+        patcher = patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.n = 0
+
+    def web_checkout(self, client=None, **overrides):
+        self.n += 1
+        session = f'carrito-{self.n}'
+        CartItem.objects.create(session_key=session, product=self.product, quantity=1)
+        body = {
+            'session_key': session, 'customer_name': 'Ana Torres', 'customer_email': 'ana@correo.test',
+            'customer_phone': '987654321', 'document_type': 'dni', 'document_number': DNI,
+            'delivery_method': 'national_shipping', 'address_line': 'Av. Siempre Viva 123', 'city': 'Puno',
+            'district': 'Juliaca', 'reference': 'Frente al parque', 'receipt_type': 'boleta',
+            'accepted_terms': True, 'accepted_warranty_policy': True,
+        }
+        body.update(overrides)
+        cache.clear()
+        return (client or APIClient()).post(WEB_CHECKOUT, body, format='json', HTTP_HOST='envios-caja.example.com')
+
+    def record_of(self, response):
+        self.assertIn(response.status_code, (200, 201), response.content)
+        return OrderDelivery.objects.get(order_id=response.json()['order_id'])
+
+    def test_a_guest_order_on_the_web(self):
+        record = self.record_of(self.web_checkout())
+        order = record.order
+        self.assertEqual((record.company, record.mode), (self.company, Mode.NATIONAL_ADDRESS))
+        self.assertEqual(
+            (record.recipient_name, record.recipient_phone, record.recipient_document_type, record.recipient_document_number),
+            ('Ana Torres', '987654321', 'dni', DNI),
+        )
+        self.assertEqual((record.address_line, record.district, record.city, record.reference),
+                         ('Av. Siempre Viva 123', 'Juliaca', 'Puno', 'Frente al parque'))
+        # Nothing a checkout does not know.
+        self.assertEqual(
+            (record.carrier, record.carrier_name, record.agency_name, record.freight_amount, record.freight_paid_by,
+             record.waybill_number, record.tracking_code, record.tracking_url, record.shipped_at,
+             record.source_address, record.updated_by),
+            (None, '', '', None, '', '', '', '', None, None, None),
+        )
+        # The order itself is what it always was.
+        self.assertEqual((order.delivery_method, order.address_line, order.city), ('national_shipping', 'Av. Siempre Viva 123', 'Puno'))
+        self.assertEqual(order.total, Decimal('80.00'))
+
+    def test_the_mode_comes_from_the_orders_delivery_method(self):
+        self.assertEqual(delivery.MODE_BY_METHOD, {
+            'pickup_store': Mode.PICKUP_STORE, 'delivery_arequipa': Mode.LOCAL_DELIVERY, 'national_shipping': Mode.NATIONAL_ADDRESS,
+        })
+        self.assertEqual(set(delivery.MODE_BY_METHOD), set(Order.DeliveryMethod.values))
+        for method, mode in delivery.MODE_BY_METHOD.items():
+            with self.subTest(method):
+                record = self.record_of(self.web_checkout(delivery_method=method))
+                self.assertEqual((record.mode, record.order.delivery_method), (mode, method))
+
+    def test_a_signed_in_order_and_one_from_the_app(self):
+        user = User.objects.create_user('ana', 'ana@correo.test', PASSWORD, first_name='Ana')
+        record = self.record_of(self.web_checkout(web_session(user), delivery_method='pickup_store'))
+        self.assertEqual((record.mode, record.order.user), (Mode.PICKUP_STORE, user))
+
+        client = v1_session(user)
+        body = {
+            'items': [{'product_slug': 'funda-envios', 'quantity': 1}], 'customer_name': 'Ana Torres',
+            'customer_phone': '912345678', 'document_type': 'dni', 'document_number': DNI,
+            'delivery_method': 'delivery_arequipa', 'address_line': 'Calle Dos 45', 'district': 'Yanahuara',
+            'city': 'Arequipa',
+            'receipt_type': 'boleta', 'accepted_terms': True, 'accepted_warranty_policy': True,
+            'idempotency_key': 'pedido-app-0001',
+        }
+        cache.clear()
+        response = client.post('/api/v1/customer/envios-caja/checkout/', body, format='json')
+        record = self.record_of(response)
+        self.assertEqual((record.mode, record.recipient_phone, record.address_line, record.district),
+                         (Mode.LOCAL_DELIVERY, '912345678', 'Calle Dos 45', 'Yanahuara'))
+        # The same request again is the same order and the same record.
+        cache.clear()
+        again = client.post('/api/v1/customer/envios-caja/checkout/', body, format='json')
+        self.assertEqual(again.json()['order_id'], response.json()['order_id'])
+        self.assertEqual(OrderDelivery.objects.filter(order_id=response.json()['order_id']).count(), 1)
+
+    def test_the_checkout_answers_exactly_what_it_answered(self):
+        response = self.web_checkout()
+        self.assertEqual(response.status_code, 200)
+        text = response.content.decode().lower()
+        for word in ('delivery', 'carrier', 'freight', 'waybill', 'recipient'):
+            self.assertNotIn(word, text)
+
+    def test_a_record_that_cannot_be_written_never_costs_the_sale(self):
+        def broken(order):
+            # A refusal of the DATABASE, the kind that poisons a transaction.
+            Customer.objects.bulk_create([Customer(company=order.company)])
+
+        with patch('store.delivery_services._snapshot', side_effect=broken), self.assertLogs('store.delivery_services', level='ERROR') as logged:
+            response = self.web_checkout()
+        self.assertEqual(response.status_code, 200, response.content)
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual((order.items.count(), order.status), (1, Order.Status.PENDING_PAYMENT))
+        self.assertFalse(OrderDelivery.objects.exists())
+        # The assessment made in the same transaction is still there.
+        self.assertTrue(OrderRiskAssessment.objects.filter(order=order).exists())
+        text = '\n'.join(logged.output)
+        for value in ('ana@correo.test', '987654321', DNI, 'Ana Torres', 'Siempre Viva'):
+            self.assertNotIn(value, text)
+
+    def test_a_python_error_in_it_does_not_cost_the_sale_either(self):
+        with patch('store.delivery_services._snapshot', side_effect=RuntimeError('Av. Siempre Viva 123')), \
+                self.assertLogs('store.delivery_services', level='ERROR') as logged:
+            response = self.web_checkout()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(OrderDelivery.objects.exists())
+        self.assertNotIn('Siempre Viva', '\n'.join(logged.output))
+
+    def test_a_sale_at_the_till_has_no_delivery_record(self):
+        cashier, _ = _p2d_member(self.company, 'caja_envios', ['company.view', 'sales.pos.use'])
+        order, created = _c1_sale(actor=cashier, company=self.company, branch=self.branch,
+                                  items=[{'product': self.product.pk, 'quantity': 1}])
+        self.assertTrue(created)
+        self.assertFalse(OrderDelivery.objects.filter(order=order).exists())
+
+    def test_an_order_is_recorded_once(self):
+        record = self.record_of(self.web_checkout())
+        with self.assertNoLogs('store.delivery_services', level='ERROR'):
+            self.assertIsNone(delivery.snapshot_for_order(record.order))
+        self.assertEqual(OrderDelivery.objects.count(), 1)
+
+    def test_it_belongs_to_the_company_of_its_order(self):
+        other = _saas_company('Otra', 'envios-otra', tax_id='20111111112')
+        with self.assertRaises(ValueError):
+            OrderDelivery.objects.create(company=other, order=_order(self.company))
+
+
+class RecordsWhenTheTableArrivedTest(TestCase):
+    """Migration 0119: every online order that already said how it is delivered gets its record."""
+
+    def setUp(self):
+        self.a = _saas_company('Tienda A', 'envios-a', tax_id='20999999990')
+        self.b = _saas_company('Tienda B', 'envios-b', tax_id='20111111112')
+        self.module = import_module('store.migrations.0119_delivery_base')
+
+    def arrive(self):
+        from django.apps import apps
+
+        self.module.record_existing_deliveries(apps, None)
+
+    def old(self, company=None, **extra):
+        extra.setdefault('customer_name', 'Ana Torres')
+        extra.setdefault('customer_phone', '987654321')
+        extra.setdefault('document_type', 'dni')
+        extra.setdefault('document_number', DNI)
+        return _order(company or self.a, paid=True, **extra)
+
+    def test_each_online_order_gets_the_record_a_checkout_would_have_made(self):
+        shipped = self.old(delivery_method='national_shipping', address_line='Av. Uno 1', district='Juliaca', city='Puno', reference='Puerta azul')
+        local = self.old(self.b, delivery_method='delivery_arequipa', address_line='Calle Dos 2', district='Cayma')
+        pickup = self.old(delivery_method='pickup_store')
+        self.arrive()
+
+        record = OrderDelivery.objects.get(order=shipped)
+        self.assertEqual((record.company, record.mode), (self.a, Mode.NATIONAL_ADDRESS))
+        self.assertEqual((record.recipient_name, record.recipient_phone, record.recipient_document_type, record.recipient_document_number),
+                         ('Ana Torres', '987654321', 'dni', DNI))
+        self.assertEqual((record.address_line, record.district, record.city, record.reference), ('Av. Uno 1', 'Juliaca', 'Puno', 'Puerta azul'))
+        self.assertEqual((OrderDelivery.objects.get(order=local).mode, OrderDelivery.objects.get(order=local).company), (Mode.LOCAL_DELIVERY, self.b))
+        self.assertEqual(OrderDelivery.objects.get(order=pickup).mode, Mode.PICKUP_STORE)
+        # Exactly what the live code writes for a new order.
+        twin = self.old(delivery_method='national_shipping', address_line='Av. Uno 1', district='Juliaca', city='Puno', reference='Puerta azul')
+        live = delivery.snapshot_for_order(twin)
+        for field in ('mode', 'recipient_name', 'recipient_phone', 'recipient_document_type', 'recipient_document_number',
+                      'address_line', 'district', 'city', 'department', 'reference', 'carrier_name', 'freight_amount'):
+            self.assertEqual(getattr(live, field), getattr(record, field), field)
+
+    def test_a_till_sale_and_an_order_that_says_nothing_get_none(self):
+        till = self.old(sales_channel='pos', delivery_method='pickup_store')
+        silent = self.old(delivery_method='')
+        self.arrive()
+        self.assertFalse(OrderDelivery.objects.filter(order__in=[till, silent]).exists())
+
+    def test_it_can_run_twice_and_keeps_what_staff_already_wrote(self):
+        order = self.old(delivery_method='national_shipping', address_line='Av. Uno 1')
+        self.arrive()
+        OrderDelivery.objects.filter(order=order).update(waybill_number='G-100', mode=Mode.AGENCY_PICKUP)
+        self.arrive()
+        record = OrderDelivery.objects.get(order=order)
+        self.assertEqual((record.waybill_number, record.mode), ('G-100', Mode.AGENCY_PICKUP))
+        self.assertEqual(OrderDelivery.objects.count(), 1)
+
+    def test_it_works_through_more_orders_than_one_batch(self):
+        with patch.object(self.module, 'BATCH', 3):
+            orders = [self.old(delivery_method='pickup_store') for _ in range(8)]
+            self.arrive()
+        self.assertEqual(OrderDelivery.objects.filter(order__in=orders).count(), 8)
+
+    def test_backwards_the_records_go_and_the_orders_are_what_they_were(self):
+        from django.apps import apps
+
+        order = self.old(delivery_method='national_shipping', address_line='Av. Uno 1', city='Puno')
+        self.arrive()
+        self.module.forget_delivery_records(apps, None)
+        self.assertFalse(OrderDelivery.objects.exists())
+        order.refresh_from_db()
+        self.assertEqual((order.delivery_method, order.address_line, order.city), ('national_shipping', 'Av. Uno 1', 'Puno'))
+
+    def test_the_step_reads_no_live_code_and_its_table_is_todays(self):
+        import inspect
+
+        source = inspect.getsource(self.module)
+        self.assertNotIn('from store', source)
+        self.assertNotIn('import store', source)
+        self.assertEqual(self.module.MODE_BY_METHOD, {k: str(v) for k, v in delivery.MODE_BY_METHOD.items()})

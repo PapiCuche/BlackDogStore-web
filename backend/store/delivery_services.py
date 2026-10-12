@@ -28,7 +28,7 @@ from django.db import IntegrityError, transaction
 
 from . import customer_profile
 from . import identity_validation as identity
-from .models import AdminAuditLog, Carrier, Customer, CustomerAddress
+from .models import AdminAuditLog, Carrier, Customer, CustomerAddress, Order, OrderDelivery, SalesChannel
 
 logger = logging.getLogger(__name__)
 
@@ -480,3 +480,73 @@ def deactivate_address(*, company, user, pk, request=None) -> bool:
                 heir.save(update_fields=['is_default', 'updated_at'])
         _log_address('customer_address_deactivated', entry, company, user, request)
     return True
+
+
+# ---------------------------------------------------------------------------
+# The delivery record of an order
+# ---------------------------------------------------------------------------
+
+#: The record's mode for each delivery method an order can have. The order's
+#: own `delivery_method` stays what the checkout wrote; this is how the record
+#: names the same fact.
+MODE_BY_METHOD = {
+    Order.DeliveryMethod.PICKUP_STORE: OrderDelivery.Mode.PICKUP_STORE,
+    Order.DeliveryMethod.DELIVERY_AREQUIPA: OrderDelivery.Mode.LOCAL_DELIVERY,
+    Order.DeliveryMethod.NATIONAL_SHIPPING: OrderDelivery.Mode.NATIONAL_ADDRESS,
+}
+
+
+def record_for(order):
+    """The delivery record of this order, or None: it has none."""
+    return OrderDelivery.objects.select_related('carrier', 'updated_by').filter(order=order).first()
+
+
+def is_online(order) -> bool:
+    """Whether this order can have a delivery record at all: a sale at the till has no delivery."""
+    return order.sales_channel == SalesChannel.ONLINE
+
+
+def _from_order(order) -> OrderDelivery:
+    """
+    The record an order starts with, read from the ORDER'S OWN COLUMNS: the mode
+    from its delivery method, the recipient from its buyer, the address as typed.
+    Unsaved. An order that says nothing about its delivery starts with no mode.
+    """
+    return OrderDelivery(
+        company=order.company, order=order, mode=MODE_BY_METHOD.get(order.delivery_method, ''),
+        recipient_name=order.customer_name or '', recipient_phone=order.customer_phone or '',
+        recipient_document_type=order.document_type or '', recipient_document_number=order.document_number or '',
+        address_line=order.address_line or '', district=order.district or '', city=order.city or '',
+        reference=order.reference or '',
+    )
+
+
+def snapshot_for_order(order):
+    """
+    Make the delivery record of an order that was just made online. The record,
+    or None.
+
+    NEVER RAISES, and never breaks the transaction it is called in: it runs in
+    a savepoint, and anything that goes wrong is logged by its kind — not with
+    the words of the error, which may quote an address — and leaves the order
+    without a record, which every reader already handles.
+    """
+    try:
+        with transaction.atomic():
+            return _snapshot(order)
+    except Exception as failed:  # noqa: BLE001 — see docstring
+        logger.error(
+            'delivery record failed for order %s (%s); the order stays without one',
+            getattr(order, 'pk', None), type(failed).__name__,
+        )
+        return None
+
+
+def _snapshot(order):
+    if order.company_id is None or not is_online(order) or not order.delivery_method:
+        return None
+    if OrderDelivery.objects.filter(order=order).exists():
+        return None
+    record = _from_order(order)
+    record.save()
+    return record
