@@ -25,7 +25,9 @@ from django.db import IntegrityError, transaction
 
 from . import accounts
 from . import identity_validation as identity
-from .models import AdminAuditLog, Customer, normalize_customer_email
+from django.db.models import Q
+
+from .models import AdminAuditLog, Customer, Order, normalize_customer_email
 
 #: The rule of the database that one account is ONE client of a shop.
 _OWN_RECORD_RULE = 'unique_customer_per_user_per_company'
@@ -33,6 +35,31 @@ _OWN_RECORD_RULE = 'unique_customer_per_user_per_company'
 #: What a buyer may write. An allowlist: a key that is not here is not read.
 WRITABLE = ('first_name', 'last_name', 'phone', 'document_type', 'document_number')
 _NAME_MAX = Customer._meta.get_field('first_name').max_length
+
+
+#: What a buyer is told when the document of their file is not theirs to change.
+DOCUMENT_LOCKED = 'El documento de tu ficha lo cambia la tienda. Comunícate con ella si necesitas corregirlo.'
+DOCUMENT_STAYS = 'El documento no se puede quitar desde aquí. Si cambió, escribe el nuevo.'
+
+
+def document_locked(record) -> bool:
+    """
+    Whether the document of this record is frozen for its subject.
+
+    A document is what the shop knows a client by: its review of orders
+    compares against it (`order_risk`), and so does the claim of a repair. Its
+    subject may correct a typo while nobody has relied on it. Once the shop HAS
+    — it made the file itself, or it has a paid order on it — a change is the
+    shop's to make, looking at the person.
+    """
+    if record is None or record.pk is None:
+        return False
+    if record.created_by_id is not None and record.created_by_id != record.user_id:
+        return True                     # filed by staff, not by its own subject
+    theirs = Q(customer=record)
+    if record.user_id is not None:
+        theirs |= Q(user_id=record.user_id)
+    return Order.objects.filter(theirs, company_id=record.company_id, status=Order.Status.PAID).exists()
 
 
 class ProfileError(Exception):
@@ -68,6 +95,9 @@ def payload(company, user) -> dict:
         'phone': record.phone if record else '',
         'document_type': record.document_type if record else '',
         'document_number': record.document_number if record else '',
+        # Whether the document is the shop's to change. The page says so and
+        # does not offer the field; the save refuses it all the same.
+        'document_locked': document_locked(record),
     }
 
 
@@ -179,7 +209,21 @@ def _save(company, user, data, request) -> dict:
                 last_name=(user.last_name or '')[:_NAME_MAX],
                 email=normalize_customer_email(user.email), created_by=user,
             )
+        # A FILE THE SHOP ARCHIVED IS NOT CHANGED BY ITS SUBJECT — not a field
+        # of it. Answered like a save that changed nothing, judged or not: the
+        # shop's decision about a client is not that client's to learn here,
+        # nor to work around by rewriting what the decision was made on.
+        if not created and not record.is_active:
+            return payload(company, user)
+
         wanted = _wanted(record, data)
+
+        if (wanted['document_type'], wanted['document_number']) != (record.document_type, record.document_number):
+            if document_locked(record):
+                raise ProfileError({'document_number': [DOCUMENT_LOCKED]})
+            # Replaced, never erased: a file that had a document keeps having one.
+            if record.document_number and not wanted['document_number']:
+                raise ProfileError({'document_number': [DOCUMENT_STAYS]})
 
         # A document identifies ONE client of a shop. Whose it already is —
         # somebody with an account, a walk-in, an archived file — is not

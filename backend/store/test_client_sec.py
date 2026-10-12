@@ -450,7 +450,7 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual(body, {
             'email': 'ana@correo.test', 'email_verified_at': None, 'email_verification_available': False,
             'first_name': 'Ana', 'last_name': 'Torres', 'phone': '',
-            'document_type': '', 'document_number': '',
+            'document_type': '', 'document_number': '', 'document_locked': False,
         })
         self.assertIn('no-store', response['Cache-Control'])
 
@@ -480,11 +480,18 @@ class OwnProfileTest(_ProfileBase):
         record = self.record()
         self.assertEqual((record.phone, record.document_number, record.last_name), ('987654321', DNI, 'Torres Rojas'))
 
-    def test_a_document_can_be_taken_off(self):
+    def test_a_document_on_file_is_corrected_but_never_taken_off(self):
         self.patch({'document_type': 'dni', 'document_number': DNI})
-        self.assertEqual(self.patch({'document_type': '', 'document_number': ''}).status_code, 200)
+        for body in ({'document_type': '', 'document_number': ''}, {'document_number': ''}, {'document_type': ''}):
+            with self.subTest(body):
+                response = self.patch(body)
+                self.assertEqual(response.status_code, 400)
+        self.assertIn('no se puede quitar', self.patch({'document_type': '', 'document_number': ''}).json()['document_number'][0])
         record = self.record()
-        self.assertEqual((record.document_type, record.document_number), ('', ''))
+        self.assertEqual((record.document_type, record.document_number), ('dni', DNI))
+        # A typo is still corrected by its owner, while the shop has not relied on it.
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000009'}).status_code, 200)
+        self.assertEqual(self.record().document_number, '70000009')
 
     def test_the_address_and_the_record_itself_are_not_the_buyers_to_write(self):
         other = User.objects.create_user('otro', 'otro@correo.test', PASSWORD)
@@ -571,9 +578,6 @@ class OwnProfileTest(_ProfileBase):
         self.assertEqual(body['phone'], '987654321')
         self.assertNotIn('is_active', body)
         self.assertNotIn('cerrado', json.dumps(body))
-        self.assertEqual(self.patch({'phone': '912345678'}).status_code, 200)
-        record = self.record()
-        self.assertEqual((record.phone, record.is_active, record.notes), ('912345678', False, 'cerrado por la tienda'))
 
     def test_a_shop_that_cannot_be_named_has_no_profile(self):
         with override_settings(DEFAULT_STOREFRONT_COMPANY_SLUG='', DEBUG=False):
@@ -2175,3 +2179,81 @@ class OnlyPlainDigitsAndNoControlCharactersTest(_ProfileBase):
                 self.assertIn(field, response.json())
         self.assertIsNone(self.record())
         self.assertEqual(self.patch({'first_name': 'Ana María', 'last_name': "D'Ávila-Ñuñez"}).status_code, 200)
+
+
+
+class WhatTheShopRecordedIsNotTheBuyersToRewriteTest(_ProfileBase):
+    """
+    F5 · the subject of a file corrects their contact details. They do not
+    rewrite what the shop relies on: an archived file, or the document of a
+    file the shop made or has already sold on.
+    """
+
+    LOCKED = 'El documento de tu ficha lo cambia la tienda'
+
+    def staff(self):
+        return User.objects.get_or_create(username='personal', defaults={'email': 'personal@tienda.test'})[0]
+
+    def test_nothing_of_an_archived_file_changes_and_nothing_says_so(self):
+        self.patch({'phone': '987654321', 'document_type': 'dni', 'document_number': DNI})
+        Customer.objects.filter(user=self.user).update(is_active=False)
+        kept = Customer.objects.filter(user=self.user).values().get()
+        audits = AdminAuditLog.objects.filter(action='customer_profile_updated').count()
+
+        for body in ({'phone': '912345678'}, {'first_name': 'Otra'}, {'document_type': 'dni', 'document_number': '70000009'},
+                     {'document_type': '', 'document_number': ''}, {'phone': 'no-es-un-teléfono'}):
+            with self.subTest(body):
+                response = self.patch(body)
+                self.assertEqual(response.status_code, 200, response.content)      # the answer of an unchanged save
+                self.assertEqual(response.json(), self.get().json())
+                self.assertEqual(response.json()['phone'], '987654321')
+        self.assertEqual(Customer.objects.filter(user=self.user).values().get(), kept)
+        self.assertEqual(AdminAuditLog.objects.filter(action='customer_profile_updated').count(), audits)
+        text = json.dumps(self.get().json())
+        for hint in ('archiv', 'is_active', 'inactiv'):
+            self.assertNotIn(hint, text)
+
+    def test_the_document_is_frozen_once_the_shop_has_sold_on_it(self):
+        self.patch({'document_type': 'dni', 'document_number': DNI})
+        self.assertFalse(self.get().json()['document_locked'])
+        _order(self.a, user=self.user, total='50.00')                       # never paid: nothing relies on it yet
+        self.assertFalse(self.get().json()['document_locked'])
+        _order(self.b, user=self.user, total='50.00', paid=True)            # paid, in another shop
+        self.assertFalse(self.get().json()['document_locked'])
+
+        _order(self.a, user=self.user, total='50.00', paid=True)
+        self.assertTrue(self.get().json()['document_locked'])
+        for body in ({'document_type': 'dni', 'document_number': '70000009'}, {'document_type': 'ce', 'document_number': 'AB12345'}):
+            with self.subTest(body):
+                response = self.patch({**body, 'phone': '912345678'})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(self.LOCKED, response.json()['document_number'][0])
+        record = self.record()
+        self.assertEqual((record.document_number, record.phone), (DNI, ''))
+        # The rest of the file is still theirs to correct, also when the form sends the document back as it is.
+        self.assertEqual(self.patch({'phone': '912345678', 'document_type': 'dni', 'document_number': DNI}).status_code, 200)
+        self.assertEqual(self.record().phone, '912345678')
+
+    def test_a_paid_order_linked_to_the_file_counts_as_well(self):
+        self.patch({'document_type': 'dni', 'document_number': DNI})
+        _order(self.a, customer=self.record(), total='50.00', paid=True)    # a counter sale the shop put on this file
+        self.assertTrue(self.get().json()['document_locked'])
+
+    def test_the_document_of_a_file_the_shop_made_is_frozen(self):
+        Customer.objects.create(
+            company=self.a, user=self.user, first_name='Ana', document_type='dni', document_number=DNI, created_by=self.staff(),
+        )
+        self.assertTrue(self.get().json()['document_locked'])
+        response = self.patch({'document_type': 'dni', 'document_number': '70000009'})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.record().document_number, DNI)
+        # A file the shop made WITHOUT a document: the buyer may not be the one to give it one either.
+        other = User.objects.create_user('otro', 'otro@correo.test', PASSWORD, first_name='Otro')
+        Customer.objects.create(company=self.a, user=other, first_name='Otro', created_by=self.staff())
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000008'}, client=web_session(other)).status_code, 400)
+
+    def test_a_file_the_buyer_made_themself_is_not_frozen_by_that(self):
+        self.patch({'document_type': 'dni', 'document_number': DNI})
+        self.assertEqual(self.record().created_by, self.user)
+        self.assertFalse(self.get().json()['document_locked'])
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000009'}).status_code, 200)
