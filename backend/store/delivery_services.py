@@ -688,6 +688,7 @@ def _staff_values(company, data, record) -> dict:
     values = {field: getattr(record, field) for field in STAFF_FIELDS if field != 'carrier'}
     values['carrier'] = record.carrier
     values['carrier_name'] = record.carrier_name
+    values['tracking_url_typed'] = record.tracking_url_typed
 
     if 'mode' in data:
         mode = data['mode']
@@ -741,16 +742,26 @@ def _staff_values(company, data, record) -> dict:
     if 'shipped_at' in data:
         values['shipped_at'] = _shipped_at(data['shipped_at'])
 
-    # Where to follow it. An address somebody typed wins. With none typed, a
-    # waybill given now is followed at the carrier's own page — or nowhere, if
-    # the carrier has none.
-    typed = clean_tracking_url(data['tracking_url'] if data['tracking_url'] is not None else '') if 'tracking_url' in data else None
-    if typed:
-        values['tracking_url'] = typed
-    elif 'waybill_number' in data and values['waybill_number']:
-        values['tracking_url'] = tracking_url_for(values['carrier'], values['waybill_number'])
-    elif typed is not None:
-        values['tracking_url'] = ''
+    # Where to follow it. Either somebody TYPED the address, and then only
+    # typing it again changes it; or it is DERIVED from the carrier's own page
+    # and the waybill, and then it moves when one of them does and is empty
+    # when one is missing or the carrier has no page. Which of the two it is is
+    # kept on the record: without it a corrected waybill erased a typed link,
+    # and a changed carrier left the buyer following the old one's page.
+    carriers_own = tracking_url_for(values['carrier'], values['waybill_number'])
+    retyped = 'tracking_url' in data
+    if retyped:
+        typed = clean_tracking_url(data['tracking_url'] if data['tracking_url'] is not None else '')
+        # The carrier's own page typed back is not a link of somebody's own.
+        values['tracking_url_typed'] = bool(typed) and typed != carriers_own
+        if values['tracking_url_typed']:
+            values['tracking_url'] = typed
+    moved = (
+        getattr(values['carrier'], 'pk', None) != record.carrier_id
+        or values['waybill_number'] != record.waybill_number
+    )
+    if not values['tracking_url_typed'] and (retyped or moved):
+        values['tracking_url'] = carriers_own
     return values
 
 

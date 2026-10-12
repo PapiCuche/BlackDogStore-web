@@ -83,6 +83,7 @@ class Migration(migrations.Migration):
                 ('waybill_number', models.CharField(blank=True, default='', max_length=60)),
                 ('tracking_code', models.CharField(blank=True, default='', max_length=80)),
                 ('tracking_url', models.CharField(blank=True, default='', max_length=500)),
+                ('tracking_url_typed', models.BooleanField(default=False)),
                 ('shipped_at', models.DateTimeField(blank=True, null=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),

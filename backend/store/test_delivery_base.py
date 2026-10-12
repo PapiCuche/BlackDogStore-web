@@ -1553,3 +1553,94 @@ class HalfACharacterInTheBookTest(_BookBase):
     def test_a_whole_character_outside_the_basic_plane_is_text(self):
         entry = self.add(door(recipient_name='Ana \U0001F600 Torres'))
         self.assertEqual(entry.recipient_name, 'Ana \U0001F600 Torres')
+
+
+class TheTrackingLinkFollowsWhatItWasMadeFromTest(_StaffDeliveryBase):
+    """
+    P2-2 · a link the system DERIVED from carrier and waybill is theirs: it
+    moves with them and is gone when one of them is. A link somebody TYPED is
+    that person's: only the link itself being sent changes it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.other = self.carrier(name='Otra Agencia', kind='agency', tracking_url_template='https://otra.ejemplo.test/t/{guia}')
+
+    def link(self):
+        return self.record().tracking_url
+
+    def buyer_link(self):
+        rows = v1_session(self.buyer).get('/api/v1/customer/envios-a/orders/').json()
+        return [row['delivery'] for row in rows if row['id'] == self.order.pk][0]['tracking_url']
+
+    def test_a_derived_link_follows_the_carrier(self):
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.assertEqual((self.link(), self.record().tracking_url_typed), ('https://rastreo.ejemplo.test/g/G-1', False))
+        self.assertEqual(self.write(self.manager, {'carrier': self.other.pk}).status_code, 200)    # the panel sends only what changed
+        self.assertEqual((self.link(), self.buyer_link()), ('https://otra.ejemplo.test/t/G-1',) * 2)
+        self.write(self.manager, {'carrier': self.courier.pk})                                     # a carrier with no page
+        self.assertEqual((self.link(), self.buyer_link()), ('', ''))
+        self.write(self.manager, {'carrier': self.agency.pk})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-1')
+        self.write(self.manager, {'carrier': None})
+        self.assertEqual((self.link(), self.buyer_link()), ('', ''))
+
+    def test_a_derived_link_follows_the_waybill(self):
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.write(self.manager, {'waybill_number': 'G-2'})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-2')
+        self.write(self.manager, {'waybill_number': ''})
+        self.assertEqual((self.link(), self.buyer_link()), ('', ''))
+        self.write(self.manager, {'waybill_number': 'G-3'})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-3')
+
+    def test_a_carrier_given_after_the_waybill_makes_the_link(self):
+        self.write(self.manager, {'waybill_number': 'G-1'})
+        self.assertEqual(self.link(), '')
+        self.write(self.manager, {'carrier': self.agency.pk})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-1')
+
+    def test_a_typed_link_is_only_changed_by_typing_it(self):
+        typed = 'https://courier.ejemplo.test/mi-envio/abc'
+        self.write(self.manager, {'carrier': self.courier.pk, 'waybill_number': 'W1', 'tracking_url': typed})
+        self.assertEqual((self.link(), self.record().tracking_url_typed), (typed, True))
+        for body in ({'waybill_number': 'W2'}, {'carrier': self.agency.pk}, {'waybill_number': ''}, {'carrier': None},
+                     {'carrier': self.other.pk, 'waybill_number': 'W3'}, {'tracking_code': 'CLAVE'}):
+            with self.subTest(body):
+                self.assertEqual(self.write(self.manager, body).status_code, 200)
+                self.assertEqual((self.link(), self.buyer_link()), (typed, typed))
+        again = 'https://courier.ejemplo.test/mi-envio/xyz'
+        self.write(self.manager, {'tracking_url': again})
+        self.assertEqual((self.link(), self.record().tracking_url_typed), (again, True))
+
+    def test_taking_a_typed_link_off_goes_back_to_the_carriers_own(self):
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1', 'tracking_url': 'https://courier.ejemplo.test/x'})
+        self.write(self.manager, {'tracking_url': ''})                      # nothing else is sent
+        self.assertEqual((self.link(), self.record().tracking_url_typed), ('https://rastreo.ejemplo.test/g/G-1', False))
+        self.write(self.manager, {'waybill_number': 'G-2'})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-2')
+        self.write(self.manager, {'tracking_url': 'https://courier.ejemplo.test/x'})
+        self.write(self.manager, {'tracking_url': None, 'carrier': self.courier.pk})
+        self.assertEqual((self.link(), self.record().tracking_url_typed), ('', False))
+
+    def test_typing_the_carriers_own_page_is_not_typing_a_link(self):
+        # A client that sends the whole record back does not freeze the link.
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.write(self.manager, {'tracking_url': 'https://rastreo.ejemplo.test/g/G-1', 'tracking_code': 'CLAVE'})
+        self.assertFalse(self.record().tracking_url_typed)
+        self.write(self.manager, {'waybill_number': 'G-2'})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-2')
+
+    def test_a_derived_link_is_not_made_again_while_what_it_came_from_stays(self):
+        # The record is a copy: a carrier that changes its page later does not rewrite orders that left.
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        Carrier.objects.filter(pk=self.agency.pk).update(tracking_url_template='https://nueva.ejemplo.test/{guia}')
+        self.write(self.manager, {'tracking_code': 'CLAVE', 'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.assertEqual(self.link(), 'https://rastreo.ejemplo.test/g/G-1')
+
+    def test_a_refused_link_changes_nothing(self):
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.assertEqual(self.write(self.manager, {'tracking_url': 'http://otra.ejemplo.test/x', 'waybill_number': 'G-9'}).status_code, 400)
+        record = self.record()
+        self.assertEqual((record.tracking_url, record.tracking_url_typed, record.waybill_number),
+                         ('https://rastreo.ejemplo.test/g/G-1', False, 'G-1'))

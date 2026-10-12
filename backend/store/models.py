@@ -9429,6 +9429,10 @@ class OrderDelivery(models.Model):
     waybill_number = models.CharField(max_length=60, blank=True, default='')
     tracking_code = models.CharField(max_length=80, blank=True, default='')
     tracking_url = models.CharField(max_length=500, blank=True, default='')
+    # Whose link that is. False: DERIVED from the carrier's page and the
+    # waybill, so it moves with them and is empty without them. True: somebody
+    # TYPED it, and only typing it again changes it.
+    tracking_url_typed = models.BooleanField(default=False)
     shipped_at = models.DateTimeField(null=True, blank=True)
 
     source_address = models.ForeignKey(
