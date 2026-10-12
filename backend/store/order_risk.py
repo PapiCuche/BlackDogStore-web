@@ -309,6 +309,37 @@ def _archived_here(company, own, document) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# The one thing a pending review may hold back — if the company says so
+# ---------------------------------------------------------------------------
+
+#: What staff are told when an order cannot leave yet.
+REVIEW_PENDING_DETAIL = (
+    'Este pedido tiene una revisión pendiente. Apruébala o recházala antes de marcarlo como enviado o entregado.'
+)
+
+
+def review_holds_dispatch(order, company) -> bool:
+    """
+    Whether this order must wait for its review before it is sent or handed over.
+
+    Only in a company that turned `hold_orders_pending_review` on, and only
+    while the review is waiting: approving OR rejecting lets the order go — what
+    the company asked for is that somebody looked. An order that was not
+    assessed, or whose assessment asks for nobody, is never held.
+
+    Asked of the database, by whoever is about to move the order and holds its
+    row locked (`order_fulfillment_services`).
+    """
+    from .models import CompanySettings
+
+    if not CompanySettings.objects.filter(company=company, hold_orders_pending_review=True).exists():
+        return False
+    return OrderRiskAssessment.objects.filter(
+        order=order, company=company, review_status=ReviewStatus.PENDING,
+    ).exists()
+
+
+# ---------------------------------------------------------------------------
 # What staff read
 # ---------------------------------------------------------------------------
 

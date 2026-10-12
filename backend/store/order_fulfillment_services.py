@@ -38,9 +38,16 @@ THE ONE THING A STATUS CHANGE DOES MEAN (SERIAL-PICK-01, an owner's decision)
 sells serialized devices does not reach them until somebody has identified each
 one, and from then on those devices are not renamed. Both surfaces get the same
 refusal and the same way to identify the device (`unit_identification`).
+
+AND ONE A COMPANY MAY ADD (CLIENT-SEC-01). An order whose assessment asks for a
+person to look (`order_risk`) can be sent and handed over all the same: the
+review is advice. A company that turns `hold_orders_pending_review` on makes
+those two moments wait until somebody has decided — either way. Off, which is
+how every company starts, nothing here changes.
 """
 from django.db import transaction
 
+from . import order_risk
 from .commerce_notifications import emit_fulfillment_changed
 from .models import AdminAuditLog, Order, UserProfile
 from .permissions import get_user_role
@@ -77,12 +84,21 @@ class FulfillmentBlocked(Exception):
 
     SERIAL-PICK-01: an order with serialized devices does not leave the shop
     — shipped or delivered — until somebody has identified each one.
+
+    CLIENT-SEC-01: in a company that holds orders until they are reviewed, an
+    order waiting for its review does not leave either. `code` says which of
+    the two it was (`units_pending`, `review_pending`); `pending` is the
+    devices still to identify, and empty for a review.
     """
 
-    def __init__(self, detail: str, *, pending: dict):
+    UNITS_PENDING = 'units_pending'
+    REVIEW_PENDING = 'review_pending'
+
+    def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING):
         super().__init__(detail)
         self.detail = detail
         self.pending = pending
+        self.code = code
 
 
 def allowed_fulfillment_statuses(user, company) -> tuple[str, ...]:
@@ -153,6 +169,13 @@ def change_fulfillment_status(
         # un-names a device between this check and the write below.
         if leaving:
             Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
+            # CLIENT-SEC-01. Only where the company asked for it: an order
+            # waiting for its review does not leave until somebody has decided.
+            # Asked with the order locked, like the devices below.
+            if order_risk.review_holds_dispatch(order, company):
+                raise FulfillmentBlocked(
+                    order_risk.REVIEW_PENDING_DETAIL, pending={}, code=FulfillmentBlocked.REVIEW_PENDING,
+                )
             pending = unit_identification.pending_units(order)
             if pending:
                 missing = sum(pending.values())

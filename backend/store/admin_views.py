@@ -1336,9 +1336,10 @@ class AdminOrderFulfillmentView(APIView):
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
         except fulfillment.FulfillmentBlocked as exc:
             # SERIAL-PICK-01: allowed, and the order is not ready — a device
-            # does not leave without somebody saying which one it is.
+            # does not leave without somebody saying which one it is. Or, where
+            # the company asked for it (CLIENT-SEC-01), its review is pending.
             return Response(
-                {'detail': exc.detail, 'code': 'units_pending', 'pending': sum(exc.pending.values())},
+                {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
                 status=status.HTTP_409_CONFLICT,
             )
 

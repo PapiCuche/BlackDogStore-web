@@ -1747,3 +1747,213 @@ class ReviewNeededNotificationTest(_RiskBase):
         self.assertEqual(OrderRiskAssessment.objects.get(order=order).review_status, Review.PENDING)
         self.assertFalse(Notification.objects.exists())
         self.assertTrue(Order.objects.filter(pk=order.pk).exists())
+
+
+# =============================================================================
+# 6 · a company may wait for the review before an order leaves — if it says so
+# =============================================================================
+
+from store import order_fulfillment_services as fulfillment  # noqa: E402
+
+SETTINGS_URL = '/api/admin/company-settings/'
+
+
+class HoldPendingReviewTest(_ReviewBase):
+    def hold(self, company=None, on=True):
+        CompanySettings.objects.update_or_create(
+            company=company or self.a, defaults={'hold_orders_pending_review': on},
+        )
+
+    def move(self, status, *, order=None, user=None, surface='panel'):
+        order = order or self.order
+        url = (
+            f'/api/admin/orders/{order.pk}/fulfillment-status/' if surface == 'panel'
+            else f'/api/v1/internal/revision-a/orders/{order.pk}/fulfillment/'
+        )
+        return acting(user or self.manager).patch(url, {'fulfillment_status': status}, format='json')
+
+    def state(self, order=None):
+        return Order.objects.get(pk=(order or self.order).pk).fulfillment_status
+
+    def test_it_is_off_unless_a_company_turns_it_on(self):
+        self.assertFalse(CompanySettings._meta.get_field('hold_orders_pending_review').default)
+        self.assertFalse(CompanySettings.objects.filter(hold_orders_pending_review=True).exists())
+        # A company with no settings row at all holds nothing either.
+        self.assertFalse(risk.review_holds_dispatch(self.order, self.a))
+
+    def test_off_a_pending_review_holds_nothing(self):
+        for surface, status in (('panel', 'shipped'), ('app', 'delivered')):
+            with self.subTest(surface):
+                response = self.move(status, surface=surface)
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertEqual(self.state(), status)
+        self.assertEqual(self.row.review_status, Review.PENDING)              # and nobody had to decide
+
+    def test_on_an_order_waiting_for_review_is_not_sent_or_handed_over(self):
+        self.hold()
+        for surface in ('panel', 'app'):
+            for status in ('shipped', 'delivered'):
+                with self.subTest(surface=surface, status=status):
+                    response = self.move(status, surface=surface)
+                    self.assertEqual(response.status_code, 409, response.content)
+                    body = response.json()
+                    self.assertEqual(body['code'], 'review_pending')
+                    self.assertIn('revisión', body['detail'])
+                    self.assertEqual(self.state(), Order.FulfillmentStatus.PENDING)
+        self.assertFalse(AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').exists())
+
+    def test_on_every_other_state_is_free(self):
+        self.hold()
+        for status in ('confirmed', 'preparing', 'ready_for_pickup', 'cancelled', 'pending'):
+            with self.subTest(status):
+                self.assertEqual(self.move(status).status_code, 200)
+                self.assertEqual(self.state(), status)
+
+    def test_either_answer_lets_it_go(self):
+        self.hold()
+        rejected = self.pending(self.a, self.north)
+        self.assertEqual(self.move('shipped').status_code, 409)
+        self.assertEqual(self.move('shipped', order=rejected).status_code, 409)
+
+        self.decide(self.manager, 'approve')
+        self.decide(self.manager, 'reject', order=rejected)
+        self.assertEqual(self.move('shipped').status_code, 200)
+        self.assertEqual(self.move('delivered', order=rejected, surface='app').status_code, 200)
+        # Rejecting did not cancel it: it left because a person looked.
+        self.assertEqual(self.state(rejected), 'delivered')
+
+    def test_on_it_holds_only_what_is_waiting(self):
+        self.hold()
+        quiet = self.pending(self.a, self.north, status=Review.NOT_REQUIRED, level=Level.LOW)
+        unassessed = _order(self.a, total='10.00', paid=True, fulfillment_branch=self.north)
+        self.assertEqual(self.move('shipped', order=quiet).status_code, 200)
+        self.assertEqual(self.move('delivered', order=unassessed).status_code, 200)
+
+    def test_it_is_each_companys_own_option(self):
+        self.hold(self.b)
+        self.assertEqual(self.move('shipped').status_code, 200)               # A did not turn it on
+
+        self.hold(self.a)
+        self.hold(self.b, on=False)
+        theirs = acting(self.foreigner).patch(
+            f'/api/admin/orders/{self.foreign.pk}/fulfillment-status/', {'fulfillment_status': 'shipped'}, format='json',
+        )
+        self.assertEqual(theirs.status_code, 200)
+
+    def test_it_is_decided_inside_the_transaction_with_the_order_locked(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.hold()
+        with CaptureQueriesContext(connection) as queries, self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
+            fulfillment.change_fulfillment_status(
+                order=self.order, new_status='shipped', actor=self.manager, company=self.a,
+            )
+        self.assertEqual((blocked.exception.code, blocked.exception.pending), ('review_pending', {}))
+        statements = [q['sql'] for q in queries.captured_queries]
+        lock = next(i for i, sql in enumerate(statements) if 'FOR UPDATE' in sql and 'store_order' in sql)
+        asked = next(i for i, sql in enumerate(statements) if 'store_orderriskassessment' in sql)
+        self.assertLess(lock, asked)
+        self.assertTrue(any('SAVEPOINT' in sql for sql in statements[:lock]))
+
+    def test_the_other_refusal_keeps_its_own_code(self):
+        blocked = fulfillment.FulfillmentBlocked('faltan equipos', pending={7: 2})
+        self.assertEqual(blocked.code, 'units_pending')
+
+
+class ReviewOptionsInCompanySettingsTest(TestCase):
+    """The two options live in the company's settings, and take two keys to change."""
+
+    def setUp(self):
+        cache.clear()
+        self.a = _saas_company('Tienda A', 'opciones-a', tax_id='20999999990')
+        self.b = _saas_company('Tienda B', 'opciones-b', tax_id='20111111112')
+        CompanySettings.objects.create(company=self.a, currency='PEN')
+        CompanySettings.objects.create(company=self.b, currency='PEN')
+        self.admin, _ = _p2d_member(self.a, 'admin_a', ['company.view', 'company.manage', 'settings.manage'])
+        self.company_only, _ = _p2d_member(self.a, 'solo_empresa', ['company.view', 'company.manage'])
+        self.settings_only, _ = _p2d_member(self.a, 'solo_config', ['company.view', 'settings.manage'])
+        self.viewer, _ = _p2d_member(self.a, 'solo_ver', ['company.view'])
+        self.admin_b, _ = _p2d_member(self.b, 'admin_b', ['company.view', 'company.manage', 'settings.manage'])
+
+    def options(self, company=None):
+        row = CompanySettings.objects.get(company=company or self.a)
+        return row.risk_review_amount, row.hold_orders_pending_review
+
+    def patch(self, user, body, query=''):
+        return acting(user).patch(SETTINGS_URL + query, body, format='json')
+
+    def test_they_are_read_with_the_rest_and_start_off(self):
+        response = acting(self.viewer).get(SETTINGS_URL)
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertIsNone(body['settings']['risk_review_amount'])
+        self.assertIs(body['settings']['hold_orders_pending_review'], False)
+        self.assertIs(body['can_manage_order_review'], False)
+        self.assertIs(acting(self.admin).get(SETTINGS_URL).json()['can_manage_order_review'], True)
+        self.assertIs(acting(self.company_only).get(SETTINGS_URL).json()['can_manage_order_review'], False)
+
+    def test_whoever_administers_the_company_and_its_configuration_sets_them(self):
+        response = self.patch(self.admin, {'risk_review_amount': '1500.00', 'hold_orders_pending_review': True})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.options(), (Decimal('1500.00'), True))
+        self.assertEqual(response.json()['settings']['risk_review_amount'], '1500.00')
+
+        entry = AdminAuditLog.objects.get(action='company_settings_updated')
+        self.assertEqual((entry.actor, entry.company), (self.admin, self.a))
+        self.assertEqual(entry.metadata['changed_fields'], ['hold_orders_pending_review', 'risk_review_amount'])
+        self.assertNotIn('1500', json.dumps(entry.metadata))
+
+        self.assertEqual(self.patch(self.admin, {'risk_review_amount': None}).status_code, 200)
+        self.assertEqual(self.options(), (None, True))
+
+    def test_administering_the_company_alone_is_not_enough(self):
+        for body in ({'risk_review_amount': '10.00'}, {'hold_orders_pending_review': True},
+                     {'phone': '+51 987 000 111', 'hold_orders_pending_review': True}):
+            with self.subTest(body):
+                response = self.patch(self.company_only, body)
+                self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(self.options(), (None, False))
+        self.assertEqual(CompanySettings.objects.get(company=self.a).phone, '')       # nothing of a refused save is kept
+        self.assertFalse(AdminAuditLog.objects.filter(action='company_settings_updated').exists())
+
+    def test_the_rest_of_the_screen_is_whose_it_was(self):
+        # What `company.manage` could change before, it still changes — also when
+        # the form sends the two options back exactly as they are.
+        response = self.patch(self.company_only, {
+            'phone': '+51 987 000 111', 'risk_review_amount': None, 'hold_orders_pending_review': False,
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(CompanySettings.objects.get(company=self.a).phone, '+51 987 000 111')
+
+    def test_neither_is_configuration_alone_nor_reading(self):
+        for user in (self.settings_only, self.viewer):
+            self.assertEqual(self.patch(user, {'hold_orders_pending_review': True}).status_code, 403)
+        self.assertEqual(self.options(), (None, False))
+
+    def test_an_amount_is_a_positive_amount(self):
+        for value in ('0', '-5', 'mucho', '0.001', '12345678901234.00'):
+            with self.subTest(value):
+                response = self.patch(self.admin, {'risk_review_amount': value})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('risk_review_amount', response.json())
+        self.assertEqual(self.patch(self.admin, {'hold_orders_pending_review': 'quizás'}).status_code, 400)
+        self.assertEqual(self.options(), (None, False))
+
+    def test_another_companys_options_are_out_of_reach(self):
+        response = self.patch(self.admin, {'hold_orders_pending_review': True}, f'?company={self.b.pk}')
+        self.assertEqual(response.status_code, 404)
+        self.patch(self.admin, {'hold_orders_pending_review': True, 'risk_review_amount': '99.00'})
+        self.assertEqual(self.options(self.b), (None, False))
+
+    @override_settings(ALLOWED_HOSTS=['*'])
+    def test_the_public_never_learns_them(self):
+        self.patch(self.admin, {'hold_orders_pending_review': True, 'risk_review_amount': '777.00'})
+        for response in (
+            APIClient().get('/api/storefront/config/', HTTP_HOST='opciones-a.example.com'),
+            APIClient().get('/api/v1/storefront/opciones-a/config/'),
+        ):
+            self.assertEqual(response.status_code, 200)
+            text = response.content.decode()
+            for word in ('risk_review', 'hold_orders', '777'):
+                self.assertNotIn(word, text)

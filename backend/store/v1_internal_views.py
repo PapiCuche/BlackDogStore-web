@@ -348,9 +348,11 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
             return Response({'detail': exc.detail}, status=status.HTTP_403_FORBIDDEN)
         except fulfillment.FulfillmentBlocked as exc:
             # SERIAL-PICK-01, the same answer as the web panel: the devices of
-            # the order have to be identified before it leaves the shop.
+            # the order have to be identified before it leaves the shop. Or,
+            # where the company asked for it (CLIENT-SEC-01), its review is
+            # pending: `code` says which.
             return Response(
-                {'detail': exc.detail, 'code': 'units_pending', 'pending': sum(exc.pending.values())},
+                {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
                 status=status.HTTP_409_CONFLICT,
             )
 

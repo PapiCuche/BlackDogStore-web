@@ -1298,6 +1298,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             'warranty_policy_text', 'warranty_policy_url', 'terms_url', 'privacy_url',
             # notifications
             'order_notification_email',
+            # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
+            # them also takes `settings.manage` (see the view).
+            'risk_review_amount', 'hold_orders_pending_review',
             'updated_at',
         ]
         read_only_fields = [
