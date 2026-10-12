@@ -3,6 +3,52 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-12 — DELIVERY-01 (base)
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Aditivo: el checkout, los precios, los
+documentos y los correos no cambian, y el flete no entra a ningún total.
+
+**Added**
+- Configuración › Transportistas: las agencias y couriers de cada empresa, con su dirección de
+  seguimiento (`/api/admin/carriers/`). No se crea ninguno por defecto.
+- «Mis direcciones» en «Mi cuenta»: varias direcciones y agencias por tienda, con destinatario
+  propio y una predeterminada (`/api/account/addresses/…`, `/api/v1/customer/<slug>/addresses/…`).
+- Registro de entrega por pedido en línea (`OrderDelivery`): se crea con el pedido y el
+  personal completa transportista, agencia, flete (informativo), guía y seguimiento desde la
+  tarjeta «Entrega» del pedido (`…/orders/<id>/delivery/`, panel y API interna).
+- En «Mis pedidos»: transportista, agencia, número de guía y enlace «Seguir mi envío».
+- En el checkout: «Usar una dirección guardada» (sólo rellena el formulario).
+- Migraciones `0119_delivery_base` y `0121_delivery_records_backfill`.
+
+**Not started** (decisiones del propietario)
+- Recojo en agencia como opción del checkout, cobro del flete, y los datos nuevos en
+  documentos y correos.
+
+## 2026-10-12 — CLIENT-SEC-01: correcciones tras la revisión
+
+**Security**
+- El pedido de un invitado ya no se enlaza por documento con la ficha de una cuenta: una
+  cuenta no puede recibir el pedido ni los avisos de otra persona por tener su documento
+  (enmienda a DEC-CUSTOMER-01).
+- Guardar un documento en el perfil exige el correo verificado y tiene un cupo de tres cambios
+  al día por cuenta.
+- El titular no puede cambiar una ficha archivada, ni el documento de una ficha que creó la
+  tienda o que ya tiene un pedido pagado, ni dejar un documento en blanco.
+- DNI, RUC y teléfono sólo admiten los dígitos 0-9; los nombres no admiten caracteres de control.
+
+**Added**
+- «Verificar mi correo» en «Mi cuenta»: código de 6 dígitos al correo de la propia cuenta
+  (`/api/account/verify-email/send/` y `/confirm/`, y sus equivalentes en v1).
+- Todo enlace de recuperación de contraseña usado deja el correo como verificado.
+
+**Changed**
+- Un pedido pasa a «por revisar» —y avisa al personal— cuando se paga, no cuando se crea.
+- Las señales de velocidad cuentan compradores distintos, y a los demás sólo si pagaron.
+- La retención opcional incluye «listo para retiro».
+- Reclamar una reparación funciona aunque antes se haya abierto «Mi cuenta», si esa ficha está vacía.
+- Quien revisa un pedido se muestra por su nombre o como «Personal de la tienda».
+- Migración `0120_client_sec_verified_backfill`: los datos de `0118` pasan a su propia migración.
+
 ## 2026-10-12 — CLIENT-SEC-01 (fase 1)
 
 En la rama `feat/client-sec-delivery`; sin desplegar. Consultivo por defecto: sin tocar la
@@ -31,8 +77,8 @@ configuración, comprar, pagar y despachar funcionan como antes.
 - Migración `0118_client_sec`.
 
 **Known, not fixed** (`docs/AUDIT_MEMORY.md`)
-- CLIENT-SEC-DOC-CLAIM (alta, anterior a esta fase), CLIENT-SEC-VALIDATORS,
-  CLIENT-SEC-VERIFY-ACTIVE y las demás CLIENT-SEC-* de la tabla de deuda.
+- CLIENT-SEC-VALIDATORS, CLIENT-SEC-IPHASH-RETENTION y las demás CLIENT-SEC-* de la tabla de
+  deuda. (CLIENT-SEC-DOC-CLAIM y CLIENT-SEC-VERIFY-ACTIVE se cerraron: ver la entrada de arriba.)
 
 ## 2026-10-11 — PAY-GUARD-03
 

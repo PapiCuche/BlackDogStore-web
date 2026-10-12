@@ -63,6 +63,7 @@ automáticamente, y eso es lo que hace el guard.
 | Pedidos — listar / abrir | `v1_internal_views.V1InternalOrderListView` | ✅ | ✅ | ✅ | `sales.orders.view` | **A** |
 | Pedidos — fulfillment | `order_fulfillment_services.change_fulfillment_status` | ✅ | ✅ | ✅ | `sales.orders.manage` | **A** |
 | Pedidos — revisión de la evaluación (CLIENT-SEC-01) | `order_risk.review` | ✅ `/admin/orders/<id>` | ✅ `orders/<id>/risk-review/`; `risk` en el detalle, `risk_level` / `review_status` y `?review=` en la lista | PENDIENTE | `sales.orders.manage` (ver: `sales.orders.view`) | **B** |
+| Pedidos — registro de entrega (DELIVERY-01) | `delivery_services.update_order_delivery` | ✅ `/admin/orders/<id>` | ✅ `orders/<id>/delivery/` (GET y PATCH); `delivery` en el detalle | PENDIENTE | `sales.orders.manage` (ver: `sales.orders.view`) | **B** |
 | Notas de venta | `sales_note_services.get_or_create_sales_note` | ✅ | PENDIENTE | PENDIENTE | `sales.notes.manage` | **C** |
 | Comisiones — informe | `sales_analytics_views.AdminCommissionsView` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.view` | **C** |
 | Comisiones — tarifas | `pos_views.AdminCommissionSettingsView` | ✅ | PENDIENTE | PENDIENTE | `sales.commissions.manage` | **C** |

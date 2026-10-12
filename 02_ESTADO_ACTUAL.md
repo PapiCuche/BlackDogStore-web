@@ -3,21 +3,77 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-12 — DELIVERY-01 (base): transportistas, libreta de direcciones y registro de entrega
+
+Rama `feat/client-sec-delivery`, sobre CLIENT-SEC-01. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** Migraciones `0119_delivery_base` (tablas) y `0121_delivery_records_backfill`
+(datos, por lotes, no atómica). Decisión: DEC-DELIVERY-01. **Aditivo: no cambia ningún
+comportamiento anterior.** `Order.delivery_method` y sus opciones, el checkout web y v1 (su
+huella y sus campos prohibidos incluidos), los precios, los documentos y los correos son los de
+antes; el flete es un dato y no entra a ningún total.
+
+| | Punto | Estado |
+|---|---|---|
+| 1 | `Carrier` por empresa (agencia o courier, plantilla de seguimiento https con `{guia}`). `GET/POST /api/admin/carriers/`, `PATCH /api/admin/carriers/<id>/`: leer con `sales.orders.view`, cambiar con `settings.manage` sobre toda la empresa; se desactivan, no se borran; nada sembrado. Sección «Transportistas» en Configuración, con dos sugerencias que sólo rellenan el nombre | IMPLEMENTADO en la rama |
+| 2 | `CustomerAddress`: la libreta del comprador en cada tienda (puerta o agencia, destinatario distinto, una predeterminada, tope de diez). `/api/account/addresses/…` y `/api/v1/customer/<slug>/addresses/…`. Lo ajeno responde 404 en todos los verbos. Límite propio de escrituras; auditoría con nombres de campo | IMPLEMENTADO en la rama |
+| 3 | `OrderDelivery`: el registro de entrega de cada pedido en línea, creado con el pedido desde las columnas del pedido, sin poder hacer fallar un checkout; nunca para una venta de caja. La migración 0121 lo escribe para los pedidos en línea que ya existían | IMPLEMENTADO en la rama |
+| 4 | El personal escribe la entrega: `GET/PATCH /api/admin/orders/<id>/delivery/` y `GET/PATCH /api/v1/internal/<slug>/orders/<id>/delivery/` (`sales.orders.view` / `sales.orders.manage`, por `visible_orders`). Tarjeta «Entrega» en el detalle del pedido | IMPLEMENTADO en la rama |
+| 5 | El comprador ve transportista, agencia, guía y enlace de seguimiento (sólo https) en sus pedidos, en la web y en `V1CustomerOrderSerializer`, como un bloque añadido `delivery` | IMPLEMENTADO en la rama |
+| 6 | «Mis direcciones» en `/account`; en el checkout, «Usar una dirección guardada», que sólo rellena el formulario en el navegador | IMPLEMENTADO en la rama |
+
+**Rutas nuevas:** 10 (dos de transportistas, tres de libreta en la web, tres en v1, una de
+entrega en el panel y una en v1). La superficie interna de v1 pasa de 88 a 89. **Capacidades:**
+ninguna nueva. **Un límite nuevo:** `account_address_write`.
+
+**Lo que no se hizo, y por qué.** Ofrecer «recojo en agencia» en el checkout, cobrar el flete
+e imprimir los datos nuevos en documentos o correos son decisiones del propietario para otra
+fase. El checkout no envía qué dirección de la libreta se usó, así que `source_address` queda
+vacío. El comprador no ve la clave de recojo ni el destinatario del pedido. La app no dibuja
+nada de esto todavía (las rutas v1 existen y están probadas).
+
+**Pruebas.** Cada prueba se vio fallar antes de su código. `store/test_delivery_base.py`: 88 pruebas, con dos de concurrencia real (dos conexiones) para la dirección predeterminada. Cambiaron pruebas existentes: las tres de pagos que borran pedidos borran antes su registro de entrega; el contador de rutas internas pasa a 89; y las dos pruebas que fijan lo que el comprador lee de un pedido ganan la clave `delivery`. Mutaciones: 94 de backend, 5 sobrevivieron a la primera pasada — 3 se cerraron con pruebas y 2 son equivalentes (la base de datos repite la regla del nombre único, y `ignore_conflicts` la del relleno) —; 65 de frontend con las de la revisión, 1 sobrevivió y se cerró. Corridas finales sobre el código de `b6fa027` (PostgreSQL): los dos módulos de la rama, 316; pagos (diez módulos), verificación, Google, invitaciones, registro, equipos con serie, seguimiento, correo, impresión y documentos, 781 y 3 omitidas (las de credenciales reales y el `Caddyfile`); y las clases de checkout, clientes, pedidos, avisos, despacho, v1 y documentos de `store/tests.py`, 2184. Cero fallos. Las migraciones `0118`–`0121` se deshicieron y se volvieron a aplicar; `makemigrations --check` sin cambios. Frontend: Jest 1169 en 110 suites, `tsc` y lint sin errores (22 avisos anteriores). **No se corrió** la suite completa del backend, Playwright, `npm run build` ni el ensayo de despliegue, y nada se miró en un navegador.
+
+## 2026-10-12 — CLIENT-SEC-01: correcciones tras la revisión independiente
+
+Misma rama. Una revisión independiente de `06df091` dejó un hallazgo grave (de raíz anterior a
+la fase), cuatro medios y varios menores. Todos corregidos, cada uno con su prueba vista fallar
+antes. Migración nueva `0120_client_sec_verified_backfill`; `0118` queda sólo con esquema.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| F1 | Una cuenta podía dejar en su ficha el documento de un extraño y recibir después el pedido de invitado de ese extraño, con sus avisos | CORREGIDO EN LA RAÍZ: un invitado sólo enlaza por documento con una ficha sin cuenta; si no, el pedido queda sin enlazar. Enmienda a DEC-CUSTOMER-01 |
+| F2 | Guardar un documento servía para averiguar si era de otro cliente, 20 veces por hora, y lo tomaba | CORREGIDO: sólo una cuenta con el correo verificado, y tres cambios de documento al día por cuenta |
+| F3 | La cola de revisión y la campana se llenaban con pedidos sin pagar; reintentar un pago disparaba `velocity_ip`; dos pedidos sin pagar marcaban el siguiente pedido de un tercero | CORREGIDO: la revisión empieza al pagar; la velocidad cuenta compradores, y a los demás sólo si pagaron |
+| F4 | Guardar «Mi cuenta» antes de reclamar una reparación bloqueaba el reclamo para siempre | CORREGIDO: una ficha vacía cede el paso al reclamo probado |
+| F5 | El titular podía borrar o cambiar el documento de una ficha archivada | CORREGIDO: una ficha archivada no cambia; el documento queda fijo si la ficha la creó el personal o tiene un pedido pagado; no se puede dejar en blanco |
+| F6 | Con la retención encendida, «listo para retiro» salía y avisaba al comprador | CORREGIDO: la retención lo incluye |
+| F7 | Una cuenta activa no tenía cómo verificar su correo | CORREGIDO: código de 6 dígitos a su propio correo (`account/verify-email/send/` y `confirm/`, web y v1); todo enlace de recuperación consumido deja la prueba |
+| F8 | Dígitos de otros alfabetos pasaban por DNI, RUC o teléfono | CORREGIDO: sólo 0-9 |
+| F9 | Un carácter nulo en un nombre respondía 500 | CORREGIDO: se rechazan los caracteres de control |
+| F10 | `velocity_ip` usaba la dirección IPv6 completa; `first_order` hacía un OR a través de un JOIN | CORREGIDO: /64, y dos consultas |
+| F11 | La migración 0118 rellenaba datos dentro de la transacción del `ALTER TABLE` | CORREGIDO: 0118 y 0119 sólo esquema; 0120 y 0121 sólo datos |
+| F12 | Quien revisa aparecía por su nombre de usuario; `ip_hash` no caduca; IP del comprador en la auditoría del perfil | El nombre: CORREGIDO («Personal de la tienda»). Lo demás: deuda CLIENT-SEC-IPHASH-RETENTION, y la auditoría sigue el precedente de toda escritura auditada |
+
+**Rutas nuevas:** 4 (enviar y confirmar el código, en la web y en v1). **Dos límites nuevos:**
+`account_verify_send` y `account_verify_confirm`. Sin capacidades nuevas.
+
+**Pruebas.** Cada corrección empezó por una prueba vista fallar. `store/test_client_sec.py` pasa de 155 a 228 pruebas, tres de ellas con dos conexiones reales (el bloqueo de una revisión y el de un guardado de perfil, que ninguna prueba fijaba). Mutaciones de las correcciones: 78, 3 sobrevivieron a la primera pasada y las tres se cerraron con pruebas. Corridas finales sobre el código de `b6fa027` (PostgreSQL): los dos módulos de la rama, 316; pagos (diez módulos), verificación, Google, invitaciones, registro, equipos con serie, seguimiento, correo, impresión y documentos, 781 y 3 omitidas (las de credenciales reales y el `Caddyfile`); y las clases de checkout, clientes, pedidos, avisos, despacho, v1 y documentos de `store/tests.py`, 2184. Cero fallos. Las migraciones `0118`–`0121` se deshicieron y se volvieron a aplicar; `makemigrations --check` sin cambios. Frontend: Jest 1169 en 110 suites, `tsc` y lint sin errores (22 avisos anteriores). **No se corrió** la suite completa del backend, Playwright, `npm run build` ni el ensayo de despliegue, y nada se miró en un navegador.
+
 ## 2026-10-12 — CLIENT-SEC-01 (fase 1): perfil del comprador, correo verificado, evaluación y revisión de pedidos
 
 Rama `feat/client-sec-delivery` (desde `master` `dfc817a`). **Sólo en la rama: sin push, sin
-PR, sin desplegar.** **Una migración, `0118_client_sec`** (aditiva y reversible). Decisión:
+PR, sin desplegar.** **Migración `0118_client_sec`** (aditiva y reversible; sus datos, en `0120`). Decisión:
 DEC-CLIENT-SEC-01. **Todo es consultivo por defecto:** con los ajustes como nacen, ningún
 checkout, pago o despacho se comporta distinto que antes.
 
 | | Punto | Estado |
 |---|---|---|
 | 1 | El correo verificado es un hecho propio (`UserProfile.email_verified_at`), escrito por los caminos que lo prueban: enlace, código, recuperación que termina una cuenta, Google con esa misma dirección, invitación de personal. La migración copia las pruebas que ya existían; los demás quedan en «desconocido». Campo añadido en `auth/me/` (web) y `v1/auth/me/` | IMPLEMENTADO en la rama |
-| 2 | Perfil propio del comprador: `GET/PATCH /api/account/profile/` (tienda por Host) y `GET/PATCH /api/v1/customer/<slug>/profile/`. Un solo validador (`identity_validation`): celular peruano, DNI de 8 dígitos, RUC de 11 con prefijo y dígito de control, CE de 6 a 12. Un documento que ya es de otro cliente de la tienda se rechaza con UNA frase genérica. Límite propio de guardados (20 por hora y cuenta). Auditoría con nombres de campo. Página «Mi cuenta» | IMPLEMENTADO en la rama. El reenvío de verificación no se ofrece a nadie con sesión: ver «Lo que no se hizo» |
-| 3 | Evaluación de cada pedido de la web y de la app al crearse (`OrderRiskAssessment`, `order_risk.assess`): ocho señales con peso, nivel por umbrales, revisión pendiente con nivel alto o cliente archivado. Guarda códigos, no datos; el origen, como HMAC (`ip_hash`). Nunca hace fallar un checkout. Las ventas de caja no se evalúan | IMPLEMENTADO en la rama |
+| 2 | Perfil propio del comprador: `GET/PATCH /api/account/profile/` (tienda por Host) y `GET/PATCH /api/v1/customer/<slug>/profile/`. Un solo validador (`identity_validation`): celular peruano, DNI de 8 dígitos, RUC de 11 con prefijo y dígito de control, CE de 6 a 12. Un documento que ya es de otro cliente de la tienda se rechaza con UNA frase genérica. Límite propio de guardados (20 por hora y cuenta). Auditoría con nombres de campo. Página «Mi cuenta» | IMPLEMENTADO en la rama (ver las correcciones de arriba: F2, F5, F7) |
+| 3 | Evaluación de cada pedido de la web y de la app al crearse (`OrderRiskAssessment`, `order_risk.assess`): ocho señales con peso, nivel por umbrales, revisión pendiente —desde que el pedido se paga— con nivel alto o cliente archivado. Guarda códigos, no datos; el origen, como HMAC (`ip_hash`). Nunca hace fallar un checkout. Las ventas de caja no se evalúan | IMPLEMENTADO en la rama |
 | 4 | Revisión manual: `POST /api/admin/orders/<id>/risk-review/` y `POST /api/v1/internal/<slug>/orders/<id>/risk-review/` (`sales.orders.manage`, alcance de `visible_orders`, una decisión por pedido, 409 después). La evaluación aparece en el detalle del pedido (`sales.orders.view`); las listas llevan `risk_level` y `review_status` y aceptan `?review=`. El comprador no ve nada | IMPLEMENTADO en la rama |
 | 5 | Aviso interno `commerce.order.review_needed` (advertencia, sólo en el panel) a quien tiene `sales.orders.manage` y puede ver el pedido: número y nivel, sin motivos ni datos del comprador | IMPLEMENTADO en la rama |
-| 6 | Retención opcional, APAGADA: `CompanySettings.hold_orders_pending_review`. Sólo encendida, «enviado» y «entregado» responden 409 (`review_pending`) mientras la revisión esté pendiente; la levanta aprobar o rechazar. Las dos opciones (con `risk_review_amount`) están en Configuración › Revisión de pedidos | IMPLEMENTADO en la rama |
+| 6 | Retención opcional, APAGADA: `CompanySettings.hold_orders_pending_review`. Sólo encendida, «listo para retiro», «enviado» y «entregado» responden 409 (`review_pending`) mientras la revisión esté pendiente; la levanta aprobar o rechazar. Las dos opciones (con `risk_review_amount`) están en Configuración › Revisión de pedidos | IMPLEMENTADO en la rama |
 | 7 | Panel: etiqueta en la lista de pedidos, filtro «Por revisar», tarjeta «Revisión del pedido» con Aprobar / Rechazar | IMPLEMENTADO en la rama |
 
 **Rutas nuevas:** 4 (dos del comprador, dos de revisión). La superficie interna de v1 pasa de
@@ -26,10 +82,6 @@ checkout, pago o despacho se comporta distinto que antes.
 **Un evento nuevo** en el catálogo de avisos.
 
 **Lo que no se hizo, y por qué.**
-- **Verificar el correo de una cuenta que ya está activa.** La acción existente
-  (`auth/resend-verification/`) sólo atiende cuentas que todavía no pueden entrar. «Mi cuenta»
-  muestra «Sin verificar» y el botón sólo aparece si el servidor dice que serviría de algo, que
-  hoy es nunca para quien tiene sesión (CLIENT-SEC-VERIFY-ACTIVE).
 - **Los tres validadores anteriores** (checkout web, checkout v1, ficha del panel) no se
   tocaron: siguen juzgando teléfono y documento cada uno a su manera (CLIENT-SEC-VALIDATORS).
 - **El nombre del evento** es `commerce.order.review_needed`, con la forma del catálogo, no
@@ -43,12 +95,14 @@ checkout, pago o despacho se comporta distinto que antes.
 - **Google prueba el correo sólo si la dirección que nombra es la de la cuenta**; la migración
   aplica la misma condición a las identidades ya vinculadas.
 
-**Queda como deuda** (`docs/AUDIT_MEMORY.md`): **CLIENT-SEC-DOC-CLAIM (alta, anterior a esta
-fase)**, CLIENT-SEC-VALIDATORS, CLIENT-SEC-VERIFY-ACTIVE, CLIENT-SEC-RUC-CHECK,
-CLIENT-SEC-RESET-PROOF, CLIENT-SEC-DOC-ORACLE, CLIENT-SEC-V1-FIRST-PROFILE,
-CLIENT-SEC-MEASUREMENT-IP, CLIENT-SEC-ORDER-PROTECT, CLIENT-SEC-APP-UI, CLIENT-SEC-NOTICE-LINK.
+**Queda como deuda** (`docs/AUDIT_MEMORY.md`): CLIENT-SEC-VALIDATORS, CLIENT-SEC-RUC-CHECK,
+CLIENT-SEC-IPHASH-RETENTION, CLIENT-SEC-V1-FIRST-PROFILE, CLIENT-SEC-MEASUREMENT-IP,
+CLIENT-SEC-ORDER-PROTECT, CLIENT-SEC-APP-UI, CLIENT-SEC-NOTICE-LINK. (CLIENT-SEC-DOC-CLAIM,
+CLIENT-SEC-VERIFY-ACTIVE, CLIENT-SEC-RESET-PROOF y CLIENT-SEC-DOC-ORACLE se cerraron con las
+correcciones de arriba.)
 
-**Pruebas.** Cada prueba se vio fallar antes de su código. Backend: `store/test_client_sec.py`,
+**Pruebas** (al cerrar la fase 1, antes de la revisión; los números finales están en las dos
+entradas de arriba)**.** Cada prueba se vio fallar antes de su código. Backend: `store/test_client_sec.py`,
 155 pruebas; con los módulos de pagos, verificación, Google, invitaciones, registro, equipos
 con serie, límites y correo: 862, 0 fallos, 3 omitidas (las de siempre: credenciales reales
 y el `Caddyfile`). Cambiaron cuatro pruebas existentes: tres de pagos borran la evaluación
