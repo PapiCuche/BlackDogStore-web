@@ -1196,8 +1196,8 @@ class ScoreAndLevelTest(_RiskBase):
 
 
 @override_settings(ALLOWED_HOSTS=['*'], **IZIPAY_TEST_SETTINGS)
-class AssessedAtCheckoutTest(TestCase):
-    """Where an online order is made — and only there."""
+class _CheckoutBase(TestCase):
+    """A shop that sells online: one company, one branch with stock, a web and an app checkout."""
 
     def setUp(self):
         cache.clear()
@@ -1239,6 +1239,11 @@ class AssessedAtCheckoutTest(TestCase):
         }
         body.update(overrides)
         return client.post('/api/v1/customer/riesgo-caja/checkout/', body, format='json', REMOTE_ADDR='203.0.113.41')
+
+
+
+class AssessedAtCheckoutTest(_CheckoutBase):
+    """Where an online order is made — and only there."""
 
     def test_a_guest_on_the_web(self):
         response = self.web_checkout()
@@ -2011,3 +2016,125 @@ class ReviewOptionsInCompanySettingsTest(TestCase):
             text = response.content.decode()
             for word in ('risk_review', 'hold_orders', '777'):
                 self.assertNotIn(word, text)
+
+
+
+# =============================================================================
+# 7 · after the independent review
+# =============================================================================
+
+from django.core import mail as django_mail  # noqa: E402
+
+from store import commerce_notifications, customer_services, email_services  # noqa: E402
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
+    """
+    F1 · a document typed by a guest never hands their order to an ACCOUNT.
+
+    A record with an account behind it is somebody's login: whoever holds it
+    reads the orders linked to it and receives their notices. A guest's
+    document is checked for shape only, so it cannot be the key to that.
+    """
+
+    VICTIM_DNI = '70000055'
+
+    def squatter(self):
+        """An account whose record in this shop carries a stranger's document."""
+        user = User.objects.create_user('ocupante', 'ocupante@correo.test', PASSWORD, first_name='Otra')
+        record = Customer.objects.create(
+            company=self.company, user=user, first_name='Otra', email='ocupante@correo.test',
+            document_type='dni', document_number=self.VICTIM_DNI,
+        )
+        return user, record
+
+    def guest_order(self, **overrides):
+        overrides.setdefault('document_number', self.VICTIM_DNI)
+        overrides.setdefault('customer_email', 'victima@correo.test')
+        self.n = getattr(self, 'n', 0) + 1
+        response = self.web_checkout(session=f'carrito-victima-{self.n}', **overrides)
+        self.assertEqual(response.status_code, 200, response.content)
+        return Order.objects.get(pk=response.json()['order_id'])
+
+    def test_the_order_of_a_guest_is_not_linked_to_an_account_that_holds_their_document(self):
+        user, record = self.squatter()
+        order = self.guest_order()
+
+        self.assertIsNone(order.user)
+        self.assertIsNone(order.customer)                                   # unlinked, with its snapshot intact
+        self.assertEqual((order.document_number, order.customer_email), (self.VICTIM_DNI, 'victima@correo.test'))
+        self.assertEqual(Customer.objects.filter(company=self.company, document_number=self.VICTIM_DNI).count(), 1)   # no twin
+        self.assertFalse(Order.objects.filter(customer=record).exists())
+
+        web = web_session(user).get('/api/orders/', HTTP_HOST='riesgo-caja.example.com')
+        self.assertEqual(web.json(), [])
+        app = v1_session(user)
+        self.assertNotIn(order.pk, [row['id'] for row in app.get('/api/v1/customer/riesgo-caja/orders/').json()])
+        self.assertEqual(app.get(f'/api/v1/customer/riesgo-caja/orders/{order.pk}/').status_code, 404)
+
+    def test_neither_its_notices_nor_its_mail_go_to_that_account(self):
+        user, record = self.squatter()
+        order = self.guest_order()
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        order.refresh_from_db()
+        django_mail.outbox = []
+
+        self.assertIsNone(commerce_notifications.emit_payment_confirmed(order))
+        for status in ('ready_for_pickup', 'shipped', 'delivered'):
+            self.assertIsNone(commerce_notifications.emit_fulfillment_changed(order, status))
+        self.assertFalse(Notification.objects.filter(customer=record).exists())
+        self.assertFalse(Notification.objects.filter(company=self.company, audience=Notification.Audience.CUSTOMER).exists())
+
+        # The buyer still gets their own confirmation, at the address they typed.
+        self.assertTrue(email_services.send_order_confirmation_email(order))
+        recipients = [address for message in django_mail.outbox for address in message.to]
+        self.assertEqual(recipients, ['victima@correo.test'])
+        self.assertNotIn('ocupante@correo.test', recipients)
+
+    def test_it_cannot_be_re_aimed_at_the_next_stranger(self):
+        user, record = self.squatter()
+        first = self.guest_order()
+        Customer.objects.filter(pk=record.pk).update(document_number='70000066')
+        second = self.guest_order(document_number='70000066', customer_email='otra@correo.test')
+        self.assertEqual((first.customer, second.customer), (None, None))
+        self.assertEqual(web_session(user).get('/api/orders/', HTTP_HOST='riesgo-caja.example.com').json(), [])
+
+    def test_a_guest_whose_document_is_a_walk_in_record_is_still_linked_to_it(self):
+        walk_in = Customer.objects.create(
+            company=self.company, first_name='Clienta', last_name='De Mostrador', document_type='dni', document_number=self.VICTIM_DNI,
+        )
+        order = self.guest_order()
+        self.assertEqual(order.customer, walk_in)
+        self.assertIsNone(walk_in.user)
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_a_guest_nobody_knows_still_gets_a_record_of_their_own(self):
+        order = self.guest_order()
+        self.assertIsNotNone(order.customer)
+        self.assertEqual((order.customer.user, order.customer.document_number), (None, self.VICTIM_DNI))
+        self.assertEqual(self.guest_order().customer, order.customer)       # and the next order finds it
+
+    def test_a_signed_in_sale_is_still_matched_by_its_account_alone(self):
+        user, record = self.squatter()
+        response = self.web_checkout(web_session(user), session='carrito-propio', document_number='70000077')
+        order = Order.objects.get(pk=response.json()['order_id'])
+        self.assertEqual((order.user, order.customer), (user, record))
+        record.refresh_from_db()
+        self.assertEqual(record.document_number, self.VICTIM_DNI)           # a sale does not rewrite the record
+
+    def test_a_record_taken_while_the_guest_was_paying_is_not_adopted_either(self):
+        # The fallback after a lost race re-reads by the same key: it must ask the same question.
+        user, record = self.squatter()
+        order = _order(self.company, document_type='dni', document_number=self.VICTIM_DNI, customer_name='Víctima Real')
+        with mock.patch('store.customer_services._create_from_order', side_effect=__import__('django').db.IntegrityError('x')):
+            self.assertIsNone(customer_services.link_order_to_customer(order))
+        order.refresh_from_db()
+        self.assertIsNone(order.customer)
+
+    def test_the_panel_finds_and_files_that_document_as_before(self):
+        user, record = self.squatter()
+        self.assertEqual(customer_services.match_by_document(self.company, 'dni', self.VICTIM_DNI), record)
+        self.assertEqual(customer_services.resolve_customer(self.company, document_type='dni', document_number=self.VICTIM_DNI), record)
+        with self.assertRaises(customer_services.DuplicateCustomerError):
+            customer_services.assert_document_available(self.company, 'dni', self.VICTIM_DNI)

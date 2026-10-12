@@ -165,7 +165,9 @@ def link_order_to_customer(order, *, actor=None):
         account is proof of identity and the link is unambiguous.
 
       * ANONYMOUS buyer → match on the document, which checkout always validates
-        and therefore always has. If no record matches, CREATE one: somebody who
+        and therefore always has — but ONLY a record with no account behind it
+        (`_guest_record`); a document that is on somebody's account leaves the
+        order unlinked. If no record matches, CREATE one: somebody who
         just gave a validated document, a phone and an address, and is about to
         pay, is a client of this business. Leaving them out would mean the CRM is
         missing precisely the people who bought something.
@@ -206,7 +208,12 @@ def link_order_to_customer(order, *, actor=None):
         if user is not None:
             existing = match_by_user(company, user)
         else:
-            existing = match_by_document(company, document_type, document_number)
+            existing, somebody_elses = _guest_record(company, document_type, document_number)
+            if somebody_elses:
+                # The document is on a record with an ACCOUNT behind it. The
+                # sale goes on unlinked, with its snapshot: no second record
+                # under one document, and nothing for the buyer to notice.
+                return None
 
         if existing is not None:
             # Never overwritten with the checkout data: the client may have
@@ -231,7 +238,9 @@ def link_order_to_customer(order, *, actor=None):
                 if user is not None:
                     existing = match_by_user(company, user)
                 else:
-                    existing = match_by_document(
+                    # The same question as above, asked again: a record that
+                    # gained an account in between is not adopted either.
+                    existing, _somebody_elses = _guest_record(
                         company, document_type, document_number,
                     )
             if existing is not None:
@@ -244,6 +253,30 @@ def link_order_to_customer(order, *, actor=None):
         # Deliberately broad. Whatever went wrong in the CRM, the sale continues
         # and the order keeps its snapshot. See §49.
         return None
+
+
+def _guest_record(company, document_type, document_number):
+    """
+    `(record, somebody_elses)` for a sale with NO account behind it.
+
+    A GUEST'S DOCUMENT OPENS ONLY A RECORD THAT NOBODY'S LOGIN OPENS
+    (CLIENT-SEC-01 · F1, amending DEC-CUSTOMER-01). Checkout checks a document
+    for its shape, never for whose it is. `Order.customer.user` is ownership
+    (`tenancy.customer_owned_orders`) and where the buyer's notices are sent,
+    so matching a guest's typed document to a record WITH an account handed
+    that account the guest's order, its notices and its history — and anybody
+    could put a stranger's document on their own record first.
+
+    So: a record with no account (a walk-in the shop filed, an earlier guest)
+    is matched exactly as before. A record with an account is not: the answer
+    is «somebody else's», and the caller leaves the order unlinked. Joining an
+    online account to a counter record stays a deliberate act (the repair
+    claim, with the document AND the tracking link; or staff).
+    """
+    holder = match_by_document(company, document_type, document_number)
+    if holder is not None and holder.user_id is not None:
+        return None, True
+    return holder, False
 
 
 def _stamp(order, customer):
