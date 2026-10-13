@@ -17536,18 +17536,17 @@ class Phase4OrderLinkTest(TestCase):
         with a free document gets a NEW record linked to their account, not a
         refusal.
         """
-        from .accounts import mark_email_verified
-
         user = User.objects.create_user(username='p4_fresh', password='x')
-        # CLIENT-SEC-01 · P1-1: the record takes the typed document only for an
-        # account that has proved its mailbox (the rule its profile has).
-        mark_email_verified(user)
         order = _p3_order(self.company, user=user,
                           document_type='dni', document_number='55556666')
         customer = link_order_to_customer(order)
         self.assertIsNotNone(customer)
         self.assertEqual(customer.user_id, user.pk)
-        self.assertEqual(customer.document_number, '55556666')
+        # CLIENT-SEC-01 (third review): a signed-in checkout never writes the
+        # document on the account's record — it is added in «Mi cuenta». The
+        # order keeps what was typed on it.
+        self.assertEqual(customer.document_number, '')
+        self.assertEqual(order.document_number, '55556666')
 
     def test_an_account_already_used_here_is_not_stolen(self):
         """
