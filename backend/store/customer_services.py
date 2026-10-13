@@ -184,7 +184,7 @@ def _release_document(holder, *, company, actor, taken_by: str, request=None) ->
     )
 
 
-def free_document_for_staff(company, document_type, document_number, *, actor, request=None, exclude_pk=None) -> None:
+def free_document_for_staff(company, document_type, document_number, *, actor, request=None) -> None:
     """
     Staff are about to file this document on a record. Refuse it, or free it.
 
@@ -193,18 +193,17 @@ def free_document_for_staff(company, document_type, document_number, *, actor, r
     offers to open it. A PROVISIONAL one gives the document up: at the counter
     the person is there with the document in hand, and a record nobody stands
     behind must not be where the shop files them — its contact would be told
-    about their repairs. Call it in the transaction that saves the new record,
-    so it is both or neither.
+    about their repairs. Call it in the transaction that saves the record the
+    document is going to, BEFORE that save and only when the document is
+    changing (the record itself still holds its old one), so it is both or
+    neither.
     """
     number = normalize_document_number(document_number)
     if not number or not document_type:
         return
-    holders = Customer.objects.select_for_update().filter(
+    holder = Customer.objects.select_for_update().filter(
         company=company, document_type=document_type, document_number=number,
-    )
-    if exclude_pk is not None:
-        holders = holders.exclude(pk=exclude_pk)
-    holder = holders.first()
+    ).first()
     if holder is None:
         return
     if is_established(holder):

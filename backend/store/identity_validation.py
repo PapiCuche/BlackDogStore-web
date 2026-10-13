@@ -78,9 +78,9 @@ def clean_phone(value) -> str:
     if not value.strip():
         return ''
     # A space is any space Unicode has — a phone pasted from a web page comes
-    # with no-break ones, and the checkout takes it. A digit is 0-9 and nothing else.
-    compact = re.sub(r'\s', '', value)
-    if not compact.isascii() or not _PERU_PHONE_RE.match(compact):
+    # with no-break ones, and the checkout takes it. A digit is 0-9 and nothing
+    # else: the pattern says so itself now (`[0-9]`).
+    if not _PERU_PHONE_RE.match(re.sub(r'\s', '', value)):
         raise IdentityError(
             'phone',
             'Teléfono inválido. Ejemplos aceptados: 987654321, +51987654321, +51 987 654 321.',

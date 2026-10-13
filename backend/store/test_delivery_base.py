@@ -1724,6 +1724,22 @@ class ABookDoesNotGrowWithoutEndTest(_BookBase):
         self.assertEqual(self.call('patch', f'{entry.pk}/', {'label': 'Corregida'}).status_code, 200)
         self.assertEqual(self.call('delete', f'{entry.pk}/').status_code, 204)
 
+    def test_the_row_reused_is_the_buyers_own(self):
+        other = Customer.objects.create(company=self.a, user=self.luis, first_name='Luis')
+        theirs = CustomerAddress.objects.create(company=self.a, customer=other, recipient_name='Luis', address_line='Jr. Ajeno 1',
+                                                district='y', city='z', is_active=False)          # older than every row of mine
+        customer = Customer.objects.create(company=self.a, user=self.ana, first_name='Ana')
+        CustomerAddress.objects.bulk_create([
+            CustomerAddress(company=self.a, customer=customer, recipient_name='Ana', address_line='x', district='y',
+                            city='z', is_active=False)
+            for _ in range(delivery.MAX_ADDRESS_ROWS)
+        ])
+        response = self.call('post', body=door())
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(CustomerAddress.objects.get(pk=response.json()['id']).customer, customer)
+        theirs.refresh_from_db()
+        self.assertEqual((theirs.customer, theirs.is_active, theirs.address_line), (other, False, 'Jr. Ajeno 1'))
+
     def test_with_every_row_removed_the_buyer_is_not_locked_out(self):
         customer = Customer.objects.create(company=self.a, user=self.ana, first_name='Ana')
         CustomerAddress.objects.bulk_create([

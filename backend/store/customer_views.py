@@ -369,7 +369,7 @@ class AdminCustomerDetailView(APIView):
                     if 'document_number' in changed or 'document_type' in changed:
                         free_document_for_staff(
                             company, customer.document_type, customer.document_number,
-                            actor=request.user, request=request, exclude_pk=customer.pk,
+                            actor=request.user, request=request,
                         )
                     customer.save()
             except DuplicateCustomerError as exc:

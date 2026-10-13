@@ -3970,8 +3970,10 @@ class OnlyARecordTheShopStandsBehindIsMatchedTest(_SeededRecordBase):
 
     def test_a_record_with_an_account_is_never_a_guests_paid_or_not(self):
         user = User.objects.create_user('con_cuenta', 'cuenta@correo.test', PASSWORD, first_name='Ana')
+        # Established or not: a record the shop filed and somebody then linked their account to.
         record = Customer.objects.create(company=self.company, user=user, first_name='Ana', document_type='dni',
-                                         document_number=self.DNI, created_by=user)
+                                         document_number=self.DNI, created_by=self.staff)
+        self.assertTrue(customer_services.is_established(record))
         order = self.holders_order()
         self.assertIsNone(order.customer)
         order = self.pay(order)
@@ -4143,9 +4145,35 @@ class StaffFileThePersonInFrontOfThemTest(_SeededRecordBase):
         _seeding, seeded = self.seed()
         client = acting(self.staff)
         client.raise_request_exception = False
-        with mock.patch('store.customer_views.Customer.save', side_effect=RuntimeError('roto')):
+        real_save = Customer.save
+
+        def only_the_new_record_fails(record, *args, **kwargs):
+            if record.pk is None:
+                raise RuntimeError('roto')
+            return real_save(record, *args, **kwargs)                        # the record giving the document up is saved
+
+        with mock.patch('store.customer_views.Customer.save', autospec=True, side_effect=only_the_new_record_fails):
             response = client.post(CUSTOMERS, {'customer_type': 'person', 'first_name': 'Victoria', 'document_type': 'dni',
                                                'document_number': self.DNI}, format='json')
+        self.assertEqual(response.status_code, 500)
+        seeded.refresh_from_db()
+        self.assertEqual(seeded.document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_correcting_is_all_or_nothing_too(self):
+        _seeding, seeded = self.seed()
+        walk_in = Customer.objects.create(company=self.company, first_name='Victoria', created_by=self.staff)
+        client = acting(self.staff)
+        client.raise_request_exception = False
+        real_save = Customer.save
+
+        def the_corrected_record_fails(record, *args, **kwargs):
+            if record.pk == walk_in.pk:
+                raise RuntimeError('roto')
+            return real_save(record, *args, **kwargs)
+
+        with mock.patch('store.customer_views.Customer.save', autospec=True, side_effect=the_corrected_record_fails):
+            response = client.patch(f'{CUSTOMERS}{walk_in.pk}/', {'document_type': 'dni', 'document_number': self.DNI}, format='json')
         self.assertEqual(response.status_code, 500)
         seeded.refresh_from_db()
         self.assertEqual(seeded.document_number, self.DNI)
@@ -4301,6 +4329,12 @@ class OnePersonOnSeveralDevicesIsOneBuyerTest(_RiskBase):
     def test_one_detail_shared_and_another_not_are_different_buyers(self):
         for n, cart in enumerate(('telefono', 'portatil')):
             self.order(paid=True, cart_session_key=cart, **{**self.SAME, 'customer_email': f'otra{n}@correo.test'})
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(cart_session_key='tableta', **self.SAME)))
+
+    def test_an_order_that_carries_less_is_not_the_same_contact(self):
+        # The same phone and document but no address at all: not «identical», so another buyer.
+        for cart in ('telefono', 'portatil'):
+            self.order(paid=True, cart_session_key=cart, **{**self.SAME, 'customer_email': ''})
         self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(cart_session_key='tableta', **self.SAME)))
 
     def test_the_sixth_paid_order_of_that_one_buyer_is_still_noticed(self):
