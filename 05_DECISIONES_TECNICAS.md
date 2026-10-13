@@ -1487,3 +1487,57 @@ Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
 - **Descartado.** Rutas bajo `api/v1/internal/` (no se pidieron en esta fase); un trabajo
   en segundo plano para exportar (el tope de 20 000 filas por libro cabe en una petición);
   una capacidad nueva para exportar.
+
+**Partes 3 y 4 (misma decisión, misma rama).**
+
+- **Un centro que reúne, no una carga que mezcla.** «Gestión masiva de inventario»
+  (`/admin/inventory/bulk`) pone a la vista importar, exportar, imágenes e historial.
+  Las tres cargas siguen siendo tres, con sus entradas de menú, sus rutas y sus
+  asistentes; el centro enlaza a ellas. No hay un importador «universal»: un archivo
+  que es dos cargas a la vez no se reparte, se devuelve.
+- **El asistente dice a dónde va un archivo y no lo carga.** `POST
+  /api/admin/imports/inspect/` (la misma dirección y la misma vista) responde además
+  `suggested_import_type`, decidido por `store.import_assistant` SÓLO con los nombres de
+  las hojas y las cabeceras, y con el vocabulario que ya comparten las cargas
+  (`SERIAL_HEADERS`, `counts_stock`, los formatos de `detect`, las hojas «Reporte de …»).
+  No lee filas, no crea un trabajo, no guarda un perfil.
+- **Lo ambiguo es `unknown`.** Serie y cantidad en la misma hoja, columnas de producto
+  y de serie, u hojas de dos cargas: no se elige la que «se lo tragaría». La única
+  mezcla que se resuelve es la que la carga de productos ya resolvía y explicaba: un
+  catálogo con una columna de stock es un catálogo, y la respuesta dice que su stock no
+  se carga ahí. Una fila que cuenta cosas o trae series pero no nombra ningún producto
+  no es una cabecera (así no se confunde el rótulo «Stock …» que el POS del propietario
+  pone encima de sus cabeceras).
+- **Una carga que no puedes hacer no se nombra.** A quien pregunta por un archivo de una
+  carga para la que no tiene permiso se le dice eso, igual sea cual sea la carga.
+- **Una entrada de menú puede pedir CUALQUIERA de varias capacidades**
+  (`anyCapabilities`), sólo con empresa resuelta. No es una capacidad nueva ni cambia
+  lo que piden las demás entradas (`requiredCapabilities` sigue siendo «todas»).
+- **Imágenes en lote: por el nombre del archivo, nunca por el nombre del producto.**
+  `<código>.<ext>` con sufijo opcional `_N`, `-N` o ` (N)` (uno a tres dígitos) para el
+  orden; la de número más bajo es la principal. El código se busca con el mismo
+  `CatalogueIndex` de la carga de productos (código interno y códigos de barras, exacto).
+  Como un código puede terminar en `-2`, se prueban el nombre entero y el nombre sin su
+  número: un producto, es ése; dos distintos o ninguno, el archivo no se carga y se dice.
+- **Un archivo sin producto no detiene la carga; un error de un producto sí.** Lo que
+  nadie reclama (sin producto, nombre ambiguo) se lista y se deja fuera, como los
+  archivos huérfanos de la carga de productos. Lo que falla en un producto que sí tiene
+  destino (imagen ilegible, dos archivos distintos con un nombre, más de 12) es un
+  error de esa fila y nada se aplica: la misma regla de «no se aplica a medias».
+- **Añadir o reemplazar, y reemplazar se escribe.** `add` nunca quita; la principal
+  sólo cambia en una galería vacía o si se marcó. `replace` reconstruye la galería de
+  los productos de la carga con lo subido, enseña cuántas imágenes pierde cada uno y
+  exige `REEMPLAZAR` al aplicar. Reemplazar quita todo y vuelve a colocar: no intenta
+  conservar la fila de una imagen que también viene en la carga.
+- **Aplicar se detiene si lo previsto ya no es cierto.** El código tiene que seguir
+  siendo del mismo producto y la galería tiene que ser, imagen por imagen, la que se
+  previsualizó. Dos cargas sobre los mismos productos se turnan (productos bloqueados
+  en orden de id) y la segunda recibe ese aviso en vez de sumar a ciegas.
+- **Misma ruta para el lote, porque es la única dimensionada para él.** La vista previa
+  es `POST /api/admin/products/import/preview/` con `kind=images` (nivel
+  `product_import` de `request_limits.py` y del Caddyfile, que no cambian). Aplicar y
+  las reglas son rutas JSON nuevas sin archivos. El tipo de trabajo `product_images`
+  es una migración sólo de opciones (`0122`).
+- **Descartado.** Un importador único que adivine; casar imágenes por nombre de
+  producto; borrar imágenes sin confirmación; una vista multipart nueva; mover el
+  almacén a S3 en esta fase (queda documentado qué haría falta).

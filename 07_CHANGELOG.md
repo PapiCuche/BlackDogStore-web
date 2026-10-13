@@ -3,6 +3,28 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4)
+
+En la rama `feat/inventory-unified`; sin desplegar. Migración `0122` (sólo opciones de un campo).
+
+**Added**
+- Panel › Inventario › **Gestión masiva de inventario**: importar, exportar, imágenes en lote e
+  historial en una pantalla. Las tres cargas (productos, stock, equipos) siguen donde estaban.
+- «¿Qué archivo tengo?»: se elige un Excel y el sistema dice a qué carga corresponde y por qué, o
+  que es un reporte, o que mezcla dos cargas. No carga nada.
+- Imágenes en lote para productos que ya existen: muchos archivos o un ZIP, cada uno a su
+  producto por el nombre del archivo (`FUNDA.png`, `FUNDA_2.png`…) o con un libro «Imágenes».
+  Vista previa antes de aplicar; añadir o, con confirmación escrita, reemplazar la galería.
+- El historial de cargas muestra las cargas de imágenes y permite descargar los errores de
+  cualquier carga.
+- `docs/imagenes-y-evidencias.md`: dónde viven las imágenes, cómo se copian y se sirven, y qué
+  haría falta para pasar a un almacenamiento de objetos.
+
+**Changed**
+- `POST /api/admin/imports/inspect/` responde además `suggested_import_type` y acepta
+  `import_type=auto`.
+- `POST /api/admin/products/import/preview/` acepta `kind=images`.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2)
 
 En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones ni capacidades nuevas.

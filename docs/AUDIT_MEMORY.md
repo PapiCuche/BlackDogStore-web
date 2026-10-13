@@ -685,6 +685,15 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | BULK-VIS-FORM-HINT | FRONTEND | la ficha del producto no avisa de lo que le falta para publicarse en bloque (la lista sí) | Baja | — |
 | CART-UNAVAILABLE-COUNT | FRONTEND | el contador del carrito en la cabecera cuenta también una línea «Ya no está disponible» | Baja | — |
 | P0E-CART-RACE-ORDER | TESTS | `store.tests.P0ECartConcurrencyTest.test_many_at_once_still_add_up` falla en `setUp` (`store_company_pkey` duplicada) cuando esa clase es la primera `TransactionTestCase` del proceso: `reset_sequences` reinicia la secuencia con la empresa piloto todavía en la base. En la suite completa otra clase vacía la base antes. Reproducido sobre `14e658c` | Baja | — |
+| IMG-IMPORT-CASE | PRODUCTOS | las imágenes en lote casan el código exacto, mayúsculas incluidas (como la carga de productos): `funda.png` no es el producto `FUNDA`. Un equipo que renombra archivos en minúsculas verá «ningún producto con ese código» | Baja | decisión del propietario: igual que escanear |
+| IMG-IMPORT-CODE-CHARS | PRODUCTOS | un código con caracteres que un nombre de archivo no admite (`/`, `:`) no se puede escribir en el nombre: para ésos queda el libro «Imágenes» | Baja | — |
+| IMG-IMPORT-REUPLOAD | PRODUCTOS | un archivo con error o sin producto obliga a volver a adjuntar el lote para previsualizar otra vez (hasta 200 archivos / 100 MB); no hay corrección sobre la vista previa | Baja | uso real |
+| IMG-IMPORT-REPLACE-REENCODE | PRODUCTOS | reemplazar quita y vuelve a colocar también las imágenes que ya estaban y vienen en la carga (nueva fila, nuevo archivo); el texto alternativo que tuvieran se pierde | Baja | — |
+| IMG-IMPORT-ALT-TEXT | PRODUCTOS | la carga en lote no pone texto alternativo: se escribe después en la galería de cada producto | Baja | — |
+| IMG-STORAGE-S3 | INFRA | el almacén de imágenes es el volumen local `evidence`; `EVIDENCE_STORAGE_BACKEND=s3` existe en el código pero nunca se ha probado contra un proveedor ni hay copia de un bucket (`docs/imagenes-y-evidencias.md` §5.4) | Media | plan y autorización del propietario |
+| ASSISTANT-HEADERS-ONLY | INVENTARIO | «¿Qué archivo tengo?» decide por hojas y cabeceras (dos primeras filas): un libro con cabeceras en la fila 3 o con nombres propios de columna sale «no se reconoce» y hay que ir a su carga a mano | Baja | — |
+| BULK-CENTRE-LEGACY-BRIDGE | FRONTEND | «Gestión masiva de inventario» no se ofrece a un operador del puente legacy (sin empresa resuelta): sus tres cargas siguen en el menú como antes | Baja | — |
+| DOCS-CADDY-LIMIT-NOTE | DOCS | `docs/imagenes-y-evidencias.md` §5.5 aún dice «Caddy, tal como se entrega, no pone tope», anterior a los niveles de `request_limits.py` y del Caddyfile | Baja | revisar con quien mantiene el despliegue |
 
 ---
 

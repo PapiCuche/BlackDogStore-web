@@ -3,6 +3,55 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4): centro de gestión masiva e imágenes en lote
+
+Misma rama (`feat/inventory-unified`), sobre `74c6112`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** Una migración, `0122` (sólo opciones de un campo: el tipo de trabajo
+`product_images`). Sin capacidades nuevas, sin rutas bajo `api/v1/internal/`, sin cambios en
+`deploy/` ni en `request_limits.py`, y sin ninguna vista multipart nueva. Decisión:
+DEC-INVENTORY-UNIFIED-01 (ampliada).
+
+| | Qué | Estado |
+|---|---|---|
+| 3.1 | Pantalla `/admin/inventory/bulk` y UNA entrada de menú «Gestión masiva de inventario», visible con cualquiera de `products.manage`, `inventory.adjust`, `products.view`, `inventory.view`. Las tres cargas conservan entrada, ruta y asistente | EN LA RAMA, probado |
+| 3.2 | Secciones: «Importar» (tres tarjetas con qué hace y qué no cada carga, del mismo texto que sus avisos), «Exportar» (el panel de la parte 2, que sigue además en Carga de stock), «Imágenes» e «Historial» (todas las cargas que la persona puede ver, con «Descargar errores») | EN LA RAMA, probado |
+| 3.3 | «¿Qué archivo tengo?»: `POST /api/admin/imports/inspect/` (misma ruta y vista) responde `suggested_import_type` (`products`, `stock`, `units`, `images`, `report`, `unknown`; `forbidden` si no puede hacer esa carga) con un código de motivo y su frase, sólo por hojas y cabeceras. No lee filas ni escribe nada | EN LA RAMA, probado |
+| 3.4 | Pruebas: cada plantilla, cada descarga en sus dos modos, los libros históricos (plantillas de varias hojas, exportaciones del POS con su rótulo y su columna de stock, libro del propietario), ambiguos, permisos y empresa | EN LA RAMA |
+| 4.1 | Carga sólo de imágenes: muchos archivos y/o un ZIP; cada archivo va a su producto por el nombre (`<código>.<ext>`, `_N` / `-N` / ` (N)` para el orden) o por un libro «Imágenes» opcional | EN LA RAMA, probado |
+| 4.2 | Vista previa sin efecto (trabajo `product_images`): por producto, qué se añade, cuál será la principal, qué ya estaba, qué pasa de 12; archivos sin producto o ambiguos; modos `add` y `replace` (éste, con palabra de confirmación) | EN LA RAMA, probado |
+| 4.3 | Aplicar: todo o nada, una vez, trabajo y productos bloqueados en orden, por `product_media`; se detiene si el catálogo o una galería cambiaron; una línea de auditoría por carga | EN LA RAMA, probado |
+| 4.4 | Sólo se escriben filas de galería e `image_url` (fijado con una prueba) | EN LA RAMA, probado |
+| 4.5 | Todas las protecciones de `import_media` por este camino; un código de otra empresa nunca casa; `products.manage`; lo guardado de una vista previa fallida o abandonada se retira | EN LA RAMA, probado |
+| 4.6 | Sección «Imágenes» del centro y enlace «Añadir imágenes en lote» desde Productos | EN LA RAMA, probado |
+| 4.7 | Auditoría de almacenamiento, sobre código y archivos de despliegue: `docs/imagenes-y-evidencias.md` §3.7, §5.3 y §5.4 | DOCUMENTADO (sin acceso al servidor) |
+
+**La restricción de la ruta se cumplió.** El lote de imágenes entra por
+`POST /api/admin/products/import/preview/` con `kind=images` —la misma ruta y la misma vista, la
+única con nivel `product_import`—. `store/test_request_limits.py` pasa sin cambios.
+
+**Decidido aquí, para confirmar con el propietario.** Un archivo sin producto o con nombre
+ambiguo se lista y no se carga, pero no impide aplicar el resto; el código se compara exacto,
+mayúsculas incluidas (deuda IMG-IMPORT-CASE); un catálogo con una columna de stock sigue yendo a la
+carga de productos (como ya lo trataba esa carga) y la respuesta lo dice.
+
+**Pruebas (sobre `406107e`, PostgreSQL, base `blackdog_focal`).** Nuevas:
+`store/test_import_assistant.py` (42) y `store/test_image_import.py` (67, dos con dos conexiones
+reales); Jest `bulk-inventory-centre` (29) y `bulk-image-import` (27). Pasadas focales: 560 OK
+(los cuatro módulos nuevos de la fase, `test_import_media`, `test_import_template`,
+`test_product_destination_import`, `test_unit_import`, `test_request_limits`,
+`test_storefront_image_cleanup`, `test_storefront_media`, `test_stock_units`, `test_serial_pick`,
+`test_product_visibility`) y 380 OK (clases C14/C15 de importación, las de producto, carrito y
+checkout de `store/tests.py`, y la matriz de paridad). Jest completo 1303/1303 en 115 suites;
+`tsc --noEmit` limpio; lint 0 errores y 22 avisos (ninguno nuevo); `makemigrations --check
+--dry-run` sin cambios. **La suite completa del backend, Playwright y el ensayo NO se corrieron.**
+Mutaciones de estas dos partes: 136; 9 sobrevivieron a la primera pasada: 6 se cerraron con
+pruebas, 2 quitando una comprobación duplicada, y 1 queda como equivalente (el filtro de empresa
+al bloquear productos: la comprobación del catálogo ya rechaza ese caso).
+
+**Deuda registrada** (`docs/AUDIT_MEMORY.md` §10): IMG-IMPORT-CASE, IMG-IMPORT-CODE-CHARS,
+IMG-IMPORT-REUPLOAD, IMG-IMPORT-REPLACE-REENCODE, IMG-IMPORT-ALT-TEXT, IMG-STORAGE-S3,
+ASSISTANT-HEADERS-ONLY, BULK-CENTRE-LEGACY-BRIDGE, DOCS-CADDY-LIMIT-NOTE.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2): visibilidad en bloque y exportaciones
 
 Rama `feat/inventory-unified`, desde `master` `14e658c`. **Sólo en la rama: sin push, sin PR, sin

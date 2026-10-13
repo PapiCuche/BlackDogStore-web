@@ -1,5 +1,26 @@
 # NEXT ACTION
 
+## En curso: INVENTORY-UNIFIED-01 (rama `feat/inventory-unified`, sin fusionar)
+
+Las cuatro partes están en la rama, con commits locales: visibilidad en bloque y
+exportaciones (hasta `74c6112`), y centro de gestión masiva con asistente e imágenes en
+lote (`8cda9e3`…`406107e`, más la documentación). **Sin push, sin PR, sin desplegar.**
+Detalle en `02_ESTADO_ACTUAL.md` (las dos entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
+
+Lo que falta antes de abrir un PR, en este orden:
+1. Suite completa del backend sobre la rama (aquí sólo se corrieron pasadas focales).
+2. Playwright y `sh deploy/rehearsal.sh`: la rama añade la migración `0122` (sólo opciones)
+   y cambia el carrito público, la lista de productos del panel y las tres cargas.
+3. Revisión independiente. Puntos que piden la palabra del propietario: un archivo de
+   imagen sin producto no impide aplicar el resto; el código de las imágenes se compara
+   exacto, mayúsculas incluidas; el ZIP de inventario completo sólo lleva productos activos.
+4. Con autorización expresa: push, PR, CI, merge y despliegue (migrar `0122`). El Caddyfile
+   del servidor NO cambia con esta fase.
+
+Encontrado y sin tocar: `P0ECartConcurrencyTest.test_many_at_once_still_add_up` falla si
+es la primera `TransactionTestCase` del proceso (deuda P0E-CART-RACE-ORDER, anterior).
+
+
 ## Prioridad del pedido actual: privacidad de medición
 
 PARCIAL: aviso `/privacy` y consentimiento v2 preparados. Revisar y publicar tras
