@@ -3,19 +3,23 @@
 ## En curso: INVENTORY-UNIFIED-01 (rama `feat/inventory-unified`, sin fusionar)
 
 Las cuatro partes están en la rama, con commits locales: visibilidad en bloque y
-exportaciones (hasta `74c6112`), y centro de gestión masiva con asistente e imágenes en
-lote (`8cda9e3`…`406107e`, más la documentación). **Sin push, sin PR, sin desplegar.**
-Detalle en `02_ESTADO_ACTUAL.md` (las dos entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
+exportaciones (hasta `74c6112`), centro de gestión masiva con asistente e imágenes en
+lote (hasta `ac6a061`), y las correcciones de la revisión independiente (`8b9dda1`…
+`179d75c`, más la documentación). **Sin push, sin PR, sin desplegar.**
+Detalle en `02_ESTADO_ACTUAL.md` (las tres entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
 
 Lo que falta antes de abrir un PR, en este orden:
 1. Suite completa del backend sobre la rama (aquí sólo se corrieron pasadas focales).
 2. Playwright y `sh deploy/rehearsal.sh`: la rama añade la migración `0122` (sólo opciones)
    y cambia el carrito público, la lista de productos del panel y las tres cargas.
-3. Revisión independiente. Puntos que piden la palabra del propietario: un archivo de
-   imagen sin producto no impide aplicar el resto; el código de las imágenes se compara
-   exacto, mayúsculas incluidas; el ZIP de inventario completo sólo lleva productos activos.
+3. Revisión independiente: HECHA (sin P0/P1) y sus P2/P3 corregidos. Puntos que piden la
+   palabra del propietario: un archivo de imagen sin producto no impide aplicar el resto;
+   el código de las imágenes se compara exacto, mayúsculas incluidas; los archivos para
+   volver a cargar sólo llevan productos activos; la carga de productos sigue publicando lo
+   que dice «Destino» (ahora avisando) y un producto nuevo nace publicado sin aviso.
 4. Con autorización expresa: push, PR, CI, merge y despliegue (migrar `0122`). El Caddyfile
-   del servidor NO cambia con esta fase.
+   del servidor NO cambia con esta fase. Hay un cupo de DRF nuevo, `admin_export` (6/min),
+   en `backend/backend/settings.py`: no necesita variable de entorno.
 
 Encontrado y sin tocar: `P0ECartConcurrencyTest.test_many_at_once_still_add_up` falla si
 es la primera `TransactionTestCase` del proceso (deuda P0E-CART-RACE-ORDER, anterior).

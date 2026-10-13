@@ -1477,7 +1477,7 @@ Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
   lector de las cargas se lo quita (`unguard_text`) para leer el mismo valor. Sólo se quita
   UN apóstrofo y sólo delante de uno de esos caracteres; una celda que ES una fórmula
   sigue siendo un error de la fila. La descarga anterior (`/api/admin/inventory/export/`)
-  no cambia (deuda INV-EXPORT-LEGACY-GUARD).
+  conserva su forma; desde la revisión también protege esas celdas (más abajo).
 - **Permisos de lectura.** El catálogo pide `products.view`; stock y equipos piden
   `inventory.view` y sólo alcanzan las sucursales de `visible_branches`; el ZIP pide las
   dos. `inventory.adjust` no abre una descarga: sólo decide si «Costo» lleva datos. No se
@@ -1541,3 +1541,35 @@ Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
 - **Descartado.** Un importador único que adivine; casar imágenes por nombre de
   producto; borrar imágenes sin confirmación; una vista multipart nueva; mover el
   almacén a S3 en esta fase (queda documentado qué haría falta).
+
+**Tras la revisión independiente (misma decisión).**
+
+- **Una fórmula no sale de aquí por ningún archivo.** También la descarga anterior del
+  inventario y el `errors.csv` de cualquier carga pasan su texto por `guard_text`.
+- **La selección en bloque se lee una vez.** Los ids de UNA consulta son lo que se compara
+  con el total que vio el operador; contar y volver a leer dejaba cambiar un producto que
+  nadie había contado.
+- **Un solo orden de bloqueo.** El cambio en bloque, la carga de imágenes y la carga de
+  productos toman sus productos de menor a mayor id, en una sola consulta. La carga de
+  productos los tomaba en el orden del archivo y podía quedar en abrazo mortal con las
+  otras dos.
+- **Un archivo para volver a cargar es de productos activos**, también el del catálogo
+  solo (no sólo el ZIP): la plantilla no tiene columna «activo» y un inactivo que no se
+  reconoce al recargar nacería activo y publicado. El reporte los lleva todos.
+- **La carga de productos sigue publicando lo que dice su columna «Destino»**, incluido lo
+  que la acción en bloque dejaría fuera. No se convirtió en error: cambiaría una operación
+  que el propietario ya aprobó. Lo que cambia es que se DICE antes de aplicar: un aviso en
+  cada fila que pasa un producto existente a la web cuando le falta algo, y cuántos
+  cambian de destino. Un producto nuevo sigue naciendo publicado, sin aviso.
+- **Las descargas tienen su propio límite** (`admin_export`, 6 por minuto): cada una arma
+  un libro en el único proceso del servidor y gastaba el cupo de las cargas.
+- **Aplicar imágenes compara la galería entera**: qué imágenes, en qué orden y cuál es la
+  principal. Y de una vista previa sólo queda en espera lo que se va a colocar.
+- **«Mis pedidos» cierra el producto que ya no se vende**, con la misma forma que el
+  carrito (`closed_product_payload`: id, nombre, imagen). La línea —cantidad y precio
+  pagado— es del comprador y no cambia.
+- **La acción en bloque va a la empresa de la lista.** La pantalla de productos manda
+  explícita la empresa para la que el servidor decidió el acceso, en la lista y en la
+  acción; el resto del panel sigue como estaba.
+- **Deuda aceptada, no arreglada:** IMPORT-UNGUARD-APOSTROPHE-CODE (N8),
+  IMG-IMPORT-NAME-READING (N12) y EXPORT-GUARD-VISIBLE (N14), en `docs/AUDIT_MEMORY.md` §10.

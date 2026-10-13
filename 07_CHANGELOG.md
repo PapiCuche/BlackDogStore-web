@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
+
+En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones nuevas.
+
+**Security**
+- La descarga anterior del inventario y el `errors.csv` de las cargas ya no escriben texto que
+  una hoja de cálculo ejecute como fórmula.
+- «Mis pedidos» ya no muestra el precio de hoy, la descripción, el stock ni la galería de un
+  producto que dejó de venderse en la web.
+- La acción en bloque de productos se aplica en la empresa para la que se abrió la pantalla,
+  aunque otra pestaña cambie de empresa.
+
+**Fixed**
+- «Todo lo que coincide» ya no puede cambiar un producto que no se contó.
+- La carga de productos y la acción en bloque, a la vez sobre los mismos productos, ya no se
+  bloquean entre sí (error 500).
+- El archivo del catálogo para volver a cargar sólo lleva productos activos.
+- Una búsqueda con un carácter nulo, o una sucursal con un carácter de control en el nombre, ya
+  no dan error 500.
+- La carga de imágenes nota si cambió la imagen principal o el orden desde la vista previa, no
+  deja copias de lo que ya estaba en la galería, y su resultado enlaza a cada galería.
+- Lista de productos: una respuesta lenta no pisa a la nueva; la selección se quita al desactivar
+  una fila; no se confirma una selección vacía; tras vaciar la última página se vuelve a la anterior.
+- El pago no deja enviar un carrito con una línea que ya no está disponible y dice qué producto
+  rechazó el servidor; el contador del carrito no cuenta esas líneas.
+
+**Changed**
+- Las descargas del inventario tienen su propio límite: 6 por minuto.
+- La vista previa de la carga de productos avisa de cada producto existente que pasa a publicarse
+  sin estar listo, y dice cuántos cambian de destino antes de aplicar.
+- La tarjeta del ZIP avisa cuando los filtros hacen que no sea el inventario completo.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4)
 
 En la rama `feat/inventory-unified`; sin desplegar. Migración `0122` (sólo opciones de un campo).

@@ -176,6 +176,9 @@ estado, stock, series ni Kardex. Pide `products.manage`.
   no sale ninguno, lo mismo. No se adivina.
 - Un código con caracteres que un nombre de archivo no admite (`/`, `:`) no se
   puede escribir así: para ésos está el libro.
+- Dos avisos de lectura: `FUNDA-12.png` es la imagen 12 de `FUNDA` salvo que exista
+  un producto `FUNDA-12`; y dos archivos del mismo lote cuyos nombres sólo difieren
+  en mayúsculas cuentan como el mismo nombre, aunque el código se busque exacto.
 
 **El libro «Imágenes» (opcional).** Una hoja «Imágenes» con `Código`,
 `Imagen principal` e `Imágenes` (varios nombres separados por `|`), leídas igual que
@@ -199,7 +202,10 @@ aplicar, una imagen ilegible, dos archivos distintos con el mismo nombre o un
 producto que superaría el límite.
 
 **Aplicar** es todo o nada y una sola vez (un segundo clic devuelve el primer
-resultado). Se detiene si el catálogo o una galería cambiaron desde la vista previa.
+resultado). Se detiene si el catálogo o una galería cambiaron desde la vista previa:
+qué imágenes tiene, en qué orden o cuál es la principal. De una vista previa sólo
+queda guardado, en espera, lo que se va a colocar; lo que ya estaba en la galería no
+deja copia.
 Deja una línea de auditoría por carga (`product_images_import_applied`: modo y
 conteos, sin nombres de archivo) además de la de cada imagen en su galería.
 

@@ -3,6 +3,51 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
+
+Misma rama (`feat/inventory-unified`), sobre `ac6a061`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** La revisión no encontró nada P0/P1; estos son sus P2/P3. Sin migraciones nuevas (sigue
+habiendo una, `0122`), sin capacidades, sin cambios en `deploy/` ni en `request_limits.py`. Una
+variable nueva en la configuración de DRF: el cupo `admin_export`.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| N1, O1 | La descarga anterior del inventario escribía nombres y códigos que empiezan por `=`, `+`, `-`, `@` como fórmulas vivas; `errors.csv` repetía lo que traía el archivo | CORREGIDO: los dos pasan por `guard_text`; la descarga anterior sigue recargándose igual |
+| N6 | «Todo lo que coincide» contaba y luego leía los ids en otra consulta, sin compararlos: `expected_count=1` cambió 2 | CORREGIDO: una sola lectura, y es ésa la que se compara |
+| N9 | Un NUL en `search` daba 500 en la lista de productos y en la acción en bloque | CORREGIDO: 400 en la acción; la lista no encuentra nada |
+| N7 | La carga de productos bloqueaba en el orden del archivo; contra la acción en bloque daba abrazo mortal (500) | CORREGIDO: bloquea todo lo que edita, de menor a mayor id, antes de escribir |
+| N2 | El archivo del catálogo «para volver a cargar» incluía productos inactivos, que al recargar podían nacer activos y publicados | CORREGIDO: sólo activos (el reporte los lleva todos) |
+| N3 | La carga de productos publica por «Destino» lo que la acción en bloque dejaría fuera, y un archivo viejo vuelve a publicar lo ocultado después | SE DICE ANTES (no se rechaza): aviso por fila con los motivos y conteo de cambios de destino en la vista previa |
+| N15, N16 | Textos: recargar stock lo deja como dice el archivo; los archivos cubren sucursales activas y «Stock total» es de toda la empresa | CORREGIDO (sólo palabras: nota del ZIP y panel) |
+| N4 | Las descargas compartían el cupo de las cargas (30/min) | CORREGIDO: cupo propio `admin_export`, 6/min |
+| N10 | Un carácter de control en el nombre de una sucursal daba 500 al descargar stock | CORREGIDO: las cabeceras se limpian como las celdas |
+| N11 | Aplicar imágenes no notaba un cambio de principal o de orden desde la vista previa | CORREGIDO: compara imágenes, orden y principal |
+| N13 | Cada vista previa guardaba otra copia de lo que ya estaba en la galería | CORREGIDO: sólo queda en espera lo que se va a colocar |
+| F1 | El resultado de la carga de imágenes nunca listaba las galerías (la respuesta de aplicar no trae filas) | CORREGIDO, y la prueba responde lo que responde el servidor |
+| O2 | «Mis pedidos» mostraba entero el producto actual de cada línea, también de uno oculto o inactivo: precio de hoy, descripción, dirección, stock y galería (anterior a la fase) | CORREGIDO: esa línea lleva el producto cerrado a id, nombre e imagen; la línea no cambia |
+| N5 | La empresa de la acción en bloque se leía del navegador al enviar: con dos pestañas podía caer en otra empresa | CORREGIDO: la lista y la acción mandan explícita la empresa de la pantalla |
+| 9 a–i | Panel: respuesta lenta que pisa a la nueva; selección que sobrevive a desactivar una fila; confirmación con selección vacía; última página vacía; vista previa de imágenes que no se invalida; ZIP filtrado sin decirlo; pago que deja enviar con una línea no disponible y no dice qué producto falló; contador del carrito; enlace a una pantalla que niega al operador antiguo | TODOS REALES, CORREGIDOS |
+| 9 j | Pruebas que leían el código de una página como texto | SUSTITUIDAS por pruebas que montan la página |
+| M03, M04, M06, M53, M54 | Mutantes que sobrevivían en la revisión | FIJADOS con pruebas |
+| N8, N12, N14 | Código que empieza por apóstrofo; `<código>-12.png`; apóstrofo visible en reportes | DEUDA, a propósito (`docs/AUDIT_MEMORY.md` §10) |
+
+**Cambió, además de lo pedido.** `Stager.keep_only` (lo usa también `discard`) en `import_media`;
+el ZIP sigue aplicando los filtros pero su tarjeta avisa cuando los hay (se eligió decirlo, no
+ignorarlos); «Añadir imágenes en lote» sólo se ofrece con empresa resuelta. Cuatro pruebas de las
+partes anteriores cambiaron a propósito: las del catálogo «para volver a cargar» (ya sin el
+producto inactivo) y la del límite de descargas (ahora su propio cupo).
+
+**Pruebas (sobre `179d75c`, PostgreSQL, base `blackdog_focal`).** `test_bulk_visibility` 69,
+`test_inventory_exports` 59, `test_import_assistant` 42, `test_image_import` 71,
+`test_product_destination_import` 53. Pasadas focales: 527 OK (esos módulos más
+`test_import_media`, `test_import_template`, `test_unit_import`, `test_request_limits`,
+`test_storefront_image_cleanup`, `test_storefront_media`, `test_product_visibility`,
+`test_stock_units`) y 327 OK (clases de importación, producto, pedidos, carrito y checkout de
+`store/tests.py`). Jest completo 1331/1331 en 120 suites; `tsc --noEmit` limpio; lint 0 errores y
+22 avisos; `makemigrations --check --dry-run` sin cambios. **La suite completa del backend,
+Playwright y el ensayo NO se corrieron aquí.** Mutaciones de estas correcciones: 64, todas
+detectadas (una sobrevivió a la primera pasada y se cerró con una prueba).
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4): centro de gestión masiva e imágenes en lote
 
 Misma rama (`feat/inventory-unified`), sobre `74c6112`. **Sólo en la rama: sin push, sin PR, sin
