@@ -733,6 +733,17 @@ class TenancyAndAuthorityTest(_Base):
         self.assertEqual([t.scope for t in View().get_throttles()], ['admin_import'])
         self.assertEqual(self.api.get(apply_url(1)).status_code, 405)
 
+    def test_the_naming_rules_are_served_to_who_may_load_and_to_nobody_else(self):
+        url = '/api/admin/products/images/import/rules/'
+        body = self.api.get(url)
+        self.assertEqual(body.status_code, 200)
+        self.assertEqual(body.json()['confirm_word'], WORD)
+        self.assertEqual(body.json()['suffixes'], ['_2', '-2', ' (2)'])
+        self.assertEqual(body.json()['image_rules']['max_per_product'], 12)
+        self.assertEqual(_client(self.viewer).get(url).status_code, 403)
+        self.assertIn(APIClient().get(url).status_code, (401, 403))
+        self.assertEqual(self.api.post(url).status_code, 405)
+
     def test_the_kind_is_a_choice_of_the_model(self):
         self.assertIn(('product_images', 'Imágenes de productos'), BulkImportJob.TYPE_CHOICES)
         self.assertEqual(BulkImportJob.PRODUCT_IMAGES, 'product_images')
