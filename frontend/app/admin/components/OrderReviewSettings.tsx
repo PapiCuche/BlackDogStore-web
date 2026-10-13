@@ -100,7 +100,7 @@ export function OrderReviewSettings({ companyId, amount, hold, canEdit, onSaved 
           Retener los pedidos por revisar
         </label>
         <p className="mt-1.5 text-[11px] text-muted">
-          Activado, un pedido con revisión pendiente no se puede marcar como enviado o entregado hasta
+          Activado, un pedido con revisión pendiente no se puede marcar como listo para retiro, enviado o entregado hasta
           que alguien la apruebe o la rechace. Apagado, la revisión es sólo informativa.
         </p>
       </div>

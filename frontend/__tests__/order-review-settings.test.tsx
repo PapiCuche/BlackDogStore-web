@@ -56,6 +56,12 @@ test('both options start off, and the screen says what that means', () => {
   expect(screen.getByText(/Apagado, la revisión es sólo informativa/)).toBeInTheDocument();
 });
 
+test('the hold names the three states it holds back', () => {
+  // The server holds «listo para retiro» too: that state is what tells the buyer to come.
+  shown();
+  expect(screen.getByText(/no se puede marcar como listo para retiro, enviado o entregado hasta/)).toBeInTheDocument();
+});
+
 test('saving sends these two options and nothing else, to this company', async () => {
   const onSaved = shown();
   fireEvent.change(amount(), { target: { value: ' 1500,00 ' } });

@@ -342,3 +342,75 @@ class ConversionsStatusTest(TestCase):
         # it out, this failed whenever the order happened to be number 24.
         line = text.split('conversiones:')[1].split('\n')[0].replace('1 conversión', '').replace('24 h', '')
         self.assertNotIn(str(self.order.pk) + ' ', line)
+
+
+@override_settings(**CONFIGURED)
+class OrderReviewLinesTest(WhatsAppBase):
+    """
+    CLIENT-SEC-01 · two things worth knowing about the review of orders, never
+    an alarm: how many wait and since when, and whether the assessor is silently
+    not assessing. Counts and ages, never an order.
+    """
+
+    def checkout_order(self, **extra):
+        """An online order as the checkout leaves it: with the cart it came from."""
+        self.n = getattr(self, 'n', 0) + 1
+        return _order(self.company, total='10.00', cart_session_key=f'carrito-{self.n}', **extra)
+
+    def line(self):
+        code, text = run()
+        return code, [row for row in text.splitlines() if ' revisión de pedidos: ' in row], text
+
+    def assessed(self, order, status):
+        from store.models import OrderRiskAssessment
+
+        return OrderRiskAssessment.objects.create(company=self.company, order=order, level='high', score=70, signals=[],
+                                                  review_status=status)
+
+    def test_nothing_waiting_and_everything_assessed(self):
+        self.assessed(self.checkout_order(paid=True), 'not_required')
+        self.assessed(self.checkout_order(), 'pending')                                   # never paid: not in the queue
+        self.checkout_order(sales_channel='pos')                                          # a sale at the till is not assessed
+        _order(self.company, total='10.00')                                               # not made by the checkout at all
+        code, lines, text = self.line()
+        self.assertEqual((code, lines), (0, ['OK    revisión de pedidos: sin pedidos por revisar ni pedidos en línea sin evaluar']), text)
+
+    def test_reviews_waiting_say_how_many_and_since_when(self):
+        from store.models import Order
+
+        old = _order(self.company, total='10.00', paid=True)
+        Order.objects.filter(pk=old.pk).update(paid_at=timezone.now() - timedelta(hours=50, minutes=5))
+        self.assessed(old, 'pending')
+        self.assessed(_order(self.company, total='10.00', paid=True), 'pending')
+        self.assessed(_order(self.company, total='10.00', paid=True), 'approved')
+        code, lines, text = self.line()
+        self.assertEqual(code, 0, text)
+        [line] = lines
+        self.assertTrue(line.startswith('NOTA  revisión de pedidos: 2 pedidos pagados esperan revisión; el más antiguo, desde hace 50 h.'), line)
+        for number in (str(old.pk),):
+            self.assertNotIn(f'#{number}', text)
+
+    def test_one_review_waiting_less_than_an_hour(self):
+        self.assessed(_order(self.company, total='10.00', paid=True), 'pending')
+        _code, [line], _text = self.line()
+        self.assertTrue(line.startswith('NOTA  revisión de pedidos: 1 pedido pagado espera revisión; el más antiguo, desde hace menos de 1 h.'), line)
+
+    def test_online_orders_nobody_assessed_are_said(self):
+        from store.models import Order
+
+        self.checkout_order()
+        _order(self.company, total='10.00', paid=True, idempotency_key='pedido-app-0001')  # the app's checkout
+        old = self.checkout_order()
+        Order.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(hours=25))
+        code, lines, text = self.line()
+        self.assertEqual(code, 0, text)                                                   # never an alarm
+        [line] = lines
+        self.assertTrue(line.startswith('NOTA  revisión de pedidos: 2 pedidos en línea de las últimas 24 h no tienen evaluación'), line)
+        self.assertNotIn('ATENCIÓN', '\n'.join(lines))
+
+    def test_both_at_once_are_two_lines(self):
+        self.assessed(_order(self.company, total='10.00', paid=True), 'pending')
+        self.checkout_order()
+        code, lines, _text = self.line()
+        self.assertEqual((code, len(lines)), (0, 2))
+        self.assertTrue(all(line.startswith('NOTA  ') for line in lines))
