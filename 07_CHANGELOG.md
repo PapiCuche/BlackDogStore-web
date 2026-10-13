@@ -34,6 +34,8 @@ En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones nuevas.
 - La vista previa de la carga de productos avisa de cada producto existente que pasa a publicarse
   sin estar listo, y dice cuántos cambian de destino antes de aplicar.
 - La tarjeta del ZIP avisa cuando los filtros hacen que no sea el inventario completo.
+- Las tarjetas del catálogo y del ZIP avisan cuando se pidió «Inactivos»: un archivo para volver
+  a cargar lleva sólo productos activos.
 
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4)
 

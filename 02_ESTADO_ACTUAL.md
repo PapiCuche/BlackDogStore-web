@@ -48,6 +48,25 @@ producto inactivo) y la del límite de descargas (ahora su propio cupo).
 Playwright y el ensayo NO se corrieron aquí.** Mutaciones de estas correcciones: 64, todas
 detectadas (una sobrevivió a la primera pasada y se cerró con una prueba).
 
+**Validación final de la rama (2026-10-13).** Sobre `0ed1b33`: suite completa del backend en
+PostgreSQL, 6996 pruebas, 0 fallos, 6 omitidas (6716 en `master` `14e658c`); `sh deploy/rehearsal.sh` `ENSAYO: OK` (149);
+Playwright 97/97 (`product-destination`, `import-split`, `storefront`, `tax-breakdown`,
+`krypton-smartform`) contra servidores locales de la rama; y un recorrido en navegador real, sin
+errores de consola: la acción en bloque viaja con `?company=` explícito y deja la selección vacía;
+un producto ocultado con el carrito ya armado sale en el carrito como «Ya no está disponible»,
+el pago no deja enviar y enlaza al carrito, y al quitar la línea el pago vuelve a abrirse; una
+imagen en lote por nombre de archivo se aplica y su resultado enlaza a la galería; la descarga
+del catálogo llega como `productos-para-cargar.xlsx`.
+
+**Segunda revisión independiente (`ac6a061..0ed1b33`).** Sin P0, sin P1, sin regresiones. Cada
+corrección cierra su hallazgo contra la prueba original; 24 mutantes sobre el código de las
+correcciones, 24 detectados. De lo que dejó anotado se corrigió uno (`af0b374`): las tarjetas del
+catálogo y del ZIP avisan cuando se pidió «Inactivos», porque un archivo para volver a cargar
+lleva sólo activos. El resto queda como deuda en `docs/AUDIT_MEMORY.md` §10:
+IMPORT-RELOAD-RENAMED-NO-CODE, ORDERS-V1-HIDDEN-PRODUCT, ORDER-LINE-CLOSED-WASTE e
+IMG-IMPORT-OLD-JOB-WORDING. Sobre `af0b374` (sólo cambia el frontend): Jest 1332/1332 en 120
+suites, `tsc --noEmit` limpio, lint 0 errores y 22 avisos, `ENSAYO: OK` (149).
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4): centro de gestión masiva e imágenes en lote
 
 Misma rama (`feat/inventory-unified`), sobre `74c6112`. **Sólo en la rama: sin push, sin PR, sin

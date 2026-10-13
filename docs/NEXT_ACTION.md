@@ -5,14 +5,16 @@
 Las cuatro partes están en la rama, con commits locales: visibilidad en bloque y
 exportaciones (hasta `74c6112`), centro de gestión masiva con asistente e imágenes en
 lote (hasta `ac6a061`), y las correcciones de la revisión independiente (`8b9dda1`…
-`179d75c`, más la documentación). **Sin push, sin PR, sin desplegar.**
+`af0b374`, más la documentación). **Sin push, sin PR, sin desplegar.**
 Detalle en `02_ESTADO_ACTUAL.md` (las tres entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
 
-Lo que falta antes de abrir un PR, en este orden:
-1. Suite completa del backend sobre la rama (aquí sólo se corrieron pasadas focales).
-2. Playwright y `sh deploy/rehearsal.sh`: la rama añade la migración `0122` (sólo opciones)
-   y cambia el carrito público, la lista de productos del panel y las tres cargas.
-3. Revisión independiente: HECHA (sin P0/P1) y sus P2/P3 corregidos. Puntos que piden la
+Hecho antes de abrir un PR:
+1. Suite completa del backend, Jest, tipos, lint, Playwright, recorrido en navegador real y
+   `sh deploy/rehearsal.sh` sobre la rama: en verde (cifras en `02_ESTADO_ACTUAL.md`).
+2. La rama añade la migración `0122` (sólo opciones) y cambia el carrito público, «Mis
+   pedidos», la lista de productos del panel y las tres cargas.
+3. Dos revisiones independientes: HECHAS (sin P0/P1), sus P2/P3 corregidos y la segunda sin
+   regresiones; `af0b374` cierra el último aviso. Puntos que piden la
    palabra del propietario: un archivo de imagen sin producto no impide aplicar el resto;
    el código de las imágenes se compara exacto, mayúsculas incluidas; los archivos para
    volver a cargar sólo llevan productos activos; la carga de productos sigue publicando lo
