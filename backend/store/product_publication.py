@@ -86,19 +86,32 @@ def publication_problems(product, *, has_gallery=None) -> list[str]:
     annotation, and only then asked of the database — one product in hand costs
     one query, a page of them costs none.
     """
-    problems = []
-    if not product.is_active:
-        problems.append('inactive')
-    if product.price is None or product.price <= 0:
-        problems.append('no_price')
-    if not product.image_url:
+    has_image = bool(product.image_url)
+    if not has_image:
         if has_gallery is None:
             has_gallery = getattr(product, 'has_gallery', None)
         if has_gallery is None:
             has_gallery = ProductImage.objects.filter(product_id=product.pk).exists()
-        if not has_gallery:
-            problems.append('no_image')
-    if product.category_id is None:
+        has_image = bool(has_gallery)
+    return problems_of(
+        is_active=product.is_active, price=product.price, has_image=has_image,
+        has_category=product.category_id is not None,
+    )
+
+
+def problems_of(*, is_active, price, has_image, has_category) -> list[str]:
+    """
+    The same rule over plain facts, for a caller that knows the state a product
+    WILL be left in rather than the one it is in (the product load's preview).
+    """
+    problems = []
+    if not is_active:
+        problems.append('inactive')
+    if price is None or price <= 0:
+        problems.append('no_price')
+    if not has_image:
+        problems.append('no_image')
+    if not has_category:
         problems.append('no_category')
     return problems
 

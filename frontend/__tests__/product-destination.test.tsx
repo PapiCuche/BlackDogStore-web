@@ -12,7 +12,8 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 
 import { ProductForm } from '@/app/admin/components/ProductForm';
 import { ProductStatusBadge } from '@/app/admin/components/ProductStatusBadge';
-import { DefaultCategoryField, destinationLabel } from '@/app/admin/components/ImportWizard';
+import { DefaultCategoryField, Notices, destinationLabel } from '@/app/admin/components/ImportWizard';
+import type { ImportJob } from '@/app/admin/lib/internal-api';
 import * as admin from '@/app/lib/admin';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -174,5 +175,38 @@ describe('la categoría para las filas que no traen una', () => {
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.getByText(/No se pudieron leer las categorías/i)).toBeInTheDocument();
     expect(screen.queryByText(/todavía no tiene categorías/i)).toBeNull();
+  });
+});
+
+describe('cuántos productos cambian de destino, antes de aplicar', () => {
+  // INVENTORY-UNIFIED-01, revisión N3: el resultado decía «destination_changed»
+  // DESPUÉS de aplicar. La vista previa lo cuenta antes.
+  const job = (changes?: { to_web: number; to_internal: number }) => ({
+    id: 1, import_type: 'products', status: 'previewed',
+    counts: { total: 3, create: 0, update: 3, no_change: 0, skip: 0, error: 0 },
+    summary: changes ? { destination_changes: changes } : {},
+  }) as unknown as ImportJob;
+
+  it('dice cuántos pasan a la web y cuántos salen de ella', () => {
+    render(<Notices job={job({ to_web: 2, to_internal: 1 })} />);
+    const said = screen.getByRole('status', { name: 'Cambios de destino' });
+    expect(said).toHaveTextContent('2 productos pasan a publicarse en e-commerce');
+    expect(said).toHaveTextContent('1 producto pasa a sólo stock interno');
+    expect(said).toHaveTextContent(/Todavía no se ha cambiado nada/);
+  });
+
+  it('sólo nombra el sentido que tiene algo', () => {
+    render(<Notices job={job({ to_web: 1, to_internal: 0 })} />);
+    const said = screen.getByRole('status', { name: 'Cambios de destino' });
+    expect(said).toHaveTextContent('1 producto pasa a publicarse en e-commerce');
+    expect(said).not.toHaveTextContent(/stock interno/);
+  });
+
+  it('si ninguno cambia, o la vista previa es de antes, no dice nada', () => {
+    const none = render(<Notices job={job({ to_web: 0, to_internal: 0 })} />);
+    expect(screen.queryByRole('status', { name: 'Cambios de destino' })).toBeNull();
+    none.unmount();
+    render(<Notices job={job()} />);
+    expect(screen.queryByRole('status', { name: 'Cambios de destino' })).toBeNull();
   });
 });

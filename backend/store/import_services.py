@@ -30,7 +30,8 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from . import (
-    import_exports, import_formats, import_media, product_media, storefront_media, xlsx_reader,
+    import_exports, import_formats, import_media, product_media, product_publication, storefront_media,
+    xlsx_reader,
 )
 from .models import (
     BulkImportJob,
@@ -517,6 +518,14 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         Product.objects.filter(company=company, category__isnull=False).values_list('pk', flat=True)
     ) if default_category is not None else set()
     galleries = _GalleryIndex(company)
+    # INVENTORY-UNIFIED-01 — where each existing product stands, read once, to
+    # say BEFORE apply which rows move a product onto the web or off it.
+    standing = {
+        state['pk']: state for state in Product.objects.filter(company=company).values(
+            'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
+        )
+    }
+    to_web = to_internal = 0
     already_present = 0
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
@@ -759,6 +768,31 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             else:
                 action = BulkImportRow.CREATE
 
+        state = standing.get(product_id)
+        if action == BulkImportRow.UPDATE and state is not None:
+            if destination == import_formats.DESTINATION_INTERNAL and state['is_published_online']:
+                to_internal += 1
+            elif destination == import_formats.DESTINATION_ONLINE and not state['is_published_online']:
+                to_web += 1
+                # SAID, NOT REFUSED. The load publishes what its file says, as it
+                # always did; the bulk action would have left this one out, so the
+                # row says what the product will lack once it is on the web —
+                # counting what this same row brings (a price, a category, pictures).
+                lacking = product_publication.problems_of(
+                    is_active=state['is_active'],
+                    price=price if price is not None else state['price'],
+                    has_image=bool(state['image_url'] or gallery['count'] or row_images or image_url),
+                    has_category=bool(
+                        category_id or state['category_id']
+                        or (category_name and options['create_missing_categories'])
+                    ),
+                )
+                if lacking:
+                    warnings.append(
+                        'Pasa a publicarse en e-commerce y la acción en bloque no lo habría publicado: '
+                        + ' '.join(product_publication.PROBLEM_LABELS[code] for code in lacking)
+                    )
+
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
         staged.append(BulkImportRow(
             job=job, sheet_name=sheet_name, row_number=row_number,
@@ -791,6 +825,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
         'media': media_summary,
+        # How many EXISTING products this file moves onto the web or off it.
+        # A new product is not a change of destination: it has none yet.
+        'destination_changes': {'to_web': to_web, 'to_internal': to_internal},
     }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',

@@ -1461,6 +1461,8 @@ export type ImportJob = {
     sheets?: string[];
     applied?: Record<string, number>;
     media?: ImportMediaSummary;
+    /** Carga de productos: cuántos que ya existen pasan a la web o salen de ella. */
+    destination_changes?: { to_web: number; to_internal: number };
     /** Sólo en una carga de imágenes (`product_images`). */
     products?: number;
     images_to_add?: number;

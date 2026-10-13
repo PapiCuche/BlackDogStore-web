@@ -118,7 +118,16 @@ export function Notices({ job }: { job: ImportJob }) {
   // que entre, así que se dice a la vista y no dentro del desplegable.
   const elsewhere = every.filter((entry) => entry.important);
   const unmapped = every.filter((entry) => !entry.important);
-  if (!reader.length && !format.length && !every.length) return null;
+  // INVENTORY-UNIFIED-01: cuántos productos que YA EXISTEN pasan a la web o
+  // salen de ella con este archivo. Se dice aquí, antes de aplicar: un archivo
+  // descargado hace días vuelve a publicar lo que se ocultó después.
+  const toWeb = job.summary?.destination_changes?.to_web ?? 0;
+  const toInternal = job.summary?.destination_changes?.to_internal ?? 0;
+  const moving = [
+    toWeb ? `${toWeb === 1 ? "1 producto pasa" : `${toWeb} productos pasan`} a publicarse en e-commerce` : "",
+    toInternal ? `${toInternal === 1 ? "1 producto pasa" : `${toInternal} productos pasan`} a sólo stock interno` : "",
+  ].filter(Boolean);
+  if (!reader.length && !format.length && !every.length && !moving.length) return null;
   // There is no "the preview was truncated" case any more, and that is the
   // point: a file over the row limit is now REFUSED outright by the backend
   // with a 400, instead of being trimmed into a job that reported no errors and
@@ -126,6 +135,16 @@ export function Notices({ job }: { job: ImportJob }) {
   // fact; the refusal happens before anything is staged.
   return (
     <div className="mb-4 space-y-2 text-xs">
+      {moving.length > 0 && (
+        <p
+          role="status"
+          aria-label="Cambios de destino"
+          className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-warning"
+        >
+          <span className="font-semibold">Cambian de destino:</span> {moving.join(" y ")}. Todavía no se ha
+          cambiado nada: revisa esas filas antes de aplicar.
+        </p>
+      )}
       {[...reader, ...format].map((note) => (
         <p
           key={note}

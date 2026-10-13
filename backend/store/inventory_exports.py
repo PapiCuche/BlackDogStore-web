@@ -170,6 +170,21 @@ class ExportFilters:
         }
 
 
+def effective_filters(kind: str, mode: str, filters: ExportFilters) -> ExportFilters:
+    """
+    The filters a download really runs with.
+
+    A CATALOGUE FILE TO RELOAD IS OF ACTIVE PRODUCTS ONLY — alone or inside the
+    ZIP, and whatever `is_active` was asked. The product template has no
+    «activo» column: an inactive product reloaded where it cannot be matched
+    (it was renamed, or the file goes into another shop) is CREATED, active and
+    on sale. The report is for reading and keeps them all.
+    """
+    if kind == 'full' or (kind == 'products' and mode == MODE_REIMPORT):
+        return ExportFilters(**{**filters.__dict__, 'is_active': 'true'})
+    return filters
+
+
 # =============================================================================
 # Writing a workbook
 # =============================================================================
@@ -274,10 +289,12 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
 
     `reimport` is the product template: its sheet, its headers. The image
     columns are left EMPTY — an empty cell changes nothing on import, and a
-    picture travels as a file, not as a cell.
+    picture travels as a file, not as a cell. ACTIVE PRODUCTS ONLY, whatever
+    was asked (`effective_filters`); the report lists them all.
 
     Existence (`stock`) is the company's total here: the catalogue has no branch.
     """
+    filters = effective_filters('products', mode, filters)
     queryset = _products(company, filters).select_related('category')
     if filters.stock == STOCK_IN:
         queryset = queryset.filter(inventory__gt=0)
@@ -503,7 +520,9 @@ def readme_text() -> str:
         '   de baja no están. La columna «Motivo / referencia» va vacía: se indica al cargar.',
         '   Se carga en Inventario > Carga de equipos.',
         '',
-        'Sólo incluye productos ACTIVOS.',
+        'Sólo incluye productos ACTIVOS, y el stock y los equipos de las sucursales activas a',
+        'las que tiene acceso quien descargó. El «Stock total» del reporte de productos es otra',
+        'cifra: suma toda la empresa, también lo que quede en una sucursal desactivada.',
         '',
         'Para cargarlos en una tienda vacía, en este orden',
         '-------------------------------------------------',
@@ -517,6 +536,15 @@ def readme_text() -> str:
         'Cargar estos archivos en la MISMA tienda no cambia nada: los productos ya existen',
         'y quedan igual, las cantidades coinciden y no generan movimientos, y cada equipo',
         'se rechaza porque su número de serie ya está registrado. No se duplica stock.',
+        '',
+        'Eso vale mientras nada haya cambiado. Estos archivos dicen cómo estaba la tienda al',
+        'descargarlos, y una carga hace lo que dice su archivo:',
+        f'  - {ZIP_STOCK}: si el stock se movió desde la descarga (una venta, un ingreso), la',
+        '    carga vuelve a dejar cada cantidad como dice el archivo, con su movimiento de',
+        '    Kardex. La vista previa lo muestra antes de aplicar.',
+        f'  - {ZIP_PRODUCTS}: un producto que se ocultó de la web después de la descarga vuelve',
+        '    a publicarse si su fila dice «Publicar en e-commerce». La vista previa cuenta',
+        '    cuántos cambian de destino.',
         '',
         'Límites y avisos',
         '----------------',
@@ -541,7 +569,7 @@ def full_archive(company, filters: ExportFilters) -> tuple[bytes, dict]:
     «active» column, so an inactive product loaded into an empty shop would
     come back active and on sale.
     """
-    filters = ExportFilters(**{**filters.__dict__, 'is_active': 'true'})
+    filters = effective_filters('full', MODE_REIMPORT, filters)
     products, product_rows = products_workbook(company, filters, MODE_REIMPORT)
     stock, stock_rows = stock_workbook(company, filters, MODE_REIMPORT)
     units, unit_rows = units_workbook(company, filters, MODE_REIMPORT)
@@ -558,10 +586,11 @@ def full_archive(company, filters: ExportFilters) -> tuple[bytes, dict]:
     return payload, {'products': product_rows, 'stock': stock_rows, 'units': unit_rows}
 
 
-def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes, dict]:
-    """`(bytes, {'<what>': rows})` for one download."""
+def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes, dict, ExportFilters]:
+    """`(bytes, {'<what>': rows}, the filters it ran with)` for one download."""
+    filters = effective_filters(kind, mode, filters)
     if kind == 'full':
-        return full_archive(company, filters)
+        return (*full_archive(company, filters), filters)
     builder = {'products': products_workbook, 'stock': stock_workbook, 'units': units_workbook}[kind]
     payload, rows = builder(company, filters, mode)
-    return payload, {kind: rows}
+    return payload, {kind: rows}, filters

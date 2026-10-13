@@ -57,20 +57,20 @@ type Download = {
 const DOWNLOADS: Download[] = [
   {
     id: "catalogue", title: "Catálogo general", kind: "products", needs: "catalogue",
-    description: "Todos los productos, una fila por producto: códigos, nombre, descripción, precio, categoría y destino.",
+    description: "Una fila por producto: códigos, nombre, descripción, precio, categoría y destino. Para volver a cargar lleva sólo los productos activos; el reporte, todos. El «Stock total» del reporte suma toda la empresa.",
   },
   {
     id: "accessories", title: "Productos por cantidad", kind: "products", needs: "catalogue",
     fixed: { type: "quantity" },
-    description: "El catálogo sin los equipos con número de serie: accesorios, repuestos y todo lo que se cuenta por cantidad.",
+    description: "El catálogo sin los equipos con número de serie: accesorios, repuestos y todo lo que se cuenta por cantidad. Para volver a cargar, sólo los productos activos.",
   },
   {
     id: "stock", title: "Stock por sucursal", kind: "stock", needs: "inventory",
-    description: "Las cantidades de cada producto, con una columna por sucursal. Los equipos con serie sólo aparecen en el reporte.",
+    description: "Las cantidades de cada producto, con una columna por sucursal, de tus sucursales activas. Los equipos con serie sólo aparecen en el reporte. Si el stock se movió desde la descarga, volver a cargarlo lo deja como dice el archivo.",
   },
   {
     id: "units", title: "Equipos con serie", kind: "units", needs: "inventory",
-    description: "Una fila por unidad física: serie, IMEI, condición y sucursal.",
+    description: "Una fila por unidad física: serie, IMEI, condición y sucursal, de tus sucursales activas.",
   },
   {
     id: "full", title: "Inventario completo (ZIP)", kind: "full", needs: "both",

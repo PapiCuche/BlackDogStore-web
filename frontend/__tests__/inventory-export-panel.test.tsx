@@ -73,6 +73,17 @@ describe('las cinco descargas', () => {
     expect(card(FULL)).toHaveTextContent(/Productos\.xlsx, Stock\.xlsx y Equipos\.xlsx/);
   });
 
+  it('dice lo que un archivo para volver a cargar no lleva y lo que hace al cargarlo', () => {
+    // Revisión N2, N15, N16: sólo palabras, pero son las que evitan una sorpresa.
+    show();
+    expect(card(CATALOGUE)).toHaveTextContent(/Para volver a cargar lleva sólo los productos activos; el reporte, todos/);
+    expect(card(ACCESSORIES)).toHaveTextContent(/sólo los productos activos/);
+    expect(card(STOCK)).toHaveTextContent(/si el stock se movió desde la descarga, volver a cargarlo lo deja como dice el archivo/i);
+    expect(card(STOCK)).toHaveTextContent(/sucursales activas/);
+    expect(card(DEVICES)).toHaveTextContent(/sucursales activas/);
+    expect(card(CATALOGUE)).toHaveTextContent(/«Stock total» del reporte suma toda la empresa/);
+  });
+
   it('cada una pide su archivo, para volver a cargar si no se dice otra cosa', async () => {
     show();
     const expected: Array<[string, string, Record<string, unknown>]> = [
