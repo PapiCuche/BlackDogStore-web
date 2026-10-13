@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 
@@ -166,22 +167,34 @@ def is_established(record) -> bool:
 DOCUMENT_RELEASED = 'customer_document_released'
 
 
-def _release_document(holder, *, company, actor, taken_by: str, request=None) -> None:
+def _release_document(holder, *, company, actor, taken_by: str, request=None) -> bool:
     """
     Take the document off a PROVISIONAL record, and write down that it happened.
+    False when the record could not be saved, and then nothing was changed.
 
     The record stays — its orders, its contact, its account if it has one — and
     nobody is told. FIELD NAMES ONLY in the entry: which record gave up which
     part of itself, and to whom (staff, or an order that was paid for).
+
+    A record's save judges the WHOLE record, so one that was already invalid
+    for another reason (no name at all) cannot be saved even to take a document
+    off it. That is not this caller's to repair: the document stays where it
+    is, and each caller has its own answer for that.
     """
+    kept = holder.document_type, holder.document_number
     holder.document_type = ''
     holder.document_number = ''
-    holder.save(update_fields=['document_type', 'document_number', 'updated_at'])
+    try:
+        holder.save(update_fields=['document_type', 'document_number', 'updated_at'])
+    except ValidationError:
+        holder.document_type, holder.document_number = kept
+        return False
     AdminAuditLog.log(
         actor=actor, action=DOCUMENT_RELEASED, target_type='customer', target_id=holder.pk,
         metadata={'changed_fields': ['document_number', 'document_type'], 'taken_by': taken_by},
         request=request, company=company,
     )
+    return True
 
 
 def free_document_for_staff(company, document_type, document_number, *, actor, request=None) -> None:
@@ -208,7 +221,9 @@ def free_document_for_staff(company, document_type, document_number, *, actor, r
         return
     if is_established(holder):
         raise DuplicateCustomerError(holder)
-    _release_document(holder, company=company, actor=actor, taken_by='staff', request=request)
+    if not _release_document(holder, company=company, actor=actor, taken_by='staff', request=request):
+        # It could not give the document up: staff are shown the record, as before.
+        raise DuplicateCustomerError(holder)
 
 
 def assert_document_available(company, document_type, document_number, *, exclude_pk=None):
@@ -378,29 +393,42 @@ def file_paid_guest_order(order):
 
     Called where a payment is confirmed. NEVER RAISES and never breaks that
     transaction: a savepoint, and a failure logged by its kind (never by its
-    words, which may quote what the buyer typed).
+    words, which may quote what the buyer typed). A failure leaves `order` as
+    it was, in memory too: what the payment does next — the notice — must not
+    write down a record that was rolled back.
 
     Paying is what an unpaid checkout lacks: it costs money and leaves a trail.
     So a paid order is filed under its document —
 
       * with the established record that holds it, as at checkout;
       * with a provisional record that holds it when that record carries this
-        order's own e-mail address: the same person, trying again after a
-        declined card;
+        order's own NAME, PHONE AND ADDRESS: the same person, trying again
+        after a declined card. All three: an address alone anybody can type;
       * otherwise the provisional record gives the document up (audited) and
         the order gets a record of its own, made from what was typed on it.
 
-    A record with an account is never a guest's, paid or not.
+    A record with an account is never a guest's, paid or not — and is not
+    touched. The order still gets a record of its own, WITHOUT the document:
+    it is somebody's purchase, and a record is where its notices come from.
+
+    A race lost to somebody filing the same document at that moment (staff, or
+    another payment) is the database refusing the second record: tried once
+    more, and then the order finds what the other one made.
     """
-    try:
-        with transaction.atomic():
-            return _file_paid_guest_order(order)
-    except Exception as failed:  # noqa: BLE001 — see docstring
-        logger.error(
-            'paid guest order %s could not be filed under a client record (%s)',
-            getattr(order, 'pk', None), type(failed).__name__,
-        )
-        return None
+    before = order.customer_id
+    for attempt in (1, 2):
+        try:
+            with transaction.atomic():
+                return _file_paid_guest_order(order)
+        except Exception as failed:  # noqa: BLE001 — see docstring
+            order.customer_id = before
+            if attempt == 1 and isinstance(failed, IntegrityError):
+                continue
+            logger.error(
+                'paid guest order %s could not be filed under a client record (%s)',
+                getattr(order, 'pk', None), type(failed).__name__,
+            )
+            return None
 
 
 def _file_paid_guest_order(order):
@@ -417,17 +445,35 @@ def _file_paid_guest_order(order):
     holder = Customer.objects.select_for_update().filter(
         company=company, document_type=document_type, document_number=number,
     ).first()
-    if holder is not None and holder.user_id is not None:
-        return None
-    mine = normalize_customer_email(order.customer_email)
-    if holder is not None and (is_established(holder) or (mine and holder.email == mine)):
+    if holder is None:
+        customer = _create_from_order(order, company)
+    elif holder.user_id is not None:
+        customer = _create_from_order(order, company, with_document=False)
+    elif is_established(holder) or _same_person(holder, order):
         customer = holder
     else:
-        if holder is not None:
-            _release_document(holder, company=company, actor=None, taken_by='paid_order')
-        customer = _create_from_order(order, company)
+        customer = _create_from_order(
+            order, company,
+            with_document=_release_document(holder, company=company, actor=None, taken_by='paid_order'),
+        )
     _stamp(order, customer)
     return customer
+
+
+def _same_person(record, order) -> bool:
+    """
+    Whether a provisional record was made by THIS buyer's own earlier checkout:
+    the same name, phone and e-mail address as the order, each of them there.
+    Compared as a person would read them — case and spacing say nothing.
+    """
+    def said(text):
+        return ' '.join((text or '').split()).casefold()
+
+    name = said(order.customer_name)
+    phone = normalize_customer_phone(order.customer_phone)
+    email = normalize_customer_email(order.customer_email)
+    theirs = said(record.business_name or f'{record.first_name} {record.last_name}')
+    return bool(name and phone and email) and (name, phone, email) == (theirs, record.phone, record.email)
 
 
 def _stamp(order, customer):
@@ -435,13 +481,14 @@ def _stamp(order, customer):
     order.save(update_fields=['customer'])
 
 
-def _create_from_order(order, company, *, actor=None):
+def _create_from_order(order, company, *, actor=None, with_document=True):
     """
     A new CRM record built from what checkout validated.
 
     `customer_type` is inferred from the document: a RUC is issued to a business,
     a DNI or CE to a person. That is a fact about the document, not a guess about
-    the buyer.
+    the buyer. `with_document=False` makes the record without it — the order's
+    document is somebody else's record's to hold.
     """
     document_type = order.document_type or ''
     is_business = document_type == 'ruc'
@@ -449,7 +496,7 @@ def _create_from_order(order, company, *, actor=None):
     name = (order.customer_name or '').strip()
     first_name, _, last_name = name.partition(' ')
     document_number = normalize_document_number(order.document_number)
-    if order.user_id is not None:
+    if order.user_id is not None or not with_document:
         # AN ACCOUNT'S RECORD NEVER TAKES ITS DOCUMENT FROM A CHECKOUT
         # (CLIENT-SEC-01). A checkout checks a document for its shape, costs
         # nothing and can be repeated; the document of an account's record is

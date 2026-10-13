@@ -1409,11 +1409,28 @@ class WhatTheBuyerSeesTest(_StaffDeliveryBase):
         self.assertEqual(detail['delivery'], expected)
 
     def test_never_the_freight_the_recipient_or_who_wrote_it(self):
+        def walk(node, keys, values):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    keys.add(key)
+                    walk(value, keys, values)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, keys, values)
+            else:
+                values.add(node)
+            return keys, values
+
         for response in (self.web_rows(), self.app_rows()):
-            text = response.content.decode()
-            for hidden in ('15.50', 'freight', 'customer_at_destination', 'Rosa Quispe', '70000002', '912345678',
-                           'recipient', 'CLAVE-SECRETA-9', 'tracking_code', 'gestora', 'updated_by', 'source_address'):
-                self.assertNotIn(hidden, text)
+            keys, values = walk(response.json(), set(), set())
+            # By KEY and by VALUE, not by searching the text: «15.50» is also the tail of many a timestamp.
+            hidden_keys = {key for key in keys if any(word in key for word in ('freight', 'recipient', 'tracking_code', 'updated_by', 'source_address'))}
+            self.assertEqual(hidden_keys, set())
+            texts = {value for value in values if isinstance(value, str)}
+            for amount in ('15.50', '15.5', 15.5):
+                self.assertNotIn(amount, values)
+            for hidden in ('customer_at_destination', 'Rosa Quispe', '70000002', '912345678', 'CLAVE-SECRETA-9', 'gestora'):
+                self.assertEqual([text for text in texts if hidden in text], [], hidden)
 
     def test_an_order_without_a_record_says_nothing(self):
         plain = self.online(self.a, self.north, record=False, method='', user=self.buyer)

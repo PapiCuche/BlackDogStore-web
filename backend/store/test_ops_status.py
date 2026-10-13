@@ -395,9 +395,38 @@ class OrderReviewLinesTest(WhatsAppBase):
         _code, [line], _text = self.line()
         self.assertTrue(line.startswith('NOTA  revisión de pedidos: 1 pedido pagado espera revisión; el más antiguo, desde hace menos de 1 h.'), line)
 
+    def test_orders_made_before_the_assessor_existed_are_not_missing_an_assessment(self):
+        from store.models import Order
+
+        # The day this is deployed: every order of yesterday is «unassessed», and none of them should have been.
+        for _ in range(3):
+            self.checkout_order()
+        code, lines, text = self.line()
+        self.assertEqual((code, lines), (0, ['OK    revisión de pedidos: sin pedidos por revisar ni pedidos en línea sin evaluar']), text)
+        # From the first assessment on, an order without one is said — and only those made after it.
+        first = self.assessed(self.checkout_order(), 'not_required')
+        Order.objects.exclude(pk=first.order_id).update(created_at=timezone.now() - timedelta(hours=2))
+        type(first).objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        self.assertEqual(self.line()[1], ['OK    revisión de pedidos: sin pedidos por revisar ni pedidos en línea sin evaluar'])
+        self.checkout_order()
+        _code, [line], _text = self.line()
+        self.assertTrue(line.startswith('NOTA  revisión de pedidos: 1 pedido en línea de las últimas 24 h no tiene evaluación'), line)
+        # It is the OLDEST assessment that says since when: a later one does not hide that order.
+        self.assessed(self.checkout_order(), 'not_required')
+        _code, [line], _text = self.line()
+        self.assertTrue(line.startswith('NOTA  revisión de pedidos: 1 pedido en línea'), line)
+
+    def started(self):
+        """The assessor has been running for days: there is an old assessment."""
+        from store.models import OrderRiskAssessment
+
+        row = self.assessed(self.checkout_order(), 'not_required')
+        OrderRiskAssessment.objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(days=3))
+
     def test_online_orders_nobody_assessed_are_said(self):
         from store.models import Order
 
+        self.started()
         self.checkout_order()
         _order(self.company, total='10.00', paid=True, idempotency_key='pedido-app-0001')  # the app's checkout
         old = self.checkout_order()
@@ -409,6 +438,7 @@ class OrderReviewLinesTest(WhatsAppBase):
         self.assertNotIn('ATENCIÓN', '\n'.join(lines))
 
     def test_both_at_once_are_two_lines(self):
+        self.started()
         self.assessed(_order(self.company, total='10.00', paid=True), 'pending')
         self.checkout_order()
         code, lines, _text = self.line()

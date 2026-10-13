@@ -53,11 +53,17 @@ class TrackingLinkTest(TrackingBase):
 
         self.assertNotEqual(first, second)
         self.assertGreaterEqual(len(first), 40)
-        for obvious in (str(self.order.pk), self.order.number):
-            self.assertNotIn(obvious, first)
         self.assertEqual(RepairTrackingLink.objects.filter(repair_order=self.order).count(), 1)
         # El mismo enlace cada vez: es lo que va en los avisos.
         self.assertEqual(tracking.token_for(self.order), first)
+        # Nobody can guess it because it is NOT MADE FROM THE ORDER: what is
+        # stored is a random identifier, and the same order given a new link
+        # gets another token. (This used to look for the order's number inside
+        # the token, which a random token contains about once in a hundred.)
+        link = RepairTrackingLink.objects.get(repair_order=self.order)
+        self.assertNotIn(link.uid, (str(self.order.pk), self.order.number))
+        self.assertEqual(len(link.uid), 32)                                  # sixteen random bytes
+        self.assertNotEqual(tracking.rotate(self.order, actor=self.staff), first)
 
     def test_the_link_shows_the_order_as_the_customer_may_see_it(self):
         res = self.anon.get(track(self.token))

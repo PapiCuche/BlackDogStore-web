@@ -3977,7 +3977,9 @@ class OnlyARecordTheShopStandsBehindIsMatchedTest(_SeededRecordBase):
         order = self.holders_order()
         self.assertIsNone(order.customer)
         order = self.pay(order)
-        self.assertIsNone(order.customer)
+        # Pre-deployment review: paid, it gets a record of its own — never the account's, and without the document.
+        self.assertNotEqual(order.customer, record)
+        self.assertEqual((order.customer.user, order.customer.document_number), (None, ''))
         record.refresh_from_db()
         self.assertEqual((record.document_number, record.user), (self.DNI, user))
         self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
@@ -4428,3 +4430,599 @@ class TheSeededRecordAtTheCounterTest(TrackingBase):
         cache.clear()
         claimed = tracking.claim(tracking.token_for(repair), user=owner, document_number=self.DNI)
         self.assertEqual((claimed.pk, claimed.user), (real.pk, owner))
+
+
+# =============================================================================
+# 10 · after the pre-deployment review
+# =============================================================================
+
+import time  # noqa: E402
+
+from django.db import connection as db_conn, transaction as db_transaction  # noqa: E402
+
+
+class AGuestWhoseDocumentIsOnAnAccountIsStillToldTest(_SeededRecordBase):
+    """
+    F1 · the document of a guest's order is on a record WITH an account. That
+    record is never the guest's — but the order is still somebody's purchase:
+    paid, it gets a record of its own WITHOUT the document, so the buyer is
+    told when it is ready and when it leaves.
+    """
+
+    def shipped_order(self, cart='titular'):
+        return self.guest(cart, customer_name='Victoria Real', customer_email=self.HOLDERS, customer_phone='922222222',
+                          delivery_method='national_shipping', address_line='Av. Uno 1', city='Puno', district='Puno')
+
+    def told(self, order, status):
+        django_mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            fulfillment.change_fulfillment_status(order=order, new_status=status, actor=self.staff, company=self.company)
+        return sorted(address for message in django_mail.outbox for address in message.to)
+
+    def seen_by(self, user):
+        web = web_session(user).get('/api/orders/', **self.host).json()
+        app = v1_session(user).get('/api/v1/customer/riesgo-caja/orders/').json()
+        return {row['id'] for row in web} | {row['id'] for row in app}
+
+    def assert_filed_apart(self, order, account_record, user):
+        kept = Customer.objects.filter(pk=account_record.pk).values().get()
+        self.assertIsNone(order.customer)                                    # at checkout: not the account's
+        order = self.pay(order)
+        own = order.customer
+        self.assertIsNotNone(own)
+        self.assertNotEqual(own, account_record)
+        self.assertEqual((own.user, own.created_by, own.document_type, own.document_number), (None, None, '', ''))
+        self.assertEqual((own.first_name, own.last_name, own.email, own.phone), ('Victoria', 'Real', self.HOLDERS, '922222222'))
+        # The buyer is told, at the address of the order.
+        self.assertEqual(self.told(order, 'ready_for_pickup'), [self.HOLDERS])
+        self.assertEqual(self.told(order, 'shipped'), [self.HOLDERS])
+        # The account's record is exactly what it was, and the account sees nothing of that order.
+        self.assertEqual(Customer.objects.filter(pk=account_record.pk).values().get(), kept)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertNotIn(order.pk, self.seen_by(user))
+        self.assertFalse(Notification.objects.filter(customer=account_record, target_id=order.pk).exists())
+        return order
+
+    def test_somebody_who_once_bought_signed_in_and_now_buys_without_signing_in(self):
+        user = User.objects.create_user('titular', self.HOLDERS, PASSWORD, first_name='Victoria')
+        record = Customer.objects.create(company=self.company, user=user, first_name='Victoria', last_name='Real',
+                                         document_type='dni', document_number=self.DNI, email=self.HOLDERS)
+        earlier = _order(self.company, user=user, paid=True, customer=record, customer_email=self.HOLDERS)
+        self.assert_filed_apart(self.shipped_order(), record, user)
+        self.assertEqual(self.seen_by(user), {earlier.pk})
+
+    def test_an_account_that_declared_a_strangers_document_does_not_silence_their_orders(self):
+        from store import customer_profile
+
+        squatter = User.objects.create_user('ocupa', 'ocupa@correo.test', PASSWORD, first_name='Ocupa')
+        accounts.mark_email_verified(squatter)
+        customer_profile.update(company=self.company, user=squatter,
+                                data={'first_name': 'Ocupa', 'document_type': 'dni', 'document_number': self.DNI})
+        record = Customer.objects.get(company=self.company, user=squatter)
+        self.assert_filed_apart(self.shipped_order(), record, squatter)
+        self.assertEqual(self.seen_by(squatter), set())
+
+    def test_the_next_order_gets_a_record_too(self):
+        user = User.objects.create_user('titular', self.HOLDERS, PASSWORD, first_name='Victoria')
+        Customer.objects.create(company=self.company, user=user, first_name='Victoria', document_type='dni',
+                                document_number=self.DNI, created_by=self.staff)
+        first = self.pay(self.shipped_order('uno'))
+        second = self.pay(self.shipped_order('dos'))
+        self.assertIsNotNone(second.customer)
+        self.assertNotEqual(second.customer.user_id, user.pk)
+        self.assertEqual(self.told(second, 'ready_for_pickup'), [self.HOLDERS])
+        self.assertIsNotNone(first.customer)
+
+
+class TheSamePersonIsTheSameContactInFullTest(_SeededRecordBase):
+    """F2 · «the same person trying again» is the same name, phone AND address — an address alone anybody can type."""
+
+    def seeded_as(self, **typed):
+        order = self.guest('quien-siembra', **{'customer_name': 'Victoria Real', 'customer_email': self.HOLDERS,
+                                               'customer_phone': '922222222', **typed})
+        return order.customer
+
+    def assert_released(self, seeded):
+        order = self.pay(self.holders_order())
+        self.assertNotEqual(order.customer, seeded)
+        own = order.customer
+        self.assertEqual((own.document_number, own.phone, own.display_name), (self.DNI, '922222222', 'Victoria Real'))
+        seeded.refresh_from_db()
+        self.assertEqual(seeded.document_number, '')
+        self.assertEqual(AdminAuditLog.objects.filter(action=RELEASED).count(), 1)
+        return own
+
+    def test_the_victims_document_and_address_with_another_name_and_phone(self):
+        seeded = self.seeded_as(customer_name='Otro Nombre', customer_phone='911111111')
+        own = self.assert_released(seeded)
+        # At the counter staff are shown the record of who paid, with THEIR phone.
+        response = self.file()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual((response.json()['existing']['id'], response.json()['existing']['phone']), (own.pk, '922222222'))
+
+    def test_another_phone_alone_is_another_person(self):
+        self.assert_released(self.seeded_as(customer_phone='911111111'))
+
+    def test_another_name_alone_is_another_person(self):
+        self.assert_released(self.seeded_as(customer_name='Otro Nombre'))
+
+    def test_another_address_alone_is_another_person(self):
+        self.assert_released(self.seeded_as(customer_email='otra@correo.test'))
+
+    def test_the_same_three_written_another_way_are_the_same_person(self):
+        seeded = self.seeded_as(customer_name='  victoria   REAL ', customer_email='Titular@Correo.test', customer_phone='922 222 222')
+        order = self.pay(self.holders_order())
+        self.assertEqual(order.customer, seeded)
+        # And the other way round: it is the order being paid that was typed carelessly.
+        again = self.pay(self.guest('otra-vez', customer_name='VICTORIA    real', customer_email='TITULAR@correo.test',
+                                    customer_phone='+51 922 222 222'.replace('+51 ', '')))
+        self.assertEqual(again.customer, seeded)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_somebody_with_one_name_is_the_same_person_too(self):
+        # The record keeps a first and a last name; one word leaves the second empty, and that is not a difference.
+        typed = {'customer_name': 'Victoria', 'customer_email': self.HOLDERS, 'customer_phone': '922222222'}
+        seeded = self.guest('un-nombre-1', **typed).customer
+        self.assertEqual((seeded.first_name, seeded.last_name), ('Victoria', ''))
+        self.assertEqual(self.pay(self.guest('un-nombre-2', **typed)).customer, seeded)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_details_that_are_missing_on_both_sides_are_not_the_same_details(self):
+        # The same name and phone, and no address on either: «equal» only because both are empty.
+        provisional = Customer.objects.create(company=self.company, first_name='Victoria', last_name='Real', phone='922222222',
+                                              document_type='dni', document_number=self.DNI)
+        order = _order(self.company, total='50.00', document_type='dni', document_number=self.DNI, customer_name='Victoria Real',
+                       customer_phone='922222222', customer_email='')
+        order = self.pay(order)
+        self.assertNotEqual(order.customer, provisional)
+        self.assertEqual(Customer.objects.get(pk=provisional.pk).document_number, '')
+
+    def test_a_business_is_the_same_by_its_registered_name(self):
+        typed = {'document_type': 'ruc', 'document_number': '20999999990', 'receipt_type': 'factura',
+                 'customer_name': 'Comercial de Prueba S.A.C.', 'customer_email': self.HOLDERS, 'customer_phone': '922222222'}
+        seeded = self.guest('empresa-1', **typed).customer
+        order = self.pay(self.guest('empresa-2', **typed))
+        self.assertEqual(order.customer, seeded)
+        other = self.pay(self.guest('empresa-3', **{**typed, 'document_number': '20111111112', 'customer_name': 'Otra Empresa S.A.C.'}))
+        self.assertNotEqual(other.customer, seeded)
+
+
+class FilingSurvivesWhatGoesWrongTest(_SeededRecordBase):
+    """F4, F5, F6 · a race lost once is tried again; a failure leaves the order as it was; a holder that cannot be saved is stepped around."""
+
+    def test_a_race_lost_once_is_tried_again(self):
+        from django.db import IntegrityError
+
+        _seeding, seeded = self.seed()
+        order = self.holders_order()
+        real_create, calls = customer_services._create_from_order, []
+
+        def refused_the_first_time(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                # Somebody filed that document between the look and the save: the database refuses this record.
+                raise IntegrityError('unique_customer_document_per_company')
+            return real_create(*args, **kwargs)
+
+        with mock.patch('store.customer_services._create_from_order', side_effect=refused_the_first_time):
+            with self.assertNoLogs('store.customer_services', level='ERROR'):
+                order = self.pay(order)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(order.customer.document_number, self.DNI)
+        # A FRESH savepoint: what the first try wrote went with it, and the second wrote it once.
+        self.assertEqual(AdminAuditLog.objects.filter(action=RELEASED).count(), 1)
+        self.assertEqual(Customer.objects.get(pk=seeded.pk).document_number, '')
+
+    def test_lost_twice_it_is_left_unlinked_and_said(self):
+        from django.db import IntegrityError
+
+        self.seed()
+        order = self.holders_order()
+        calls = []
+
+        def always_loses(*args, **kwargs):
+            calls.append(1)
+            raise IntegrityError('unique_customer_document_per_company')
+
+        with mock.patch('store.customer_services._create_from_order', side_effect=always_loses), \
+                self.assertLogs('store.customer_services', level='ERROR'):
+            order = self.pay(order)
+        self.assertEqual((len(calls), order.customer), (2, None))
+        self.assertTrue(Order.objects.filter(pk=order.pk, paid=True).exists())
+
+    def test_another_failure_is_not_tried_again(self):
+        self.seed()
+        order = self.holders_order()
+        calls = []
+
+        def broken(*args, **kwargs):
+            calls.append(1)
+            raise RuntimeError('roto')
+
+        with mock.patch('store.customer_services._create_from_order', side_effect=broken), \
+                self.assertLogs('store.customer_services', level='ERROR'):
+            self.pay(order)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failure_after_the_record_was_assigned_leaves_the_order_as_it_was(self):
+        self.seed()
+        order = self.holders_order()
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        order.refresh_from_db()
+
+        def assign_then_break(order, customer):
+            order.customer = customer
+            raise RuntimeError('roto después de asignar')
+
+        with mock.patch('store.customer_services._stamp', side_effect=assign_then_break), \
+                self.assertLogs('store.customer_services', level='ERROR'):
+            self.assertIsNone(customer_services.file_paid_guest_order(order))
+        # In memory too: whatever runs next in the payment must not write a record that was rolled back.
+        self.assertEqual((order.customer_id, order.customer), (None, None))
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_a_holder_that_cannot_be_saved_does_not_stop_the_order_being_filed(self):
+        Customer.objects.bulk_create([Customer(company=self.company, document_type='dni', document_number=self.DNI)])   # no name
+        holder = self.holder()
+        with self.assertNoLogs('store.customer_services', level='ERROR'):
+            order = self.pay(self.holders_order())
+        own = order.customer
+        self.assertNotEqual(own, holder)
+        self.assertEqual((own.document_number, own.email), ('', self.HOLDERS))
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertEqual(self.ready(order), [self.HOLDERS])
+
+    def test_staff_are_shown_a_holder_that_cannot_be_saved(self):
+        Customer.objects.bulk_create([Customer(company=self.company, document_type='dni', document_number=self.DNI)])   # no name
+        holder = self.holder()
+        response = self.file()
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual((response.json()['existing']['id'], response.json()['existing']['document_number']), (holder.pk, self.DNI))
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+
+class AFilingThatFailsNeverReachesTheCommitTest(PaymentBase):
+    """F5 on the real road · the notice written next must not point at a record that was rolled back."""
+
+    def test_the_payment_is_confirmed_and_every_row_it_wrote_is_whole(self):
+        Customer.objects.filter(pk=self.order.customer_id).update(email='otro@correo.test')
+        Order.objects.filter(pk=self.order.pk).update(customer=None)
+
+        def assign_then_break(order, customer):
+            order.customer = customer
+            raise RuntimeError('roto después de asignar')
+
+        with mock.patch('store.customer_services._stamp', side_effect=assign_then_break):
+            self.assertEqual(self.notify().status_code, 200)
+        self.refresh()
+        self.assertEqual((self.order.paid, self.order.customer), (True, None))
+        existing = set(Customer.objects.values_list('pk', flat=True))
+        told = set(Notification.objects.filter(target_type='order', target_id=self.order.pk).values_list('customer_id', flat=True))
+        self.assertTrue(told <= existing | {None}, (told, existing))
+        db_conn.check_constraints()                                          # what COMMIT would check
+
+
+class WhatFilingAndFreeingLeaveAloneTest(_SeededRecordBase):
+    """Rules of the third review that no test pinned."""
+
+    def test_a_document_held_in_another_shop_is_not_this_shops(self):
+        other = _saas_company('Otra', 'riesgo-otra', tax_id='20111111112')
+        theirs = Customer.objects.create(company=other, first_name='Ajena', document_type='dni', document_number=self.DNI,
+                                         email='ajena@correo.test', created_by=self.staff)
+        first = self.holders_order()
+        Order.objects.filter(pk=first.pk).update(customer=None)
+        Customer.objects.filter(company=self.company).delete()
+        order = self.pay(Order.objects.get(pk=first.pk))
+        self.assertEqual((order.customer.company, order.customer.document_number), (self.company, self.DNI))
+        theirs.refresh_from_db()
+        self.assertEqual((theirs.document_number, theirs.email), (self.DNI, 'ajena@correo.test'))
+        self.assertFalse(Order.objects.filter(customer=theirs).exists())
+
+    def test_an_order_that_has_a_record_is_not_filed_again(self):
+        mine = Customer.objects.create(company=self.company, first_name='Victoria', created_by=self.staff)
+        holder = Customer.objects.create(company=self.company, first_name='Otra', document_type='dni', document_number=self.DNI,
+                                         created_by=self.staff)
+        order = _order(self.company, total='50.00', paid=True, customer=mine, document_type='dni', document_number=self.DNI,
+                       customer_name='Victoria Real')
+        self.assertIsNone(customer_services.file_paid_guest_order(order))
+        self.assertEqual(Order.objects.get(pk=order.pk).customer, mine)
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, self.DNI)
+
+    def test_an_order_without_a_document_or_without_a_shop_is_left_alone(self):
+        Customer.objects.create(company=self.company, first_name='Sin', last_name='Documento', created_by=self.staff)
+        for typed in ({'document_type': '', 'document_number': ''}, {'document_type': 'dni', 'document_number': ''},
+                      {'document_type': '', 'document_number': self.DNI}):
+            with self.subTest(typed):
+                order = _order(self.company, total='50.00', paid=True, customer_name='Victoria Real', **typed)
+                self.assertIsNone(customer_services.file_paid_guest_order(order))
+                self.assertIsNone(Order.objects.get(pk=order.pk).customer)
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(db_conn) as queries:
+            self.assertIsNone(customer_services.file_paid_guest_order(
+                Order(company=None, status=Order.Status.PAID, document_type='dni', document_number=self.DNI)))
+        self.assertEqual([q['sql'] for q in queries.captured_queries if 'SAVEPOINT' not in q['sql']], [])
+
+    def test_staff_saving_a_record_with_the_document_it_already_has_frees_nothing(self):
+        _seeding, seeded = self.seed()                                      # a provisional record, corrected by staff
+        response = acting(self.staff).patch(f'{CUSTOMERS}{seeded.pk}/', {
+            'document_type': 'dni', 'document_number': self.DNI, 'phone': '933333333'}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        seeded.refresh_from_db()
+        self.assertEqual((seeded.document_number, seeded.phone), (self.DNI, '933333333'))
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        # An established one resent with its own document is not its own conflict either.
+        walk_in = Customer.objects.create(company=self.company, first_name='Otra', document_type='dni', document_number='70000085',
+                                          created_by=self.staff)
+        response = acting(self.staff).patch(f'{CUSTOMERS}{walk_in.pk}/', {
+            'document_type': 'dni', 'document_number': '70000085', 'phone': '944444444'}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_changing_only_the_type_of_a_document_is_changing_the_document(self):
+        provisional = Customer.objects.create(company=self.company, first_name='Otra', document_type='ce', document_number=self.DNI)
+        walk_in = Customer.objects.create(company=self.company, first_name='Victoria', document_type='dni', document_number=self.DNI,
+                                          created_by=self.staff)
+        established = Customer.objects.create(company=self.company, first_name='Eva', document_type='ce', document_number='70000085',
+                                              created_by=self.staff)
+        other = Customer.objects.create(company=self.company, first_name='Ana', document_type='dni', document_number='70000085',
+                                        created_by=self.staff)
+        taken = acting(self.staff).patch(f'{CUSTOMERS}{other.pk}/', {'document_type': 'ce'}, format='json')
+        self.assertEqual((taken.status_code, taken.json()['existing']['id']), (409, established.pk))
+        freed = acting(self.staff).patch(f'{CUSTOMERS}{walk_in.pk}/', {'document_type': 'ce'}, format='json')
+        self.assertEqual(freed.status_code, 200, freed.content)
+        provisional.refresh_from_db()
+        walk_in.refresh_from_db()
+        self.assertEqual((provisional.document_type, provisional.document_number, walk_in.document_type), ('', '', 'ce'))
+        self.assertEqual(AdminAuditLog.objects.get(action=RELEASED).target_id, str(provisional.pk))
+
+    def test_the_record_a_refused_save_collided_with(self):
+        from django.db import IntegrityError
+
+        from store.customer_views import _holder_after
+
+        other = _saas_company('Otra', 'riesgo-otra', tax_id='20111111112')
+        Customer.objects.create(company=other, first_name='Ajena', document_type='dni', document_number=self.DNI, created_by=self.staff)
+        mine = Customer(company=self.company, first_name='Victoria', document_type='dni', document_number=self.DNI)
+        refused = IntegrityError('unique_customer_document_per_company')
+        self.assertIsNone(_holder_after(refused, self.company, mine))                      # another shop's is not it
+        holder = Customer.objects.create(company=self.company, first_name='Otra', document_type='dni', document_number=self.DNI,
+                                         created_by=self.staff)
+        Customer.objects.create(company=self.company, first_name='Sin', last_name='Documento', created_by=self.staff)
+        self.assertEqual(_holder_after(refused, self.company, mine), holder)
+        self.assertEqual(_holder_after(customer_services.DuplicateCustomerError(holder), self.company, mine), holder)
+        # An integrity error on a record with no document is about something else: not ours to answer.
+        self.assertIsNone(_holder_after(refused, self.company, Customer(company=self.company, first_name='Victoria')))
+        self.assertIsNone(_holder_after(refused, self.company, Customer(company=self.company, first_name='V', document_type='dni')))
+
+    def test_a_record_without_a_document_is_nobodys_conflict(self):
+        Customer.objects.create(company=self.company, first_name='Sin', last_name='Documento', created_by=self.staff)
+        Customer.objects.create(company=self.company, first_name='Otra', last_name='Sin Documento')
+        response = self.file(document_type='', document_number='')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertEqual(Customer.objects.filter(company=self.company, document_number='').count(), 3)
+
+
+class FilingAtOnceTest(TransactionTestCase):
+    """
+    F4, F12 · real commits and real row locks, with two connections: staff
+    filing a person while their order is paid, two payments at once, and two
+    staff at once. Each ends with every order filed, one record holding the
+    document, and ONE release written down.
+    """
+
+    DNI = '70000081'
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda', 'archivo-a-la-vez', tax_id='20999999990')
+        self.staff, _ = _p2d_member(self.company, 'mostrador_carrera', CUSTOMER_CAPS)
+
+    def provisional(self):
+        return Customer.objects.create(company=self.company, first_name='Otro', email='otro@correo.test',
+                                       document_type='dni', document_number=self.DNI)
+
+    def paid(self, email):
+        return _order(self.company, paid=True, customer_email=email, customer_name='Victoria Real', customer_phone='922222222',
+                      document_type='dni', document_number=self.DNI)
+
+    def run_both(self, first, second):
+        """`first` starts, holds its transaction open, and only then `second` runs against it."""
+        holding, errors = threading.Event(), []
+
+        def one():
+            try:
+                with db_transaction.atomic():
+                    first()
+                    holding.set()
+                    time.sleep(0.6)
+            except Exception as failed:  # noqa: BLE001 — the outcome under test
+                errors.append(('first', failed))
+            finally:
+                holding.set()
+                db_connection.close()
+
+        def two():
+            try:
+                holding.wait(10)
+                second()
+            except Exception as failed:  # noqa: BLE001
+                errors.append(('second', failed))
+            finally:
+                db_connection.close()
+
+        threads = [threading.Thread(target=one), threading.Thread(target=two)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        return errors
+
+    def assert_one_holder_and_one_release(self):
+        self.assertEqual(Customer.objects.filter(company=self.company, document_number=self.DNI).count(), 1)
+        self.assertEqual(AdminAuditLog.objects.filter(action=RELEASED).count(), 1)
+
+    def test_staff_filing_the_person_while_their_order_is_paid(self):
+        holder, order = self.provisional(), self.paid('titular@correo.test')
+
+        def staff():
+            customer_services.free_document_for_staff(self.company, 'dni', self.DNI, actor=self.staff)
+            Customer(company=self.company, created_by=self.staff, first_name='Victoria', last_name='Real',
+                     document_type='dni', document_number=self.DNI).save()
+
+        def payment():
+            with db_transaction.atomic():
+                locked = Order.objects.select_for_update().get(pk=order.pk)
+                customer_services.file_paid_guest_order(locked)
+                Order.objects.filter(pk=order.pk).update(payment_error='')   # the payment's transaction is usable
+
+        self.assertEqual(self.run_both(staff, payment), [])
+        filed = Customer.objects.get(company=self.company, created_by=self.staff)
+        self.assertEqual(Order.objects.get(pk=order.pk).customer, filed)      # not left unlinked for good
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, '')
+        self.assert_one_holder_and_one_release()
+
+    def test_two_payments_with_one_document_at_once(self):
+        self.provisional()
+        a, b = self.paid('uno@correo.test'), self.paid('dos@correo.test')
+
+        def pay(order):
+            with db_transaction.atomic():
+                locked = Order.objects.select_for_update().get(pk=order.pk)
+                customer_services.file_paid_guest_order(locked)
+                Order.objects.filter(pk=order.pk).update(payment_error='')
+
+        self.assertEqual(self.run_both(lambda: pay(a), lambda: pay(b)), [])
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertIsNotNone(a.customer)
+        self.assertEqual(b.customer, a.customer)                             # the second finds what the first one made
+        self.assert_one_holder_and_one_release()
+
+    def looked_then_waited(self, name, thread_name):
+        """`customer_services.<name>`, pausing in `thread_name` AFTER it answered: between the look and the act."""
+        real, looked = getattr(customer_services, name), threading.Event()
+
+        def paused(*args, **kwargs):
+            answer = real(*args, **kwargs)
+            if threading.current_thread().name == thread_name:
+                looked.set()
+                time.sleep(0.6)
+            return answer
+
+        return mock.patch.object(customer_services, name, side_effect=paused), looked
+
+    def together(self, jobs):
+        errors = {}
+
+        def run(name, job):
+            try:
+                job()
+            except Exception as failed:  # noqa: BLE001 — the outcome under test
+                errors[name] = failed
+            finally:
+                db_connection.close()
+
+        threads = [threading.Thread(target=run, args=(name, job), name=name) for name, job in jobs.items()]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        return errors
+
+    def test_staff_who_looked_at_a_record_hold_it_until_they_are_done(self):
+        # The lock of the staff path: a payment cannot make the record established between the look and the release.
+        holder = Customer.objects.create(company=self.company, first_name='Victoria', last_name='Real', phone='922222222',
+                                         email='titular@correo.test', document_type='dni', document_number=self.DNI)
+        order = self.paid('titular@correo.test')                             # the same person: it would be filed under `holder`
+        patcher, looked = self.looked_then_waited('is_established', 'mostrador')
+
+        def staff():
+            with db_transaction.atomic():
+                customer_services.free_document_for_staff(self.company, 'dni', self.DNI, actor=self.staff)
+                Customer(company=self.company, created_by=self.staff, first_name='Victoria', last_name='Real',
+                         document_type='dni', document_number=self.DNI).save()
+
+        def payment():
+            looked.wait(10)
+            with db_transaction.atomic():
+                customer_services.file_paid_guest_order(Order.objects.select_for_update().get(pk=order.pk))
+
+        with patcher:
+            self.assertEqual(self.together({'mostrador': staff, 'pago': payment}), {})
+        filed = Customer.objects.get(company=self.company, created_by=self.staff)
+        self.assertEqual(Order.objects.get(pk=order.pk).customer, filed)      # it waited, and found what staff made
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, '')
+        self.assert_one_holder_and_one_release()
+
+    def test_a_payment_that_looked_at_a_record_holds_it_until_it_is_done(self):
+        # The lock of the payment path: staff cannot take the document off the record an order is being filed under.
+        holder = Customer.objects.create(company=self.company, first_name='Victoria', last_name='Real', phone='922222222',
+                                         email='titular@correo.test', document_type='dni', document_number=self.DNI)
+        order = self.paid('titular@correo.test')
+        patcher, looked = self.looked_then_waited('_same_person', 'pago')
+
+        def payment():
+            with db_transaction.atomic():
+                customer_services.file_paid_guest_order(Order.objects.select_for_update().get(pk=order.pk))
+
+        def staff():
+            looked.wait(10)
+            with db_transaction.atomic():
+                customer_services.free_document_for_staff(self.company, 'dni', self.DNI, actor=self.staff)
+                Customer(company=self.company, created_by=self.staff, first_name='Victoria', last_name='Real',
+                         document_type='dni', document_number=self.DNI).save()
+
+        with patcher:
+            errors = self.together({'pago': payment, 'mostrador': staff})
+        # Staff waited, and by then the record had a paid order: it is shown to them, not emptied.
+        self.assertEqual(list(errors), ['mostrador'])
+        self.assertIsInstance(errors['mostrador'], customer_services.DuplicateCustomerError)
+        self.assertEqual(errors['mostrador'].existing.pk, holder.pk)
+        self.assertEqual(Order.objects.get(pk=order.pk).customer, holder)
+        self.assertEqual(Customer.objects.get(pk=holder.pk).document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_two_staff_filing_the_same_person_at_once(self):
+        self.provisional()
+        answers = {}
+        real_save = Customer.save
+
+        def slow_first(record, *args, **kwargs):
+            result = real_save(record, *args, **kwargs)
+            if threading.current_thread().name == 'primera' and record.created_by_id is not None:
+                started.set()
+                time.sleep(0.6)
+            return result
+
+        started = threading.Event()
+
+        def file(name, wait):
+            try:
+                if wait:
+                    started.wait(10)
+                client = APIClient()
+                client.force_authenticate(self.staff)
+                client.raise_request_exception = False
+                answers[name] = client.post(CUSTOMERS, {'customer_type': 'person', 'first_name': name, 'document_type': 'dni',
+                                                        'document_number': self.DNI}, format='json')
+            finally:
+                db_connection.close()
+
+        with mock.patch('store.customer_views.Customer.save', autospec=True, side_effect=slow_first):
+            threads = [threading.Thread(target=file, args=('primera', False), name='primera'),
+                       threading.Thread(target=file, args=('segunda', True), name='segunda')]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertEqual(answers['primera'].status_code, 201, answers['primera'].content)
+        self.assertEqual(answers['segunda'].status_code, 409, answers['segunda'].content)
+        self.assertEqual(answers['segunda'].json()['existing']['id'], answers['primera'].json()['id'])
+        self.assert_one_holder_and_one_release()

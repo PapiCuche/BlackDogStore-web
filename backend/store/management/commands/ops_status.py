@@ -246,9 +246,16 @@ class Command(BaseCommand):
         # «Made by the checkout»: it is the checkout that assesses, and it
         # always leaves the browser's cart or the app's idempotency key on the
         # order. An order written any other way was never going to be assessed.
-        unassessed = Order.objects.filter(
+        # And made AFTER the assessor existed: on the day this is deployed every
+        # earlier order has no assessment, and none of them was ever missing one.
+        # No assessment at all means there is nothing yet to compare against.
+        first_assessment = (
+            OrderRiskAssessment.objects.order_by('created_at').values_list('created_at', flat=True).first()
+        )
+        unassessed = 0 if first_assessment is None else Order.objects.filter(
             ~Q(cart_session_key='') | Q(idempotency_key__isnull=False),
-            sales_channel=SalesChannel.ONLINE, created_at__gte=now - RECENT, risk_assessment__isnull=True,
+            sales_channel=SalesChannel.ONLINE, created_at__gte=max(now - RECENT, first_assessment),
+            risk_assessment__isnull=True,
         ).count()
         if unassessed:
             review_notes.append(

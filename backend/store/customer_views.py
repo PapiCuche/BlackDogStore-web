@@ -37,7 +37,7 @@ member granted one shop sees what that client bought there, not a record of the
 other shops' sales they could not open one by one.
 """
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -243,14 +243,17 @@ class AdminCustomerListView(APIView):
                     actor=request.user, request=request,
                 )
                 customer.save()
-        except DuplicateCustomerError as exc:
+        except (DuplicateCustomerError, IntegrityError) as exc:
             # 409, not 400: the request is well-formed and the client is not at
             # fault. Something already exists, and the useful answer says which
             # record, so the UI can offer to open it instead of a dead end.
+            existing = _holder_after(exc, company, customer)
+            if existing is None:
+                raise
             return Response(
                 {
-                    'detail': str(exc),
-                    'existing': CustomerListSerializer(exc.existing).data,
+                    'detail': str(DuplicateCustomerError(existing)),
+                    'existing': CustomerListSerializer(existing).data,
                 },
                 status=status.HTTP_409_CONFLICT,
             )
@@ -280,6 +283,25 @@ class AdminCustomerListView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+def _holder_after(refusal, company, customer):
+    """
+    The record a refused save collided with, or None.
+
+    Either the service found it (`DuplicateCustomerError`), or the DATABASE
+    did: somebody else filed the same document between the look and the save,
+    and the unique rule refused the second one. Both are the same answer for
+    staff — «it already exists, here it is» — so the second is looked up now,
+    after the fact. An integrity error about anything else is not ours: None.
+    """
+    if isinstance(refusal, DuplicateCustomerError):
+        return refusal.existing
+    if not customer.document_type or not customer.document_number:
+        return None
+    return Customer.objects.filter(
+        company=company, document_type=customer.document_type, document_number=customer.document_number,
+    ).first()
 
 
 class AdminCustomerDetailView(APIView):
@@ -372,11 +394,14 @@ class AdminCustomerDetailView(APIView):
                             actor=request.user, request=request,
                         )
                     customer.save()
-            except DuplicateCustomerError as exc:
+            except (DuplicateCustomerError, IntegrityError) as exc:
+                existing = _holder_after(exc, company, customer)
+                if existing is None:
+                    raise
                 return Response(
                     {
-                        'detail': str(exc),
-                        'existing': CustomerListSerializer(exc.existing).data,
+                        'detail': str(DuplicateCustomerError(existing)),
+                        'existing': CustomerListSerializer(existing).data,
                     },
                     status=status.HTTP_409_CONFLICT,
                 )
