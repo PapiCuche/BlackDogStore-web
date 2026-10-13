@@ -110,6 +110,14 @@ export type AdminProduct = {
    * que `is_active`.
    */
   is_published_online: boolean;
+  /** Cómo se cuenta: equipo por equipo (con serie) o por cantidad. */
+  is_serialized?: boolean;
+  requires_imei?: boolean;
+  /**
+   * INVENTORY-UNIFIED-01. Códigos de lo que le falta para publicarse en bloque
+   * (`PUBLICATION_PROBLEM_LABELS`). Vacío = listo. La ficha individual no lo exige.
+   */
+  publication_problems?: string[];
   created_at: string;
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
@@ -205,11 +213,21 @@ export type AdminCategory = {
   product_count?: number;
 };
 
-export async function fetchAdminProducts(params?: {
+/**
+ * Los filtros de la lista de productos. La acción en bloque manda ESTOS mismos
+ * para «todo lo que coincide»: el servidor los vuelve a evaluar con el código
+ * que contó la lista.
+ */
+export type ProductListFilter = {
   search?: string;
   category?: number | string;
   is_active?: 'true' | 'false';
+  is_published_online?: 'true' | 'false';
+  is_serialized?: 'true' | 'false';
   stock?: 'in_stock' | 'out_of_stock' | 'low_stock';
+};
+
+export async function fetchAdminProducts(params?: ProductListFilter & {
   page?: number;
   page_size?: number;
 }): Promise<PaginatedResponse<AdminProduct>> {
@@ -217,6 +235,8 @@ export async function fetchAdminProducts(params?: {
     search: params?.search,
     category: params?.category !== undefined ? String(params.category) : undefined,
     is_active: params?.is_active,
+    is_published_online: params?.is_published_online,
+    is_serialized: params?.is_serialized,
     stock: params?.stock,
     page: params?.page,
     page_size: params?.page_size,
@@ -226,6 +246,77 @@ export async function fetchAdminProducts(params?: {
   if (res.status === 401) throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
   if (!res.ok) throw new Error('No se pudieron cargar los productos.');
   return res.json();
+}
+
+/** Lo que le falta a un producto para publicarse en bloque, como lo dice el panel. */
+export const PUBLICATION_PROBLEM_LABELS: Record<string, string> = {
+  inactive: 'está inactivo',
+  no_price: 'no tiene precio de venta',
+  no_image: 'no tiene imagen',
+  no_category: 'no tiene categoría',
+};
+
+/** Un código que esta versión no conoce se muestra tal cual: mejor que callarlo. */
+export function publicationProblemLabel(code: string): string {
+  return PUBLICATION_PROBLEM_LABELS[code] ?? code;
+}
+
+export type BulkVisibilityAction = 'publish' | 'hide';
+
+export type BulkVisibilityResult = {
+  action: BulkVisibilityAction;
+  changed: number;
+  /** Ya estaban como se pidió. */
+  unchanged: number;
+  /** Sólo al publicar: los que no están listos, con el motivo. Los demás SÍ se publicaron. */
+  refused: { id: number; name: string; problems: string[] }[];
+  total: number;
+};
+
+/** «Todo lo que coincide» ya no coincide con lo que se contó. No se cambió nada. */
+export class SelectionChangedError extends Error {
+  currentCount: number;
+
+  constructor(currentCount: number) {
+    super(`La selección cambió: ahora coinciden ${currentCount} productos. No se cambió nada.`);
+    this.name = 'SelectionChangedError';
+    this.currentCount = currentCount;
+  }
+}
+
+/**
+ * Publica u oculta varios productos. Sólo cambia «en la web»: ni activo, ni
+ * precio, ni stock. O los marcados (`ids`) o todo lo que coincide con el filtro,
+ * con el total que se mostró (`expectedCount`).
+ */
+export async function bulkSetProductVisibility(
+  action: BulkVisibilityAction,
+  selection: { ids: number[] } | { filter: ProductListFilter; expectedCount: number },
+): Promise<BulkVisibilityResult> {
+  const body = 'ids' in selection
+    ? { action, ids: selection.ids }
+    : {
+        action,
+        filter: Object.fromEntries(
+          Object.entries(selection.filter).filter(([, value]) => value !== undefined && String(value) !== ''),
+        ),
+        expected_count: selection.expectedCount,
+      };
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/bulk-visibility/`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return res.json();
+  const err = await res.json().catch(() => null);
+  if (res.status === 409 && err?.code === 'selection_changed') {
+    throw new SelectionChangedError(Number(err.current_count) || 0);
+  }
+  if (res.status === 403) throw new Error('No tienes permisos para publicar u ocultar productos.');
+  if (res.status === 401) throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
+  if (res.status === 404) {
+    throw new Error('Alguno de los productos ya no existe. Actualiza la lista y vuelve a seleccionar.');
+  }
+  throw new Error(typeof err?.detail === 'string' ? err.detail : 'No se pudo cambiar la visibilidad de los productos.');
 }
 
 export async function fetchAdminProductDetail(productId: number): Promise<AdminProduct> {
