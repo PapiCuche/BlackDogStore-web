@@ -26,16 +26,40 @@ suite itself, that the shards are disjoint and that together they are the suite.
 What cannot be dealt out stops the plan instead of being skipped: a module that
 does not import, a class that a label cannot name, a test found twice.
 
+WHY THE CLASSES THAT FLUSH THE DATABASE STAY TOGETHER
+-----------------------------------------------------
+A TransactionTestCase empties every table after each of its tests, so each one
+of them runs on what the previous one left. The suite leans on that: five of
+its concurrency classes set `reset_sequences`, which restarts every id at 1,
+and only work because an earlier class of the same kind has already removed
+the rows the migrations seed (company 1). Alone, or first in a shard, such a
+class collides with them — that is how the first local run of the shards
+failed. So those classes are never spread: all of them go to the last shard, in
+the order the whole suite runs them, and the chain there is the chain of the
+suite.
+
+WHY A NEW TEST DOES NOT RESHUFFLE THE SHARDS
+--------------------------------------------
+Which tests run next to which is not supposed to matter, and the day it does
+(the paragraph above is such a day) it should not be a different surprise in
+every pull request. So where a class goes depends on `ci_shard_weights.json`
+and on the class's own name, not on which other classes exist: adding, renaming
+or deleting a test moves no other test. The dealing changes only when that file
+is regenerated or the number of shards changes.
+
 WHY THE WEIGHTS CANNOT HIDE A TEST EITHER
 -----------------------------------------
 `ci_shard_weights.json` holds how long each class took the last time somebody
-measured. It decides only WHICH shard a class goes to. A class missing from the
-file is weighed by its number of tests; a class in the file that no longer exists
-is ignored. A stale file makes the shards uneven, never incomplete.
+measured, and which of them flushed the database. It decides only WHICH shard a
+class goes to. A class missing from the file goes to the shard its name picks;
+a class in the file that no longer exists is simply not there to be run. A
+stale file makes the shards uneven, never incomplete — and whether a class
+flushes the database is read from the class itself, not from the file.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -56,6 +80,8 @@ class Suite:
 
     def __init__(self):
         self.tests: dict[str, list[str]] = {}
+        #: The classes that empty the database after each test, in run order.
+        self.flushing: list[str] = []
 
     @property
     def labels(self) -> list[str]:
@@ -103,6 +129,13 @@ def _label_of(test) -> str:
     return label
 
 
+def _flushes(cls) -> bool:
+    """A TransactionTestCase that is not a TestCase: its tests commit, and the tables are emptied after each."""
+    from django.test import TestCase, TransactionTestCase
+
+    return issubclass(cls, TransactionTestCase) and not issubclass(cls, TestCase)
+
+
 def collect(tests) -> Suite:
     """Group an iterable of tests by class. Refuses what a shard could not run faithfully."""
     suite = Suite()
@@ -120,7 +153,10 @@ def collect(tests) -> Suite:
                 f'once per module in the whole suite and once in a shard: import the module, not the class.'
             )
         seen.add(test_id)
-        suite.tests.setdefault(_label_of(test), []).append(test_id)
+        label = _label_of(test)
+        if label not in suite.tests and _flushes(type(test)):
+            suite.flushing.append(label)
+        suite.tests.setdefault(label, []).append(test_id)
     return suite
 
 
@@ -135,42 +171,68 @@ def load(labels) -> Suite:
 
 
 def read_weights(path: Path = WEIGHTS_FILE) -> dict:
-    if not path.exists():
-        return {'seconds_per_test': 1.0, 'classes': {}}
-    data = json.loads(path.read_text(encoding='utf-8'))
-    return {'seconds_per_test': float(data.get('seconds_per_test', 1.0)), 'classes': dict(data.get('classes', {}))}
+    data = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    return {
+        'seconds_per_test': float(data.get('seconds_per_test', 1.0)),
+        'classes': dict(data.get('classes', {})),
+        'flushing': list(data.get('flushing', [])),
+    }
 
 
 def weigh(suite: Suite, weights: dict) -> dict[str, float]:
-    per_test = weights['seconds_per_test']
-    known = weights['classes']
+    per_test = weights.get('seconds_per_test', 1.0)
+    known = weights.get('classes', {})
     return {
         label: float(known[label]) if label in known else per_test * len(tests)
         for label, tests in suite.tests.items()
     }
 
 
+def _home(label: str, total: int) -> int:
+    """Where a class the weights file does not know goes: decided by its name alone."""
+    return int.from_bytes(hashlib.sha256(label.encode()).digest()[:8], 'big') % total
+
+
 def assign(suite: Suite, total: int, weights: dict | None = None) -> list[list[str]]:
     """
     Deal every class of the suite into `total` shards of similar weight.
 
-    Heaviest first, each to the lightest shard so far; ties go to the lower
-    shard and to the label that sorts first, so the same tree always gives the
-    same answer on every machine. Inside a shard the classes keep the order of
-    the whole suite.
+    Where a class goes depends on the weights file and on its own name, never
+    on which other classes exist today:
+
+      * the classes the file knows are dealt once, from the file alone —
+        heaviest first, each to the lightest shard so far, ties to the lower
+        shard and to the label that sorts first;
+      * a class the file does not know goes where its name says (`_home`);
+      * the classes that flush the database all go to the last shard, whose
+        share of the rest is smaller by what the file says they weigh.
+
+    So adding, renaming or deleting a test moves no OTHER test to a different
+    shard, and what runs next to what only changes when somebody regenerates
+    the file or changes the number of shards — on purpose, in a pull request
+    whose own run validates the new dealing. Inside a shard the classes keep
+    the order of the whole suite.
     """
     if total < 1:
         raise SuiteError(f'--total must be 1 or more, not {total}')
-    weight = weigh(suite, read_weights() if weights is None else weights)
-    position = {label: index for index, label in enumerate(suite.labels)}
-    shards: list[list[str]] = [[] for _ in range(total)]
+    weights = read_weights() if weights is None else weights
+    known = weights.get('classes', {})
+    chain = set(weights.get('flushing', []))
     loads = [0.0] * total
-    for label in sorted(suite.labels, key=lambda item: (-weight[item], item)):
+    loads[-1] = sum(float(known[label]) for label in chain if label in known)
+    home: dict[str, int] = {}
+    for label in sorted((label for label in known if label not in chain), key=lambda item: (-float(known[item]), item)):
         lightest = min(range(total), key=lambda index: (loads[index], index))
-        shards[lightest].append(label)
-        loads[lightest] += weight[label]
-    for shard in shards:
-        shard.sort(key=position.__getitem__)
+        home[label] = lightest
+        loads[lightest] += float(known[label])
+
+    flushing = set(suite.flushing)
+    shards: list[list[str]] = [[] for _ in range(total)]
+    for label in suite.labels:  # already in the order of the whole suite
+        if label in flushing:
+            shards[-1].append(label)
+        else:
+            shards[home[label] if label in home else _home(label, total)].append(label)
     return shards
 
 
@@ -234,14 +296,15 @@ def check_log(text: str, expected: int, shard: int, total: int) -> tuple[bool, s
 DURATION = re.compile(r'^(\d+\.\d+)s\s+\S+ \(([\w.]+)\.\w+\)\s*$', re.MULTILINE)
 
 
-def weights_from_log(text: str) -> dict:
+def weights_from_log(text: str, flushing=()) -> dict:
     """
     The weights file, from the log of a whole run with `--durations 0`.
 
     unittest prints one line per test that took a millisecond or more
     (`0.412s  test_name (module.Class.test_name)`); a class weighs the sum of
     its lines. Class fixtures are not in those lines, which is fine for a
-    weight: in this suite the time is in the tests.
+    weight: in this suite the time is in the tests. `flushing` is recorded so
+    that the dealing can be worked out from the file alone.
     """
     classes: dict[str, float] = {}
     for seconds, label in DURATION.findall(text):
@@ -252,6 +315,7 @@ def weights_from_log(text: str) -> dict:
     return {
         'how': 'python manage.py test --noinput --durations 0 2>&1 | python scripts/ci_shards.py weights',
         'seconds_per_test': round(sum(classes.values()) / found['ran'], 3),
+        'flushing': sorted(flushing),
         'classes': {label: round(seconds, 1) for label, seconds in sorted(classes.items())},
     }
 
@@ -264,8 +328,10 @@ def _plan(suite: Suite, total: int) -> str:
     for index, shard in enumerate(shards, start=1):
         lines.append(f'{index:>5}  {len(shard):>7}  {suite.count(shard):>5}  {sum(weight[label] for label in shard):>9.0f}')
     lines.append(f'total  {len(suite.labels):>7}  {len(suite.ids):>5}  {sum(weight.values()):>9.0f}')
+    holders = [index for index, shard in enumerate(shards, start=1) if set(shard) & set(suite.flushing)]
+    lines.append(f'{len(suite.flushing)} class(es) that flush the database, all in shard {holders or "-"}')
     unweighed = len(set(suite.labels) - set(read_weights()['classes']))
-    lines.append(f'{unweighed} class(es) weighed by their number of tests (not in {WEIGHTS_FILE.name})')
+    lines.append(f'{unweighed} class(es) not in {WEIGHTS_FILE.name}: dealt by name, weighed here by number of tests')
     return '\n'.join(lines)
 
 
@@ -287,10 +353,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.command == 'weights':
-            print(json.dumps(weights_from_log(sys.stdin.read()), indent=1, ensure_ascii=False))
-            return 0
         suite = discover()
+        if args.command == 'weights':
+            print(json.dumps(weights_from_log(sys.stdin.read(), suite.flushing), indent=1, ensure_ascii=False))
+            return 0
         if args.command == 'plan':
             print(_plan(suite, args.total))
             return 0

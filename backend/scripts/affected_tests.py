@@ -26,6 +26,9 @@ HOW IT GUESSES (no database, a couple of seconds)
    literals are resolved with the project's own URLconf).
 4. With `--wide`, the classes that call a view whose module imports it.
 5. A file read by a test from outside `backend/` (EXTERNAL_INPUTS below).
+6. If any class chosen flushes the database (a TransactionTestCase), all the
+   classes that do: some of them only work after another one has emptied the
+   tables the migrations seed, as they do in the whole suite.
 
 `models.py`, the migrations, the settings and the requirements reach every
 test: for those it says so and selects the whole suite.
@@ -386,6 +389,9 @@ def select(files: list[str], suite, *, base: str | None = None, wide: bool = Fal
                     elif wide and reached & importers[module]:
                         add(found.label, f'calls a view that imports {module}')
 
+    if set(reasons) & set(suite.flushing):
+        for label in suite.flushing:
+            add(label, 'runs with the other classes that flush the database')
     labels = [label for label in suite.labels if label in reasons]
     if not whole and labels and suite.count(labels) > TOO_WIDE * len(suite.ids):
         whole = f'the change reaches {suite.count(labels)} of {len(suite.ids)} tests'

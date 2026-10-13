@@ -13,6 +13,9 @@ So the split is checked from inside the thing it splits, on every run:
     shards, with or without the weights file;
   * asking `manage.py test` for a shard's labels loads exactly the tests the
     plan counted, and the shards together load the suite, test by test;
+  * the classes that flush the database run as one chain, in one shard, in
+    the order the whole suite runs them;
+  * adding or removing a test moves no other test to a different shard;
   * what cannot be dealt faithfully stops the plan instead of being left out;
   * a shard whose log does not show every test it was dealt is not accepted.
 
@@ -26,7 +29,8 @@ from pathlib import Path
 from unittest import mock
 
 from django.conf import settings
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
+from django.utils.module_loading import import_string
 
 BACKEND = Path(settings.BASE_DIR)
 
@@ -68,12 +72,14 @@ class EveryTestIsInExactlyOneShardTest(WithTheSuite):
                 ci_shards.verify(self.suite, shards)
 
     def test_the_weights_only_move_classes_between_shards(self):
-        """No file, an empty file, a file about classes that no longer exist: the same suite."""
+        """No file, an empty file, a file about classes that no longer exist, a file that is wrong: the same suite."""
         for weights in (
+            {},
             {'seconds_per_test': 1.0, 'classes': {}},
-            {'seconds_per_test': 0.0, 'classes': {}},
+            {'seconds_per_test': 0.0, 'classes': {}, 'flushing': []},
             {'seconds_per_test': 0.3, 'classes': {'store.tests.ThisClassWasDeleted': 900.0}},
             {'seconds_per_test': 0.3, 'classes': {self.suite.labels[0]: 10_000.0}},
+            {'seconds_per_test': 0.3, 'classes': {self.suite.labels[0]: 1.0}, 'flushing': [self.suite.labels[0], 'gone.Gone']},
         ):
             with self.subTest(weights=weights):
                 shards = ci_shards.assign(self.suite, 6, weights)
@@ -82,6 +88,44 @@ class EveryTestIsInExactlyOneShardTest(WithTheSuite):
 
     def test_the_same_tree_gives_the_same_shards(self):
         self.assertEqual(ci_shards.assign(self.suite, 6), ci_shards.assign(ci_shards.discover(), 6))
+
+    def test_adding_or_removing_a_test_moves_no_other_test(self):
+        """
+        The dealing is a function of the weights file and of each class's own
+        name. If it depended on the rest of the suite, every new test would
+        put different tests side by side, and a hidden dependence between two
+        of them would surface in somebody else's pull request.
+        """
+        def where(suite):
+            return {label: number for number, shard in enumerate(ci_shards.assign(suite, 6)) for label in shard}
+
+        before = where(self.suite)
+
+        grown = ci_shards.Suite()
+        grown.flushing = list(self.suite.flushing)
+        grown.tests = {'store.test_brand_new.FirstTest': ['a', 'b'], **self.suite.tests, 'store.tests.ZzNewTest': ['c']}
+        after = where(grown)
+        self.assertEqual({label: after[label] for label in before}, before)
+        self.assertEqual(after.keys() - before.keys(), {'store.test_brand_new.FirstTest', 'store.tests.ZzNewTest'})
+
+        shrunk = ci_shards.Suite()
+        shrunk.flushing = list(self.suite.flushing)
+        shrunk.tests = dict(list(self.suite.tests.items())[::2])
+        after = where(shrunk)
+        self.assertEqual(after, {label: before[label] for label in shrunk.tests})
+
+    def test_a_class_the_weights_do_not_know_is_dealt_by_its_name(self):
+        unknown = [label for label in self.suite.labels if label not in ci_shards.read_weights()['classes']]
+        self.assertIn(f'{__name__}.{type(self).__name__}', unknown)
+        shards = ci_shards.assign(self.suite, 6)
+        for label in unknown:
+            self.assertIn(label, shards[ci_shards._home(label, 6)])
+        # The name alone, and the same answer on every machine and every run.
+        self.assertEqual(ci_shards._home('store.tests.CheckoutTest', 6), 0)
+        self.assertEqual(
+            [ci_shards._home(f'store.tests.Test{number}', 6) for number in range(8)],
+            [4, 4, 2, 3, 5, 0, 2, 5],
+        )
 
     def test_a_shard_keeps_the_order_of_the_whole_suite(self):
         position = {label: index for index, label in enumerate(self.suite.labels)}
@@ -122,6 +166,60 @@ class TheLabelsOfAShardLoadExactlyItsTestsTest(WithTheSuite):
                 ci_shards.shard_labels(self.suite, number, 6)
         with self.assertRaises(ci_shards.SuiteError):
             ci_shards.assign(self.suite, 0)
+
+
+class TheClassesThatFlushTheDatabaseStayTogetherTest(WithTheSuite):
+    """
+    A TransactionTestCase runs on what the previous one left behind, and five
+    of this suite's set `reset_sequences`: they restart every id at 1 and only
+    work because an earlier class of the kind has already emptied the tables
+    the migrations seed. `C15InitialRaceTest`, dealt first of its kind to a
+    shard, failed on company 1 the first time the shards were run. Spread over
+    shards the chain is a different chain in each; in one shard, in order, it
+    is the chain of the whole suite.
+    """
+
+    def test_they_are_the_transaction_test_cases_and_nothing_else(self):
+        flushing = [
+            label for label in self.suite.labels
+            if issubclass(import_string(label), TransactionTestCase) and not issubclass(import_string(label), TestCase)
+        ]
+        self.assertEqual(self.suite.flushing, flushing)
+        self.assertIn('store.tests.C15InitialRaceTest', flushing)
+        self.assertGreater(len(flushing), 20)
+
+    def test_the_last_shard_holds_all_of_them_in_the_order_of_the_whole_suite(self):
+        for total in (1, 2, 3, 6, 8, 12):
+            with self.subTest(total=total):
+                shards = ci_shards.assign(self.suite, total)
+                self.assertEqual([label for label in shards[-1] if label in self.suite.flushing], self.suite.flushing)
+                for shard in shards[:-1]:
+                    self.assertFalse(set(shard) & set(self.suite.flushing))
+
+    def test_it_is_the_class_that_says_whether_it_flushes_and_not_the_file(self):
+        """A file that forgot them all, or that names a class that never flushed: the chain is the same."""
+        weights = ci_shards.read_weights()
+        for flushing in ([], [self.suite.labels[0]]):
+            shards = ci_shards.assign(self.suite, 6, {**weights, 'flushing': flushing})
+            ci_shards.verify(self.suite, shards)
+            self.assertEqual([label for label in shards[-1] if label in self.suite.flushing], self.suite.flushing)
+            self.assertFalse(any(set(shard) & set(self.suite.flushing) for shard in shards[:-1]))
+
+    def test_their_tests_run_there_exactly_as_they_run_in_the_whole_suite(self):
+        def chain(labels):
+            return [
+                test.id() for test in ci_shards.runner().build_suite(labels)
+                if isinstance(test, TransactionTestCase) and not isinstance(test, TestCase)
+            ]
+
+        whole = chain([str(BACKEND)])
+        ran = [chain(shard) for shard in ci_shards.assign(self.suite, 6)]
+        self.assertEqual([found for found in ran if found], [whole])
+        self.assertEqual(len(whole), self.suite.count(self.suite.flushing))
+
+    def test_the_committed_file_knows_which_they_are(self):
+        """Not needed to keep them together — only to give the last shard a fair share of the rest."""
+        self.assertEqual(sorted(ci_shards.read_weights()['flushing']), sorted(self.suite.flushing))
 
 
 class WhatCannotBeDealtStopsThePlanTest(SimpleTestCase):
@@ -199,9 +297,10 @@ class TheWeightsComeFromARealRunTest(SimpleTestCase):
     )
 
     def test_a_class_weighs_the_sum_of_its_tests(self):
-        weights = ci_shards.weights_from_log(self.LOG)
+        weights = ci_shards.weights_from_log(self.LOG, flushing=['store.test_m.B'])
         self.assertEqual(weights['classes'], {'store.test_m.B': 1.2, 'store.tests.A': 0.6})
         self.assertEqual(weights['seconds_per_test'], 0.371)
+        self.assertEqual(weights['flushing'], ['store.test_m.B'])
 
     def test_a_log_without_durations_is_refused_instead_of_emptying_the_file(self):
         with self.assertRaises(ci_shards.SuiteError):

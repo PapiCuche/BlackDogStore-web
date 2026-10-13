@@ -27,7 +27,16 @@ class AffectedTestsIsAConvenienceTest(WithTheSuite):
     def test_a_changed_test_module_selects_its_own_classes(self):
         labels, _reasons, whole = affected_tests.select(['backend/store/test_register_race.py'], self.suite)
         self.assertIsNone(whole)
-        self.assertEqual(labels, [label for label in self.suite.labels if label.startswith('store.test_register_race.')])
+        own = [label for label in self.suite.labels if label.startswith('store.test_register_race.')]
+        self.assertEqual([label for label in labels if label in own], own)
+        # One of them flushes the database, so the whole chain of those comes along.
+        self.assertEqual(sorted(set(labels) - set(own)), sorted(set(self.suite.flushing) - set(own)))
+
+    def test_a_class_that_flushes_the_database_never_comes_alone(self):
+        labels, reasons, _whole = affected_tests.select(['backend/store/stock_import_services.py'], self.suite)
+        self.assertIn('store.tests.C15InitialRaceTest', labels)
+        self.assertEqual([label for label in labels if label in self.suite.flushing], self.suite.flushing)
+        self.assertIn('runs with the other classes that flush the database', set(reasons.values()))
 
     def test_what_reaches_every_test_selects_the_whole_suite(self):
         for name in ('backend/store/models.py', 'backend/store/migrations/0001_initial.py',
