@@ -35,8 +35,9 @@ mayúsculas incluidas (deuda IMG-IMPORT-CASE); un catálogo con una columna de s
 carga de productos (como ya lo trataba esa carga) y la respuesta lo dice.
 
 **Pruebas (sobre `406107e`, PostgreSQL, base `blackdog_focal`).** Nuevas:
-`store/test_import_assistant.py` (42) y `store/test_image_import.py` (67, dos con dos conexiones
-reales); Jest `bulk-inventory-centre` (29) y `bulk-image-import` (27). Pasadas focales: 560 OK
+`store/test_import_assistant.py` (42) y `store/test_image_import.py` (68, dos con dos conexiones
+reales; la última se añadió en `8786d56`, tras las pasadas de abajo, y el módulo se volvió a correr
+entero: 68 OK); Jest `bulk-inventory-centre` (29) y `bulk-image-import` (27). Pasadas focales: 560 OK
 (los cuatro módulos nuevos de la fase, `test_import_media`, `test_import_template`,
 `test_product_destination_import`, `test_unit_import`, `test_request_limits`,
 `test_storefront_image_cleanup`, `test_storefront_media`, `test_stock_units`, `test_serial_pick`,
@@ -44,7 +45,7 @@ reales); Jest `bulk-inventory-centre` (29) y `bulk-image-import` (27). Pasadas f
 checkout de `store/tests.py`, y la matriz de paridad). Jest completo 1303/1303 en 115 suites;
 `tsc --noEmit` limpio; lint 0 errores y 22 avisos (ninguno nuevo); `makemigrations --check
 --dry-run` sin cambios. **La suite completa del backend, Playwright y el ensayo NO se corrieron.**
-Mutaciones de estas dos partes: 136; 9 sobrevivieron a la primera pasada: 6 se cerraron con
+Mutaciones de estas dos partes: 138; 9 sobrevivieron a la primera pasada: 6 se cerraron con
 pruebas, 2 quitando una comprobación duplicada, y 1 queda como equivalente (el filtro de empresa
 al bloquear productos: la comprobación del catálogo ya rechaza ese caso).
 
