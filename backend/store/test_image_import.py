@@ -495,6 +495,25 @@ class ApplyAddTest(_Base):
         self.assertEqual(len(self.gallery(self.phone)), 2)
         self.assertEqual(AdminAuditLog.objects.filter(action='product_images_import_applied').count(), 1)
 
+    def test_the_load_locks_its_products_of_this_company_lowest_id_first(self):
+        """
+        Review M53, M54. Every product of the load is taken in ONE statement,
+        lowest id first (the order the bulk change and the product load use, so
+        none of them waits on another holding what it needs), and only among
+        this company's products.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        body = self.staged([picture('COD-A2.png', ONE), picture('COD-A1.png', TWO)])
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.apply(body['id']).status_code, 200)
+
+        locks = [q['sql'] for q in queries if 'FOR UPDATE' in q['sql'] and 'FROM "store_product"' in q['sql']]
+        self.assertIn(f'IN ({self.phone.pk}, {self.cable.pk})', locks[0])
+        self.assertIn('ORDER BY "store_product"."id" ASC', locks[0])
+        self.assertIn(f'"store_product"."company_id" = {self.company.pk}', locks[0])
+
     def test_only_the_gallery_and_the_product_s_picture_address_are_written(self):
         branch = _p2d_branch(self.company, 'Centro')
         category = Category.objects.create(company=self.company, name='Teléfonos', slug='telefonos')

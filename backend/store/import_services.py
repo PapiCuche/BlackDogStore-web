@@ -865,6 +865,17 @@ def apply_products(*, job, actor):
                 f'previsualizar antes de aplicar.'
             )
 
+    # EVERY PRODUCT THIS JOB EDITS, LOCKED NOW, LOWEST ID FIRST.
+    #
+    # The loop below used to take each product as its row came up — in FILE
+    # order. The bulk visibility change and the picture load take theirs in id
+    # order, so a file naming the higher id first and one of those, over the
+    # same two products, waited on each other until the database killed one (a
+    # 500). One order for everybody: whoever arrives second waits, and proceeds.
+    # The per-row `select_for_update` further down then finds its row already held.
+    edited = sorted({(row.normalized_data or {}).get('product_id') for row in rows} - {None})
+    list(Product.objects.select_for_update().filter(company=company, pk__in=edited).order_by('pk').only('pk'))
+
     for row in rows:
         data = row.normalized_data or {}
         name = data.get('name', '')

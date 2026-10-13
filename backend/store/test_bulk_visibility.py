@@ -17,20 +17,25 @@ Lo que estas pruebas fijan:
   * que lo oculto o inactivo no enseña precio ni se deja comprar por ningún
     camino público, también cuando ya estaba en un carrito.
 """
+import io
 import threading
+import time
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection as db_connection
 from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from openpyxl import Workbook
 from rest_framework.test import APIClient
 
-from store import admin_views, product_publication, stock_unit_services
+from store import admin_views, import_exports, import_services, product_publication, stock_unit_services
 from store.models import (
-    AdminAuditLog, BranchStock, CartItem, Category, Order, Product, ProductImage, Review,
-    StockMovement, StockUnit,
+    AdminAuditLog, BranchStock, BulkImportJob, CartItem, Category, Order, Product, ProductBarcode,
+    ProductImage, Review, StockMovement, StockUnit,
 )
 from store.tests import (
     FAKE_SESSION_TOKEN, IZIPAY_TEST_SETTINGS, SESSION_TOKEN_PATH,
@@ -857,6 +862,138 @@ class PublicExposureMatrixTest(TestCase):
             # The same buyer buys what the shop does sell.
             fine = app.post(url, body('cable-expo', 'expo-req-0000002'), format='json')
             self.assertLess(fine.status_code, 300, fine.content)
+
+
+# =============================================================================
+# One lock order for everything that writes products in bulk
+# =============================================================================
+
+XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def product_locks(queries):
+    """The statements that LOCK product rows, in the order they ran."""
+    return [q['sql'] for q in queries if 'FOR UPDATE' in q['sql'] and 'FROM "store_product"' in q['sql']]
+
+
+def product_workbook(rows):
+    book = Workbook()
+    page = book.active
+    page.title = 'Productos'
+    page.append(import_exports.PRODUCT_TEMPLATE_HEADERS)
+    for row in rows:
+        page.append(row)
+    out = io.BytesIO()
+    book.save(out)
+    return SimpleUploadedFile('productos.xlsx', out.getvalue(), content_type=XLSX)
+
+
+class LockOrderTest(_Base):
+    """
+    Review N7, M04. The bulk change, the picture load and the product load all
+    hold several product rows at once. If each takes them in its own order, two
+    of them wait on each other and the database kills one (a 500). So all three
+    take them LOWEST ID FIRST — pinned here on the locking statement itself.
+    """
+
+    def test_the_bulk_change_locks_its_products_lowest_id_first(self):
+        products = [self.product(f'Funda {n}') for n in range(3)]
+        with CaptureQueriesContext(db_connection) as queries:
+            self.post({'action': 'hide', 'ids': [p.pk for p in reversed(products)]})
+        locks = product_locks(queries)
+        self.assertEqual(len(locks), 1, locks)
+        self.assertIn('ORDER BY "store_product"."id" ASC', locks[0])
+
+    def test_the_product_load_locks_every_product_it_edits_lowest_id_first_before_writing_any(self):
+        low, high = self.product('Funda baja'), self.product('Funda alta')
+        for product, code in ((low, 'BAJA-1'), (high, 'ALTA-1')):
+            ProductBarcode.objects.create(company=self.company, product=product, code=code)
+        staged = self.api.post('/api/admin/products/import/preview/', {'file': product_workbook([
+            ['', 'ALTA-1', 'Funda alta renombrada', '', 11, 'Accesorios', '', '', ''],     # the HIGHER id first
+            ['', 'BAJA-1', 'Funda baja renombrada', '', 11, 'Accesorios', '', '', ''],
+        ])}, format='multipart')
+        self.assertEqual((staged.status_code, staged.json()['counts']['update']), (201, 2), staged.content)
+        job = BulkImportJob.objects.get(pk=staged.json()['id'])
+
+        with CaptureQueriesContext(db_connection) as queries:
+            import_services.apply_products(job=job, actor=self.manager)
+
+        locks = product_locks(queries)
+        # ONE statement takes both, in id order, and it runs before any row is written.
+        self.assertIn(f'IN ({low.pk}, {high.pk})', locks[0])
+        self.assertIn('ORDER BY "store_product"."id" ASC', locks[0])
+        self.assertIn(f'"store_product"."company_id" = {self.company.pk}', locks[0])
+        first_write = next(i for i, q in enumerate(queries) if q['sql'].startswith('UPDATE "store_product"'))
+        first_lock = next(i for i, q in enumerate(queries) if q['sql'] == locks[0])
+        self.assertLess(first_lock, first_write)
+        self.assertEqual(
+            list(Product.objects.filter(pk__in=[low.pk, high.pk]).order_by('pk').values_list('name', 'price')),
+            [('Funda baja renombrada', Decimal('11.00')), ('Funda alta renombrada', Decimal('11.00'))])
+
+
+class ProductLoadAgainstBulkChangeTest(TransactionTestCase):
+    """Real locks, two connections: the two writers over the same products, in opposite orders."""
+
+    def setUp(self):
+        cache.clear()
+        self.company = _saas_company('Tienda A', 'bulk-vis-orden', tax_id='20999999993')
+        from store.company_provisioning import provision_company_access_defaults
+        provision_company_access_defaults(self.company)
+        self.user, _ = _p2d_member(self.company, 'bv_orden', ['company.view', 'products.view', 'products.manage'])
+        category = Category.objects.create(company=self.company, name='Accesorios', slug='accesorios')
+        self.low, self.high = (
+            Product.objects.create(company=self.company, name=name, slug=slug, price=Decimal('10.00'),
+                                   category=category, image_url=PICTURE)
+            for name, slug in (('Baja', 'bv-orden-baja'), ('Alta', 'bv-orden-alta'))
+        )
+        ProductBarcode.objects.create(company=self.company, product=self.low, code='BAJA-1')
+        ProductBarcode.objects.create(company=self.company, product=self.high, code='ALTA-1')
+
+    def test_a_load_that_names_the_higher_id_first_and_a_bulk_change_do_not_deadlock(self):
+        staged = _client(self.user).post('/api/admin/products/import/preview/', {'file': product_workbook([
+            ['', 'ALTA-1', 'Alta nueva', '', 11, 'Accesorios', '', '', ''],
+            ['', 'BAJA-1', 'Baja nueva', '', 11, 'Accesorios', '', '', ''],
+        ])}, format='multipart')
+        self.assertEqual(staged.status_code, 201, staged.content)
+        job_id = staged.json()['id']
+
+        first_row_done, results = threading.Event(), {}
+        original = import_services._place_row_images
+
+        def slow(row, product, images, actor):
+            # The load has written its FIRST row and holds whatever it locked for it.
+            if not first_row_done.is_set():
+                first_row_done.set()
+                time.sleep(1.5)        # long enough for the bulk change to take what is free and wait
+            return original(row, product, images, actor)
+
+        def run(name, call, wait=False):
+            try:
+                if wait:
+                    first_row_done.wait(10)
+                results[name] = call().status_code
+            except Exception as failed:  # noqa: BLE001 — a deadlock arrives as an exception
+                results[name] = failed
+            finally:
+                db_connection.close()
+
+        ids = [self.low.pk, self.high.pk]
+        with patch.object(import_services, '_place_row_images', side_effect=slow):
+            threads = [
+                threading.Thread(target=run, args=(
+                    'load', lambda: _client(self.user).post(f'/api/admin/products/import/{job_id}/apply/'))),
+                threading.Thread(target=run, args=(
+                    'bulk', lambda: _client(self.user).post(URL, {'action': 'hide', 'ids': ids}, format='json'), True)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+
+        self.assertEqual(results, {'load': 200, 'bulk': 200})
+        self.assertEqual(
+            list(Product.objects.filter(pk__in=ids).order_by('pk').values_list('name', 'is_published_online')),
+            [('Baja nueva', False), ('Alta nueva', False)])
 
 
 # =============================================================================
