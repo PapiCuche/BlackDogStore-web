@@ -985,8 +985,8 @@ STAFF_KEYS = {
     'recipient_name', 'recipient_document_type', 'recipient_document_number', 'recipient_phone',
     'address_line', 'district', 'city', 'department', 'reference',
     'carrier', 'carrier_name', 'agency_name', 'agency_locality',
-    'freight_amount', 'freight_paid_by', 'waybill_number', 'tracking_code', 'tracking_url', 'shipped_at',
-    'updated_by', 'updated_at',
+    'freight_amount', 'freight_paid_by', 'waybill_number', 'tracking_code', 'tracking_url', 'tracking_url_typed',
+    'shipped_at', 'updated_by', 'updated_at',
 }
 
 
@@ -1705,13 +1705,41 @@ class ABookDoesNotGrowWithoutEndTest(_BookBase):
             for _ in range(delivery.MAX_ADDRESS_ROWS - 2)
         ])
         self.assertEqual(self.call('post', body=door(label='La última')).status_code, 201)
-        response = self.call('post', body=door(label='Una más'))
-        self.assertEqual(response.status_code, 400, response.content)
-        self.assertIn('detail', response.json())
         self.assertEqual(CustomerAddress.objects.filter(customer=customer).count(), delivery.MAX_ADDRESS_ROWS)
+        # At the ceiling a new entry takes the place of the OLDEST removed row: no row is added, nobody is refused.
+        oldest = CustomerAddress.objects.filter(customer=customer, is_active=False).order_by('pk').first()
+        CustomerAddress.objects.filter(pk=oldest.pk).update(
+            label='Vieja', reference='Dato de antes', recipient_phone='911111111', department='Antes', is_default=False)
+        response = self.call('post', body={'kind': 'address', 'recipient_name': 'Ana Torres', 'address_line': 'Av. Nueva 9',
+                                           'district': 'Cayma', 'city': 'Arequipa'})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['id'], oldest.pk)
+        self.assertEqual(CustomerAddress.objects.filter(customer=customer).count(), delivery.MAX_ADDRESS_ROWS)
+        oldest.refresh_from_db()
+        # Nothing of what the row used to say is left on it.
+        self.assertEqual((oldest.is_active, oldest.label, oldest.reference, oldest.recipient_phone, oldest.department, oldest.address_line),
+                         (True, '', '', '', '', 'Av. Nueva 9'))
+        self.assertEqual(AdminAuditLog.objects.filter(action='customer_address_created', target_id=str(oldest.pk)).count(), 1)
         # What is there can still be corrected, made the default and removed.
         self.assertEqual(self.call('patch', f'{entry.pk}/', {'label': 'Corregida'}).status_code, 200)
         self.assertEqual(self.call('delete', f'{entry.pk}/').status_code, 204)
+
+    def test_with_every_row_removed_the_buyer_is_not_locked_out(self):
+        customer = Customer.objects.create(company=self.a, user=self.ana, first_name='Ana')
+        CustomerAddress.objects.bulk_create([
+            CustomerAddress(company=self.a, customer=customer, recipient_name='Ana', address_line='x', district='y',
+                            city='z', is_active=False)
+            for _ in range(delivery.MAX_ADDRESS_ROWS)
+        ])
+        response = self.call('post', body=door())
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(CustomerAddress.objects.filter(customer=customer).count(), delivery.MAX_ADDRESS_ROWS)
+        [entry] = self.book()
+        self.assertTrue(entry['is_default'])
+        # The ten-entry limit is still what refuses.
+        for n in range(delivery.MAX_ACTIVE_ADDRESSES - 1):
+            self.assertEqual(self.call('post', body=door(label=f'Casa {n}')).status_code, 201)
+        self.assertEqual(self.call('post', body=door(label='De más')).status_code, 400)
 
     def test_another_buyers_rows_do_not_count(self):
         other = Customer.objects.create(company=self.a, user=self.luis, first_name='Luis')
@@ -1783,3 +1811,108 @@ class WhoWroteTheDeliveryTest(_StaffDeliveryBase):
         self.manager.first_name, self.manager.last_name = 'Gema', 'Gestora'
         self.manager.save()
         self.assertEqual(self.write(self.manager, {'waybill_number': 'G-1'}).json()['updated_by'], 'Gema Gestora')
+
+
+# ---------------------------------------------------------------------------
+# 8 · after the third independent review
+# ---------------------------------------------------------------------------
+
+
+class ALinkSentBackIsNotALinkTypedTest(_StaffDeliveryBase):
+    """F6 · a client that sends the record back with one field changed has not typed the link it was shown."""
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.manager, {'carrier': self.agency.pk, 'waybill_number': 'G-1'})
+        self.shown = self.record().tracking_url
+        self.assertEqual(self.shown, 'https://rastreo.ejemplo.test/g/G-1')
+
+    def test_a_new_waybill_with_the_old_derived_link_sent_back(self):
+        body = self.write(self.manager, {'waybill_number': 'G-2', 'tracking_url': self.shown}).json()
+        record = self.record()
+        self.assertEqual((record.tracking_url, record.tracking_url_typed), ('https://rastreo.ejemplo.test/g/G-2', False))
+        self.assertEqual((body['tracking_url'], body['tracking_url_typed']), ('https://rastreo.ejemplo.test/g/G-2', False))
+
+    def test_a_new_carrier_with_the_old_derived_link_sent_back(self):
+        other = self.carrier(name='Otra Agencia', kind='agency', tracking_url_template='https://otra.ejemplo.test/t/{guia}')
+        self.write(self.manager, {'carrier': other.pk, 'tracking_url': self.shown})
+        record = self.record()
+        self.assertEqual((record.tracking_url, record.tracking_url_typed), ('https://otra.ejemplo.test/t/G-1', False))
+
+    def test_the_same_link_sent_back_alone_changes_nothing(self):
+        Carrier.objects.filter(pk=self.agency.pk).update(tracking_url_template='https://nueva.ejemplo.test/{guia}')
+        self.write(self.manager, {'tracking_url': self.shown, 'tracking_code': 'CLAVE'})
+        record = self.record()
+        self.assertEqual((record.tracking_url, record.tracking_url_typed), (self.shown, False))
+
+    def test_a_typed_link_sent_back_is_still_the_typed_link(self):
+        typed = 'https://courier.ejemplo.test/mi-envio/abc'
+        self.write(self.manager, {'tracking_url': typed})
+        body = self.write(self.manager, {'waybill_number': 'G-2', 'tracking_url': typed}).json()
+        self.assertEqual((body['tracking_url'], body['tracking_url_typed']), (typed, True))
+        self.assertTrue(self.read(self.viewer).json()['tracking_url_typed'])
+
+    def test_another_link_typed_over_a_derived_one_is_typed(self):
+        self.write(self.manager, {'waybill_number': 'G-2', 'tracking_url': 'https://courier.ejemplo.test/x'})
+        record = self.record()
+        self.assertEqual((record.tracking_url, record.tracking_url_typed), ('https://courier.ejemplo.test/x', True))
+
+
+class HalfACharacterInALinkTest(_StaffDeliveryBase):
+    """F7 · the two addresses that become links refuse half a character like every other text."""
+
+    def test_the_orders_tracking_address(self):
+        response = acting(self.manager).patch(self.url(self.order, 'panel'), data='{"tracking_url": "https://uno.test/\\ud800"}',
+                                              content_type='application/json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('tracking_url', response.json())
+        self.assertEqual(self.record().tracking_url, '')
+
+    def test_a_carriers_tracking_template(self):
+        response = acting(self.admin).post(
+            CARRIERS, data='{"name": "Uno", "kind": "courier", "tracking_url_template": "https://uno.test/\\udfff/{guia}"}',
+            content_type='application/json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('tracking_url_template', response.json())
+        self.assertFalse(Carrier.objects.filter(name='Uno').exists())
+
+
+class TheBookDoesNotFollowTheRecordToAnotherAccountTest(_BookBase):
+    """F5 · when the shop unlinks an account from a record, the addresses that account wrote stop being anybody's book."""
+
+    def test_unlinking_switches_the_book_off(self):
+        from store import tracking_services as tracking
+
+        first, second = self.add(door()), self.add(self.office())
+        record = first.customer
+        staff = self.admin
+        tracking.unlink_account(record, actor=staff, reason='cuenta equivocada')
+
+        self.assertEqual(self.book(), [])
+        self.assertEqual(
+            list(CustomerAddress.objects.filter(customer=record).order_by('pk').values_list('pk', 'is_active', 'is_default')),
+            [(first.pk, False, False), (second.pk, False, False)],
+        )
+        # The next account linked to that record starts with an empty book.
+        Customer.objects.filter(pk=record.pk).update(user=self.luis)
+        self.assertEqual(self.book(client=web_session(self.luis)), [])
+        entry = AdminAuditLog.objects.get(action='customer_account_unlinked')
+        self.assertEqual(entry.metadata['addresses_removed'], 2)
+        for value in ('Av. Siempre Viva 123', 'Ana Torres', '987654321'):
+            self.assertNotIn(value, json.dumps(entry.metadata))
+
+    def test_a_record_that_had_no_account_keeps_what_it_has(self):
+        from store import tracking_services as tracking
+
+        record = Customer.objects.create(company=self.a, first_name='Sin cuenta')
+        row = CustomerAddress.objects.create(company=self.a, customer=record, recipient_name='x', address_line='x', district='y', city='z')
+        tracking.unlink_account(record, actor=self.admin, reason='nada que desvincular')
+        self.assertTrue(CustomerAddress.objects.get(pk=row.pk).is_active)
+
+    def test_another_records_book_is_not_touched(self):
+        from store import tracking_services as tracking
+
+        mine = self.add(door())
+        other = Customer.objects.create(company=self.a, user=self.luis, first_name='Luis')
+        tracking.unlink_account(other, actor=self.admin, reason='otra ficha')
+        self.assertTrue(CustomerAddress.objects.get(pk=mine.pk).is_active)

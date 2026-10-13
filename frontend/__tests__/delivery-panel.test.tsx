@@ -35,7 +35,7 @@ function delivery(overrides: Partial<OrderDelivery> = {}): OrderDelivery {
     recipient_name: 'Ana Torres', recipient_document_type: 'dni', recipient_document_number: '70000001', recipient_phone: '987654321',
     address_line: 'Av. Siempre Viva 123', district: 'Juliaca', city: 'Puno', department: '', reference: '',
     carrier: null, carrier_name: '', agency_name: '', agency_locality: '', freight_amount: null, freight_paid_by: '',
-    waybill_number: '', tracking_code: '', tracking_url: '', shipped_at: null, updated_by: null, updated_at: null,
+    waybill_number: '', tracking_code: '', tracking_url: '', tracking_url_typed: false, shipped_at: null, updated_by: null, updated_at: null,
     ...overrides,
   };
 }

@@ -61,6 +61,8 @@ export type OrderDelivery = {
   waybill_number: string;
   tracking_code: string;
   tracking_url: string;
+  /** True when a person typed that link; false when it follows carrier and waybill. */
+  tracking_url_typed: boolean;
   shipped_at: string | null;
   updated_by: string | null;
   updated_at: string | null;

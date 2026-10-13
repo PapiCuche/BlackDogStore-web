@@ -481,10 +481,19 @@ def unlink_account(customer, *, actor, reason: str, request=None) -> Customer:
         return locked
     locked.user = None
     locked.save(update_fields=['user', 'updated_at'])
+    # The address book was written by the account that is leaving: the next
+    # account linked to this record must not find it. Switched off, like any
+    # entry its owner removes; the orders that used an address have their copy.
+    from .models import CustomerAddress
+
+    removed = CustomerAddress.objects.filter(customer=locked, is_active=True).update(
+        is_active=False, is_default=False, updated_at=timezone.now(),
+    )
     AdminAuditLog.log(
         actor=actor, action='customer_account_unlinked', target_type='customer',
         target_id=locked.pk,
-        metadata={'customer_id': locked.pk, 'previous_user_id': previous, 'reason': reason},
+        metadata={'customer_id': locked.pk, 'previous_user_id': previous, 'reason': reason,
+                  'addresses_removed': removed},
         request=request, company=locked.company,
     )
     return locked

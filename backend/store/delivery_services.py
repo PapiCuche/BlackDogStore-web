@@ -70,8 +70,8 @@ def _https_address(field: str, value, *, max_length: int, placeholder: str = '')
         return ''
     if len(text) > max_length:
         _refuse(field, f'Máximo {max_length} caracteres.')
-    if any(ch.isspace() or ord(ch) < 32 for ch in text):
-        _refuse(field, 'La dirección no puede llevar espacios.')
+    if any(ch.isspace() for ch in text) or identity.has_control_characters(text):
+        _refuse(field, 'La dirección no puede llevar espacios ni caracteres que no se pueden guardar.')
     # Judged with the placeholder filled by something harmless: what matters is
     # the address a browser would open.
     probe = text.replace(placeholder, 'x') if placeholder else text
@@ -223,8 +223,8 @@ def update_carrier(*, carrier, company, actor, data, request=None):
 MAX_ACTIVE_ADDRESSES = 10
 #: Every row one buyer holds in one shop, kept or removed. A removed entry is
 #: switched off, not deleted, so without a ceiling adding and removing would
-#: grow the table for ever. Far above what anybody types in a lifetime of
-#: moving house; beyond it an entry is corrected, not added.
+#: grow the table for ever. At the ceiling a new entry is written over the
+#: oldest removed row instead of adding one: nobody is ever refused for it.
 MAX_ADDRESS_ROWS = 200
 #: What a file the shop archived answers to a write. It says nothing of why:
 #: the shop's decision about a client is not that client's to learn here.
@@ -414,12 +414,19 @@ def create_address(*, company, user, data, request=None):
             raise DeliveryError({
                 'detail': f'Puedes guardar hasta {MAX_ACTIVE_ADDRESSES} direcciones. Quita una para agregar otra.',
             })
-        if CustomerAddress.objects.filter(customer=customer).count() >= MAX_ADDRESS_ROWS:
-            raise DeliveryError({
-                'detail': 'Ya no puedes agregar más direcciones: corrige una de las que tienes.',
-            })
+        values = _address_values(company, data, CustomerAddress(company=company, customer=customer))
         entry = CustomerAddress(company=company, customer=customer)
-        for field, value in _address_values(company, data, entry).items():
+        if CustomerAddress.objects.filter(customer=customer).count() >= MAX_ADDRESS_ROWS:
+            # At the ceiling no row is added: the new entry takes the place of
+            # the OLDEST one the buyer removed (with ten active at most, there
+            # always is one). Every field is written over; nothing of what the
+            # row used to say is left on it.
+            entry = (
+                CustomerAddress.objects.select_for_update()
+                .filter(customer=customer, is_active=False).order_by('pk').first()
+            )
+            entry.is_active = True
+        for field, value in values.items():
             setattr(entry, field, value)
         entry.is_default = not active.filter(is_default=True).exists()
         entry.save()
@@ -647,6 +654,8 @@ def staff_payload(order, record=None, *, can_edit: bool = False) -> dict:
         'waybill_number': record.waybill_number,
         'tracking_code': record.tracking_code,
         'tracking_url': record.tracking_url,
+        # Whether a person typed that link (it stays) or it follows carrier and waybill.
+        'tracking_url_typed': record.tracking_url_typed,
         'shipped_at': record.shipped_at,
         # A name when the person has one; never the login, which is not a name to show.
         'updated_by': (editor.get_full_name().strip() or STAFF_WITHOUT_NAME) if editor is not None else None,
@@ -776,6 +785,11 @@ def _staff_values(company, data, record) -> dict:
     retyped = 'tracking_url' in data
     if retyped:
         typed = clean_tracking_url(data['tracking_url'] if data['tracking_url'] is not None else '')
+        # The link the record already has, SENT BACK as it was shown, is not
+        # somebody typing a link: a client that returns the whole record with
+        # a new waybill would otherwise freeze the old page under the new one.
+        retyped = typed != record.tracking_url
+    if retyped:
         # The carrier's own page typed back is not a link of somebody's own.
         values['tracking_url_typed'] = bool(typed) and typed != carriers_own
         if values['tracking_url_typed']:
