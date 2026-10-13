@@ -13,7 +13,9 @@ Lo que estas pruebas fijan:
   * la regla de «puede publicarse», una sola;
   * la acción por ids y por «todo lo que coincide con el filtro», con el mismo
     filtro que usa la lista y con el conteo que el operador vio;
-  * empresa, permisos, topes, concurrencia y auditoría.
+  * empresa, permisos, topes, concurrencia y auditoría;
+  * que lo oculto o inactivo no enseña precio ni se deja comprar por ningún
+    camino público, también cuando ya estaba en un carrito.
 """
 import threading
 from decimal import Decimal
@@ -22,20 +24,31 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection as db_connection
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from store import admin_views, product_publication, stock_unit_services
 from store.models import (
-    AdminAuditLog, BranchStock, Category, Product, ProductImage, StockMovement, StockUnit,
+    AdminAuditLog, BranchStock, CartItem, Category, Order, Product, ProductImage, Review,
+    StockMovement, StockUnit,
 )
-from store.tests import _p2d_branch, _p2d_member, _p2d_stock, _p3_company, _saas_company
+from store.tests import (
+    FAKE_SESSION_TOKEN, IZIPAY_TEST_SETTINGS, SESSION_TOKEN_PATH,
+    _make_product, _p2d_branch, _p2d_member, _p2d_stock, _p3_company, _pilot_company, _saas_company,
+    _v1_customer,
+)
 
 User = get_user_model()
 
 URL = '/api/admin/products/bulk-visibility/'
 LIST_URL = '/api/admin/products/'
 PICTURE = 'https://imagenes.example.test/producto.png'
+
+CHECKOUT = {
+    'customer_name': 'Ana Torres', 'customer_email': 'ana@correo.test', 'customer_phone': '936449536',
+    'document_type': 'dni', 'document_number': '12345678', 'delivery_method': 'pickup_store',
+    'receipt_type': 'boleta', 'accepted_terms': True, 'accepted_warranty_policy': True,
+}
 
 
 def _client(user):
@@ -535,6 +548,235 @@ class ProductListTest(_Base):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(self.published(product), [True])
         self.assertEqual(response.json()['publication_problems'], ['no_image'])
+
+
+# =============================================================================
+# What the public sees of a product that left the web
+# =============================================================================
+
+class PublicExposureMatrixTest(TestCase):
+    """
+    One product hidden and one deactivated, BOTH AFTER a buyer put them in a cart.
+
+    Every public way in, for each of the two: none shows its price, its stock
+    or its description, and none lets it be bought. The cart is the one place
+    that still names it — the buyer put it there — and only to say it is gone.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _pilot_company()
+        self.category = Category.objects.create(company=self.company, name='Cables Expo', slug='cables-expo')
+        self.on_sale = _make_product('Cable Expo', 'cable-expo', price='41.00', category=self.category)
+        hidden = _make_product('Oculto Expo', 'oculto-expo', price='73.19', category=self.category)
+        inactive = _make_product('Inactivo Expo', 'inactivo-expo', price='86.27', category=self.category)
+        buyer = User.objects.create_user('expo_compradora', 'expo@correo.test', 'Pass123!')
+        for product in (self.on_sale, hidden, inactive):
+            Product.objects.filter(pk=product.pk).update(description=f'Ficha reservada de {product.slug}')
+            Review.objects.create(product=product, user=buyer, rating=5, comment=f'Reseña de {product.slug}')
+        # In a cart while it was still on sale — one cart per case, next to
+        # something the shop does sell.
+        self.gone = {'hidden': hidden, 'inactive': inactive}
+        for kind, product in self.gone.items():
+            CartItem.objects.create(session_key=f'expo_{kind}', product=self.on_sale, quantity=1)
+            CartItem.objects.create(session_key=f'expo_{kind}', product=product, quantity=2)
+        Product.objects.filter(pk=hidden.pk).update(is_published_online=False)
+        Product.objects.filter(pk=inactive.pk).update(is_active=False)
+        for product in self.gone.values():
+            product.refresh_from_db()
+        self.client = APIClient()
+
+    def assert_says_nothing(self, response, product, *, name_allowed=False):
+        """Not its price, not its description, not its address — and its name only where allowed."""
+        body = response.content.decode()
+        self.assertNotIn(str(product.price), body)
+        self.assertNotIn('Ficha reservada de ' + product.slug, body)
+        self.assertNotIn(product.slug, body)
+        if not name_allowed:
+            self.assertNotIn(product.name, body)
+
+    def slugs(self, url):
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        return response, [row['slug'] for row in (body['results'] if isinstance(body, dict) else body)]
+
+    def line(self, kind, product):
+        return CartItem.objects.get(session_key=f'expo_{kind}', product=product)
+
+    # -- catalogue ------------------------------------------------------------
+
+    def test_web_list(self):
+        response, found = self.slugs('/api/products/')
+        self.assertIn('cable-expo', found)
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                self.assertNotIn(product.slug, found)
+                self.assert_says_nothing(response, product)
+
+    def test_web_detail(self):
+        self.assertEqual(self.client.get(f'/api/products/{self.on_sale.pk}/').status_code, 200)
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                response = self.client.get(f'/api/products/{product.pk}/')
+                self.assertEqual(response.status_code, 404)
+                self.assert_says_nothing(response, product)
+                response, found = self.slugs(f'/api/products/?slug={product.slug}')
+                self.assertEqual(found, [])
+
+    def test_web_search(self):
+        response, found = self.slugs('/api/products/?search=Expo')
+        self.assertEqual(found, ['cable-expo'])
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                self.assert_says_nothing(response, product)
+                _response, by_name = self.slugs(f'/api/products/?search={product.name.split()[0]}')
+                self.assertEqual(by_name, [])
+
+    def test_category_listing(self):
+        response, found = self.slugs('/api/products/?category=cables-expo')
+        self.assertEqual(found, ['cable-expo'])
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                self.assert_says_nothing(response, product)
+
+    def test_reviews_read(self):
+        self.assertEqual(len(self.client.get(f'/api/reviews/?product={self.on_sale.pk}').json()), 1)
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                response = self.client.get(f'/api/reviews/?product={product.pk}')
+                self.assertEqual(response.json(), [])
+
+    # -- cart -----------------------------------------------------------------
+
+    def test_cart_add(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                response = self.client.post(
+                    '/api/cart/add/', {'session_key': f'expo_{kind}', 'product': product.pk, 'quantity': 1}, format='json')
+                self.assertEqual(response.status_code, 404, response.content)
+                self.assert_says_nothing(response, product)
+                self.assertEqual(self.line(kind, product).quantity, 2)
+
+    def test_cart_read_opens_and_marks_the_line_unavailable(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                response = self.client.get(f'/api/cart/?session_key=expo_{kind}')
+                self.assertEqual(response.status_code, 200, response.content)
+                lines = {row['product']['id']: row for row in response.json()}
+
+                sold = lines[self.on_sale.pk]
+                self.assertIs(sold['available'], True)
+                self.assertEqual(sold['product']['price'], '41.00')
+                self.assertEqual(sold['product']['slug'], 'cable-expo')
+
+                gone = lines[product.pk]
+                self.assertIs(gone['available'], False)
+                # Name and picture, to say what it was and let it be removed. Nothing else.
+                self.assertEqual(gone['product'], {'id': product.pk, 'name': product.name, 'image_url': product.image_url})
+                self.assertEqual(gone['quantity'], 2)
+                self.assert_says_nothing(response, product, name_allowed=True)
+
+    def test_cart_patch(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                line = self.line(kind, product)
+                response = self.client.patch(
+                    f'/api/cart/{line.pk}/?session_key=expo_{kind}', {'quantity': 1}, format='json')
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('ya no está disponible', response.json()['detail'])
+                self.assert_says_nothing(response, product, name_allowed=True)
+                self.assertEqual(self.line(kind, product).quantity, 2)
+
+                # The line next to it is still the buyer's to change.
+                other = self.line(kind, self.on_sale)
+                fine = self.client.patch(f'/api/cart/{other.pk}/?session_key=expo_{kind}', {'quantity': 2}, format='json')
+                self.assertEqual(fine.status_code, 200, fine.content)
+                self.assertIs(fine.json()['available'], True)
+
+    def test_cart_remove_still_works(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                line = self.line(kind, product)
+                response = self.client.delete(f'/api/cart/{line.pk}/?session_key=expo_{kind}')
+                self.assertEqual(response.status_code, 204)
+                self.assertFalse(CartItem.objects.filter(pk=line.pk).exists())
+
+    # -- buying ---------------------------------------------------------------
+
+    def test_checkout_quote(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                body = {'session_key': f'expo_{kind}', 'delivery_method': 'pickup_store'}
+                response = self.client.post('/api/checkout/quote/', body, format='json')
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertNotIn(str(product.price), response.content.decode())
+
+                # Without that line the same cart is quoted: it was the line, not the cart.
+                self.line(kind, product).delete()
+                self.assertEqual(self.client.post('/api/checkout/quote/', body, format='json').status_code, 200)
+
+    def test_web_checkout(self):
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                with patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN), override_settings(**IZIPAY_TEST_SETTINGS):
+                    response = self.client.post(
+                        '/api/payments/create-checkout-session/', {'session_key': f'expo_{kind}', **CHECKOUT}, format='json')
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('ya no está disponible', response.content.decode())
+                self.assertNotIn(str(product.price), response.content.decode())
+                self.assertFalse(Order.objects.filter(items__product=product).exists())
+
+    # -- the app's API --------------------------------------------------------
+
+    def test_v1_list_and_detail(self):
+        base = f'/api/v1/storefront/{self.company.slug}/products/'
+        response, found = self.slugs(base)
+        self.assertIn('cable-expo', found)
+        self.assertEqual(self.client.get(f'{base}cable-expo/').status_code, 200)
+        for kind, product in self.gone.items():
+            with self.subTest(kind):
+                self.assertNotIn(product.slug, found)
+                self.assert_says_nothing(response, product)
+                detail = self.client.get(f'{base}{product.slug}/')
+                self.assertEqual(detail.status_code, 404)
+                self.assertNotIn(str(product.price), detail.content.decode())
+                _response, searched = self.slugs(f'{base}?search={product.name.split()[0]}')
+                self.assertEqual(searched, [])
+
+    @override_settings(**IZIPAY_TEST_SETTINGS)
+    def test_v1_checkout(self):
+        user = User.objects.create_user('expo_app', 'expo_app@example.com', 'Pass123!')
+        _v1_customer(self.company, user)
+        app = APIClient()
+        token = app.post(
+            '/api/v1/auth/login/', {'email': 'expo_app@example.com', 'password': 'Pass123!'}, format='json',
+        ).json()['access']
+        app.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        url = f'/api/v1/customer/{self.company.slug}/checkout/'
+
+        def body(slug, key):
+            return {
+                'items': [{'product_slug': slug, 'quantity': 1}], 'customer_name': 'Ana Torres',
+                'customer_phone': '987654321', 'document_type': 'dni', 'document_number': '12345678',
+                'delivery_method': 'pickup_store', 'receipt_type': 'boleta', 'accepted_terms': True,
+                'accepted_warranty_policy': True, 'idempotency_key': key,
+            }
+
+        with patch(SESSION_TOKEN_PATH, return_value=FAKE_SESSION_TOKEN):
+            unknown = app.post(url, body('no-existe-expo', 'expo-req-0000001'), format='json')
+            for kind, product in self.gone.items():
+                with self.subTest(kind):
+                    response = app.post(url, body(product.slug, f'expo-req-{kind:0>8}'), format='json')
+                    # Exactly what a slug nobody has answers: it is not «gone», it is not there.
+                    self.assertEqual(response.status_code, unknown.status_code, response.content)
+                    self.assertGreaterEqual(response.status_code, 400)
+                    self.assertNotIn(product.name, response.content.decode())
+                    self.assertNotIn(str(product.price), response.content.decode())
+                    self.assertFalse(Order.objects.filter(items__product=product).exists())
+            # The same buyer buys what the shop does sell.
+            fine = app.post(url, body('cable-expo', 'expo-req-0000002'), format='json')
+            self.assertLess(fine.status_code, 300, fine.content)
 
 
 # =============================================================================

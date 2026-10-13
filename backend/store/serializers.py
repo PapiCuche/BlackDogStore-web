@@ -225,12 +225,45 @@ class OrderSerializer(serializers.ModelSerializer):
 
 
 class CartItemSerializer(serializers.ModelSerializer):
+    """
+    One line of a cart, as the PUBLIC reads it.
+
+    A LINE OUTLIVES ITS PRODUCT'S PLACE ON THE WEB (INVENTORY-UNIFIED-01). A
+    product can be hidden or deactivated after somebody put it in a cart, and
+    the cart still holds the row. Every other public surface stops showing the
+    product at that moment (`tenancy.company_storefront_products`); the cart
+    kept serialising it whole — price, stock, description — as if it were on
+    sale.
+
+    Now such a line carries `available: false` and, of the product, only what
+    lets the buyer recognise it and take it out: its id, its name and its
+    picture. No price, no stock, no description, no address. A line whose
+    product is on sale is unchanged, plus `available: true`.
+    """
+
     product = ProductSerializer(read_only=True)
 
     class Meta:
         model = CartItem
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
+
+    def to_representation(self, instance):
+        product = instance.product
+        if product.is_sold_online:
+            data = super().to_representation(instance)
+            data['available'] = True
+            return data
+        # Built by hand, not by trimming the full payload: a field added to the
+        # public product tomorrow must not reach this line by default.
+        return {
+            'id': instance.pk,
+            'session_key': instance.session_key,
+            'product': {'id': product.pk, 'name': product.name, 'image_url': product.image_url},
+            'quantity': instance.quantity,
+            'added_at': self.fields['added_at'].to_representation(instance.added_at),
+            'available': False,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,9 @@ import { clearStoredCoupon, getSessionKey, readCart, readStoredCoupon } from "..
 type CheckoutItem = {
   id: number;
   quantity: number;
-  product: { id: number; name: string; price: number | string; slug: string };
+  /** INVENTORY-UNIFIED-01. `false`: ya no se vende en la web; llega sin precio. */
+  available?: boolean;
+  product: { id: number; name: string; price?: number | string; slug?: string };
 };
 import { API_BASE } from "../lib/api";
 import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/analytics/items";
@@ -188,8 +190,10 @@ export default function CheckoutPage() {
     return () => { cancelledFetch = true; };
   }, [sessionKey, reloadToken]);
 
+  // Lo que ya no se vende no tiene precio: no se suma. El servidor rechaza el
+  // pago mientras siga en el carrito, y el resumen lo dice.
   const subtotal = (items ?? []).reduce(
-    (sum, item) => sum + Number(item.product.price) * item.quantity, 0,
+    (sum, item) => sum + (item.available === false ? 0 : Number(item.product.price ?? 0) * item.quantity), 0,
   );
   const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
   const total = subtotal - discount;
@@ -886,14 +890,23 @@ export default function CheckoutPage() {
                         <span className="block truncate text-sm text-foreground">
                           {item.product.name}
                         </span>
-                        <span className="mt-0.5 block text-xs text-muted">
-                          {item.quantity} × S/ {Number(item.product.price).toFixed(2)}
-                        </span>
+                        {item.available === false ? (
+                          <span className="mt-0.5 block text-xs font-semibold text-danger">
+                            Ya no está disponible.{" "}
+                            <Link href="/cart" className="underline underline-offset-2">Quítalo en el carrito</Link>
+                          </span>
+                        ) : (
+                          <span className="mt-0.5 block text-xs text-muted">
+                            {item.quantity} × S/ {Number(item.product.price ?? 0).toFixed(2)}
+                          </span>
+                        )}
                       </span>
                       {/* `tabular-nums` para que los importes alineen en columna. */}
-                      <span className="shrink-0 text-sm tabular-nums text-foreground">
-                        S/ {(Number(item.product.price) * item.quantity).toFixed(2)}
-                      </span>
+                      {item.available === false ? null : (
+                        <span className="shrink-0 text-sm tabular-nums text-foreground">
+                          S/ {(Number(item.product.price ?? 0) * item.quantity).toFixed(2)}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>

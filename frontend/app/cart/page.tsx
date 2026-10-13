@@ -13,14 +13,22 @@ import { CartItemCard } from "../components/CartItemCard";
 type CartItem = {
   id: number;
   quantity: number;
+  /**
+   * INVENTORY-UNIFIED-01. `false`: dejó de venderse en la web después de entrar
+   * al carrito. Llega sin precio ni ficha: se muestra, se puede quitar y no se
+   * suma ni se paga.
+   */
+  available?: boolean;
   product: {
     id: number;
     name: string;
-    price: number | string;
-    slug: string;
+    price?: number | string;
+    slug?: string;
     image_url?: string;
   };
 };
+
+const onSale = (lines: CartItem[]) => lines.filter((line) => line.available !== false);
 
 type Coupon = { code: string; discount_percent: number };
 
@@ -44,10 +52,11 @@ export default function CartPage() {
     try {
       const data = await fetcher<CartItem[]>(`${API_BASE}/cart/?session_key=${sessionKey}`);
       setItems(data);
-      if (!viewed.current && data.length) {
+      const sellable = onSale(data);
+      if (!viewed.current && sellable.length) {
         // The cart as it was found, once per visit to this page — not on every reload after an edit.
         viewed.current = true;
-        track({ name: "VIEW_CART", items: toItems(data), currency: DEFAULT_CURRENCY, value: lineTotal(data) });
+        track({ name: "VIEW_CART", items: toItems(sellable), currency: DEFAULT_CURRENCY, value: lineTotal(sellable) });
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Error al cargar el carrito.");
@@ -83,7 +92,8 @@ export default function CartPage() {
       const res = await fetchWithAuth(`${API_BASE}/cart/${id}/?session_key=${sessionKey}`, { method: "DELETE" });
       if (!res.ok) throw new Error("No se pudo eliminar.");
       const removed = items.find((line) => line.id === id);
-      if (removed) {
+      // Lo que ya no se vende no es un artículo retirado de una compra: no tiene precio.
+      if (removed && removed.available !== false) {
         track({
           name: "REMOVE_FROM_CART", item: toItem(removed.product, removed.quantity), currency: DEFAULT_CURRENCY,
           value: lineTotal([removed]),
@@ -129,8 +139,11 @@ export default function CartPage() {
     clearStoredCoupon();
   }
 
-  const unitCount = items.reduce((sum, item) => sum + item.quantity, 0);
-  const subtotal = items.reduce((sum, item) => sum + Number(item.product.price) * item.quantity, 0);
+  // Sólo lo que se vende cuenta: una línea que ya no está disponible no tiene precio.
+  const sellable = onSale(items);
+  const hasUnavailable = sellable.length < items.length;
+  const unitCount = sellable.reduce((sum, item) => sum + item.quantity, 0);
+  const subtotal = sellable.reduce((sum, item) => sum + Number(item.product.price ?? 0) * item.quantity, 0);
   const discountAmount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
   const total = subtotal - discountAmount;
 
@@ -181,6 +194,12 @@ export default function CartPage() {
                 <div className="rounded-xl border border-bd-border bg-surface p-4 text-sm text-muted">
                   Inicia sesión para mantener tu experiencia vinculada a tu cuenta.{" "}
                   <Link href="/auth" className="font-bold text-foreground underline underline-offset-4">Ingresar</Link>
+                </div>
+              ) : null}
+
+              {hasUnavailable ? (
+                <div className="rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger" role="alert">
+                  Algún producto de tu carrito ya no está disponible. Quítalo para continuar con tu compra.
                 </div>
               ) : null}
 
@@ -261,19 +280,26 @@ export default function CartPage() {
                 </span>
               </div>
 
-              <Link
-                href="/checkout"
-                onClick={() => {
-                  track({
-                    name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
-                    ...(coupon ? { coupon: coupon.code } : {}),
-                  });
-                  markCheckoutBegun();
-                }}
-                className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
-              >
-                Continuar al checkout
-              </Link>
+              {hasUnavailable ? (
+                // El pago rechazaría el carrito entero: mejor decirlo aquí que después del formulario.
+                <p className="mt-6 rounded-xl border border-bd-border bg-background px-4 py-3 text-center text-xs font-semibold text-muted">
+                  Quita lo que ya no está disponible para continuar.
+                </p>
+              ) : (
+                <Link
+                  href="/checkout"
+                  onClick={() => {
+                    track({
+                      name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
+                      ...(coupon ? { coupon: coupon.code } : {}),
+                    });
+                    markCheckoutBegun();
+                  }}
+                  className="mt-6 block w-full rounded-full bg-foreground py-3.5 text-center text-xs font-bold uppercase tracking-[0.08em] text-background transition hover:opacity-90"
+                >
+                  Continuar al checkout
+                </Link>
+              )}
               <Link
                 href="/product"
                 className="mt-3 block w-full rounded-xl border border-bd-border py-3 text-center text-xs font-bold text-muted transition hover:border-foreground/25 hover:text-foreground"
