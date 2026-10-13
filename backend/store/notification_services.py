@@ -36,7 +36,7 @@ from django.utils import timezone
 from . import notification_events as events
 from .models import (
     AnnouncementAudienceRule, Company, Membership, MembershipRoleAssignment,
-    Notification, NotificationDelivery, NotificationEvent,
+    Notification, NotificationDelivery, NotificationEvent, Order,
 )
 from .tenancy import has_branch_access, resolve_capabilities
 
@@ -300,6 +300,17 @@ def _recipient_email(notification) -> str:
     if notification.user_id is not None:
         return (notification.user.email or '').strip()
     if notification.customer_id is not None:
+        if notification.target_type == 'order':
+            # A NOTICE ABOUT AN ORDER GOES TO THAT ORDER'S OWN CONTACT, never to
+            # the address on the record it is linked to (CLIENT-SEC-01). The
+            # record may have been made by somebody else's checkout; the address
+            # typed on the order is the buyer's. No address there, no mail.
+            typed = (
+                Order.objects
+                .filter(pk=notification.target_id, company_id=notification.company_id)
+                .values_list('customer_email', flat=True).first()
+            )
+            return (typed or '').strip()
         return (notification.customer.email or '').strip()
     return ''
 

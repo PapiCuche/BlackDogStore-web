@@ -59,6 +59,8 @@ class NotificationEmailTest(_Base):
     def order_of(self, customer, **extra):
         from store.tests import _p3_order
 
+        # A notice about an order goes to the address typed on THAT order (CLIENT-SEC-01).
+        extra.setdefault('customer_email', customer.email)
         return _p3_order(customer.company, customer=customer, user=customer.user, **extra)
 
     def emit(self, event_type, *, company=None, key='k', title='Tu equipo está listo para recoger',
@@ -199,7 +201,11 @@ class NotificationEmailTest(_Base):
 
         foreign = _p3_order(Company.objects.get(pk=other.pk), user=self.customer.user)
         self.emit(ev.COMMERCE_FULFILLMENT_READY, customers=[self.customer], target_type='order', target_id=foreign.pk)
-        self.assertNotIn('class="btn"', self.one().alternatives[0][0])
+        # CLIENT-SEC-01: a notice about an order is written to that order's own
+        # address, looked up in the notice's company. This order is not of this
+        # company: there is nobody to write to — no button, and no mail at all.
+        self.assertEqual(outbox_module.outbox, [])
+        self.assertEqual(NotificationDelivery.objects.get().status, NotificationDelivery.Status.SKIPPED)
 
     def test_a_title_that_cannot_be_a_subject_is_a_failed_delivery_not_a_crash(self):
         self.emit(ev.SERVICE_READY_FOR_PICKUP, customers=[self.customer], target_type='repair_order', target_id=1,
@@ -234,9 +240,11 @@ class NotificationEmailTest(_Base):
     def test_another_companys_notice_is_the_one_it_was(self):
         other = other_company()
         # Having no template is an answer, not a failure: nothing is logged as one.
+        theirs = self.customer_of(other, 'luis@otra.test')
+        order = self.order_of(theirs)                   # the notice is written to the order's own address
         with self.assertNoLogs('store.notification_services', level='ERROR'):
-            self.emit(ev.COMMERCE_FULFILLMENT_READY, company=other, customers=[self.customer_of(other, 'luis@otra.test')],
-                      target_type='order', target_id=9, title='Tu pedido está listo para recoger', body='Pedido #9.')
+            self.emit(ev.COMMERCE_FULFILLMENT_READY, company=other, customers=[theirs],
+                      target_type='order', target_id=order.pk, title='Tu pedido está listo para recoger', body='Pedido #9.')
         message = self.one()
         self.assertEqual(message.subject, 'Otra Tienda · Tu pedido está listo para recoger')
         blob = message.subject + message.body + message.alternatives[0][0]

@@ -77,8 +77,10 @@ def clean_phone(value) -> str:
         raise IdentityError('phone', 'Indica un número de teléfono válido.')
     if not value.strip():
         return ''
-    # The checkout's pattern says `\d`; here a digit is 0-9 and nothing else.
-    if not value.isascii() or not _PERU_PHONE_RE.match(re.sub(r'\s', '', value)):
+    # A space is any space Unicode has — a phone pasted from a web page comes
+    # with no-break ones, and the checkout takes it. A digit is 0-9 and nothing else.
+    compact = re.sub(r'\s', '', value)
+    if not compact.isascii() or not _PERU_PHONE_RE.match(compact):
         raise IdentityError(
             'phone',
             'Teléfono inválido. Ejemplos aceptados: 987654321, +51987654321, +51 987 654 321.',

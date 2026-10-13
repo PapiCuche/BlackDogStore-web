@@ -2245,6 +2245,10 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
         )
         return user, record
 
+    def staff(self):
+        """Whoever filed a walk-in: a record of the shop's says who made it."""
+        return User.objects.get_or_create(username='mostrador_f1', defaults={'email': 'mostrador@tienda.test'})[0]
+
     def guest_order(self, **overrides):
         overrides.setdefault('document_number', self.VICTIM_DNI)
         overrides.setdefault('customer_email', 'victima@correo.test')
@@ -2299,6 +2303,7 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
     def test_a_guest_whose_document_is_a_walk_in_record_is_still_linked_to_it(self):
         walk_in = Customer.objects.create(
             company=self.company, first_name='Clienta', last_name='De Mostrador', document_type='dni', document_number=self.VICTIM_DNI,
+            created_by=self.staff(),
         )
         order = self.guest_order()
         self.assertEqual(order.customer, walk_in)
@@ -2309,7 +2314,9 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
         order = self.guest_order()
         self.assertIsNotNone(order.customer)
         self.assertEqual((order.customer.user, order.customer.document_number), (None, self.VICTIM_DNI))
-        self.assertEqual(self.guest_order().customer, order.customer)       # and the next order finds it
+        # Third review: once that order is PAID, the next one finds its record.
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        self.assertEqual(self.guest_order().customer, order.customer)
 
     def test_a_signed_in_sale_is_still_matched_by_its_account_alone(self):
         user, record = self.squatter()
@@ -2345,7 +2352,8 @@ class GuestOrderAndSomebodyElsesRecordTest(_CheckoutBase):
         made = []
 
         def lost_the_race(*args, **kwargs):
-            made.append(Customer.objects.create(company=self.company, first_name='Clienta', document_type='dni', document_number=self.VICTIM_DNI))
+            made.append(Customer.objects.create(company=self.company, first_name='Clienta', document_type='dni',
+                                                document_number=self.VICTIM_DNI, created_by=self.staff()))
             raise IntegrityError('unique_customer_document_per_company')
 
         with mock.patch('store.customer_services._create_from_order', side_effect=lost_the_race):
@@ -3241,9 +3249,10 @@ class TwoAtOnceTest(TransactionTestCase):
 
 class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
     """
-    P1-1 · a signed-in checkout makes the account's record. It must not be a
-    second door to what the profile guards: the record takes the typed document
-    only for an account with a proved mailbox, and only if nobody holds it.
+    P1-1, and F2 of the third review · a signed-in checkout makes the account's
+    record and NEVER puts a document on it. The document goes on the record in
+    «Mi cuenta», where the proof of the mailbox, the conflict check and the
+    day's budget live; the order keeps what was typed on it.
     """
 
     STRANGERS_DNI = '70000044'
@@ -3276,8 +3285,10 @@ class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
         self.buy(user)
         # Staff file the real holder of that DNI: nothing stands in the way.
         customer_services.assert_document_available(self.company, 'dni', self.STRANGERS_DNI)
+        staff = User.objects.create_user('mostrador_p11', 'mostrador@tienda.test', PASSWORD)
         real = Customer.objects.create(
             company=self.company, first_name='Titular', last_name='Real', document_type='dni', document_number=self.STRANGERS_DNI,
+            created_by=staff,
         )
         theirs = self.web_checkout(session='carrito-titular', document_number=self.STRANGERS_DNI, customer_email='titular@correo.test')
         guest_order = Order.objects.get(pk=theirs.json()['order_id'])
@@ -3293,11 +3304,36 @@ class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
         self.assertEqual(record.document_number, '')
         self.assertEqual(Customer.objects.filter(company=self.company).exclude(document_number='').count(), 0)
 
-    def test_an_account_with_a_proved_mailbox_keeps_what_it_always_had(self):
+    def test_a_proved_mailbox_changes_nothing_the_document_is_added_in_the_profile(self):
         user = self.account('verificada', verified=True)
         order = self.buy(user)
         record = Customer.objects.get(company=self.company, user=user)
-        self.assertEqual((record.document_type, record.document_number, order.customer), ('dni', self.STRANGERS_DNI, record))
+        self.assertEqual((record.document_type, record.document_number, order.customer), ('', '', record))
+        self.assertEqual((order.document_type, order.document_number), ('dni', self.STRANGERS_DNI))
+        self.assertEqual((record.first_name, record.phone, record.email), ('Ana', '987654321', 'ana@correo.test'))
+
+    def test_a_spent_budget_is_not_walked_around_at_the_checkout(self):
+        from store import customer_profile
+
+        user = self.account('gastada', verified=True)
+        for _ in range(customer_profile.DOCUMENT_CHANGES_PER_DAY):
+            AdminAuditLog.log(actor=user, action=customer_profile.DOCUMENT_ATTEMPT, target_type='customer',
+                              metadata={'accepted': False}, company=self.company)
+        self.buy(user, document_number='70000061')
+        self.assertEqual(Customer.objects.get(company=self.company, user=user).document_number, '')
+        self.assertEqual(AdminAuditLog.objects.filter(action=customer_profile.DOCUMENT_ATTEMPT).count(),
+                         customer_profile.DOCUMENT_CHANGES_PER_DAY)
+
+    def test_the_checkout_does_not_answer_whether_a_document_is_on_file(self):
+        Customer.objects.create(company=self.company, first_name='Titular', document_type='dni', document_number='70000062')
+        seen = []
+        for name, number in (('sonda1', '70000062'), ('sonda2', '70000063')):
+            web = web_session(self.account(name, verified=True))
+            self.web_checkout(web, session=f'carrito-{name}', document_number=number)
+            cache.clear()
+            profile = web.get(WEB_PROFILE, **self.host).json()
+            seen.append((profile['document_type'], profile['document_number'], profile['document_locked']))
+        self.assertEqual(seen, [('', '', False)] * 2)                        # taken or free: the same profile
 
     def test_a_document_somebody_holds_stays_theirs(self):
         holder = Customer.objects.create(
@@ -3311,12 +3347,12 @@ class ADocumentTypedAtCheckoutIsNotARecordsDocumentTest(_CheckoutBase):
         self.assertEqual((holder.user, holder.document_number), (None, self.STRANGERS_DNI))
         self.assertEqual(Customer.objects.filter(company=self.company, document_number=self.STRANGERS_DNI).count(), 1)
 
-    def test_a_document_held_in_another_shop_is_not_held_here(self):
-        other = _saas_company('Otra Tienda', 'riesgo-otra', tax_id='20111111112')
-        Customer.objects.create(company=other, first_name='Titular', document_type='dni', document_number=self.STRANGERS_DNI)
-        user = self.account('verificada', verified=True)
-        self.buy(user)
-        self.assertEqual(Customer.objects.get(company=self.company, user=user).document_number, self.STRANGERS_DNI)
+    def test_the_app_checkout_puts_no_document_on_a_new_record_either(self):
+        user = self.account('desde_app', verified=True)
+        order = _order(self.company, user=user, total='80.00', document_type='dni', document_number=self.STRANGERS_DNI,
+                       customer_name='Ana Torres')
+        record = customer_services.link_order_to_customer(order, actor=user)
+        self.assertEqual((record.user, record.document_type, record.document_number), (user, '', ''))
 
     def test_a_business_record_made_without_its_ruc_is_still_a_business(self):
         user = self.account(verified=False)
@@ -3769,3 +3805,592 @@ class VelocityCountsPaidOrdersAndLooksAgainWhenPaidTest(_RiskBase):
         self.assertEqual(row.review_status, Review.PENDING)
         self.assertIn('IntegrityError', ' '.join(logged.output))
         self.assertTrue(Order.objects.filter(pk=order.pk, status=Order.Status.PAID).exists())    # the transaction is usable
+
+
+# =============================================================================
+# 9 · after the third independent review
+# =============================================================================
+
+from store import notification_services  # noqa: E402
+
+CUSTOMERS = '/api/admin/customers/'
+CUSTOMER_CAPS = ['company.view', 'service.customers.view', 'service.customers.manage', VIEW, MANAGE]
+RELEASED = 'customer_document_released'
+
+
+@override_settings(FRONTEND_URL='https://tienda.test', EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class _SeededRecordBase(_CheckoutBase):
+    """
+    A shop where somebody left an UNPAID checkout carrying another person's
+    document and their own contact — free, anonymous, and repeatable.
+    """
+
+    DNI = '70000081'
+    SEEDERS = 'otro@correo.test'
+    HOLDERS = 'titular@correo.test'
+
+    def setUp(self):
+        super().setUp()
+        django_mail.outbox = []
+        self.staff, _ = _p2d_member(self.company, 'mostrador', CUSTOMER_CAPS)
+
+    def guest(self, cart, **typed):
+        typed.setdefault('document_number', self.DNI)
+        response = self.web_checkout(session=f'carrito-{cart}', **typed)
+        self.assertEqual(response.status_code, 200, response.content)
+        return Order.objects.get(pk=response.json()['order_id'])
+
+    def seed(self):
+        order = self.guest('quien-siembra', customer_name='Victoria Real', customer_email=self.SEEDERS, customer_phone='911111111')
+        return order, order.customer
+
+    def holders_order(self, cart='titular'):
+        return self.guest(cart, customer_name='Victoria Real', customer_email=self.HOLDERS, customer_phone='922222222')
+
+    def pay(self, order):
+        """The order was just paid: what payment confirmation does about its record."""
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        order.refresh_from_db()
+        customer_services.file_paid_guest_order(order)
+        order.refresh_from_db()
+        return order
+
+    def ready(self, order):
+        """Staff say it can be collected. Who was written to."""
+        django_mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            fulfillment.change_fulfillment_status(order=order, new_status='ready_for_pickup', actor=self.staff, company=self.company)
+        return sorted(address for message in django_mail.outbox for address in message.to)
+
+    def file(self, **typed):
+        body = {'customer_type': 'person', 'first_name': 'Victoria', 'last_name': 'Real', 'document_type': 'dni',
+                'document_number': self.DNI, 'email': 'victoria@correo.test', 'phone': '933333333'}
+        body.update(typed)
+        return acting(self.staff).post(CUSTOMERS, body, format='json')
+
+    def holder(self):
+        return Customer.objects.filter(company=self.company, document_type='dni', document_number=self.DNI).first()
+
+
+class AnOrdersNoticeGoesToTheOrdersOwnContactTest(_SeededRecordBase):
+    """F1(a) · a notice about an order is written to the address typed on THAT order, never to its record's."""
+
+    def test_the_address_of_the_order_not_the_one_on_file(self):
+        Customer.objects.create(company=self.company, first_name='Victoria', document_type='dni', document_number=self.DNI,
+                                email='ficha@correo.test', created_by=self.staff)
+        order = self.pay(self.holders_order())
+        self.assertEqual(order.customer, self.holder())                     # a record the shop made: matched as always
+        self.assertEqual(self.ready(order), [self.HOLDERS])
+        [notice] = Notification.objects.filter(target_type='order', target_id=order.pk, event__event_type=events.COMMERCE_FULFILLMENT_READY)
+        self.assertEqual(notification_services._recipient_email(notice), self.HOLDERS)
+
+    def test_an_order_with_no_address_is_written_to_nobody(self):
+        record = Customer.objects.create(company=self.company, first_name='Victoria', email='ficha@correo.test', created_by=self.staff)
+        order = _order(self.company, total='50.00', paid=True, customer=record, customer_email='')
+        self.assertEqual(self.ready(order), [])
+        [notice] = Notification.objects.filter(target_type='order', target_id=order.pk)
+        self.assertEqual(notification_services._recipient_email(notice), '')
+
+    def test_the_order_is_looked_up_in_the_notices_own_company(self):
+        other = _saas_company('Otra', 'riesgo-otra', tax_id='20111111112')
+        record = Customer.objects.create(company=self.company, first_name='Victoria', email='ficha@correo.test', created_by=self.staff)
+        theirs = _order(other, total='50.00', paid=True, customer_email='ajena@correo.test')
+        event = NotificationEvent.objects.create(company=self.company, event_type=events.COMMERCE_FULFILLMENT_READY,
+                                                 event_key='prueba-cruce', target_type='order', target_id=theirs.pk)
+        notice = Notification.objects.create(event=event, company=self.company, audience=Notification.Audience.CUSTOMER,
+                                             customer=record, title='x', target_type='order', target_id=theirs.pk)
+        self.assertEqual(notification_services._recipient_email(notice), '')
+
+    def test_a_notice_that_is_not_about_an_order_is_what_it_was(self):
+        record = Customer.objects.create(company=self.company, first_name='Victoria', email='ficha@correo.test', created_by=self.staff)
+        event = NotificationEvent.objects.create(company=self.company, event_type=events.SERVICE_READY_FOR_PICKUP,
+                                                 event_key='prueba-servicio', target_type='repair_order', target_id=1)
+        notice = Notification.objects.create(event=event, company=self.company, audience=Notification.Audience.CUSTOMER,
+                                             customer=record, title='x', target_type='repair_order', target_id=1)
+        self.assertEqual(notification_services._recipient_email(notice), 'ficha@correo.test')
+
+
+class OnlyARecordTheShopStandsBehindIsMatchedTest(_SeededRecordBase):
+    """
+    F1(b) · a guest's document opens a record only when the shop has relied on
+    it: staff made it, or it has a paid order or a repair. What unpaid
+    checkouts alone made is nobody's yet.
+    """
+
+    def test_a_record_made_by_an_unpaid_checkout_is_not_the_next_guests(self):
+        _seeding, seeded = self.seed()
+        self.assertFalse(customer_services.is_established(seeded))
+        order = self.holders_order()
+        self.assertIsNone(order.customer)                                    # unlinked: no error, and no second record
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+        self.assertEqual((order.document_number, order.customer_email), (self.DNI, self.HOLDERS))
+
+    def test_end_to_end_the_buyer_is_told_and_whoever_seeded_the_record_is_not(self):
+        seeding, seeded = self.seed()
+        order = self.pay(self.holders_order())
+
+        own = order.customer
+        self.assertNotEqual(own, seeded)
+        self.assertEqual((own.document_number, own.email, own.user, own.created_by), (self.DNI, self.HOLDERS, None, None))
+        seeded.refresh_from_db()
+        self.assertEqual((seeded.document_type, seeded.document_number, seeded.email), ('', '', self.SEEDERS))
+        seeding.refresh_from_db()
+        self.assertEqual(seeding.customer, seeded)                           # their own order stays theirs
+        self.assertEqual(self.ready(order), [self.HOLDERS])                  # and nothing to the other mailbox
+        self.assertTrue(customer_services.is_established(own))
+
+        entry = AdminAuditLog.objects.get(action=RELEASED)
+        self.assertEqual((entry.actor, entry.company, entry.target_type, entry.target_id), (None, self.company, 'customer', str(seeded.pk)))
+        self.assertEqual(entry.metadata, {'changed_fields': ['document_number', 'document_type'], 'taken_by': 'paid_order'})
+
+        # Staff, afterwards, are sent to the record of the person who paid.
+        response = self.file()
+        self.assertEqual((response.status_code, response.json()['existing']['id']), (409, own.pk))
+
+    def test_paying_ones_own_first_order_establishes_ones_record(self):
+        first = self.holders_order()
+        record = first.customer
+        self.assertFalse(customer_services.is_established(record))
+        self.pay(first)
+        self.assertTrue(customer_services.is_established(record))
+        again = self.guest('otra-vez', customer_email='otra-direccion@correo.test', customer_phone='944444444')
+        self.assertEqual(again.customer, record)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_a_checkout_tried_again_is_filed_under_its_own_record_when_it_is_paid(self):
+        first = self.holders_order('intento-1')                              # the card was declined
+        second = self.holders_order('intento-2')
+        self.assertIsNone(second.customer)
+        second = self.pay(second)
+        self.assertEqual(second.customer, first.customer)                    # the same person: the same address on both
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+        self.assertEqual(self.holder(), first.customer)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+        self.assertEqual(self.ready(second), [self.HOLDERS])
+
+    def test_a_record_with_an_account_is_never_a_guests_paid_or_not(self):
+        user = User.objects.create_user('con_cuenta', 'cuenta@correo.test', PASSWORD, first_name='Ana')
+        record = Customer.objects.create(company=self.company, user=user, first_name='Ana', document_type='dni',
+                                         document_number=self.DNI, created_by=user)
+        order = self.holders_order()
+        self.assertIsNone(order.customer)
+        order = self.pay(order)
+        self.assertIsNone(order.customer)
+        record.refresh_from_db()
+        self.assertEqual((record.document_number, record.user), (self.DNI, user))
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_what_makes_a_record_established(self):
+        made = lambda **extra: Customer.objects.create(company=self.company, first_name='Ana', **extra)   # noqa: E731
+        user = User.objects.create_user('propia', 'propia@correo.test', PASSWORD, first_name='Ana')
+
+        self.assertFalse(customer_services.is_established(made()))                                  # nobody's
+        self.assertFalse(customer_services.is_established(made(user=user, created_by=user)))        # declared by its own account
+        self.assertTrue(customer_services.is_established(made(created_by=self.staff)))              # filed by staff
+        other = User.objects.create_user('ajena', 'ajena@correo.test', PASSWORD, first_name='Eva')
+        self.assertTrue(customer_services.is_established(made(user=other, created_by=self.staff)))  # filed by staff, then linked
+
+        unpaid, paid, elsewhere = made(), made(), made()
+        _order(self.company, total='10.00', customer=unpaid)
+        _order(self.company, total='10.00', customer=paid, paid=True)
+        self.assertFalse(customer_services.is_established(unpaid))
+        self.assertTrue(customer_services.is_established(paid))
+        # A paid order of the ACCOUNT in this shop counts; one in another shop does not.
+        buyer = User.objects.create_user('compra', 'compra@correo.test', PASSWORD, first_name='Ana')
+        own = made(user=buyer, created_by=buyer)
+        _order(_saas_company('Otra', 'riesgo-otra', tax_id='20111111112'), total='10.00', user=buyer, paid=True)
+        self.assertFalse(customer_services.is_established(own))
+        _order(self.company, total='10.00', user=buyer, paid=True)
+        self.assertTrue(customer_services.is_established(own))
+        self.assertFalse(customer_services.is_established(elsewhere))
+
+    def test_a_paid_order_goes_to_the_established_record_whatever_address_it_carries(self):
+        record = Customer.objects.create(company=self.company, first_name='Victoria', document_type='dni', document_number=self.DNI,
+                                         email='ficha@correo.test', created_by=self.staff)
+        order = self.holders_order()
+        Order.objects.filter(pk=order.pk).update(customer=None)              # as if it had been left unlinked
+        order = self.pay(Order.objects.get(pk=order.pk))
+        self.assertEqual(order.customer, record)
+        record.refresh_from_db()
+        self.assertEqual((record.document_number, record.email), (self.DNI, 'ficha@correo.test'))
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_two_orders_without_an_address_are_not_the_same_contact(self):
+        provisional = Customer.objects.create(company=self.company, first_name='Otra', document_type='dni', document_number=self.DNI)
+        self.assertEqual(provisional.email, '')
+        order = _order(self.company, total='50.00', document_type='dni', document_number=self.DNI, customer_name='Victoria Real',
+                       customer_email='')
+        order = self.pay(order)
+        self.assertNotEqual(order.customer, provisional)
+        self.assertEqual(order.customer.document_number, self.DNI)
+        self.assertEqual(Customer.objects.get(pk=provisional.pk).document_number, '')
+
+    def test_an_accounts_order_is_never_filed_by_its_document(self):
+        user = User.objects.create_user('con_sesion', 'sesion@correo.test', PASSWORD, first_name='Ana')
+        holder = Customer.objects.create(company=self.company, first_name='Victoria', document_type='dni', document_number=self.DNI,
+                                         created_by=self.staff)
+        order = _order(self.company, user=user, total='50.00', paid=True, document_type='dni', document_number=self.DNI)
+        self.assertIsNone(customer_services.file_paid_guest_order(order))
+        self.assertIsNone(Order.objects.get(pk=order.pk).customer)
+        self.assertIsNone(Customer.objects.get(pk=holder.pk).user)
+
+    def test_filing_a_paid_order_does_nothing_for_an_order_that_has_a_record_an_account_or_no_payment(self):
+        linked = self.holders_order()
+        record = linked.customer
+        self.assertEqual(customer_services.file_paid_guest_order(linked), None)          # not paid
+        unpaid = self.holders_order('sin-pagar')
+        self.assertIsNone(customer_services.file_paid_guest_order(unpaid))
+        self.assertIsNone(Order.objects.get(pk=unpaid.pk).customer)
+        self.assertEqual(self.pay(linked).customer, record)                              # already has its record
+        self.assertEqual(Customer.objects.filter(company=self.company).count(), 1)
+
+    def test_filing_that_breaks_never_costs_the_payment(self):
+        self.seed()
+        order = self.holders_order()
+
+        def broken(order):
+            Customer.objects.bulk_create([Customer(company=order.company)])              # refused by the database itself
+
+        with mock.patch('store.customer_services._file_paid_guest_order', side_effect=broken), \
+                self.assertLogs('store.customer_services', level='ERROR') as logged:
+            order = self.pay(order)
+        self.assertIsNone(order.customer)
+        self.assertIn('IntegrityError', ' '.join(logged.output))
+        self.assertNotIn(self.DNI, ' '.join(logged.output))
+        self.assertTrue(Order.objects.filter(pk=order.pk, paid=True).exists())            # the transaction is usable
+
+
+class StaffFileThePersonInFrontOfThemTest(_SeededRecordBase):
+    """
+    F1(c), F3 · at the counter the person is there with the document in hand.
+    A record nobody stands behind does not send staff to it: it gives the
+    document up. A record the shop has relied on keeps today's 409.
+    """
+
+    def test_a_record_seeded_by_an_unpaid_checkout_gives_the_document_up(self):
+        _seeding, seeded = self.seed()
+        response = self.file()
+        self.assertEqual(response.status_code, 201, response.content)
+        filed = Customer.objects.get(pk=response.json()['id'])
+        self.assertEqual((filed.document_number, filed.email, filed.created_by), (self.DNI, 'victoria@correo.test', self.staff))
+        seeded.refresh_from_db()
+        self.assertEqual((seeded.document_type, seeded.document_number, seeded.email, seeded.is_active), ('', '', self.SEEDERS, True))
+        entry = AdminAuditLog.objects.get(action=RELEASED)
+        self.assertEqual((entry.actor, entry.company, entry.target_id), (self.staff, self.company, str(seeded.pk)))
+        self.assertEqual(entry.metadata, {'changed_fields': ['document_number', 'document_type'], 'taken_by': 'staff'})
+        for value in (self.DNI, self.SEEDERS, 'victoria@correo.test'):
+            self.assertNotIn(value, json.dumps(entry.metadata))
+
+    def test_a_record_an_account_declared_for_itself_gives_it_up_and_is_told_nothing(self):
+        user = User.objects.create_user('ocupante', 'ocupante@correo.test', PASSWORD, first_name='Otra')
+        accounts.mark_email_verified(user)
+        web = web_session(user)
+        cache.clear()
+        saved = web.patch(WEB_PROFILE, {'document_type': 'dni', 'document_number': self.DNI}, format='json', **self.host)
+        self.assertEqual(saved.status_code, 200, saved.content)
+        before = web.get(WEB_PROFILE, **self.host).json()
+
+        response = self.file()
+        self.assertEqual(response.status_code, 201, response.content)
+        own = Customer.objects.get(company=self.company, user=user)
+        self.assertEqual((own.document_type, own.document_number, own.is_active), ('', '', True))     # it keeps its record
+        cache.clear()
+        after = web.get(WEB_PROFILE, **self.host).json()
+        self.assertEqual(set(after), set(before))                                                    # nothing new to read
+        self.assertEqual({key: after[key] for key in after if key not in ('document_type', 'document_number')},
+                         {key: before[key] for key in before if key not in ('document_type', 'document_number')})
+        self.assertEqual((after['document_type'], after['document_number']), ('', ''))
+        self.assertFalse(Notification.objects.filter(customer=own).exists())
+
+    def test_a_record_the_shop_has_relied_on_keeps_the_409(self):
+        cases = {
+            'filed by staff': lambda: Customer.objects.create(company=self.company, first_name='Ana', created_by=self.staff),
+            'a paid order': lambda: self.pay(self.guest('pagado', document_number='70000085')).customer,
+            'an account that paid': self.account_that_paid,
+        }
+        for n, (label, make) in enumerate(cases.items()):
+            with self.subTest(label):
+                number = f'7000009{n}'
+                record = make()
+                Customer.objects.filter(pk=record.pk).update(document_type='dni', document_number=number)
+                response = self.file(document_number=number)
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertEqual(response.json()['existing']['id'], record.pk)
+                self.assertEqual(Customer.objects.get(pk=record.pk).document_number, number)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def account_that_paid(self):
+        user = User.objects.create_user('pagadora', 'pagadora@correo.test', PASSWORD, first_name='Ana')
+        record = Customer.objects.create(company=self.company, user=user, first_name='Ana', created_by=user)
+        _order(self.company, total='10.00', user=user, customer=record, paid=True)
+        return record
+
+    def test_correcting_a_record_takes_the_document_the_same_way(self):
+        _seeding, seeded = self.seed()
+        walk_in = Customer.objects.create(company=self.company, first_name='Victoria', created_by=self.staff)
+        response = acting(self.staff).patch(f'{CUSTOMERS}{walk_in.pk}/', {'document_type': 'dni', 'document_number': self.DNI}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        walk_in.refresh_from_db()
+        seeded.refresh_from_db()
+        self.assertEqual((walk_in.document_number, seeded.document_number), (self.DNI, ''))
+        self.assertEqual(AdminAuditLog.objects.get(action=RELEASED).target_id, str(seeded.pk))
+        # And an established one still answers 409 to a correction.
+        other = Customer.objects.create(company=self.company, first_name='Otra', created_by=self.staff)
+        response = acting(self.staff).patch(f'{CUSTOMERS}{other.pk}/', {'document_type': 'dni', 'document_number': self.DNI}, format='json')
+        self.assertEqual((response.status_code, response.json()['existing']['id']), (409, walk_in.pk))
+
+    def test_it_is_all_or_nothing(self):
+        _seeding, seeded = self.seed()
+        client = acting(self.staff)
+        client.raise_request_exception = False
+        with mock.patch('store.customer_views.Customer.save', side_effect=RuntimeError('roto')):
+            response = client.post(CUSTOMERS, {'customer_type': 'person', 'first_name': 'Victoria', 'document_type': 'dni',
+                                               'document_number': self.DNI}, format='json')
+        self.assertEqual(response.status_code, 500)
+        seeded.refresh_from_db()
+        self.assertEqual(seeded.document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+    def test_a_record_of_another_shop_is_not_touched(self):
+        other = _saas_company('Otra', 'riesgo-otra', tax_id='20111111112')
+        theirs = Customer.objects.create(company=other, first_name='Ana', document_type='dni', document_number=self.DNI)
+        self.assertEqual(self.file().status_code, 201)
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.document_number, self.DNI)
+        self.assertFalse(AdminAuditLog.objects.filter(action=RELEASED).exists())
+
+
+class ThePaidOrderIsFiledOnTheRealRoadTest(PaymentBase):
+    """F1(b) · the signed notification that pays a guest's order is what files it."""
+
+    def test_an_order_left_unlinked_gets_its_record_when_the_gateway_says_paid(self):
+        seeded = self.order.customer
+        self.assertIsNotNone(seeded)
+        # As if another unpaid checkout had made that record first, with another mailbox.
+        Customer.objects.filter(pk=seeded.pk).update(email='otro@correo.test')
+        Order.objects.filter(pk=self.order.pk).update(customer=None)
+
+        self.assertEqual(self.notify().status_code, 200)
+        self.refresh()
+        self.assertTrue(self.order.paid)
+        own = self.order.customer
+        self.assertNotEqual(own, seeded)
+        self.assertEqual((own.document_number, own.email), (self.order.document_number, self.order.customer_email))
+        self.assertEqual(Customer.objects.get(pk=seeded.pk).document_number, '')
+        # The «payment confirmed» notice is about the record the order has now.
+        self.assertTrue(Notification.objects.filter(customer=own, target_type='order', target_id=self.order.pk).exists())
+        # Replayed, nothing more happens.
+        self.assertEqual(self.notify().status_code, 200)
+        self.assertEqual(AdminAuditLog.objects.filter(action=RELEASED).count(), 1)
+
+
+class AnEmptyDocumentCanBeFilledByItsSubjectTest(_ProfileBase):
+    """
+    F4 · a record whose document is EMPTY is not frozen: its subject, with a
+    proved mailbox, writes it once — the conflict check, the day's budget and
+    the audit entry are the profile's. A document that is there stays the shop's
+    to change.
+    """
+
+    LOCKED = 'El documento de tu ficha lo cambia la tienda'
+
+    def bought(self):
+        """An account whose record the checkout made — without a document — and that has paid."""
+        record = Customer.objects.create(company=self.a, user=self.user, first_name='Ana', created_by=self.user)
+        _order(self.a, user=self.user, customer=record, total='50.00', paid=True)
+        return record
+
+    def test_after_a_paid_order_the_buyer_adds_the_document_they_bought_with(self):
+        record = self.bought()
+        self.assertFalse(self.get().json()['document_locked'])
+        response = self.patch({'document_type': 'dni', 'document_number': DNI})
+        self.assertEqual(response.status_code, 200, response.content)
+        record.refresh_from_db()
+        self.assertEqual((record.document_type, record.document_number), ('dni', DNI))
+        self.assertEqual([entry.metadata for entry in AdminAuditLog.objects.filter(action='customer_document_change_attempted')],
+                         [{'accepted': True}])
+        # Written, it is the shop's from now on.
+        self.assertTrue(response.json()['document_locked'])
+        again = self.patch({'document_type': 'dni', 'document_number': '70000009'})
+        self.assertEqual(again.status_code, 400)
+        self.assertIn(self.LOCKED, again.json()['document_number'][0])
+
+    def test_a_record_staff_filed_without_a_document_can_be_completed_too(self):
+        staff = User.objects.create_user('personal', 'personal@tienda.test', PASSWORD)
+        record = Customer.objects.create(company=self.a, user=self.user, first_name='Ana', created_by=staff)
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': DNI}).status_code, 200)
+        record.refresh_from_db()
+        self.assertEqual(record.document_number, DNI)
+        self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000009'}).status_code, 400)
+
+    def test_filling_it_still_takes_a_proved_mailbox_a_free_document_and_budget(self):
+        from store import customer_profile
+
+        self.bought()
+        Customer.objects.create(company=self.a, first_name='Otra', document_type='dni', document_number='70000002')
+        self.unverified()
+        needs = self.patch({'document_type': 'dni', 'document_number': DNI})
+        self.assertEqual(needs.status_code, 400)
+        self.assertIn('Verifica tu correo', needs.json()['document_number'][0])
+        accounts.mark_email_verified(self.user)
+        taken = self.patch({'document_type': 'dni', 'document_number': '70000002'})
+        self.assertEqual((taken.status_code, taken.json()['document_number']), (400, [identity.DOCUMENT_REFUSED]))
+        for _ in range(customer_profile.DOCUMENT_CHANGES_PER_DAY - 1):
+            self.assertEqual(self.patch({'document_type': 'dni', 'document_number': '70000002'}).status_code, 400)
+        spent = self.patch({'document_type': 'dni', 'document_number': DNI})
+        self.assertIn('mañana', spent.json()['document_number'][0])
+        self.assertEqual(self.record().document_number, '')
+
+
+class TheLastSmallOnesOfTheThirdReviewTest(_CheckoutBase):
+    """F7 · the app's CE is the web's; and a phone pasted with no-break spaces is the phone."""
+
+    def app(self):
+        user = User.objects.create_user('compra_app', 'compra_app@correo.test', PASSWORD, first_name='Ana')
+        Customer.objects.create(company=self.company, user=user, first_name='Ana')
+        return v1_session(user)
+
+    def test_the_apps_foreign_card_is_six_to_twelve_ascii_letters_and_digits(self):
+        client = self.app()
+        for n, number in enumerate(('ÁÉÍÓÚÑ12', '１２３４５６７', 'AB 123456', 'AB-123456', 'A' * 13, 'AB123', '\u0661\u0662\u0663\u0664\u0665\u0666')):
+            with self.subTest(number):
+                response = self.app_checkout(client, document_type='ce', document_number=number, idempotency_key=f'pedido-ce-{n:04d}')
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn('document_number', response.json())
+        self.assertFalse(Order.objects.exists())
+        for n, number in enumerate(('AB123456', 'abc123', '001234567890')):
+            with self.subTest(number):
+                response = self.app_checkout(client, document_type='ce', document_number=number, idempotency_key=f'pedido-ok-{n:04d}')
+                self.assertEqual(response.status_code, 201, response.content)
+
+    def test_a_pasted_phone_is_the_same_phone_in_the_profile_as_at_the_checkout(self):
+        pasted = '+51\u00a0987\u00a0654\u00a0321'                           # no-break spaces, as a web page gives them
+        self.assertEqual(self.web_checkout(session='carrito-nbsp', customer_phone=pasted).status_code, 200)
+        self.assertEqual(identity.clean_phone(pasted), identity.clean_phone('+51 987 654 321'))
+        self.assertEqual(identity.clean_phone('\u2009987\u202f654\u3000321'), identity.clean_phone('987654321'))
+        user = User.objects.create_user('pega', 'pega@correo.test', PASSWORD, first_name='Ana')
+        cache.clear()
+        saved = web_session(user).patch(WEB_PROFILE, {'phone': pasted}, format='json', **self.host)
+        self.assertEqual(saved.status_code, 200, saved.content)
+        # A digit is still 0-9.
+        for bad in ('9٨٧٦٥٤٣٢١', '+51\u00a09８7\u00a0654\u00a0321'):
+            with self.assertRaises(identity.IdentityError):
+                identity.clean_phone(bad)
+
+
+class OnePersonOnSeveralDevicesIsOneBuyerTest(_RiskBase):
+    """Audit B · orders with the SAME phone, e-mail and document are one buyer, whatever browser made them."""
+
+    SAME = {'customer_phone': '987111222', 'customer_email': 'una@correo.test', 'document_type': 'dni', 'document_number': '40001111'}
+
+    def signals(self, order):
+        return set(self.assess(order, None).signals)
+
+    def test_three_browsers_one_contact(self):
+        for cart in ('telefono', 'portatil'):
+            self.order(paid=True, cart_session_key=cart, **self.SAME)
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(cart_session_key='tableta', **self.SAME)))
+
+    def test_written_another_way_it_is_still_the_same_contact(self):
+        for cart in ('telefono', 'portatil'):
+            self.order(paid=True, cart_session_key=cart, **self.SAME)
+        order = self.order(cart_session_key='tableta', customer_phone='+51 987 111 222', customer_email='UNA@correo.test',
+                           document_type='dni', document_number='40001111')
+        self.assertNotIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(order))
+
+    def test_one_detail_shared_and_another_not_are_different_buyers(self):
+        for n, cart in enumerate(('telefono', 'portatil')):
+            self.order(paid=True, cart_session_key=cart, **{**self.SAME, 'customer_email': f'otra{n}@correo.test'})
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(cart_session_key='tableta', **self.SAME)))
+
+    def test_the_sixth_paid_order_of_that_one_buyer_is_still_noticed(self):
+        for n in range(5):
+            self.order(paid=True, cart_session_key=f'carrito-{n}', **self.SAME)
+        self.assertIn(risk.SIGNAL_VELOCITY_CONTACT, self.signals(self.order(cart_session_key='otro', **self.SAME)))
+
+
+class SettlingACodeLeavesTheOtherKindAloneTest(_OwnAddressBase):
+    """Audit C · the mail of one kind of code leaving kills the older codes OF THAT KIND, and no other."""
+
+    def codes(self, purpose):
+        return AccountToken.objects.filter(user=self.user, purpose=purpose).exclude(code_hash='').count()
+
+    def test_the_two_kinds_do_not_kill_each_other(self):
+        from store import verification_codes
+
+        registration = verification_codes.issue(self.user)
+        verification_codes.settle(registration)
+        own = verification_codes.issue_own(self.user)
+        verification_codes.settle(own)
+        self.assertEqual((self.codes(AccountToken.PURPOSE_EMAIL_VERIFICATION), self.codes(AccountToken.PURPOSE_OWN_EMAIL_PROOF)), (1, 1))
+
+        AccountToken.objects.filter(user=self.user).update(created_at=timezone.now() - timedelta(minutes=5))
+        verification_codes.settle(verification_codes.issue(self.user))
+        self.assertEqual((self.codes(AccountToken.PURPOSE_EMAIL_VERIFICATION), self.codes(AccountToken.PURPOSE_OWN_EMAIL_PROOF)), (1, 1))
+        self.assertEqual(self.confirm(own.code).status_code, 200)            # the account's own code still works
+
+
+@override_settings(FRONTEND_URL='https://tienda.test', EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class TheSeededRecordAtTheCounterTest(TrackingBase):
+    """
+    F1 end to end, at the counter · an unpaid checkout left a record with
+    somebody's document and another mailbox. That person brings a device in.
+    """
+
+    DNI = '70000091'
+    SEEDERS = 'otro@correo.test'
+
+    def test_staff_file_the_real_person_and_the_mailbox_that_seeded_the_record_gets_nothing(self):
+        from store.models import RepairOrder
+
+        seeding = _order(self.company, customer_name='Victoria Real', customer_email=self.SEEDERS,
+                         customer_phone='911111111', document_type='dni', document_number=self.DNI)
+        seeded = customer_services.link_order_to_customer(seeding)
+        self.assertEqual((seeded.document_number, seeded.email, seeded.user, seeded.created_by), (self.DNI, self.SEEDERS, None, None))
+
+        # The person is at the counter, document in hand: staff file them.
+        staff, _ = _p2d_member(self.company, 'mostrador_g1', CUSTOMER_CAPS)
+        response = acting(staff).post(CUSTOMERS, {
+            'customer_type': 'person', 'first_name': 'Victoria', 'last_name': 'Real', 'document_type': 'dni',
+            'document_number': self.DNI, 'email': 'victoria@correo.test', 'phone': '933333333',
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.content)
+        real = Customer.objects.get(pk=response.json()['id'])
+        self.assertNotEqual(real, seeded)
+        device = Device.objects.create(company=self.company, customer=real, brand='Genérica', model='X200')
+        repair = self.make_order(customer=real, device=device)
+
+        # The notice of that repair goes to the person staff filed.
+        django_mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=True):
+            notification_services.emit(
+                company=self.company, event_type=events.SERVICE_READY_FOR_PICKUP,
+                event_key=events.event_key(events.SERVICE_READY_FOR_PICKUP, 'repair_order', repair.pk),
+                title='Equipo listo para recoger', body='Tu equipo está listo.', target_type='repair_order',
+                target_id=repair.pk, customers=[real],
+            )
+        self.assertEqual([message.to for message in django_mail.outbox], [['victoria@correo.test']])
+
+        # Whoever seeded the record is left with a record that has no document and no repair: nothing to claim.
+        seeded.refresh_from_db()
+        self.assertEqual((seeded.document_type, seeded.document_number), ('', ''))
+        self.assertFalse(RepairOrder.objects.filter(customer=seeded).exists())
+        other = _m7_user('quien_sembro')
+        self.assertEqual(list(tracking.account_rows(other, self.company)), [])
+        self.assertIsNone(Customer.objects.filter(company=self.company, user=other).first())
+
+        # A record with a repair is one the shop stands behind, whoever made it.
+        walk_in = Customer.objects.create(company=self.company, first_name='Sin', last_name='Autor', document_type='dni',
+                                          document_number='70000092')
+        self.assertFalse(customer_services.is_established(walk_in))
+        self.make_order(customer=walk_in, device=Device.objects.create(company=self.company, customer=walk_in, brand='Otra', model='Y1'))
+        self.assertTrue(customer_services.is_established(walk_in))
+        again = acting(staff).post(CUSTOMERS, {'customer_type': 'person', 'first_name': 'Otra', 'document_type': 'dni',
+                                               'document_number': '70000092'}, format='json')
+        self.assertEqual((again.status_code, again.json()['existing']['id']), (409, walk_in.pk))
+
+        # And the person the repair is for claims it, with the link of THEIR mail and their document.
+        owner = _m7_user('la_titular')
+        cache.clear()
+        claimed = tracking.claim(tracking.token_for(repair), user=owner, document_number=self.DNI)
+        self.assertEqual((claimed.pk, claimed.user), (real.pk, owner))

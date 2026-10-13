@@ -422,12 +422,15 @@ def _contact_is_busy(order, company, document) -> bool:
         .values('pk', 'user_id', 'cart_session_key', 'customer_phone', 'customer_email',
                 'document_type', 'document_number')[:_VELOCITY_CONTACT_SCAN]
     )
-    buyers = {_buyer_key({'pk': order.pk, 'user_id': order.user_id, 'cart_session_key': order.cart_session_key})}
+    me = _buyer_key({'pk': order.pk, 'user_id': order.user_id, 'cart_session_key': order.cart_session_key})
+    buyers = {me}
     orders = 1
     for row in recent:
         theirs = _contact_keys(row['customer_phone'], row['customer_email'], row['document_type'], row['document_number'])
         if mine & theirs:
-            buyers.add(_buyer_key(row))
+            # The same phone, address AND document is the same person on
+            # another device, not another buyer.
+            buyers.add(me if theirs == mine else _buyer_key(row))
             orders += 1
     return len(buyers) >= VELOCITY_CONTACT_BUYERS or orders >= VELOCITY_CONTACT_ORDERS
 

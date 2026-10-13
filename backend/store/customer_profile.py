@@ -102,6 +102,11 @@ def document_locked(record) -> bool:
     """
     if record is None or record.pk is None:
         return False
+    if not record.document_number:
+        # Nothing to freeze. A record made without a document — every record a
+        # signed-in checkout makes — is completed ONCE by its subject, under
+        # the rules of any document save (proved mailbox, conflict, budget).
+        return False
     if record.created_by_id is not None and record.created_by_id != record.user_id:
         return True                     # filed by staff, not by its own subject
     theirs = Q(customer=record)

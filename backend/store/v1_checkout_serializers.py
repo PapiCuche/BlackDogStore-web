@@ -149,8 +149,9 @@ class V1CheckoutSerializer(serializers.Serializer):
             # ASCII: `isdigit()` alone takes every digit Unicode has.
             if not (number.isascii() and number.isdigit()) or len(number) != length:
                 errors['document_number'] = f'Debe tener {length} dígitos.'
-        elif len(number) < 6:
-            errors['document_number'] = 'Documento inválido.'
+        elif not re.fullmatch(r'[A-Za-z0-9]{6,12}', number):
+            # The web checkout's own rule for a Carnet de Extranjería.
+            errors['document_number'] = 'Debe tener entre 6 y 12 letras o números.'
 
         if errors:
             raise serializers.ValidationError(errors)

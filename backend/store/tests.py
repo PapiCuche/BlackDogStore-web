@@ -17718,6 +17718,8 @@ class Phase4ApiTest(TestCase):
         self.assertEqual(Customer.objects.get(pk=res.data['id']).company, self.a)
 
     def test_a_duplicate_document_returns_a_conflict_with_the_existing_record(self):
+        # CLIENT-SEC-01: the 409 is for a record the shop stands behind — here, one staff filed.
+        Customer.objects.filter(pk=self.customer_a.pk).update(created_by=self.manager_a)
         res = self._as(self.manager_a).post(
             '/api/admin/customers/',
             {'first_name': 'Otra', 'document_type': 'dni', 'document_number': '11111111'},
@@ -17759,6 +17761,8 @@ class Phase4ApiTest(TestCase):
         self.assertEqual(self.customer_a.first_name, 'Anabel')
 
     def test_editing_into_an_existing_document_is_refused(self):
+        # CLIENT-SEC-01: the 409 is for a record the shop stands behind — here, one staff filed.
+        Customer.objects.filter(pk=self.customer_a.pk).update(created_by=self.manager_a)
         other = _p4_customer(self.a, first_name='Otro', document_type='dni',
                              document_number='33333333')
         res = self._as(self.manager_a).patch(

@@ -13,7 +13,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .customer_services import link_order_to_customer
+from .customer_services import file_paid_guest_order, link_order_to_customer
 from .models import (
     AdminAuditLog, BranchStock, Category, Product, Order, OrderItem, CartItem, PaymentTransaction,
     Review, Coupon, UserProfile, assert_items_match_order,
@@ -704,6 +704,11 @@ class _SignedNotificationMixin:
             # sends the confirmation, with its receipt and its tenant identity,
             # exactly once. This adds the in-app record and nothing else;
             # notifications must not become a way to mail people twice.
+            # CLIENT-SEC-01 · a guest's order that had no record gets one now
+            # that it is paid, BEFORE the notice below looks for whom to tell.
+            # In a savepoint and unable to raise.
+            file_paid_guest_order(order)
+
             emit_payment_confirmed(order)
 
             # CLIENT-SEC-01 · F3. A review starts to wait when the order is
