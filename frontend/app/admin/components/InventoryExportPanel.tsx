@@ -99,6 +99,11 @@ export function InventoryExportPanel({
   // Con algo puesto arriba, el ZIP ya no es «todo»: se dice en su tarjeta.
   const narrowed = chosen.length > 0 || Object.values(filters).some(Boolean);
 
+  // Un catálogo para volver a cargar lleva sólo productos activos, se pida lo que se pida:
+  // el servidor cambia el filtro, y aquí se dice en la tarjeta en vez de callarlo.
+  const onlyActive = (item: Download) =>
+    filters.is_active === "false" && (item.kind === "full" || (item.kind === "products" && mode === "reimport"));
+
   const set = (key: keyof typeof NO_FILTERS) => (event: React.ChangeEvent<HTMLSelectElement>) =>
     setFilters((current) => ({ ...current, [key]: event.target.value }));
 
@@ -249,6 +254,12 @@ export function InventoryExportPanel({
                 <p role="alert" className="mt-1 text-xs font-semibold text-warning">
                   Con los filtros o las sucursales de arriba NO es el inventario completo: lleva sólo lo que
                   coincide. Para llevarlo todo, quítalos.
+                </p>
+              ) : null}
+              {onlyActive(item) ? (
+                <p role="alert" className="mt-1 text-xs font-semibold text-warning">
+                  Este archivo lleva sólo productos activos: el filtro «Inactivos» no le aplica.
+                  {item.kind === "products" ? " Para verlos, descarga el reporte." : ""}
                 </p>
               ) : null}
               {item.kind === "units" ? (

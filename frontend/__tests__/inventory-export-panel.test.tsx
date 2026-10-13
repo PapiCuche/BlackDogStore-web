@@ -247,6 +247,27 @@ describe('los filtros', () => {
     expect(within(card(STOCK)).queryByRole('alert')).toBeNull();
   });
 
+  it('pedir «Inactivos» en un archivo para volver a cargar se dice: ese archivo lleva sólo activos', () => {
+    // Segunda revisión: el servidor cambia el filtro por «activos» y la pantalla lo callaba.
+    show();
+    const said = /lleva sólo productos activos: el filtro «Inactivos» no le aplica/;
+    expect(within(card(CATALOGUE)).queryByText(said)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Estado del producto'), { target: { value: 'false' } });
+    expect(within(card(CATALOGUE)).getByRole('alert')).toHaveTextContent(said);
+    expect(within(card(ACCESSORIES)).getByRole('alert')).toHaveTextContent(said);
+    expect(within(card(FULL)).getByText(said)).toBeInTheDocument();
+    // Stock y equipos sí obedecen el filtro: no llevan el aviso.
+    expect(within(card(STOCK)).queryByText(said)).toBeNull();
+
+    // El reporte lleva activos e inactivos: ahí el filtro vale y el aviso se va.
+    fireEvent.click(screen.getByRole('radio', { name: /Reporte/ }));
+    expect(within(card(CATALOGUE)).queryByText(said)).toBeNull();
+    expect(within(card(ACCESSORIES)).queryByText(said)).toBeNull();
+    // El ZIP es siempre para volver a cargar.
+    expect(within(card(FULL)).getByText(said)).toBeInTheDocument();
+  });
+
   it('no hay filtro de marca: el catálogo no tiene ese dato', () => {
     show();
     expect(screen.queryByLabelText(/Marca/i)).toBeNull();
