@@ -34,7 +34,7 @@ from rest_framework.test import APIClient
 
 from store import admin_views, import_exports, import_services, product_publication, stock_unit_services
 from store.models import (
-    AdminAuditLog, BranchStock, BulkImportJob, CartItem, Category, Order, Product, ProductBarcode,
+    AdminAuditLog, BranchStock, BulkImportJob, CartItem, Category, Order, OrderItem, Product, ProductBarcode,
     ProductImage, Review, StockMovement, StockUnit,
 )
 from store.tests import (
@@ -655,10 +655,16 @@ class PublicExposureMatrixTest(TestCase):
         self.on_sale = _make_product('Cable Expo', 'cable-expo', price='41.00', category=self.category)
         hidden = _make_product('Oculto Expo', 'oculto-expo', price='73.19', category=self.category)
         inactive = _make_product('Inactivo Expo', 'inactivo-expo', price='86.27', category=self.category)
-        buyer = User.objects.create_user('expo_compradora', 'expo@correo.test', 'Pass123!')
+        buyer = self.buyer = User.objects.create_user('expo_compradora', 'expo@correo.test', 'Pass123!')
+        # An order of that buyer from when all three were on sale, at the price of that day.
+        self.order = Order.objects.create(
+            company=self.company, user=buyer, customer_name='Ana Torres', customer_email='expo@correo.test',
+            total=Decimal('30.00'), status=Order.Status.PAID, paid=True,
+        )
         for product in (self.on_sale, hidden, inactive):
             Product.objects.filter(pk=product.pk).update(description=f'Ficha reservada de {product.slug}')
             Review.objects.create(product=product, user=buyer, rating=5, comment=f'Reseña de {product.slug}')
+            OrderItem.objects.create(order=self.order, product=product, quantity=3, price=Decimal('10.00'))
         # In a cart while it was still on sale — one cart per case, next to
         # something the shop does sell.
         self.gone = {'hidden': hidden, 'inactive': inactive}
@@ -810,7 +816,48 @@ class PublicExposureMatrixTest(TestCase):
                 self.assertEqual(response.status_code, 400, response.content)
                 self.assertIn('ya no está disponible', response.content.decode())
                 self.assertNotIn(str(product.price), response.content.decode())
-                self.assertFalse(Order.objects.filter(items__product=product).exists())
+                self.assertFalse(Order.objects.filter(items__product=product).exclude(pk=self.order.pk).exists())
+
+    # -- what the buyer already bought ---------------------------------------
+
+    def test_my_orders_keep_the_line_and_say_nothing_else_of_the_product(self):
+        """
+        Review O2 (older than this phase). The buyer's order history nested the
+        LIVE product: for one that left the web, today's price, its description,
+        its address, the company's stock and its gallery. The line of the order
+        — what was bought, how many, at what price — is the buyer's; the
+        product as it is today is not on sale to anybody.
+        """
+        from store.serializers import ProductSerializer
+
+        api = _client(self.buyer)
+        listed = api.get('/api/orders/')
+        detail = api.get(f'/api/orders/{self.order.pk}/')
+        self.assertEqual((listed.status_code, detail.status_code), (200, 200))
+        body = listed.json()
+        orders = body['results'] if isinstance(body, dict) else body
+
+        for response, order in ((listed, orders[0]), (detail, detail.json())):
+            lines = {item['product']['id']: item for item in order['items']}
+            # What IS on sale keeps its whole payload, field for field.
+            sold = lines[self.on_sale.pk]
+            self.assertEqual(list(sold['product']), ProductSerializer.Meta.fields)
+            self.assertEqual((sold['product']['slug'], sold['product']['price']), ('cable-expo', '41.00'))
+            for kind, product in self.gone.items():
+                with self.subTest(kind):
+                    line = lines[product.pk]
+                    self.assertEqual(line['product'], {'id': product.pk, 'name': product.name, 'image_url': product.image_url})
+                    # The line itself is intact: it is the buyer's record of the purchase.
+                    self.assertEqual((line['quantity'], line['price'], list(line)), (3, '10.00', ['id', 'product', 'quantity', 'price']))
+                    self.assert_says_nothing(response, product, name_allowed=True)
+                    self.assertNotIn('"inventory":10', response.content.decode().split(f'"id":{product.pk}', 1)[1][:200])
+
+    def test_a_line_of_an_order_and_a_line_of_a_cart_close_a_product_the_same_way(self):
+        from store.serializers import closed_product_payload
+
+        for _kind, product in self.gone.items():
+            self.assertEqual(
+                closed_product_payload(product), {'id': product.pk, 'name': product.name, 'image_url': product.image_url})
 
     # -- the app's API --------------------------------------------------------
 
@@ -858,7 +905,7 @@ class PublicExposureMatrixTest(TestCase):
                     self.assertGreaterEqual(response.status_code, 400)
                     self.assertNotIn(product.name, response.content.decode())
                     self.assertNotIn(str(product.price), response.content.decode())
-                    self.assertFalse(Order.objects.filter(items__product=product).exists())
+                    self.assertFalse(Order.objects.filter(items__product=product).exclude(pk=self.order.pk).exists())
             # The same buyer buys what the shop does sell.
             fine = app.post(url, body('cable-expo', 'expo-req-0000002'), format='json')
             self.assertLess(fine.status_code, 300, fine.content)

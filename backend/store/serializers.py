@@ -185,12 +185,42 @@ class CouponSerializer(serializers.ModelSerializer):
         fields = ['code', 'discount_percent']
 
 
+def closed_product_payload(product) -> dict:
+    """
+    What the PUBLIC may still read of a product that is no longer sold online.
+
+    Enough to recognise it — its id, its name, its picture — and nothing that
+    says what it is today: no price, no stock, no description, no address, no
+    gallery. ONE shape, for a line of a cart and for a line of an order.
+
+    Built by hand, not by trimming the full payload: a field added to the
+    public product tomorrow must not reach these lines by default.
+    """
+    return {'id': product.pk, 'name': product.name, 'image_url': product.image_url}
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
+    """
+    One line of the BUYER'S OWN order, on the web.
+
+    The line is theirs: what they bought, how many, at what price. The product
+    nested in it is the LIVE one, and for one that has left the web since
+    (hidden or deactivated) the live product is not on sale to anybody: it is
+    closed to `closed_product_payload`, as the cart closes it. A product that
+    is still sold keeps its whole payload.
+    """
+
     product = ProductSerializer(read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ['id', 'product', 'quantity', 'price']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not instance.product.is_sold_online:
+            data['product'] = closed_product_payload(instance.product)
+        return data
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -254,12 +284,10 @@ class CartItemSerializer(serializers.ModelSerializer):
             data = super().to_representation(instance)
             data['available'] = True
             return data
-        # Built by hand, not by trimming the full payload: a field added to the
-        # public product tomorrow must not reach this line by default.
         return {
             'id': instance.pk,
             'session_key': instance.session_key,
-            'product': {'id': product.pk, 'name': product.name, 'image_url': product.image_url},
+            'product': closed_product_payload(product),
             'quantity': instance.quantity,
             'added_at': self.fields['added_at'].to_representation(instance.added_at),
             'available': False,
