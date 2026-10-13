@@ -26,7 +26,10 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .throttles import AdminOrdersThrottle, AdminOrderStatusChangeThrottle
+from .throttles import (
+    AccountProfileWriteThrottle, AccountRepairsThrottle,
+    AdminOrdersThrottle, AdminOrderStatusChangeThrottle,
+)
 
 from .tenancy import (
     customer_owned_orders,
@@ -85,10 +88,127 @@ class V1CustomerOrderViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewS
         # that could be forgotten, and no query parameter that widens it.
         return (
             customer_owned_orders(self.request.user, self.get_customer_company())
-            .select_related('company')
+            .select_related('company', 'delivery_record')
             .prefetch_related('items__product')
             .order_by('-created_at')
         )
+
+
+class V1CustomerProfileView(V1CustomerSurfaceMixin, APIView):
+    """
+    GET / PATCH — my own profile in this company. CLIENT-SEC-01.
+
+    THE SAME PROFILE AS THE WEB'S «Mi cuenta», through the same service
+    (`customer_profile`): the same fields, the same judge, the same refusals in
+    the same words, the same audit entry.
+
+    The company is the one in the path, IF this person is a client of it — the
+    gate every view of this surface shares. Somebody who has never bought here
+    finds nothing, and so cannot open a file on themselves in a shop they have
+    no relation with; on the web that shop is the one whose page they are on.
+    """
+
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_throttles(self):
+        if self.request.method == 'PATCH':
+            return [AccountProfileWriteThrottle()]
+        return [AccountRepairsThrottle()]
+
+    def get(self, request, company_slug=None):
+        from . import customer_profile
+        # Imported here: `evidence_views` builds on this module's mixin.
+        from .evidence_views import _no_store
+
+        company = self.get_customer_company()
+        return _no_store(Response(customer_profile.payload(company, request.user)))
+
+    def patch(self, request, company_slug=None):
+        from . import customer_profile
+        from .evidence_views import _no_store
+
+        company = self.get_customer_company()
+        try:
+            body = customer_profile.update(
+                company=company, user=request.user, data=request.data, request=request,
+            )
+        except customer_profile.ProfileError as refused:
+            return Response(refused.errors, status=status.HTTP_400_BAD_REQUEST)
+        return _no_store(Response(body))
+
+
+def _verify_view(step):
+    """One step of «verify my own address» from the app, on the surface's own gate."""
+    from .account_views import VerifyOwnEmailActions
+    from .throttles import AccountVerifyConfirmThrottle, AccountVerifySendThrottle
+
+    class View(V1CustomerSurfaceMixin, VerifyOwnEmailActions, APIView):
+        http_method_names = ['post', 'options']
+        authentication_classes = V1CustomerSurfaceMixin.authentication_classes
+        permission_classes = V1CustomerSurfaceMixin.permission_classes
+        throttle_classes = [AccountVerifySendThrottle if step == 'send' else AccountVerifyConfirmThrottle]
+
+        def shop(self, request):
+            return self.get_customer_company()
+
+        def post(self, request, company_slug=None):
+            return self.send_code(request) if step == 'send' else self.confirm_code(request)
+
+    return View
+
+
+class V1CustomerVerifyEmailSendView(_verify_view('send')):
+    """POST — CLIENT-SEC-01 · F7: send the signed-in account the code for its own address."""
+
+
+class V1CustomerVerifyEmailConfirmView(_verify_view('confirm')):
+    """POST {code} — and take it back. The same service and answers as the web's."""
+
+
+class _V1Book(V1CustomerSurfaceMixin):
+    """
+    DELIVERY-01 — my address book in this company, from the app. The same book
+    and the same answers as the web's (`account_views.AddressBookActions`); the
+    company is the one in the path, IF this person is a client of it — whoever
+    is not gets the 404 of this whole surface before anything is looked up.
+    """
+
+    def book_company(self, request):
+        return self.get_customer_company()
+
+
+def _book_view(*verbs):
+    """A view of the book with exactly these verbs, built on the shared actions."""
+    from .account_views import AddressBookActions
+
+    class View(_V1Book, AddressBookActions, APIView):
+        http_method_names = [*verbs, 'options']
+        # The surface's own gate: Bearer only, and a client of the company.
+        authentication_classes = V1CustomerSurfaceMixin.authentication_classes
+        permission_classes = V1CustomerSurfaceMixin.permission_classes
+
+    return View
+
+
+class V1CustomerAddressListView(_book_view('get', 'head', 'post')):
+    def get(self, request, company_slug=None):
+        return self.list_book(request)
+
+    def post(self, request, company_slug=None):
+        return self.add_entry(request)
+
+
+class V1CustomerAddressDetailView(_book_view('patch', 'delete')):
+    def patch(self, request, company_slug=None, pk=None):
+        return self.change_entry(request, pk)
+
+    def delete(self, request, company_slug=None, pk=None):
+        return self.remove_entry(request, pk)
+
+
+class V1CustomerAddressDefaultView(_book_view('post')):
+    def post(self, request, company_slug=None, pk=None):
+        return self.choose_default(request, pk)
 
 
 class V1CustomerRepairViewSet(V1CustomerSurfaceMixin, viewsets.ReadOnlyModelViewSet):

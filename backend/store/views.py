@@ -13,7 +13,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .customer_services import link_order_to_customer
+from .customer_services import file_paid_guest_order, link_order_to_customer
 from .models import (
     AdminAuditLog, BranchStock, Category, Product, Order, OrderItem, CartItem, PaymentTransaction,
     Review, Coupon, UserProfile, assert_items_match_order,
@@ -33,6 +33,7 @@ from .tenancy import (
 from .permissions import get_user_role
 from .email_services import send_order_emails_after_payment
 from .commerce_notifications import emit_payment_confirmed
+from . import order_risk
 from .serializers import (
     CategorySerializer,
     PublicCategorySerializer,
@@ -188,7 +189,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         lives at /api/admin/orders/ with its own tenant scoping. The old branch
         would now expose every tenant's orders to any staff user.
         """
-        return storefront_orders(self.request, self.request.user).prefetch_related(
+        return storefront_orders(self.request, self.request.user).select_related('delivery_record').prefetch_related(
             'items__product', 'items__product__images',
         )
 
@@ -288,6 +289,7 @@ class CreateCheckoutSessionView(APIView):
                 # No idempotency key: the browser contract has none and is not
                 # being changed to acquire one.
                 idempotency=None,
+                request=request,
             )
         except checkout.CheckoutError as exc:
             return Response(exc.as_payload(), status=exc.status_code)
@@ -702,7 +704,18 @@ class _SignedNotificationMixin:
             # sends the confirmation, with its receipt and its tenant identity,
             # exactly once. This adds the in-app record and nothing else;
             # notifications must not become a way to mail people twice.
+            # CLIENT-SEC-01 · a guest's order that had no record gets one now
+            # that it is paid, BEFORE the notice below looks for whom to tell.
+            # In a savepoint and unable to raise.
+            file_paid_guest_order(order)
+
             emit_payment_confirmed(order)
+
+            # CLIENT-SEC-01 · F3. A review starts to wait when the order is
+            # PAID, here, and not when it was made: an order nobody pays for
+            # never reaches the queue or the staff's bell. In a savepoint and
+            # unable to raise — it decides nothing about this payment.
+            order_risk.review_when_paid(order)
 
             # ANALYTICS-MARKETING — the purchase as a conversion, born HERE and
             # nowhere else: not when a browser opens the success page. One

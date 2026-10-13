@@ -119,6 +119,18 @@ class V1InternalOrderDetailSerializer(serializers.ModelSerializer):
     #     Bookkeeping about our own systems, not about the order.
 
 
+class V1InternalRiskReviewSerializer(serializers.Serializer):
+    """
+    CLIENT-SEC-01 — the decision of a person about an order waiting for review.
+
+    `note` stays on the assessment for whoever reads the order next. It is not
+    copied to the audit trail: people write names and phone numbers in it.
+    """
+
+    decision = serializers.ChoiceField(choices=['approve', 'reject'])
+    note = serializers.CharField(required=False, allow_blank=True, max_length=300, default='')
+
+
 class V1InternalFulfillmentSerializer(serializers.Serializer):
     """
     A fulfilment change.

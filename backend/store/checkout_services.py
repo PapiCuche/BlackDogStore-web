@@ -30,6 +30,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from . import delivery_services, order_risk
 from .company_settings import build_identity_snapshot
 from .customer_services import link_order_to_customer
 from .models import (
@@ -383,6 +384,7 @@ def create_pending_order(
     order_user=None,
     cart_session_key: str = '',
     idempotency: IdempotencyStamp | None = None,
+    request=None,
 ) -> Order:
     """
     Write the Order, its items and its CRM link, in one transaction.
@@ -396,6 +398,9 @@ def create_pending_order(
     the action (used as `created_by` on a new CRM record); `order_user` is who
     the order BELONGS to. The browser surface has neither for a guest; the
     native surface always has both, and they are the same person.
+
+    `request` is the one the buyer made, when there is one. It is read for one
+    thing: where the order came from, for its assessment (`order_risk`).
     """
     # Merged here too, not only in validation. This function is the last point
     # before the lines become rows, and it is reached by every surface, so a
@@ -461,6 +466,18 @@ def create_pending_order(
                 quantity=line.quantity,
                 price=line.product.price,
             )
+
+        # CLIENT-SEC-01. Every order made online is assessed as it is made, in
+        # this transaction, so the two exist together or not at all. ADVICE: it
+        # decides nothing about this sale, and it cannot fail it — `assess`
+        # swallows its own failures and then the order simply has no assessment.
+        order_risk.assess(order, request)
+
+        # DELIVERY-01. The order's delivery as a record of its own, copied from
+        # the columns just written above — which stay the ones documents,
+        # e-mails and this contract read. Like the assessment, it cannot fail
+        # the sale: without it the order simply has no record yet.
+        delivery_services.snapshot_for_order(order)
 
     return order
 

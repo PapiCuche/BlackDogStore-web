@@ -3,6 +3,180 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones.
+
+**Fixed**
+- Un pedido de invitado cuyo documento está en la ficha de una cuenta recibe, al pagarse, una
+  ficha propia sin documento: el comprador vuelve a recibir «listo para recoger» y «enviado».
+  Antes (en esta rama, nunca publicado) quedaba sin ficha y sin avisos.
+- Dos personas archivando el mismo documento a la vez: la segunda recibe «ya existe» (409) en
+  vez de un error.
+- Un pedido pagado que pierde una carrera al archivarse se reintenta; un fallo al archivarlo
+  ya no puede hacer fallar la confirmación del pago.
+
+**Security**
+- Para tratar un pedido pagado como «la misma persona reintentando» tienen que coincidir
+  nombre, teléfono y correo con la ficha provisional, no sólo el correo.
+
+**Changed**
+- `ops_status` no cuenta como «sin evaluación» los pedidos anteriores a la primera evaluación.
+
+## 2026-10-13 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la tercera revisión
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones nuevas.
+
+**Security**
+- Los avisos de un pedido («listo para recoger», «enviado») van al correo escrito en ESE
+  pedido, no al de la ficha a la que está enlazado.
+- El pedido de un invitado sólo se enlaza por documento con una ficha establecida (creada por
+  el personal, o con un pedido pagado o una reparación). Una ficha que sólo dejó un checkout
+  sin pagar ya no recibe el pedido de la persona real; ese pedido se archiva al pagarse.
+- En el mostrador, una ficha no establecida que tiene el documento de la persona que se está
+  atendiendo lo suelta (auditado) en vez de devolver «ya existe»; una establecida conserva
+  el 409. Vale también para la ficha que una cuenta declaró para sí en «Mi cuenta».
+- Un checkout con sesión nunca escribe el documento en la ficha de la cuenta: se añade en
+  «Mi cuenta». Deja de saltarse el cupo diario y de responder si un documento está en uso.
+- Al desvincular una cuenta de una ficha, su libreta de direcciones se apaga.
+- El checkout de la app exige para el carné de extranjería lo mismo que la web (6 a 12 letras
+  o números ASCII).
+
+**Fixed**
+- Quien compró con cuenta y tiene la ficha sin documento puede completarlo una vez desde
+  «Mi cuenta» aunque ya tenga un pedido pagado.
+- Reenviar el enlace de seguimiento derivado junto con otra guía ya no lo deja congelado; la
+  respuesta del personal dice si el enlace es escrito (`tracking_url_typed`).
+- Un medio carácter en la dirección de seguimiento o en la plantilla del transportista se
+  rechaza en vez de dar error.
+- Con 200 direcciones quitadas ya no se bloquea la libreta: la nueva ocupa la fila quitada
+  más antigua.
+- Un teléfono pegado con espacios duros se acepta en «Mi cuenta» igual que en el checkout.
+- La explicación de la retención dice los tres estados que retiene: listo para retiro,
+  enviado y entregado.
+
+**Changed**
+- En la señal de contacto, pedidos con el mismo teléfono, correo y documento son un solo
+  comprador (una persona en varios dispositivos).
+- `ops_status` añade dos notas, nunca alarmas: pedidos pagados que esperan revisión (con la
+  antigüedad del más viejo) y pedidos en línea del último día sin evaluación.
+
+## 2026-10-12 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la segunda revisión
+
+En la rama `feat/client-sec-delivery`; sin desplegar.
+
+**Security**
+- Un checkout con sesión ya no deja en la ficha de la cuenta un documento que el perfil no
+  dejaría guardar: la ficha lo toma sólo si la cuenta probó su correo y nadie en la tienda
+  lo tiene; si no, la ficha nace sin documento y el pedido conserva lo escrito.
+- El código de «Verificar mi correo» tiene un propósito de token propio y su correo no lleva
+  enlace: una cuenta apagada después de pedirlo ya no se reactiva por la recuperación, el
+  enlace o el reenvío. El código queda ligado a la dirección a la que se envió.
+- El cupo de tres cambios de documento al día se cuenta en la auditoría
+  (`customer_document_change_attempted`), no en la memoria del proceso: un reinicio no lo
+  devuelve. Un doble toque en el primer guardado gasta un intento.
+- Los dos checkout (web y v1) sólo admiten los dígitos 0-9 en documento y teléfono.
+- Una ficha archivada no se borra al reclamar una reparación ni admite direcciones nuevas.
+
+**Fixed**
+- Una fecha de envío fuera de 2000-01-01 … hoy + 1 año se rechaza (antes una fecha del año
+  9999 se guardaba y dejaba el pedido ilegible para todos); el flete se acota antes de
+  redondearse; un texto con medio carácter se rechaza en vez de dar error.
+- El enlace de seguimiento sigue al transportista y a la guía cuando es el derivado, y sólo
+  cambia al escribirlo cuando lo escribió una persona (`OrderDelivery.tracking_url_typed`).
+- Una entrada de agencia se puede corregir aunque su transportista se haya apagado.
+- La tarjeta «Entrega» muestra el nombre de quien la escribió o «Personal de la tienda»,
+  nunca el usuario.
+
+**Changed**
+- Las señales de velocidad cuentan también pedidos pagados (el sexto en una hora por origen,
+  o en un día por teléfono, correo o documento) y se vuelven a mirar cuando el pedido se paga.
+- Un comprador tiene como mucho 200 entradas de libreta entre activas y quitadas (desde la
+  tercera revisión, al llegar se reutiliza la quitada más antigua).
+- Deshacer la migración `0121` ya no borra los registros de entrega.
+- `0118` añade la tercera opción de `AccountToken.purpose`; `0119` crea `OrderDelivery` con
+  `tracking_url_typed` y sin `source_address` (ninguna de las dos estaba publicada).
+
+**Removed**
+- `OrderDelivery.source_address`: ningún código la escribía.
+
+## 2026-10-12 — DELIVERY-01 (base)
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Aditivo: el checkout, los precios, los
+documentos y los correos no cambian, y el flete no entra a ningún total.
+
+**Added**
+- Configuración › Transportistas: las agencias y couriers de cada empresa, con su dirección de
+  seguimiento (`/api/admin/carriers/`). No se crea ninguno por defecto.
+- «Mis direcciones» en «Mi cuenta»: varias direcciones y agencias por tienda, con destinatario
+  propio y una predeterminada (`/api/account/addresses/…`, `/api/v1/customer/<slug>/addresses/…`).
+- Registro de entrega por pedido en línea (`OrderDelivery`): se crea con el pedido y el
+  personal completa transportista, agencia, flete (informativo), guía y seguimiento desde la
+  tarjeta «Entrega» del pedido (`…/orders/<id>/delivery/`, panel y API interna).
+- En «Mis pedidos»: transportista, agencia, número de guía y enlace «Seguir mi envío».
+- En el checkout: «Usar una dirección guardada» (sólo rellena el formulario).
+- Migraciones `0119_delivery_base` y `0121_delivery_records_backfill`.
+
+**Not started** (decisiones del propietario)
+- Recojo en agencia como opción del checkout, cobro del flete, y los datos nuevos en
+  documentos y correos.
+
+## 2026-10-12 — CLIENT-SEC-01: correcciones tras la revisión
+
+**Security**
+- El pedido de un invitado ya no se enlaza por documento con la ficha de una cuenta: una
+  cuenta no puede recibir el pedido ni los avisos de otra persona por tener su documento
+  (enmienda a DEC-CUSTOMER-01).
+- Guardar un documento en el perfil exige el correo verificado y tiene un cupo de tres cambios
+  al día por cuenta.
+- El titular no puede cambiar una ficha archivada, ni el documento de una ficha que creó la
+  tienda o que ya tiene un pedido pagado, ni dejar un documento en blanco.
+- DNI, RUC y teléfono sólo admiten los dígitos 0-9; los nombres no admiten caracteres de control.
+
+**Added**
+- «Verificar mi correo» en «Mi cuenta»: código de 6 dígitos al correo de la propia cuenta
+  (`/api/account/verify-email/send/` y `/confirm/`, y sus equivalentes en v1).
+- Todo enlace de recuperación de contraseña usado deja el correo como verificado.
+
+**Changed**
+- Un pedido pasa a «por revisar» —y avisa al personal— cuando se paga, no cuando se crea.
+- Las señales de velocidad cuentan compradores distintos, y a los demás sólo si pagaron.
+- La retención opcional incluye «listo para retiro».
+- Reclamar una reparación funciona aunque antes se haya abierto «Mi cuenta», si esa ficha está vacía.
+- Quien revisa un pedido se muestra por su nombre o como «Personal de la tienda».
+- Migración `0120_client_sec_verified_backfill`: los datos de `0118` pasan a su propia migración.
+
+## 2026-10-12 — CLIENT-SEC-01 (fase 1)
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Consultivo por defecto: sin tocar la
+configuración, comprar, pagar y despachar funcionan como antes.
+
+**Added**
+- «Mi cuenta»: el comprador ve y corrige su nombre, teléfono y documento en la tienda
+  (`/account`; `GET/PATCH /api/account/profile/` y `/api/v1/customer/<slug>/profile/`). El correo
+  se muestra con «Verificado / Sin verificar» y no se edita ahí.
+- `UserProfile.email_verified_at`: cuándo se probó el buzón de una cuenta. Campo añadido
+  `email_verified_at` en `auth/me/` y `v1/auth/me/`.
+- Evaluación de cada pedido en línea al crearse (`OrderRiskAssessment`): nivel bajo, medio o
+  alto y los motivos, sin datos personales ni la IP.
+- Revisión manual en el panel y en la API interna (`…/orders/<id>/risk-review/`): Aprobar o
+  Rechazar con una nota, una vez por pedido. Es una referencia: no cancela, no devuelve ni
+  cambia el pago o el despacho.
+- En la lista de pedidos: etiqueta de riesgo y filtro «Por revisar» (`?review=pending`).
+- Aviso en el panel «Pedido por revisar» para quien gestiona pedidos en esa sucursal.
+- Configuración › Revisión de pedidos: «Monto de revisión» y «Retener los pedidos por
+  revisar», las dos apagadas al nacer. Con la retención encendida, un pedido con revisión
+  pendiente no se puede marcar como enviado o entregado hasta que alguien decida.
+
+**Changed**
+- El rechazo de «enviado / entregado» dice su motivo en `code`: `units_pending` (como antes) o
+  `review_pending`.
+- Migración `0118_client_sec`.
+
+**Known, not fixed** (`docs/AUDIT_MEMORY.md`)
+- CLIENT-SEC-VALIDATORS, CLIENT-SEC-IPHASH-RETENTION y las demás CLIENT-SEC-* de la tabla de
+  deuda. (CLIENT-SEC-DOC-CLAIM y CLIENT-SEC-VERIFY-ACTIVE se cerraron: ver la entrada de arriba.)
+
 ## 2026-10-11 — PAY-GUARD-03
 
 **Fixed**

@@ -29,6 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from . import accounts
 from . import google_identity as google
 from . import security_log
 from .auth_views import _set_auth_cookies
@@ -86,6 +87,11 @@ class _GoogleMixin:
         ExternalIdentity.objects.filter(
             provider=ExternalIdentity.PROVIDER_GOOGLE, subject=proven.subject,
         ).update(last_login_at=timezone.now())
+        # Google vouches for the address IT names (`email_verified` is required
+        # of every token). That proves this account's mailbox only while the
+        # account still has that address.
+        if (user.email or '').strip().lower() == proven.email:
+            accounts.mark_email_verified(user)
         security_log.login_succeeded(request, channel='google', user=user)
         refresh = RefreshToken.for_user(user)
         response = Response({

@@ -41,7 +41,9 @@ from rest_framework.test import APIClient
 from store import checkout_services as checkout
 from store.integrations import payments as payment_adapters
 from store.integrations import registry, service
-from store.models import AdminAuditLog, CartItem, Company, IntegrationConfig, Order, PaymentTransaction
+from store.models import (
+    AdminAuditLog, CartItem, Company, IntegrationConfig, Order, OrderDelivery, OrderRiskAssessment, PaymentTransaction,
+)
 from store.payments.fake_micuentaweb import FakeMiCuentaWeb
 from store.test_integrations_payments import (
     CHECKOUT_PUBLIC, CHECKOUT_SECRETS, EMPTY_ENV, MCW_PUBLIC, MCW_SECRETS, _Base, fake_checkout, fake_mcw,
@@ -198,6 +200,8 @@ class UnsafeChangeTest(GuardBase):
             with self.subTest(name):
                 self.reset_console()
                 PaymentTransaction.objects.all().delete()
+                OrderRiskAssessment.objects.all().delete()
+                OrderDelivery.objects.all().delete()
                 Order.objects.all().delete()
                 attempt = self.open_attempt(minutes=45)
                 self.prepare(name)
@@ -233,6 +237,8 @@ class UnsafeChangeTest(GuardBase):
                 with self.subTest(f'{case} · {name}'):
                     self.reset_console()
                     PaymentTransaction.objects.all().delete()
+                    OrderRiskAssessment.objects.all().delete()
+                    OrderDelivery.objects.all().delete()
                     Order.objects.all().delete()
                     attempt = self.open_attempt(minutes=45)
                     self.gateway.hold(attempt.transaction_id, *transactions(attempt))

@@ -54,9 +54,13 @@ RESEND_WAIT = timedelta(seconds=60)
 DAILY_CODES = 5
 LINK_TTL_HOURS = 24
 
-Issued = namedtuple('Issued', 'token code row_id user_id')
-
 _PURPOSE = AccountToken.PURPOSE_EMAIL_VERIFICATION
+# What a signed-in account asks for (`issue_own`, `confirm_own`). Never the
+# purpose above: that one is what says an account was never finished.
+_OWN_PURPOSE = AccountToken.PURPOSE_OWN_EMAIL_PROOF
+
+Issued = namedtuple('Issued', 'token code row_id user_id purpose', defaults=[_PURPOSE])
+
 _SIX_DIGITS = re.compile(r'[0-9]{6}')
 _SEPARATORS = '-‐‑‒–—'
 _NOBODY = 0          # no account has this id: what is locked and compared when there is nothing to check
@@ -70,6 +74,15 @@ def _key() -> bytes:
 def _mac(user_id, code: str) -> str:
     """Bound to the account: the same six digits are a different secret for somebody else."""
     return hmac.new(_key(), f'{user_id}:{code}'.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def _own_mac(user, code: str) -> str:
+    """
+    Bound to the account AND to the address the code was sent to: what it
+    proves is that one mailbox is read, so it is worth nothing for another.
+    """
+    address = (user.email or '').strip().lower()
+    return hmac.new(_key(), f'own|{user.pk}|{address}|{code}'.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
 def normalise(typed) -> str | None:
@@ -102,29 +115,47 @@ def issue(user) -> Issued | None:
     (`settle`); if it did not, `withdraw` takes this one back. Meanwhile only
     the newest code of an account is ever accepted, so two are never good at once.
     """
+    return _issue(user, _PURPOSE, lambda code: _mac(user.pk, code))
+
+
+@transaction.atomic
+def issue_own(user) -> Issued | None:
+    """
+    A code for a SIGNED-IN account to prove its own address, or None when it
+    must wait (CLIENT-SEC-01 · F7).
+
+    The same wait and the same day's budget as `issue`, counted apart, and a
+    token of its own purpose: nothing that finishes a half-made account — the
+    link, the public resend, a recovery — ever looks at it. `Issued.token` is
+    never sent to anybody; the code is the whole of this proof.
+    """
+    return _issue(user, _OWN_PURPOSE, lambda code: _own_mac(user, code))
+
+
+def _issue(user, purpose, mac) -> Issued | None:
     _lock_account(user.pk)
     now = timezone.now()
-    sent = AccountToken.objects.filter(user=user, purpose=_PURPOSE)
+    sent = AccountToken.objects.filter(user=user, purpose=purpose)
     latest = sent.order_by('-created_at', '-pk').first()
     if latest is not None and now - latest.created_at < RESEND_WAIT:
         return None
     if sent.filter(created_at__gt=now - timedelta(hours=24)).count() >= DAILY_CODES:
         return None
 
-    raw_token, row = AccountToken.make(user, _PURPOSE, ttl_hours=LINK_TTL_HOURS)
+    raw_token, row = AccountToken.make(user, purpose, ttl_hours=LINK_TTL_HOURS)
     code = f'{secrets.randbelow(10 ** 6):06d}'
-    row.code_hash = _mac(user.pk, code)
+    row.code_hash = mac(code)
     row.code_expires_at = now + CODE_TTL
     row.save(update_fields=['code_hash', 'code_expires_at'])
-    return Issued(raw_token, code, row.pk, user.pk)
+    return Issued(raw_token, code, row.pk, user.pk, purpose)
 
 
 @transaction.atomic
 def settle(issued: Issued) -> None:
-    """The mail left. Every older code of the account is over."""
+    """The mail left. Every older code of the account — of that kind — is over."""
     _lock_account(issued.user_id)
     (AccountToken.objects
-     .filter(user_id=issued.user_id, purpose=_PURPOSE)
+     .filter(user_id=issued.user_id, purpose=issued.purpose)
      .exclude(pk=issued.row_id).exclude(code_hash='')
      .update(code_hash='', code_expires_at=None))
 
@@ -197,6 +228,58 @@ def check(email, typed, *, on_exhausted=None):
             return None
         # Every link and code the account was sent, not only this one.
         accounts.mark_verified(user)
+        accounts.mark_email_verified(user)
         user.is_active = True
         user.save(update_fields=['is_active'])
     return user
+
+
+def confirm_own(user, typed, *, on_exhausted=None) -> bool:
+    """
+    The code a SIGNED-IN account typed for its own address (CLIENT-SEC-01 · F7).
+
+    `check` above finishes an account that cannot sign in yet, found by the
+    address somebody typed. This one is for an account that already can: the
+    account is the session's, never looked up, and what the code adds is the
+    one fact a session does not prove — that this person reads the mailbox.
+
+    The same rules: `CODE_TTL`, `MAX_ATTEMPTS`, the newest code only, and the
+    same lock order (account first). The HMAC is bound to the account and to
+    the address the code went to, read again here from the locked row: a code
+    asked for one address proves nothing about the next one. False for every
+    refusal alike.
+    """
+    code = normalise(typed)
+    now = timezone.now()
+    with transaction.atomic():
+        account = _lock_account(user.pk)
+        row = (
+            AccountToken.objects.select_for_update()
+            .filter(user_id=user.pk, purpose=_OWN_PURPOSE, used_at__isnull=True)
+            .exclude(code_hash='')
+            .order_by('-created_at', '-pk')
+            .first()
+        )
+        expected = row.code_hash if row is not None else _mac(_NOBODY, '000000')
+        matches = (
+            code is not None and account is not None
+            and hmac.compare_digest(expected, _own_mac(account, code))
+        )
+        if (
+            account is None or not account.is_active or row is None or code is None
+            or row.code_expires_at is None or row.code_expires_at <= now
+            or row.expires_at <= now or row.code_attempts >= MAX_ATTEMPTS
+        ):
+            return False
+        if not matches:
+            row.code_attempts += 1
+            row.save(update_fields=['code_attempts'])
+            if row.code_attempts >= MAX_ATTEMPTS and on_exhausted is not None:
+                on_exhausted(account)
+            return False
+        # Every code of this kind the account was sent, not only this one.
+        (AccountToken.objects
+         .filter(user_id=account.pk, purpose=_OWN_PURPOSE, used_at__isnull=True)
+         .update(used_at=now))
+        accounts.mark_email_verified(account)
+    return True

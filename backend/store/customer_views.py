@@ -37,6 +37,7 @@ member granted one shop sees what that client bought there, not a record of the
 other shops' sales they could not open one by one.
 """
 
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -44,7 +45,7 @@ from rest_framework.views import APIView
 
 from .customer_services import (
     DuplicateCustomerError,
-    assert_document_available,
+    free_document_for_staff,
     find_possible_duplicates,
 )
 from .models import AdminAuditLog, Customer
@@ -232,25 +233,30 @@ class AdminCustomerListView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        customer = Customer(company=company, created_by=request.user, **data)
         try:
-            assert_document_available(
-                company, data.get('document_type', ''), data.get('document_number', ''),
-            )
-        except DuplicateCustomerError as exc:
+            # One transaction: a provisional record that gives this document up
+            # (`free_document_for_staff`) does so only if the new record is saved.
+            with transaction.atomic():
+                free_document_for_staff(
+                    company, data.get('document_type', ''), data.get('document_number', ''),
+                    actor=request.user, request=request,
+                )
+                customer.save()
+        except (DuplicateCustomerError, IntegrityError) as exc:
             # 409, not 400: the request is well-formed and the client is not at
             # fault. Something already exists, and the useful answer says which
             # record, so the UI can offer to open it instead of a dead end.
+            existing = _holder_after(exc, company, customer)
+            if existing is None:
+                raise
             return Response(
                 {
-                    'detail': str(exc),
-                    'existing': CustomerListSerializer(exc.existing).data,
+                    'detail': str(DuplicateCustomerError(existing)),
+                    'existing': CustomerListSerializer(existing).data,
                 },
                 status=status.HTTP_409_CONFLICT,
             )
-
-        customer = Customer(company=company, created_by=request.user, **data)
-        try:
-            customer.save()
         except Exception as exc:  # model validation
             from django.core.exceptions import ValidationError as DjangoValidationError
             if isinstance(exc, DjangoValidationError):
@@ -277,6 +283,25 @@ class AdminCustomerListView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+def _holder_after(refusal, company, customer):
+    """
+    The record a refused save collided with, or None.
+
+    Either the service found it (`DuplicateCustomerError`), or the DATABASE
+    did: somebody else filed the same document between the look and the save,
+    and the unique rule refused the second one. Both are the same answer for
+    staff — «it already exists, here it is» — so the second is looked up now,
+    after the fact. An integrity error about anything else is not ours: None.
+    """
+    if isinstance(refusal, DuplicateCustomerError):
+        return refusal.existing
+    if not customer.document_type or not customer.document_number:
+        return None
+    return Customer.objects.filter(
+        company=company, document_type=customer.document_type, document_number=customer.document_number,
+    ).first()
 
 
 class AdminCustomerDetailView(APIView):
@@ -353,23 +378,6 @@ class AdminCustomerDetailView(APIView):
 
         # `company`, `user` and `created_by` are not writable fields, so there is
         # nothing to reject here — they are simply not part of the serializer.
-        if 'document_number' in data or 'document_type' in data:
-            try:
-                assert_document_available(
-                    company,
-                    data.get('document_type', customer.document_type),
-                    data.get('document_number', customer.document_number),
-                    exclude_pk=customer.pk,
-                )
-            except DuplicateCustomerError as exc:
-                return Response(
-                    {
-                        'detail': str(exc),
-                        'existing': CustomerListSerializer(exc.existing).data,
-                    },
-                    status=status.HTTP_409_CONFLICT,
-                )
-
         changed = []
         for field, value in data.items():
             if getattr(customer, field) != value:
@@ -378,7 +386,25 @@ class AdminCustomerDetailView(APIView):
 
         if changed:
             try:
-                customer.save()
+                # One transaction, as in the create: see `free_document_for_staff`.
+                with transaction.atomic():
+                    if 'document_number' in changed or 'document_type' in changed:
+                        free_document_for_staff(
+                            company, customer.document_type, customer.document_number,
+                            actor=request.user, request=request,
+                        )
+                    customer.save()
+            except (DuplicateCustomerError, IntegrityError) as exc:
+                existing = _holder_after(exc, company, customer)
+                if existing is None:
+                    raise
+                return Response(
+                    {
+                        'detail': str(DuplicateCustomerError(existing)),
+                        'existing': CustomerListSerializer(existing).data,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             except Exception as exc:
                 from django.core.exceptions import ValidationError as DjangoValidationError
                 if isinstance(exc, DjangoValidationError):

@@ -39,6 +39,52 @@ def mark_verified(user) -> None:
     ).update(used_at=timezone.now())
 
 
+def mark_email_verified(user, *, when=None) -> None:
+    """
+    Somebody has just PROVED they read this account's mailbox (CLIENT-SEC-01).
+
+    Called by the roads that prove it and by nothing else: the verification
+    link, its code, a recovery link that finishes an account, Google naming
+    this very address, a staff invitation sent to it. Signing in proves
+    nothing, and neither does being active.
+
+    The first proof is the one kept: the date says since when the address is
+    known to be read, not when it was last used.
+    """
+    from .models import UserProfile
+
+    if user is None or not getattr(user, 'pk', None):
+        return
+    profile, _created = UserProfile.objects.get_or_create(
+        user=user, defaults={'role': UserProfile.ROLE_CUSTOMER},
+    )
+    UserProfile.objects.filter(pk=profile.pk, email_verified_at__isnull=True).update(
+        email_verified_at=when or timezone.now(),
+    )
+
+
+def email_verified_at(user):
+    """When this account's mailbox was proven, or None: unknown is not verified."""
+    from .models import UserProfile
+
+    if user is None or not getattr(user, 'pk', None):
+        return None
+    # Asked of the database: the profile an authenticated request carries may
+    # have been read before the proof was written.
+    return UserProfile.objects.filter(user=user).values_list('email_verified_at', flat=True).first()
+
+
+def can_verify_own_email(user) -> bool:
+    """
+    Whether a signed-in account has something to verify and a way to do it: it
+    is active, it has an address, and nobody has proved that address yet.
+    """
+    return bool(
+        user is not None and getattr(user, 'pk', None) and user.is_active
+        and (user.email or '').strip() and email_verified_at(user) is None
+    )
+
+
 def with_email(email: str) -> list:
     """Every account under this address, as people write it: no case, no stray spaces."""
     email = (email or '').strip()

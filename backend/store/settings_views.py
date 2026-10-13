@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 CAP_COMPANY_VIEW = 'company.view'
 CAP_COMPANY_MANAGE = 'company.manage'
+CAP_SETTINGS_MANAGE = 'settings.manage'
+
+#: CLIENT-SEC-01 — the two settings that decide how orders are reviewed.
+ORDER_REVIEW_OPTIONS = frozenset({'risk_review_amount', 'hold_orders_pending_review'})
 
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
 
@@ -292,6 +296,11 @@ class AdminCompanySettingsView(APIView):
             ),
             'status': company_configuration_status(company),
             'can_manage': has_capability(request.user, company, CAP_COMPANY_MANAGE),
+            # CLIENT-SEC-01: the two order-review options take a second key.
+            'can_manage_order_review': (
+                has_capability(request.user, company, CAP_COMPANY_MANAGE)
+                and has_capability(request.user, company, CAP_SETTINGS_MANAGE)
+            ),
         })
 
     def patch(self, request):
@@ -318,6 +327,21 @@ class AdminCompanySettingsView(APIView):
             settings_row, data=payload, partial=True,
         )
         settings_ser.is_valid(raise_exception=True)
+
+        # CLIENT-SEC-01. Whether orders wait for a review, and from which
+        # amount one is asked for, decide how the shop sells: CHANGING either
+        # takes `settings.manage` as well as this screen's own capability.
+        # Asked before anything is written — a refused save keeps nothing — and
+        # only of a change: a form that sends them back as they were is the
+        # form it always was.
+        if any(
+            field in ORDER_REVIEW_OPTIONS and getattr(settings_row, field) != value
+            for field, value in settings_ser.validated_data.items()
+        ) and not has_capability(request.user, company, CAP_SETTINGS_MANAGE):
+            return Response(
+                {'detail': 'No tienes permisos para cambiar la revisión de pedidos de esta empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         changed = []
 

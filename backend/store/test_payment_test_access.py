@@ -23,7 +23,7 @@ from django.contrib.auth import get_user_model
 from django.test import override_settings
 from rest_framework.test import APIClient
 
-from store.models import AdminAuditLog, Order, PaymentTransaction
+from store.models import AdminAuditLog, Order, OrderDelivery, OrderRiskAssessment, PaymentTransaction
 from store.payments.fake_micuentaweb import FakeMiCuentaWeb
 from store.test_integrations_payments import CHECKOUT_PUBLIC, CHECKOUT_SECRETS, MCW_PUBLIC, _Base, fake_checkout
 from store.test_micuentaweb import IPN_URL, McwBase
@@ -71,6 +71,8 @@ class TestKeysInTheConsoleTest(_Base):
         for name, go_live in (('mi cuenta web', self.go_live_with_mcw), ('sdk web', self.go_live_with_checkout)):
             with self.subTest(name):
                 PaymentTransaction.objects.all().delete()
+                OrderRiskAssessment.objects.all().delete()
+                OrderDelivery.objects.all().delete()
                 Order.objects.all().delete()
                 self.fake = go_live()
                 self.as_buyer(self.master)

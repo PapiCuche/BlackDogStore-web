@@ -385,7 +385,12 @@ def claim(token, *, user, document_number='', request=None) -> Customer:
         return customer
     if customer.user_id is not None:
         raise TrackingError('Esta orden ya pertenece a otra cuenta.', conflict=True)
-    if Customer.objects.filter(company_id=order.company_id, user=user).exists():
+    # The account may already have a record here. One that HOLDS something is
+    # another client file, and joining two files is the shop's to do. One that
+    # is EMPTY — made by opening «Mi cuenta» and saving a name or a phone — is
+    # not: it steps aside once the claim below has been proved (CLIENT-SEC-01 · F4).
+    own = Customer.objects.select_for_update().filter(company_id=order.company_id, user=user).first()
+    if own is not None and not _is_empty_record(own):
         raise TrackingError(
             'Tu cuenta ya está asociada a otro registro de cliente de esta tienda. '
             'Pide en la tienda que unan los dos.', conflict=True,
@@ -414,16 +419,47 @@ def claim(token, *, user, document_number='', request=None) -> Customer:
             'El documento no coincide con el de esta orden.', forbidden=True,
         )
 
+    metadata = {'customer_id': customer.pk, 'via': 'tracking_link', 'repair_order_id': order.pk}
+    if own is not None:
+        # In this transaction: the empty record goes, and its account moves to
+        # the file the shop already kept. One account, one client of a shop.
+        metadata['replaced_empty_customer_id'] = own.pk
+        own.delete()
     customer.user = user
     customer.save(update_fields=['user', 'updated_at'])
     AdminAuditLog.log(
         actor=user, action='customer_account_linked', target_type='customer',
-        target_id=customer.pk,
-        metadata={'customer_id': customer.pk, 'via': 'tracking_link',
-                  'repair_order_id': order.pk},
+        target_id=customer.pk, metadata=metadata,
         request=request, company=order.company,
     )
     return customer
+
+
+def _is_empty_record(record) -> bool:
+    """
+    Whether a client record holds NOTHING: no document, no note of the shop,
+    not made by staff, and no row of any kind that points at it — a purchase, a
+    repair, a device, an address, a notice. Asked of every relation the model
+    has, so one added later counts without being remembered here.
+
+    A record the shop ARCHIVED is never empty: archiving it was a decision
+    about that person, and deleting the record would undo it.
+    """
+    if not record.is_active:
+        return False
+    if record.document_number or record.notes or record.business_name:
+        return False
+    if record.created_by_id is not None and record.created_by_id != record.user_id:
+        return False
+    return not any(
+        getattr(record, relation.get_accessor_name()).exists()
+        for relation in Customer._meta.related_objects
+        if relation.one_to_many or relation.many_to_many
+    ) and not any(
+        relation.related_model.objects.filter(**{relation.field.name: record}).exists()
+        for relation in Customer._meta.related_objects
+        if relation.one_to_one
+    )
 
 
 @transaction.atomic
@@ -445,10 +481,19 @@ def unlink_account(customer, *, actor, reason: str, request=None) -> Customer:
         return locked
     locked.user = None
     locked.save(update_fields=['user', 'updated_at'])
+    # The address book was written by the account that is leaving: the next
+    # account linked to this record must not find it. Switched off, like any
+    # entry its owner removes; the orders that used an address have their copy.
+    from .models import CustomerAddress
+
+    removed = CustomerAddress.objects.filter(customer=locked, is_active=True).update(
+        is_active=False, is_default=False, updated_at=timezone.now(),
+    )
     AdminAuditLog.log(
         actor=actor, action='customer_account_unlinked', target_type='customer',
         target_id=locked.pk,
-        metadata={'customer_id': locked.pk, 'previous_user_id': previous, 'reason': reason},
+        metadata={'customer_id': locked.pk, 'previous_user_id': previous, 'reason': reason,
+                  'addresses_removed': removed},
         request=request, company=locked.company,
     )
     return locked

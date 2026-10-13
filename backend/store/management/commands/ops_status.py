@@ -27,7 +27,9 @@ from store.integrations import health as integration_health
 from store.integrations import payments as payment_adapters
 from store.integrations.providers.payments import attempts_of_another_origin
 from store.integrations import registry
-from store.models import ConversionDelivery, NotificationDelivery, PaymentTransaction
+from store.models import (
+    ConversionDelivery, NotificationDelivery, Order, OrderRiskAssessment, PaymentTransaction, SalesChannel,
+)
 
 #: How far back a failure is still news.
 RECENT = timedelta(hours=24)
@@ -60,7 +62,8 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 class Command(BaseCommand):
-    help = 'Lo que necesita atención: migraciones, pagos, avisos de WhatsApp, conversiones e integraciones. Sólo lee.'
+    help = ('Lo que necesita atención: migraciones, pagos, avisos de WhatsApp, conversiones, revisión de pedidos '
+            'e integraciones. Sólo lee.')
 
     def handle(self, *args, **options):
         now = timezone.now()
@@ -223,6 +226,43 @@ class Command(BaseCommand):
                 f'{int(CONVERSION_WAIT.total_seconds() // 60)} minutos. '
                 '¿Se está ejecutando `send_pending_conversions`?')
         report('conversiones', conversions, 'sin conversiones fallidas ni atrasadas', conversion_notes)
+
+        # CLIENT-SEC-01. The review of orders is advice, so neither line is ever
+        # an alarm: how many paid orders wait for somebody and since when, and
+        # whether online orders are being made without an assessment — which is
+        # what an assessor that fails in silence looks like from here.
+        review_notes = []
+        pending = OrderRiskAssessment.objects.filter(
+            review_status=OrderRiskAssessment.ReviewStatus.PENDING, order__status=Order.Status.PAID,
+        )
+        waiting = pending.count()
+        if waiting:
+            oldest = pending.order_by('order__paid_at').values_list('order__paid_at', flat=True).first()
+            hours = int((now - oldest).total_seconds() // 3600) if oldest else 0
+            review_notes.append(
+                f'{_plural(waiting, "pedido pagado espera", "pedidos pagados esperan")} revisión; el más antiguo, '
+                f'desde hace {f"{hours} h" if hours else "menos de 1 h"}. Se deciden en Pedidos › Por revisar.'
+            )
+        # «Made by the checkout»: it is the checkout that assesses, and it
+        # always leaves the browser's cart or the app's idempotency key on the
+        # order. An order written any other way was never going to be assessed.
+        # And made AFTER the assessor existed: on the day this is deployed every
+        # earlier order has no assessment, and none of them was ever missing one.
+        # No assessment at all means there is nothing yet to compare against.
+        first_assessment = (
+            OrderRiskAssessment.objects.order_by('created_at').values_list('created_at', flat=True).first()
+        )
+        unassessed = 0 if first_assessment is None else Order.objects.filter(
+            ~Q(cart_session_key='') | Q(idempotency_key__isnull=False),
+            sales_channel=SalesChannel.ONLINE, created_at__gte=max(now - RECENT, first_assessment),
+            risk_assessment__isnull=True,
+        ).count()
+        if unassessed:
+            review_notes.append(
+                f'{_plural(unassessed, "pedido en línea de las últimas 24 h no tiene", "pedidos en línea de las últimas 24 h no tienen")} '
+                'evaluación. La venta no se ve afectada; si se repite, busca «order risk assessment failed» en el registro.'
+            )
+        report('revisión de pedidos', [], 'sin pedidos por revisar ni pedidos en línea sin evaluar', review_notes)
 
         # What a master configured in Configuración › Integraciones, and the two
         # integrations a shop cannot work without. Labels and states, never values.

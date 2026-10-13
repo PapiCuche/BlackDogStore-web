@@ -195,6 +195,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    # DELIVERY-01, an added field: where the order went and how to follow it,
+    # or null. A closed shape of its own (`delivery_services.buyer_payload`).
+    delivery = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -211,8 +214,14 @@ class OrderSerializer(serializers.ModelSerializer):
             'paid_at',
             'created_at',
             'items',
+            'delivery',
         ]
         read_only_fields = fields
+
+    def get_delivery(self, obj):
+        from .delivery_services import buyer_payload_for
+
+        return buyer_payload_for(obj)
 
 
 class CartItemSerializer(serializers.ModelSerializer):
@@ -228,7 +237,9 @@ class CartItemSerializer(serializers.ModelSerializer):
 # Phase 4.0: Checkout input serializer (commercial fields)
 # ---------------------------------------------------------------------------
 
-_PERU_PHONE_RE = re.compile(r'^\+?51?\s*9\d{2}\s*\d{3}\s*\d{3}$|^9\d{8}$')
+# `[0-9]`, not `\d`: in Python `\d` is every digit Unicode has, and «٩٨٧…» is a
+# different text for the same number (CLIENT-SEC-01).
+_PERU_PHONE_RE = re.compile(r'^\+?51?\s*9[0-9]{2}\s*[0-9]{3}\s*[0-9]{3}$|^9[0-9]{8}$')
 
 # Fields the frontend must never be allowed to set (injected fields)
 _FORBIDDEN_CHECKOUT_FIELDS = frozenset([
@@ -303,10 +314,10 @@ class CheckoutInputSerializer(serializers.Serializer):
 
         # document_number format per type
         if doc_type == Order.DocumentType.DNI:
-            if not re.fullmatch(r'\d{8}', doc_number):
+            if not re.fullmatch(r'[0-9]{8}', doc_number):
                 raise serializers.ValidationError({'document_number': 'El DNI debe tener exactamente 8 dígitos.'})
         elif doc_type == Order.DocumentType.RUC:
-            if not re.fullmatch(r'\d{11}', doc_number):
+            if not re.fullmatch(r'[0-9]{11}', doc_number):
                 raise serializers.ValidationError({'document_number': 'El RUC debe tener exactamente 11 dígitos.'})
         elif doc_type == Order.DocumentType.CE:
             if not re.fullmatch(r'[a-zA-Z0-9]{6,12}', doc_number):
@@ -577,6 +588,15 @@ class AdminOrderDetailSerializer(serializers.ModelSerializer):
 class AdminOrderFulfillmentSerializer(serializers.Serializer):
     fulfillment_status = serializers.ChoiceField(choices=Order.FulfillmentStatus.choices)
     note = serializers.CharField(required=False, allow_blank=True, max_length=500, default='')
+
+
+class OrderRiskReviewSerializer(serializers.Serializer):
+    """
+    CLIENT-SEC-01 — what a person decided about an order waiting for review.
+    One shape for the panel and the internal surface of v1.
+    """
+    decision = serializers.ChoiceField(choices=['approve', 'reject'])
+    note = serializers.CharField(required=False, allow_blank=True, max_length=300, default='')
 
 
 class AdminCategoryUpdateSerializer(serializers.ModelSerializer):
@@ -1289,6 +1309,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             'warranty_policy_text', 'warranty_policy_url', 'terms_url', 'privacy_url',
             # notifications
             'order_notification_email',
+            # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
+            # them also takes `settings.manage` (see the view).
+            'risk_review_amount', 'hold_orders_pending_review',
             'updated_at',
         ]
         read_only_fields = [

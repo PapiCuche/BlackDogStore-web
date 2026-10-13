@@ -17542,7 +17542,11 @@ class Phase4OrderLinkTest(TestCase):
         customer = link_order_to_customer(order)
         self.assertIsNotNone(customer)
         self.assertEqual(customer.user_id, user.pk)
-        self.assertEqual(customer.document_number, '55556666')
+        # CLIENT-SEC-01 (third review): a signed-in checkout never writes the
+        # document on the account's record — it is added in «Mi cuenta». The
+        # order keeps what was typed on it.
+        self.assertEqual(customer.document_number, '')
+        self.assertEqual(order.document_number, '55556666')
 
     def test_an_account_already_used_here_is_not_stolen(self):
         """
@@ -17713,6 +17717,8 @@ class Phase4ApiTest(TestCase):
         self.assertEqual(Customer.objects.get(pk=res.data['id']).company, self.a)
 
     def test_a_duplicate_document_returns_a_conflict_with_the_existing_record(self):
+        # CLIENT-SEC-01: the 409 is for a record the shop stands behind — here, one staff filed.
+        Customer.objects.filter(pk=self.customer_a.pk).update(created_by=self.manager_a)
         res = self._as(self.manager_a).post(
             '/api/admin/customers/',
             {'first_name': 'Otra', 'document_type': 'dni', 'document_number': '11111111'},
@@ -17754,6 +17760,8 @@ class Phase4ApiTest(TestCase):
         self.assertEqual(self.customer_a.first_name, 'Anabel')
 
     def test_editing_into_an_existing_document_is_refused(self):
+        # CLIENT-SEC-01: the 409 is for a record the shop stands behind — here, one staff filed.
+        Customer.objects.filter(pk=self.customer_a.pk).update(created_by=self.manager_a)
         other = _p4_customer(self.a, first_name='Otro', document_type='dni',
                              document_number='33333333')
         res = self._as(self.manager_a).patch(
@@ -19932,6 +19940,8 @@ class M4CustomerOrderContractTest(TestCase):
                 'total', 'discount_amount', 'coupon_code',
                 'delivery_method', 'delivery_method_label',
                 'created_at', 'paid_at', 'items',
+                # DELIVERY-01, added: where it went and how to follow it.
+                'delivery',
             },
         )
 
@@ -53792,6 +53802,10 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'v1-internal-order-units': self.commerce.pk,
             'v1-internal-order-unit-lookup': self.commerce.pk,
             'v1-internal-order-unit-detail': self.commerce.pk,
+            # CLIENT-SEC-01: sólo POST; aquí la alcanza OPTIONS.
+            'v1-internal-order-risk-review': self.commerce.pk,
+            # DELIVERY-01: GET lee el registro de entrega; PATCH lo escribe.
+            'v1-internal-order-delivery': self.commerce.pk,
             'v1-internal-service-device-detail': self.device.pk,
             'v1-internal-announcement': self.announcement.pk,
             'v1-internal-notifications-read': 999999,
@@ -54120,7 +54134,9 @@ class H411CredentialChannelTest(M8ServiceBase):
         # WhatsApp, y configuración de mensajería.
         # 87 desde SERIAL-PICK-01: consulta de equipo en caja, y consulta,
         # identificación y retiro del equipo de un pedido.
-        self.assertEqual(internal, 87)
+        # 88 desde CLIENT-SEC-01: decidir la revisión de un pedido.
+        # 89 desde DELIVERY-01: el registro de entrega de un pedido.
+        self.assertEqual(internal, 89)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------

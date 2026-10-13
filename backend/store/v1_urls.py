@@ -12,8 +12,14 @@ from .v1_auth_views import V1LoginView, V1LogoutView, V1MeView, V1RefreshView
 from .print_views import PrintAgentClaimView, PrintAgentResultView
 from .v1_checkout_views import V1CustomerCheckoutView
 from .v1_customer_views import (
+    V1CustomerAddressDefaultView,
+    V1CustomerAddressDetailView,
+    V1CustomerAddressListView,
     V1CustomerOrderViewSet,
+    V1CustomerProfileView,
     V1CustomerRepairQuoteDecisionView,
+    V1CustomerVerifyEmailConfirmView,
+    V1CustomerVerifyEmailSendView,
     V1CustomerRepairPaymentSummaryView,
     V1CustomerRepairQuoteView,
     V1CustomerRepairViewSet,
@@ -114,7 +120,8 @@ from .v1_inventory_views import (
 )
 from .v1_internal_views import (
     V1InternalContextView, V1InternalOrderDetailView,
-    V1InternalOrderFulfillmentView, V1InternalOrderListView,
+    V1InternalOrderDeliveryView,
+    V1InternalOrderFulfillmentView, V1InternalOrderListView, V1InternalOrderRiskReviewView,
     V1InternalOrderUnitDetailView, V1InternalOrderUnitLookupView, V1InternalOrderUnitsView,
 )
 from .v1_views import (
@@ -162,6 +169,33 @@ urlpatterns = [
         'customer/<slug:company_slug>/checkout/',
         V1CustomerCheckoutView.as_view(), name='v1-customer-checkout',
     ),
+    # CLIENT-SEC-01 — my own profile in this company (the web's «Mi cuenta»).
+    path(
+        'customer/<slug:company_slug>/profile/',
+        V1CustomerProfileView.as_view(), name='v1-customer-profile',
+    ),
+    # CLIENT-SEC-01 · F7 — prove my own mailbox with a code.
+    path(
+        'customer/<slug:company_slug>/verify-email/send/',
+        V1CustomerVerifyEmailSendView.as_view(), name='v1-customer-verify-email-send',
+    ),
+    path(
+        'customer/<slug:company_slug>/verify-email/confirm/',
+        V1CustomerVerifyEmailConfirmView.as_view(), name='v1-customer-verify-email-confirm',
+    ),
+    # DELIVERY-01 — my own address book in this company.
+    path(
+        'customer/<slug:company_slug>/addresses/',
+        V1CustomerAddressListView.as_view(), name='v1-customer-addresses',
+    ),
+    path(
+        'customer/<slug:company_slug>/addresses/<int:pk>/',
+        V1CustomerAddressDetailView.as_view(), name='v1-customer-address-detail',
+    ),
+    path(
+        'customer/<slug:company_slug>/addresses/<int:pk>/default/',
+        V1CustomerAddressDefaultView.as_view(), name='v1-customer-address-default',
+    ),
     # CUSTOMER — the quote on my own repair, and my answer to it. Literal
     # sub-paths on the `customer/` prefix, registered BEFORE the router
     # include() on that same prefix, following the file's existing ordering.
@@ -201,6 +235,16 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/orders/<int:pk>/fulfillment/',
         V1InternalOrderFulfillmentView.as_view(), name='v1-internal-order-fulfillment',
+    ),
+    # DELIVERY-01 — the delivery record of an order.
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/delivery/',
+        V1InternalOrderDeliveryView.as_view(), name='v1-internal-order-delivery',
+    ),
+    # CLIENT-SEC-01 — a person decides the review an order was waiting for.
+    path(
+        'internal/<slug:company_slug>/orders/<int:pk>/risk-review/',
+        V1InternalOrderRiskReviewView.as_view(), name='v1-internal-order-risk-review',
     ),
     # SERIAL-PICK-01 — which device is handed over with a web order.
     path(

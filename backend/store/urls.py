@@ -45,7 +45,7 @@ from .admin_views import (
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
     AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
-    AdminOrderReprocessStockExitView,
+    AdminOrderReprocessStockExitView, AdminOrderRiskReviewView,
 )
 from .inventory_views import (
     AdminBestSellingView, AdminHighStockView, AdminInventorySummaryView,
@@ -132,6 +132,11 @@ from .tenant_views import (
     MyMembershipsView,
 )
 from .tracking_views import AccountRepairClaimView, AccountRepairsView
+from .account_views import (
+    AccountAddressDefaultView, AccountAddressDetailView, AccountAddressListView, AccountProfileView,
+    AccountVerifyEmailConfirmView, AccountVerifyEmailSendView,
+)
+from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -222,6 +227,10 @@ urlpatterns = [
     path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),
     path('admin/orders/<int:pk>/units/<int:unit_pk>/', AdminOrderUnitDetailView.as_view(), name='admin-order-unit-detail'),
     path('admin/orders/<int:pk>/reprocess-stock-exit/', AdminOrderReprocessStockExitView.as_view(), name='admin-order-reprocess-stock-exit'),
+    # DELIVERY-01 — the delivery record of an order: carrier, agency, freight, waybill.
+    path('admin/orders/<int:pk>/delivery/', AdminOrderDeliveryView.as_view(), name='admin-order-delivery'),
+    # CLIENT-SEC-01 — a person decides the review an order was waiting for.
+    path('admin/orders/<int:pk>/risk-review/', AdminOrderRiskReviewView.as_view(), name='admin-order-risk-review'),
     path('admin/orders/<int:pk>/receipt-pdf/', AdminOrderReceiptPdfView.as_view(), name='admin-order-receipt-pdf'),
     path('admin/orders/<int:pk>/resend-confirmation-email/', AdminOrderResendEmailView.as_view(), name='admin-order-resend-email'),
 
@@ -419,6 +428,18 @@ urlpatterns = [
     # --- TRACKING: the signed-in customer's own repairs ---
     path('account/repairs/', AccountRepairsView.as_view(), name='account-repairs'),
     path('account/repairs/claim/', AccountRepairClaimView.as_view(), name='account-repairs-claim'),
+    # --- DELIVERY-01: a company's carriers ---
+    path('admin/carriers/', AdminCarrierListView.as_view(), name='admin-carriers'),
+    path('admin/carriers/<int:pk>/', AdminCarrierDetailView.as_view(), name='admin-carrier-detail'),
+    # --- CLIENT-SEC-01: the signed-in buyer's own profile in this shop ---
+    path('account/profile/', AccountProfileView.as_view(), name='account-profile'),
+    # --- CLIENT-SEC-01 · F7: a signed-in account proves its own mailbox ---
+    path('account/verify-email/send/', AccountVerifyEmailSendView.as_view(), name='account-verify-email-send'),
+    path('account/verify-email/confirm/', AccountVerifyEmailConfirmView.as_view(), name='account-verify-email-confirm'),
+    # --- DELIVERY-01: the signed-in buyer's own address book in this shop ---
+    path('account/addresses/', AccountAddressListView.as_view(), name='account-addresses'),
+    path('account/addresses/<int:pk>/', AccountAddressDetailView.as_view(), name='account-address-detail'),
+    path('account/addresses/<int:pk>/default/', AccountAddressDefaultView.as_view(), name='account-address-default'),
 
     # --- SaaS Phase 2E: internal document sequences ---
     # `scope/` before `<int:pk>/` so the literal segment is not swallowed by

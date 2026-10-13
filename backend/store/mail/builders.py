@@ -48,6 +48,32 @@ def verify_email(*, brand: str, name: str, link: str, code: str = '') -> dict:
     }
 
 
+def own_email_code(*, brand: str, name: str, code: str) -> dict:
+    """
+    A signed-in account asked to prove its address. 01-confirmar-correo, without
+    its button: the code is typed where it was asked for, and nothing here opens
+    anything for whoever only has the mail.
+    """
+    return {
+        'asunto': f'Tu código de verificación · {brand}',
+        'preheader': 'El código que pediste para verificar el correo de tu cuenta.',
+        'etiqueta': 'Cuenta web',
+        'titulo': 'Verifica tu correo',
+        'saludo': _greeting(name),
+        'parrafos': [
+            'Pediste verificar el correo de tu cuenta. Escribe este código en la página «Mi cuenta».',
+            'Si no lo pediste, ignora este correo.',
+        ],
+        'codigo': {
+            'etiqueta': 'Tu código',
+            'valor': code,
+            'nota': 'Vence en 15 minutos. No lo compartas con nadie: nunca te lo pediremos.',
+        },
+        'motivo': f'Recibes este correo porque alguien con sesión iniciada en la web de {brand} pidió verificar esta dirección.',
+        'anio': fmt.year(),
+    }
+
+
 def password_reset(*, brand: str, name: str, link: str) -> dict:
     return {
         'asunto': f'Restablece tu contraseña · {brand}',

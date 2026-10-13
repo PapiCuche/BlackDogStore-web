@@ -14,6 +14,271 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-DELIVERY-01 · La entrega es un registro propio JUNTO al pedido, y el flete es un dato
+
+Base de DELIVERY-01 (transportistas, libreta de direcciones, registro de entrega). Lo que el
+código cumple y las pruebas vigilan:
+
+- **Aditivo.** `Order` conserva `delivery_method` (con sus tres opciones) y sus columnas de
+  dirección, y el checkout web y v1 —con su huella y sus campos prohibidos—, los precios, los
+  documentos, los PDF, los tickets y los correos siguen leyendo ESAS columnas. Nada de esta
+  fase las cambia. Lo nuevo vive al lado: `Carrier`, `CustomerAddress` y `OrderDelivery`.
+- **`OrderDelivery` es una copia, no un enlace.** Nace con el pedido, de las columnas del
+  pedido (`delivery_services.snapshot_for_order`, en un punto de guardado que no puede hacer
+  fallar un checkout), y guarda en texto lo que necesita: `carrier_name` además de `carrier`,
+  y la dirección entera. No apunta a ninguna entrada de la libreta (la columna
+  `source_address`, que ningún código escribió nunca, se retiró). Renombrar o apagar un
+  transportista, editar o quitar una dirección de la libreta, no reescribe la entrega de un
+  pedido que ya salió.
+- **El flete es información.** `freight_amount` y `freight_paid_by` dicen qué cobra el
+  transportista y quién lo paga. No entran al total del pedido, a su impuesto ni a su
+  comprobante, y el comprador no los ve.
+- **El personal escribe la entrega, no el pedido.** Destinatario, puerta o agencia (sólo entre
+  `national_address` y `agency_pickup`; nunca hacia o desde `pickup_store`), transportista,
+  flete, guía y seguimiento. `Order.delivery_method`, el total y el estado de despacho no se
+  tocan desde ahí. Ver es `sales.orders.view`, escribir es `sales.orders.manage`, por
+  `visible_orders`. Los transportistas se leen con `sales.orders.view` y se cambian con
+  `settings.manage` sobre toda la empresa; se desactivan, no se borran; no se siembra ninguno.
+- **Un enlace sólo es un enlace si es https.** La plantilla de seguimiento de un transportista
+  admite un único marcador, `{guia}`, fuera del dominio; el número de guía se escribe
+  codificado; y tanto el servidor como las pantallas se niegan a dar como enlace algo que no
+  empiece por `https://`.
+- **El enlace de seguimiento sabe de quién es** (`OrderDelivery.tracking_url_typed`). Uno
+  DERIVADO sale de la página del transportista y de la guía: se rehace cuando cambia el
+  transportista o la guía, y queda vacío si falta cualquiera de los dos o el transportista no
+  tiene página. Uno ESCRITO por una persona sólo cambia cuando se envía el propio enlace;
+  enviarlo vacío vuelve al derivado, y escribir exactamente la página del transportista no
+  cuenta como escrito. Un enlace derivado no se rehace mientras su transportista y su guía no
+  cambien: el registro sigue siendo una copia.
+- **Lo que no se puede leer no se guarda.** La fecha de envío vale entre el 2000-01-01 y un
+  año hacia adelante; el flete se acota antes de redondearse; un texto con medio carácter (un
+  sustituto suelto de UTF-16) se rechaza donde ya se rechazaban los caracteres de control; y
+  la escritura del personal se relee dentro de su transacción antes de confirmarse.
+- **La libreta es del comprador en UNA tienda.** Cuelga de su `Customer` de esa empresa; una
+  entrada de otro comprador o de otra tienda responde 404 en todos los verbos. Una
+  predeterminada entre las activas (regla de la base de datos, movida en una transacción con
+  la ficha bloqueada), tope de diez, se desactivan y no se borran. En el checkout sólo RELLENA
+  el formulario en el navegador: lo que se envía al servidor no cambia. Como las entradas
+  quitadas siguen siendo filas, un comprador tiene como mucho `MAX_ADDRESS_ROWS` (200) entre
+  activas y quitadas; al llegar, la entrada nueva ocupa la fila quitada más antigua. Una ficha
+  que la tienda archivó no admite una entrada nueva ni una dirección escrita sobre otra, y la
+  respuesta no dice por qué. Una entrada de agencia cuyo transportista se apagó se puede
+  corregir: el transportista sólo se juzga cuando es el transportista lo que cambia.
+
+**Lo que espera al propietario** (no empezado): ofrecer «recojo en agencia» en el checkout,
+cobrar el flete, e imprimir transportista, guía o destinatario en documentos y correos.
+Tampoco se envía al servidor qué dirección de la libreta se usó. El comprador no ve la clave
+de recojo ni el destinatario.
+
+**Marcha atrás de las migraciones.** Deshacer `0121` no borra nada: para entonces los
+registros llevan lo que escribió el personal. Quien quita los registros es deshacer `0119`,
+que quita la tabla.
+
+### DEC-CLIENT-SEC-01 · La revisión de pedidos es un consejo, y de la persona se guarda lo mínimo
+
+Fase 1 de CLIENT-SEC-01 (perfil del comprador, correo verificado, evaluación y revisión
+manual de pedidos). Cuatro reglas que el código cumple y las pruebas vigilan:
+
+- **Consultiva por defecto.** Todo pedido de la web o de la app se evalúa al crearse
+  (`order_risk.assess`, dentro de la transacción del pedido y en un punto de guardado
+  propio: si falla, el pedido queda sin evaluación y la venta sigue). La evaluación no
+  rechaza un checkout, no toca un pago y no cancela nada. La decisión de quien revisa
+  (`order_risk.review`) tampoco: cambia la evaluación y nada más. Lo único que puede
+  retener —«listo para retiro», «enviado» y «entregado» mientras la revisión de un pedido
+  PAGADO está pendiente— es una opción
+  de cada empresa, `hold_orders_pending_review`, **apagada por defecto**; encendida, la
+  levanta cualquiera de las dos respuestas, porque lo que se pide es que alguien mire.
+  Con las dos opciones como nacen, checkout, pago y despacho son los de la versión anterior.
+- **Proporcional.** Ocho señales con nombre y peso (`order_risk.SIGNALS`, `WEIGHTS`) y
+  dos umbrales (`MEDIUM_SCORE`, `HIGH_SCORE`). Lo que parece la mayoría de compradores
+  honestos —primera compra sin cuenta— queda en `low` y no pide a nadie. Se pide una
+  revisión con nivel `high` o cuando el cliente está archivado en la tienda. Todo se
+  calcula **dentro de la empresa del pedido**: ninguna señal cuenta pedidos, clientes u
+  orígenes de otra empresa.
+- **Sin dato personal en la evaluación.** `OrderRiskAssessment.signals` guarda los
+  CÓDIGOS de las reglas, nunca el valor que las activó. El origen se guarda como
+  `ip_hash`: un HMAC de la dirección con una clave derivada de `SECRET_KEY` (etiqueta
+  propia) y ligado a la empresa, de modo que la misma dirección da otro valor en cada
+  tienda. **No se guarda la IP ni el navegador.** La auditoría de la revisión lleva
+  decisión, nivel y códigos; la nota de quien revisa se queda en la evaluación y no se
+  copia a la auditoría ni a los registros. El aviso al personal dice qué pedido y qué
+  nivel, no por qué. El comprador no ve nada de esto en ninguna superficie.
+- **Sin biometría ni fotografías de documentos.** El perfil valida la FORMA de un
+  teléfono y de un documento (`identity_validation`), y la forma no es identidad: nada
+  aquí pide un selfie ni la foto de un DNI, ni de forma general ni por nivel de riesgo.
+  Si algún día hiciera falta, es una decisión del propietario con su base legal, no una
+  consecuencia de esta fase.
+
+**Correo verificado.** `UserProfile.email_verified_at` es un hecho propio: lo escriben
+los caminos que prueban que alguien lee el buzón (enlace, código —también el que pide una
+cuenta con sesión—, todo enlace de recuperación consumido, Google cuando nombra esa misma
+dirección, invitación de personal enviada a ella) y ninguno más. `is_active` sigue significando «puede entrar», y
+`is_email_verified` de la API v1 sigue significando lo que significaba. Nulo es
+«desconocido», y desconocido no es verificado.
+
+**Capacidades reutilizadas, catálogo intacto.** Ver la evaluación es `sales.orders.view`;
+decidir la revisión es `sales.orders.manage`, con el alcance por sucursal de
+`visible_orders`. En el puente legacy del piloto deciden ventas y administración, no
+almacén (como cancelar). Las dos opciones de empresa viven en la pantalla de
+Configuración (`company.manage`) y cambiarlas exige además `settings.manage`. No se
+añadió ninguna capacidad ni se tocó ningún rol.
+
+**Enmiendas tras la revisión independiente** (misma rama, antes de publicar):
+
+- **ENMIENDA A DEC-CUSTOMER-01 · el documento de un invitado no abre la ficha de una
+  cuenta.** `link_order_to_customer` enlazaba la compra de un invitado con la ficha que
+  tuviera su documento, tuviera o no cuenta. Pero `Order.customer.user` es propiedad
+  (`tenancy.customer_owned_orders`) y es adonde van los avisos del comprador, y el checkout
+  sólo comprueba la FORMA de un documento: una cuenta que dejara en su ficha el DNI de un
+  extraño leía el siguiente pedido de invitado de ese extraño y recibía sus avisos. Ahora un
+  invitado sólo enlaza por documento con una ficha SIN cuenta (`_guest_record`, en el primer
+  intento y en el reintento tras perder una carrera); si el documento está en la ficha de una
+  cuenta, el pedido queda sin enlazar, con su instantánea, sin ficha gemela y sin error para
+  quien compra. Una venta con sesión sigue enlazándose sólo por su cuenta. Es el único cambio
+  deliberado a un comportamiento anterior, y sólo lo estrecha. Unir una cuenta con una ficha
+  de mostrador sigue siendo un acto deliberado (el reclamo de una reparación, o la tienda).
+- **La revisión empieza cuando el pedido se PAGA.** Las señales se anotan al crear el pedido,
+  pero la revisión pasa a «por revisar» —y el aviso al personal sale— en la confirmación del
+  pago (`order_risk.review_when_paid`, en un punto de guardado, incapaz de hacer fallar una
+  confirmación o una conciliación). Un pedido que nadie paga no llega a la cola ni a la
+  campana. La cola y la retención miran sólo pedidos pagados. La retención incluye «listo
+  para retiro», porque ese estado avisa al comprador de que venga.
+- **La velocidad cuenta COMPRADORES, y a los demás sólo si pagaron** (ampliado en la segunda
+  revisión, más abajo: también cuenta pedidos pagados). `velocity_ip` y
+  `velocity_contact` cuentan compradores distintos (quien reintenta un pago es uno), y el
+  pedido de OTRO comprador cuenta sólo si se pagó: un pedido sin pagar no cuesta nada, y
+  contarlo dejaba marcar el pedido de un tercero o llenar la cola desde un navegador. El
+  origen de una dirección IPv6 es su /64.
+- **El documento es de quien probó su correo, y pocas veces al día.** Guardar un documento
+  responde algo sobre los demás clientes de la tienda: sólo lo hace una cuenta con
+  `email_verified_at`, con un cupo propio de tres cambios al día por cuenta (rechazos
+  incluidos). Una cuenta con sesión puede verificar su correo con un código enviado a SU
+  dirección (`account/verify-email/…`, las reglas de `verification_codes`), y todo enlace de
+  recuperación consumido también deja la prueba.
+- **Lo que la tienda registró no lo reescribe su titular.** El perfil no cambia nada de una
+  ficha archivada (responde como un guardado sin cambios); el documento queda fijo cuando la
+  ficha la creó el personal o ya tiene un pedido pagado; y un documento se sustituye, no se
+  borra.
+- **Una ficha vacía no bloquea el reclamo de una reparación**: si la cuenta sólo tiene la
+  ficha que hizo «Mi cuenta» —sin documento, sin notas, sin nada que apunte a ella—, el
+  reclamo probado pasa la cuenta a la ficha reclamada y quita la vacía.
+
+**Enmiendas tras la segunda revisión independiente** (misma rama, antes de publicar):
+
+- **El checkout con sesión no es otra puerta al documento** (endurecido en la tercera
+  revisión, más abajo: ya no lo toma nunca). La ficha que crea una compra con
+  cuenta toma el documento escrito en el checkout sólo con la regla del perfil: la cuenta
+  probó su correo y nadie en esa tienda tiene ya ese documento
+  (`customer_services._record_may_take_document`). Si no, la ficha nace SIN documento, la
+  venta sigue sin decir nada, y el pedido conserva lo que se escribió. La ficha de un
+  invitado lo toma como siempre. Sin esto, un checkout sin pagar —gratis y repetible— dejaba
+  el DNI de un extraño en la ficha propia, saltándose el correo probado y el cupo.
+- **El código «verificar mi correo» tiene su propio propósito y su correo no lleva enlace.**
+  `AccountToken.PURPOSE_OWN_EMAIL_PROOF`. Un token de verificación es lo que dice «registrada y
+  nunca confirmada» (`accounts.is_unverified`); emitido para una cuenta ACTIVA, hacía que una
+  cuenta apagada después se reactivara sola por la recuperación, por el enlace o por el
+  reenvío público. Ninguno de esos caminos mira el propósito nuevo. El correo lleva sólo el
+  código, que no vale nada sin la sesión que lo pidió, y el código queda ligado a la
+  dirección a la que se envió: si la cuenta cambia de correo, no sirve.
+- **El cupo de documento se cuenta en la auditoría, no en la memoria del proceso.** Cada
+  intento que llega a la pregunta «¿se puede guardar este documento?» —aceptado o
+  rechazado— es una entrada `customer_document_change_attempted` (sólo el resultado, nunca
+  el documento), y el cupo cuenta las de las últimas 24 horas con la fila de la cuenta
+  bloqueada. Se eligió la auditoría y no una tabla propia porque esas entradas son las que
+  la auditoría quiere de todos modos, sin migración y sin un segundo contador que mantener
+  fiel; un intento por encima del cupo no escribe nada, así que son como mucho tres filas al
+  día por cuenta. Un doble toque en el primer guardado gasta un intento. `CACHES` no se
+  tocó: los límites de DRF siguen en la memoria del proceso (THROTTLE-CACHE-01).
+- **La velocidad cuenta también PEDIDOS PAGADOS, y se vuelve a mirar al pagar.** Además de
+  tres compradores distintos, se nota el sexto pedido pagado de un mismo origen en una hora
+  (`VELOCITY_IP_ORDERS`) o con un mismo teléfono, correo o documento en un día
+  (`VELOCITY_CONTACT_ORDERS`), este incluido y lo haga quien lo haga. Los pedidos sin pagar
+  no cuentan nunca, así que quien reintenta el pago de UNA compra sigue siendo una compra.
+  Y al pagarse un pedido (`review_when_paid`) las dos señales se preguntan otra vez —para
+  entonces los pedidos hechos a su lado ya se pagaron—, en un punto de guardado propio
+  dentro del de la revisión: sólo AÑADE a lo anotado, recalcula puntaje y nivel, y si falla
+  la revisión que ya tocaba se abre igual.
+- **Un dígito es 0-9 también en el checkout** (web y v1: documento y teléfono). Nada más de
+  esos dos validadores cambió.
+- **Una ficha archivada nunca es «vacía»**: el reclamo de una reparación no la borra.
+
+**Enmiendas tras la tercera revisión independiente** (misma rama, antes de publicar). Las
+tres primeras cierran un camino anterior a la fase: un checkout anónimo y SIN PAGAR con el DNI
+de otra persona y el contacto propio dejaba una ficha con ese documento, y después el pedido
+de la persona real, sus avisos, su reparación en el mostrador y por último la ficha entera
+iban a parar a quien la sembró.
+
+- **El aviso de un pedido va al contacto del propio pedido.** «Listo para recoger» y «enviado»
+  se escriben a `order.customer_email`, nunca al correo de la ficha a la que el pedido está
+  enlazado (`notification_services._recipient_email`). Sin correo en el pedido, no hay correo.
+  Los avisos de una reparación siguen yendo al correo de la ficha: ahí la ficha la abrió el
+  personal con la persona delante. WhatsApp sólo envía avisos de reparaciones, así que no
+  cambia.
+- **Ficha ESTABLECIDA** (`customer_services.is_established`): la que creó el personal, o la
+  que ya tiene un pedido PAGADO (enlazado a ella o de su cuenta en esa tienda) o una
+  reparación. Todo lo demás es provisional —la que dejó un checkout sin pagar, la que una
+  cuenta declaró para sí en «Mi cuenta»—: hacerla no cuesta nada y no prueba de quién es el
+  documento que lleva. De ahí salen tres reglas:
+  - *El pedido de un invitado sólo se enlaza por documento con una ficha establecida y sin
+    cuenta.* Si el documento está en una ficha provisional, el pedido queda sin enlazar, sin
+    error y sin ficha gemela (enmienda otra vez a DEC-CUSTOMER-01).
+  - *Un pedido de invitado se archiva cuando se PAGA* (`file_paid_guest_order`, en la
+    confirmación del pago, en un punto de guardado e incapaz de hacerla fallar). Pagar es lo
+    que al checkout le falta: cuesta dinero y deja rastro. Si la ficha provisional que tiene
+    su documento lleva el mismo correo que el pedido, es la misma persona reintentando tras
+    una tarjeta rechazada y el pedido se enlaza a ella (desde la revisión previa al despliegue:
+    mismo nombre, teléfono y correo); si no, esa ficha suelta el documento
+    (auditado: `customer_document_released`, sólo nombres de campo) y el pedido recibe una
+    ficha propia hecha con lo que se escribió en él. Así el primer pedido pagado de un
+    invitado establece su ficha para los siguientes.
+  - *El personal no es enviado a una ficha provisional.* Al crear o corregir una ficha con un
+    documento que está en una ficha NO establecida —con cuenta o sin ella—, esa ficha suelta
+    el documento y la del personal se guarda, en una transacción y con auditoría. La cuenta
+    que lo había declarado conserva su ficha, sin el documento, y no se le dice nada. Una
+    ficha establecida responde el 409 de siempre.
+- **El documento de la ficha de una cuenta sólo entra por «Mi cuenta».** Un checkout con
+  sesión NUNCA lo escribe (sustituye a la regla de la segunda revisión, que lo permitía con
+  el correo probado y dejaba pasar el cupo y servía de oráculo): la ficha nace sin documento
+  y el pedido conserva lo escrito. A cambio, un documento VACÍO no está congelado: su
+  titular, con el correo probado, lo completa una vez aunque la ficha ya tenga un pedido
+  pagado o la haya creado el personal, con la comprobación de conflicto, el cupo y la
+  auditoría de siempre; cambiar uno que ya está sigue siendo de la tienda.
+- **La libreta no acompaña a la ficha a otra cuenta.** Cuando la tienda desvincula una cuenta
+  (`unlink_account`), las direcciones de la ficha se apagan.
+- **Un enlace devuelto no es un enlace escrito.** Enviar de vuelta el enlace derivado tal como
+  estaba, junto con otra guía u otro transportista, no lo congela; `tracking_url_typed` viaja
+  en la respuesta del personal.
+- **La libreta ya no rechaza por el tope de filas.** Al llegar a 200, la entrada nueva ocupa
+  la fila quitada más antigua, reescrita entera.
+- **Tres dispositivos, un comprador.** En la señal de contacto, pedidos con el mismo teléfono,
+  correo Y documento son un solo comprador (siguen contando como pedidos pagados).
+- `ops_status` dice, como NOTA y nunca como alarma, cuántos pedidos pagados esperan revisión
+  y desde cuándo, y cuántos pedidos en línea del último día no tienen evaluación.
+
+**Ajustes tras la revisión previa al despliegue** (misma rama):
+
+- **Un pedido pagado siempre tiene una ficha.** Si su documento está en la ficha de una
+  CUENTA, esa ficha no se toca y el pedido recibe una ficha propia SIN documento, hecha con lo
+  escrito en él. Sin esto, quien compró una vez con sesión y vuelve a comprar sin ella —o la
+  persona cuyo documento declaró otra cuenta— no recibía nunca «listo para recoger» ni
+  «enviado». La cuenta no ve ese pedido.
+- **«La misma persona reintentando» es el mismo nombre, teléfono Y correo** que la ficha
+  provisional, no sólo el correo (que cualquiera puede escribir). Si falta o difiere uno, la
+  ficha suelta el documento y el pedido recibe la suya.
+- **Archivar un pedido pagado no puede dejar nada a medias.** Una carrera perdida (el personal
+  archivando a la vez, o dos pagos) se reintenta una vez; si aun así falla, el pedido queda
+  como estaba también en memoria, para que el aviso siguiente no apunte a una ficha deshecha.
+  Una ficha provisional que no se puede guardar (inválida por otro motivo) no suelta el
+  documento: al personal se le muestra con el 409 y al pedido pagado se le da una ficha sin
+  documento. Dos personas archivando el mismo documento a la vez: la segunda recibe el 409.
+- `ops_status` cuenta como «sin evaluación» sólo los pedidos posteriores a la primera
+  evaluación que exista: el día del despliegue no avisa de los pedidos anteriores.
+
+**Lo que esta fase no decide** (queda como deuda en `docs/AUDIT_MEMORY.md`): unificar los
+tres validadores anteriores de teléfono y documento, cuánto tiempo se conserva `ip_hash`, y
+—decisión del propietario— los pesos y umbrales de la evaluación y si el monto por sí solo
+debe abrir una revisión.
+
 ### DEC-CP2-HOST-01 · Lightsail en São Paulo, apertura por separado
 
 Aprobado por el propietario con `GO AWS`, 2026-10-07: instancia Ubuntu 24.04 LTS

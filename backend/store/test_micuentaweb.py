@@ -30,7 +30,7 @@ from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
-from store.models import CartItem, Order, PaymentTransaction, Product, StockMovement
+from store.models import CartItem, Order, OrderDelivery, OrderRiskAssessment, PaymentTransaction, Product, StockMovement
 from store.payments import micuentaweb
 from store.payments.fake_micuentaweb import FakeMiCuentaWeb
 from store.tests import (
@@ -164,6 +164,8 @@ class CreatePaymentContractTest(McwBase):
         for mode in ('error', 'not_json', 'http_error', 'unreachable', 'timeout'):
             with self.subTest(mode):
                 PaymentTransaction.objects.all().delete()
+                OrderRiskAssessment.objects.all().delete()
+                OrderDelivery.objects.all().delete()
                 Order.objects.all().delete()
                 self.fake.mode = mode
                 with self.assertLogs('store', level='ERROR') as logs:

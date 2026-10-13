@@ -442,6 +442,35 @@ export type AdminOrder = {
    * units it sold never left a shelf. Derived server-side from the Kardex.
    */
   has_stock_shortfall: boolean;
+  /**
+   * CLIENT-SEC-01: how the order looked when it was made online, and whether a
+   * person still has to look. Both null for an order that was not assessed (a
+   * sale at the till, an order from before). Said by the server.
+   */
+  risk_level?: OrderRiskLevel | null;
+  review_status?: OrderReviewStatus | null;
+};
+
+export type OrderRiskLevel = 'low' | 'medium' | 'high';
+export type OrderReviewStatus = 'not_required' | 'pending' | 'approved' | 'rejected';
+
+/**
+ * CLIENT-SEC-01: what was noticed about an order and what a person decided.
+ * The reasons are the server's words; nothing of the buyer travels here.
+ */
+export type OrderRisk = {
+  level: OrderRiskLevel;
+  level_label: string;
+  score: number;
+  signals: { code: string; label: string }[];
+  review_status: OrderReviewStatus;
+  review_status_label: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string;
+  assessed_at: string;
+  /** Whether THIS caller may decide the review, now. Never derive it from a role. */
+  can_review: boolean;
 };
 
 /** INV-04: one product an order sold but could not fully dispatch. */
@@ -496,6 +525,10 @@ export type AdminOrderDetail = AdminOrder & {
   units_pending?: number;
   /** Si QUIEN CONSULTA puede identificar o quitar equipos. Lo decide el servidor. */
   units_can_change?: boolean;
+  /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
+  risk?: OrderRisk | null;
+  /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
+  delivery?: import("./delivery").OrderDelivery | null;
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
@@ -527,6 +560,8 @@ export async function fetchAdminOrders(params?: {
   fulfillment_status?: string;
   paid?: 'true' | 'false';
   shortfall?: 'true';
+  /** CLIENT-SEC-01: only the orders waiting for a person to review them. */
+  review?: 'pending';
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -538,6 +573,7 @@ export async function fetchAdminOrders(params?: {
     fulfillment_status: params?.fulfillment_status,
     paid: params?.paid,
     shortfall: params?.shortfall,
+    review: params?.review,
     date_from: params?.date_from,
     date_to: params?.date_to,
     page: params?.page,
@@ -586,6 +622,30 @@ export async function updateOrderFulfillment(
   }
   if (!res.ok) throw new Error('No se pudo actualizar el estado de despacho.');
   return res.json();
+}
+
+// ── CLIENT-SEC-01: the review of an order ───────────────────────────────────
+
+/**
+ * Decide the review an order was waiting for. Advice: the server changes the
+ * assessment and nothing else of the order. It is decided once — a second
+ * answer is refused (409) and the reason is the server's.
+ */
+export async function reviewOrderRisk(
+  orderId: number,
+  decision: 'approve' | 'reject',
+  note: string,
+): Promise<OrderRisk> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/risk-review/`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, note }),
+  });
+  if (res.ok) return (await res.json()).risk as OrderRisk;
+  const err = await res.json().catch(() => null);
+  if (res.status === 403) throw new Error(err?.detail ?? 'No tienes permisos para revisar pedidos.');
+  if (res.status === 404) throw new Error(err?.detail ?? 'Orden no encontrada.');
+  if (res.status === 409) throw new Error(err?.detail ?? 'La revisión de este pedido ya no está pendiente.');
+  throw new Error(typeof err?.detail === 'string' ? err.detail : 'No se pudo registrar la revisión.');
 }
 
 // ── SERIAL-PICK-01: los equipos de un pedido ────────────────────────────────

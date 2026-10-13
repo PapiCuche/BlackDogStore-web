@@ -29,6 +29,7 @@ const SENSITIVE_PREFIXES = [
   "/admin",                // the panel is not the shop: staff are not measured
   "/orders",               // a customer's own orders
   "/repairs",              // a customer's own repairs, with their tracking links
+  "/account",              // a customer's own profile: name, phone and document
 ];
 
 /**

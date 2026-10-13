@@ -34,7 +34,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 from .token_revocation import refresh_is_revoked, revoke_access_token
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import security_log
+from . import accounts, security_log
 from .tenancy import access_contexts, is_platform_admin, verified_company_relations
 from .throttles import LoginThrottle, RefreshThrottle
 from .v1_auth_serializers import (
@@ -255,7 +255,13 @@ class V1MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return Response(_identity_payload(request.user))
+        payload = _identity_payload(request.user)
+        # CLIENT-SEC-01, an added field of THIS answer: when the mailbox was
+        # proven, or null. Beside `user`, not inside it: the user object is the
+        # one login returns, key for key, and `is_email_verified` in it still
+        # means «active».
+        payload['email_verified_at'] = accounts.email_verified_at(request.user)
+        return Response(payload)
 
 
 class V1LogoutView(APIView):

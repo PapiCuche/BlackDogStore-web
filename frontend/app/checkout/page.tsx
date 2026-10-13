@@ -31,6 +31,7 @@ import {
 } from "../lib/business";
 import { useStorefront } from "../components/StorefrontProvider";
 import KryptonPaymentForm from "../components/KryptonPaymentForm";
+import { SavedAddressSelect } from "../components/SavedAddressSelect";
 import {
   isPaymentSession,
   openPaymentForm,
@@ -129,6 +130,8 @@ export default function CheckoutPage() {
   const warranty = warrantyText(storefront);
   const deliveryCopy = deliveryDescriptions(storefront);
   const [form, dispatch] = useReducer(formReducer, initialForm);
+  // DELIVERY-01: a signed-in buyer may fill the address from their own book.
+  const [signedIn, setSignedIn] = useState(false);
   const [loading, setLoading] = useState(false);
   // Set once the backend has opened a payment attempt. Its presence is what
   // causes the official SDK to be loaded — never a URL from the response.
@@ -244,6 +247,7 @@ export default function CheckoutPage() {
       .then((profile) => {
         if (profile) {
           dispatch({ type: "prefill", name: profile.first_name || "", email: profile.email || "" });
+          setSignedIn(true);
         }
       })
       .catch(() => {});
@@ -608,6 +612,20 @@ export default function CheckoutPage() {
 
             {needsAddress && (
               <div className="space-y-4 pt-1">
+                {/* DELIVERY-01: fills the fields below in the browser. What is
+                    sent to the server is this same form: no address id travels. */}
+                <SavedAddressSelect
+                  enabled={signedIn}
+                  isEmpty={!form.address_line && !form.district && !form.city && !form.reference}
+                  onUse={(entry) => {
+                    dispatch({ type: "set_str", field: "address_line", value: entry.address_line });
+                    dispatch({ type: "set_str", field: "district", value: entry.district });
+                    dispatch({ type: "set_str", field: "city", value: entry.city });
+                    dispatch({ type: "set_str", field: "reference", value: entry.reference });
+                  }}
+                  className={inputClass}
+                  labelClassName={labelClass}
+                />
                 <div>
                   <label htmlFor="checkout-address" className={labelClass}>Dirección *</label>
                   <input
