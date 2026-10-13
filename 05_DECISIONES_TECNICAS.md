@@ -60,7 +60,7 @@ código cumple y las pruebas vigilan:
   la ficha bloqueada), tope de diez, se desactivan y no se borran. En el checkout sólo RELLENA
   el formulario en el navegador: lo que se envía al servidor no cambia. Como las entradas
   quitadas siguen siendo filas, un comprador tiene como mucho `MAX_ADDRESS_ROWS` (200) entre
-  activas y quitadas; pasado ese número se corrige una entrada, no se añade otra. Una ficha
+  activas y quitadas; al llegar, la entrada nueva ocupa la fila quitada más antigua. Una ficha
   que la tienda archivó no admite una entrada nueva ni una dirección escrita sobre otra, y la
   respuesta no dice por qué. Una entrada de agencia cuyo transportista se apagó se puede
   corregir: el transportista sólo se juzga cuando es el transportista lo que cambia.
@@ -165,7 +165,8 @@ añadió ninguna capacidad ni se tocó ningún rol.
 
 **Enmiendas tras la segunda revisión independiente** (misma rama, antes de publicar):
 
-- **El checkout con sesión no es otra puerta al documento.** La ficha que crea una compra con
+- **El checkout con sesión no es otra puerta al documento** (endurecido en la tercera
+  revisión, más abajo: ya no lo toma nunca). La ficha que crea una compra con
   cuenta toma el documento escrito en el checkout sólo con la regla del perfil: la cuenta
   probó su correo y nadie en esa tienda tiene ya ese documento
   (`customer_services._record_may_take_document`). Si no, la ficha nace SIN documento, la
@@ -201,8 +202,62 @@ añadió ninguna capacidad ni se tocó ningún rol.
   esos dos validadores cambió.
 - **Una ficha archivada nunca es «vacía»**: el reclamo de una reparación no la borra.
 
+**Enmiendas tras la tercera revisión independiente** (misma rama, antes de publicar). Las
+tres primeras cierran un camino anterior a la fase: un checkout anónimo y SIN PAGAR con el DNI
+de otra persona y el contacto propio dejaba una ficha con ese documento, y después el pedido
+de la persona real, sus avisos, su reparación en el mostrador y por último la ficha entera
+iban a parar a quien la sembró.
+
+- **El aviso de un pedido va al contacto del propio pedido.** «Listo para recoger» y «enviado»
+  se escriben a `order.customer_email`, nunca al correo de la ficha a la que el pedido está
+  enlazado (`notification_services._recipient_email`). Sin correo en el pedido, no hay correo.
+  Los avisos de una reparación siguen yendo al correo de la ficha: ahí la ficha la abrió el
+  personal con la persona delante. WhatsApp sólo envía avisos de reparaciones, así que no
+  cambia.
+- **Ficha ESTABLECIDA** (`customer_services.is_established`): la que creó el personal, o la
+  que ya tiene un pedido PAGADO (enlazado a ella o de su cuenta en esa tienda) o una
+  reparación. Todo lo demás es provisional —la que dejó un checkout sin pagar, la que una
+  cuenta declaró para sí en «Mi cuenta»—: hacerla no cuesta nada y no prueba de quién es el
+  documento que lleva. De ahí salen tres reglas:
+  - *El pedido de un invitado sólo se enlaza por documento con una ficha establecida y sin
+    cuenta.* Si el documento está en una ficha provisional, el pedido queda sin enlazar, sin
+    error y sin ficha gemela (enmienda otra vez a DEC-CUSTOMER-01).
+  - *Un pedido de invitado se archiva cuando se PAGA* (`file_paid_guest_order`, en la
+    confirmación del pago, en un punto de guardado e incapaz de hacerla fallar). Pagar es lo
+    que al checkout le falta: cuesta dinero y deja rastro. Si la ficha provisional que tiene
+    su documento lleva el mismo correo que el pedido, es la misma persona reintentando tras
+    una tarjeta rechazada y el pedido se enlaza a ella; si no, esa ficha suelta el documento
+    (auditado: `customer_document_released`, sólo nombres de campo) y el pedido recibe una
+    ficha propia hecha con lo que se escribió en él. Así el primer pedido pagado de un
+    invitado establece su ficha para los siguientes.
+  - *El personal no es enviado a una ficha provisional.* Al crear o corregir una ficha con un
+    documento que está en una ficha NO establecida —con cuenta o sin ella—, esa ficha suelta
+    el documento y la del personal se guarda, en una transacción y con auditoría. La cuenta
+    que lo había declarado conserva su ficha, sin el documento, y no se le dice nada. Una
+    ficha establecida responde el 409 de siempre.
+- **El documento de la ficha de una cuenta sólo entra por «Mi cuenta».** Un checkout con
+  sesión NUNCA lo escribe (sustituye a la regla de la segunda revisión, que lo permitía con
+  el correo probado y dejaba pasar el cupo y servía de oráculo): la ficha nace sin documento
+  y el pedido conserva lo escrito. A cambio, un documento VACÍO no está congelado: su
+  titular, con el correo probado, lo completa una vez aunque la ficha ya tenga un pedido
+  pagado o la haya creado el personal, con la comprobación de conflicto, el cupo y la
+  auditoría de siempre; cambiar uno que ya está sigue siendo de la tienda.
+- **La libreta no acompaña a la ficha a otra cuenta.** Cuando la tienda desvincula una cuenta
+  (`unlink_account`), las direcciones de la ficha se apagan.
+- **Un enlace devuelto no es un enlace escrito.** Enviar de vuelta el enlace derivado tal como
+  estaba, junto con otra guía u otro transportista, no lo congela; `tracking_url_typed` viaja
+  en la respuesta del personal.
+- **La libreta ya no rechaza por el tope de filas.** Al llegar a 200, la entrada nueva ocupa
+  la fila quitada más antigua, reescrita entera.
+- **Tres dispositivos, un comprador.** En la señal de contacto, pedidos con el mismo teléfono,
+  correo Y documento son un solo comprador (siguen contando como pedidos pagados).
+- `ops_status` dice, como NOTA y nunca como alarma, cuántos pedidos pagados esperan revisión
+  y desde cuándo, y cuántos pedidos en línea del último día no tienen evaluación.
+
 **Lo que esta fase no decide** (queda como deuda en `docs/AUDIT_MEMORY.md`): unificar los
-tres validadores anteriores de teléfono y documento, y cuánto tiempo se conserva `ip_hash`.
+tres validadores anteriores de teléfono y documento, cuánto tiempo se conserva `ip_hash`, y
+—decisión del propietario— los pesos y umbrales de la evaluación y si el monto por sí solo
+debe abrir una revisión.
 
 ### DEC-CP2-HOST-01 · Lightsail en São Paulo, apertura por separado
 

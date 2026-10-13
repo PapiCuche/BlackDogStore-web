@@ -3,6 +3,44 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la tercera revisión
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones nuevas.
+
+**Security**
+- Los avisos de un pedido («listo para recoger», «enviado») van al correo escrito en ESE
+  pedido, no al de la ficha a la que está enlazado.
+- El pedido de un invitado sólo se enlaza por documento con una ficha establecida (creada por
+  el personal, o con un pedido pagado o una reparación). Una ficha que sólo dejó un checkout
+  sin pagar ya no recibe el pedido de la persona real; ese pedido se archiva al pagarse.
+- En el mostrador, una ficha no establecida que tiene el documento de la persona que se está
+  atendiendo lo suelta (auditado) en vez de devolver «ya existe»; una establecida conserva
+  el 409. Vale también para la ficha que una cuenta declaró para sí en «Mi cuenta».
+- Un checkout con sesión nunca escribe el documento en la ficha de la cuenta: se añade en
+  «Mi cuenta». Deja de saltarse el cupo diario y de responder si un documento está en uso.
+- Al desvincular una cuenta de una ficha, su libreta de direcciones se apaga.
+- El checkout de la app exige para el carné de extranjería lo mismo que la web (6 a 12 letras
+  o números ASCII).
+
+**Fixed**
+- Quien compró con cuenta y tiene la ficha sin documento puede completarlo una vez desde
+  «Mi cuenta» aunque ya tenga un pedido pagado.
+- Reenviar el enlace de seguimiento derivado junto con otra guía ya no lo deja congelado; la
+  respuesta del personal dice si el enlace es escrito (`tracking_url_typed`).
+- Un medio carácter en la dirección de seguimiento o en la plantilla del transportista se
+  rechaza en vez de dar error.
+- Con 200 direcciones quitadas ya no se bloquea la libreta: la nueva ocupa la fila quitada
+  más antigua.
+- Un teléfono pegado con espacios duros se acepta en «Mi cuenta» igual que en el checkout.
+- La explicación de la retención dice los tres estados que retiene: listo para retiro,
+  enviado y entregado.
+
+**Changed**
+- En la señal de contacto, pedidos con el mismo teléfono, correo y documento son un solo
+  comprador (una persona en varios dispositivos).
+- `ops_status` añade dos notas, nunca alarmas: pedidos pagados que esperan revisión (con la
+  antigüedad del más viejo) y pedidos en línea del último día sin evaluación.
+
 ## 2026-10-12 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la segunda revisión
 
 En la rama `feat/client-sec-delivery`; sin desplegar.
@@ -33,7 +71,8 @@ En la rama `feat/client-sec-delivery`; sin desplegar.
 **Changed**
 - Las señales de velocidad cuentan también pedidos pagados (el sexto en una hora por origen,
   o en un día por teléfono, correo o documento) y se vuelven a mirar cuando el pedido se paga.
-- Un comprador tiene como mucho 200 entradas de libreta entre activas y quitadas.
+- Un comprador tiene como mucho 200 entradas de libreta entre activas y quitadas (desde la
+  tercera revisión, al llegar se reutiliza la quitada más antigua).
 - Deshacer la migración `0121` ya no borra los registros de entrega.
 - `0118` añade la tercera opción de `AccountToken.purpose`; `0119` crea `OrderDelivery` con
   `tracking_url_typed` y sin `source_address` (ninguna de las dos estaba publicada).
