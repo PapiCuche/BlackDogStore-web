@@ -16,11 +16,30 @@ import Link from "next/link";
 
 export type ImportKind = "products" | "units" | "stock";
 
-const LINKS: Record<ImportKind, { label: string; href: string }> = {
-  products: { label: "Carga de productos", href: "/admin/products/import" },
-  units: { label: "Carga de equipos", href: "/admin/inventory/units/import" },
-  stock: { label: "Carga de stock", href: "/admin/inventory/import" },
+/**
+ * Qué hace cada carga y qué NO hace, en una frase cada cosa. Una sola
+ * redacción: la usa el aviso de cada pantalla y las tarjetas de «Gestión
+ * masiva de inventario» (INVENTORY-UNIFIED-01).
+ */
+export const IMPORT_KINDS: Record<ImportKind, { label: string; href: string; does: string; doesNot: string }> = {
+  products: {
+    label: "Carga de productos", href: "/admin/products/import",
+    does: "Esta carga crea y edita productos y accesorios del catálogo.",
+    doesNot: "No mueve stock.",
+  },
+  units: {
+    label: "Carga de equipos", href: "/admin/inventory/units/import",
+    does: "Una fila = un equipo físico.",
+    doesNot: "No hay columna de cantidad: una cantidad no dice qué equipos son.",
+  },
+  stock: {
+    label: "Carga de stock", href: "/admin/inventory/import",
+    does: "Esta carga ajusta cantidades y deja su movimiento en el Kardex.",
+    doesNot: "Un producto con número de serie no se carga por cantidad.",
+  },
 };
+
+const LINKS = IMPORT_KINDS;
 
 function Other({ kind }: { kind: ImportKind }) {
   return (
@@ -39,9 +58,9 @@ export function ImportKindNotice({ kind }: { kind: ImportKind }) {
     >
       {kind === "products" ? (
         <>
-          <p className="font-semibold">Esta carga crea y edita productos y accesorios del catálogo.</p>
+          <p className="font-semibold">{IMPORT_KINDS.products.does}</p>
           <p className="text-muted">
-            No mueve stock. La plantilla es una sola hoja, «Productos»: cada cabecera lleva una nota
+            {IMPORT_KINDS.products.doesNot} La plantilla es una sola hoja, «Productos»: cada cabecera lleva una nota
             con lo que va debajo. La categoría es una de tu empresa; las imágenes son opcionales y se
             pueden añadir después en la ficha; «Destino» decide si el producto sale en la tienda en
             línea o queda sólo como stock interno.
@@ -54,10 +73,10 @@ export function ImportKindNotice({ kind }: { kind: ImportKind }) {
 
       {kind === "units" ? (
         <>
-          <p className="font-semibold">Una fila = un equipo físico.</p>
+          <p className="font-semibold">{IMPORT_KINDS.units.does}</p>
           <p className="text-muted">
-            Dos teléfonos iguales son dos filas, cada una con su número de serie. No hay columna de
-            cantidad: una cantidad no dice qué equipos son. Serie sola, serie + IMEI o serie + dos
+            Dos teléfonos iguales son dos filas, cada una con su número de serie.{" "}
+            {IMPORT_KINDS.units.doesNot} Serie sola, serie + IMEI o serie + dos
             IMEI, según lo que lleve el producto; lo que un equipo no tiene se deja vacío.
           </p>
           <p className="mt-2 text-xs text-muted">
@@ -71,9 +90,9 @@ export function ImportKindNotice({ kind }: { kind: ImportKind }) {
 
       {kind === "stock" ? (
         <>
-          <p className="font-semibold">Esta carga ajusta cantidades y deja su movimiento en el Kardex.</p>
+          <p className="font-semibold">{IMPORT_KINDS.stock.does}</p>
           <p className="mt-2 text-xs text-muted">
-            Un producto con número de serie no se carga por cantidad: sus equipos van uno por fila en{" "}
+            {IMPORT_KINDS.stock.doesNot} Sus equipos van uno por fila en{" "}
             <Other kind="units" />. Para crear o editar productos, <Other kind="products" />.
           </p>
         </>
