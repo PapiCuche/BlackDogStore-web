@@ -672,6 +672,19 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | WHATSAPP-INLINE-SEND | NOTIFY | el primer intento ocurre en la petición (hasta 8 s si el proveedor tarda); con `WHATSAPP_SEND_INLINE=0` lo hace sólo la tarea programada | Baja | — |
 | TRACKING-LINK-UI-COPY | SERVICE | el aviso al personal sin la capacidad dice a quién pedir el enlace; no hay flujo para solicitarlo desde la pantalla | Baja | — |
 | MIG-ADMIN-LIVE | RBAC | 13 migraciones anteriores (0033…0082) comparan el rol Administrador contra el catálogo vivo; una base atrasada que cruce varias en un solo `migrate` puede dejarlo sin ampliar. 0094 y 0095 usan conjuntos congelados | Media | — |
+| INV-EXPORT-LEGACY-GUARD | INVENTARIO | `GET /api/admin/inventory/export/` responde como antes: no protege las celdas que empiezan por `=`, `+`, `-`, `@`, incluye los productos con serie (su archivo no vuelve a entrar por la carga de stock) y no escribe en modo write-only. Las descargas nuevas (`/api/admin/inventory/exports/…`) sí | Media | decidir si se retira o se iguala (INVENTORY-UNIFIED-01) |
+| INV-EXPORT-RESTORE-GAPS | INVENTARIO | restaurar el ZIP en una tienda VACÍA no es una copia: no viajan «con número de serie» / «lleva IMEI» (hay que marcarlos antes de cargar equipos), ni imágenes, ni códigos adicionales (uno de cada tipo), ni mínimos y objetivos de stock, ni productos inactivos; un equipo apartado entra disponible. La nota del ZIP lo dice | Media | propietario: si hace falta una copia fiel, es otra herramienta |
+| INV-EXPORT-IMPORT-LIMITS | INVENTARIO | una descarga admite 20 000 filas por libro y las cargas 5000 (1000 equipos) por archivo: un archivo mayor hay que dividirlo antes de cargarlo | Baja | — |
+| INV-EXPORT-NAME-MATCH | INVENTARIO | dos productos SIN código y con el mismo nombre no se pueden reconocer al recargar: la carga los rechaza con error (no duplica) y el archivo entero no se aplica hasta asignarles código | Baja | — |
+| INV-EXPORT-SYNC | INVENTARIO | la exportación se arma en memoria dentro de la petición (tope de filas y de 25 MB para el ZIP); no hay trabajo en segundo plano ni export del Kardex | Baja | volumen real |
+| INV-EXPORT-THROTTLE-SHARED | INFRA | las descargas comparten el cubo `admin_import` (30/min por usuario) con las cargas masivas | Baja | — |
+| INV-EXPORT-LEGACY-BRIDGE-UI | FRONTEND | el panel «Exportar» no se ofrece a un operador del puente legacy (sin empresa resuelta): el servidor sí le respondería | Baja | — |
+| INV-REPORT-RENAMED-SHEET | INVENTARIO | las cargas rechazan un reporte por el nombre de su hoja; con la hoja renombrada, el de productos entra como una plantilla con columnas de más (sobre la misma tienda no cambia nada) | Baja | — |
+| IMPORT-UNGUARD | INVENTARIO | las tres cargas quitan UN apóstrofo inicial cuando va delante de `=`, `+`, `-`, `@`, tabulador o retorno: un archivo ajeno que escribía `'=texto` a propósito ahora se lee `=texto` | Baja | deliberado (ida y vuelta de las descargas) |
+| BULK-VIS-CAP | PRODUCTOS | publicar u ocultar en bloque admite 2000 productos por petición; por encima responde 400 con el total y el panel no parte la selección en lotes | Baja | catálogos mayores |
+| BULK-VIS-FORM-HINT | FRONTEND | la ficha del producto no avisa de lo que le falta para publicarse en bloque (la lista sí) | Baja | — |
+| CART-UNAVAILABLE-COUNT | FRONTEND | el contador del carrito en la cabecera cuenta también una línea «Ya no está disponible» | Baja | — |
+| P0E-CART-RACE-ORDER | TESTS | `store.tests.P0ECartConcurrencyTest.test_many_at_once_still_add_up` falla en `setUp` (`store_company_pkey` duplicada) cuando esa clase es la primera `TransactionTestCase` del proceso: `reset_sequences` reinicia la secuencia con la empresa piloto todavía en la base. En la suite completa otra clase vacía la base antes. Reproducido sobre `14e658c` | Baja | — |
 
 ---
 

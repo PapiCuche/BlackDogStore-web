@@ -3,6 +3,43 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2)
+
+En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones ni capacidades nuevas.
+
+**Added**
+- Publicar u ocultar varios productos a la vez desde Panel › Productos: columna «E-commerce»,
+  filtros Todos / Publicados / Internos y por tipo (por serie / por cantidad), selección por fila,
+  por página o de todos los resultados con su total exacto, confirmación con la cuenta y resultado
+  con lo que cambió, lo que ya estaba y lo que no se publicó y por qué.
+- `POST /api/admin/products/bulk-visibility/` (`products.manage`). Sólo cambia «en la web»: ni
+  activo, ni precio, ni stock, ni equipos, ni Kardex.
+- La lista de productos del panel filtra por `is_serialized` y cada fila dice qué le falta para
+  publicarse en bloque (`publication_problems`).
+- Descargas del inventario: `GET /api/admin/inventory/exports/{products,stock,units,full}/`, en
+  modo «para volver a cargar» o «reporte», con filtros de sucursal, categoría, tipo, existencia,
+  condición, visibilidad y estado. El inventario completo es un ZIP con `Productos.xlsx`,
+  `Stock.xlsx`, `Equipos.xlsx` y `LEEME.txt`.
+- Panel «Exportar» en Inventario › Carga de stock.
+
+**Changed**
+- El carrito marca `available: false` la línea de un producto que dejó de venderse en la web, la
+  muestra como «Ya no está disponible», no la suma y no ofrece seguir al pago mientras esté.
+- Las cargas masivas rechazan los reportes (hojas «Reporte de …») y leen sin el apóstrofo de
+  protección el texto que las descargas guardan delante de `=`, `+`, `-` o `@`.
+- En la lista de productos, «Solo stock interno» se muestra en la columna «E-commerce».
+
+**Fixed**
+- El archivo de stock para volver a cargar ya no incluye productos con número de serie, que la
+  carga de stock rechazaba: lo descargado vuelve a entrar sin filas con error.
+
+**Security**
+- La lectura del carrito ya no entrega precio, stock ni descripción de un producto oculto o
+  desactivado después de añadirse, y no se puede cambiar la cantidad de esa línea.
+- Las descargas nuevas protegen las celdas que una hoja de cálculo ejecutaría como fórmula,
+  entregan «Costo» sólo a quien puede ajustar inventario y no salen de las sucursales de quien
+  descarga.
+
 ## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
 
 En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones.

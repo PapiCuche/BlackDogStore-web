@@ -1421,3 +1421,69 @@ venta derivados del snapshot (`subtotal_amount`, `taxable_amount`, `tax_rate`).
 reserva a descuentos que no afectan la base y lo resta del importe a pagar (reglas
 3300/3280). Fuente: archivo oficial de reglas de validación (21.04.2025). Detalle:
 [ADR-43](docs/adr-fiscal-c22a1.md#adr-43--un-descuento-se-declara-donde-nació-con-el-código-de-su-nivel-y-no-se-resta-dos-veces).
+
+### DEC-INVENTORY-UNIFIED-01 · Un catálogo, una regla para publicar en bloque y dos clases de archivo
+
+Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
+
+- **Un solo catálogo.** No hay «productos de la web» y «productos internos»: hay
+  productos, y `Product.is_published_online` dice de cada uno si se ofrece en la tienda
+  en línea (DEC-PRODUCT-DEST-01). La acción en bloque, los filtros y las descargas leen y
+  escriben ese dato; ninguno crea otra lista ni toca `is_active`, precios, cantidades,
+  equipos o Kardex.
+- **Qué significa «puede publicarse en bloque».** Una definición,
+  `store.product_publication.publication_problems`: activo (`inactive`), con precio mayor
+  que cero (`no_price`), con imagen —`image_url` o alguna imagen de galería— (`no_image`) y
+  con categoría (`no_category`). La devuelve la lista del panel en cada fila
+  (`publication_problems`, sin una consulta por fila) y la usa el reporte de productos.
+- **La regla es del bloque, no de la ficha.** Quien edita UN producto ve lo que hace y
+  puede tener motivo para publicarlo sin foto; quien marca «los 600 resultados» no ve cada
+  uno. Por eso la ficha guarda como siempre y la acción en bloque deja fuera lo que no está
+  listo, diciendo cuál y por qué. Ocultar se permite siempre.
+- **Resultado parcial explícito.** Publicar en bloque publica lo que está listo y devuelve
+  lo demás en `refused`, con sus códigos. No es un fallo ni un «todo o nada»: rechazar 599
+  productos listos por uno sin foto obligaría a trabajar de uno en uno. Lo que sí es todo
+  o nada es un id que no es de la empresa (404, nada cambia).
+- **«Todo lo que coincide» viaja como filtro, no como lista.** El servidor vuelve a
+  evaluar el filtro con la MISMA función que la lista (`admin_views.filter_admin_products`)
+  y compara con el total que se mostró (`expected_count`). Si difieren responde 409
+  `selection_changed` y no cambia nada: confirmar «312 productos» no puede cambiar 340. Un
+  filtro con una clave o un valor que no entiende se rechaza en vez de ignorarse, porque
+  para una escritura «no entendí, así que todo» es la lectura equivocada.
+- **Tope y bloqueo.** Hasta 2000 productos por lote (`MAX_BULK_PRODUCTS`), en una
+  transacción, con las filas bloqueadas en orden de id; la ficha del producto bloquea esa
+  misma fila, así que un guardado y un lote se turnan. Una línea de auditoría por lote que
+  cambió algo, con los conteos y hasta 200 ids.
+- **Un carrito puede tener una línea que ya no se vende.** Se devuelve marcada
+  `available: false` con id, nombre e imagen, sin precio ni stock; no se puede cambiar su
+  cantidad y sí quitarla. Se arma a mano y no recortando el producto público, para que un
+  campo nuevo de mañana no llegue ahí por defecto.
+- **Para volver a cargar o reporte.** Cada descarga (`store.inventory_exports`) sale en uno
+  de dos modos. `reimport` usa la hoja y las cabeceras de la carga correspondiente, tomadas
+  de sus propias constantes: el archivo vuelve a entrar tal cual. `report` añade columnas
+  de sólo lectura, su hoja se llama «Reporte de …» y las tres cargas la rechazan por ese
+  nombre. Se eligió rechazar y no «importar ignorando columnas»: quien edita «Activo» o
+  «Publicado» en un reporte y lo sube esperaría un cambio que no ocurre.
+- **Sin stock doble al restaurar.** Cargar los archivos `reimport` sobre la MISMA tienda
+  no cambia nada: un producto se reconoce por su código (o su nombre) y queda igual, una
+  cantidad igual a la actual no genera movimiento, y un equipo ya registrado se rechaza
+  fila por fila. Para que eso sea cierto, el archivo de stock NO lleva productos con serie
+  (la carga de stock rechaza una cantidad para ellos) y el de equipos NO lleva vendidos ni
+  dados de baja (recargarlos los devolvería al estante).
+- **El ZIP completo es de productos activos.** La plantilla de productos no tiene columna
+  «activo»: un inactivo cargado en una tienda vacía volvería activo y a la venta.
+- **Una celda nunca es una fórmula.** Todo texto exportado que empieza por `=`, `+`, `-`,
+  `@`, tabulador o retorno lleva un apóstrofo delante (`xlsx_reader.guard_text`), y el
+  lector de las cargas se lo quita (`unguard_text`) para leer el mismo valor. Sólo se quita
+  UN apóstrofo y sólo delante de uno de esos caracteres; una celda que ES una fórmula
+  sigue siendo un error de la fila. La descarga anterior (`/api/admin/inventory/export/`)
+  no cambia (deuda INV-EXPORT-LEGACY-GUARD).
+- **Permisos de lectura.** El catálogo pide `products.view`; stock y equipos piden
+  `inventory.view` y sólo alcanzan las sucursales de `visible_branches`; el ZIP pide las
+  dos. `inventory.adjust` no abre una descarga: sólo decide si «Costo» lleva datos. No se
+  añadió ninguna capacidad.
+- **No hay marca.** El catálogo no tiene campo de marca y no se inventó uno: no hay filtro
+  ni columna de marca.
+- **Descartado.** Rutas bajo `api/v1/internal/` (no se pidieron en esta fase); un trabajo
+  en segundo plano para exportar (el tope de 20 000 filas por libro cabe en una petición);
+  una capacidad nueva para exportar.

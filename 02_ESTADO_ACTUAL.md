@@ -3,6 +3,57 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2): visibilidad en bloque y exportaciones
+
+Rama `feat/inventory-unified`, desde `master` `14e658c`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** Sin migraciones, sin capacidades nuevas, sin rutas bajo `api/v1/internal/`, sin cambios
+en `deploy/` ni en `request_limits.py`. Decisión: DEC-INVENTORY-UNIFIED-01.
+
+| | Qué | Estado |
+|---|---|---|
+| 1.1 | Una definición de «puede publicarse en bloque» (`store/product_publication.py`): activo, con precio, con imagen, con categoría. La ficha individual guarda como siempre | EN LA RAMA, probado |
+| 1.2 | `POST /api/admin/products/bulk-visibility/` (`products.manage`): por ids o por el filtro de la lista + total esperado; 409 `selection_changed`; tope de 2000; una transacción con filas bloqueadas en orden; sólo escribe `is_published_online` y `updated_at`; resultado parcial con motivos; una línea de auditoría por lote | EN LA RAMA, probado |
+| 1.3 | La lista `GET /api/admin/products/` filtra por `is_serialized` y cada fila trae `publication_problems`, sin una consulta por fila; el filtro es una función compartida con la acción en bloque | EN LA RAMA, probado |
+| 1.4 | Un producto oculto o desactivado DESPUÉS de entrar a un carrito: la lectura del carrito lo devuelve `available: false` con id, nombre e imagen (sin precio ni stock), el cambio de cantidad se rechaza y quitarlo sigue funcionando. Matriz de exposición pública para oculto e inactivo | EN LA RAMA, probado |
+| 1.5 | Panel › Productos: columna «E-commerce», filtros rápidos Todos / Publicados / Internos, filtro de tipo, casilla por fila y por página, «Seleccionar los N productos que coinciden», acciones con confirmación y resultado, 409 explicado | EN LA RAMA, probado |
+| 2.1 | `GET /api/admin/inventory/exports/{products,stock,units,full}/` con `mode=reimport\|report` y filtros de sucursal, categoría, tipo, existencia, condición, visibilidad y estado | EN LA RAMA, probado |
+| 2.2 | `products.view` para el catálogo; `inventory.view` y sucursales visibles para stock y equipos; las dos para el ZIP; «Costo» sólo con `inventory.adjust` | EN LA RAMA, probado |
+| 2.3 | Celdas que no se ejecutan como fórmula (y se leen igual al recargar), códigos / series / IMEI como texto, libros en modo write-only, tope de 20 000 filas y de 25 MB para el ZIP, nombres de archivo fijos, `no-store`, límite de peticiones y una línea de auditoría por descarga | EN LA RAMA, probado |
+| 2.4 | `GET /api/admin/inventory/export/` responde igual que antes (fijado con pruebas) | EN LA RAMA, probado |
+| 2.5 | Panel «Exportar» (`InventoryExportPanel` / `InventoryExports`), por ahora en Inventario › Carga de stock junto a «Descargar inventario» | EN LA RAMA, probado |
+
+**Lo que cambió de comportamiento existente, a propósito.**
+- La lectura del carrito añade `available` a cada línea y recorta el producto de una línea que ya
+  no se vende. `test_the_cart_that_holds_it_still_opens` sigue igual y sigue pasando: el carrito abre.
+- Las tres cargas masivas rechazan una hoja llamada «Reporte de productos», «Reporte de stock» o
+  «Reporte de equipos», y quitan UN apóstrofo inicial cuando va delante de `=`, `+`, `-`, `@`,
+  tabulador o retorno (deuda IMPORT-UNGUARD).
+- En la lista de productos, «Solo stock interno» pasa de la columna Estado a la columna E-commerce.
+
+**No hay campo de marca** en el catálogo: no se añadió filtro ni columna de marca.
+
+**Pruebas (sobre `0a229fb`, PostgreSQL, base `blackdog_focal`).** Nuevas: `store/test_bulk_visibility.py`
+(58, dos con dos conexiones reales) y `store/test_inventory_exports.py` (53); Jest
+`product-bulk-visibility` (34), `cart-unavailable` (10) e `inventory-export-panel` (33). Pasadas
+focales: 550 pruebas OK (módulos nuevos, `test_import_template`, `test_product_destination_import`,
+`test_unit_import`, `test_import_media`, `test_stock_units`, `test_serial_pick`,
+`test_product_visibility`, `test_request_limits`, clases C14/C15 de importación y la matriz de
+paridad) y 392 OK (carrito, `Phase40CheckoutValidationTest`, `M5Checkout*` y las clases que usan
+`/api/admin/products/`). Jest completo 1247/1247 en 113 suites; `tsc --noEmit` limpio; lint 0
+errores y 22 avisos (ninguno nuevo). `makemigrations --check --dry-run`: sin cambios. **La suite
+completa del backend y Playwright NO se corrieron en esta fase.** Mutaciones: 164, las 164
+detectadas (4 sobrevivieron a la primera pasada y se cerraron: tres pruebas que no podían fallar y
+una comprobación duplicada).
+
+**Encontrado, anterior a la fase.** `store.tests.P0ECartConcurrencyTest.test_many_at_once_still_add_up`
+falla en su `setUp` cuando esa clase es la primera `TransactionTestCase` del proceso (reproducido
+igual sobre `14e658c`); deuda P0E-CART-RACE-ORDER.
+
+**Deuda registrada** (`docs/AUDIT_MEMORY.md` §10): INV-EXPORT-LEGACY-GUARD, INV-EXPORT-RESTORE-GAPS,
+INV-EXPORT-IMPORT-LIMITS, INV-EXPORT-NAME-MATCH, INV-EXPORT-SYNC, INV-EXPORT-THROTTLE-SHARED,
+INV-EXPORT-LEGACY-BRIDGE-UI, INV-REPORT-RENAMED-SHEET, IMPORT-UNGUARD, BULK-VIS-CAP,
+BULK-VIS-FORM-HINT, CART-UNAVAILABLE-COUNT, P0E-CART-RACE-ORDER.
+
 ## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
 
 Misma rama (`feat/client-sec-delivery`, PR #111, detenido hasta estos ajustes). La revisión de
