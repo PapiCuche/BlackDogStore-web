@@ -366,6 +366,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
     """Read serializer: used for list and detail responses from admin endpoints."""
     category_id = serializers.IntegerField(source='category.id', read_only=True, default=None, allow_null=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='', allow_null=True)
+    publication_problems = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -374,11 +375,18 @@ class AdminProductSerializer(serializers.ModelSerializer):
             'image_url', 'category_id', 'category_name', 'is_active',
             # PRODUCT-DESTINATION-01: offered on the public shop, or internal stock only.
             'is_published_online',
+            # INVENTORY-UNIFIED-01: what it lacks to be published in bulk (codes).
+            'publication_problems',
             # Read-only here. How a product is counted changes only through
             # `stock_unit_services.set_serialized`, which checks the shelf.
             'is_serialized', 'requires_imei',
             'created_at', 'updated_at',
         ]
+
+    def get_publication_problems(self, obj):
+        # The list annotates `has_gallery`; one product in hand asks once.
+        from .product_publication import publication_problems
+        return publication_problems(obj)
 
 
 class AdminProductDetailSerializer(AdminProductSerializer):

@@ -40,6 +40,7 @@ from .auth_views import (
 from .admin_views import (
     AdminUserListView, AdminUserRoleView, AdminAuditLogListView,
     AdminProductListView, AdminProductDetailView, AdminProductInventoryAdjustView,
+    AdminProductBulkVisibilityView,
     AdminCategoryDetailView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
@@ -212,6 +213,7 @@ urlpatterns = [
     path('admin/users/<int:pk>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     path('admin/products/', AdminProductListView.as_view(), name='admin-products'),
+    path('admin/products/bulk-visibility/', AdminProductBulkVisibilityView.as_view(), name='admin-product-bulk-visibility'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
