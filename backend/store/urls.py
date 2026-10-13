@@ -83,6 +83,8 @@ from .import_views import (
     AdminImportInspectView,
     AdminImportJobView,
     AdminInventoryExportView,
+    AdminProductImagesImportApplyView,
+    AdminProductImagesImportRulesView,
     AdminProductImportApplyView,
     AdminProductImportPreviewView,
     AdminProductTemplateView,
@@ -401,6 +403,10 @@ urlpatterns = [
     path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
     path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
     path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    # INVENTORY-UNIFIED-01: pictures in bulk. The preview is `products/import/preview/` with
+    # `kind=images` (the one route sized for it); these two carry no file.
+    path('admin/products/images/import/rules/', AdminProductImagesImportRulesView.as_view(), name='admin-product-images-import-rules'),
+    path('admin/products/images/import/<int:pk>/apply/', AdminProductImagesImportApplyView.as_view(), name='admin-product-images-import-apply'),
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),

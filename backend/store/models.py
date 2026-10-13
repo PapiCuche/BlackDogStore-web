@@ -4076,10 +4076,14 @@ class BulkImportJob(models.Model):
     # UNIT-IMPORT: devices with a serial number, one row each. Its own kind
     # because it writes UNITS, not quantities.
     UNITS = 'units'
+    # INVENTORY-UNIFIED-01: pictures for products that already exist. Its own
+    # kind because it writes GALLERIES and nothing else of a product.
+    PRODUCT_IMAGES = 'product_images'
     TYPE_CHOICES = [
         (PRODUCTS, 'Productos'),
         (STOCK, 'Inventario'),
         (UNITS, 'Equipos con serie'),
+        (PRODUCT_IMAGES, 'Imágenes de productos'),
     ]
 
     PREVIEWED = 'previewed'
