@@ -776,6 +776,36 @@ class FileSafetyTest(_Base):
         staged = self.api.post('/api/admin/products/import/preview/', {'file': upload(out.getvalue())}, format='multipart')
         self.assertEqual(staged.json()['counts']['error'], 1, staged.content)
 
+    def test_the_error_report_of_a_load_cannot_run_as_a_formula_either(self):
+        """Review O1: errors.csv is opened in a spreadsheet, and it wrote what the upload carried."""
+        import csv
+
+        from store.models import BulkImportRow
+
+        job = BulkImportJob.objects.create(company=self.company, import_type=BulkImportJob.PRODUCTS, rows_error=3)
+        BulkImportRow.objects.create(
+            job=job, sheet_name='=Hoja', row_number=2, action=BulkImportRow.ERROR, match_key='=HYPERLINK("http://malo.example","x")',
+            normalized_data={'name': '+SUM(1,2)'}, errors=['@SUM(A1) no es un precio.'], warnings=['-2+3'])
+        BulkImportRow.objects.create(
+            job=job, sheet_name='Productos', row_number=3, action=BulkImportRow.ERROR, match_key='COD-1',
+            normalized_data={'name': 'Funda'}, errors=['El precio no es un número.'], warnings=[])
+        BulkImportRow.objects.create(
+            job=job, sheet_name='Productos', row_number=4, action=BulkImportRow.ERROR, match_key='\tTAB',
+            normalized_data={'name': "'=YA"}, errors=['x'], warnings=[])
+
+        response = self.api.get(f'/api/admin/imports/{job.pk}/errors.csv/')
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.reader(io.StringIO(response.content.decode('utf-8-sig'))))
+        self.assertEqual(rows[0], ['Hoja', 'Fila', 'Identificador', 'Producto', 'Error', 'Advertencia'])
+        self.assertEqual(rows[1], [
+            "'=Hoja", '2', '\'=HYPERLINK("http://malo.example","x")', "'+SUM(1,2)", "'@SUM(A1) no es un precio.", "'-2+3"])
+        # What is honest stays exactly as it was.
+        self.assertEqual(rows[2], ['Productos', '3', 'COD-1', 'Funda', 'El precio no es un número.', ''])
+        self.assertEqual(rows[3][2:4], ["'\tTAB", "''=YA"])
+        for row in rows[1:]:
+            self.assertEqual([cell for cell in row if cell[:1] in ('=', '+', '-', '@', '\t', '\r')], [])
+
     def test_a_character_a_workbook_cannot_hold_does_not_break_the_download(self):
         Product.objects.filter(pk=self.case.pk).update(name='Funda\x07 rota', description='línea\x0b dos')
         names = [row['Nombre'] for row in self.records(self.get('products'))]
@@ -854,6 +884,41 @@ class LegacyInventoryExportTest(_Base):
         limited = self.member('exp_centro', 'inventory.adjust', branches=[self.centro])
         self.assertEqual(limited.get(f'{self.URL}?branches={self.norte.pk}').status_code, 404)
         self.assertEqual(limited.get(f'{self.URL}?branches={self.foreign_branch.pk}').status_code, 404)
+
+    def test_a_name_or_a_code_that_starts_like_a_formula_is_written_as_text(self):
+        """Review N1: the old download wrote them as live formula cells."""
+        evil = self.product('=HYPERLINK("http://malo.example","clic")', 'formula-1', '10.00', self.accessories)
+        self.code(evil, '=COD-1')
+        self.code(evil, '+775000000001', ProductBarcode.EAN13)
+        plus = self.product('+SUM(1,2)', 'formula-2', '10.00', self.accessories)
+        _p2d_stock(self.centro, evil, 3)
+
+        response = self.api.get(self.URL)
+
+        page = load_workbook(io.BytesIO(response.content)).active
+        cells = [cell for row in page.iter_rows(min_row=2) for cell in row if cell.value is not None]
+        self.assertEqual([cell.coordinate for cell in cells if cell.data_type == 'f'], [])
+        texts = [cell.value for cell in cells if isinstance(cell.value, str)]
+        self.assertEqual([text for text in texts if text[:1] in ('=', '+', '-', '@')], [])
+        for guarded in ('\'=HYPERLINK("http://malo.example","clic")', "'=COD-1", "'+775000000001", "'+SUM(1,2)"):
+            self.assertIn(guarded, texts)
+        self.assertEqual(plus.name, '+SUM(1,2)')                       # the catalogue itself is untouched
+
+    def test_the_guarded_download_still_reloads_and_finds_every_product(self):
+        evil = self.product('=HYPERLINK("http://malo.example","clic")', 'formula-1', '10.00', self.accessories)
+        self.code(evil, '=COD-1')
+        _p2d_stock(self.centro, evil, 3)
+        Product.objects.filter(pk=self.phone.pk).update(is_active=False)   # a serialized one would be refused: not this test
+
+        staged = self.api.post('/api/admin/inventory/import/preview/', {
+            'file': upload(self.api.get(self.URL).content), 'mapping': StockExportTest.MAPPING, 'header_row': 1,
+            'branch_map': json.dumps({'3': self.centro.pk, '4': self.norte.pk}),
+        }, format='multipart')
+
+        self.assertEqual(staged.status_code, 201, staged.content)
+        body = staged.json()
+        self.assertEqual((body['counts']['error'], body['counts']['update']), (0, 0), body['rows'])
+        self.assertIn(evil.pk, {row['data']['product_id'] for row in body['rows']})
 
     def test_it_leaves_no_export_audit_line_as_before(self):
         self.api.get(self.URL)

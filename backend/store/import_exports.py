@@ -453,13 +453,19 @@ def inventory_export_bytes(*, company, branches, include_quantities: bool) -> by
         cell.font = Font(bold=True, color='FFFFFF')
         cell.fill = header_fill
 
+    from .xlsx_reader import guard_text
+
     for index, (internal, external, name, *quantities) in enumerate(rows, start=2):
         # Written as TEXT, always. A code stored as a number is how the owner's
         # own file lost the ability to keep a leading zero, and re-exporting the
         # same trap would repeat the damage on every round trip.
-        sheet.cell(row=index, column=1, value=internal).number_format = '@'
-        sheet.cell(row=index, column=2, value=external).number_format = '@'
-        sheet.cell(row=index, column=3, value=name)
+        #
+        # And GUARDED: a name or a code that starts like a formula (`=`, `+`,
+        # `-`, `@`) was written as a live formula cell. The stock importer
+        # takes the guard off again, so the file still names the same product.
+        sheet.cell(row=index, column=1, value=guard_text(internal)).number_format = '@'
+        sheet.cell(row=index, column=2, value=guard_text(external)).number_format = '@'
+        sheet.cell(row=index, column=3, value=guard_text(name))
         for offset, quantity in enumerate(quantities):
             cell = sheet.cell(row=index, column=4 + offset)
             if quantity is not None:
@@ -485,15 +491,20 @@ def error_report_csv(job) -> str:
     without it Excel on Windows renders every accented product name as mojibake
     and the report becomes unreadable in the one program that will open it.
     """
+    from .xlsx_reader import guard_text
+
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(['Hoja', 'Fila', 'Identificador', 'Producto', 'Error', 'Advertencia'])
     for row in job.rows.exclude(errors=[]).order_by('row_number', 'pk'):
         data = row.normalized_data or {}
+        # Every text column is GUARDED. This file repeats what the upload
+        # carried — a sheet name, a code, a product name — and it is opened in
+        # a spreadsheet: `=HYPERLINK(…)` in a cell of a CSV is a formula.
         writer.writerow([
-            row.sheet_name, row.row_number, row.match_key,
-            data.get('name', ''),
-            ' · '.join(row.errors or []),
-            ' · '.join(row.warnings or []),
+            guard_text(str(row.sheet_name or '')), row.row_number, guard_text(str(row.match_key or '')),
+            guard_text(str(data.get('name', '') or '')),
+            guard_text(' · '.join(row.errors or [])),
+            guard_text(' · '.join(row.warnings or [])),
         ])
     return '﻿' + buffer.getvalue()
