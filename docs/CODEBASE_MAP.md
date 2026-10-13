@@ -52,10 +52,56 @@ Frontend: `frontend/app/` (Next.js 16, app router). Tests: `backend/store/tests.
 
 | Pieza | Archivos | Notas |
 |---|---|---|
-| CI | `.github/workflows/frontend-uxui-validation.yml`, `backend-postgres-validation.yml` | Filtros por ruta; backend ~70 min |
+| CI | `.github/workflows/frontend-uxui-validation.yml`, `backend-postgres-validation.yml`, `backend/scripts/ci_shards.py` | Filtros por ruta; backend en 6 fragmentos en paralelo (ver «CI») |
 | Producción | `backend/Dockerfile.prod`, `frontend/Dockerfile.prod`, `docker-compose.prod.yml`, `deploy/` | `sh deploy/rehearsal.sh` ensaya la pila completa; `deploy/preflight.py` revisa el archivo de variables |
 | Almacenamiento | `evidence_storage.py` (`filesystem` o `s3`) | Evidencias y `companies/<id>/storefront/` en el mismo almacén |
 | Datos locales | `backend/private-media/`, `*.sqlite3`, `.env` | Ignorados por git; nunca se versionan |
+
+## CI
+
+Dos workflows. Corren en los PR hacia `master` y en `master` tras el merge. Un push nuevo a un PR cancela
+el run del commit anterior; en `master` no se cancela ninguno.
+
+- **Backend PostgreSQL Validation.** Siempre la suite completa: ningún paso elige tests según lo que
+  cambió. Se reparte en 6 trabajos `Django shard N/6` que corren a la vez (el mismo `manage.py test`, los
+  mismos settings y `TEST_RUNNER`, PostgreSQL 16, un proceso cada uno) y un trabajo final,
+  **`Django tests on PostgreSQL`**, que falla si algún fragmento falló, se canceló o agotó su tiempo. Ése es
+  el check que se mira antes de mergear. En un solo trabajo tardaba 50–100 min (mediana 72 en 60 runs
+  verdes); en fragmentos se esperan 12–20 min, **por medir en el primer run real**.
+- **Quién reparte.** `backend/scripts/ci_shards.py` pregunta al runner qué tests existen y los reparte
+  todos, por clase: un archivo o una clase nuevos entran solos. `store/test_ci_shards.py` y
+  `store/test_ci_workflow.py` (dentro de la suite) prueban en cada run que los fragmentos son disjuntos y
+  suman la suite; cada fragmento comprueba además que corrió exactamente los tests que le tocaban.
+  A qué fragmento va una clase depende sólo de `ci_shard_weights.json` (segundos por clase de la última
+  medición) y de su propio nombre: añadir o borrar un test no mueve a ningún otro. Si el archivo envejece,
+  los fragmentos quedan desiguales, nunca incompletos; se regenera con
+  `python manage.py test --noinput --durations 0 2>&1 | python scripts/ci_shards.py weights` (eso sí
+  cambia el reparto: va en un PR propio). El número de fragmentos es la lista `shard: [...]` del workflow.
+- **Las clases que vacían la base van juntas.** Las 24 `TransactionTestCase` van siempre al último
+  fragmento, en el orden de la suite entera. Cinco usan `reset_sequences` y sólo funcionan después de
+  que otra de su tipo haya vaciado lo que siembran las migraciones (empresa 1): sola o primera,
+  `store.tests.C15InitialRaceTest` falla con «duplicate key … (id)=(1)», también hoy a mano. Para correr
+  una de ellas en local, darle antes otra (p. ej. `store.test_register_race.AtTheSameInstantTest`) o
+  usar `affected_tests.py`, que las trae todas.
+- **Cuándo corre el backend.** `backend/**` y los archivos de fuera que leen sus tests: `deploy/**`,
+  `docker-compose.prod.yml`, `docs/internal-parity-matrix.md`, `frontend/app/admin/**` y
+  `frontend/app/auth/components/DevQuickLogin.tsx`. Un PR sólo de documentación no arranca nada. Un test
+  nuevo que lea un archivo de fuera de `backend/` lo añade a `EXTERNAL_INPUTS`
+  (`backend/scripts/affected_tests.py`) y al workflow; `store/test_affected_tests.py` falla si falta.
+- **Frontend UX/UI Validation.** Tests, lint y build en un trabajo (`Tests, lint and build`, 1–2 min);
+  `frontend/**`.
+- **Mientras se programa.** Desde `backend/`, con el `DATABASE_URL` de PostgreSQL de siempre:
+  `python3 scripts/affected_tests.py --run` corre primero las clases que nombran lo que cambió frente a
+  `origin/master` (`--why` dice por qué cada una, `--wide` añade las que están a un import, `--files a b`
+  usa esas rutas, sin `--run` sólo las lista). Es una ayuda de escritorio, no una compuerta: adivina por
+  el texto de los tests y puede no ver alguno. Ningún workflow la usa; el CI corre siempre todo.
+- **Ajustes de GitHub.** Hoy `master` no tiene protección de rama ni checks obligatorios: nada que
+  cambiar al mergear esto. Si se activa, los obligatorios son `Django tests on PostgreSQL` y
+  `Tests, lint and build`; nunca los `Django shard N/6`, que cambian de nombre con el número de
+  fragmentos. Ojo: con filtros por ruta, un check obligatorio se queda en «Expected» para siempre en un
+  PR que no lo dispara (sólo docs; o sólo frontend, para el del backend). Antes de exigirlos hay que
+  quitar `paths:` del disparador, decidir en un primer trabajo si los fragmentos corren, y dejar que el
+  trabajo final corra siempre.
 
 ## E2E por área
 
