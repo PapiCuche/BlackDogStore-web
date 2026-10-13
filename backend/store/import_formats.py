@@ -431,6 +431,11 @@ _DEVICE_HEADERS = {*SERIAL_HEADERS, 'imei', 'imei 1', 'imei1', 'imei 2', 'imei2'
 _WAREHOUSE = re.compile(r'^(almacen|deposito)\b')
 
 
+def is_warehouse_header(key: str) -> bool:
+    """Whether a header, already folded by `normalize_header`, is a quantity column of a warehouse."""
+    return bool(_WAREHOUSE.match(key))
+
+
 def counts_stock(key: str) -> bool:
     """Whether a header, already folded by `normalize_header`, states HOW MANY there are."""
     words = key.split(' ')
@@ -453,6 +458,6 @@ NO_DEVICES_HERE = (
 def _belongs_to_stock(key: str) -> str:
     if key in _DEVICE_HEADERS:
         return NO_DEVICES_HERE
-    if counts_stock(key) or _WAREHOUSE.match(key):
+    if counts_stock(key) or is_warehouse_header(key):
         return NO_STOCK_HERE
     return ''

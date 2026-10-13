@@ -33,6 +33,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import (
+    import_assistant,
     import_exports,
     import_formats,
     import_media,
@@ -121,6 +122,59 @@ def _import_context(request):
     return company, granted, None
 
 
+#: `import_type` of an inspection that only asks where a file goes.
+ASSISTANT = 'auto'
+
+#: What somebody must be able to run for a suggestion to name it.
+_SUGGESTION_NEEDS = {
+    import_assistant.PRODUCTS: BulkImportJob.PRODUCTS,
+    import_assistant.IMAGES: BulkImportJob.PRODUCTS,
+    import_assistant.STOCK: BulkImportJob.STOCK,
+    import_assistant.UNITS: BulkImportJob.UNITS,
+}
+
+
+def _granted_kinds(user, company) -> set:
+    """The loads `user` may run in `company`. The same reading as `_import_context`."""
+    granted = set()
+    if has_capability(user, company, CAP_PRODUCTS):
+        granted.add(BulkImportJob.PRODUCTS)
+    if has_capability(user, company, CAP_STOCK):
+        granted.update((BulkImportJob.STOCK, BulkImportJob.UNITS))
+    return granted
+
+
+def _suggestion(workbook, granted) -> dict:
+    """
+    Where this workbook goes, for a caller who may run `granted`.
+
+    Reads the first two rows of each sheet as candidate headers, and nothing
+    below them. A load the caller may not run is not named: they are told they
+    lack the permission, and the same thing whichever load it was.
+    """
+    sheets = []
+    for name in workbook.sheetnames:
+        candidates = []
+        for header_row in (1, 2):
+            headers, _rows, _more = xlsx_reader.read_rows(
+                workbook, name, header_row=header_row, limit=1, mode=xlsx_reader.SAMPLE,
+            )
+            candidates.append(headers)
+        sheets.append((name, candidates))
+    found = import_assistant.classify(sheets)
+
+    needed = _SUGGESTION_NEEDS.get(found['type'])
+    if needed is not None and needed not in granted:
+        return {
+            'suggested_import_type': import_assistant.FORBIDDEN, 'suggestion_reason': 'no_permission',
+            'suggestion_detail': import_assistant.NO_PERMISSION, 'suggestion_sheet': '',
+        }
+    return {
+        'suggested_import_type': found['type'], 'suggestion_reason': found['reason'],
+        'suggestion_detail': found['detail'], 'suggestion_sheet': found['sheet'],
+    }
+
+
 def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
     payload = {
         'id': job.pk,
@@ -189,8 +243,14 @@ class AdminImportInspectView(APIView):
 
     def post(self, request):
         import_type = request.data.get('import_type') or BulkImportJob.PRODUCTS
-        capability = CAP_PRODUCTS if import_type == BulkImportJob.PRODUCTS else CAP_STOCK
-        company, error = _context(request, capability)
+        if import_type == ASSISTANT:
+            # «¿Qué archivo tengo?»: whoever may run ANY load may ask. What they
+            # are told is narrowed below to the loads they may run.
+            company, granted, error = _import_context(request)
+        else:
+            capability = CAP_PRODUCTS if import_type == BulkImportJob.PRODUCTS else CAP_STOCK
+            company, error = _context(request, capability)
+            granted = None
         if error:
             return error
 
@@ -202,6 +262,20 @@ class AdminImportInspectView(APIView):
             workbook, notes = xlsx_reader.load_workbook(data)
         except xlsx_reader.XlsxError as exc:
             return _error(exc)
+
+        if granted is None:
+            granted = _granted_kinds(request.user, company)
+        suggestion = _suggestion(workbook, granted)
+        if import_type == ASSISTANT:
+            # The suggestion and the names of the sheets. No row, no header, no
+            # job: this answers «where does it go», and nothing is kept.
+            return Response({
+                'import_type': ASSISTANT, **suggestion,
+                'sheet_names': (
+                    [] if suggestion['suggested_import_type'] == import_assistant.FORBIDDEN
+                    else [str(name) for name in workbook.sheetnames]
+                ),
+            })
 
         sheets = []
         for name in workbook.sheetnames:
@@ -253,6 +327,7 @@ class AdminImportInspectView(APIView):
 
         return Response({
             'import_type': import_type,
+            **suggestion,
             'reader_notes': notes,
             'sheets': sheets,
             'fields': (
