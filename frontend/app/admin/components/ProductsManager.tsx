@@ -209,9 +209,15 @@ export function ProductsManager({ canManage }: { canManage: boolean }) {
         description={data ? `${data.count} productos en total. Filtra por categoría, publicación y disponibilidad.` : "Gestiona el catálogo de esta empresa."}
         actions={
           canManage ? (
-            <Link href="/admin/products/new" className={internalPrimaryButtonClass}>
-              Nuevo producto
-            </Link>
+            <>
+              {/* INVENTORY-UNIFIED-01: muchas imágenes a la vez, sin recrear productos. */}
+              <Link href="/admin/inventory/bulk#imagenes" className={internalButtonClass}>
+                Añadir imágenes en lote
+              </Link>
+              <Link href="/admin/products/new" className={internalPrimaryButtonClass}>
+                Nuevo producto
+              </Link>
+            </>
           ) : null
         }
       />

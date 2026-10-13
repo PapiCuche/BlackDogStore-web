@@ -17,6 +17,7 @@
 
 import { useState } from "react";
 import type { ImageRules, ImportJob, ImportRow, InspectedSheet } from "../lib/internal-api";
+import { importErrorReportUrl } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
@@ -237,7 +238,21 @@ export function PreviewTable({
   );
 }
 
-export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
+/** Cómo se llama cada carga en el historial. */
+export const IMPORT_TYPE_LABELS: Record<ImportJob["import_type"], string> = {
+  products: "Productos",
+  stock: "Inventario",
+  units: "Equipos con serie",
+  product_images: "Imágenes de productos",
+};
+
+/**
+ * `companyId` (aunque sea `null`) añade la columna «Reporte», con «Descargar
+ * errores» en la carga que los tiene. Las pantallas que ya ofrecen ese enlace
+ * junto a su vista previa no lo pasan y la tabla queda como estaba.
+ */
+export function HistoryTable({ jobs, companyId }: { jobs: ImportJob[]; companyId?: number | null }) {
+  const withReport = companyId !== undefined;
   if (!jobs.length) {
     return (
       <p className="text-sm text-muted">Todavía no se ha importado nada.</p>
@@ -258,6 +273,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
             <th className="px-3 py-2">Actualizar</th>
             <th className="px-3 py-2">Errores</th>
             <th className="px-3 py-2">Sucursales</th>
+            {withReport ? <th className="px-3 py-2">Reporte</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -267,7 +283,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                 {new Date(job.created_at).toLocaleString("es-PE")}
               </td>
               <td className="px-3 py-2 text-foreground">
-                {job.import_type === "products" ? "Productos" : job.import_type === "units" ? "Equipos con serie" : "Inventario"}
+                {IMPORT_TYPE_LABELS[job.import_type] ?? job.import_type}
               </td>
               <td className="px-3 py-2 text-muted">{job.original_filename}</td>
               <td className="px-3 py-2 text-muted">{job.created_by || "—"}</td>
@@ -300,6 +316,20 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                   .map((entry) => entry.branch_name)
                   .join(", ") || "—"}
               </td>
+              {withReport ? (
+                <td className="px-3 py-2">
+                  {job.counts.error > 0 ? (
+                    <a
+                      href={importErrorReportUrl(companyId ?? null, job.id)}
+                      className="font-semibold text-foreground underline underline-offset-2"
+                    >
+                      Descargar errores
+                    </a>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
@@ -449,12 +479,15 @@ export function SheetPicker({
 }
 
 export function ImportImagesField({
-  images, zip, onChange, disabled = false,
+  images, zip, onChange, disabled = false, title, description,
 }: {
   images: File[];
   zip: File | null;
   onChange: (images: File[], zip: File | null) => void;
   disabled?: boolean;
+  /** Otra carga que adjunta imágenes (las imágenes en lote) dice aquí lo suyo. */
+  title?: string;
+  description?: React.ReactNode;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -490,11 +523,15 @@ export function ImportImagesField({
   return (
     <div className="space-y-3 rounded-xl border border-bd-border bg-surface px-4 py-4">
       <div>
-        <p className="text-sm font-semibold text-foreground">Imágenes de los productos (opcional)</p>
+        <p className="text-sm font-semibold text-foreground">{title ?? "Imágenes de los productos (opcional)"}</p>
         <p className="mt-1 text-xs text-muted">
-          En el Excel, la columna «Imagen principal» lleva el nombre de un archivo y «Imágenes» varios
-          separados por <code>|</code>. Adjunta aquí esos archivos: se casan por su nombre, sin mirar
-          mayúsculas ni carpetas.
+          {description ?? (
+            <>
+              En el Excel, la columna «Imagen principal» lleva el nombre de un archivo y «Imágenes» varios
+              separados por <code>|</code>. Adjunta aquí esos archivos: se casan por su nombre, sin mirar
+              mayúsculas ni carpetas.
+            </>
+          )}
         </p>
       </div>
 
