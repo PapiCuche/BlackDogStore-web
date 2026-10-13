@@ -38,7 +38,7 @@ from .admin_views import (
 from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES
 from .models import AdminAuditLog, Category
 from .tenancy import visible_branches
-from .throttles import AdminImportThrottle
+from .throttles import AdminExportThrottle
 
 _NOT_FOUND = 'No encontrado.'
 
@@ -64,8 +64,9 @@ def _not_found():
 
 class AdminInventoryExportsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    # Building a workbook costs what reading one does: the same budget.
-    throttle_classes = [AdminImportThrottle]
+    # Its own budget, and a small one: a download builds a whole workbook in the
+    # one server process. It does not spend the budget of the loads.
+    throttle_classes = [AdminExportThrottle]
     http_method_names = ['get', 'options']
 
     def get(self, request, kind):

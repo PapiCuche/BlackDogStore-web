@@ -140,6 +140,10 @@ class _Base(TestCase):
         return _client(user)
 
     def get(self, kind, client=None, **query):
+        # Downloads have their own small budget per minute (see the throttle
+        # test, which does not come through here): a test that reads ten files
+        # is not what that budget is about.
+        cache.clear()
         return (client or self.api).get(url(kind, **query))
 
     def sheet(self, response):
@@ -273,11 +277,31 @@ class ExportAccessTest(_Base):
                 self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
                 self.assertEqual(response['Content-Type'], 'application/zip' if kind == 'full' else XLSX)
 
-    def test_downloads_are_throttled(self):
-        from store.inventory_export_views import AdminInventoryExportsView
-        from store.throttles import AdminImportThrottle
+    def test_downloads_have_their_own_budget_and_do_not_spend_the_one_of_the_loads(self):
+        """
+        Review N4. A download builds a workbook in the one server process, and it
+        shared 30 a minute with the loads: thirty downloads left nobody able to
+        preview an import. Six a minute, of their own.
+        """
+        from django.conf import settings
 
-        self.assertEqual(AdminInventoryExportsView.throttle_classes, [AdminImportThrottle])
+        from store.inventory_export_views import AdminInventoryExportsView
+        from store.throttles import AdminExportThrottle
+
+        self.assertEqual(AdminInventoryExportsView.throttle_classes, [AdminExportThrottle])
+        self.assertEqual(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['admin_export'], '6/min')
+
+        cache.clear()
+        codes = [self.api.get(url(kind)).status_code for kind in ('products', 'stock', 'units', 'full', 'products', 'stock', 'units')]
+        self.assertEqual(codes, [200] * 6 + [429])
+        self.assertEqual(self.exported().count(), 6)
+        # Somebody else is not held back by this person's downloads…
+        self.assertEqual(self.member('exp_otra', 'products.view').get(url('products')).status_code, 200)
+        # …and neither is this person's next load.
+        staged = self.api.post(
+            '/api/admin/products/import/preview/',
+            {'file': upload(self.api.get('/api/admin/products/import/template/').content)}, format='multipart')
+        self.assertEqual(staged.status_code, 201, staged.content)
 
     def test_each_download_leaves_one_audit_line_without_any_cell(self):
         self.get('units', mode='report', branches=self.centro.pk, condition='used', category=self.phones.pk)
@@ -846,6 +870,18 @@ class FileSafetyTest(_Base):
         Product.objects.filter(pk=self.case.pk).update(name='Funda\x07 rota', description='línea\x0b dos')
         names = [row['Nombre'] for row in self.records(self.get('products'))]
         self.assertIn('Funda rota', names)
+
+    def test_a_branch_name_a_workbook_cannot_hold_does_not_break_the_download(self):
+        """Review N10: a control character in a branch name is in a HEADER of the stock file, and it answered 500."""
+        from store.models import Branch
+
+        Branch.objects.filter(pk=self.centro.pk).update(name='Cen\x07tro\x0b')
+        for kind, mode in (('stock', 'reimport'), ('stock', 'report'), ('units', 'reimport'), ('units', 'report'), ('full', 'reimport')):
+            with self.subTest(kind=kind, mode=mode):
+                self.assertEqual(self.get(kind, mode=mode).status_code, 200)
+        _title, headers, _rows = self.sheet(self.get('stock'))
+        self.assertEqual(headers[3:], ['ALMACEN Centro', 'ALMACEN Norte'])
+        self.assertEqual({row['Sucursal'] for row in self.records(self.get('units'))}, {'Centro', 'Norte'})
 
     def test_more_rows_than_the_cap_are_refused_with_the_count(self):
         with patch.object(inventory_exports, 'MAX_EXPORT_ROWS', 2):

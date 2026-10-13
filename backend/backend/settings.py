@@ -147,6 +147,9 @@ REST_FRAMEWORK = {
         # Inspeccionar, previsualizar y aplicar una carga masiva. Cada
         # previsualización puede recodificar cientos de imágenes.
         'admin_import': '30/min',
+        # INVENTORY-UNIFIED-01: cada descarga del inventario arma un libro en el
+        # único proceso del servidor. Su cupo es suyo, y no gasta el de las cargas.
+        'admin_export': '6/min',
         'admin_order_email_resend': '10/min',
         # TRACKING. Una página de seguimiento pide la orden y una imagen por foto.
         'tracking_read': '240/min',

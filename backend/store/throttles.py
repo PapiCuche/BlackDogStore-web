@@ -200,6 +200,18 @@ class AdminImportThrottle(UserRateThrottle):
     scope = 'admin_import'
 
 
+class AdminExportThrottle(UserRateThrottle):
+    """
+    Las descargas del inventario (`/api/admin/inventory/exports/…`).
+
+    Un cupo PROPIO y pequeño. Cada descarga arma un libro entero en memoria, en
+    el único proceso del servidor; compartiendo el cupo de las cargas, treinta
+    descargas seguidas dejaban a esa persona sin poder previsualizar una carga,
+    y ocupaban el proceso para todos.
+    """
+    scope = 'admin_export'
+
+
 class ServiceEvidenceReadThrottle(UserRateThrottle):
     """
     Mirar la galería de una orden: la lista y cada imagen.

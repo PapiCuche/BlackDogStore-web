@@ -221,7 +221,9 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
     bold, fill = Font(bold=True, color='FFFFFF'), PatternFill('solid', fgColor='1F2937')
     head = []
     for title_ in headers:
-        cell = WriteOnlyCell(sheet, value=title_)
+        # A header can carry a tenant's text too («ALMACEN <branch name>»): the
+        # same cleaning as any cell, or one control character is a 500.
+        cell = WriteOnlyCell(sheet, value=_text(title_))
         cell.font, cell.fill = bold, fill
         head.append(cell)
     sheet.append(head)
