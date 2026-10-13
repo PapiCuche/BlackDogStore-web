@@ -230,8 +230,15 @@ export type ProductListFilter = {
 export async function fetchAdminProducts(params?: ProductListFilter & {
   page?: number;
   page_size?: number;
+  /**
+   * La empresa para la que se abrió la pantalla. Explícita: sin ella la añade
+   * `fetchWithAuth` al enviar, leyendo lo que el navegador tenga guardado EN ESE
+   * MOMENTO — que otra pestaña puede haber cambiado.
+   */
+  company?: number | null;
 }): Promise<PaginatedResponse<AdminProduct>> {
   const qs = buildQs({
+    company: params?.company ?? undefined,
     search: params?.search,
     category: params?.category !== undefined ? String(params.category) : undefined,
     is_active: params?.is_active,
@@ -292,6 +299,13 @@ export class SelectionChangedError extends Error {
 export async function bulkSetProductVisibility(
   action: BulkVisibilityAction,
   selection: { ids: number[] } | { filter: ProductListFilter; expectedCount: number },
+  /**
+   * La empresa de la lista sobre la que se seleccionó. «Todo lo que coincide»
+   * viaja como filtro y cuenta, sin ids: en otra empresa podría coincidir otra
+   * cosa. Por eso va escrita en la dirección y no se deja a lo que el navegador
+   * tenga guardado al enviar.
+   */
+  companyId?: number | null,
 ): Promise<BulkVisibilityResult> {
   const body = 'ids' in selection
     ? { action, ids: selection.ids }
@@ -302,7 +316,7 @@ export async function bulkSetProductVisibility(
         ),
         expected_count: selection.expectedCount,
       };
-  const res = await fetchWithAuth(`${API_BASE}/admin/products/bulk-visibility/`, {
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/bulk-visibility/${buildQs({ company: companyId ?? undefined })}`, {
     method: 'POST',
     body: JSON.stringify(body),
   });

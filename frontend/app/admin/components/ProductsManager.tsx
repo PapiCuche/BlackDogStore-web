@@ -76,7 +76,18 @@ const VISIBILITY_CHIPS = [
 const CHIP =
   "rounded-full border px-3.5 py-1.5 text-sm font-semibold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40";
 
-export function ProductsManager({ canManage }: { canManage: boolean }) {
+type Props = {
+  canManage: boolean;
+  /**
+   * La empresa para la que se abrió la pantalla (la que el servidor resolvió al
+   * decidir el acceso). La lista y la acción en bloque la mandan explícita: lo
+   * que se confirma se aplica donde se contó, aunque otra pestaña haya cambiado
+   * de empresa entretanto. `null`: operador sin empresa resuelta.
+   */
+  companyId?: number | null;
+};
+
+export function ProductsManager({ canManage, companyId = null }: Props) {
   const [data, setData] = useState<PaginatedResponse<AdminProduct> | null>(null);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
@@ -96,13 +107,13 @@ export function ProductsManager({ canManage }: { canManage: boolean }) {
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchAdminProducts({ ...listFilter(filters), page, page_size: 20 }));
+      setData(await fetchAdminProducts({ ...listFilter(filters), page, page_size: 20, company: companyId ?? undefined }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al cargar productos.");
     } finally {
       setLoading(false);
     }
-  }, [filters, page]);
+  }, [filters, page, companyId]);
 
   useEffect(() => {
     if (searchInput === filters.search) return;
@@ -182,6 +193,7 @@ export function ProductsManager({ canManage }: { canManage: boolean }) {
         selection.allMatching
           ? { filter: listFilter(filters), expectedCount: total }
           : { ids: [...selection.ids].sort((a, b) => a - b) },
+        companyId,
       );
       setResult(done);
       setSelection(NOTHING);

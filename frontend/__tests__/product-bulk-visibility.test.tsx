@@ -50,7 +50,7 @@ async function open(options: { canManage?: boolean; results?: admin.AdminProduct
   const results = options.results ?? [funda, flex, cable];
   api.fetchAdminProducts.mockResolvedValue(page(results, options.count ?? results.length));
   await act(async () => {
-    render(<ProductsManager canManage={options.canManage ?? true} />);
+    render(<ProductsManager canManage={options.canManage ?? true} companyId={7} />);
   });
   await screen.findByText('Funda');
 }
@@ -308,7 +308,7 @@ describe('la confirmación', () => {
     fireEvent.click(screen.getByRole('button', { name: HIDE }));
     await confirm();
 
-    expect(api.bulkSetProductVisibility).toHaveBeenCalledWith('hide', { ids: [1, 3] });
+    expect(api.bulkSetProductVisibility).toHaveBeenCalledWith('hide', { ids: [1, 3] }, 7);
   });
 
   it('«todo lo que coincide» manda el filtro de la lista y el total que se mostró, no los ids de la página', async () => {
@@ -328,7 +328,7 @@ describe('la confirmación', () => {
     expect(api.bulkSetProductVisibility).toHaveBeenCalledWith('publish', {
       filter: { search: undefined, category: '5', is_active: undefined, is_published_online: 'false', is_serialized: 'false', stock: undefined },
       expectedCount: 45,
-    });
+    }, 7);
   });
 
   it('mientras se aplica no se puede confirmar dos veces', async () => {
@@ -452,6 +452,45 @@ describe('el resultado', () => {
   });
 });
 
+describe('la empresa sobre la que se actúa', () => {
+  // Revisión N5. La empresa se leía de `localStorage` AL ENVIAR: con dos pestañas
+  // en dos empresas, «los N que coinciden» —un filtro y una cuenta, sin ids—
+  // podía caer en la otra si las cuentas coincidían. La lista y la acción llevan
+  // ahora, explícita, la empresa para la que se abrió la pantalla.
+  const KEY = 'internal-selected-company';
+
+  afterEach(() => window.localStorage.removeItem(KEY));
+
+  it('la lista se pide para la empresa de la pantalla', async () => {
+    window.localStorage.setItem(KEY, '7');
+    await open();
+    expect(lastQuery().company).toBe(7);
+  });
+
+  it('otra pestaña cambia de empresa entre la lista y la confirmación: la acción va a la de la lista', async () => {
+    window.localStorage.setItem(KEY, '7');
+    await open({ count: 45 });
+    api.bulkSetProductVisibility.mockResolvedValueOnce({ action: 'hide', changed: 45, unchanged: 0, refused: [], total: 45 });
+    tickPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Seleccionar los 45 productos que coinciden' }));
+
+    window.localStorage.setItem(KEY, '9');                 // la otra pestaña eligió otra empresa
+    fireEvent.click(screen.getByRole('button', { name: HIDE }));
+    await confirm();
+
+    expect(api.bulkSetProductVisibility.mock.calls[0][2]).toBe(7);
+    // Y la lista que se vuelve a leer después, también.
+    expect(lastQuery().company).toBe(7);
+  });
+
+  it('sin empresa resuelta (operador antiguo) no se inventa ninguna', async () => {
+    api.fetchAdminProducts.mockResolvedValue(page([funda]));
+    await act(async () => { render(<ProductsManager canManage />); });
+    await screen.findByText('Funda');
+    expect(lastQuery().company).toBeUndefined();
+  });
+});
+
 describe('la llamada al servidor', () => {
   const real = jest.requireActual('@/app/lib/admin') as typeof admin;
   /* eslint-disable-next-line @typescript-eslint/no-require-imports */
@@ -492,6 +531,23 @@ describe('la llamada al servidor', () => {
     const url = String(fetchWithAuth.mock.calls[0][0]);
     expect(url).toContain('is_published_online=false');
     expect(url).toContain('is_serialized=true');
+  });
+
+  it('la lista y la acción llevan la empresa en la dirección, y lo guardado en el navegador no la cambia', async () => {
+    const { withSelectedCompany } = jest.requireActual('@/app/lib/auth') as typeof import('@/app/lib/auth');
+    window.localStorage.setItem('internal-selected-company', '9');
+    fetchWithAuth.mockResolvedValue(answer(200, page([])));
+
+    await real.fetchAdminProducts({ company: 7, page: 1 });
+    await real.bulkSetProductVisibility('hide', { filter: {}, expectedCount: 0 }, 7);
+
+    const [list, bulk] = fetchWithAuth.mock.calls.map(([url]) => withSelectedCompany(String(url)));
+    expect(list).toMatch(/\/admin\/products\/\?company=7&page=1$/);
+    expect(bulk).toMatch(/\/admin\/products\/bulk-visibility\/\?company=7$/);
+    // Sin empresa explícita sigue valiendo la del navegador, como en el resto del panel.
+    await real.bulkSetProductVisibility('hide', { ids: [1] });
+    expect(withSelectedCompany(String(fetchWithAuth.mock.calls[2][0]))).toMatch(/bulk-visibility\/\?company=9$/);
+    window.localStorage.removeItem('internal-selected-company');
   });
 
   it('cada código de problema tiene su texto', () => {
