@@ -452,6 +452,75 @@ describe('el resultado', () => {
   });
 });
 
+describe('lo que se ve es lo último que se pidió', () => {
+  // Revisión, grupo 9 (a)–(d): cuatro maneras de acabar confirmando sobre algo
+  // que la pantalla ya no enseña.
+
+  it('(a) una respuesta lenta de antes no pisa a la de después', async () => {
+    await open();
+    let slow: (value: ReturnType<typeof page>) => void = () => {};
+    api.fetchAdminProducts
+      .mockReturnValueOnce(new Promise((resolve) => { slow = resolve; }))     // «Internos», lenta
+      .mockResolvedValueOnce(page([cable]));                                  // «Publicados», rápida
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Internos' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Publicados' })); });
+    await screen.findByText('Cable');
+
+    await act(async () => { slow(page([flex], 99)); });
+
+    expect(screen.getByText('Cable')).toBeInTheDocument();
+    expect(screen.queryByText('Flex de carga')).toBeNull();
+    expect(screen.getByText(/^1 productos en total/)).toBeInTheDocument();
+  });
+
+  it('(b) desactivar una fila quita la selección: la fila puede dejar de estar a la vista', async () => {
+    api.patchAdminProduct.mockResolvedValueOnce({ ...funda, is_active: false });
+    await open();
+    tick('Funda');
+    tick('Cable');
+    await act(async () => { fireEvent.click(within(rowOf('Funda')).getByRole('button', { name: 'Desactivar' })); });
+    await screen.findByText('Funda');
+
+    expect(screen.queryByText(/seleccionado/)).toBeNull();
+    expect(screen.queryByRole('button', { name: HIDE })).toBeNull();
+  });
+
+  it('(c) si la selección se vacía con la confirmación abierta, la confirmación se cierra', async () => {
+    await open();
+    tick('Funda');
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cable' } });   // el filtro llega 300 ms después
+    fireEvent.click(screen.getByRole('button', { name: HIDE }));
+    expect(dialog()).toBeInTheDocument();
+
+    await act(async () => { jest.advanceTimersByTime(400); });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(api.bulkSetProductVisibility).not.toHaveBeenCalled();
+  });
+
+  it('(d) si la acción vacía la última página, se vuelve a la última que tiene algo', async () => {
+    await open({ count: 45 });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Siguiente' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Siguiente' })); });
+    await screen.findByText('Funda');
+    expect(lastQuery().page).toBe(3);
+
+    // Tras ocultar, quedan 40: la página 3 ya no existe.
+    api.fetchAdminProducts.mockImplementation(async (params) => (
+      params?.page === 3 ? { count: 40, page: 3, page_size: 20, results: [] } : page([cable], 40)
+    ));
+    api.bulkSetProductVisibility.mockResolvedValueOnce({ action: 'hide', changed: 3, unchanged: 0, refused: [], total: 3 });
+    tickPage();
+    fireEvent.click(screen.getByRole('button', { name: HIDE }));
+    await confirm();
+
+    await screen.findByText('Cable');
+    expect(lastQuery().page).toBe(2);
+    expect(screen.getByText('Página 2 de 2')).toBeInTheDocument();
+    expect(screen.queryByText('No hay productos que coincidan.')).toBeNull();
+  });
+});
+
 describe('la empresa sobre la que se actúa', () => {
   // Revisión N5. La empresa se leía de `localStorage` AL ENVIAR: con dos pestañas
   // en dos empresas, «los N que coinciden» —un filtro y una cuenta, sin ids—

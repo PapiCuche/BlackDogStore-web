@@ -11,7 +11,7 @@
  * «Todo lo que coincide» no viaja como una lista de ids: viaja el filtro y el
  * total que el servidor dio, y el servidor lo vuelve a contar antes de tocar nada.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AdminCategory,
@@ -103,27 +103,50 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
   const [result, setResult] = useState<BulkVisibilityResult | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
 
+  // Cuál fue la ÚLTIMA lista pedida. Una respuesta que llega tarde —la de un
+  // filtro que ya no está puesto— no pisa a la que la pantalla espera.
+  const latest = useRef(0);
+
   const load = useCallback(async () => {
+    const mine = ++latest.current;
     setLoading(true);
     setError(null);
     try {
-      setData(await fetchAdminProducts({ ...listFilter(filters), page, page_size: 20, company: companyId ?? undefined }));
+      const found = await fetchAdminProducts({ ...listFilter(filters), page, page_size: 20, company: companyId ?? undefined });
+      if (mine !== latest.current) return;
+      // Una acción puede vaciar la última página (ocultar, con el filtro
+      // «Publicados»): se vuelve a la última que todavía tiene algo.
+      const lastPage = Math.max(1, Math.ceil(found.count / found.page_size));
+      if (found.results.length === 0 && page > lastPage) {
+        setPage(lastPage);
+        return;
+      }
+      setData(found);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al cargar productos.");
+      if (mine === latest.current) setError(err instanceof Error ? err.message : "Error al cargar productos.");
     } finally {
-      setLoading(false);
+      if (mine === latest.current) setLoading(false);
     }
   }, [filters, page, companyId]);
+
+  /**
+   * Quitar la selección es también cerrar la confirmación que estuviera
+   * abierta: no se confirma «0 productos», ni algo que ya no se ve.
+   */
+  const clearSelection = useCallback(() => {
+    setSelection(NOTHING);
+    setPending(null);
+  }, []);
 
   useEffect(() => {
     if (searchInput === filters.search) return;
     const timer = window.setTimeout(() => {
       setFilters((current) => ({ ...current, search: searchInput }));
       setPage(1);
-      setSelection(NOTHING);
+      clearSelection();
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [searchInput, filters.search]);
+  }, [searchInput, filters.search, clearSelection]);
 
   useEffect(() => {
     fetchAdminCategories()
@@ -144,12 +167,12 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
   function setFilter(key: keyof Filters, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
     setPage(1);
-    setSelection(NOTHING);
+    clearSelection();
   }
 
   function goToPage(next: number) {
     setPage(next);
-    setSelection(NOTHING);
+    clearSelection();
   }
 
   const rows = data?.results ?? [];
@@ -222,10 +245,14 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
         actions={
           canManage ? (
             <>
-              {/* INVENTORY-UNIFIED-01: muchas imágenes a la vez, sin recrear productos. */}
-              <Link href="/admin/inventory/bulk#imagenes" className={internalButtonClass}>
-                Añadir imágenes en lote
-              </Link>
+              {/* INVENTORY-UNIFIED-01: muchas imágenes a la vez, sin recrear productos.
+                  Esa pantalla decide por capacidades DE UNA EMPRESA: sin empresa
+                  resuelta respondería «sin permisos», así que no se ofrece. */}
+              {companyId !== null ? (
+                <Link href="/admin/inventory/bulk#imagenes" className={internalButtonClass}>
+                  Añadir imágenes en lote
+                </Link>
+              ) : null}
               <Link href="/admin/products/new" className={internalPrimaryButtonClass}>
                 Nuevo producto
               </Link>
@@ -330,7 +357,7 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
         {result ? <BulkVisibilityResultPanel result={result} onClose={() => setResult(null)} /> : null}
 
         {canManage && selectedCount > 0 ? (
-          <BulkVisibilityBar count={selectedCount} onAction={ask} onClear={() => setSelection(NOTHING)} />
+          <BulkVisibilityBar count={selectedCount} onAction={ask} onClear={clearSelection} />
         ) : null}
         {canManage && selection.allMatching ? (
           <p className="mb-4 text-sm text-muted">Los {total} productos que coinciden están seleccionados.</p>
@@ -354,7 +381,9 @@ export function ProductsManager({ canManage, companyId = null }: Props) {
           <ProductsTable
             products={rows}
             canManage={canManage}
-            onChanged={load}
+            // Activar o desactivar una fila puede sacarla de la lista filtrada:
+            // la selección se quita, para no dejar marcado algo que no se ve.
+            onChanged={() => { clearSelection(); void load(); }}
             selection={tableSelection}
           />
         )}

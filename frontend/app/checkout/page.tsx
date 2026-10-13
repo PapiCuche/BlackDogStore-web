@@ -195,6 +195,8 @@ export default function CheckoutPage() {
   const subtotal = (items ?? []).reduce(
     (sum, item) => sum + (item.available === false ? 0 : Number(item.product.price ?? 0) * item.quantity), 0,
   );
+  // Con una línea así el servidor rechaza el carrito entero: no se ofrece enviar.
+  const hasUnavailable = (items ?? []).some((item) => item.available === false);
   const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
   const total = subtotal - discount;
 
@@ -309,7 +311,15 @@ export default function CheckoutPage() {
           setLoading(false);
           return;
         }
-        throw new Error((err as { detail?: string })?.detail ?? "Datos inválidos.");
+        // El rechazo de un carrito trae, además de la frase general, QUÉ línea
+        // lo impidió («Funda ya no está disponible.»). Sin eso, quien compra
+        // sólo sabe que algo falló.
+        const reasons = Array.isArray((err as { errors?: unknown })?.errors)
+          ? ((err as { errors: unknown[] }).errors).filter((reason): reason is string => typeof reason === "string")
+          : [];
+        throw new Error(
+          [(err as { detail?: string })?.detail ?? "Datos inválidos.", ...reasons].join(" "),
+        );
       }
 
       if (!res.ok) {
@@ -825,10 +835,17 @@ export default function CheckoutPage() {
             </div>
           )}
 
+          {hasUnavailable ? (
+            <p role="alert" className="rounded-xl border border-danger-border bg-danger-surface p-3 text-sm text-danger">
+              Quita del carrito lo que ya no está disponible para continuar.{" "}
+              <Link href="/cart" className="font-semibold underline underline-offset-2">Ir al carrito</Link>
+            </p>
+          ) : null}
+
           <button
             type="submit"
             className="w-full rounded-full bg-foreground px-6 py-3.5 text-sm font-bold uppercase tracking-[0.06em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={loading}
+            disabled={loading || hasUnavailable}
           >
             {loading ? "Abriendo el pago…" : "Continuar al pago →"}
           </button>

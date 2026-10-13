@@ -96,6 +96,9 @@ export function InventoryExportPanel({
   );
   if (offered.length === 0) return null;
 
+  // Con algo puesto arriba, el ZIP ya no es «todo»: se dice en su tarjeta.
+  const narrowed = chosen.length > 0 || Object.values(filters).some(Boolean);
+
   const set = (key: keyof typeof NO_FILTERS) => (event: React.ChangeEvent<HTMLSelectElement>) =>
     setFilters((current) => ({ ...current, [key]: event.target.value }));
 
@@ -242,6 +245,12 @@ export function InventoryExportPanel({
             <div>
               <h3 className="text-sm font-semibold text-foreground">{item.title}</h3>
               <p className="mt-1 text-xs text-muted">{item.description}</p>
+              {item.kind === "full" && narrowed ? (
+                <p role="alert" className="mt-1 text-xs font-semibold text-warning">
+                  Con los filtros o las sucursales de arriba NO es el inventario completo: lleva sólo lo que
+                  coincide. Para llevarlo todo, quítalos.
+                </p>
+              ) : null}
               {item.kind === "units" ? (
                 <p className="mt-1 text-xs text-muted">
                   {canSeeCost

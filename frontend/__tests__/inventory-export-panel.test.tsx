@@ -9,9 +9,6 @@
  * Qué contiene cada archivo y quién puede bajarlo lo decide el servidor
  * (`test_inventory_exports.py`).
  */
-import fs from 'fs';
-import path from 'path';
-
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { InventoryExportPanel, InventoryExports } from '@/app/admin/components/InventoryExportPanel';
@@ -232,6 +229,24 @@ describe('los filtros', () => {
     expect(lastCall()[2].type).toBe('serialized');
   });
 
+  it('el ZIP dice cuándo NO es el inventario completo', async () => {
+    // Revisión, grupo 9 (f): el «inventario completo» obedecía en silencio a los filtros puestos.
+    show();
+    expect(within(card(FULL)).queryByRole('alert')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Categoría'), { target: { value: '5' } });
+    expect(within(card(FULL)).getByRole('alert')).toHaveTextContent(/Con los filtros o las sucursales de arriba NO es el inventario completo/);
+    await download(FULL);
+    expect(lastCall()[2]).toMatchObject({ category: '5' });
+
+    fireEvent.change(screen.getByLabelText('Categoría'), { target: { value: '' } });
+    expect(within(card(FULL)).queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Norte' }));
+    expect(within(card(FULL)).getByRole('alert')).toBeInTheDocument();
+    // Las demás tarjetas no llevan ese aviso: en ellas filtrar es lo que se espera.
+    expect(within(card(STOCK)).queryByRole('alert')).toBeNull();
+  });
+
   it('no hay filtro de marca: el catálogo no tiene ese dato', () => {
     show();
     expect(screen.queryByLabelText(/Marca/i)).toBeNull();
@@ -362,22 +377,5 @@ describe('la petición al servidor', () => {
   });
 });
 
-describe('dónde vive por ahora', () => {
-  const page = fs.readFileSync(path.join(process.cwd(), 'app/admin/inventory/import/page.tsx'), 'utf8');
-
-  it('en «Carga de stock», junto a «Descargar inventario», que sigue ahí', () => {
-    const legacy = page.indexOf('title="Descargar inventario"');
-    const panel = page.indexOf('<InventoryExports');
-    expect(legacy).toBeGreaterThan(-1);
-    expect(panel).toBeGreaterThan(legacy);
-    expect(page).toContain('title="Exportar"');
-    expect(page).toContain('inventoryExportUrl(companyId, exportBranches, "current")');
-  });
-
-  it('con las capacidades de quien mira, no con su rol', () => {
-    expect(page).toMatch(/canCatalogue=\{canExportCatalogue\}/);
-    expect(page).toMatch(/access\.can\("products\.view"/);
-    expect(page).toMatch(/access\.can\("inventory\.view"/);
-    expect(page).toMatch(/canSeeCost=\{access\.can\("inventory\.adjust"/);
-  });
-});
+// Dónde se monta el panel (Carga de stock y Gestión masiva) se prueba montando esas páginas:
+// `inventory-pages-mount.test.tsx`.

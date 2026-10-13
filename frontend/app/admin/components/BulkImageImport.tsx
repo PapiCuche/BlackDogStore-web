@@ -80,6 +80,19 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
   const [word, setWord] = useState("");
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // La vista previa es de lo que se adjuntó CUANDO se pidió. Si después cambian
+  // los archivos o las opciones, ya no describe lo que hay en el formulario.
+  const [stale, setStale] = useState(false);
+
+  /** Cambia algo de lo que se va a enviar: la vista previa que hubiera deja de valer. */
+  function edit(change: () => void) {
+    change();
+    if (job && job.status !== "applied") {
+      setJob(null);
+      setWord("");
+      setStale(true);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +112,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
     setJob(null);
     setWord("");
     setError(null);
+    setStale(false);
   }
 
   const replacing = job?.options?.mode === "replace";
@@ -109,6 +123,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
     setError(null);
     setJob(null);
     setWord("");
+    setStale(false);
     try {
       setJob(await previewImageImport(companyId, {
         images: files, imagesZip: zip, book, mode, useMain: mode === "add" && useMain,
@@ -176,7 +191,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
             images={files}
             zip={zip}
             disabled={busy !== null}
-            onChange={(nextImages, nextZip) => { setFiles(nextImages); setZip(nextZip); }}
+            onChange={(nextImages, nextZip) => edit(() => { setFiles(nextImages); setZip(nextZip); })}
             title="Imágenes"
             description="Varias a la vez, un ZIP, o las dos cosas. No se sube nada hasta previsualizar."
           />
@@ -198,14 +213,14 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
               onChange={(event) => {
                 const selected = event.target.files?.[0] ?? null;
                 event.target.value = "";
-                if (selected) setBook(selected);
+                if (selected) edit(() => setBook(selected));
               }}
               className="mt-2 block w-full text-sm text-muted file:mr-4 file:rounded-full file:border file:border-bd-border file:bg-background file:px-4 file:py-2 file:text-sm file:font-semibold file:text-foreground"
             />
             {book ? (
               <p className="mt-2 flex items-center justify-between gap-3">
                 <span className="break-all text-foreground">{book.name}</span>
-                <button type="button" onClick={() => setBook(null)} className="shrink-0 underline underline-offset-4 hover:text-danger">
+                <button type="button" onClick={() => edit(() => setBook(null))} className="shrink-0 underline underline-offset-4 hover:text-danger">
                   Quitar
                 </button>
               </p>
@@ -214,7 +229,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
 
           <fieldset role="radiogroup" aria-label="Qué hacer con la galería" className="grid gap-3 sm:grid-cols-2">
             <label className="flex cursor-pointer gap-3 rounded-lg border border-bd-border bg-background p-3 text-sm">
-              <input type="radio" name="image-mode" className="mt-1" checked={mode === "add"} onChange={() => setMode("add")} />
+              <input type="radio" name="image-mode" className="mt-1" checked={mode === "add"} onChange={() => edit(() => setMode("add"))} />
               <span>
                 <span className="block font-semibold text-foreground">Añadir a la galería</span>
                 <span className="mt-0.5 block text-xs text-muted">
@@ -223,7 +238,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
               </span>
             </label>
             <label className="flex cursor-pointer gap-3 rounded-lg border border-bd-border bg-background p-3 text-sm">
-              <input type="radio" name="image-mode" className="mt-1" checked={mode === "replace"} onChange={() => setMode("replace")} />
+              <input type="radio" name="image-mode" className="mt-1" checked={mode === "replace"} onChange={() => edit(() => setMode("replace"))} />
               <span>
                 <span className="block font-semibold text-foreground">Reemplazar la galería</span>
                 <span className="mt-0.5 block text-xs text-muted">
@@ -236,7 +251,7 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
 
           {mode === "add" ? (
             <label className="flex items-start gap-2 text-sm text-foreground">
-              <input type="checkbox" className="mt-1" checked={useMain} onChange={(event) => setUseMain(event.target.checked)} />
+              <input type="checkbox" className="mt-1" checked={useMain} onChange={(event) => edit(() => setUseMain(event.target.checked))} />
               <span>
                 Usar como principal la primera imagen de cada producto
                 <span className="block text-xs text-muted">
@@ -258,6 +273,11 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
       )}
 
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+      {stale ? (
+        <p role="status" className="text-sm text-warning">
+          Cambiaste los archivos o las opciones: la vista previa anterior ya no vale. Previsualiza otra vez.
+        </p>
+      ) : null}
 
       {job && !applied ? (
         <div className="space-y-4">

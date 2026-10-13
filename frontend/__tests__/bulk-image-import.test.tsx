@@ -268,6 +268,33 @@ describe('la vista previa', () => {
   });
 });
 
+describe('una vista previa es de lo que se adjuntó cuando se pidió', () => {
+  // Revisión, grupo 9 (e): cambiar los archivos o el modo dejaba en pantalla la
+  // vista previa anterior, con su botón de aplicar.
+  it('adjuntar otro archivo la retira: hay que previsualizar otra vez', async () => {
+    await previewed(job([productRow()]));
+    expect(screen.getByRole('table')).toBeInTheDocument();
+
+    attach(png('COD-A2.png'));
+
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Añadir 2 imágenes/ })).toBeNull();
+    expect(screen.getByText(/Cambiaste los archivos o las opciones/)).toBeInTheDocument();
+    expect(previewButton()).toBeEnabled();
+  });
+
+  it.each([
+    ['el modo', () => fireEvent.click(screen.getByRole('radio', { name: /Reemplazar la galería/ }))],
+    ['«usar como principal»', () => fireEvent.click(screen.getByRole('checkbox', { name: /Usar como principal/ }))],
+    ['el libro', () => fireEvent.change(screen.getByLabelText(/Libro «Imágenes» \(opcional\)/), { target: { files: [new File(['b'], 'i.xlsx')] } })],
+  ])('cambiar %s también', async (_what, change) => {
+    await previewed(job([productRow()]));
+    change();
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(mocked.applyImageImport).not.toHaveBeenCalled();
+  });
+});
+
 describe('aplicar', () => {
   it('añadir: se aplica ese trabajo y se dice lo que pasó, con enlace a cada galería', async () => {
     const staged = job([productRow()]);
@@ -403,8 +430,16 @@ describe('desde la lista de productos', () => {
   });
 
   it('quien gestiona el catálogo tiene el enlace a las imágenes en lote', async () => {
-    await act(async () => { render(<ProductsManager canManage />); });
+    await act(async () => { render(<ProductsManager canManage companyId={7} />); });
     expect(screen.getByRole('link', { name: 'Añadir imágenes en lote' })).toHaveAttribute('href', '/admin/inventory/bulk#imagenes');
+  });
+
+  it('un operador sin empresa resuelta no: esa pantalla no le abre', async () => {
+    // Revisión, grupo 9 (i). «Gestión masiva» decide por capacidades de una empresa;
+    // al operador antiguo le respondería «sin permisos». No se ofrece lo que se va a negar.
+    await act(async () => { render(<ProductsManager canManage />); });
+    expect(screen.queryByRole('link', { name: 'Añadir imágenes en lote' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Nuevo producto' })).toBeInTheDocument();
   });
 
   it('quien sólo consulta, no', async () => {

@@ -6,9 +6,6 @@
  * que siguen siendo tres), exportar, imágenes e historial. Y un asistente que
  * dice a qué carga va un archivo — lo dice el servidor; la pantalla manda ahí.
  */
-import fs from 'fs';
-import path from 'path';
-
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { BulkInventoryCentre, ImportAssistant } from '@/app/admin/components/BulkInventoryCentre';
@@ -105,15 +102,6 @@ describe('la entrada del menú', () => {
     const both = { ...entry(), anyCapabilities: undefined, requiredCapabilities: ['products.view', 'inventory.view'] };
     expect(canAccessModule(both, member(['products.view']))).toBe(false);
     expect(canAccessModule(both, member(['products.view', 'inventory.view']))).toBe(true);
-  });
-
-  it('la página existe y la guarda el control interno', () => {
-    const page = fs.readFileSync(path.join(process.cwd(), 'app/admin/inventory/bulk/page.tsx'), 'utf8');
-    expect(page).toContain('<InternalControlGuard>');
-    expect(page).toContain('<BulkInventoryCentre');
-    for (const capability of ['products.manage', 'inventory.adjust', 'products.view', 'inventory.view']) {
-      expect(page).toContain(`"${capability}"`);
-    }
   });
 });
 

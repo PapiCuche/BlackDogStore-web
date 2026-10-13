@@ -1,6 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import CartPage from '@/app/cart/page';
@@ -133,17 +130,4 @@ describe('el carrito que la contiene', () => {
   });
 });
 
-describe('el resumen del pago', () => {
-  // La página de pago no se monta en esta suite (pide el SDK de la pasarela);
-  // como en el resto de sus pruebas, se fija sobre su código.
-  const checkout = fs.readFileSync(path.join(process.cwd(), 'app/checkout/page.tsx'), 'utf8');
-
-  it('no suma lo que ya no se vende ni le pone precio', () => {
-    expect(checkout).toMatch(/item\.available === false \? 0 : Number\(item\.product\.price \?\? 0\) \* item\.quantity/);
-    expect(checkout).not.toMatch(/Number\(item\.product\.price\)/);
-  });
-
-  it('lo dice y manda al carrito a quitarlo', () => {
-    expect(checkout).toMatch(/Ya no está disponible\.[\s\S]{0,200}href="\/cart"/);
-  });
-});
+// El resumen del pago con una línea así se prueba montando la página: `checkout-unavailable-line.test.tsx`.
