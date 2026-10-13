@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
+
+Misma rama (`feat/client-sec-delivery`, PR #111, detenido hasta estos ajustes). La revisión de
+`8ea3fe4..ab86212` encontró una regresión alta frente a producción y varios menores. Sin
+migraciones, rutas ni capacidades nuevas.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| F1 | El pedido de un invitado cuyo documento está en la ficha de una CUENTA no se archivaba nunca: sin ficha no hay aviso, y el comprador no recibía «listo para recoger» ni «enviado». Caso honesto: quien compró una vez con sesión y ahora compra sin ella | CORREGIDO: al pagarse recibe una ficha propia SIN documento; la ficha de la cuenta no se toca y la cuenta no ve ese pedido |
+| F2 | «La misma persona reintentando» se decidía sólo por el correo, que cualquiera puede escribir | CORREGIDO: nombre, teléfono y correo, los tres presentes e iguales |
+| F4 | Un pedido pagado que perdía una carrera al archivarse quedaba sin ficha | CORREGIDO: se reintenta una vez |
+| F5 | Si el archivado fallaba después de asignar la ficha, el pedido la conservaba en memoria y la confirmación del pago moría al confirmar | CORREGIDO: el pedido queda como estaba |
+| F6 | Una ficha provisional inválida por otro motivo bloqueaba al personal con un 400 engañoso | CORREGIDO: al personal, el 409 con esa ficha; al pedido pagado, una ficha sin documento |
+| F9 | `ops_status` iba a decir «N pedidos sin evaluar» durante 24 h tras cualquier despliegue | CORREGIDO: sólo cuenta los posteriores a la primera evaluación |
+| F11 | Prueba que fallaba por azar (`'15.50'` dentro de una marca de tiempo) | CORREGIDA: compara claves y valores |
+| F12 | Dos personas archivando el mismo documento a la vez: la segunda recibía un 500 | CORREGIDO: el mismo 409 |
+| — | `test_tracking…test_every_order_is_born_with_a_link_nobody_can_guess` fallaba 1 de cada 100 veces | CORREGIDA: comprueba que el enlace no sale de la orden (identificador aleatorio; rotarlo da otro) |
+
+**Queda como deuda, a propósito** (`docs/AUDIT_MEMORY.md`): CLIENT-SEC-PAID-SEED (F3),
+CLIENT-SEC-CREATED-BY-SETNULL (F7), CLIENT-SEC-COUNTER-TYPO (F8), CLIENT-SEC-APP-CE (F10),
+CLIENT-SEC-ORDER-NO-EMAIL (F13). Se cerró CLIENT-SEC-UNLINKED-GUEST.
+
+**Pruebas.** `store/test_client_sec.py` pasa de 322 a 352 pruebas (cinco con dos conexiones reales: personal y pago a la vez, dos pagos, dos personas archivando, y los dos bloqueos de fila), `test_ops_status` gana una. Cambió una prueba de la ronda anterior, la que esperaba que el pedido de un invitado con el documento en la ficha de una cuenta quedara sin ficha tras pagarse. Mutaciones de esta ronda: 33; 5 sobrevivieron a la primera pasada — 4 se cerraron con pruebas (datos vacíos en los dos lados; un solo nombre; los dos bloqueos, que las pruebas de carrera no necesitaban porque el reintento las salvaba) y 1 es equivalente (si la ficha provisional no puede soltar el documento, el personal recibe el mismo 409 por la regla de la base). Corridas sobre el código de `a7e38d0` (PostgreSQL): `test_client_sec`, `test_ops_status` y `test_tracking`, 425; `test_delivery_base`, `test_mail_notifications`, `test_deploy_scripts` y los diez módulos de pagos, 504 y 3 omitidas; las clases de clientes, checkout, avisos y despacho de `store/tests.py`, 902. Cero fallos. `makemigrations --check` sin cambios. `store.tests.M12BConcurrencyTest` falla si se ejecuta SOLA (deuda M12B-CONCURRENCY-ISOLATION, anterior a esta rama); dentro de la selección pasa. **No se corrió** la suite completa del backend, el frontend (no cambió), Playwright ni el ensayo de despliegue.
+
 ## 2026-10-13 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la tercera revisión independiente
 
 Misma rama (`feat/client-sec-delivery`). **Sólo en la rama: sin push, sin PR, sin desplegar.**

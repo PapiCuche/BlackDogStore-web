@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
+
+En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones.
+
+**Fixed**
+- Un pedido de invitado cuyo documento está en la ficha de una cuenta recibe, al pagarse, una
+  ficha propia sin documento: el comprador vuelve a recibir «listo para recoger» y «enviado».
+  Antes (en esta rama, nunca publicado) quedaba sin ficha y sin avisos.
+- Dos personas archivando el mismo documento a la vez: la segunda recibe «ya existe» (409) en
+  vez de un error.
+- Un pedido pagado que pierde una carrera al archivarse se reintenta; un fallo al archivarlo
+  ya no puede hacer fallar la confirmación del pago.
+
+**Security**
+- Para tratar un pedido pagado como «la misma persona reintentando» tienen que coincidir
+  nombre, teléfono y correo con la ficha provisional, no sólo el correo.
+
+**Changed**
+- `ops_status` no cuenta como «sin evaluación» los pedidos anteriores a la primera evaluación.
+
 ## 2026-10-13 — CLIENT-SEC-01 y DELIVERY-01: correcciones tras la tercera revisión
 
 En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones nuevas.

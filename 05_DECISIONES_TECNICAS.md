@@ -226,7 +226,8 @@ iban a parar a quien la sembró.
     confirmación del pago, en un punto de guardado e incapaz de hacerla fallar). Pagar es lo
     que al checkout le falta: cuesta dinero y deja rastro. Si la ficha provisional que tiene
     su documento lleva el mismo correo que el pedido, es la misma persona reintentando tras
-    una tarjeta rechazada y el pedido se enlaza a ella; si no, esa ficha suelta el documento
+    una tarjeta rechazada y el pedido se enlaza a ella (desde la revisión previa al despliegue:
+    mismo nombre, teléfono y correo); si no, esa ficha suelta el documento
     (auditado: `customer_document_released`, sólo nombres de campo) y el pedido recibe una
     ficha propia hecha con lo que se escribió en él. Así el primer pedido pagado de un
     invitado establece su ficha para los siguientes.
@@ -253,6 +254,25 @@ iban a parar a quien la sembró.
   correo Y documento son un solo comprador (siguen contando como pedidos pagados).
 - `ops_status` dice, como NOTA y nunca como alarma, cuántos pedidos pagados esperan revisión
   y desde cuándo, y cuántos pedidos en línea del último día no tienen evaluación.
+
+**Ajustes tras la revisión previa al despliegue** (misma rama):
+
+- **Un pedido pagado siempre tiene una ficha.** Si su documento está en la ficha de una
+  CUENTA, esa ficha no se toca y el pedido recibe una ficha propia SIN documento, hecha con lo
+  escrito en él. Sin esto, quien compró una vez con sesión y vuelve a comprar sin ella —o la
+  persona cuyo documento declaró otra cuenta— no recibía nunca «listo para recoger» ni
+  «enviado». La cuenta no ve ese pedido.
+- **«La misma persona reintentando» es el mismo nombre, teléfono Y correo** que la ficha
+  provisional, no sólo el correo (que cualquiera puede escribir). Si falta o difiere uno, la
+  ficha suelta el documento y el pedido recibe la suya.
+- **Archivar un pedido pagado no puede dejar nada a medias.** Una carrera perdida (el personal
+  archivando a la vez, o dos pagos) se reintenta una vez; si aun así falla, el pedido queda
+  como estaba también en memoria, para que el aviso siguiente no apunte a una ficha deshecha.
+  Una ficha provisional que no se puede guardar (inválida por otro motivo) no suelta el
+  documento: al personal se le muestra con el 409 y al pedido pagado se le da una ficha sin
+  documento. Dos personas archivando el mismo documento a la vez: la segunda recibe el 409.
+- `ops_status` cuenta como «sin evaluación» sólo los pedidos posteriores a la primera
+  evaluación que exista: el día del despliegue no avisa de los pedidos anteriores.
 
 **Lo que esta fase no decide** (queda como deuda en `docs/AUDIT_MEMORY.md`): unificar los
 tres validadores anteriores de teléfono y documento, cuánto tiempo se conserva `ip_hash`, y
