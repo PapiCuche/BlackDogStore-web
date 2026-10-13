@@ -516,6 +516,13 @@ def filter_admin_products(queryset, params, *, strict=False):
     is the wrong reading.
     """
     search = _filter_text(params, 'search', strict)
+    if '\x00' in search:
+        # No name and no slug can hold a NUL, and the database refuses the
+        # literal outright (it answered 500). For a write it is a filter that
+        # means nothing; for the list, a search that matches nothing.
+        if strict:
+            raise InvalidProductFilter('search')
+        return queryset.none()
     if search:
         queryset = queryset.filter(Q(name__icontains=search) | Q(slug__icontains=search)).distinct()
 

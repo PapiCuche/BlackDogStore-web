@@ -128,12 +128,17 @@ def set_visibility(*, company, publish: bool, ids=None, select=None, expected_co
     base = Product.objects.filter(company=company)
 
     if select is not None:
-        count = select(base).count()
-        if count > MAX_BULK_PRODUCTS:
-            raise TooManyProducts(count)
-        if count != expected_count:
-            raise SelectionChanged(count)
-        wanted = set(select(base).order_by().values_list('pk', flat=True))
+        # READ ONCE. The selection is the ids of ONE statement, and it is that
+        # set which is compared with what the operator counted. A count and
+        # then a second read of the ids let a product that began to match in
+        # between be changed without ever having been counted.
+        found = list(select(base).order_by().values_list('pk', flat=True)[:MAX_BULK_PRODUCTS + 1])
+        if len(found) > MAX_BULK_PRODUCTS:
+            # Past the cap nothing is loaded; the full count is only for the message.
+            raise TooManyProducts(select(base).count())
+        wanted = set(found)
+        if len(wanted) != expected_count:
+            raise SelectionChanged(len(wanted))
     else:
         wanted = set(ids)
         if len(wanted) > MAX_BULK_PRODUCTS:

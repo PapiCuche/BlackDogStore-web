@@ -221,6 +221,24 @@ class BulkByIdsTest(_Base):
         for pk, stamp in Product.objects.filter(pk__in=[plain.pk, device.pk]).values_list('pk', 'updated_at'):
             self.assertGreater(stamp, stamps[pk])
 
+    def test_an_inactive_product_stays_inactive_whatever_is_done_to_its_visibility(self):
+        """Review M06: hiding wrote `is_active` too and nothing noticed, because every fixture was active."""
+        off = self.product('Descatalogado', is_active=False, price=Decimal('12.50'))
+        on = self.product('Vigente', published=False)
+
+        def facts(product):
+            return Product.objects.filter(pk=product.pk).values_list('is_active', 'price', 'name', 'inventory').get()
+
+        before = facts(off), facts(on)
+        self.assertEqual(self.post({'action': 'hide', 'ids': [off.pk, on.pk]}).json()['changed'], 1)
+        self.assertEqual((facts(off), facts(on)), before)
+        self.assertEqual(self.published(off, on), [False, False])
+
+        body = self.post({'action': 'publish', 'ids': [off.pk, on.pk]}).json()
+        self.assertEqual((body['changed'], [item['id'] for item in body['refused']]), (1, [off.pk]))
+        self.assertEqual((facts(off), facts(on)), before)
+        self.assertEqual(self.published(off, on), [False, True])
+
     def test_one_audit_line_per_batch_with_what_changed_and_nobody_s_data(self):
         ready = self.product('Funda', published=False)
         no_picture = self.product('Sin foto', published=False, image_url='')
@@ -462,6 +480,61 @@ class BulkByFilterTest(_Base):
         self.assertEqual((response.json()['code'], response.json()['count'], response.json()['limit']), ('too_many', 5, 4))
         self.assertEqual(self.published(self.case, self.cable), [True, True])
 
+    def test_what_starts_matching_after_the_selection_was_read_is_not_changed(self):
+        """
+        Review N6. The count and the ids were two reads: a product that began to
+        match between them was changed without ever having been counted.
+        """
+        calls = []
+
+        def select(queryset):
+            calls.append(1)
+            if len(calls) == 2:
+                # What a commit by somebody else looks like, right after the selection was read.
+                self.late = self.product('Teléfono azul tardío')
+            return queryset.filter(name__icontains='azul')
+
+        result = product_publication.set_visibility(company=self.company, publish=False, select=select, expected_count=3)
+
+        self.assertEqual((result['changed'], result['total']), (3, 3))
+        self.assertEqual(self.published(self.late), [True])
+        self.assertEqual(self.published(self.case, self.cable, self.phone), [False, False, False])
+
+    def test_the_selection_is_read_once_and_that_is_what_is_compared_with_the_count(self):
+        late = []
+
+        def select(queryset):
+            if not late:
+                late.append(self.product('Funda azul recién llegada'))     # arrives before the one and only read
+            return queryset.filter(name__icontains='azul')
+
+        with self.assertRaises(product_publication.SelectionChanged) as refused:
+            product_publication.set_visibility(company=self.company, publish=False, select=select, expected_count=3)
+        self.assertEqual(refused.exception.current_count, 4)
+        self.assertEqual(self.published(self.case, self.cable, self.phone), [True] * 3)
+
+    def test_a_product_edited_between_the_selection_and_the_lock_stops_the_batch(self):
+        """Asked again WITH the rows held: what was selected may have stopped matching."""
+        calls = []
+
+        def select(queryset):
+            calls.append(1)
+            if len(calls) == 2:
+                Product.objects.filter(pk=self.cable.pk).update(name='Cable verde')
+            return queryset.filter(name__icontains='azul')
+
+        with self.assertRaises(product_publication.SelectionChanged) as refused:
+            product_publication.set_visibility(company=self.company, publish=False, select=select, expected_count=3)
+        self.assertEqual(refused.exception.current_count, 2)
+        self.assertEqual(self.published(self.case, self.cable, self.phone), [True, True, True])
+
+    def test_a_search_that_no_text_can_hold_is_refused_not_a_crash(self):
+        """Review N9: a NUL in «search» reached the database and answered 500."""
+        response = self.post({'action': 'hide', 'filter': {'search': 'a\x00b'}, 'expected_count': 0})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()['detail'], 'El filtro no es válido.')
+        self.assertEqual(self.published(self.case), [True])
+
     def test_the_audit_line_keeps_the_filter_that_was_used(self):
         self.post({'action': 'hide', 'filter': {'search': 'azul', 'is_active': 'true'}, 'expected_count': 3})
         metadata = self.audit().get().metadata
@@ -492,6 +565,13 @@ class ProductListTest(_Base):
         self.assertEqual([row['id'] for row in self.rows('is_serialized=true')['results']], [phone.pk])
         self.assertEqual([row['id'] for row in self.rows('is_serialized=false')['results']], [case.pk])
         self.assertEqual(self.rows('is_serialized=quizá')['count'], 2)
+
+    def test_a_search_that_no_text_can_hold_matches_nothing(self):
+        """Review N9: the list answered 500 to `?search=a%00b`."""
+        self.product('Funda')
+        found = self.rows('search=a%00b')
+        self.assertEqual((found['count'], found['results']), (0, []))
+        self.assertEqual(self.rows('search=Funda')['count'], 1)
 
     def test_each_row_says_why_it_cannot_be_published(self):
         ready = self.product('Funda')
