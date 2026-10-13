@@ -270,6 +270,37 @@ class PreviewByNameTest(_Base):
         same = self.staged([picture('COD-A1.png', ONE)])
         self.assertEqual((self.row(same, self.phone)['action'], same['counts']['no_change']), ('no_change', 1))
 
+    def test_a_preview_keeps_waiting_only_the_pictures_it_will_place(self):
+        """
+        Review N13. Every preview stored its pictures again, also the ones that
+        were already in the gallery: a load of what is already there left
+        unplaced copies until the daily sweep.
+        """
+        self.loaded([picture('COD-A1.png', ONE)])
+        self.assertEqual(StorefrontImage.objects.count(), 1)
+
+        # Everything is already there: nothing will be placed, nothing waits.
+        same = self.staged([picture('COD-A1.png', ONE)])
+        self.assertEqual(same['counts']['no_change'], 1)
+        self.assertEqual(StorefrontImage.objects.count(), 1)
+        self.assertEqual(same['summary']['media']['staged'], 0)
+
+        # One is there and one is new: only the new one waits.
+        mixed = self.staged([picture('COD-A1.png', ONE), picture('COD-A1_2.png', TWO)])
+        self.assertEqual(StorefrontImage.objects.count(), 2)
+        self.assertEqual(mixed['summary']['media']['staged'], 1)
+        images = self.row(mixed, self.phone)['data']['images']
+        self.assertEqual([(image['existing'], bool(image['address'])) for image in images], [(True, False), (False, True)])
+        # And what waits is still what gets placed.
+        self.assertEqual(self.apply(mixed['id']).json()['summary']['applied']['images_added'], 1)
+        self.assertEqual(len(self.gallery(self.phone)), 2)
+        self.assertEqual(StorefrontImage.objects.count(), 2)
+
+        # Both are in the gallery now: previewing them again, however often, leaves nothing waiting.
+        for _ in range(3):
+            self.staged([picture('COD-A1.png', ONE), picture('COD-A1_2.png', TWO)])
+        self.assertEqual(StorefrontImage.objects.count(), 2)
+
     def test_the_same_picture_twice_for_one_product_goes_in_once(self):
         body = self.staged([picture('COD-A1.png', ONE), picture('COD-A1_2.png', ONE)])
         phone = self.row(body, self.phone)
@@ -581,6 +612,34 @@ class ApplyAddTest(_Base):
         self.assertEqual(response.status_code, 400)
         self.assertIn('El catálogo cambió', response.json()['detail'])
         self.assertEqual(ProductImage.objects.count(), 0)
+
+    def test_a_main_picture_or_an_order_that_changed_since_the_preview_stops_the_load(self):
+        """
+        Review N11. The same pictures with ANOTHER main one, or in another
+        order, is not the gallery the preview showed: «usar como principal»
+        would be moving a main picture somebody has just chosen.
+        """
+        self.loaded([picture('COD-A1.png', ONE), picture('COD-A1_2.png', TWO)])
+        first, second = self.gallery(self.phone)
+
+        body = self.staged([picture('COD-A1.png', THREE)], use_main='true')
+        ProductImage.objects.filter(pk=first.pk).update(is_primary=False)
+        ProductImage.objects.filter(pk=second.pk).update(is_primary=True)
+        response = self.apply(body['id'])
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('galería', response.json()['detail'])
+        self.assertEqual(len(self.gallery(self.phone)), 2)
+        self.assertTrue(ProductImage.objects.get(pk=second.pk).is_primary)
+
+        body = self.staged([picture('COD-A1.png', THREE)])
+        ProductImage.objects.filter(pk=first.pk).update(sort_order=5)          # the same two, the other way round
+        response = self.apply(body['id'])
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(len(self.gallery(self.phone)), 2)
+
+        # Previewed again, it goes in.
+        self.loaded([picture('COD-A1.png', THREE)])
+        self.assertEqual(len(self.gallery(self.phone)), 3)
 
     def test_a_gallery_that_changed_since_the_preview_stops_the_load(self):
         body = self.staged([picture('COD-A1.png', ONE)])

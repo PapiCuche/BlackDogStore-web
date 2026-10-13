@@ -83,6 +83,17 @@ function summary(over: Partial<api.ImportJob['summary']> = {}, ignoredNames: str
   };
 }
 
+/**
+ * What the server answers to APPLY: the job, applied, WITHOUT its rows — only
+ * the preview carries them (`_job_payload(job)` against `_job_payload(job, rows=True)`).
+ * The mock used to hand the rows back, and hid that the result had no links.
+ */
+function appliedAnswer(staged: api.ImportJob, applied: Record<string, number>): api.ImportJob {
+  const { rows: _onlyInThePreview, rows_truncated: _neither, ...rest } = staged;
+  void _onlyInThePreview; void _neither;
+  return { ...rest, status: 'applied', is_applicable: false, summary: { ...staged.summary, applied } };
+}
+
 async function open() {
   await act(async () => { render(<BulkImageImport companyId={7} />); });
 }
@@ -261,10 +272,8 @@ describe('aplicar', () => {
   it('añadir: se aplica ese trabajo y se dice lo que pasó, con enlace a cada galería', async () => {
     const staged = job([productRow()]);
     await previewed(staged);
-    mocked.applyImageImport.mockResolvedValueOnce({
-      ...staged, status: 'applied',
-      summary: { ...staged.summary, applied: { products: 1, images_added: 2, images_removed: 0, made_main: 0 } },
-    });
+    mocked.applyImageImport.mockResolvedValueOnce(
+      appliedAnswer(staged, { products: 1, images_added: 2, images_removed: 0, made_main: 0 }));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Añadir 2 imágenes' })); });
 
     expect(mocked.applyImageImport).toHaveBeenCalledWith(7, 31, undefined);
@@ -292,14 +301,13 @@ describe('aplicar', () => {
     fireEvent.change(word, { target: { value: 'REEMPLAZAR' } });
     expect(button).toBeEnabled();
 
-    mocked.applyImageImport.mockResolvedValueOnce({
-      ...staged, status: 'applied',
-      summary: { ...staged.summary, applied: { products: 1, images_added: 1, images_removed: 2, made_main: 0 } },
-    });
+    mocked.applyImageImport.mockResolvedValueOnce(
+      appliedAnswer(staged, { products: 1, images_added: 1, images_removed: 2, made_main: 0 }));
     await act(async () => { fireEvent.click(button); });
 
     expect(mocked.applyImageImport).toHaveBeenCalledWith(7, 31, 'REEMPLAZAR');
     expect(screen.getByRole('status')).toHaveTextContent('Se quitaron 2 imágenes y se añadió 1 imagen en 1 producto.');
+    expect(within(screen.getByRole('status')).getByRole('link', { name: 'Ver galería de Teléfono' })).toBeInTheDocument();
   });
 
   it('añadir no pide ninguna palabra', async () => {
@@ -320,7 +328,8 @@ describe('aplicar', () => {
   it('«Empezar otra carga» deja la pantalla como al principio', async () => {
     const staged = job([productRow()]);
     await previewed(staged);
-    mocked.applyImageImport.mockResolvedValueOnce({ ...staged, status: 'applied', summary: { ...staged.summary, applied: { products: 1, images_added: 2, images_removed: 0, made_main: 0 } } });
+    mocked.applyImageImport.mockResolvedValueOnce(
+      appliedAnswer(staged, { products: 1, images_added: 2, images_removed: 0, made_main: 0 }));
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Añadir 2 imágenes' })); });
     fireEvent.click(screen.getByRole('button', { name: 'Empezar otra carga' }));
 

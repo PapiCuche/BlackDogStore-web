@@ -43,7 +43,8 @@ primary flag and the reference count that protects a placed image from the
 daily sweep. What a replacement removes goes through `product_media` too.
 
 Apply is all or nothing, once, with the job and then every product locked in
-id order, and it stops if the catalogue or a gallery is not what the preview saw.
+id order, and it stops if the catalogue or a gallery (its pictures, their order
+or its main one) is not what the preview saw.
 """
 
 from __future__ import annotations
@@ -273,7 +274,7 @@ def _preview(*, company, actor, bundle, upload, filename, mode, use_main, stager
         data = {
             'product_id': plan['product_id'], 'name': product.name if product else '',
             'code': plan['code'], 'barcode': plan['barcode'],
-            'images': [], 'gallery_count': 0, 'gallery_ids': [], 'will_add': 0, 'will_remove': 0, 'main': '',
+            'images': [], 'gallery_count': 0, 'gallery_state': [], 'will_add': 0, 'will_remove': 0, 'main': '',
         }
         if product is not None:
             gallery = list(
@@ -314,7 +315,10 @@ def _preview(*, company, actor, bundle, upload, filename, mode, use_main, stager
                     chosen['primary'] = True
                     data['main'] = chosen['name']
             data.update(
-                images=images, gallery_count=len(gallery), gallery_ids=[image['pk'] for image in gallery],
+                images=images, gallery_count=len(gallery),
+                # The gallery as the preview saw it: which pictures, in which
+                # order, and which is the main one. Apply compares all three.
+                gallery_state=[[image['pk'], image['is_primary']] for image in gallery],
                 will_add=will_add, will_remove=will_remove,
             )
             already_present += sum(1 for image in images if image['existing'])
@@ -343,12 +347,19 @@ def _preview(*, company, actor, bundle, upload, filename, mode, use_main, stager
             warnings=[item['sentence']],
         ))
 
-    if counts['error']:
-        # A job with errors cannot be applied, so the pictures stored for it
-        # have no future. Removed now rather than left for the daily sweep.
-        stager.discard()
-        for row in staged:
-            for image in (row.normalized_data or {}).get('images', []):
+    # ONLY WHAT WILL BE PLACED KEEPS WAITING. A job with errors cannot be
+    # applied, so nothing of it has a future; and in a job that can, a picture
+    # that is already in its gallery (or belongs to a row that changes nothing)
+    # was stored only to learn what it is. Removed now, not left for the sweep.
+    needed = set() if counts['error'] else {
+        image['address']
+        for row in staged if row.action == BulkImportRow.UPDATE
+        for image in row.normalized_data.get('images', []) if not image['existing']
+    }
+    stager.keep_only(needed)
+    for row in staged:
+        for image in (row.normalized_data or {}).get('images', []):
+            if image['address'] not in needed:
                 image['address'] = None
 
     summary = {
@@ -427,9 +438,9 @@ def apply_images(*, job, actor, confirmation='', request=None):
         owner, match_error, _by, _warnings = index.match(barcode=data.get('barcode', ''), code=data.get('code', ''))
         if product is None or match_error or owner != product.pk:
             raise ImageImportError(_STALE_CATALOGUE.format(row=row.row_number, name=data.get('name', '')))
-        now = list(ProductImage.objects.filter(company=company, product=product).order_by('sort_order', 'pk')
-                   .values_list('pk', flat=True))
-        if now != data.get('gallery_ids', []):
+        now = [list(pair) for pair in ProductImage.objects.filter(company=company, product=product)
+               .order_by('sort_order', 'pk').values_list('pk', 'is_primary')]
+        if now != data.get('gallery_state', []):
             raise ImageImportError(_STALE_GALLERY.format(name=product.name))
 
     added = removed = made_main = touched = 0

@@ -125,7 +125,11 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
     setBusy("apply");
     setError(null);
     try {
-      setJob(await applyImageImport(companyId, job.id, replacing ? word : undefined));
+      const done = await applyImageImport(companyId, job.id, replacing ? word : undefined);
+      // The answer to apply is the job WITHOUT its rows: only the preview
+      // carries them. The result links to each product's gallery, so the rows
+      // of the preview are kept.
+      setJob({ ...done, rows: done.rows ?? job.rows });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No se pudieron aplicar las imágenes.");
     } finally {
