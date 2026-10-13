@@ -92,6 +92,7 @@ from .import_views import (
     AdminUnitImportTemplateView,
     AdminStockImportPreviewView,
 )
+from .inventory_export_views import AdminInventoryExportsView
 from .promotion_views import (
     AdminCouponView,
     AdminPosCombosView,
@@ -417,6 +418,8 @@ urlpatterns = [
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
+    # INVENTORY-UNIFIED-01: the catalogue, the quantities, the devices and all three in a ZIP.
+    path('admin/inventory/exports/<str:kind>/', AdminInventoryExportsView.as_view(), name='admin-inventory-exports'),
     path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
     path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
     path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),

@@ -288,6 +288,45 @@ def load_workbook(data: bytes):
 
 
 # --------------------------------------------------------------------------
+# Text that a spreadsheet would run
+# --------------------------------------------------------------------------
+
+#: A text cell that starts with one of these is what Excel, LibreOffice or a
+#: CSV round trip may evaluate as a formula. A product called `=HYPERLINK(…)`
+#: is a tenant's data on its way to an administrator's desktop.
+FORMULA_TRIGGERS = ('=', '+', '-', '@', '\t', '\r')
+#: What neutralises it: a leading apostrophe, which every spreadsheet reads as
+#: «this is text».
+FORMULA_GUARD = "'"
+
+
+def _needs_guard(text: str) -> bool:
+    # Past any apostrophes already there, so a value that BEGINS with one and
+    # then a trigger gets its own guard and comes back exactly as it was.
+    return text.lstrip(FORMULA_GUARD)[:1] in FORMULA_TRIGGERS
+
+
+def guard_text(text: str) -> str:
+    """`text` as it is safe to WRITE in a cell of a file we hand out."""
+    if text and (text[0] in FORMULA_TRIGGERS or (text[0] == FORMULA_GUARD and _needs_guard(text))):
+        return FORMULA_GUARD + text
+    return text
+
+
+def unguard_text(text: str) -> str:
+    """
+    The value `guard_text` was given, from what a cell holds.
+
+    ONE apostrophe comes off, and only in front of a trigger: a name that
+    simply starts with an apostrophe is left alone. This is what lets a file
+    we exported go back through an importer and name the same products.
+    """
+    if text[:1] == FORMULA_GUARD and _needs_guard(text):
+        return text[1:]
+    return text
+
+
+# --------------------------------------------------------------------------
 # Reading values
 # --------------------------------------------------------------------------
 
@@ -422,6 +461,10 @@ def read_rows(workbook, sheet_name: str, *, header_row: int = 1,
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
                 numeric.add(index)
             text = normalize_scalar(raw)
+            if isinstance(raw, str):
+                # The guard our own exports put in front of text a spreadsheet
+                # would run. A cell that IS a formula never gets here.
+                text = unguard_text(text).strip()
             if text != '':
                 values[index] = text
             else:

@@ -87,6 +87,29 @@ PRODUCT_TEMPLATE_EXAMPLE = [
 HELP_SHEETS = frozenset({'instrucciones', 'ejemplo', 'ejemplos', 'ayuda', 'categorias'})
 
 
+#: INVENTORY-UNIFIED-01 — the sheets of the REPORTS (`store.inventory_exports`).
+#: A report carries columns that are only read; uploading one would silently
+#: drop them, so every importer refuses these sheets by name and points at the
+#: file that IS made to be loaded.
+REPORT_SHEETS = {
+    'products': 'Reporte de productos',
+    'stock': 'Reporte de stock',
+    'units': 'Reporte de equipos',
+}
+
+
+def report_sheet_refusal(name) -> str:
+    """Why `name` cannot be imported, when it is the sheet of a report. Empty otherwise."""
+    from .import_formats import normalize_header
+
+    if normalize_header(str(name or '')) not in {normalize_header(title) for title in REPORT_SHEETS.values()}:
+        return ''
+    return (
+        f'«{name}» es un reporte: sirve para leer y no se importa. '
+        'Descarga el archivo «para volver a cargar» y sube ese.'
+    )
+
+
 def is_template_help_row(fields: dict) -> bool:
     """
     The row under the headers that says what each column is.
@@ -342,31 +365,18 @@ def product_template_bytes(company=None) -> bytes:
     return buffer.getvalue()
 
 
-def inventory_export_bytes(*, company, branches, include_quantities: bool) -> bytes:
+INVENTORY_EXPORT_SHEET = 'Inventario'
+INVENTORY_EXPORT_HEADERS = ['CODIGO', 'CODIGO EAN', 'NOMBRE']
+
+
+def product_codes(company) -> dict[int, dict[str, str]]:
     """
-    The catalogue with one column per branch, for counting and re-uploading.
+    product id -> `{'internal': code, 'external': code}`, the active codes only.
 
-    The header row is `CODIGO · CODIGO EAN · NOMBRE`, matching the shape the
-    importer already recognises, plus one `<branch name>` column per branch. The
-    result re-imports through the same detector as any other file.
+    One code of each kind: the first in the model's own order (the primary
+    one, then by code). What an export writes under «Código» and under
+    «Código de barras» is decided HERE, for every file.
     """
-    from openpyxl.styles import Font, PatternFill
-
-    branches = list(branches)
-    workbook = _workbook()
-    sheet = workbook.active
-    sheet.title = 'Inventario'
-
-    headers = ['CODIGO', 'CODIGO EAN', 'NOMBRE'] + [f'ALMACEN {b.name}' for b in branches]
-    header_fill = PatternFill('solid', fgColor='1F2937')
-    for column, title in enumerate(headers, start=1):
-        cell = sheet.cell(row=1, column=column, value=title)
-        cell.font = Font(bold=True, color='FFFFFF')
-        cell.fill = header_fill
-
-    products = list(
-        Product.objects.filter(company=company, is_active=True).order_by('name')
-    )
     codes: dict[int, dict[str, str]] = {}
     for product_id, code, symbology in ProductBarcode.objects.filter(
         company=company, is_active=True,
@@ -376,26 +386,84 @@ def inventory_export_bytes(*, company, branches, include_quantities: bool) -> by
             slot.setdefault('internal', code)
         else:
             slot.setdefault('external', code)
+    return codes
 
+
+def inventory_export_table(*, company, branches, include_quantities: bool, products=None):
+    """
+    The inventory sheet as data: `(headers, rows)`.
+
+    `CODIGO · CODIGO EAN · NOMBRE` plus one `ALMACEN <branch name>` column per
+    branch — the shape the stock importer reads. A row is
+    `[internal code, external code, name, quantity per branch…]`; a quantity is
+    None when the sheet is asked for blank.
+
+    `products` narrows which products are listed (a queryset of this company's
+    products). Without it: the active ones, as this export always did.
+    """
+    branches = list(branches)
+    headers = INVENTORY_EXPORT_HEADERS + [f'ALMACEN {b.name}' for b in branches]
+    if products is None:
+        products = Product.objects.filter(company=company, is_active=True)
+    products = list(products.order_by('name'))
+    codes = product_codes(company)
     quantities = {
         (b, p): q
         for b, p, q in BranchStock.objects
         .filter(branch__in=branches)
         .values_list('branch_id', 'product_id', 'quantity')
     }
-
-    for index, product in enumerate(products, start=2):
+    rows = []
+    for product in products:
         slot = codes.get(product.pk, {})
+        rows.append([
+            slot.get('internal', ''), slot.get('external', ''), product.name,
+            *[
+                quantities.get((branch.pk, product.pk), 0) if include_quantities else None
+                for branch in branches
+            ],
+        ])
+    return headers, rows
+
+
+def inventory_export_bytes(*, company, branches, include_quantities: bool) -> bytes:
+    """
+    The catalogue with one column per branch, for counting and re-uploading.
+
+    The header row is `CODIGO · CODIGO EAN · NOMBRE`, matching the shape the
+    importer already recognises, plus one `<branch name>` column per branch. The
+    result re-imports through the same detector as any other file.
+
+    The rows are `inventory_export_table`'s; this is how they are laid out for
+    `GET /api/admin/inventory/export/`, which answers as it always did.
+    """
+    from openpyxl.styles import Font, PatternFill
+
+    branches = list(branches)
+    workbook = _workbook()
+    sheet = workbook.active
+    sheet.title = INVENTORY_EXPORT_SHEET
+
+    headers, rows = inventory_export_table(
+        company=company, branches=branches, include_quantities=include_quantities,
+    )
+    header_fill = PatternFill('solid', fgColor='1F2937')
+    for column, title in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=column, value=title)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = header_fill
+
+    for index, (internal, external, name, *quantities) in enumerate(rows, start=2):
         # Written as TEXT, always. A code stored as a number is how the owner's
         # own file lost the ability to keep a leading zero, and re-exporting the
         # same trap would repeat the damage on every round trip.
-        sheet.cell(row=index, column=1, value=slot.get('internal', '')).number_format = '@'
-        sheet.cell(row=index, column=2, value=slot.get('external', '')).number_format = '@'
-        sheet.cell(row=index, column=3, value=product.name)
-        for offset, branch in enumerate(branches):
+        sheet.cell(row=index, column=1, value=internal).number_format = '@'
+        sheet.cell(row=index, column=2, value=external).number_format = '@'
+        sheet.cell(row=index, column=3, value=name)
+        for offset, quantity in enumerate(quantities):
             cell = sheet.cell(row=index, column=4 + offset)
-            if include_quantities:
-                cell.value = quantities.get((branch.pk, product.pk), 0)
+            if quantity is not None:
+                cell.value = quantity
             # else: left EMPTY, which the importer reads as "do not change" —
             # so a sheet that comes back with only twelve lines filled in moves
             # exactly twelve stocks.

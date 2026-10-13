@@ -434,6 +434,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     workbook, reader_notes = xlsx_reader.load_workbook(data)
 
     sheet_name = sheet_name or workbook.sheetnames[0]
+    refusal = import_exports.report_sheet_refusal(sheet_name)
+    if refusal:
+        # INVENTORY-UNIFIED-01: a report is read, not loaded. Before anything is staged.
+        raise ImportError_(refusal)
     if import_exports.is_help_sheet(sheet_name):
         # The «Instrucciones» and «Ejemplo» of the previous template. Refused before anything
         # is staged: an example must not become catalogue because somebody

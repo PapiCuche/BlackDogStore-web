@@ -31,7 +31,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from . import stock_unit_services, xlsx_reader
-from .import_exports import _autosize, _header_row, _workbook
+from .import_exports import _autosize, _header_row, _workbook, report_sheet_refusal
 from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
@@ -202,6 +202,10 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     data = xlsx_reader.check_upload(upload, filename=filename)
     workbook, _notes = xlsx_reader.load_workbook(data)
     sheet_name = _pick_sheet(workbook)
+    refusal = report_sheet_refusal(sheet_name)
+    if refusal:
+        # INVENTORY-UNIFIED-01: a report is read, not loaded. Before anything is staged.
+        raise UnitImportError(refusal)
     try:
         headers, rows, _truncated = xlsx_reader.read_rows(
             workbook, sheet_name, header_row=1, limit=MAX_UNITS + 1, mode=xlsx_reader.FULL_IMPORT,
