@@ -37,6 +37,7 @@ import {
 } from "../../components/InternalControlGuard";
 import { DashboardSection } from "../../components/dashboard-ui";
 import { ImportKindNotice } from "../../components/ImportKindNotice";
+import { InventoryExports } from "../../components/InventoryExportPanel";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import {
   CountsBar,
@@ -57,6 +58,7 @@ import {
   type InspectResult,
   type InspectedSheet,
 } from "../../lib/internal-api";
+import { buildInternalAccess } from "../../lib/internal-access";
 
 const PRIMARY = internalPrimaryButtonClass;
 const DANGER = "rounded-xl bg-amber-300 px-4 py-2.5 text-sm font-bold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-40";
@@ -69,6 +71,11 @@ function text(row: { data: Record<string, unknown> }, key: string) {
 
 function StockImportScreen({ ctx }: { ctx: InternalContext }) {
   const companyId = ctx.selectedCompanyId;
+  // Lo que se ofrece para exportar. La autoridad es del servidor: esto sólo
+  // evita enseñar una descarga que respondería 403.
+  const access = buildInternalAccess(ctx.user, ctx.dashboard);
+  const canExportCatalogue = access.can("products.view", ["inventory", "sales", "admin", "superadmin"]);
+  const canExportInventory = access.can("inventory.view", ["inventory", "admin", "superadmin"]);
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResult | null>(null);
@@ -241,6 +248,23 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
               </p>
             </div>
           </DashboardSection>
+
+          {/* INVENTORY-UNIFIED-01 — el catálogo, el stock y los equipos, cada uno
+              en su archivo. Aquí por ahora, junto a la descarga de siempre: una
+              pantalla propia de gestión masiva lo montará igual. */}
+          {canExportCatalogue || canExportInventory ? (
+            <DashboardSection
+              title="Exportar"
+              description="El catálogo, el stock por sucursal y los equipos con serie: para volver a cargar o como reporte."
+            >
+              <InventoryExports
+                companyId={companyId}
+                canCatalogue={canExportCatalogue}
+                canInventory={canExportInventory}
+                canSeeCost={access.can("inventory.adjust", ["inventory", "admin", "superadmin"])}
+              />
+            </DashboardSection>
+          ) : null}
         </>
       )}
 

@@ -77,8 +77,7 @@ describe('la línea de un producto que ya no se vende', () => {
   });
 
   it('una respuesta de antes, sin la marca, es una línea en venta', () => {
-    const { available: _available, ...legacy } = ON_SALE;
-    render(<CartItemCard {...legacy} />);
+    render(<CartItemCard id={ON_SALE.id} quantity={ON_SALE.quantity} product={ON_SALE.product} />);
     expect(screen.queryByText('Ya no está disponible')).toBeNull();
     expect(screen.getByRole('spinbutton')).toBeInTheDocument();
   });
