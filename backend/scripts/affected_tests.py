@@ -48,10 +48,11 @@ REPO = BACKEND.parent
 
 #: Files OUTSIDE backend/ that a backend test reads, and who reads them (a test
 #: module, or one class of it). A change to one of these can turn the backend
-#: suite red. `store/test_affected_tests.py` fails if a test module spells out a
-#: path that is not here, or if a reader named here stopped existing. (The list
-#: comes from running the whole suite under an audit hook on `open` and
-#: `os.scandir`.)
+#: suite red, so each pattern is also a path filter of the backend workflow:
+#: `store/test_ci_workflow.py` fails if one is missing there, and
+#: `store/test_affected_tests.py` fails if a test module spells out a path that
+#: is not here, or if a reader named here stopped existing. (The list comes from
+#: running the whole suite under an audit hook on `open` and `os.scandir`.)
 EXTERNAL_INPUTS: dict[str, tuple[str, ...]] = {
     'deploy/**': (
         'store.test_deploy_scripts',
@@ -63,11 +64,12 @@ EXTERNAL_INPUTS: dict[str, tuple[str, ...]] = {
     'docs/internal-parity-matrix.md': ('store.tests.Ip1ParityManifestTest',),
     'frontend/app/admin/**': ('store.tests.H412bFrontendLegacyRoleParityTest',),
     'frontend/app/auth/components/DevQuickLogin.tsx': ('store.tests.DemoAccountsSingleSourceTest',),
+    '.github/workflows/backend-postgres-validation.yml': ('store.test_ci_workflow',),
 }
 
 #: Inside backend/, but reached by path instead of by import.
 READ_BY_PATH: dict[str, tuple[str, ...]] = {
-    'backend/scripts/*': ('store.test_ci_shards', 'store.test_affected_tests'),
+    'backend/scripts/*': ('store.test_ci_shards', 'store.test_affected_tests', 'store.test_ci_workflow'),
 }
 
 #: Reach every test: no selection is honest for these.
