@@ -217,10 +217,19 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'product', 'quantity', 'price']
 
     def to_representation(self, instance):
-        data = super().to_representation(instance)
-        if not instance.product.is_sold_online:
-            data['product'] = closed_product_payload(instance.product)
-        return data
+        if instance.product.is_sold_online:
+            return super().to_representation(instance)
+        # Closed BEFORE the product is serialised, not after: the whole public
+        # payload (gallery, rating, stock) is not built just to be thrown away.
+        # Same keys, same order, and the line's own fields rendered by their
+        # own serializer fields.
+        fields = self.fields
+        return {
+            'id': instance.pk,
+            'product': closed_product_payload(instance.product),
+            'quantity': fields['quantity'].to_representation(instance.quantity),
+            'price': fields['price'].to_representation(instance.price),
+        }
 
 
 class OrderSerializer(serializers.ModelSerializer):

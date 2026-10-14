@@ -1001,6 +1001,78 @@ class PublicExposureMatrixTest(TestCase):
                 _response, searched = self.slugs(f'{base}?search={product.name.split()[0]}')
                 self.assertEqual(searched, [])
 
+    def app(self):
+        """The buyer, signed in to the app of this company."""
+        _v1_customer(self.company, self.buyer)
+        app = APIClient()
+        token = app.post(
+            '/api/v1/auth/login/', {'email': 'expo@correo.test', 'password': 'Pass123!'}, format='json',
+        ).json()['access']
+        app.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        return app
+
+    def test_v1_my_orders_keep_the_line_and_close_the_product(self):
+        """
+        Owner's decision D6 (2026-10-13), second review. The app's order history
+        still gave the address (slug) of a product that left the web. The line
+        keeps what the ORDER recorded — how many, at what price — and of the
+        product as it is today only what the web's closed line carries: its
+        name and its picture. Every key the app reads stays there.
+        """
+        from store.serializers import closed_product_payload
+
+        app = self.app()
+        base = f'/api/v1/customer/{self.company.slug}/orders/'
+        listed = app.get(base)
+        detail = app.get(f'{base}{self.order.pk}/')
+        self.assertEqual((listed.status_code, detail.status_code), (200, 200), listed.content)
+        body = listed.json()
+        orders = body['results'] if isinstance(body, dict) else body
+        keys = ['id', 'product_name', 'product_slug', 'image_url', 'quantity', 'price']
+
+        for response, order in ((listed, orders[0]), (detail, detail.json())):
+            lines = {item['product_name']: item for item in order['items']}
+            # What IS on sale is exactly what it was.
+            sold = OrderItem.objects.get(order=self.order, product=self.on_sale)
+            self.assertEqual(lines['Cable Expo'], {
+                'id': sold.pk, 'product_name': 'Cable Expo', 'product_slug': 'cable-expo',
+                'image_url': self.on_sale.image_url, 'quantity': 3, 'price': '10.00',
+            })
+            for kind, product in self.gone.items():
+                with self.subTest(kind):
+                    line = lines[product.name]
+                    self.assertEqual(list(line), keys)                       # present, not missing
+                    self.assertEqual(line['product_slug'], '')               # empty, not the address
+                    self.assertEqual(line['image_url'], closed_product_payload(product)['image_url'])
+                    self.assertEqual((line['quantity'], line['price']), (3, '10.00'))
+                    self.assert_says_nothing(response, product, name_allowed=True)
+
+    def test_v1_categories_and_config_say_nothing_of_them(self):
+        for path in ('categories/', 'config/'):
+            response = self.client.get(f'/api/v1/storefront/{self.company.slug}/{path}')
+            self.assertEqual(response.status_code, 200, response.content)
+            for kind, product in self.gone.items():
+                with self.subTest(path=path, kind=kind):
+                    self.assert_says_nothing(response, product)
+
+    def test_a_closed_line_of_the_web_does_not_build_the_whole_product_first(self):
+        """Second review (ORDER-LINE-CLOSED-WASTE): it serialised the product and threw it away."""
+        from store.serializers import OrderItemSerializer, ProductSerializer
+
+        built = []
+        original = ProductSerializer.to_representation
+
+        def spy(serializer, instance):
+            built.append(instance.pk)
+            return original(serializer, instance)
+
+        items = list(OrderItem.objects.filter(order=self.order).select_related('product').order_by('pk'))
+        with patch.object(ProductSerializer, 'to_representation', spy):
+            data = OrderItemSerializer(items, many=True).data
+        self.assertEqual(built, [self.on_sale.pk])
+        self.assertEqual([list(line) for line in data], [['id', 'product', 'quantity', 'price']] * 3)
+        self.assertEqual([line['price'] for line in data], ['10.00'] * 3)
+
     @override_settings(**IZIPAY_TEST_SETTINGS)
     def test_v1_checkout(self):
         user = User.objects.create_user('expo_app', 'expo_app@example.com', 'Pass123!')
