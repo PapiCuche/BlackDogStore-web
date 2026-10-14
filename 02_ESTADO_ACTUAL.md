@@ -219,6 +219,113 @@ INV-EXPORT-IMPORT-LIMITS, INV-EXPORT-NAME-MATCH, INV-EXPORT-SYNC, INV-EXPORT-THR
 INV-EXPORT-LEGACY-BRIDGE-UI, INV-REPORT-RENAMED-SHEET, IMPORT-UNGUARD, BULK-VIS-CAP,
 BULK-VIS-FORM-HINT, CART-UNAVAILABLE-COUNT, P0E-CART-RACE-ORDER.
 
+## 2026-10-13 — CI-OPTIMIZATION-01: auditoría de GitHub Actions y suite del backend en fragmentos
+
+Rama `chore/ci-optimization` (desde `14e658c`), commits locales, **sin push**: PARCIAL hasta que corra en
+GitHub. Sólo CI, dos scripts de desarrollo y sus pruebas. Cómo queda organizado: `docs/CODEBASE_MAP.md` § CI.
+
+**Auditoría (85 runs del backend, 2026-10-02 → 10-13).** El paso de tests es más del 99 % del trabajo;
+checkout, Python, `pip` (caché ya activa, acierta) y migraciones (~30 s) suman menos de 1 min. 60 runs
+verdes: mediana 72 min, de 43 a 99, bimodal según la máquina que toca (los últimos 30: mediana 82). 21
+cancelados, 10 de ellos en `master` (el grupo de concurrencia cancelaba también ahí: el 2026-10-11, de
+siete merges seguidos sólo se probó el último). El 28 % de los minutos son runs verdes de `master`, que
+con el PR al día repiten el árbol que ese PR ya validó. Frontend: 1–2 min; su caché de npm nunca se guardaba donde otro PR
+pudiera leerla. `master` no tiene protección de rama ni checks obligatorios.
+
+| | Antes (medido) | Después |
+|---|---|---|
+| Backend, un run en GitHub | mediana 72 min (43–99) | **esperado** 12–20 min: 6 fragmentos a la vez; sin medir hasta el primer push |
+| Aviso de un fallo | a los 15–73 min, un solo trabajo | cada fragmento informa por separado, con su lista de fallos en el resumen |
+| Suite completa en local, un proceso | 6747 tests, 2285 s (38 min) | igual; los 6 fragmentos uno tras otro: 6783 tests, 2316 s |
+| Fragmento más pesado / media (local) | — | 394 s / 386 s medido en el primer reparto; 385 s / 383 s por pesos en el definitivo |
+| Runs de `master` cancelados | 10 de 30 | 0 (cada merge se valida) |
+| Disparo por `deploy/**`, `frontend/app/admin/**`… | no | sí (los leen tests del backend) |
+
+**Equivalencia.** Descubrimiento del runner: 923 clases, 6791 tests (6747 + 44 nuevos), ningún id
+repetido. De 1 a 16 fragmentos, la unión es la suite y ninguna clase está en dos; las etiquetas de cada
+fragmento cargan por el runner exactamente sus tests; cada fragmento conserva el orden de la suite
+entera. Corridos en local los seis fragmentos del primer reparto: 1141 + 1039 + 1057 + 1054 + 1405 +
+1087 = 6783 = la suite de ese commit, 6 omitidos como en la corrida entera, y **un error**, que es el
+hallazgo de abajo. Del reparto definitivo (`5f22aff`) se corrieron de punta a punta dos fragmentos: el 6,
+que lleva las 24 clases que vacían la base (1120 tests, 374 s, OK), y el 3, el más numeroso (1566 tests,
+385 s, OK); en los dos, «Ran» coincide con lo repartido. 22 mutaciones deliberadas de los scripts y del
+workflow (quitar un fragmento de la matriz, una puerta que se puede saltar, una clase en dos fragmentos,
+un import roto que se calla, un archivo externo olvidado…): las pruebas de guarda detectan todas.
+
+**Hallazgo: dependencia de orden que la suite entera esconde.** `store.tests.C15InitialRaceTest`
+(`TransactionTestCase` con `reset_sequences`) sólo pasa si antes corrió otra clase que vacía la base; sola
+falla con «duplicate key store_company_pkey (id)=(1)» — también en `master`, a mano. Hay cinco clases
+así. No se tocó ningún test: las 24 `TransactionTestCase` van siempre juntas al último fragmento, en el
+orden de la suite, y el reparto dejó de depender de qué otras clases existen (añadir un test no mueve a
+ningún otro). Queda como deuda **TEST-TTC-RESET-SEQ** (PENDIENTE, baja): que esas cinco clases no
+dependan de que otra limpie antes.
+
+**Lo que no se implementó, y por qué.**
+- `--parallel`: en un subconjunto de 601 tests (7 clases de concurrencia real) pasa y va 3,7× más rápido,
+  pero aquí arranca procesos con `spawn` y el CI con `fork`: no es prueba. PROPUESTA.
+- Hasher de contraseñas rápido en tests: ~74 % del tiempo medido en tres módulos es PBKDF2 (229 tests,
+  150,6 s → 39,3 s con MD5, todos verdes). Cambia lo que ejercitan los tests de autenticación: decisión
+  del propietario. PROPUESTA **TEST-HASHER**.
+- Saltarse en `master` la suite de un árbol idéntico al del PR: ahorra minutos, no tiempo de espera, y
+  añade lógica que podría saltarse algo. No.
+
+**Del propietario.** Nada en los ajustes de GitHub para mergear esto (no hay checks obligatorios y el
+nombre `Django tests on PostgreSQL` se conserva). Si algún día se exigen checks, ver la advertencia de
+`docs/CODEBASE_MAP.md` § CI sobre los filtros por ruta.
+
+**Sin verificar hasta el push.** La duración real; la sintaxis del workflow en GitHub (no hay
+`actionlint` aquí: se analizó el YAML y se contrastaron las expresiones con la documentación); Python
+3.12 y PostgreSQL 16 (en local: 3.14 y 14); los fragmentos 1, 2, 4 y 5 del reparto definitivo de punta
+a punta.
+
+## 2026-10-13 — #110 y #111 en `master` y desplegados
+
+**#111 (CLIENT-SEC-01 fase 1 y base de DELIVERY-01)** se fusionó con commit de merge y CI
+verde en `c76317e`. `master` quedó en `14e658c`, con el mismo árbol: el que pasó la
+suite completa (6747, 0 fallos, 6 omitidas), el ensayo (`ENSAYO: OK`) y cuatro
+revisiones independientes, la última sin P0 ni P1.
+
+**Desplegado el 2026-10-13, 15:35 (Lima).** El servidor pasó de `dfc817a` a `14e658c`
+siguiendo `docs/despliegue-produccion.md` §7: copia previa `db-20261013-152521.sql.gz` y
+`evidence-20261013-152521.tar.gz`, imágenes construidas con la web en línea, `migrate
+--plan` con cuatro operaciones (`0118`–`0121`), `migrate` sin incidencias, contenedores
+reemplazados y sanos, `deploy/healthcheck.sh` en verde, `manage.py check` sin
+incidencias y sin errores en el registro. El `deploy/Caddyfile` local del servidor no
+cambió. No se tocó la pasarela ni ninguna variable.
+
+**Antes de migrar:** 5 pedidos en línea (2 pagados, 3 por pagar), 5 intentos de pago, 1
+cliente, 6 usuarios; pasarela «Mi Cuenta Web» en TEST. La copia previa se restauró en un
+PostgreSQL desechable sin red; sobre esa copia, con la imagen nueva, `0118`–`0121` se
+aplicaron, se deshicieron y se aplicaron otra vez, y tras deshacerlas el esquema es
+idéntico al de `0117`.
+
+**Lo que hicieron las migraciones aquí:** un registro de entrega por cada uno de los 5
+pedidos (los cinco «recojo en tienda») y «correo verificado» en 2 cuentas. Pedidos,
+totales (S/ 24 950,00), pagos e intentos, iguales que antes. Ninguna evaluación de
+riesgo: se crean con los pedidos nuevos.
+
+**Vuelta atrás.** Lo recomendado es volver sólo los contenedores a las imágenes
+guardadas como `rollback-dfc817a` y dejar las migraciones aplicadas: el código anterior
+funciona sobre el esquema nuevo. Revertir el esquema (`migrate store 0117` con la
+imagen nueva) borra transportistas, libretas, registros de entrega, evaluaciones y
+decisiones; sólo como último recurso y con la copia previa a mano.
+
+**Comprobado en producción después**, sin sesión y sin enviar formularios: tienda,
+carrito, checkout, «Mi cuenta», pedidos y panel responden 200; el perfil, la libreta de
+direcciones, los transportistas, la entrega y la revisión de un pedido responden 401
+sin sesión; las rutas de pago responden 405 a una lectura. `PAYMENTS_PUBLIC_TEST`
+apagado; la retención de envíos y el importe de revisión, sin configurar.
+
+**#110 («Mi Cuenta Web»)** estaba desplegado desde el 2026-10-11, 22:46 (Lima), de
+`3057dd2` a `dfc817a`, con la migración `0117`; no quedó escrito entonces. El 12 de
+octubre el propietario escribió sus claves de TEST en la consola y completó pagos de
+prueba con Mastercard y American Express; con VISA la autenticación 3DS de la tienda en
+TEST falla en Izipay (`PSP_727`), también en el formulario mínimo oficial.
+
+**Falta, y sólo puede hacerlo el propietario con su sesión:** abrir «Mi cuenta»,
+verificar el correo con el código, guardar una dirección, y en el panel revisar un
+pedido y completar su entrega con transportista y guía.
+
 ## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
 
 Misma rama (`feat/client-sec-delivery`, PR #111, detenido hasta estos ajustes). La revisión de
@@ -435,7 +542,7 @@ la cabecera con el enlace nuevo no se midió en un navegador (por eso sólo apar
 
 Rama `feat/izipay-smartform-v4` (PR #110). **Sin migración, sin rutas, sin ajustes
 nuevos.** La auditoría dio por cumplidos los puntos de aceptación; quedaban seis defectos
-pequeños. No desplegado. Nada se probó contra la pasarela real.
+pequeños. En `master` y desplegado el 2026-10-11 (`dfc817a`). Nada se probó contra la pasarela real.
 
 | | Defecto | Estado |
 |---|---|---|
@@ -507,7 +614,7 @@ Playwright ni el ensayo Docker.
 
 Rama `feat/izipay-smartform-v4`. **Con migración (`0117_payment_attempt_origin`). Sin
 rutas nuevas. Sin dependencias nuevas.** Decisiones: DEC-PAY-04, DEC-PAY-05, DEC-PAY-06.
-No desplegado. **Nada se probó contra la pasarela real: no hay credenciales.**
+En `master` y desplegado el 2026-10-11 (`dfc817a`). **Nada se probó contra la pasarela real: no hay credenciales.**
 
 **1. Un cambio de pasarela que dejaría un cobro sin confirmar no se hace** (DEC-PAY-04).
 Activar el otro producto, apagar o revocar el que cobra, cambiar de tienda o de entorno:
@@ -567,7 +674,7 @@ de backend, Playwright ni el ensayo Docker.
 ## 2026-10-11 — IZIPAY-MCW-AUDIT-01: «Mi Cuenta Web» contra su documentación, y la consulta que faltaba
 
 Rama `feat/izipay-smartform-v4`. **Sin migración. Sin rutas nuevas. Sin dependencias
-nuevas.** Decisión: DEC-PAY-03. No desplegado. **Nada se probó contra la pasarela real:
+nuevas.** Decisión: DEC-PAY-03. En `master` y desplegado el 2026-10-11 (`dfc817a`). **Nada se probó contra la pasarela real:
 no hay credenciales.**
 
 Se leyó la documentación oficial de la API REST V4 (inicio rápido del SmartForm, claves,

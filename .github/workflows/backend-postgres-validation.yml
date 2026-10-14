@@ -1,34 +1,65 @@
 name: Backend PostgreSQL Validation
 
+# The whole Django suite, on PostgreSQL, on every pull request and on master.
+# Nothing here selects tests by what changed: the path filters only decide
+# whether the suite runs at all, and when it runs, it runs whole.
+#
+# The paths are `backend/**` plus every file OUTSIDE backend/ that a backend
+# test reads (the list is EXTERNAL_INPUTS in backend/scripts/affected_tests.py;
+# backend/store/test_ci_shards.py fails if one of them is missing below). A pull
+# request that touches only documentation starts nothing.
 on:
   pull_request:
     branches:
       - master
     paths:
       - "backend/**"
+      - "deploy/**"
+      - "docker-compose.prod.yml"
+      - "docs/internal-parity-matrix.md"
+      - "frontend/app/admin/**"
+      - "frontend/app/auth/components/DevQuickLogin.tsx"
       - ".github/workflows/backend-postgres-validation.yml"
   push:
     branches:
       - master
     paths:
       - "backend/**"
+      - "deploy/**"
+      - "docker-compose.prod.yml"
+      - "docs/internal-parity-matrix.md"
+      - "frontend/app/admin/**"
+      - "frontend/app/auth/components/DevQuickLogin.tsx"
       - ".github/workflows/backend-postgres-validation.yml"
 
 permissions:
   contents: read
 
+# A newer push to a pull request makes the run of the older commit pointless:
+# it is cancelled. A push to master is never cancelled and never waits behind
+# another one (its group is its own run): every merge commit is validated.
 concurrency:
-  group: backend-postgres-${{ github.ref }}
-  cancel-in-progress: true
+  group: backend-postgres-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  backend:
-    name: Django tests on PostgreSQL
+  # The suite, dealt into shards that run side by side. Each one is an ordinary
+  # `manage.py test` — same settings, same TEST_RUNNER, same PostgreSQL, one
+  # process — given the labels `scripts/ci_shards.py` deals to it. The number of
+  # shards is the length of the list below and nothing else: the script is told
+  # `strategy.job-total`. backend/store/test_ci_shards.py, which is part of the
+  # suite, proves on every run that the shards are disjoint and add up to it.
+  shards:
+    name: Django shard ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
-    # The full suite takes about 27 minutes on a developer laptop and did not
-    # finish in 35 on a hosted runner (run 36976127633 was cancelled by the
-    # limit, not by a failing test). It runs in one process on purpose.
-    timeout-minutes: 120
+    # A shard is a sixth of a suite that took 50 to 100 minutes in one process,
+    # depending on the machine GitHub hands out.
+    timeout-minutes: 45
+    strategy:
+      # Every shard reports: one failure must not hide the failures of the rest.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
 
     services:
       postgres:
@@ -57,6 +88,8 @@ jobs:
       EMAIL_BACKEND: "django.core.mail.backends.locmem.EmailBackend"
       FISCAL_ENABLED: "0"
       FISCAL_ENVIRONMENT: "beta"
+      SHARD: ${{ matrix.shard }}
+      SHARD_TOTAL: ${{ strategy.job-total }}
 
     steps:
       - name: Checkout
@@ -78,5 +111,41 @@ jobs:
       - name: Verify migrations are committed
         run: python manage.py makemigrations --check --dry-run
 
-      - name: Run backend test suite
-        run: python manage.py test
+      # Fails, instead of printing a shorter list, if a test module does not
+      # import or a test cannot be named by a label.
+      - name: Deal the suite into shards
+        run: |
+          python scripts/ci_shards.py plan --total "$SHARD_TOTAL"
+          python scripts/ci_shards.py labels --shard "$SHARD" --total "$SHARD_TOTAL" > "$RUNNER_TEMP/shard-labels.txt"
+
+      # `shell: bash` runs with `-eo pipefail`, and the script says it again: the
+      # status of this step is the status of the tests, not of `tee`.
+      - name: Run backend test suite (this shard)
+        shell: bash
+        run: |
+          set -eo pipefail
+          python manage.py test --noinput $(cat "$RUNNER_TEMP/shard-labels.txt") 2>&1 | tee "$RUNNER_TEMP/shard-test.log"
+
+      # Fails if the shard did not run exactly the tests it was dealt, and
+      # writes what ran and what broke to the summary page of the job.
+      - name: Check the shard ran what it was dealt
+        if: ${{ !cancelled() }}
+        run: python scripts/ci_shards.py check-log --shard "$SHARD" --total "$SHARD_TOTAL" "$RUNNER_TEMP/shard-test.log"
+
+  # The one check to look at (and the one to require, if master is ever
+  # protected): it keeps the name the single job had. `always()` on purpose — a
+  # job that is skipped counts as passed for a required check, and this one must
+  # fail when a shard failed, timed out or was cancelled.
+  backend:
+    name: Django tests on PostgreSQL
+    if: always()
+    needs: shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.shards.result }}
+        run: |
+          echo "shards: $SHARDS"
+          test "$SHARDS" = "success"

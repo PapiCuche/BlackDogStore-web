@@ -43,7 +43,7 @@ ni activar el borrador del secreto API. La configuración de producción queda i
 
 Se sobrescribe al cerrar cada fase. No es un changelog.
 
-master: el servidor sirve `3057dd2cc6f144d988858d6e6fb1f923b11facbf` (#108, IMPORT-SPLIT-01; incluye #102–#107), desplegado el 2026-10-11.
+master: el servidor sirve `14e658cb3fc4aef2271d83417e25e83d1fc20a7d` (#111, CLIENT-SEC-01 y base de DELIVERY-01; incluye #102–#110), desplegado el 2026-10-13.
 Volver a hacer fetch antes de asumir el HEAD remoto; cambios posteriores de docs no
 actualizan automáticamente la copia desplegable del servidor.
 
