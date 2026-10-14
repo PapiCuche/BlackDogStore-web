@@ -6792,17 +6792,24 @@ class Phase60SalesNoteTest(TestCase):
         self.assertTrue(pdf.startswith(b'%PDF'))
         self.assertGreater(len(pdf), 1000)
 
-    def test_29_pdf_contains_no_sunat_disclaimer(self):
+    def test_29_pdf_carries_the_heading_and_the_control_line(self):
         note, _ = get_or_create_sales_note(self.paid_order)
         res = self._as(UserProfile.ROLE_ADMIN).get(
             f'/api/admin/orders/{self.paid_order.pk}/sales-note/pdf/'
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res['Content-Type'], 'application/pdf')
-        # The disclaimer text lives in the service and is rendered into the story
-        from .sales_note_services import SALES_NOTE_DISCLAIMER, build_sales_note_context
-        self.assertIn('SUNAT', SALES_NOTE_DISCLAIMER)
-        self.assertEqual(build_sales_note_context(note)['disclaimer'], SALES_NOTE_DISCLAIMER)
+        # SALES-NOTE-DESIGN-01: one source for the line, printed as it is.
+        from .sales_note_services import SALES_NOTE_CONTROL_LINE, build_sales_note_context
+        self.assertEqual(SALES_NOTE_CONTROL_LINE, 'Documento de control interno, sin validez tributaria')
+        self.assertEqual(build_sales_note_context(note)['control_line'], SALES_NOTE_CONTROL_LINE)
+        text = _pdf_text(res.content)
+        self.assertIn('NOTA DE VENTA', text)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text)
+        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
+        self.assertNotIn('Documento interno de venta', text)
+        self.assertNotIn('SUNAT', text)
 
     def test_30_pdf_context_contains_no_gateway_ids(self):
         note, _ = get_or_create_sales_note(self.paid_order)
@@ -6911,7 +6918,9 @@ class Phase60SalesNoteTest(TestCase):
         res = self.client.get(f'/api/admin/orders/{self.paid_order.pk}/sales-note/')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data['number'], 'NV-000001')
-        self.assertIn('SUNAT', res.data['notice'])
+        # The API repeats what the paper says, from the same constant.
+        from .sales_note_services import SALES_NOTE_CONTROL_LINE
+        self.assertEqual(res.data['notice'], SALES_NOTE_CONTROL_LINE)
 
 
 @override_settings(**IZIPAY_TEST_SETTINGS)
@@ -14935,17 +14944,25 @@ class Phase3CrossTenantDocumentTest(TestCase):
         self.assertEqual(ctx['store_ruc'], '20222222222')
         self.assertIn('Garantía B', ctx['warranty_note'])
 
-    def test_the_sales_note_keeps_its_internal_document_disclaimer(self):
+    def test_the_sales_note_keeps_its_internal_control_line(self):
         """Tenant branding must not turn an internal note into a fiscal receipt."""
         from store.sales_note_services import (
-            SALES_NOTE_DISCLAIMER, build_sales_note_context, get_or_create_sales_note,
+            SALES_NOTE_CONTROL_LINE, build_sales_note_context, generate_sales_note_pdf,
+            get_or_create_sales_note,
         )
 
         order = _p3_order(self.a)
         note, _created = get_or_create_sales_note(order)
         ctx = build_sales_note_context(note)
-        self.assertEqual(ctx['disclaimer'], SALES_NOTE_DISCLAIMER)
-        self.assertIn('No válido como comprobante electrónico SUNAT', ctx['disclaimer'])
+        self.assertEqual(ctx['control_line'], SALES_NOTE_CONTROL_LINE)
+        self.assertEqual(ctx['title'], 'Nota de venta')
+        text = _pdf_text(generate_sales_note_pdf(note))
+        self.assertIn('NOTA DE VENTA', text)
+        self.assertIn('Documento de control interno, sin validez tributaria', text)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text)
+        # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
+        self.assertNotIn('Documento interno de venta', text)
+        self.assertNotIn('SUNAT', text)
 
     def test_filenames_use_the_slug_and_stay_safe(self):
         from store.pdf_services import get_order_receipt_filename
@@ -16919,10 +16936,18 @@ class Phase2ePdfTest(TestCase):
         self.assertEqual(ctx['store_name'], 'Empresa PDF')
         self.assertEqual(ctx['store_ruc'], '20555555555')
 
-    def test_the_pdf_says_it_is_not_a_sunat_document(self):
+    def test_the_pdf_says_it_has_no_tax_validity(self):
+        from .sales_note_services import generate_sales_note_pdf
+
         ctx = build_sales_note_context(self.note)
-        self.assertIn('SUNAT', ctx['disclaimer'])
-        self.assertTrue(ctx['disclaimer'])
+        self.assertEqual(ctx['control_line'], 'Documento de control interno, sin validez tributaria')
+        text = _pdf_text(generate_sales_note_pdf(self.note))
+        self.assertIn('NOTA DE VENTA', text)
+        self.assertIn(ctx['control_line'], text)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text)
+        # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
+        self.assertNotIn('Documento interno de venta', text)
+        self.assertNotIn('SUNAT', text)
 
     def test_two_tenants_holding_the_same_number_render_different_documents(self):
         other = _p3_company('p2e-pdf-b', 'Empresa PDF B', tax_id='20666666666')
@@ -48881,15 +48906,21 @@ class C21DocumentTest(TestCase):
         self.assertEqual(currency_symbol('COP'), 'COP')
         self.assertEqual(currency_symbol(''), 'S/')
 
-    def test_the_a4_still_says_it_is_not_a_sunat_receipt(self):
+    def test_the_a4_still_says_it_has_no_tax_validity(self):
         """
         El aviso no es negociable y añadir el desglose es justo lo que podría
         haberlo desplazado: un papel con IGV desglosado se parece MÁS a una
-        boleta, así que tiene que decir más claro que no lo es.
+        boleta, así que tiene que decir que no lo es. SALES-NOTE-DESIGN-01: lo
+        dice con una línea discreta, no con la franja de antes.
         """
         text = _pdf_text(generate_sales_note_pdf(self.note))
-        self.assertIn('SUNAT', text)
+        self.assertIn('NOTA DE VENTA', text)
+        self.assertIn('Documento de control interno, sin validez tributaria', text)
         self.assertIn('No es una serie fiscal', text)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text)
+        # `_pdf_text` leaves accents escaped: the old band is matched by its ASCII parts.
+        self.assertNotIn('Documento interno de venta', text)
+        self.assertNotIn('SUNAT', text)
 
     def test_no_document_claims_to_be_issued(self):
         """
@@ -48966,7 +48997,11 @@ class C21DocumentTest(TestCase):
         for figure in ('100.00', '18.00', '118.00'):
             self.assertIn(figure, ticket)
         self.assertIn(self.note.number, ticket)
-        self.assertIn('SUNAT', ticket)
+        self.assertIn('NOTA DE VENTA', ticket)
+        self.assertIn('Documento de control interno, sin validez tributaria', ticket)
+        self.assertNotIn('NOTA DE VENTA INTERNA', ticket.upper())
+        self.assertNotIn('Documento interno de venta', ticket)
+        self.assertNotIn('SUNAT', ticket)
 
     def test_a_name_with_no_spaces_does_not_run_off_the_roll(self):
         """
@@ -51955,6 +51990,9 @@ class C22BFiscalPdfTest(TestCase):
         texto = _pdf_text(generate_fiscal_pdf(self.doc))
         self.assertNotIn('No válido como comprobante', texto)
         self.assertNotIn('Nota de venta interna', texto)
+        # SALES-NOTE-DESIGN-01: neither the note's new line nor its heading.
+        self.assertNotIn('Documento de control interno', texto)
+        self.assertNotIn('NOTA DE VENTA', texto.upper())
 
     def test_the_ticket_is_eighty_millimetres_wide(self):
         from .fiscal_pdf_services import generate_fiscal_ticket_pdf

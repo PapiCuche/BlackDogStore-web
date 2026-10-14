@@ -40,13 +40,13 @@ from .pdf_services import (
 
 logger = logging.getLogger(__name__)
 
-# Must appear visibly on every generated sales-note PDF.
-SALES_NOTE_DISCLAIMER = (
-    "Documento interno de venta. "
-    "No válido como comprobante electrónico SUNAT."
-)
+# SALES-NOTE-DESIGN-01. The one line every printed sales note carries — A4,
+# 80 mm ticket and thermal print — and the API repeats. It replaces the framed
+# band the A4 used to draw: discreet, but on the paper and legible.
+SALES_NOTE_CONTROL_LINE = "Documento de control interno, sin validez tributaria"
 
-_TITLE = "Nota de venta interna"
+# What the paper is called. Printed in capitals as the heading of every form.
+_TITLE = "Nota de venta"
 
 
 class SalesNoteError(Exception):
@@ -193,7 +193,7 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': amount_in_words(tax['total'], tax['currency']),
         'title': _TITLE,
-        'disclaimer': SALES_NOTE_DISCLAIMER,
+        'control_line': SALES_NOTE_CONTROL_LINE,
         'number': sales_note.number,
         'issued_at': local_stamp(sales_note.issued_at),
         'order_id': order.pk,
@@ -343,9 +343,10 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
         'amount_in_words': ctx['amount_in_words'],
         'totals': totals,
         'total': style.money(cur, tax['total']),
-        # El aviso no es opcional: una nota de venta interna no es un
-        # comprobante electrónico, y eso va enmarcado junto al total.
-        'legal': ctx['disclaimer'],
+        # El aviso no es opcional: una nota de venta no es un comprobante
+        # electrónico. Va junto al total en UNA línea discreta, sin la franja
+        # enmarcada que lleva la constancia de pedido (`legal`).
+        'control_line': ctx['control_line'],
         'notes': ctx['notes'],
         'footnotes': [ctx['warranty_note']] if ctx['warranty_note'] else [],
         'footer': '  ·  '.join(part for part in (

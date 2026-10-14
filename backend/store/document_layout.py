@@ -18,7 +18,9 @@ THE PAGE, TOP TO BOTTOM
   totals     counts and the amount in words on the left, the figures on the
              right, the total in its own band. Kept together: a page never ends
              with the total orphaned on the next one.
-  legal      the statement the document must carry, in a frame; then notes
+  legal      the statement the document must carry, in a frame — or, instead,
+             `control_line`: the same kind of statement as one plain line,
+             no frame and no fill; then notes
   footer     on EVERY page: whose document, which number, page X of Y
 
 DATA, NOT A SHOP. Nothing in this file knows a company. An empty field prints
@@ -69,6 +71,8 @@ def _styles():
         'total_label': make('DTotalLabel', fontSize=9, leading=12, alignment=TA_RIGHT),
         'legal': make('DLegal', fontName=style.FONT_BOLD, fontSize=8.5, leading=11.5,
                       alignment=TA_CENTER, textColor=ink),
+        'control_line': make('DControlLine', fontSize=8.5, leading=11.5,
+                             alignment=TA_CENTER, textColor=muted),
         'small': make('DSmall', fontSize=7.5, leading=10, textColor=muted),
     }
 
@@ -333,7 +337,7 @@ def render_a4(document: dict) -> bytes:
     `lines[{number, code, description, units, details, unit, list_price,
     discount, unit_price, quantity, amount}]`, `summary[str]`,
     `amount_in_words`, `totals[(label, value)]`, `total`, `total_label`,
-    `legal`, `notes`, `footnotes[str]`, `footer`.
+    `legal`, `control_line`, `notes`, `footnotes[str]`, `footer`.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -367,6 +371,9 @@ def render_a4(document: dict) -> bytes:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         closing += [Spacer(1, 12), legal]
+    if document.get('control_line'):
+        # One discreet line, no frame and no fill (SALES-NOTE-DESIGN-01).
+        closing += [Spacer(1, 10), Paragraph(style.markup(document['control_line']), styles['control_line'])]
     # The figures and the statement about what this paper is travel together.
     story.append(KeepTogether(closing))
 

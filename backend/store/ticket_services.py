@@ -35,7 +35,7 @@ from django.utils import timezone
 from . import document_style as style
 from .models import Order, SalesNote
 from .sales_note_services import (
-    SALES_NOTE_DISCLAIMER, SalesNoteError, build_sales_note_context,
+    SALES_NOTE_CONTROL_LINE, SalesNoteError, build_sales_note_context,
 )
 
 #: Rollo de 80 mm. El área imprimible real de casi toda térmica de 80 mm son
@@ -229,7 +229,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     cur.rule()
 
     # --- Qué es este papel ---
-    cur.line(ctx['title'], size=8.5, bold=True, align='center')
+    cur.line(ctx['title'].upper(), size=8.5, bold=True, align='center')
     cur.line(ctx['number'], size=9, bold=True, align='center')
     cur.line('Número interno del sistema. No es una serie fiscal.',
              size=6, align='center')
@@ -301,8 +301,8 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
 
     cur.rule()
 
-    # --- El aviso, que no es opcional ---
-    cur.line(SALES_NOTE_DISCLAIMER, size=6.5, bold=True, align='center')
+    # --- El aviso, que no es opcional: una línea discreta, sin negrita ---
+    cur.line(SALES_NOTE_CONTROL_LINE, size=7, align='center')
     cur.gap(2)
     if ctx['warranty_note']:
         cur.line(str(ctx['warranty_note']), size=6, align='center')
