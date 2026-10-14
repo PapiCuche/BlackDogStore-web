@@ -94,8 +94,16 @@ def line_nets(order, items) -> dict:
     before_discount = _money(gross / (Decimal('1') + rate)) if rate else _money(gross)
     discount = max(before_discount - base, Decimal('0.00'))
 
-    nets = allocate(base, weights)
-    discounts = allocate(discount, weights)
+    # DC1 review — WHERE the discount fell. A promotion lowered its own lines
+    # (the fiscal F6 rule, read from the same snapshot): the base is shared
+    # over each line's gross AFTER its promotion, and the discount follows the
+    # promotions. What is left of the order discount (a coupon, a manual
+    # discount) is spread over the lines by their gross, as before.
+    line_discounts = _gross_line_discounts(order, items, [w for _k, w in weights])
+    after = [(pk, weight - cut) for (pk, weight), cut in zip(weights, line_discounts)]
+    nets = allocate(base, after)
+    discounts = allocate(discount, [(pk, cut) for (pk, _w), cut in zip(weights, line_discounts)]) \
+        if any(line_discounts) else allocate(discount, weights)
     out = {}
     for item in items:
         line_before = nets[item.pk] + discounts[item.pk]
@@ -103,6 +111,36 @@ def line_nets(order, items) -> dict:
             if item.quantity else Decimal('0.0000')
         out[item.pk] = (unit, discounts[item.pk], nets[item.pk])
     return out
+
+
+def _gross_line_discounts(order, items, grosses) -> list[Decimal]:
+    """
+    How much of the order discount each line carries, WITH tax.
+
+    A promotion's own lines first — the very attribution the fiscal document
+    declares (`fiscal_services._promotion_line_discounts`). The rest of the
+    order discount, if any, by gross weight over what is left. A snapshot that
+    does not explain itself (the fiscal code refuses it) is spread by weight
+    like any order discount: a margin must not block a payment.
+    """
+    from .models import DiscountSource
+
+    gross_discount = _money(order.discount_amount or 0)
+    if gross_discount <= 0:
+        return [Decimal('0.00')] * len(items)
+    promoted = [Decimal('0.00')] * len(items)
+    if order.discount_source == DiscountSource.PROMOTION:
+        from .fiscal_services import FiscalError, _promotion_line_discounts
+
+        try:
+            promoted = list(_promotion_line_discounts(order, items, grosses))
+        except FiscalError:
+            promoted = [Decimal('0.00')] * len(items)
+    rest = gross_discount - sum(promoted, Decimal('0.00'))
+    if rest > 0:
+        spread = allocate(rest, [(index, g - p) for index, (g, p) in enumerate(zip(grosses, promoted))])
+        promoted = [p + spread[index] for index, p in enumerate(promoted)]
+    return promoted
 
 
 def snapshot_nets(order) -> None:

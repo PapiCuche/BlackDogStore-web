@@ -242,3 +242,90 @@ class PosSnapshotTest(_Shop):
         self.assertEqual(items[self.cable.pk].unit_cost, D('8.0000'))
         self.assertEqual(sum(i.net_amount for i in items.values()), order.taxable_amount)
         self.assertGreater(items[self.case.pk].discount_net, items[self.cable.pk].discount_net)
+
+
+class PromotionLineNetsTest(_Shop):
+    """
+    DC1 review — a promotion lowers ITS line, not the whole order by weight.
+
+    The fiscal F6 rule (`fiscal_services._promotion_line_discounts`): each
+    line's base is shared over its gross AFTER its own promotion; the order
+    discount without tax follows each line's promotion amount.
+    """
+
+    def promotion_order(self, lines, promos):
+        from store.models import AppliedPromotion, DiscountSource, Promotion
+
+        discount = sum(promos.values(), D('0.00'))
+        order = self.web_order(lines, discount=discount)
+        Order.objects.filter(pk=order.pk).update(discount_source=DiscountSource.PROMOTION)
+        order.refresh_from_db()
+        for product, amount in promos.items():
+            promotion = Promotion.objects.create(
+                company=self.company, name=f'Combo {order.pk}-{product.pk}',
+                promotion_type=Promotion.BUNDLE_FIXED_PRICE, fixed_price=D('1.00'),
+            )
+            AppliedPromotion.objects.create(
+                company=self.company, order=order, promotion=promotion,
+                promotion_name_snapshot='Combo', promotion_type_snapshot=Promotion.BUNDLE_FIXED_PRICE,
+                applications=1, regular_amount=product.price, discount_amount=amount,
+                metadata={'components': [
+                    {'product_id': product.pk, 'quantity_used': 1, 'unit_price': str(product.price)},
+                ]},
+            )
+        return order
+
+    def test_the_reviewers_example(self):
+        funda = _prod(self.company, 'Funda', 'funda-promo', price='118.00', inventory=0)
+        iphone = _prod(self.company, 'iPhone', 'iphone-promo', price='4720.00', inventory=0)
+        order = self.promotion_order([(funda, 1), (iphone, 1)], {funda: D('18.00')})
+        margin_services.snapshot_nets(order)
+        funda_line, iphone_line = self.line(order, funda), self.line(order, iphone)
+        self.assertEqual((funda_line.net_amount, iphone_line.net_amount), (D('84.75'), D('4000.00')))
+        # 4838 / 1.18 = 4100.00 before the discount; 4084.75 after: all 15.25 is the case's.
+        self.assertEqual((funda_line.discount_net, iphone_line.discount_net), (D('15.25'), D('0.00')))
+        self.assertEqual(funda_line.net_amount + iphone_line.net_amount, order.taxable_amount)
+
+    def test_it_agrees_with_the_fiscal_line_bases(self):
+        from store import fiscal_services
+
+        funda = _prod(self.company, 'Funda', 'funda-promo2', price='118.00', inventory=0)
+        iphone = _prod(self.company, 'iPhone', 'iphone-promo2', price='4720.00', inventory=0)
+        order = self.promotion_order([(funda, 1), (iphone, 1)], {funda: D('18.00')})
+        margin_services.snapshot_nets(order)
+        items = list(order.items.select_related('product').order_by('pk'))
+        grosses = [item.price * item.quantity for item in items]
+        promo = fiscal_services._promotion_line_discounts(order, items, grosses)
+        self.assertEqual(promo, [D('18.00'), D('0.00')])
+        line = {item.product_id: item for item in OrderItem.objects.filter(order=order)}
+        self.assertEqual(line[iphone.pk].discount_net, D('0.00'))
+        self.assertGreater(line[funda.pk].discount_net, D('0.00'))
+
+    def test_random_orders_always_add_up(self):
+        """Property: whatever the lines and promotions, the nets add up to the base and never go negative."""
+        import random
+
+        rng = random.Random(20261014)
+        for case in range(40):
+            products = [
+                _prod(self.company, f'P{case}-{n}', f'p-{case}-{n}',
+                      price=str(D(rng.randint(100, 500000)) / 100), inventory=0)
+                for n in range(rng.randint(1, 4))
+            ]
+            lines = [(product, 1) for product in products]
+            promos = {}
+            for product in products:
+                if rng.random() < 0.5:
+                    promos[product] = (product.price * D(rng.randint(1, 60)) / 100).quantize(D('0.01'))
+            if not promos:
+                continue
+            order = self.promotion_order(lines, promos)
+            margin_services.snapshot_nets(order)
+            rows = list(OrderItem.objects.filter(order=order))
+            with self.subTest(case=case):
+                self.assertEqual(sum(row.net_amount for row in rows), order.taxable_amount)
+                for row in rows:
+                    self.assertGreaterEqual(row.net_amount, D('0.00'))
+                    self.assertGreaterEqual(row.discount_net, D('0.00'))
+                    if row.product not in promos:
+                        self.assertEqual(row.discount_net, D('0.00'))
