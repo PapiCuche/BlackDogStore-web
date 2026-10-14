@@ -871,7 +871,15 @@ class FullExportTest(_Base):
 # =============================================================================
 
 class FileSafetyTest(_Base):
-    DANGEROUS = ['=HYPERLINK("http://malo.example","clic")', '+SUM(1,2)', '-2+3', '@SUM(1)', "'=YA-CON-COMILLA"]
+    """
+    Owner's decision D7 (2026-10-13): no visible apostrophe. A text that starts
+    like a formula is written as what it is — a STRING cell, marked as text
+    (`quotePrefix`) — with the very text it had. What makes it safe is the cell
+    type, not a character in front: a string cell is never evaluated.
+    """
+
+    DANGEROUS = ['=HYPERLINK("http://malo.example","clic")', '+SUM(1,2)', '-2+3', '@SUM(1)', "'=YA-CON-COMILLA",
+                 '=1+1', '-10% dto', '+51 999', '@casa']
 
     def setUp(self):
         super().setUp()
@@ -886,38 +894,86 @@ class FileSafetyTest(_Base):
         page = load_workbook(io.BytesIO(response.content)).active
         return [cell for row in page.iter_rows(min_row=2) for cell in row if cell.value is not None]
 
-    def test_no_text_cell_can_run_as_a_formula(self):
+    def test_no_text_cell_can_run_as_a_formula_and_none_carries_an_apostrophe(self):
         for kind, mode in (('products', 'reimport'), ('products', 'report'), ('stock', 'reimport'), ('stock', 'report')):
             with self.subTest(kind=kind, mode=mode):
                 cells = self.cells(self.get(kind, mode=mode))
-                self.assertFalse([cell.value for cell in cells if cell.data_type == 'f'])
-                texts = [cell.value for cell in cells if isinstance(cell.value, str)]
-                self.assertFalse([text for text in texts if text[:1] in ('=', '+', '-', '@', '\t', '\r')])
-                self.assertIn('\'=HYPERLINK("http://malo.example","clic")', texts)
-                self.assertIn("'+SUM(1,2)", texts)
-                self.assertIn("''=YA-CON-COMILLA", texts)
+                self.assertEqual([cell.coordinate for cell in cells if cell.data_type == 'f'], [])
+                by_text = {cell.value: cell for cell in cells if isinstance(cell.value, str)}
+                for name in self.DANGEROUS:
+                    self.assertIn(name, by_text)                       # the text itself, nothing in front
+                    self.assertEqual(by_text[name].data_type, 's', name)
+                for name in self.DANGEROUS[:4]:
+                    self.assertTrue(by_text[name].quotePrefix, name)   # «this is text», the way Excel marks it
+                    self.assertNotIn("'" + name, by_text)
+                self.assertFalse(by_text['Funda'].quotePrefix)         # ordinary text is not marked
 
-    def test_a_branch_a_category_and_a_note_are_guarded_too(self):
+    def test_the_sheet_itself_stores_them_as_strings_not_as_formulas(self):
+        """Read from the file's own XML, not through a library's idea of it."""
+        for kind, mode in (('products', 'reimport'), ('products', 'report'), ('stock', 'reimport')):
+            with self.subTest(kind=kind, mode=mode):
+                archive = zipfile.ZipFile(io.BytesIO(self.get(kind, mode=mode).content))
+                sheets = [name for name in archive.namelist() if name.startswith('xl/worksheets/sheet')]
+                self.assertEqual(len(sheets), 1)
+                xml = archive.read(sheets[0]).decode('utf-8')
+                self.assertNotIn('<f>', xml)
+                self.assertNotIn('<f ', xml)
+                self.assertIn('t="inlineStr"><is><t>=1+1</t></is></c>', xml)
+                self.assertIn('<t>-10% dto</t>', xml)
+                # Nothing put in front. (`'=YA-CON-COMILLA` is a name that HAS an apostrophe: it keeps its one.)
+                self.assertNotIn("<t>'=1+1", xml)
+                self.assertNotIn("<t>'-10% dto", xml)
+                self.assertIn("<t>'=YA-CON-COMILLA</t>", xml)
+                self.assertNotIn("<t>''=YA-CON-COMILLA", xml)
+
+    def test_a_branch_a_category_and_a_note_are_text_too(self):
         self.centro.name = '+Centro'
         self.centro.save(update_fields=['name'])
         Category.objects.filter(pk=self.phones.pk).update(name='=Teléfonos')
         StockUnit.objects.filter(serial_number='SER-0001').update(notes='@nota')
 
-        report = [cell.value for cell in self.cells(self.get('units', mode='report'))]
-        self.assertIn("'+Centro", report)
-        self.assertIn("'@nota", report)
-        catalogue = [cell.value for cell in self.cells(self.get('products'))]
-        self.assertIn("'=Teléfonos", catalogue)
+        report = self.cells(self.get('units', mode='report'))
+        self.assertEqual([cell.coordinate for cell in report if cell.data_type == 'f'], [])
+        self.assertIn('+Centro', [cell.value for cell in report])
+        self.assertIn('@nota', [cell.value for cell in report])
+        catalogue = self.cells(self.get('products'))
+        self.assertEqual([cell.coordinate for cell in catalogue if cell.data_type == 'f'], [])
+        self.assertIn('=Teléfonos', [cell.value for cell in catalogue])
+        # A header carries a branch name: it is a string as well.
+        stock = load_workbook(io.BytesIO(self.get('stock').content)).active
+        self.assertEqual([cell.data_type for cell in stock[1]], ['s'] * stock.max_column)
 
-    def test_the_guard_comes_off_exactly_when_the_file_is_read_back(self):
-        for value in [*self.DANGEROUS, '\tcon tabulador', 'normal', "'comilla suelta", '', "''dos"]:
-            with self.subTest(value=value):
-                self.assertEqual(xlsx_reader.unguard_text(xlsx_reader.guard_text(value)), value)
-        self.assertEqual(xlsx_reader.guard_text('normal'), 'normal')
-        self.assertEqual(xlsx_reader.guard_text("'comilla suelta"), "'comilla suelta")
-        self.assertEqual(xlsx_reader.unguard_text("'comilla suelta"), "'comilla suelta")
+    def test_a_description_that_is_a_list_with_dashes_is_shown_as_it_was_written(self):
+        """Review N14: «- Incluye cable» came out as «'- Incluye cable» in every report."""
+        Product.objects.filter(pk=self.case.pk).update(description='- Incluye cable\n- Garantía 6 meses')
+        for mode in ('report', 'reimport'):
+            with self.subTest(mode):
+                row = next(row for row in self.records(self.get('products', mode=mode)) if row['Nombre'] == 'Funda')
+                self.assertEqual(row['Descripción'], '- Incluye cable\n- Garantía 6 meses')
 
-    def test_reloading_the_guarded_catalogue_reads_the_same_names_and_changes_nothing(self):
+    def test_reading_takes_nothing_off_a_text_that_begins_with_an_apostrophe(self):
+        """
+        Review N8. No workbook of ours carries a guard apostrophe any more, so
+        the reader removes none: a stored code like `'-1234` is read as it is.
+        """
+        from openpyxl import Workbook
+
+        self.assertFalse(hasattr(xlsx_reader, 'unguard_text'))
+        book = Workbook()
+        page = book.active
+        page.title = 'Productos'
+        page.append(import_exports.PRODUCT_TEMPLATE_HEADERS)
+        page.append(['', "'-1234", "'=Nombre con comilla", '', 10, '', '', '', ''])
+        out = io.BytesIO()
+        book.save(out)
+        body = self.api.post(
+            '/api/admin/products/import/preview/', {'file': upload(out.getvalue())}, format='multipart').json()
+        self.assertEqual(body['counts']['error'], 0, body['rows'])
+        self.assertEqual((body['rows'][0]['data']['code'], body['rows'][0]['data']['name']),
+                         ("'-1234", "'=Nombre con comilla"))
+
+    def test_reloading_the_catalogue_reads_the_same_names_and_changes_nothing(self):
+        Product.objects.filter(pk=self.case.pk).update(description='- Incluye cable\n- Garantía 6 meses')
         before = list(Product.objects.filter(company=self.company).order_by('pk').values())
 
         staged = self.api.post(
@@ -925,15 +981,32 @@ class FileSafetyTest(_Base):
 
         self.assertEqual(staged.status_code, 201, staged.content)
         body = staged.json()
-        self.assertEqual((body['counts']['error'], body['counts']['create']), (0, 0))
-        read_back = {row['data']['name'] for row in body['rows']}
+        self.assertEqual((body['counts']['error'], body['counts']['create']), (0, 0), body['rows'])
+        read_back = {row['data']['name']: row['data'] for row in body['rows']}
         for name in self.DANGEROUS:
             self.assertIn(name, read_back)
+        self.assertEqual(read_back['Funda']['description'], '- Incluye cable\n- Garantía 6 meses')
+        self.assertEqual(read_back['=1+1']['description'], '=5+1')
         applied = self.api.post(f'/api/admin/products/import/{body["id"]}/apply/')
         self.assertEqual(applied.json()['summary']['applied']['updated'], 0, applied.content)
         self.assertEqual(list(Product.objects.filter(company=self.company).order_by('pk').values()), before)
 
-    def test_reloading_the_guarded_stock_finds_every_product(self):
+    def test_a_code_that_starts_like_a_formula_or_with_an_apostrophe_comes_back_as_itself(self):
+        odd = self.product('Rareza', 'rareza', '10.00', self.accessories)
+        self.code(odd, "'-1234")
+        minus = self.product('Negativo', 'negativo', '10.00', self.accessories)
+        self.code(minus, '-9988')
+
+        body = self.api.post(
+            '/api/admin/products/import/preview/', {'file': upload(self.get('products').content)},
+            format='multipart').json()
+
+        self.assertEqual((body['counts']['error'], body['counts']['create']), (0, 0), body['rows'])
+        by_name = {row['data']['name']: row['data'] for row in body['rows']}
+        self.assertEqual((by_name['Rareza']['code'], by_name['Rareza']['product_id']), ("'-1234", odd.pk))
+        self.assertEqual((by_name['Negativo']['code'], by_name['Negativo']['product_id']), ('-9988', minus.pk))
+
+    def test_reloading_the_stock_finds_every_product(self):
         staged = self.api.post('/api/admin/inventory/import/preview/', {
             'file': upload(self.get('stock').content), 'mapping': StockExportTest.MAPPING, 'header_row': 1,
             'branch_map': json.dumps({'3': self.centro.pk, '4': self.norte.pk}),
@@ -942,7 +1015,7 @@ class FileSafetyTest(_Base):
         self.assertEqual((staged.json()['counts']['error'], staged.json()['counts']['update']), (0, 0))
 
     def test_a_real_formula_in_an_upload_is_still_refused(self):
-        """Quitar la guarda no abre la puerta: una celda que ES una fórmula sigue siendo un error de la fila."""
+        """Leer texto como texto no abre la puerta: una celda que ES una fórmula sigue siendo un error de la fila."""
         from openpyxl import Workbook
 
         book = Workbook()
@@ -984,6 +1057,7 @@ class FileSafetyTest(_Base):
         self.assertEqual(rows[3][2:4], ["'\tTAB", "''=YA"])
         for row in rows[1:]:
             self.assertEqual([cell for cell in row if cell[:1] in ('=', '+', '-', '@', '\t', '\r')], [])
+        # A CSV has no cell types: there the apostrophe is the only mark there is, and it stays (D7).
 
     def test_a_character_a_workbook_cannot_hold_does_not_break_the_download(self):
         Product.objects.filter(pk=self.case.pk).update(name='Funda\x07 rota', description='línea\x0b dos')
@@ -1089,13 +1163,16 @@ class LegacyInventoryExportTest(_Base):
         page = load_workbook(io.BytesIO(response.content)).active
         cells = [cell for row in page.iter_rows(min_row=2) for cell in row if cell.value is not None]
         self.assertEqual([cell.coordinate for cell in cells if cell.data_type == 'f'], [])
-        texts = [cell.value for cell in cells if isinstance(cell.value, str)]
-        self.assertEqual([text for text in texts if text[:1] in ('=', '+', '-', '@')], [])
-        for guarded in ('\'=HYPERLINK("http://malo.example","clic")', "'=COD-1", "'+775000000001", "'+SUM(1,2)"):
-            self.assertIn(guarded, texts)
+        by_text = {cell.value: cell for cell in cells if isinstance(cell.value, str)}
+        # The text itself, as a string cell marked as text: no apostrophe in the value (D7).
+        for written in ('=HYPERLINK("http://malo.example","clic")', '=COD-1', '+775000000001', '+SUM(1,2)'):
+            self.assertIn(written, by_text)
+            self.assertEqual((by_text[written].data_type, by_text[written].quotePrefix), ('s', True), written)
+        xml = zipfile.ZipFile(io.BytesIO(response.content)).read('xl/worksheets/sheet1.xml').decode('utf-8')
+        self.assertNotIn('<f>', xml)
         self.assertEqual(plus.name, '+SUM(1,2)')                       # the catalogue itself is untouched
 
-    def test_the_guarded_download_still_reloads_and_finds_every_product(self):
+    def test_the_download_still_reloads_and_finds_every_product(self):
         evil = self.product('=HYPERLINK("http://malo.example","clic")', 'formula-1', '10.00', self.accessories)
         self.code(evil, '=COD-1')
         _p2d_stock(self.centro, evil, 3)

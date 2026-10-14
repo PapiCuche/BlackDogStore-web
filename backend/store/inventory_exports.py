@@ -39,9 +39,10 @@ WHAT A FILE TO RELOAD LEAVES OUT, ON PURPOSE
 
 THE FILES ARE A TENANT'S DATA ON SOMEBODY'S DESKTOP
 ---------------------------------------------------
-Text that a spreadsheet would run as a formula is guarded
-(`xlsx_reader.guard_text`) and read back the same by the importers. Codes,
-serials and IMEIs are text. Nothing a user typed reaches a file name. There is
+Text that a spreadsheet would run as a formula is written as a STRING cell
+marked as text (`xlsx_reader.mark_as_text`) — the very text, with no apostrophe
+in front — and the importers read it back as it is. Codes, serials and IMEIs
+are text. Nothing a user typed reaches a file name. There is
 a cap on rows and on the size of the ZIP. Cost is written only for a caller
 who may adjust inventory.
 
@@ -64,7 +65,7 @@ from .import_formats import (
     product_identifier,
 )
 from .models import BranchStock, Product, StockUnit
-from .xlsx_reader import guard_text
+from .xlsx_reader import looks_like_formula, mark_as_text
 
 KINDS = ('products', 'stock', 'units', 'full')
 MODE_REIMPORT, MODE_REPORT = 'reimport', 'report'
@@ -188,11 +189,10 @@ class ExportFilters:
 # =============================================================================
 
 def _text(value) -> str | None:
-    """A text cell: without what a workbook cannot hold, and never a formula."""
+    """The text of a cell, without what a workbook cannot hold. None when empty."""
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
-    text = ILLEGAL_CHARACTERS_RE.sub('', str(value or ''))
-    return guard_text(text) or None
+    return ILLEGAL_CHARACTERS_RE.sub('', str(value or '')) or None
 
 
 def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) -> bytes:
@@ -203,6 +203,9 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
     `text_columns` are the indexes of identifiers (codes, serials, IMEIs): their
     cells are text whatever they look like, so no zero is lost and no IMEI
     becomes 4.90154E+14. Every other string is text too; numbers stay numbers.
+
+    A string that STARTS LIKE A FORMULA is written as a string cell marked as
+    text — never as a formula, and with no apostrophe in its value.
     """
     import openpyxl
     from openpyxl.cell import WriteOnlyCell
@@ -222,6 +225,8 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
         # A header can carry a tenant's text too («ALMACEN <branch name>»): the
         # same cleaning as any cell, or one control character is a 500.
         cell = WriteOnlyCell(sheet, value=_text(title_))
+        if looks_like_formula(cell.value):
+            mark_as_text(cell)
         cell.font, cell.fill = bold, fill
         head.append(cell)
     sheet.append(head)
@@ -232,9 +237,13 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
         for index, value in enumerate(row):
             if isinstance(value, str):
                 value = _text(value)
-            if value is not None and index in text_columns:
+            risky = looks_like_formula(value)
+            if value is not None and (risky or index in text_columns):
                 cell = WriteOnlyCell(sheet, value=value)
-                cell.number_format = '@'
+                if risky:
+                    mark_as_text(cell)
+                if index in text_columns:
+                    cell.number_format = '@'
                 cells.append(cell)
             else:
                 cells.append(value)
@@ -564,8 +573,8 @@ def readme_text() -> str:
         '    su código de barras. Sin ninguno, por su nombre; si dos productos sin código se',
         '    llaman igual, la carga pide asignarles uno.',
         '  - Si un producto tiene varios códigos, viaja uno de cada tipo.',
-        '  - Un texto que empieza por = + - o @ lleva un apóstrofo delante para que Excel no lo',
-        '    ejecute como fórmula. Al cargar el archivo se lee sin el apóstrofo.',
+        '  - Un texto que empieza por = + - o @ (una descripción con guiones, un teléfono con',
+        '    +) va en una celda de texto: se ve tal cual y Excel no lo ejecuta como fórmula.',
         '  - El catálogo no tiene campo de marca: no hay columna de marca.',
         '  - La columna «Costo» sólo trae datos si quien descargó puede ajustar inventario.',
         '',

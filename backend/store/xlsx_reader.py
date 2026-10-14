@@ -291,13 +291,45 @@ def load_workbook(data: bytes):
 # Text that a spreadsheet would run
 # --------------------------------------------------------------------------
 
-#: A text cell that starts with one of these is what Excel, LibreOffice or a
-#: CSV round trip may evaluate as a formula. A product called `=HYPERLINK(…)`
-#: is a tenant's data on its way to an administrator's desktop.
+#: A text that starts with one of these is what Excel, LibreOffice or a CSV
+#: round trip may evaluate as a formula. A product called `=HYPERLINK(…)` is a
+#: tenant's data on its way to an administrator's desktop.
+#:
+#: TWO KINDS OF FILE, TWO ANSWERS (owner's decision, 2026-10-13).
+#:
+#:   .xlsx  A cell has a TYPE. Such a text is written as a string cell, marked
+#:          as text the way Excel itself marks it (`mark_as_text`), with the
+#:          very text it had. Nothing is put in front of it, so a report shows
+#:          «- Incluye cable» and not «'- Incluye cable», and a file to reload
+#:          gives back exactly what was stored. A string cell is not evaluated.
+#:
+#:   .csv   There are no cell types: whatever opens it guesses from the first
+#:          character. There the only mark there is, is a leading apostrophe
+#:          (`guard_text`). Only `errors.csv` is written that way.
 FORMULA_TRIGGERS = ('=', '+', '-', '@', '\t', '\r')
-#: What neutralises it: a leading apostrophe, which every spreadsheet reads as
+#: The mark of a CSV: a leading apostrophe, which every spreadsheet reads as
 #: «this is text».
 FORMULA_GUARD = "'"
+
+
+def looks_like_formula(value) -> bool:
+    """Whether a text starts the way a spreadsheet would try to run."""
+    return isinstance(value, str) and value[:1] in FORMULA_TRIGGERS
+
+
+def mark_as_text(cell):
+    """
+    Make an .xlsx cell LITERAL TEXT, whatever it starts with. Returns the cell.
+
+    openpyxl turns a value that starts with `=` into a formula cell on
+    assignment; setting the type back AFTER the value is what keeps it a
+    string. `quotePrefix` is the flag Excel sets when somebody types an
+    apostrophe first: the cell stays text when it is edited, and the
+    apostrophe is not part of the value.
+    """
+    cell.data_type = 's'
+    cell.quotePrefix = True
+    return cell
 
 
 def _needs_guard(text: str) -> bool:
@@ -307,22 +339,13 @@ def _needs_guard(text: str) -> bool:
 
 
 def guard_text(text: str) -> str:
-    """`text` as it is safe to WRITE in a cell of a file we hand out."""
+    """
+    `text` as it is safe to write in a CSV we hand out. NOT for an .xlsx cell:
+    there the cell type does it (`mark_as_text`) and no apostrophe is shown.
+    Nothing reads a CSV of ours back, so nothing takes the apostrophe off.
+    """
     if text and (text[0] in FORMULA_TRIGGERS or (text[0] == FORMULA_GUARD and _needs_guard(text))):
         return FORMULA_GUARD + text
-    return text
-
-
-def unguard_text(text: str) -> str:
-    """
-    The value `guard_text` was given, from what a cell holds.
-
-    ONE apostrophe comes off, and only in front of a trigger: a name that
-    simply starts with an apostrophe is left alone. This is what lets a file
-    we exported go back through an importer and name the same products.
-    """
-    if text[:1] == FORMULA_GUARD and _needs_guard(text):
-        return text[1:]
     return text
 
 
@@ -342,9 +365,18 @@ def _cell_value(cell):
     formula cell rather than Excel's cached result. That is the point: the
     cached result was computed by whatever machine last saved the file, from
     rows that may not be in this upload. §17 — a mapped formula is a row error.
+
+    A FORMULA IS A CELL OF TYPE FORMULA. A STRING cell whose text happens to
+    start with `=` is text: it is what our own downloads write for a product
+    called `=1+1`, and what Excel stores when somebody types an apostrophe
+    first. It is read as the text it is. Anything that is not plainly a
+    string and starts with `=` is still refused.
     """
     value = cell.value
-    if isinstance(value, str) and value.startswith('='):
+    kind = getattr(cell, 'data_type', None)
+    if kind == 'f':
+        raise FormulaCell(str(value))
+    if isinstance(value, str) and value.startswith('=') and kind != 's':
         raise FormulaCell(value)
     return value
 
@@ -460,11 +492,10 @@ def read_rows(workbook, sheet_name: str, *, header_row: int = 1,
                 continue
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
                 numeric.add(index)
+            # Read AS IT IS. Nothing is taken off the front: no workbook of
+            # ours carries a guard apostrophe, so a stored code like `'-1234`
+            # is that code.
             text = normalize_scalar(raw)
-            if isinstance(raw, str):
-                # The guard our own exports put in front of text a spreadsheet
-                # would run. A cell that IS a formula never gets here.
-                text = unguard_text(text).strip()
             if text != '':
                 values[index] = text
             else:

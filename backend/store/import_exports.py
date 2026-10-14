@@ -454,19 +454,26 @@ def inventory_export_bytes(*, company, branches, include_quantities: bool) -> by
         cell.font = Font(bold=True, color='FFFFFF')
         cell.fill = header_fill
 
-    from .xlsx_reader import guard_text
+    from .xlsx_reader import looks_like_formula, mark_as_text
+
+    def text(row, column, value, *, as_code=False):
+        cell = sheet.cell(row=row, column=column, value=value)
+        if looks_like_formula(value):
+            mark_as_text(cell)
+        if as_code:
+            cell.number_format = '@'
 
     for index, (internal, external, name, *quantities) in enumerate(rows, start=2):
         # Written as TEXT, always. A code stored as a number is how the owner's
         # own file lost the ability to keep a leading zero, and re-exporting the
         # same trap would repeat the damage on every round trip.
         #
-        # And GUARDED: a name or a code that starts like a formula (`=`, `+`,
-        # `-`, `@`) was written as a live formula cell. The stock importer
-        # takes the guard off again, so the file still names the same product.
-        sheet.cell(row=index, column=1, value=guard_text(internal)).number_format = '@'
-        sheet.cell(row=index, column=2, value=guard_text(external)).number_format = '@'
-        sheet.cell(row=index, column=3, value=guard_text(name))
+        # And NEVER A FORMULA: a name or a code that starts like one (`=`, `+`,
+        # `-`, `@`) was written as a live formula cell. It is a string cell
+        # marked as text, with the text it had; the stock importer reads it back.
+        text(index, 1, internal, as_code=True)
+        text(index, 2, external, as_code=True)
+        text(index, 3, name)
         for offset, quantity in enumerate(quantities):
             cell = sheet.cell(row=index, column=4 + offset)
             if quantity is not None:
