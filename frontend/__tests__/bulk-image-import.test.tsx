@@ -124,7 +124,11 @@ describe('antes de adjuntar nada', () => {
       expect(rule).toHaveTextContent(example);
     }
     expect(rule).toHaveTextContent(/número más bajo.*principal/i);
-    expect(rule).toHaveTextContent(/código interno o su código de barras, tal cual/);
+    // Decisión del 2026-10-14: se compara sin distinguir mayúsculas, y lo ambiguo no se asigna.
+    expect(rule).toHaveTextContent(/código interno o su código de barras, sin distinguir mayúsculas ni espacios de más/);
+    expect(rule).not.toHaveTextContent(/con sus mayúsculas/);
+    expect(rule).toHaveTextContent(/Si un código coincide con más de un producto, ese archivo no se carga/);
+    expect(rule).toHaveTextContent(/Lo que no tiene producto se lista y el resto se carga igual/);
     expect(rule).toHaveTextContent(/No se busca por el nombre del producto/);
   });
 

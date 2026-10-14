@@ -174,8 +174,9 @@ export function BulkImageImport({ companyId }: { companyId: number | null }) {
           {EXAMPLES.slice(1).map((example, index) => (
             <span key={example}>{index ? ", " : ""}<code>{example}</code></span>
           ))}. La de número más bajo —o la que no lleva número— es la principal. El código es su código
-          interno o su código de barras, tal cual está escrito, con sus mayúsculas. No se busca por el
-          nombre del producto.
+          interno o su código de barras, sin distinguir mayúsculas ni espacios de más. Si un código
+          coincide con más de un producto, ese archivo no se carga: no se elige por ti. No se busca por el
+          nombre del producto. Lo que no tiene producto se lista y el resto se carga igual.
         </p>
         {limits ? (
           <p className="mt-2 text-xs text-muted">

@@ -10,19 +10,35 @@ picture belongs to is said in one of two ways:
   with that code. A trailing `_N`, `-N` or ` (N)` — N of one to three digits —
   is its ORDER: `FUNDA.png`, `FUNDA_2.png`, `FUNDA-3.jpg`, `FUNDA (4).webp`.
   The picture with the lowest order (a name with no number counts as 0) is the
-  main one. `<código>` is looked up as the product load looks up «Código» and
-  «Código de barras» — the internal code and every barcode, exact, through the
-  same `CatalogueIndex` — and NEVER by the product's name.
+  main one. `<código>` is looked up among the internal code and every barcode
+  of the company's products (inactive ones included) — and NEVER by the
+  product's name.
 
-      A code may itself end in `-2`. So the WHOLE name is tried as a code and,
-      separately, the name without its trailing number. One product: that is
-      it. Two different products: the file is not loaded and says so. None:
-      the same. Nothing is guessed.
+      COMPARED AS A PERSON READS IT (owner's decision, 2026-10-14). Both sides
+      go through `image_code_key`: Unicode NFKC, case folded, spaces trimmed
+      and collapsed (a non-breaking space is a space). `funda.png`, `FUNDA.png`
+      and `ＦＵＮＤＡ.png` are the product `FUNDA`. This is the PICTURE load's
+      rule only: the product load and every other importer still compare a
+      code exactly, as the till does.
+
+      AMBIGUOUS IS REFUSED, NEVER CHOSEN. A key that names two products (codes
+      `abcd` and `ABCD` on two products) is not assigned: the file — or the
+      workbook row — is listed with the reason, and the rest of the load goes
+      on. A code may itself end in `-2`, so the WHOLE name is tried as a code
+      and, separately, the name without its trailing number: two different
+      products between them is the same refusal, and an ambiguous whole name
+      does not fall back to the shorter one.
 
   BY A SMALL WORKBOOK. One sheet «Imágenes» with `Código`, `Imagen principal`,
-  `Imágenes` — read exactly as the product load reads those columns
-  (`import_media.split_references`). With a workbook the file names decide
-  nothing.
+  `Imágenes` — the file columns read as the product load reads them
+  (`import_media.split_references`), the code by the same key as a file name.
+  With a workbook the file names decide nothing.
+
+WHAT HAS NO PRODUCT DOES NOT STOP THE REST (owner's decision, 2026-10-14). A
+file — or a workbook row — whose code is nobody's, or is ambiguous, is listed
+before and after apply and never assigned; the rest of the load applies. What
+is wrong with a product's OWN pictures (a broken file, two different files with
+one name, over the limit) is still an error of that product and stops the load.
 
 TWO MODES, CHOSEN ON PURPOSE
 ----------------------------
@@ -50,14 +66,16 @@ or its main one) is not what the preview saw.
 from __future__ import annotations
 
 import re
+import unicodedata
+from collections import defaultdict
 
 from django.db import transaction
 from django.utils import timezone
 
 from . import import_exports, import_media, product_media, xlsx_reader
 from .import_formats import normalize_header
-from .import_services import CatalogueIndex, ImportError_, _place_row_images, _safe_filename, _sha256
-from .models import AdminAuditLog, BulkImportJob, BulkImportRow, Product, ProductImage
+from .import_services import ImportError_, _place_row_images, _safe_filename, _sha256
+from .models import AdminAuditLog, BulkImportJob, BulkImportRow, Product, ProductBarcode, ProductImage
 
 MODE_ADD, MODE_REPLACE = 'add', 'replace'
 MODES = (MODE_ADD, MODE_REPLACE)
@@ -77,6 +95,58 @@ NO_PRODUCT, AMBIGUOUS_CODE = 'no_product', 'ambiguous_code'
 
 class ImageImportError(Exception):
     """The load, or the job, cannot be used. The message is for the operator."""
+
+
+def image_code_key(text) -> str:
+    """
+    A code as the picture load compares it: NFKC, case folded, spaces trimmed and
+    collapsed. A non-breaking space is a space. Applied to BOTH sides.
+    """
+    text = unicodedata.normalize('NFKC', str(text or '')).replace('\u00a0', ' ')
+    return ' '.join(text.casefold().split())
+
+
+class ImageCodes:
+    """
+    Key -> the products of ONE company that hold a code with that key.
+
+    Every barcode of the company, active or not, as the product load's
+    ownership index reads them; a set, because once compared without case two
+    products may share a key, and that must be SEEN, not overwritten.
+    """
+
+    def __init__(self, company):
+        self.owners: dict[str, set[int]] = defaultdict(set)
+        for code, product_id in ProductBarcode.objects.filter(company=company).values_list('code', 'product_id'):
+            key = image_code_key(code)
+            if key:
+                self.owners[key].add(product_id)
+
+    def of(self, text) -> set[int]:
+        return set(self.owners.get(image_code_key(text), ()))
+
+
+def ambiguous_sentence(code) -> str:
+    return (
+        f'el código «{str(code).strip()}» coincide con más de un producto de esta empresa '
+        f'(se comparan sin distinguir mayúsculas ni espacios). No se asigna a ninguno: '
+        f'corrige los códigos o usa el código de barras.'
+    )
+
+
+def owner_of_codes(codes: ImageCodes, *, code='', barcode=''):
+    """`(product id, None)`, `(None, None)` when nobody's, or `(None, sentence)` when ambiguous."""
+    found: set[int] = set()
+    for value in (code, barcode):
+        if not str(value or '').strip():
+            continue
+        owners = codes.of(value)
+        if len(owners) > 1:
+            return None, ambiguous_sentence(value)
+        found |= owners
+    if len(found) > 1:
+        return None, 'El código y el código de barras de esta fila son de productos distintos. No se asigna a ninguno.'
+    return (found.pop(), None) if found else (None, None)
 
 
 def naming_rule() -> dict:
@@ -107,13 +177,19 @@ def interpretations(filename) -> list[tuple[str, int]]:
     return readings
 
 
-def _owner_by_name(index: CatalogueIndex, filename: str):
+def _owner_by_name(codes: ImageCodes, filename: str):
     """`(product id, code, order)` for a file, or `(None, reason, sentence)`."""
-    hits = [
-        (index.owner_of(code), code, order)
-        for code, order in interpretations(filename) if code.strip()
-    ]
-    hits = [hit for hit in hits if hit[0]]
+    hits = []
+    for code, order in interpretations(filename):
+        if not image_code_key(code):
+            continue
+        owners = codes.of(code)
+        if len(owners) > 1:
+            # Refused here, whole name first: an ambiguous whole name does not
+            # fall back to the shorter reading.
+            return None, AMBIGUOUS_CODE, f'«{filename}»: {ambiguous_sentence(code)}'
+        if owners:
+            hits.append((owners.pop(), code, order))
     if not hits:
         return None, NO_PRODUCT, (
             f'«{filename}»: ningún producto de esta empresa tiene ese código. No se carga.'
@@ -157,17 +233,40 @@ def preview_images(*, company, actor, images, upload=None, filename='', mode=MOD
         raise
 
 
-def _plans_from_names(bundle, index):
+def _plans_from_names(bundle, codes):
     """`(plans, unmatched)` — which files go to which product, by their names."""
     plans: dict[int, dict] = {}
     unmatched = []
+    # Two files whose names compare equal by the code key («COD.png» and
+    # «ＣＯＤ.png») are ONE name, as two «cod.png» already were: the same
+    # content goes in once, different contents are an error of that product.
+    same_name: dict[str, list[str]] = defaultdict(list)
+    for key in sorted(bundle.names()):
+        same_name[image_code_key(bundle.display(key))].append(key)
+    clashing = {}
+    for keys in same_name.values():
+        if len(keys) < 2:
+            continue
+        digests = set()
+        for key in keys:
+            try:
+                digests.add(_sha256(bundle.read(key)))
+            except import_media.ImportMediaError:
+                digests.add(key)
+        for key in keys[1:]:
+            clashing[key] = len(digests) > 1
     for key in sorted(bundle.names()):
         name = bundle.display(key)
-        product_id, code, order = _owner_by_name(index, name)
+        product_id, code, order = _owner_by_name(codes, name)
         if product_id is None:
             unmatched.append({'file': name, 'reason': code, 'sentence': order})
             continue
         plan = plans.setdefault(product_id, {'code': code, 'barcode': '', 'refs': [], 'errors': []})
+        if key in clashing:
+            if clashing[key]:
+                plan['errors'].append(
+                    f'Imagen «{name}»: hay más de un archivo con ese nombre y no son iguales. Renómbralos.')
+            continue
         plan['refs'].append((order, import_media.normalize_name(name), name))
     for plan in plans.values():
         plan['refs'] = [name for _order, _key, name in sorted(plan['refs'])]
@@ -188,7 +287,7 @@ def _pick_sheet(workbook) -> str:
     raise ImageImportError('El archivo no tiene una hoja de imágenes.')
 
 
-def _plans_from_workbook(upload, filename, index):
+def _plans_from_workbook(upload, filename, codes):
     """`(plans, sheet name, sha256)` — one plan per row, as the workbook says."""
     data = xlsx_reader.check_upload(upload, filename=filename)
     workbook, _notes = xlsx_reader.load_workbook(data)
@@ -222,12 +321,18 @@ def _plans_from_workbook(upload, filename, index):
         if not (text['code'] or text['barcode']):
             plan['errors'].append('Falta el código del producto.')
         else:
-            # By code and by barcode, exact — the product load's own reading. Never by name.
-            product_id, match_error, _matched_by, _warnings = index.match(barcode=text['barcode'], code=text['code'])
-            if match_error:
-                plan['errors'].append(match_error)
+            # By code and by barcode, through the picture load's key. Never by name.
+            product_id, ambiguous = owner_of_codes(codes, code=text['code'], barcode=text['barcode'])
+            named = text['code'] or text['barcode']
+            if ambiguous:
+                plan['skip'] = (AMBIGUOUS_CODE, f'Fila {row_number}: {ambiguous}')
             elif product_id is None:
-                plan['errors'].append('No existe un producto con ese código en esta empresa.')
+                # A picture without a product: listed, not assigned, and it does
+                # not stop the rest of the load.
+                plan['skip'] = (NO_PRODUCT, (
+                    f'Fila {row_number}: ningún producto de esta empresa tiene ese código («{named}»). '
+                    f'No se carga.'
+                ))
             elif product_id in seen:
                 plan['errors'].append(f'Este producto ya aparece en la fila {seen[product_id]}. Deja una sola fila por producto.')
             else:
@@ -242,14 +347,20 @@ def _plans_from_workbook(upload, filename, index):
 
 @transaction.atomic
 def _preview(*, company, actor, bundle, upload, filename, mode, use_main, stager):
-    index = CatalogueIndex(company)
+    codes = ImageCodes(company)
     if upload is not None:
         source = SOURCE_WORKBOOK
-        plans, sheet, sha256 = _plans_from_workbook(upload, filename, index)
-        unmatched = []
+        plans, sheet, sha256 = _plans_from_workbook(upload, filename, codes)
+        # Rows whose code is nobody's or ambiguous: listed like a file without a product.
+        unmatched = [
+            {'file': ', '.join(plan['refs']) or plan['code'] or plan['barcode'], 'reason': plan['skip'][0],
+             'sentence': plan['skip'][1], 'row_number': plan['row_number']}
+            for plan in plans if plan.get('skip') and not plan['errors']
+        ]
+        plans = [plan for plan in plans if not (plan.get('skip') and not plan['errors'])]
     else:
         source, sheet, sha256 = SOURCE_NAMES, '', ''
-        plans, unmatched = _plans_from_names(bundle, index)
+        plans, unmatched = _plans_from_names(bundle, codes)
 
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCT_IMAGES,
@@ -342,7 +453,7 @@ def _preview(*, company, actor, bundle, upload, filename, mode, use_main, stager
     for offset, item in enumerate(unmatched, start=len(plans) + 1):
         counts['skip'] += 1
         staged.append(BulkImportRow(
-            job=job, sheet_name=sheet, row_number=offset, action=BulkImportRow.SKIP,
+            job=job, sheet_name=sheet, row_number=item.get('row_number') or offset, action=BulkImportRow.SKIP,
             match_key=item['file'][:120], normalized_data={'file': item['file'], 'reason': item['reason']},
             warnings=[item['sentence']],
         ))
@@ -430,13 +541,13 @@ def apply_images(*, job, actor, confirmation='', request=None):
     }
 
     # The whole load is checked against the catalogue as it stands NOW, before
-    # anything is written.
-    index = CatalogueIndex(company)
+    # anything is written — by the same key the preview used.
+    codes = ImageCodes(company)
     for row in rows:
         data = row.normalized_data
         product = products.get(data.get('product_id'))
-        owner, match_error, _by, _warnings = index.match(barcode=data.get('barcode', ''), code=data.get('code', ''))
-        if product is None or match_error or owner != product.pk:
+        owner, ambiguous = owner_of_codes(codes, code=data.get('code', ''), barcode=data.get('barcode', ''))
+        if product is None or ambiguous or owner != product.pk:
             raise ImageImportError(_STALE_CATALOGUE.format(row=row.row_number, name=data.get('name', '')))
         now = [list(pair) for pair in ProductImage.objects.filter(company=company, product=product)
                .order_by('sort_order', 'pk').values_list('pk', 'is_primary')]

@@ -98,7 +98,9 @@ class _Base(TestCase):
     def product(self, name, code, *, ean=None, company=None):
         company = company or self.company
         product = Product.objects.create(
-            company=company, name=name, slug=f'img-{company.pk}-{code.lower()}', price='100.00')
+            # The count keeps two codes that differ only in case (`abcd`, `ABCD`) apart in the slug.
+            company=company, name=name, price='100.00',
+            slug=f'img-{company.pk}-{code.lower()}-{Product.objects.filter(company=company).count()}')
         ProductBarcode.objects.create(company=company, product=product, code=code, symbology=ProductBarcode.INTERNAL)
         if ean:
             ProductBarcode.objects.create(company=company, product=product, code=ean, symbology=ProductBarcode.EAN13)
@@ -246,15 +248,79 @@ class PreviewByNameTest(_Base):
 
     def test_a_file_whose_name_is_no_product_s_code_is_said_and_not_loaded(self):
         body = self.staged([
-            picture('NO-EXISTE.png', ONE), picture('cod-a1.png', TWO), picture('Teléfono.png', THREE),
-            picture('COD-A2.png', FOUR),
+            picture('NO-EXISTE.png', ONE), picture('Teléfono.png', THREE), picture('COD-A2.png', FOUR),
         ])
-        # Exact, as the product load reads a code: another case is another code. And never by the product's NAME.
-        self.assertEqual(self.unmatched(body), {
-            'NO-EXISTE.png': 'no_product', 'cod-a1.png': 'no_product', 'Teléfono.png': 'no_product'})
-        self.assertEqual(body['summary']['unmatched'], 3)
-        self.assertEqual(body['summary']['media']['orphans'], 3)
+        # Never by the product's NAME.
+        self.assertEqual(self.unmatched(body), {'NO-EXISTE.png': 'no_product', 'Teléfono.png': 'no_product'})
+        self.assertEqual(body['summary']['unmatched'], 2)
+        self.assertEqual(body['summary']['media']['orphans'], 2)
         self.assertEqual(StorefrontImage.objects.count(), 1)
+
+    # ---- owner's decision of 2026-10-14: a code is compared as a person reads it ----
+
+    def test_a_code_is_found_whatever_its_case_spacing_or_unicode_form(self):
+        # A stored code is printable ASCII without spaces (`validate_barcode`): the
+        # variations are on the side of the file name, and both sides go through one key.
+        body = self.staged([
+            picture('cod-a2.png', ONE),                          # case
+            picture('ＣＯＤ－Ａ２_2.png', TWO),                     # full-width, read through NFKC
+            picture('Cod-A2  .png', THREE),                      # spaces around
+            picture('7751234567892_2.png', TWO),                 # a barcode, as before
+        ], images_zip=archive([('cod-a1\u00a0.png', FOUR)]))      # a non-breaking space (in a ZIP it survives)
+        self.assertEqual(self.unmatched(body), {})
+        self.assertEqual(self.names(self.row(body, self.cable)), ['Cod-A2  .png', 'cod-a2.png', 'ＣＯＤ－Ａ２_2.png'])
+        self.assertEqual(self.names(self.row(body, self.phone)), ['cod-a1\u00a0.png', '7751234567892_2.png'])
+        self.assertEqual(image_import.image_code_key('  ＡＢ\u00a0 c\tD  '), 'ab c d')
+        self.assertEqual(image_import.image_code_key('Straße'), image_import.image_code_key('STRASSE'))
+        # And apply finds them the same way.
+        response = self.apply(body['id'])
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((len(self.gallery(self.cable)), len(self.gallery(self.phone))), (3, 2))
+
+    def test_a_code_that_two_products_share_once_compared_is_refused_and_not_assigned(self):
+        lower = self.product('Minúscula', 'abcd')
+        upper = self.product('Mayúscula', 'ABCD')
+        body = self.staged([picture('Abcd.png', ONE), picture('COD-A2.png', TWO)])
+
+        self.assertEqual(self.unmatched(body), {'Abcd.png': 'ambiguous_code'})
+        said = next(row for row in body['rows'] if row['action'] == 'skip')['warnings'][0]
+        self.assertIn('coincide con más de un producto', said)
+        self.assertIn('Abcd.png', said)
+        self.assertEqual(StorefrontImage.objects.count(), 1)      # not even stored
+        self.assertEqual(body['counts']['error'], 0)              # the rest of the load is good
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual((self.gallery(lower), self.gallery(upper)), ([], []))
+        self.assertEqual(len(self.gallery(self.cable)), 1)
+
+    def test_a_whole_name_that_is_ambiguous_does_not_fall_back_to_the_shorter_code(self):
+        self.product('Adaptador', 'XYZW')
+        self.product('Adaptador dos', 'xyzw-2')
+        self.product('Adaptador tres', 'XYZW-2')
+        body = self.staged([picture('XYZW-2.png', ONE)])
+        self.assertEqual(self.unmatched(body), {'XYZW-2.png': 'ambiguous_code'})
+        self.assertIn('coincide con más de un producto', body['rows'][0]['warnings'][0])
+
+    def test_two_different_files_whose_names_compare_equal_are_an_error_of_that_product(self):
+        body = self.staged([picture('COD-A2.png', ONE), picture('ＣＯＤ-Ａ2.png', TWO)])
+        row = self.row(body, self.cable)
+        self.assertEqual(row['action'], 'error')
+        self.assertIn('más de un archivo', ' '.join(row['errors']))
+
+    def test_two_copies_whose_names_compare_equal_go_in_once(self):
+        body = self.staged([picture('COD-A2.png', ONE), picture('ＣＯＤ-Ａ2.png', ONE)])
+        row = self.row(body, self.cable)
+        self.assertEqual((row['action'], row['data']['will_add']), ('update', 1))
+
+    def test_what_has_no_product_is_listed_and_the_rest_applies_and_stays_listed(self):
+        """Owner's decision of 2026-10-14: images without a product do not stop the rest."""
+        body = self.staged([picture('NO-EXISTE.png', ONE), picture('COD-A2.png', TWO)])
+        self.assertTrue(body['is_applicable'])
+        applied = self.apply(body['id'])
+        self.assertEqual(applied.status_code, 200, applied.content)
+        self.assertEqual(len(self.gallery(self.cable)), 1)
+        job = self.api.get(f'/api/admin/imports/{body["id"]}/').json()
+        self.assertEqual(job['summary']['unmatched'], 1)
+        self.assertEqual(self.unmatched(job), {'NO-EXISTE.png': 'no_product'})
 
     def test_what_is_already_in_the_gallery_is_not_added_again(self):
         self.loaded([picture('COD-A1.png', ONE)])
@@ -400,18 +466,38 @@ class PreviewByWorkbookTest(_Base):
 
     def test_what_is_wrong_with_a_row_is_an_error_of_that_row(self):
         body = self.staged([picture('frontal.png', ONE)], book=image_book([
-            ['NO-EXISTE', '', 'frontal.png'],          # 2: no such product
-            ['COD-A1', '', 'falta.png'],               # 3: the file did not come
-            ['COD-A2', '', ''],                        # 4: names no file
-            ['', '', 'frontal.png'],                   # 5: names no product
+            ['COD-A1', '', 'falta.png'],               # 2: the file did not come
+            ['COD-A2', '', ''],                        # 3: names no file
+            ['', '', 'frontal.png'],                   # 4: names no product
         ]))
         errors = {row['row']: ' '.join(row['errors']) for row in body['rows']}
-        self.assertIn('No existe un producto', errors[2])
-        self.assertIn('falta.png', errors[3])
-        self.assertIn('no está entre los archivos adjuntos', errors[3])
-        self.assertIn('no indica ninguna imagen', errors[4])
-        self.assertIn('Falta el código', errors[5])
-        self.assertEqual(body['counts']['error'], 4)
+        self.assertIn('falta.png', errors[2])
+        self.assertIn('no está entre los archivos adjuntos', errors[2])
+        self.assertIn('no indica ninguna imagen', errors[3])
+        self.assertIn('Falta el código', errors[4])
+        self.assertEqual(body['counts']['error'], 3)
+        self.assertEqual(StorefrontImage.objects.count(), 0)
+
+    def test_a_row_whose_code_is_nobody_s_is_listed_and_the_rest_applies(self):
+        """Owner's decision of 2026-10-14: a picture without a product does not stop the load."""
+        body = self.staged([picture('frontal.png', ONE), picture('cable.png', TWO)], book=image_book([
+            ['NO-EXISTE', '', 'frontal.png'], ['cod-a2', '', 'cable.png']]))
+        rows = {row['row']: row for row in body['rows']}
+        self.assertEqual((rows[2]['action'], rows[2]['errors']), ('skip', []))
+        self.assertIn('ningún producto de esta empresa tiene ese código', rows[2]['warnings'][0])
+        self.assertEqual(rows[3]['action'], 'update')               # «cod-a2» is COD-A2
+        self.assertEqual((body['counts']['error'], body['summary']['unmatched']), (0, 1))
+        self.assertEqual(body['summary']['media']['orphan_names'], ['frontal.png'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(len(self.gallery(self.cable)), 1)
+
+    def test_a_row_whose_code_two_products_share_once_compared_is_refused_and_not_assigned(self):
+        self.product('Minúscula', 'abcd')
+        self.product('Mayúscula', 'ABCD')
+        body = self.staged([picture('a.png', ONE)], book=image_book([['Abcd', '', 'a.png']]))
+        row = body['rows'][0]
+        self.assertEqual(row['action'], 'skip')
+        self.assertIn('coincide con más de un producto', row['warnings'][0])
         self.assertEqual(StorefrontImage.objects.count(), 0)
 
     def test_a_product_named_in_two_rows_is_an_error(self):
@@ -440,7 +526,8 @@ class PreviewByWorkbookTest(_Base):
             headers=['Código', 'Nombre', 'Precio de venta', 'Imagen principal', 'Imágenes'], sheet='Productos')
         body = self.staged([picture('frontal.png', ONE)], book=book)
         self.assertEqual(self.row(body, self.phone)['action'], 'update')
-        self.assertEqual(body['counts']['error'], 1)           # NUEVO-1 is nobody: it is not created
+        # NUEVO-1 is nobody: it is not created, and (decision of 2026-10-14) it does not stop the rest.
+        self.assertEqual((body['counts']['error'], body['counts']['skip']), (0, 1))
         self.assertEqual(Product.objects.filter(company=self.company).count(), 2)
         self.phone.refresh_from_db()
         self.assertEqual((self.phone.name, str(self.phone.price)), ('Teléfono', '100.00'))
