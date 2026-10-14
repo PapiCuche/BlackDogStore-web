@@ -21,21 +21,31 @@ Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código
 - **D1 · Alcance.** Sólo pedidos EN LÍNEA con `status=paid` cuyos productos no han salido:
   `pending`, `confirmed`, `preparing`, `ready_for_pickup` y también `cancelled` («Cancelado
   operativo», que nunca movió nada). `shipped`/`delivered` se rechazan (409 `goods_left`, «ya
-  salió: requiere devolución», flujo futuro). Ventas de caja (409 `pos_sale`) y pedidos sin
-  pagar (409 `not_paid`) quedan fuera; estos últimos, para una fase posterior.
+  salió: requiere devolución», flujo futuro). **«No ha salido» se lee de la historia del
+  pedido, no sólo de su estado actual** (revisión, P1): también es `goods_left` si algún
+  equipo del pedido tiene `OrderUnit.left_at`, si el pedido pasó alguna vez a enviado o
+  entregado (registro `order_fulfillment_status_changed`) o si su entrega tiene
+  `shipped_at`. Devolver a «en preparación» o a «Cancelado operativo» un pedido entregado no
+  lo hace cancelable. Ventas de caja (409 `pos_sale`) y pedidos sin pagar (409 `not_paid`)
+  quedan fuera; estos últimos, para una fase posterior.
 - **D2 · Stock.** Siempre se repone, una vez: cada `sale_exit` del pedido vuelve con su propio
   `order_cancel_return` (con el pedido) a la misma sucursal, por `create_stock_movement` y sus
   bloqueos; los equipos con serie vendidos al pedido vuelven a «disponible», uno por línea, y
   su `OrderUnit` se suelta (`released_by_return`). Una línea que no descontó stock al pagar
-  (faltante) no tiene nada que devolver.
+  (faltante) no tiene nada que devolver, y un equipo ya devuelto con `return_unit` antes de
+  cancelar (su `return_entry` nombra el pedido) no se repone dos veces.
 - **D3 · Permiso.** `sales.orders.manage` con el alcance de empresa y sucursal de las demás
   vistas de pedidos (fuera de alcance, 404). Sin capacidad nueva ni cambios de rol. En el
   puente legacy del piloto: ventas, administrador y superadministrador (no inventario, como
-  la regla histórica del despacho).
+  la regla histórica del despacho). Los motivos por los que no se puede cancelar sólo se
+  muestran a quien podría cancelar.
 - **D4 · Fiscal.** Una boleta/factura viva (01/03 no rechazada) se conserva intacta; la
   cancelación procede y registra «nota de crédito / baja pendiente» (`fiscal_pending` y el
   documento en texto), también en la auditoría y en el detalle. Nunca se emite una nota de
-  crédito ni una baja automáticamente.
+  crédito ni una baja automáticamente. Emitir el comprobante bloquea el pedido antes de
+  reservar el correlativo (pedido, luego serie) y exige que siga PAGADO: no se emite sobre un
+  pedido cancelado mientras tanto. La nota de venta interna hace lo mismo antes de gastar
+  un número `NV-`.
 
 Además: `paid` se queda en verdadero y no se toca ningún `PaymentTransaction` ni la pasarela;
 el pago lee ese `paid` para archivar como `DUPLICATE` cualquier cobro posterior (con

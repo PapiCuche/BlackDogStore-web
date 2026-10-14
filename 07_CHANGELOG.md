@@ -23,6 +23,14 @@ En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (a
 - Un cobro que llega para un pedido cancelado se archiva como cobro duplicado, con el estado
   del pedido en la auditoría; el pedido sigue cancelado y pagado.
 - Marcar un fallo de pago sólo afecta a un pedido que todavía espera su pago.
+- Un pedido que alguna vez salió (equipo marcado como entregado, paso por enviado o
+  entregado, o fecha de envío en su entrega) no se cancela aunque se le devuelva a un estado
+  anterior.
+- No se emite boleta/factura ni nota de venta interna de un pedido que se canceló mientras
+  tanto; ninguno gasta su número.
+- Un equipo devuelto antes de cancelar no se repone dos veces.
+- El resumen de un cliente (pedidos e importe pagados, última compra) ya no cuenta los
+  pedidos cancelados.
 
 **Not changed**
 - Pagos (no hay reembolso), comprobantes fiscales (ni nota de crédito ni baja automáticas),

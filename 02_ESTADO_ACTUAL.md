@@ -26,9 +26,13 @@ desplegar.** Una migración nueva, `0124` (aditiva). Sin capacidades nuevas ni c
   `paid` sigue verdadero, ningún intento de pago cambia y no se llama a la pasarela; un cobro
   que llegue después queda como cobro duplicado (evidencia) y el pedido sigue cancelado.
   Detalle de decisiones en DEC-ORDER-CANCEL-01; deuda en `docs/AUDIT_MEMORY.md` §10.
-- Pruebas en la rama: `test_order_cancel` (31, con tres carreras de dos conexiones),
-  regresión focal 2271 pruebas en verde; Jest 1354/1354; `tsc` y lint sin errores;
-  `makemigrations --check` sin cambios.
+- Revisión independiente (`e142874`): «no ha salido» se lee de la historia del pedido (P1),
+  boleta/factura y nota interna re-comprueban el pago con el pedido bloqueado (P2), un
+  equipo devuelto antes no impide ni duplica la reposición, estadísticas del cliente sin
+  cancelados y pruebas que antes no fijaban nada.
+- Pruebas en la rama: `test_order_cancel` (44, con tres carreras de dos conexiones),
+  regresión focal 2451 pruebas en verde; Jest 1356/1356; `tsc` y lint sin errores;
+  `makemigrations --check` sin cambios (sólo `0124`).
 
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
