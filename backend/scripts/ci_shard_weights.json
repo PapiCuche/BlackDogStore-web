@@ -13,6 +13,7 @@
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",
   "store.test_register_race.AtTheSameInstantTest",
+  "store.test_sales_note_control.VoidAtTheSameInstantTest",
   "store.test_stock_units.ConcurrentSaleTest",
   "store.test_verification_code.ConcurrencyTest",
   "store.tests.C11IdempotencyRecoveryTest",

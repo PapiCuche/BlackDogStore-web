@@ -302,18 +302,19 @@ def _restore_stock(order, actor, reason, request):
 
 def _void_sales_note(order, actor, reason) -> bool:
     """The internal note is kept, as void. Its papers say so from now on."""
+    from .sales_note_control import REASON_ORDER_CANCELLED, mark_void
+
     note = SalesNote.objects.select_for_update().filter(order=order, status=SalesNote.STATUS_ISSUED).first()
     if note is None:
         return False
-    note.status = SalesNote.STATUS_VOID
-    note.metadata = {
-        **(note.metadata or {}),
+    # SALES-NOTE-CONTROL-01: the same void record the master's void writes,
+    # with its own reason type. The metadata #119 kept stays as it was.
+    mark_void(note, actor=actor, reason_type=REASON_ORDER_CANCELLED, reason=reason, extra_metadata={
         'voided_at': timezone.now().isoformat(),
         'voided_by': getattr(actor, 'pk', None),
         'void_reason': reason,
         'voided_by_order_cancellation': True,
-    }
-    note.save(update_fields=['status', 'metadata'])
+    })
     return True
 
 

@@ -155,6 +155,9 @@ from .access_views import (
     CapabilityCatalogView, InternalDashboardView, MyCompanyAccessView,
 )
 from django.urls import path, include
+from .sales_note_control_views import (
+    AdminSalesNoteDetailView, AdminSalesNoteListView, AdminSalesNoteRemarkView, AdminSalesNoteVoidView,
+)
 
 router = DefaultRouter()
 router.register('categories', CategoryViewSet, basename='category')
@@ -269,6 +272,11 @@ urlpatterns = [
     path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
     path('admin/fiscal-documents/<int:pk>/pdf/', AdminFiscalDocumentPdfView.as_view(), name='admin-fiscal-document-pdf'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
+    # SALES-NOTE-CONTROL-01 — issued notes: list, detail, the master's void, internal remarks.
+    path('admin/sales-notes/', AdminSalesNoteListView.as_view(), name='admin-sales-notes'),
+    path('admin/sales-notes/<int:pk>/', AdminSalesNoteDetailView.as_view(), name='admin-sales-note-detail'),
+    path('admin/sales-notes/<int:pk>/void/', AdminSalesNoteVoidView.as_view(), name='admin-sales-note-void'),
+    path('admin/sales-notes/<int:pk>/remarks/', AdminSalesNoteRemarkView.as_view(), name='admin-sales-note-remarks'),
 
     # --- Phase 2D: multi-branch inventory ---
     # The Phase 6.0 routes above keep their paths and their names; they gained a

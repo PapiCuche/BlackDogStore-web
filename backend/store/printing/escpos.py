@@ -270,6 +270,10 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     r.rule()
 
     r.line(ctx['title'].upper(), align='center', bold=True)
+    if ctx.get('stamp'):
+        # SALES-NOTE-CONTROL-01: a void note says so on the roll as well — a
+        # ticket queued before the void still prints marked.
+        r.line(ctx['stamp'], align='center', bold=True, large=True)
     r.line(ctx['number'], align='center', bold=True, large=True)
     r.line('Número interno del sistema. No es una serie fiscal.', align='center')
     r.row('Fecha:', ctx['issued_at'])

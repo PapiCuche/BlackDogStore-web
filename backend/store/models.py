@@ -1530,6 +1530,28 @@ class SalesNote(models.Model):
     pdf_generated_at = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
+    # SALES-NOTE-CONTROL-01 — THE VOID RECORD. Written once, by the one writer
+    # (`sales_note_control.mark_void`): the platform master's act or the
+    # cancellation of the order. Voiding never touches the number, the issue
+    # date, the lines, the order, a payment or the series.
+    VOID_REASON_TEST = 'prueba'
+    VOID_REASON_ERROR = 'error'
+    VOID_REASON_OTHER = 'otro'
+    VOID_REASON_ORDER_CANCELLED = 'pedido_cancelado'
+    VOID_REASON_CHOICES = [
+        (VOID_REASON_TEST, 'Prueba'),
+        (VOID_REASON_ERROR, 'Error de emisión'),
+        (VOID_REASON_OTHER, 'Otro motivo'),
+        (VOID_REASON_ORDER_CANCELLED, 'Pedido cancelado'),
+    ]
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sales_notes_voided',
+    )
+    void_reason_type = models.CharField(max_length=20, choices=VOID_REASON_CHOICES, blank=True)
+    void_reason = models.CharField(max_length=500, blank=True)
+
     class Meta:
         ordering = ['-created_at', '-id']
         constraints = [
@@ -1552,6 +1574,39 @@ class SalesNote(models.Model):
 
     def __str__(self):
         return f"SalesNote({self.number}, order={self.order_id})"
+
+
+class SalesNoteRemark(models.Model):
+    """
+    SALES-NOTE-CONTROL-01 — an internal observation about an issued note.
+
+    APPEND-ONLY. A remark is history: written once, never edited or deleted
+    (`save` refuses an update, `delete` refuses outright). A correction is a new
+    remark. NEVER PRINTED — the paper of a note says what it said when it was
+    issued; remarks live only in the panel.
+    """
+
+    sales_note = models.ForeignKey(SalesNote, on_delete=models.PROTECT, related_name='remarks')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sales_note_remarks',
+    )
+    text = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError('Una observación de la nota de venta no se modifica: añade otra.')
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('Una observación de la nota de venta no se borra.')
+
+    def __str__(self):
+        return f"SalesNoteRemark({self.sales_note_id}, {self.created_at:%Y-%m-%d})"
 
 
 class OrderCancellation(models.Model):

@@ -92,6 +92,7 @@ def authenticate_agent(raw_token: str):
 # -- encolar ---------------------------------------------------------------------
 
 CANCELLED_REFUSAL = 'El pedido está cancelado: su ticket no se imprime. Descarga el PDF, que lo marca como anulado.'
+VOID_NOTE_REFUSAL = 'La nota de venta está anulada: su ticket no se imprime. Descarga el PDF, que la marca como anulada.'
 
 
 def _is_authoritative(order) -> bool:
@@ -205,6 +206,10 @@ def enqueue_manual(*, order, printer, key: str, actor):
     kind, document, note = printable_document(order)
     if kind is None:
         raise PrintError('Este pedido todavía no tiene un documento que imprimir.')
+    if note is not None and note.status == note.STATUS_VOID:
+        # SALES-NOTE-CONTROL-01: like a cancelled order's, a void note is not
+        # reprinted on the roll. Its PDF (marked «ANULADA») stays downloadable.
+        raise PrintError(VOID_NOTE_REFUSAL)
     key = (key or '').strip()
     if not key:
         raise PrintError('Falta la clave de idempotencia.')
