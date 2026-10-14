@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — SOCIAL-AUTH-01 (rama local `feat/social-auth`)
+
+**Added**
+- «Continuar con Facebook» (Authorization Code + PKCE) y «Continuar con Apple» (Sign in
+  with Apple, `form_post`) para cuentas de comprador, junto a Google, que no cambia.
+- «Mi cuenta» › Cuentas vinculadas: ver, vincular (con la contraseña) y desvincular.
+- Integraciones `facebook` y `apple` en la consola; `GET /api/auth/social/config/`.
+- `docs/acceso-con-redes-sociales.md`: funcionamiento y configuración en Google Cloud,
+  Meta for Developers y Apple Developer, con las direcciones de vuelta por dominio.
+
+**Security**
+- Intento de un solo uso, con caducidad y atado al navegador; verificación de firma,
+  emisor, audiencia, caducidad y `nonce`; ningún token del proveedor guardado; ninguna
+  vinculación automática por correo; Facebook/Apple nunca abren cuentas del equipo.
+
+**Not verified**
+- Sin credenciales: ningún inicio real con Facebook o Apple.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

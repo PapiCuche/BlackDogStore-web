@@ -1635,3 +1635,36 @@ archivos de productos activos, el aviso de la carga y el apóstrofo.
   carga de imágenes añade a productos que ya existen.
 - Deudas que siguen como están, documentadas: ORDER-HISTORY-LIVE-NAME,
   IMPORT-STATE-NEVER-WRITES e IMPORT-ID-FOREIGN-WARNINGS.
+
+### DEC-SOCIAL-01 · Facebook y Apple abren cuentas de comprador por un flujo de redirección terminado en el servidor
+
+Fase SOCIAL-AUTH-01 (rama `feat/social-auth`). Operación: `docs/acceso-con-redes-sociales.md`.
+
+- **Google no cambia** (DEC-GOOGLE-01): su flujo de ID token, su vinculación con 409 y
+  contraseña y su comportamiento con cuentas del equipo. `social_identity.py` lo lista
+  sólo para decir si está activo y para desvincular.
+- **Facebook: código + PKCE S256 + `state`**, canjeado una vez en el servidor con la clave
+  secreta; el token de usuario se comprueba con `debug_token` (esta app, válido, esta
+  persona) antes de creer `/me`, que va firmado con `appsecret_proof`.
+- **Apple: código + `state` + `nonce`, `form_post`.** Sin PKCE (Apple no lo documenta para
+  este flujo). El POST de Apple no lleva las cookies `Lax`, así que sólo entrega el código
+  al intento y redirige (303) a un GET del mismo sitio, que es quien decide. El secreto de
+  cliente es un JWT ES256 de cinco minutos; el `id_token` se verifica (RS256 fijado antes de
+  pedir clave, claves de Apple, emisor, audiencia = Services ID, caducidad, `nonce`). El
+  `id_token` del POST no se lee.
+- **El intento vive en el servidor** (caché, como el `nonce` de Google): diez minutos, un
+  solo uso (`cache.add`), y atado al navegador por una cookie HttpOnly cuyo resumen guarda.
+- **El correo de Facebook no es el de la cuenta.** La Graph API no dice si está verificado:
+  usarlo como correo de la cuenta permitiría a quien controle una cuenta de Facebook con
+  la dirección de otra persona ocupar esa dirección (índice único) y conservar el acceso
+  cuando el dueño del buzón la recupere. Se guarda en `email_at_link` y se compara.
+- **El correo de Apple sí** (Apple lo verifica), aunque sea de reenvío; puede faltar.
+- **Nada se vincula solo**: correo con cuenta → `link_required`. Se vincula desde «Mi
+  cuenta» con la contraseña actual; sin contraseña, primero se crea una por recuperación.
+  Desvincular nunca deja la cuenta sin forma de entrar.
+- **Sólo compradores**: staff, superusuario, rol interno o cualquier `Membership` (también
+  inactiva) no entra ni vincula por Facebook/Apple, y nada de este flujo da privilegios.
+- **Sin migración**: `ExternalIdentity` ya tenía lo necesario. Sus `choices` siguen
+  nombrando sólo Google (no se validan al guardar); se ampliarán con la próxima migración
+  (deuda SOCIAL-CHOICES).
+- **La app móvil** no tiene entrada con proveedores; queda como trabajo futuro.
