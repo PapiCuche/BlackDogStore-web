@@ -324,7 +324,7 @@ class ExportAccessTest(_Base):
 
     def test_the_full_download_counts_its_three_files_in_one_line(self):
         self.get('full')
-        self.assertEqual(self.exported().get().metadata['rows'], {'products': 3, 'stock': 2, 'units': 3})
+        self.assertEqual(self.exported().get().metadata['rows'], {'products': 4, 'stock': 3, 'units': 3})
 
     def test_a_refused_download_leaves_no_audit_line(self):
         self.get('stock', branches=self.foreign_branch.pk)
@@ -337,48 +337,94 @@ class ExportAccessTest(_Base):
 # =============================================================================
 
 class ProductsExportTest(_Base):
-    def test_to_reload_it_is_the_product_template_one_row_per_product(self):
+    def test_to_reload_it_is_the_product_template_plus_the_state_one_row_per_product(self):
         title, headers, rows = self.sheet(self.get('products'))
 
         self.assertEqual(title, 'Productos')
-        self.assertEqual(headers, import_exports.PRODUCT_TEMPLATE_HEADERS)
-        # «Batería vieja» is inactive: it is not in a file to reload (see the test below).
-        self.assertEqual(rows, [
-            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno'],
+        self.assertEqual(headers[:10], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual([row[:10] for row in rows], [
+            [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', 'Inactivo'],
+            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', 'Activo'],
             ['7751234567892', 'FUN-001', 'Funda', 'Funda de silicona.', 59.9, 'Accesorios', None, None,
-             'Publicar en e-commerce'],
-            [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce'],
+             'Publicar en e-commerce', 'Activo'],
+            [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce', 'Activo'],
         ])
 
-    def test_a_file_to_reload_never_carries_an_inactive_product(self):
-        """
-        Review N2. The template has no «activo» column: an inactive product in
-        the file, reloaded where it cannot be matched (renamed, or another
-        shop), came back ACTIVE AND PUBLISHED. The report keeps them all.
-        """
+    def test_the_owners_template_does_not_gain_the_state_column(self):
+        self.assertNotIn('Estado', import_exports.PRODUCT_TEMPLATE_HEADERS)
+        template = load_workbook(io.BytesIO(self.api.get('/api/admin/products/import/template/').content)).active
+        self.assertEqual([cell.value for cell in template[1]], import_exports.PRODUCT_TEMPLATE_HEADERS)
+
+    def test_a_file_to_reload_carries_active_and_inactive_unless_a_filter_says_otherwise(self):
+        """Owner's decision D3 (2026-10-13): both by default; the filter is honoured again."""
         def names(**query):
             return [row['Nombre'] for row in self.records(self.get('products', **query))]
 
-        self.assertEqual(names(), ['Cable', 'Funda', 'Teléfono X'])
-        # Asking for them does not bring them into this file either.
-        self.assertEqual(names(is_active='false'), ['Cable', 'Funda', 'Teléfono X'])
+        self.assertEqual(names(), ['Batería vieja', 'Cable', 'Funda', 'Teléfono X'])
+        self.assertEqual(names(is_active='false'), ['Batería vieja'])
         self.assertEqual(names(mode='reimport', is_active='true'), ['Cable', 'Funda', 'Teléfono X'])
         self.assertEqual(names(mode='report'), ['Batería vieja', 'Cable', 'Funda', 'Teléfono X'])
         self.assertEqual(names(mode='report', is_active='false'), ['Batería vieja'])
+        # The audit line says the filter that was asked, which is the one that ran.
         self.get('products', is_active='false')
-        self.assertEqual(self.exported().order_by('-pk').first().metadata['filters']['is_active'], 'true')
+        self.assertEqual(self.exported().order_by('-pk').first().metadata['filters']['is_active'], 'false')
+        self.get('products')
+        self.assertEqual(self.exported().order_by('-pk').first().metadata['filters']['is_active'], '')
 
-    def test_renaming_an_inactive_product_and_reloading_creates_nothing(self):
-        """The reviewer's case: the codeless inactive product, renamed after the download."""
+    def reload(self, content, client=None):
+        client = client or self.api
+        staged = client.post('/api/admin/products/import/preview/', {'file': upload(content)}, format='multipart')
+        self.assertEqual(staged.status_code, 201, staged.content)
+        self.assertEqual(staged.json()['counts']['error'], 0, staged.json()['rows'])
+        applied = client.post(f'/api/admin/products/import/{staged.json()["id"]}/apply/')
+        self.assertEqual(applied.status_code, 200, applied.content)
+        return staged.json(), applied.json()['summary']['applied']
+
+    def test_an_inactive_product_reloaded_into_its_own_shop_is_not_reactivated(self):
         content = self.get('products').content
-        Product.objects.filter(pk=self.old.pk).update(name='Batería vieja (renombrada)')
+        self.code(self.old, 'BAT-OLD')                    # so the row finds it whatever else changes
+        content = self.get('products').content
 
-        staged = self.api.post('/api/admin/products/import/preview/', {'file': upload(content)}, format='multipart')
+        staged, applied = self.reload(content)
 
-        self.assertEqual(staged.json()['counts']['create'], 0, staged.content)
-        self.api.post(f'/api/admin/products/import/{staged.json()["id"]}/apply/')
-        self.assertEqual(Product.objects.filter(company=self.company).count(), 4)
-        self.assertFalse(Product.objects.filter(company=self.company, name='Batería vieja').exists())
+        self.assertEqual((staged['counts']['create'], staged['counts']['total']), (0, 4))
+        self.assertEqual((applied['created'], applied['updated']), (0, 0))
+        self.old.refresh_from_db()
+        self.assertFalse(self.old.is_active)
+
+    def test_a_file_with_inactive_products_reloaded_twice_changes_nothing(self):
+        before = list(Product.objects.filter(company=self.company).order_by('pk').values())
+        codes = list(ProductBarcode.objects.order_by('pk').values())
+        content = self.get('products').content
+
+        for _time in range(2):
+            staged, applied = self.reload(content)
+            self.assertEqual((staged['counts']['create'], staged['counts']['total']), (0, 4))
+            self.assertEqual(applied, {
+                'created': 0, 'updated': 0, 'images_added': 0, 'destination_changed': 0, 'publication_refused': 0})
+
+        self.assertEqual(list(Product.objects.filter(company=self.company).order_by('pk').values()), before)
+        self.assertEqual(list(ProductBarcode.objects.order_by('pk').values()), codes)
+        self.assertEqual(Product.objects.filter(company=self.company, is_active=False).count(), 1)
+
+    def test_loaded_into_another_shop_an_inactive_product_is_created_inactive_and_internal(self):
+        content = self.get('products').content
+        Category.objects.create(company=self.other, name='Accesorios', slug='accesorios')
+        Category.objects.create(company=self.other, name='Teléfonos', slug='telefonos')
+        there, _ = _p2d_member(self.other, 'exp_otra', ALL)
+
+        staged, applied = self.reload(content, _client(there))
+
+        self.assertEqual((staged['counts']['create'], applied['created']), (4, 4))
+        old = Product.objects.get(company=self.other, name='Batería vieja')
+        self.assertEqual((old.is_active, old.is_published_online), (False, False))
+        row = next(row for row in staged['rows'] if row['data']['name'] == 'Batería vieja')
+        self.assertIn('El producto está inactivo.', ' '.join(row['warnings']))
+        funda = Product.objects.get(company=self.other, name='Funda')
+        self.assertEqual((funda.is_active, funda.is_published_online), (True, True))
+        # Nothing of this shop moved.
+        self.old.refresh_from_db()
+        self.assertEqual((self.old.is_active, self.old.company_id), (False, self.company.pk))
 
     def test_codes_are_text_so_no_zero_is_lost(self):
         page = load_workbook(io.BytesIO(self.get('products').content)).active
@@ -440,7 +486,7 @@ class ProductsExportTest(_Base):
 
         self.assertEqual(staged.status_code, 201, staged.content)
         counts = staged.json()['counts']
-        self.assertEqual((counts['error'], counts['create'], counts['total']), (0, 0, 3))
+        self.assertEqual((counts['error'], counts['create'], counts['total']), (0, 0, 4))
         applied = self.api.post(f'/api/admin/products/import/{staged.json()["id"]}/apply/')
         self.assertEqual(applied.status_code, 200, applied.content)
         self.assertEqual(
@@ -713,23 +759,30 @@ class FullExportTest(_Base):
         self.assertEqual(self.page(archive, 'Stock.xlsx').title, 'Inventario')
         self.assertEqual(self.page(archive, 'Equipos.xlsx').title, 'Equipos')
 
-    def test_they_are_the_files_to_reload_of_the_active_products(self):
+    def test_they_are_the_files_to_reload_active_and_inactive_unless_filtered(self):
         archive = self.archive()
         products = self.page(archive, 'Productos.xlsx')
         stock = self.page(archive, 'Stock.xlsx')
         devices = self.page(archive, 'Equipos.xlsx')
 
-        self.assertEqual([cell.value for cell in products[1]], import_exports.PRODUCT_TEMPLATE_HEADERS)
-        self.assertEqual([row[2] for row in products.iter_rows(min_row=2, values_only=True)],
-                         ['Cable', 'Funda', 'Teléfono X'])
-        self.assertEqual([row[2] for row in stock.iter_rows(min_row=2, values_only=True)], ['Cable', 'Funda'])
+        self.assertEqual(
+            [cell.value for cell in products[1]][:10], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual([(row[2], row[9]) for row in products.iter_rows(min_row=2, values_only=True)], [
+            ('Batería vieja', 'Inactivo'), ('Cable', 'Activo'), ('Funda', 'Activo'), ('Teléfono X', 'Activo')])
+        self.assertEqual([row[2] for row in stock.iter_rows(min_row=2, values_only=True)],
+                         ['Batería vieja', 'Cable', 'Funda'])
         self.assertEqual([cell.value for cell in devices[1]], unit_import_services.HEADERS)
         self.assertEqual([row[3] for row in devices.iter_rows(min_row=2, values_only=True)],
                          ['SER-0001', 'SER-0002', 'SER-0003'])
-        # An inactive product is in none of the three, whatever is asked for.
-        asked = self.archive(is_active='false')
+        # The filter is honoured in the three files.
+        asked = self.archive(is_active='true')
         self.assertEqual([row[2] for row in self.page(asked, 'Productos.xlsx').iter_rows(min_row=2, values_only=True)],
                          ['Cable', 'Funda', 'Teléfono X'])
+        self.assertEqual([row[2] for row in self.page(asked, 'Stock.xlsx').iter_rows(min_row=2, values_only=True)],
+                         ['Cable', 'Funda'])
+        only = self.archive(is_active='false')
+        self.assertEqual([row[2] for row in self.page(only, 'Productos.xlsx').iter_rows(min_row=2, values_only=True)],
+                         ['Batería vieja'])
 
     def test_the_note_says_what_each_file_is_the_order_and_that_the_same_shop_does_not_change(self):
         note = self.archive().read('LEEME.txt').decode('utf-8')
@@ -743,6 +796,11 @@ class FullExportTest(_Base):
         self.assertIn('si el stock se movió desde la descarga', note)
         self.assertIn('vuelve a dejar cada cantidad como dice el archivo', note)
         self.assertIn('sucursales activas', note)
+        # D3: active and inactive travel, and a load never activates or deactivates what exists.
+        self.assertIn('productos activos e inactivos', note)
+        self.assertIn('«Estado»', note)
+        self.assertIn('no activa ni desactiva', note)
+        self.assertNotIn('Sólo incluye productos ACTIVOS', note)
         self.assertIn('«Stock total» del reporte de productos', note)
         self.assertIn('con número de serie', note)
         # It names no shop: the note is the platform's, the data is the tenant's.

@@ -57,12 +57,12 @@ type Download = {
 const DOWNLOADS: Download[] = [
   {
     id: "catalogue", title: "Catálogo general", kind: "products", needs: "catalogue",
-    description: "Una fila por producto: códigos, nombre, descripción, precio, categoría y destino. Para volver a cargar lleva sólo los productos activos; el reporte, todos. El «Stock total» del reporte suma toda la empresa.",
+    description: "Una fila por producto: códigos, nombre, descripción, precio, categoría y destino. Lleva activos e inactivos, salvo que filtres por estado. Para volver a cargar trae además la columna «Estado»: cargarlo no activa ni desactiva un producto que ya existe. El «Stock total» del reporte suma toda la empresa.",
   },
   {
     id: "accessories", title: "Productos por cantidad", kind: "products", needs: "catalogue",
     fixed: { type: "quantity" },
-    description: "El catálogo sin los equipos con número de serie: accesorios, repuestos y todo lo que se cuenta por cantidad. Para volver a cargar, sólo los productos activos.",
+    description: "El catálogo sin los equipos con número de serie: accesorios, repuestos y todo lo que se cuenta por cantidad.",
   },
   {
     id: "stock", title: "Stock por sucursal", kind: "stock", needs: "inventory",
@@ -74,7 +74,7 @@ const DOWNLOADS: Download[] = [
   },
   {
     id: "full", title: "Inventario completo (ZIP)", kind: "full", needs: "both",
-    description: "Productos.xlsx, Stock.xlsx y Equipos.xlsx con una hoja cada uno, y una nota con el orden para cargarlos en una tienda vacía. Sólo productos activos; siempre para volver a cargar.",
+    description: "Productos.xlsx, Stock.xlsx y Equipos.xlsx con una hoja cada uno, y una nota con el orden para cargarlos en una tienda vacía. Productos activos e inactivos; siempre para volver a cargar.",
   },
 ];
 
@@ -98,11 +98,6 @@ export function InventoryExportPanel({
 
   // Con algo puesto arriba, el ZIP ya no es «todo»: se dice en su tarjeta.
   const narrowed = chosen.length > 0 || Object.values(filters).some(Boolean);
-
-  // Un catálogo para volver a cargar lleva sólo productos activos, se pida lo que se pida:
-  // el servidor cambia el filtro, y aquí se dice en la tarjeta en vez de callarlo.
-  const onlyActive = (item: Download) =>
-    filters.is_active === "false" && (item.kind === "full" || (item.kind === "products" && mode === "reimport"));
 
   const set = (key: keyof typeof NO_FILTERS) => (event: React.ChangeEvent<HTMLSelectElement>) =>
     setFilters((current) => ({ ...current, [key]: event.target.value }));
@@ -254,12 +249,6 @@ export function InventoryExportPanel({
                 <p role="alert" className="mt-1 text-xs font-semibold text-warning">
                   Con los filtros o las sucursales de arriba NO es el inventario completo: lleva sólo lo que
                   coincide. Para llevarlo todo, quítalos.
-                </p>
-              ) : null}
-              {onlyActive(item) ? (
-                <p role="alert" className="mt-1 text-xs font-semibold text-warning">
-                  Este archivo lleva sólo productos activos: el filtro «Inactivos» no le aplica.
-                  {item.kind === "products" ? " Para verlos, descarga el reporte." : ""}
                 </p>
               ) : null}
               {item.kind === "units" ? (

@@ -646,6 +646,17 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         elif not destination and not product_id:
             destination = import_formats.DESTINATION_INTERNAL
 
+        # «Estado», the column of a file to reload. It decides how a NEW product
+        # is born and nothing else: see below, where the product is known.
+        wants_active = import_formats.parse_state(fields.get('is_active', ''))
+        if wants_active is None:
+            labels = import_formats.STATE_LABELS
+            errors.append(
+                f'«{fields.get("is_active", "").strip()}» no es un estado. Escribe '
+                f'«{labels[True]}» o «{labels[False]}», o deja la celda vacía.'
+            )
+            wants_active = ''
+
         # §18 — a code this row would WRITE that another product already holds.
         #
         # Ownership matching normally resolves this first: if a code is held,
@@ -773,6 +784,22 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 action = BulkImportRow.CREATE
 
         state = standing.get(product_id)
+        # A LOAD NEVER ACTIVATES OR DEACTIVATES A PRODUCT THAT EXISTS (owner's
+        # decision, 2026-10-13) — in either direction. A file downloaded last
+        # month must not switch back on what was retired since, nor retire what
+        # was switched on. When the file and the product disagree, the row says so.
+        born_active = wants_active is not False
+        if action == BulkImportRow.UPDATE and state is not None and wants_active != '' \
+                and wants_active != state['is_active']:
+            labels = import_formats.STATE_LABELS
+            warnings.append(
+                f'El archivo dice «{labels[wants_active]}» y el producto está '
+                f'{"activo" if state["is_active"] else "inactivo"}: esta carga no activa ni desactiva '
+                f'productos; se queda como está.'
+            )
+        # How a NEW product is born. None on a product that exists: not touched.
+        normalized['is_active'] = born_active if action == BulkImportRow.CREATE else None
+
         # A ROW THAT ASKS FOR THE WEB FOR WHAT IS NOT ELIGIBLE (owner's decision,
         # 2026-10-13). Not an error: everything else the row says is applied,
         # and the product stays — or is born — «solo stock interno», with the
@@ -787,7 +814,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         )
         if asks_to_publish:
             refused = product_publication.problems_of(
-                is_active=state['is_active'] if state is not None else True,
+                is_active=state['is_active'] if state is not None else born_active,
                 price=price if price is not None else (state['price'] if state is not None else None),
                 has_image=bool(
                     (state is not None and state['image_url']) or gallery['count'] or row_images or image_url
@@ -1030,8 +1057,10 @@ def apply_products(*, job, actor):
             # Only what the approved row says. A row with no key (a job staged
             # before the column existed) asked for nothing: internal.
             publish = data.get('destination', '') == import_formats.DESTINATION_ONLINE
+            # «Estado» of the file: only here, where the product is born.
+            born_active = data.get('is_active') is not False
             if publish and product_publication.problems_of(
-                is_active=True, price=price,
+                is_active=born_active, price=price,
                 has_image=bool(data.get('image_url') or data.get('images')),
                 has_category=category_id is not None, require_image=require_image,
             ):
@@ -1045,6 +1074,7 @@ def apply_products(*, job, actor):
                 image_url=data.get('image_url', ''),
                 category_id=category_id,
                 is_published_online=publish,
+                is_active=born_active,
             )
             product.full_clean()
             product.save()

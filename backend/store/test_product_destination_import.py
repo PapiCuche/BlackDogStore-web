@@ -447,6 +447,85 @@ class PublishingWhatIsNotEligibleIsRefusedRowByRowTest(_Base):
         self.assertEqual(body['rows'][0]['data']['name'], 'Sin categoría')
 
 
+class StateColumnTest(_Base):
+    """
+    INVENTORY-UNIFIED-01, owner's decision D3 (2026-10-13). The file to reload
+    carries «Estado» (Activo / Inactivo) so that inactive products can travel.
+    The column is optional and a load NEVER activates or deactivates a product
+    that exists: it only decides how a NEW product is born.
+    """
+
+    HEADERS = [*HEADERS, 'Destino', 'Estado']
+
+    def row(self, code, name, state, *, price=100, category='Repuestos', destination=None):
+        return [None, code, name, None, price, category, None, None, destination, state]
+
+    def book(self, rows):
+        return workbook_bytes(rows, headers=self.HEADERS)
+
+    def test_a_new_product_marked_inactive_is_born_inactive_and_internal(self):
+        body = self.preview(self.book([
+            self.row('EST-1', 'Descatalogado', 'Inactivo', destination=ONLINE),
+            self.row('EST-2', 'Descatalogado sin destino', 'inactivo'),
+            self.row('EST-3', 'Vigente', 'Activo', destination=ONLINE),
+            self.row('EST-4', 'Sin decir', None, destination=ONLINE),
+        ])).json()
+
+        self.assertEqual((body['counts']['create'], body['counts']['error']), (4, 0), body['rows'])
+        warned = {row['data']['name']: ' '.join(row['warnings']) for row in body['rows']}
+        self.assertIn('No se publica en e-commerce: El producto está inactivo.', warned['Descatalogado'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(
+            {p.name: (p.is_active, p.is_published_online) for p in Product.objects.filter(company=self.company)},
+            {'Descatalogado': (False, False), 'Descatalogado sin destino': (False, False),
+             'Vigente': (True, True), 'Sin decir': (True, True)})
+
+    def test_it_never_activates_or_deactivates_a_product_that_exists_and_says_so(self):
+        off = Product.objects.create(company=self.company, name='Apagado', slug='apagado', price=10, is_active=False)
+        on = Product.objects.create(company=self.company, name='Encendido', slug='encendido', price=10)
+        same = Product.objects.create(company=self.company, name='Igual', slug='igual', price=10, is_active=False)
+        for product, code in ((off, 'ESTX-1'), (on, 'ESTX-2'), (same, 'ESTX-3')):
+            ProductBarcode.objects.create(company=self.company, product=product, code=code)
+
+        body = self.preview(self.book([
+            self.row('ESTX-1', 'Apagado', 'Activo', price=11),
+            self.row('ESTX-2', 'Encendido', 'Inactivo', price=12),
+            self.row('ESTX-3', 'Igual', 'Inactivo', price=13),
+        ])).json()
+
+        self.assertEqual((body['counts']['update'], body['counts']['error']), (3, 0), body['rows'])
+        warned = {row['data']['name']: ' '.join(row['warnings']) for row in body['rows']}
+        self.assertIn('El archivo dice «Activo» y el producto está inactivo', warned['Apagado'])
+        self.assertIn('El archivo dice «Inactivo» y el producto está activo', warned['Encendido'])
+        for name in ('Apagado', 'Encendido'):
+            self.assertIn('esta carga no activa ni desactiva productos', warned[name])
+        self.assertEqual(warned['Igual'], '')
+
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(
+            {p.name: (p.is_active, p.price) for p in Product.objects.filter(company=self.company)},
+            {'Apagado': (False, 11), 'Encendido': (True, 12), 'Igual': (False, 13)})
+
+    def test_it_is_read_as_people_write_it_and_anything_else_is_an_error_that_names_both(self):
+        for position, (written, active) in enumerate((
+            ('Activo', True), (' ACTIVO ', True), ('activo', True), ('Inactivo', False), ('  inactivo', False),
+        )):
+            with self.subTest(written):
+                body = self.preview(self.book([self.row(f'ESTW-{position}', f'Producto {position}', written)])).json()
+                self.assertEqual(body['counts']['error'], 0, body['rows'])
+                self.assertIs(body['rows'][0]['data']['is_active'], active)
+        body = self.preview(self.book([self.row('ESTW-9', 'Raro', 'Descontinuado')])).json()
+        self.assertEqual(body['counts']['error'], 1)
+        self.assertIn('«Descontinuado» no es un estado', body['rows'][0]['errors'][0])
+        self.assertIn('«Activo» o «Inactivo»', body['rows'][0]['errors'][0])
+
+    def test_a_file_without_the_column_loads_as_before(self):
+        body = self.imported([product_row('ESTO-1', 'De antes', category='Repuestos', destination=ONLINE)])
+        self.assertEqual(body['counts']['create'], 1)
+        self.assertEqual(
+            (self.product('De antes').is_active, self.product('De antes').is_published_online), (True, True))
+
+
 class TheColumnIsNeverSilentlyIgnoredTest(_Base):
     """
     A cell that says «Solo stock interno» and is not read publishes the product.

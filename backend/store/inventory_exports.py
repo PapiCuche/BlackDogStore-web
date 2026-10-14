@@ -15,7 +15,10 @@ TWO MODES
 ---------
 `reimport` is exactly what the matching importer asks for — same sheet name,
 same headers, taken from the importers' own constants — so the file goes back
-in unchanged. Loaded into the SAME shop it changes nothing: a product matches
+in unchanged. The catalogue adds «Estado» (Activo / Inactivo) to the template's
+columns: active AND inactive products travel (owner's decision, 2026-10-13),
+and the importer reads that column only to decide how a NEW product is born —
+it never activates or deactivates one that exists. Loaded into the SAME shop it changes nothing: a product matches
 itself, a quantity equals itself, and a device that is already registered is
 refused row by row. That last one is the point: reloading can never make stock
 twice.
@@ -53,7 +56,9 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from . import import_exports, product_publication, unit_import_services
-from .import_formats import DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE
+from .import_formats import (
+    DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE, STATE_HEADER, STATE_LABELS,
+)
 from .models import BranchStock, Product, StockUnit
 from .xlsx_reader import guard_text
 
@@ -84,6 +89,9 @@ FILENAMES = {
 ZIP_PRODUCTS, ZIP_STOCK, ZIP_UNITS, ZIP_NOTE = 'Productos.xlsx', 'Stock.xlsx', 'Equipos.xlsx', 'LEEME.txt'
 
 PRODUCT_SHEET = 'Productos'
+#: The file to RELOAD: the owner's template plus what only a download knows.
+#: The template itself does not gain these columns.
+PRODUCT_RELOAD_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [STATE_HEADER]
 PRODUCT_REPORT_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [
     'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar',
 ]
@@ -168,21 +176,6 @@ class ExportFilters:
             'type': self.type, 'stock': self.stock, 'condition': self.condition,
             'visibility': self.visibility, 'is_active': self.is_active,
         }
-
-
-def effective_filters(kind: str, mode: str, filters: ExportFilters) -> ExportFilters:
-    """
-    The filters a download really runs with.
-
-    A CATALOGUE FILE TO RELOAD IS OF ACTIVE PRODUCTS ONLY — alone or inside the
-    ZIP, and whatever `is_active` was asked. The product template has no
-    «activo» column: an inactive product reloaded where it cannot be matched
-    (it was renamed, or the file goes into another shop) is CREATED, active and
-    on sale. The report is for reading and keeps them all.
-    """
-    if kind == 'full' or (kind == 'products' and mode == MODE_REIMPORT):
-        return ExportFilters(**{**filters.__dict__, 'is_active': 'true'})
-    return filters
 
 
 # =============================================================================
@@ -289,14 +282,13 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
     """
     The catalogue. `(bytes, rows)`.
 
-    `reimport` is the product template: its sheet, its headers. The image
-    columns are left EMPTY — an empty cell changes nothing on import, and a
-    picture travels as a file, not as a cell. ACTIVE PRODUCTS ONLY, whatever
-    was asked (`effective_filters`); the report lists them all.
+    `reimport` is the product template — its sheet, its headers — plus
+    «Estado». The image columns are left EMPTY: an empty cell changes nothing
+    on import, and a picture travels as a file, not as a cell. Active and
+    inactive products, unless `is_active` narrows it.
 
     Existence (`stock`) is the company's total here: the catalogue has no branch.
     """
-    filters = effective_filters('products', mode, filters)
     queryset = _products(company, filters).select_related('category')
     if filters.stock == STOCK_IN:
         queryset = queryset.filter(inventory__gt=0)
@@ -334,6 +326,8 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
                 'Sí' if product.is_published_online else 'No',
                 ' '.join(labels[code] for code in problems),
             ]
+        else:
+            row += [STATE_LABELS[product.is_active]]
         rows.append(row)
 
     if report:
@@ -343,8 +337,8 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
         )
     else:
         payload = _workbook_bytes(
-            PRODUCT_SHEET, import_exports.PRODUCT_TEMPLATE_HEADERS, rows, text_columns=(0, 1),
-            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28],
+            PRODUCT_SHEET, PRODUCT_RELOAD_HEADERS, rows, text_columns=(0, 1),
+            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 12],
         )
     return payload, len(rows)
 
@@ -508,8 +502,8 @@ def readme_text() -> str:
         '',
         f'1. {ZIP_PRODUCTS}',
         '   El catálogo: una fila por producto (código de barras, código, nombre,',
-        '   descripción, precio, categoría y destino). Las columnas de imágenes van',
-        '   vacías: las imágenes no viajan en este archivo.',
+        '   descripción, precio, categoría, destino y estado). Las columnas de imágenes',
+        '   van vacías: las imágenes no viajan en este archivo.',
         '   Se carga en Productos > Carga de productos.',
         '',
         f'2. {ZIP_STOCK}',
@@ -523,9 +517,15 @@ def readme_text() -> str:
         '   de baja no están. La columna «Motivo / referencia» va vacía: se indica al cargar.',
         '   Se carga en Inventario > Carga de equipos.',
         '',
-        'Sólo incluye productos ACTIVOS, y el stock y los equipos de las sucursales activas a',
-        'las que tiene acceso quien descargó. El «Stock total» del reporte de productos es otra',
-        'cifra: suma toda la empresa, también lo que quede en una sucursal desactivada.',
+        'Incluye productos activos e inactivos (salvo que se haya filtrado), y el stock y los',
+        'equipos de las sucursales activas a las que tiene acceso quien descargó.',
+        'El «Stock total» del reporte de productos es otra cifra: suma toda la empresa,',
+        'también lo que quede en una sucursal desactivada.',
+        '',
+        'La columna «Estado» dice si cada producto está «Activo» o «Inactivo». Una carga',
+        'no activa ni desactiva un producto que ya existe: esa columna sólo decide cómo nace',
+        'uno nuevo. Un producto «Inactivo» que se carga en otra tienda se crea inactivo y como',
+        '«Solo stock interno».',
         '',
         'Para cargarlos en una tienda vacía, en este orden',
         '-------------------------------------------------',
@@ -568,11 +568,9 @@ def full_archive(company, filters: ExportFilters) -> tuple[bytes, dict]:
     """
     The three files to reload and the note, zipped in memory. `(bytes, row counts)`.
 
-    ACTIVE PRODUCTS ONLY, whatever was asked: the product template has no
-    «active» column, so an inactive product loaded into an empty shop would
-    come back active and on sale.
+    Active and inactive products, unless `is_active` narrows it: the catalogue
+    file says which is which («Estado») and a load never switches one on.
     """
-    filters = effective_filters('full', MODE_REIMPORT, filters)
     products, product_rows = products_workbook(company, filters, MODE_REIMPORT)
     stock, stock_rows = stock_workbook(company, filters, MODE_REIMPORT)
     units, unit_rows = units_workbook(company, filters, MODE_REIMPORT)
@@ -589,11 +587,10 @@ def full_archive(company, filters: ExportFilters) -> tuple[bytes, dict]:
     return payload, {'products': product_rows, 'stock': stock_rows, 'units': unit_rows}
 
 
-def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes, dict, ExportFilters]:
-    """`(bytes, {'<what>': rows}, the filters it ran with)` for one download."""
-    filters = effective_filters(kind, mode, filters)
+def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes, dict]:
+    """`(bytes, {'<what>': rows})` for one download."""
     if kind == 'full':
-        return (*full_archive(company, filters), filters)
+        return full_archive(company, filters)
     builder = {'products': products_workbook, 'stock': stock_workbook, 'units': units_workbook}[kind]
     payload, rows = builder(company, filters, mode)
-    return payload, {kind: rows}, filters
+    return payload, {kind: rows}

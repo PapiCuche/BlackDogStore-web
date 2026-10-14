@@ -124,9 +124,7 @@ class AdminInventoryExportsView(APIView):
             filters.include_cost = no_cost is None
 
         try:
-            # `filters` comes back as the download really ran with it (a file
-            # to reload is of active products only), and that is what is logged.
-            payload, rows, filters = inventory_exports.build(kind, mode, company, filters)
+            payload, rows = inventory_exports.build(kind, mode, company, filters)
         except inventory_exports.ExportError as exc:
             return Response(exc.payload(), status=status.HTTP_400_BAD_REQUEST)
 

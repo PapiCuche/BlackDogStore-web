@@ -84,7 +84,9 @@ PRODUCT_FIELDS = {
     'image_main':  {'label': 'Imagen principal (archivo)', 'required': False},
     'image_files': {'label': 'Imágenes (archivos, separados por |)', 'required': False},
     'slug':        {'label': 'Slug',                'required': False},
-    'is_active':   {'label': 'Activo',              'required': False},
+    # «Activo» o «Inactivo». Sólo decide cómo NACE un producto nuevo: la carga
+    # nunca activa ni desactiva uno que ya existe.
+    'is_active':   {'label': 'Estado (Activo o Inactivo)', 'required': False},
     # PRODUCT-DESTINATION-01: «Publicar en e-commerce» o «Solo stock interno».
     'destination': {'label': 'Destino (e-commerce o sólo stock interno)', 'required': False},
 }
@@ -148,6 +150,23 @@ def parse_destination(text) -> str | None:
     if not key:
         return ''
     return _DESTINATION_WORDS.get(key)
+
+# =============================================================================
+# Whether a product is in use — the «Estado» column of a file to reload
+# =============================================================================
+
+STATE_HEADER = 'Estado'
+STATE_LABELS = {True: 'Activo', False: 'Inactivo'}
+_STATE_WORDS = {'activo': True, 'inactivo': False}
+
+
+def parse_state(text):
+    """True, False, '' for an empty cell — or None for anything else."""
+    key = normalize_header(text)
+    if not key:
+        return ''
+    return _STATE_WORDS.get(key)
+
 
 STOCK_FIELDS = {
     'external_id': {'label': 'ID del sistema origen', 'required': False},
@@ -268,6 +287,8 @@ def _preset_products_platform():
             # Both spellings: as the template names it now, and as the owner's
             # planning sheet named it while the feature did not exist.
             'destination': DESTINATION_HEADERS,
+            # Only in the file to reload (`inventory_exports`); the template has none.
+            'is_active': 'estado',
         },
         'notes': [],
     }

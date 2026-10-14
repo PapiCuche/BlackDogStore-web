@@ -73,8 +73,12 @@ describe('las cinco descargas', () => {
   it('dice lo que un archivo para volver a cargar no lleva y lo que hace al cargarlo', () => {
     // Revisión N2, N15, N16: sólo palabras, pero son las que evitan una sorpresa.
     show();
-    expect(card(CATALOGUE)).toHaveTextContent(/Para volver a cargar lleva sólo los productos activos; el reporte, todos/);
-    expect(card(ACCESSORIES)).toHaveTextContent(/sólo los productos activos/);
+    // Decisión D3: activos e inactivos viajan, con su columna «Estado», y cargar no reactiva nada.
+    expect(card(CATALOGUE)).toHaveTextContent(/Lleva activos e inactivos, salvo que filtres por estado/);
+    expect(card(CATALOGUE)).toHaveTextContent(/columna «Estado».*no activa ni desactiva un producto que ya existe/);
+    expect(card(ACCESSORIES)).not.toHaveTextContent(/sólo los productos activos/);
+    expect(card(FULL)).not.toHaveTextContent(/Sólo productos activos/);
+    expect(card(FULL)).toHaveTextContent(/activos e inactivos/);
     expect(card(STOCK)).toHaveTextContent(/si el stock se movió desde la descarga, volver a cargarlo lo deja como dice el archivo/i);
     expect(card(STOCK)).toHaveTextContent(/sucursales activas/);
     expect(card(DEVICES)).toHaveTextContent(/sucursales activas/);
@@ -247,25 +251,16 @@ describe('los filtros', () => {
     expect(within(card(STOCK)).queryByRole('alert')).toBeNull();
   });
 
-  it('pedir «Inactivos» en un archivo para volver a cargar se dice: ese archivo lleva sólo activos', () => {
-    // Segunda revisión: el servidor cambia el filtro por «activos» y la pantalla lo callaba.
+  it('pedir «Inactivos» vale en todas las descargas: ninguna tarjeta dice que el filtro no aplica', () => {
+    // Decisión D3: el archivo para volver a cargar lleva activos e inactivos y obedece el filtro.
     show();
-    const said = /lleva sólo productos activos: el filtro «Inactivos» no le aplica/;
-    expect(within(card(CATALOGUE)).queryByText(said)).toBeNull();
-
     fireEvent.change(screen.getByLabelText('Estado del producto'), { target: { value: 'false' } });
-    expect(within(card(CATALOGUE)).getByRole('alert')).toHaveTextContent(said);
-    expect(within(card(ACCESSORIES)).getByRole('alert')).toHaveTextContent(said);
-    expect(within(card(FULL)).getByText(said)).toBeInTheDocument();
-    // Stock y equipos sí obedecen el filtro: no llevan el aviso.
-    expect(within(card(STOCK)).queryByText(said)).toBeNull();
-
-    // El reporte lleva activos e inactivos: ahí el filtro vale y el aviso se va.
-    fireEvent.click(screen.getByRole('radio', { name: /Reporte/ }));
-    expect(within(card(CATALOGUE)).queryByText(said)).toBeNull();
-    expect(within(card(ACCESSORIES)).queryByText(said)).toBeNull();
-    // El ZIP es siempre para volver a cargar.
-    expect(within(card(FULL)).getByText(said)).toBeInTheDocument();
+    for (const name of [CATALOGUE, ACCESSORIES, STOCK, DEVICES]) {
+      expect(within(card(name)).queryByRole('alert')).toBeNull();
+    }
+    expect(screen.queryByText(/el filtro «Inactivos» no le aplica/)).toBeNull();
+    // El ZIP sí avisa, pero de otra cosa: con un filtro ya no es el inventario completo.
+    expect(within(card(FULL)).getByRole('alert')).toHaveTextContent(/NO es el inventario completo/);
   });
 
   it('no hay filtro de marca: el catálogo no tiene ese dato', () => {
