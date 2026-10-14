@@ -68,7 +68,7 @@ KNOWN = {
     'EVIDENCE_STORAGE_ACCESS_KEY_ID', 'EVIDENCE_STORAGE_SECRET_ACCESS_KEY', 'EVIDENCE_STORAGE_REGION',
     'GOOGLE_OAUTH_CLIENT_ID',
     'WHATSAPP_PROVIDER', 'WHATSAPP_GRAPH_API_VERSION', 'WHATSAPP_SEND_INLINE', 'MEASUREMENT_SEND_INLINE',
-    'DJANGO_LOG_LEVEL', 'FISCAL_ENABLED',
+    'DJANGO_LOG_LEVEL', 'FISCAL_ENABLED', 'ADMIN_EXPORT_RATE',
 }
 
 IZIPAY_KEYS = ('IZIPAY_MERCHANT_CODE', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY', 'IZIPAY_TOKEN_URL')
@@ -559,6 +559,12 @@ def check_optional(report, values):
         report.optional_data('facturación electrónica (SUNAT): apagada; encenderla necesita certificado y credenciales SOL, '
                              'que se escriben en Configuración › Integraciones › SUNAT',
                              'FISCAL_ENABLED')
+
+    # Opcional. La aplicación no se detiene por un valor mal escrito (usa 6/min
+    # y lo anota en el registro), pero aquí se dice antes de publicar.
+    rate = values.get('ADMIN_EXPORT_RATE', '').strip()
+    if rate and not re.fullmatch(r'[1-9]\d{0,6}/(s|sec|second|m|min|minute|h|hour|d|day)', rate):
+        report.bad('ADMIN_EXPORT_RATE no es un cupo como 6/min (número/periodo, con s, min, hour o day)')
 
     if not values.get('NEXT_PUBLIC_IMAGE_HOSTS', '').strip():
         report.ok('fotos de producto: sólo las subidas desde el panel (ningún host externo autorizado)')

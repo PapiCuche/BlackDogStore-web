@@ -64,7 +64,16 @@ export async function downloadInventoryExport(
     const err = await res.json().catch(() => null);
     if (res.status === 403) throw new Error("No tienes permisos para esta descarga.");
     if (res.status === 404) throw new Error("La sucursal o la categoría elegida ya no está disponible. Actualiza la página.");
-    if (res.status === 429) throw new Error("Demasiadas descargas seguidas. Espera un momento e inténtalo de nuevo.");
+    if (res.status === 429) {
+      // Lo que el servidor dice: que las descargas están limitadas y en cuántos segundos volver.
+      if (typeof err?.detail === "string" && err.detail) throw new Error(err.detail);
+      const wait = Number(res.headers.get("Retry-After"));
+      throw new Error(
+        Number.isFinite(wait) && wait > 0
+          ? `Las descargas del inventario están limitadas. Vuelve a intentarlo en ${wait} segundos.`
+          : "Las descargas del inventario están limitadas. Espera un momento e inténtalo de nuevo.",
+      );
+    }
     throw new Error(typeof err?.detail === "string" ? err.detail : "No se pudo generar la descarga.");
   }
   // El nombre lo pone el servidor, y es fijo: nada de lo que alguien escribió.

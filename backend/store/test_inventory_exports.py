@@ -303,6 +303,44 @@ class ExportAccessTest(_Base):
             {'file': upload(self.api.get('/api/admin/products/import/template/').content)}, format='multipart')
         self.assertEqual(staged.status_code, 201, staged.content)
 
+    def test_the_five_cards_one_after_another_fit_in_the_default_budget(self):
+        """Owner's decision D4: the limit must not get in the way of a legitimate download of everything."""
+        from django.conf import settings
+
+        self.assertEqual(settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['admin_export'], '6/min')
+        cache.clear()
+        cards = [url('products'), url('products', type='quantity'), url('stock'), url('units'), url('full')]
+        self.assertEqual([self.api.get(card).status_code for card in cards], [200] * 5)
+        self.assertEqual(self.exported().count(), 5)
+
+    def test_past_the_budget_the_answer_says_it_in_spanish_and_when_to_come_back(self):
+        cache.clear()
+        for _n in range(6):
+            self.assertEqual(self.api.get(url('products')).status_code, 200)
+
+        response = self.api.get(url('products'))
+
+        self.assertEqual(response.status_code, 429)
+        seconds = int(response['Retry-After'])
+        self.assertTrue(1 <= seconds <= 60, seconds)
+        body = response.json()
+        self.assertEqual(body['code'], 'throttled')
+        self.assertEqual(body['retry_after'], seconds)
+        self.assertEqual(
+            body['detail'],
+            'Las descargas del inventario están limitadas para no saturar el servidor. '
+            f'Vuelve a intentarlo en {seconds} segundos.')
+        self.assertNotIn('throttled.', body['detail'])
+        self.assertEqual(self.exported().count(), 6)                    # the refused one built nothing
+
+    def test_the_budget_is_the_one_configured(self):
+        from store.throttles import AdminExportThrottle
+
+        with patch.dict(AdminExportThrottle.THROTTLE_RATES, {'admin_export': '2/min'}):
+            cache.clear()
+            codes = [self.api.get(url('products')).status_code for _n in range(3)]
+        self.assertEqual(codes, [200, 200, 429])
+
     def test_each_download_leaves_one_audit_line_without_any_cell(self):
         self.get('units', mode='report', branches=self.centro.pk, condition='used', category=self.phones.pk)
 
@@ -330,6 +368,84 @@ class ExportAccessTest(_Base):
         self.get('stock', branches=self.foreign_branch.pk)
         self.get('products', self.member('exp_nadie'))
         self.assertEqual(self.exported().count(), 0)
+
+
+class ExportRateSettingTest(TestCase):
+    """
+    `ADMIN_EXPORT_RATE`: the downloads' budget, from the environment. Read ONCE,
+    at start-up; a value DRF could not parse would otherwise be a 500 on every
+    download, so it falls back to the default and says so in the log.
+    """
+
+    def rate(self, value):
+        from backend.rates import rate_from_env
+
+        return rate_from_env('ADMIN_EXPORT_RATE', value, '6/min')
+
+    def test_absent_or_empty_is_the_default(self):
+        for value in (None, '', '   '):
+            with self.subTest(value=value):
+                self.assertEqual(self.rate(value), '6/min')
+
+    def test_a_valid_rate_is_taken_as_written(self):
+        for value in ('12/min', '1/s', '300/hour', '20/m', ' 30/min ', '5000/day'):
+            with self.subTest(value=value):
+                self.assertEqual(self.rate(value), value.strip())
+
+    def test_what_is_not_a_rate_falls_back_to_the_default_and_is_logged(self):
+        for value in ('seis', '6', '6/', '/min', '6/fortnight', '0/min', '-3/min', '6 por minuto', '1e3/min', '6/min/2'):
+            with self.subTest(value=value):
+                with self.assertLogs('backend.rates', level='WARNING') as logs:
+                    self.assertEqual(self.rate(value), '6/min')
+                self.assertIn('ADMIN_EXPORT_RATE', logs.output[0])
+                self.assertIn('6/min', logs.output[0])
+
+    def test_every_rate_it_accepts_is_one_the_throttle_can_use(self):
+        from rest_framework.throttling import SimpleRateThrottle
+
+        for value in ('12/min', '1/s', '300/hour', '20/m', '5000/day'):
+            with self.subTest(value=value):
+                requests, seconds = SimpleRateThrottle.parse_rate(None, self.rate(value))
+                self.assertTrue(requests > 0 and seconds > 0)
+
+    def configured(self, value):
+        """What a fresh process ends up with: the settings are read once, at start-up."""
+        import os
+        import pathlib
+        import subprocess
+        import sys
+
+        backend = pathlib.Path(__file__).resolve().parents[1]
+        env = {**os.environ, 'DJANGO_SETTINGS_MODULE': 'backend.settings'}
+        env.pop('ADMIN_EXPORT_RATE', None)
+        if value is not None:
+            env['ADMIN_EXPORT_RATE'] = value
+        return subprocess.run(
+            [sys.executable, '-c',
+             'import django; django.setup(); from django.conf import settings; '
+             "print('RATE=' + settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['admin_export'])"],
+            cwd=backend, env=env, capture_output=True, text=True, timeout=120)
+
+    def test_the_server_starts_with_the_rate_of_the_environment(self):
+        result = self.configured('9/min')
+        self.assertEqual(result.returncode, 0, result.stderr[-600:])
+        self.assertIn('RATE=9/min', result.stdout)
+        self.assertIn('RATE=6/min', self.configured(None).stdout)
+
+    def test_the_server_starts_with_the_default_when_the_value_is_not_a_rate_and_says_so(self):
+        result = self.configured('muchas')
+        self.assertEqual(result.returncode, 0, result.stderr[-600:])
+        self.assertIn('RATE=6/min', result.stdout)
+        self.assertIn('ADMIN_EXPORT_RATE', result.stderr)
+
+    def test_the_deployment_files_name_it_without_a_value_that_is_anybodys(self):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        for name in ('deploy/.env.production.example', '.env.example'):
+            with self.subTest(name):
+                self.assertIn('# ADMIN_EXPORT_RATE=6/min', (root / name).read_text(encoding='utf-8'))
+        self.assertIn("'ADMIN_EXPORT_RATE'", (root / 'deploy' / 'preflight.py').read_text(encoding='utf-8'))
 
 
 # =============================================================================

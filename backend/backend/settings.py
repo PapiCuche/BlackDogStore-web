@@ -4,6 +4,8 @@ import os
 import environ
 from django.core.exceptions import ImproperlyConfigured
 
+from .rates import rate_from_env
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # django-environ — DEBUG DEFAULTS TO FALSE, and that default is a security
@@ -149,7 +151,10 @@ REST_FRAMEWORK = {
         'admin_import': '30/min',
         # INVENTORY-UNIFIED-01: cada descarga del inventario arma un libro en el
         # único proceso del servidor. Su cupo es suyo, y no gasta el de las cargas.
-        'admin_export': '6/min',
+        # Configurable (`ADMIN_EXPORT_RATE`), y comprobado AL ARRANCAR: un valor
+        # que no es un cupo vuelve al de por omisión con una línea en el
+        # registro, en vez de un 500 en cada descarga.
+        'admin_export': rate_from_env('ADMIN_EXPORT_RATE', env('ADMIN_EXPORT_RATE', default=''), '6/min'),
         'admin_order_email_resend': '10/min',
         # TRACKING. Una página de seguimiento pide la orden y una imagen por foto.
         'tracking_read': '240/min',

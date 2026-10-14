@@ -1,5 +1,5 @@
 from django.conf import settings
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, Throttled
 from rest_framework.throttling import (
     AnonRateThrottle,
     SimpleRateThrottle,
@@ -210,6 +210,16 @@ class AdminExportThrottle(UserRateThrottle):
     y ocupaban el proceso para todos.
     """
     scope = 'admin_export'
+
+
+class ExportThrottled(Throttled):
+    """
+    El 429 de una descarga, dicho a una persona: que están limitadas y en
+    cuántos segundos volver. `Retry-After` lo pone DRF a partir de `wait`.
+    """
+    default_detail = 'Las descargas del inventario están limitadas para no saturar el servidor.'
+    extra_detail_singular = 'Vuelve a intentarlo en {wait} segundo.'
+    extra_detail_plural = 'Vuelve a intentarlo en {wait} segundos.'
 
 
 class ServiceEvidenceReadThrottle(UserRateThrottle):

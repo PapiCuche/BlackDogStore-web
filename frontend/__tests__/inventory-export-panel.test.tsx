@@ -385,11 +385,27 @@ describe('la petición al servidor', () => {
     [400, { code: 'too_many_rows', detail: 'Son 24000 filas y una descarga admite hasta 20000.' }, 'Son 24000 filas'],
     [403, { detail: 'x' }, 'No tienes permisos para esta descarga.'],
     [404, { detail: 'No encontrado.' }, 'ya no está disponible'],
-    [429, {}, 'Demasiadas descargas'],
+    // D4: lo que el servidor dice —que están limitadas y en cuántos segundos volver—, no una frase genérica.
+    [429, { code: 'throttled', retry_after: 37, detail: 'Las descargas del inventario están limitadas para no saturar el servidor. Vuelve a intentarlo en 37 segundos.' },
+      'Las descargas del inventario están limitadas para no saturar el servidor. Vuelve a intentarlo en 37 segundos.'],
     [500, null, 'No se pudo generar la descarga.'],
   ])('un %i se explica', async (status, body, message) => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status, json: async () => body, headers: new Headers() });
     await expect(real.downloadInventoryExport('products', 'reimport', {}, null)).rejects.toThrow(message as string);
+  });
+
+  it('un 429 sin cuerpo legible dice cuándo volver por la cabecera Retry-After', async () => {
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: false, status: 429, json: async () => { throw new Error('no es JSON'); }, headers: new Headers({ 'Retry-After': '12' }),
+    });
+    await expect(real.downloadInventoryExport('products', 'reimport', {}, null)).rejects.toThrow(
+      'Las descargas del inventario están limitadas. Vuelve a intentarlo en 12 segundos.');
+  });
+
+  it('un 429 sin cuerpo ni cabecera sigue diciendo que es un límite, no un fallo', async () => {
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({}), headers: new Headers() });
+    await expect(real.downloadInventoryExport('products', 'reimport', {}, null)).rejects.toThrow(
+      'Las descargas del inventario están limitadas. Espera un momento e inténtalo de nuevo.');
   });
 });
 

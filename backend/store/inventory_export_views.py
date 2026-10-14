@@ -38,7 +38,7 @@ from .admin_views import (
 from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES
 from .models import AdminAuditLog, Category
 from .tenancy import visible_branches
-from .throttles import AdminExportThrottle
+from .throttles import AdminExportThrottle, ExportThrottled
 
 _NOT_FOUND = 'No encontrado.'
 
@@ -68,6 +68,18 @@ class AdminInventoryExportsView(APIView):
     # one server process. It does not spend the budget of the loads.
     throttle_classes = [AdminExportThrottle]
     http_method_names = ['get', 'options']
+
+    def throttled(self, request, wait):
+        # In Spanish, and saying when to come back: a person reads this.
+        raise ExportThrottled(wait)
+
+    def handle_exception(self, exc):
+        response = super().handle_exception(exc)
+        if isinstance(exc, ExportThrottled):
+            # `Retry-After` is already on the response; the body repeats the
+            # seconds so the panel does not have to parse a sentence.
+            response.data = {'code': 'throttled', 'detail': str(exc.detail), 'retry_after': exc.wait}
+        return response
 
     def get(self, request, kind):
         if kind not in inventory_exports.KINDS:
