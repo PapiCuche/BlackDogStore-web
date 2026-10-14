@@ -142,6 +142,10 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .social_views import (
+    AppleCallbackView, SocialCallbackView, SocialConfigView, SocialIdentitiesView, SocialIdentityView,
+    SocialLinkStartView, SocialStartView,
+)
 from .stock_unit_views import (
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitListView,
@@ -186,6 +190,15 @@ urlpatterns = [
     path('auth/google/config/', GoogleConfigView.as_view(), name='auth-google-config'),
     path('auth/google/', GoogleSignInView.as_view(), name='auth-google'),
     path('auth/google/link/', GoogleLinkView.as_view(), name='auth-google-link'),
+    # SOCIAL-AUTH-01. Facebook y Apple: flujos de redirección; sin configurar, 404.
+    path('auth/social/config/', SocialConfigView.as_view(), name='auth-social-config'),
+    path('auth/social/identities/', SocialIdentitiesView.as_view(), name='auth-social-identities'),
+    path('auth/social/identities/<slug:provider>/', SocialIdentityView.as_view(), name='auth-social-identity'),
+    path('auth/social/<slug:provider>/link/', SocialLinkStartView.as_view(), name='auth-social-link'),
+    path('auth/facebook/start/', SocialStartView.as_view(provider='facebook'), name='auth-facebook-start'),
+    path('auth/facebook/callback/', SocialCallbackView.as_view(provider='facebook'), name='auth-facebook-callback'),
+    path('auth/apple/start/', SocialStartView.as_view(provider='apple'), name='auth-apple-start'),
+    path('auth/apple/callback/', AppleCallbackView.as_view(), name='auth-apple-callback'),
     path('auth/me/', UserDetailView.as_view(), name='auth-me'),
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/verify-email/code/', VerifyEmailCodeView.as_view(), name='auth-verify-email-code'),

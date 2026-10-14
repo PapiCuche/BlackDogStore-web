@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { track } from "../lib/analytics/service";
 import { BrandLogo } from "../components/BrandLogo";
 import { GoogleSignIn } from "../components/GoogleSignIn";
+import { SocialSignIn } from "../components/SocialSignIn";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter } from "next/navigation";
 import {
@@ -126,11 +127,24 @@ export default function AuthPage() {
   }, []);
 
   useEffect(() => {
-    getCurrentUser().then((u) => {
+    let cancelled = false;
+    getCurrentUser().then(async (u) => {
+      if (cancelled) return;
+      // SOCIAL-AUTH-01. Facebook o Apple vuelven aquí con la sesión ya en sus
+      // cookies (`?social=<proveedor>`): desde aquí es un inicio como cualquiera.
+      const social = new URLSearchParams(window.location.search).get("social");
+      if (u && (social === "facebook" || social === "apple")) {
+        track({ name: "LOGIN", method: social });
+        forgetInternalAccess();
+        window.dispatchEvent(new Event("authChange"));
+        router.replace(await destinationAfterLogin());
+        return;
+      }
       setUser(u);
       setLoading(false);
     });
-  }, []);
+    return () => { cancelled = true; };
+  }, [router]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -445,6 +459,8 @@ export default function AuthPage() {
 
             {/* Entrar y registrarse con Google son lo mismo: la primera vez crea la cuenta. */}
             <GoogleSignIn onSignedIn={handleGoogleSignedIn} />
+            {/* Facebook y Apple: enlaces al inicio del flujo; sólo si están configurados. */}
+            <SocialSignIn />
 
             <div className="mt-6 space-y-3 text-center text-sm text-muted">
               <div>

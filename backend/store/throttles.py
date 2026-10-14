@@ -399,3 +399,25 @@ class WhatsAppWebhookThrottle(AnonRateThrottle):
 class GoogleSignInThrottle(AnonRateThrottle):
     """Entrar con Google, por dirección. Su propio cupo: no gasta el del login con contraseña."""
     scope = 'google_sign_in'
+
+
+class SocialSignInThrottle(AnonRateThrottle):
+    """
+    Entrar con Facebook o Apple, por dirección (SOCIAL-AUTH-01): empezar, volver
+    del proveedor y preguntar qué proveedores hay comparten cupo.
+    """
+    scope = 'social_sign_in'
+
+
+class SocialConfigThrottle(AnonRateThrottle):
+    """
+    Qué proveedores hay (SOCIAL-AUTH-01): se pide en cada visita a /auth. Cupo
+    propio y más ancho que el del flujo: muchas personas en Perú salen a internet
+    por la misma dirección del operador (CGNAT), y esto no abre nada.
+    """
+    scope = 'social_config'
+
+
+class SocialLinkThrottle(UserRateThrottle):
+    """Vincular o desvincular un proveedor desde «Mi cuenta», por cuenta. Pide la contraseña."""
+    scope = 'social_link'

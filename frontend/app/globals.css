@@ -543,3 +543,17 @@ img { display: block; max-width: 100%; }
 }
 @keyframes v3-hero-enter { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .v3-autoplay-control { display: none; } }
+
+/* SOCIAL-AUTH-01 — «Continuar con Facebook» lleva el azul de Facebook en
+   cualquier tema: es la marca de otra empresa, no un color de este tema. */
+.facebook-sign-in {
+  background-color: #1877f2;
+  color: #ffffff;
+}
+
+/* SOCIAL-AUTH-01 — «Continuar con Apple»: negro sobre fondo claro y blanco
+   sobre fondo oscuro, como pide Apple (Human Interface Guidelines). */
+:root[data-theme="dark"] .apple-sign-in {
+  background-color: #ffffff;
+  color: #000000;
+}

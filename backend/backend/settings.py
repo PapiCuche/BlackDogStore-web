@@ -104,6 +104,14 @@ REST_FRAMEWORK = {
         'login': '5/min',
         # GOOGLE-AUTH. Pedir la configuración, entrar y vincular comparten cupo.
         'google_sign_in': '20/min',
+        # SOCIAL-AUTH-01. Facebook y Apple: empezar y volver son dos peticiones
+        # (tres con el POST de Apple), así que el cupo es algo más ancho.
+        'social_sign_in': '30/min',
+        # Sólo dice qué proveedores están activos y se pide en cada /auth: más
+        # ancho, por las direcciones compartidas de los operadores (CGNAT).
+        'social_config': '120/min',
+        # Vincular pide la contraseña: por cuenta, como cambiarla.
+        'social_link': '10/min',
         # SEC-SET-04-A. Renovar la sesión, por dirección: web y app comparten cubo.
         'token_refresh': '30/min',
         'register': '5/min',

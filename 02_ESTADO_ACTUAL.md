@@ -3,6 +3,34 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — SOCIAL-AUTH-01: Facebook y Apple para compradores (rama local)
+
+Rama `feat/social-auth` desde `abfc6bd`; sólo commits locales, sin push. Operación y guías
+de Google Cloud, Meta y Apple: `docs/acceso-con-redes-sociales.md`. Decisión DEC-SOCIAL-01.
+
+- **Facebook**: código + PKCE S256 + `state`, canje y `debug_token` en el servidor. **Apple**:
+  código + `state` + `nonce` con `form_post`, secreto de cliente ES256, `id_token`
+  verificado. Google, sin cambios.
+- Intento en el servidor (10 min, un uso, atado al navegador). Nada se vincula solo:
+  `link_required`, y se vincula desde «Mi cuenta» con la contraseña. Desvincular nunca deja
+  la cuenta sin forma de entrar. Staff, superusuario, rol interno o `Membership` no entran
+  ni vinculan por Facebook/Apple.
+- Consola: proveedores `facebook` y `apple` (secretos cifrados, sólo MASTER).
+  `GET /api/auth/social/config/` sólo dice qué está activo; sin configurar, botones ocultos
+  y rutas 404.
+- **Sin migración.** Sin dependencias nuevas.
+- Pruebas: `store.test_social_auth` (96, proveedores simulados) y `social-sign-in.test.tsx`
+  (19). Módulos de auth relacionados: 680 en verde; Jest 1360; `tsc` limpio; lint con los
+  22 avisos de siempre; `makemigrations --check` sin cambios. Mutaciones: 28/28 backend y
+  4/4 frontend tras cerrar 6 supervivientes con pruebas.
+- **Revisión independiente**: un P1 (Apple: terminar el intento de otra persona) y cuatro
+  P3, corregidos en `a0554f4` — toda vuelta gasta el intento antes de mirar la cookie;
+  secreto de entrega de un solo uso en el 303 de Apple; vincular reconoce la sesión por la
+  cookie de renovación si la de acceso caducó; cupo propio de 120/min para la
+  configuración. 107 pruebas en `store.test_social_auth`; módulos de auth 691 en verde.
+- **BLOQUEADO por credenciales**: ningún inicio real con Facebook ni Apple
+  (SOCIAL-CREDENTIALS). La app móvil no tiene entrada con proveedores (SOCIAL-MOBILE).
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |
