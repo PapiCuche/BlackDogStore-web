@@ -25,6 +25,9 @@ En la rama `feat/inventory-unified`; sin desplegar. Migración nueva `0123` (adi
 
 **Fixed**
 - Un producto sin código renombrado ya no se crea otra vez al recargar su archivo.
+- Imágenes en lote (decisión del 2026-10-14): el código se busca sin distinguir mayúsculas, espacios
+  ni forma Unicode; si coincide con más de un producto no se asigna y se dice; lo que no tiene
+  producto se lista y el resto se aplica.
 - Una carga nunca reactiva ni desactiva un producto existente.
 
 **Security**

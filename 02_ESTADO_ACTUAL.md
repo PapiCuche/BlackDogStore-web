@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — INVENTORY-UNIFIED-01: decisión del propietario sobre imágenes en lote
+
+PR #117. `41c164f`, `7099642` (prueba) y `f780088` (docs), luego `master` (#115, #116) fusionado
+en la rama. Sólo la carga de imágenes en lote: el código se compara con NFKC, sin mayúsculas y
+con los espacios normalizados, contra todos los códigos de la empresa; si coincide con dos o más
+productos no se asigna y se dice. Una fila del libro «Imágenes» sin producto (o ambigua) se
+lista como los archivos huérfanos y ya no frena el resto; un error en las imágenes de un producto
+encontrado (archivo roto, dos archivos distintos con un nombre, más del límite) sigue frenando
+la carga. Fotos opcionales sin cambio. La carga de productos sigue comparando exacto
+(deuda IMG-IMPORT-KEY-ONLY-IMAGES). Sin migración.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01: las siete decisiones del propietario
 
 Misma rama (`feat/inventory-unified`), sobre `8dd3e59`: `e2c9c84`…`4a46012`, un commit por
