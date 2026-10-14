@@ -161,6 +161,45 @@ class Receipt:
         return bytes(self._out)
 
 
+#: Lo que puede ir delante de la cabecera de un documento: blancos, nulos y el
+#: Ctrl-D con el que algunos controladores abren un trabajo PostScript.
+_LEADING_NOISE = b' \t\r\n\x00\x04\x0c'
+_BOMS = (b'\xef\xbb\xbf', b'\xfe\xff', b'\xff\xfe')
+#: Hasta dónde se busca una cabecera envuelta (en PJL, por ejemplo).
+_HEADER_WINDOW = 128
+
+
+def payload_problem(payload: bytes) -> str:
+    """
+    Por qué estos bytes NO se pueden mandar a una térmica ESC/POS, o '' si se puede.
+
+    PRINT-THERMAL-01. Una ESC/POS imprime como texto lo que no entiende: un PDF
+    o un PostScript sale como metros de código fuente. Un ticket de esta
+    aplicación empieza siempre por `ESC @`; un PDF, por `%PDF`; un PostScript,
+    por `%!` — quizá detrás de blancos, de una marca de orden de bytes o de un
+    envoltorio PJL. El agente del local lleva una copia de esta misma regla
+    (`print_agent/agent.py`), porque se instala como un archivo suelto.
+    """
+    payload = bytes(payload or b'')
+    head = payload[:_HEADER_WINDOW]
+    stripped = head
+    while True:
+        before = stripped
+        stripped = stripped.lstrip(_LEADING_NOISE)
+        for bom in _BOMS:
+            if stripped.startswith(bom):
+                stripped = stripped[len(bom):]
+        if stripped == before:
+            break
+    if stripped.startswith(b'%PDF') or b'%PDF-' in head:
+        return 'Son los bytes de un PDF, no un ticket ESC/POS: no se envían a la térmica.'
+    if stripped.startswith(b'%!') or b'%!PS-Adobe' in head:
+        return 'Son los bytes de un PostScript, no un ticket ESC/POS: no se envían a la térmica.'
+    if not payload.startswith(ESC + b'@'):
+        return 'No es un ticket ESC/POS (no empieza por ESC @): no se envía a la térmica.'
+    return ''
+
+
 def _fits(char: str, encoding: str) -> bool:
     try:
         char.encode(encoding)

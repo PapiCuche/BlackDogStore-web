@@ -85,6 +85,12 @@ class PrintAgentClaimView(APIView):
                 return Response({'job': None})
             try:
                 payload = printing.render(job)
+            except printing.PrintPayloadRejected as exc:
+                # No es un ticket ESC/POS: la térmica lo imprimiría como texto.
+                # Se cierra con el motivo, sin reintentos. PRINT-THERMAL-01.
+                logger.error('Trabajo de impresión %s rechazado: %s', job.pk, exc)
+                printing.reject_payload(job, str(exc))
+                continue
             except Exception:  # noqa: BLE001
                 logger.exception('Trabajo de impresión %s: no se pudo preparar.', job.pk)
                 printing.release_unrenderable(

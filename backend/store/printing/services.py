@@ -58,6 +58,15 @@ class PrintConflict(PrintError):
     """La entrega con la que se intenta cerrar ya no es la vigente."""
 
 
+class PrintPayloadRejected(PrintError):
+    """
+    Lo que saldría hacia la impresora no es un ticket ESC/POS. PRINT-THERMAL-01.
+
+    No es pasajero —volver a intentarlo da los mismos bytes—, así que el trabajo
+    se cierra como fallido con este motivo y no se reintenta solo.
+    """
+
+
 # -- agentes ---------------------------------------------------------------------
 
 def _hash(raw_token: str) -> str:
@@ -318,13 +327,38 @@ def deactivate_printer(printer) -> None:
             updated_at=timezone.now())
 
 def render(job) -> bytes:
-    """Los bytes que la impresora de este trabajo tiene que recibir."""
+    """
+    Los bytes que la impresora de este trabajo tiene que recibir.
+
+    SÓLO ESC/POS. Un tipo de documento que no se conoce, o unos bytes que no son
+    un ticket ESC/POS (un PDF, un PostScript), levantan `PrintPayloadRejected`
+    en vez de salir hacia la térmica. PRINT-THERMAL-01.
+    """
     from . import escpos
 
     options = {'paper_width_mm': job.printer.paper_width_mm, 'encoding': job.printer.encoding}
     if job.kind == PrintJob.Kind.FISCAL_TICKET:
-        return escpos.fiscal_ticket(job.fiscal_document, **options)
-    return escpos.sales_note_ticket(job.sales_note, **options)
+        payload = escpos.fiscal_ticket(job.fiscal_document, **options)
+    elif job.kind == PrintJob.Kind.SALES_NOTE_TICKET:
+        payload = escpos.sales_note_ticket(job.sales_note, **options)
+    else:
+        raise PrintPayloadRejected(
+            f'Tipo de documento desconocido para la térmica ({job.kind}): no se imprime.')
+    problem = escpos.payload_problem(payload)
+    if problem:
+        raise PrintPayloadRejected(problem)
+    return payload
+
+
+def reject_payload(job, reason: str) -> None:
+    """Cierra como fallido un trabajo cuyos bytes no son para una térmica."""
+    job.status = PrintJob.Status.FAILED
+    job.claim_token = ''
+    job.lease_expires_at = None
+    job.available_at = None
+    job.last_error = ' '.join(str(reason).split())[:300]
+    job.save(update_fields=[
+        'status', 'claim_token', 'lease_expires_at', 'last_error', 'available_at', 'updated_at'])
 
 
 def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):

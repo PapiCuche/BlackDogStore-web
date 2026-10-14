@@ -174,6 +174,46 @@ def is_local_address(host: str, *, allow_loopback: bool = False) -> bool:
     return any(address in network for network in _LOCAL_NETWORKS)
 
 
+# ---------------------------------------------------------------------------
+# Sólo ESC/POS
+# ---------------------------------------------------------------------------
+
+#: Los documentos que el servidor manda a una térmica. Otro tipo no se imprime.
+KNOWN_KINDS = frozenset({'fiscal_ticket', 'sales_note_ticket', 'test_ticket'})
+_LEADING_NOISE = b' \t\r\n\x00\x04\x0c'
+_BOMS = (b'\xef\xbb\xbf', b'\xfe\xff', b'\xff\xfe')
+_HEADER_WINDOW = 128
+
+
+def payload_problem(payload: bytes) -> str:
+    """
+    Por qué estos bytes NO se pueden mandar a una térmica ESC/POS, o '' si se puede.
+
+    Copia de `store/printing/escpos.py::payload_problem` (el agente se instala
+    como un archivo suelto). Un ticket empieza por `ESC @`; un PDF, por `%PDF`;
+    un PostScript, por `%!` — quizá tras blancos, una marca de orden de bytes o
+    un envoltorio PJL. Una térmica imprimiría esos dos como texto.
+    """
+    payload = bytes(payload or b'')
+    head = payload[:_HEADER_WINDOW]
+    stripped = head
+    while True:
+        before = stripped
+        stripped = stripped.lstrip(_LEADING_NOISE)
+        for bom in _BOMS:
+            if stripped.startswith(bom):
+                stripped = stripped[len(bom):]
+        if stripped == before:
+            break
+    if stripped.startswith(b'%PDF') or b'%PDF-' in head:
+        return 'Son los bytes de un PDF, no un ticket ESC/POS: no se envían a la térmica.'
+    if stripped.startswith(b'%!') or b'%!PS-Adobe' in head:
+        return 'Son los bytes de un PostScript, no un ticket ESC/POS: no se envían a la térmica.'
+    if not payload.startswith(b'\x1b@'):
+        return 'No es un ticket ESC/POS (no empieza por ESC @): no se envía a la térmica.'
+    return ''
+
+
 def send_to_printer(host: str, port: int, payload: bytes, timeout: float) -> None:
     """Entrega los bytes a la impresora. Levanta OSError si no se pudo."""
     with socket.create_connection((host, port), timeout=timeout) as connection:
@@ -256,7 +296,10 @@ class Agent:
                 self.journal.confirmed(key)
 
     def run_once(self) -> str:
-        """Un ciclo. Devuelve qué pasó: idle, printed, failed, skipped, offline, unauthorised."""
+        """
+        Un ciclo. Devuelve qué pasó: idle, printed, failed, refused, skipped,
+        offline, unauthorised, error.
+        """
         self._flush_unconfirmed()
         try:
             code, body = self.http('POST', self._url('jobs/claim/'), self.config['token'], {})
@@ -289,6 +332,22 @@ class Agent:
                 self.journal.needs_confirmation(printed_key, job_id, claim_token)
             return 'skipped'
 
+        try:
+            payload = base64.b64decode(job.get('payload_base64') or '', validate=True)
+        except ValueError as exc:
+            logger.warning('Trabajo %s: los bytes llegaron dañados (%s).', job_id, exc)
+            self._report(job_id, claim_token, ok=False, error=f'ValueError: {exc}'[:200])
+            return 'failed'
+        # SÓLO ESC/POS, diga lo que diga el servidor. Un PDF o un PostScript en
+        # una térmica sale como metros de código fuente. PRINT-THERMAL-01.
+        problem = (
+            payload_problem(payload) if job.get('kind') in KNOWN_KINDS
+            else f"Tipo de documento desconocido ({job.get('kind')}): no se imprime.")
+        if problem:
+            logger.error('Trabajo %s rechazado sin enviarlo: %s', job_id, problem)
+            self._report(job_id, claim_token, ok=False, error=problem)
+            return 'refused'
+
         printer = job.get('printer') or {}
         host, port = str(printer.get('host', '')), int(printer.get('port') or 9100)
         if not is_local_address(host, allow_loopback=self.config['allow_loopback']):
@@ -298,7 +357,6 @@ class Agent:
             return 'failed'
 
         try:
-            payload = base64.b64decode(job['payload_base64'], validate=True)
             self.printer(host, port, payload, self.config['printer_timeout'])
         except (OSError, ValueError) as exc:
             reason = f'{type(exc).__name__}: {exc}'[:200]
@@ -328,7 +386,7 @@ class Agent:
             return 0.0                              # puede haber otro esperando
         if outcome == 'unauthorised':
             return 60.0
-        if outcome in ('failed', 'error', 'offline'):
+        if outcome in ('failed', 'refused', 'error', 'offline'):
             # Con la impresora apagada o el servidor caído, insistir sin pausa
             # sólo quema los intentos del trabajo.
             return max(10.0, self.config['poll_seconds'] * 3)
