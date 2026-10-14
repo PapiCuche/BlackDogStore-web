@@ -13,6 +13,7 @@ import {
   fetchSalesNote,
   type SalesNote,
 } from "../../lib/inventory";
+import { ThermalPrintHint } from "./ThermalPrintHint";
 
 type Props = { orderId: number; isPaid: boolean };
 
@@ -190,6 +191,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
               </>
             )}
           </div>
+          {note ? <ThermalPrintHint className="mt-3" /> : null}
         </>
       )}
     </section>

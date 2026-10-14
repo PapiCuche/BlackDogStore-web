@@ -18,6 +18,8 @@ const mockApi = {
   revokePrintAgent: jest.fn(),
   fetchPrintJobs: jest.fn(),
   retryPrintJob: jest.fn(),
+  requestTestPrint: jest.fn(),
+  downloadTestPage: jest.fn(),
 };
 jest.mock('@/app/admin/lib/printing-api', () => ({
   ...jest.requireActual('@/app/admin/lib/printing-api'),
@@ -29,6 +31,8 @@ jest.mock('@/app/admin/lib/printing-api', () => ({
   revokePrintAgent: (...a: unknown[]) => mockApi.revokePrintAgent(...a),
   fetchPrintJobs: (...a: unknown[]) => mockApi.fetchPrintJobs(...a),
   retryPrintJob: (...a: unknown[]) => mockApi.retryPrintJob(...a),
+  requestTestPrint: (...a: unknown[]) => mockApi.requestTestPrint(...a),
+  downloadTestPage: (...a: unknown[]) => mockApi.downloadTestPage(...a),
 }));
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -142,4 +146,44 @@ it('quien no puede configurar ve la cola pero no los formularios', async () => {
   expect(screen.queryByRole('button', { name: 'Añadir impresora' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Crear agente' })).toBeNull();
   expect(mockApi.fetchPrintAgents).not.toHaveBeenCalled();
+});
+
+describe('PRINT-THERMAL-01: probar antes de imprimir un ticket entero', () => {
+  const TEST_JOB = {
+    id: 12, kind: 'test_ticket', reason: 'manual', status: 'pending', order: null, branch: 1,
+    printer: 5, printer_name: 'Caja', attempts: 0, last_error: '',
+    created_at: '2026-10-14T10:00:00Z', printed_at: null,
+  };
+
+  it('manda una prueba corta a una impresora y la enseña en la cola', async () => {
+    mockApi.requestTestPrint.mockResolvedValue(TEST_JOB);
+    mount();
+    const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Imprimir prueba' }));
+
+    await waitFor(() => expect(mockApi.requestTestPrint).toHaveBeenCalledWith(7, 5));
+    expect(await screen.findByText(/Prueba enviada a «Caja»/)).toBeInTheDocument();
+    expect(screen.getByText(/Si sale texto técnico/)).toBeInTheDocument();
+    const queued = screen.getByText('Prueba de impresión').closest('li') as HTMLElement;
+    expect(within(queued).queryByText(/Pedido/)).toBeNull();
+  });
+
+  it('descarga la prueba en PDF de 80 mm y explica con qué imprimirla', async () => {
+    mockApi.downloadTestPage.mockResolvedValue(undefined);
+    mount();
+    await screen.findByText('Caja');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Descargar prueba PDF 80 mm' }));
+
+    await waitFor(() => expect(mockApi.downloadTestPage).toHaveBeenCalledWith(7));
+    expect(screen.getByText(/controlador de la propia térmica/)).toBeInTheDocument();
+  });
+
+  it('quien no configura impresoras no manda pruebas', async () => {
+    render(<PrintingSettings companyId={7} branches={BRANCHES} canManage={false} />);
+    await screen.findByText('Caja');
+
+    expect(screen.queryByRole('button', { name: 'Imprimir prueba' })).toBeNull();
+  });
 });

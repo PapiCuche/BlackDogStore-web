@@ -14,9 +14,11 @@
 import { useEffect, useState } from "react";
 import {
   PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent, createPrinter,
-  deactivatePrinter, fetchPrintAgents, fetchPrintJobs, fetchPrinters, retryPrintJob,
-  revokePrintAgent, type PrintAgent, type PrintJob, type Printer,
+  deactivatePrinter, downloadTestPage, fetchPrintAgents, fetchPrintJobs, fetchPrinters,
+  requestTestPrint, retryPrintJob, revokePrintAgent, type PrintAgent, type PrintJob,
+  type Printer,
 } from "../../lib/printing-api";
+import { ThermalPrintHint } from "../../components/ThermalPrintHint";
 
 type Branch = { id: number; name: string };
 
@@ -26,6 +28,7 @@ const LABEL = "block text-xs font-semibold uppercase tracking-wider text-muted";
 const CARD = "rounded-xl border border-bd-border bg-surface p-5 sm:p-6";
 const KIND: Record<string, string> = {
   fiscal_ticket: "Comprobante electrónico", sales_note_ticket: "Nota de venta",
+  test_ticket: "Prueba de impresión",
 };
 
 export function PrintingSettings({
@@ -39,6 +42,7 @@ export function PrintingSettings({
   const [agents, setAgents] = useState<PrintAgent[]>([]);
   const [jobs, setJobs] = useState<PrintJob[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
   const [printer, setPrinter] = useState({ branch: branches[0]?.id ?? 0, name: "", host: "", auto: true });
@@ -110,6 +114,25 @@ export function PrintingSettings({
     } catch (err) { fail(err); }
   }
 
+  // PRINT-THERMAL-01: unas pocas líneas antes de un ticket entero.
+  async function testPrint(row: Printer) {
+    setError(null); setNotice(null);
+    try {
+      const job = await requestTestPrint(companyId, row.id);
+      setJobs((rows) => [job, ...rows.filter((j) => j.id !== job.id)]);
+      setNotice(
+        `Prueba enviada a «${row.name}»: deben salir unas pocas líneas y un corte. ` +
+        "Si sale texto técnico (%!PS, %PDF), apaga la impresora y cancela la cola de " +
+        "impresión del equipo.",
+      );
+    } catch (err) { fail(err); }
+  }
+
+  async function testPage() {
+    setError(null);
+    try { await downloadTestPage(companyId); } catch (err) { fail(err); }
+  }
+
   async function retry(job: PrintJob) {
     try {
       const updated = await retryPrintJob(companyId, job.id);
@@ -125,6 +148,11 @@ export function PrintingSettings({
   return (
     <div className="space-y-8">
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+      {notice ? (
+        <p role="status" className="rounded-lg border border-bd-border bg-surface-2 px-4 py-3 text-sm text-foreground">
+          {notice}
+        </p>
+      ) : null}
 
       <section className={CARD} aria-labelledby="printers-title">
         <h2 id="printers-title" className="text-base font-semibold text-foreground">Impresoras</h2>
@@ -145,16 +173,35 @@ export function PrintingSettings({
                   </p>
                 </div>
                 {canManage && row.is_active ? (
-                  <button type="button" onClick={() => void removePrinter(row)}
-                    aria-label={`Desactivar ${row.name}`}
-                    className="min-h-11 px-2 text-sm text-muted underline-offset-4 hover:text-danger hover:underline">
-                    Desactivar
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" onClick={() => void testPrint(row)}
+                      className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
+                      Imprimir prueba
+                    </button>
+                    <button type="button" onClick={() => void removePrinter(row)}
+                      aria-label={`Desactivar ${row.name}`}
+                      className="min-h-11 px-2 text-sm text-muted underline-offset-4 hover:text-danger hover:underline">
+                      Desactivar
+                    </button>
+                  </div>
                 ) : null}
               </li>
             ))}
           </ul>
         )}
+
+        <div className="mt-5 rounded-lg border border-bd-border bg-surface-2 p-4">
+          <p className="text-sm text-foreground">
+            Antes del primer ticket, «Imprimir prueba» manda unas pocas líneas por el agente: ancho
+            del rollo, acentos y corte. Para comprobar el PDF de 80 mm sin gastar un ticket,
+            descarga la prueba en PDF.
+          </p>
+          <ThermalPrintHint className="mt-2" />
+          <button type="button" onClick={() => void testPage()}
+            className="mt-3 min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
+            Descargar prueba PDF 80 mm
+          </button>
+        </div>
 
         {canManage ? (
           <form onSubmit={(e) => void addPrinter(e)} className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -266,7 +313,9 @@ export function PrintingSettings({
               <li key={job.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <div className="min-w-0">
                   <p className="font-medium text-foreground">
-                    Pedido #{job.order} · {KIND[job.kind] ?? job.kind}
+                    {job.order === null
+                      ? KIND[job.kind] ?? job.kind
+                      : `Pedido #${job.order} · ${KIND[job.kind] ?? job.kind}`}
                   </p>
                   <p className="text-xs text-muted">
                     {job.printer_name} · <span>{PRINT_JOB_STATUS_LABEL[job.status] ?? job.status}</span>

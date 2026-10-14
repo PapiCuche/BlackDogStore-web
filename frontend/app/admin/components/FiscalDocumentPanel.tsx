@@ -26,6 +26,7 @@ import {
   submitFiscalDocument,
   type FiscalDocument,
 } from "../../lib/fiscal";
+import { ThermalPrintHint } from "./ThermalPrintHint";
 
 type Props = {
   orderId: number;
@@ -276,6 +277,8 @@ export function FiscalDocumentPanel({ orderId, isPaid, receiptType, canIssue = f
               </button>
             ) : null}
           </div>
+
+          {document?.can_download_pdf ? <ThermalPrintHint className="mt-3" /> : null}
 
           {/*
             UN RECHAZO ES TERMINAL PARA EL BOTÓN GENÉRICO. No se ofrece «emitir
