@@ -20,6 +20,7 @@ from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import get_resolver, reverse
 from rest_framework.views import APIView
+from rest_framework.parsers import FileUploadParser, MultiPartParser
 
 from store import evidence_images, import_media, request_limits, storefront_media, xlsx_reader
 from store.views import MAX_NOTIFICATION_BYTES
@@ -115,6 +116,12 @@ class LimitTableTest(SimpleTestCase):
         )
         self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_MEMORY_SIZE, largest_unparsed)
 
+    def test_the_apple_form_post_callback_reads_url_encoded_forms_only(self):
+        """Apple posts a small url-encoded form; no file parser may sneak in there."""
+        from rest_framework.parsers import FormParser
+        from store.social_views import AppleCallbackView
+        self.assertEqual(list(AppleCallbackView.parser_classes), [FormParser])
+
     def test_every_view_that_takes_files_has_a_tier(self):
         """
         A new upload endpoint without a tier would be capped at the default and
@@ -133,7 +140,12 @@ class LimitTableTest(SimpleTestCase):
         takes_files = set()
         for _, entry in walk(get_resolver().url_patterns):
             cls = getattr(entry.callback, 'view_class', None) or getattr(entry.callback, 'cls', None)
-            if cls is not None and list(getattr(cls, 'parser_classes', default_parsers)) != default_parsers:
+            parsers = list(getattr(cls, 'parser_classes', default_parsers)) if cls is not None else []
+            # A view that only reads small url-encoded forms (Apple's form_post
+            # callback) takes no files: what makes an upload route is a parser
+            # that reads files.
+            if cls is not None and parsers != default_parsers and any(
+                    issubclass(parser, (MultiPartParser, FileUploadParser)) for parser in parsers):
                 takes_files.add(cls.__name__)
         self.assertEqual(takes_files, {
             'AdminStorefrontImageUploadView',
