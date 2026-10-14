@@ -700,11 +700,18 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # is born and nothing else: see below, where the product is known.
         wants_active = import_formats.parse_state(fields.get('is_active', ''))
         if wants_active is None:
+            # Unreadable. On a NEW product it would decide how it is born: an
+            # error. On one that exists it is ignored anyway — a load never
+            # activates or deactivates — so it is said, and the row applies.
             labels = import_formats.STATE_LABELS
-            errors.append(
-                f'«{fields.get("is_active", "").strip()}» no es un estado. Escribe '
-                f'«{labels[True]}» o «{labels[False]}», o deja la celda vacía.'
-            )
+            said = f'«{fields.get("is_active", "").strip()}» no es un estado'
+            if product_id:
+                warnings.append(f'{said}: se ignora, porque esta carga no activa ni desactiva productos.')
+            else:
+                errors.append(
+                    f'{said}. Escribe «{labels[True]}» o «{labels[False]}» (o Sí / No), '
+                    f'o deja la celda vacía.'
+                )
             wants_active = ''
 
         # §18 — a code this row would WRITE that another product already holds.

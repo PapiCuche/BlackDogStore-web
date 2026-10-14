@@ -519,18 +519,45 @@ class StateColumnTest(_Base):
             {p.name: (p.is_active, p.price) for p in Product.objects.filter(company=self.company)},
             {'Apagado': (False, 11), 'Encendido': (True, 12), 'Igual': (False, 13)})
 
-    def test_it_is_read_as_people_write_it_and_anything_else_is_an_error_that_names_both(self):
+    def test_it_is_read_as_people_write_it(self):
+        """Review F1: a column «Activo» with Sí/No, mapped to this field, is read too."""
         for position, (written, active) in enumerate((
             ('Activo', True), (' ACTIVO ', True), ('activo', True), ('Inactivo', False), ('  inactivo', False),
+            ('Sí', True), ('SI', True), ('si', True), ('No', False), ('NO', False), (1, True), (0, False),
+            ('true', True), ('FALSE', False), ('Verdadero', True), ('falso', False),
         )):
             with self.subTest(written):
                 body = self.preview(self.book([self.row(f'ESTW-{position}', f'Producto {position}', written)])).json()
                 self.assertEqual(body['counts']['error'], 0, body['rows'])
                 self.assertIs(body['rows'][0]['data']['is_active'], active)
-        body = self.preview(self.book([self.row('ESTW-9', 'Raro', 'Descontinuado')])).json()
-        self.assertEqual(body['counts']['error'], 1)
-        self.assertIn('«Descontinuado» no es un estado', body['rows'][0]['errors'][0])
-        self.assertIn('«Activo» o «Inactivo»', body['rows'][0]['errors'][0])
+
+    def test_an_unreadable_state_is_an_error_only_where_it_would_decide_something(self):
+        """
+        Review F1. On a NEW product it decides how it is born, so it must be read.
+        On one that exists it is ignored anyway (a load never activates or
+        deactivates): a warning, and the file still applies.
+        """
+        existing = Product.objects.create(company=self.company, name='Existente', slug='existente', price=10)
+        ProductBarcode.objects.create(company=self.company, product=existing, code='ESTU-1')
+
+        body = self.preview(self.book([
+            self.row('ESTU-1', 'Existente', 'Descontinuado', price=11),
+            self.row('ESTU-2', 'Nuevo raro', 'Descontinuado'),
+        ])).json()
+
+        rows = {row['data']['name']: row for row in body['rows']}
+        self.assertEqual((rows['Existente']['action'], rows['Existente']['errors']), ('update', []))
+        self.assertIn('«Descontinuado» no es un estado', ' '.join(rows['Existente']['warnings']))
+        self.assertIn('se ignora', ' '.join(rows['Existente']['warnings']))
+        self.assertEqual(rows['Nuevo raro']['action'], 'error')
+        self.assertIn('«Descontinuado» no es un estado', rows['Nuevo raro']['errors'][0])
+        self.assertIn('«Activo» o «Inactivo»', rows['Nuevo raro']['errors'][0])
+
+        only_update = self.preview(self.book([self.row('ESTU-1', 'Existente', 'quizás', price=12)])).json()
+        self.assertEqual(only_update['counts']['error'], 0, only_update['rows'])
+        self.assertEqual(self.apply(only_update['id']).status_code, 200)
+        existing.refresh_from_db()
+        self.assertEqual((existing.price, existing.is_active), (12, True))
 
     def test_a_file_without_the_column_loads_as_before(self):
         body = self.imported([product_row('ESTO-1', 'De antes', category='Repuestos', destination=ONLINE)])

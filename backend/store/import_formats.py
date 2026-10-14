@@ -179,7 +179,15 @@ def parse_product_identifier(text):
     found = re.fullmatch(r'(\d{1,12})-(\d{1,12})', str(text or '').strip())
     return (int(found.group(1)), int(found.group(2))) if found else None
 STATE_LABELS = {True: 'Activo', False: 'Inactivo'}
-_STATE_WORDS = {'activo': True, 'inactivo': False}
+#: Read forgivingly (case, accents, spaces): an older «Activo» column holds
+#: Sí/No, and a spreadsheet may hold 1/0 or TRUE/FALSE.
+_STATE_WORDS = {
+    'activo': True, 'inactivo': False,
+    'si': True, 'no': False,
+    '1': True, '0': False,
+    'true': True, 'false': False,
+    'verdadero': True, 'falso': False,
+}
 
 
 def parse_state(text):
