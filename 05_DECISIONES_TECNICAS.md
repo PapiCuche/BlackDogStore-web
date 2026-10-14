@@ -1573,3 +1573,43 @@ Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
   acción; el resto del panel sigue como estaba.
 - **Deuda aceptada, no arreglada:** IMPORT-UNGUARD-APOSTROPHE-CODE (N8),
   IMG-IMPORT-NAME-READING (N12) y EXPORT-GUARD-VISIBLE (N14), en `docs/AUDIT_MEMORY.md` §10.
+  (N8 y N14 los cerró después la decisión D7.)
+
+**Decisiones del propietario (2026-10-13).** Sustituyen lo que decían arriba sobre los
+archivos de productos activos, el aviso de la carga y el apóstrofo.
+
+- **D1 · Lo nuevo nace interno.** «Productos nuevos importados: por defecto Solo stock
+  interno.» Un producto NUEVO sin «Destino» nace con `is_published_online` apagado; un
+  «Destino» explícito se respeta; uno existente sin «Destino» no cambia. La ficha y las
+  demás altas, igual que antes.
+- **D2 · Una regla de publicación, la misma en la acción en bloque y en la carga.**
+  «Rechazar solo la publicación de productos comercialmente inelegibles, indicando motivo
+  por fila. La importación como stock interno sí se permite. No exigir imagen salvo regla
+  configurable.» Elegible = activo, con precio y con categoría; la imagen sólo con
+  `CompanySettings.publication_requires_image` (migración `0123`, `db_default` apagado,
+  como `hold_orders_pending_review`). En la carga el rechazo no es error de fila: el resto
+  de la fila se aplica y el producto queda interno; aplicar vuelve a preguntar con el
+  producto bloqueado; un producto ya publicado no se despublica por esta regla. Sustituye
+  al aviso de la revisión N3.
+- **D3 · Activos e inactivos viajan; cargar no reactiva.** El archivo para volver a cargar
+  y el ZIP llevan los dos y respetan el filtro; la columna «Estado» sólo decide cómo nace
+  un producto nuevo. Una carga NUNCA cambia `is_active` de uno existente. Sustituye a la
+  regla «sólo activos» de la revisión N2. (Tercera revisión, F1: se lee también Sí/No,
+  1/0 y verdadero/falso, y un valor ilegible sólo es error en una fila que crea.)
+- **D4 · El límite de descargas se configura y se explica.** `ADMIN_EXPORT_RATE` (6/min),
+  validado al arrancar; un 429 en castellano con `Retry-After`. Las cinco descargas
+  seguidas caben en el cupo por omisión.
+- **D5 · Identidad estable, nunca un nombre ambiguo.** «Identificador» = `<empresa>-<producto>`:
+  ni secreto ni nuevo (los dos números ya están en las direcciones del panel) y sólo vale
+  en la empresa sobre la que se actúa. Decide antes que el nombre; ajeno o inexistente se
+  ignora con un aviso que no dice si existe en otra parte; contra un código, error. Sin
+  identificador ni código, el nombre sólo si lo lleva un único producto (como ya era).
+  La plantilla del propietario no gana estas columnas.
+- **D6 · Lo oculto no se expone en la app.** Las líneas de «Mis pedidos» v1 de un producto
+  que ya no se vende llevan lo que lleva la línea cerrada de la web (nombre e imagen) y
+  `product_slug` vacío; cantidad y precio son del pedido. Las claves que lee la app siguen.
+- **D7 · Excel sin apóstrofos, CSV con él.** En un .xlsx la protección es el TIPO de celda:
+  texto marcado como texto (`quotePrefix`), con el valor intacto; el lector rechaza las
+  fórmulas por su tipo y no quita nada. Ningún escritor desplegado puso apóstrofos (la
+  guarda nació en esta rama), así que no hay archivos antiguos que leer de otra manera.
+  En `errors.csv`, que no tiene tipos, el apóstrofo se queda.

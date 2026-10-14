@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — INVENTORY-UNIFIED-01: decisiones del propietario
+
+En la rama `feat/inventory-unified`; sin desplegar. Migración nueva `0123` (aditiva).
+
+**Added**
+- Configuración › «Publicación en e-commerce»: exigir imagen para publicar en bloque
+  (apagado por omisión).
+- El archivo del catálogo para volver a cargar trae las columnas «Estado» e «Identificador».
+- `ADMIN_EXPORT_RATE`: cupo configurable de descargas del inventario (6 por minuto).
+
+**Changed**
+- Un producto nuevo cargado sin «Destino» queda como «Solo stock interno».
+- Publicar en bloque —la acción de la lista y la carga de productos— pide estar activo,
+  con precio y con categoría; la imagen, sólo si la empresa lo configura. En la carga, lo
+  que no cumple se carga igual, queda interno y la fila dice por qué.
+- El archivo para volver a cargar lleva productos activos e inactivos y respeta el filtro.
+- Las celdas que empiezan por `=`, `+`, `-` o `@` se ven tal cual en los Excel descargados,
+  sin apóstrofo, y siguen sin ejecutarse.
+- Cuando se piden demasiadas descargas, el panel dice en cuántos segundos volver.
+
+**Fixed**
+- Un producto sin código renombrado ya no se crea otra vez al recargar su archivo.
+- Una carga nunca reactiva ni desactiva un producto existente.
+
+**Security**
+- La app ya no da la dirección de un producto que dejó de venderse en «Mis pedidos».
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
 
 En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones nuevas.

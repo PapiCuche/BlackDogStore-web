@@ -3,6 +3,50 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — INVENTORY-UNIFIED-01: las siete decisiones del propietario
+
+Misma rama (`feat/inventory-unified`), sobre `8dd3e59`: `e2c9c84`…`4a46012`, un commit por
+decisión, más `a94c8fa` y `0dbf3b3` (pruebas que cerraron mutantes; la segunda es G01 de la
+tercera revisión) y `1f21cfe` (F1 de la tercera revisión: «Estado» lee Sí/No, 1/0,
+verdadero/falso, y un valor ilegible sólo es error al CREAR; al actualizar, aviso). **EN LA RAMA, probado por partes: sin push, sin PR, sin desplegar.** Una migración
+nueva, `0123` (aditiva); una variable opcional, `ADMIN_EXPORT_RATE`. Sin capacidades nuevas,
+sin rutas nuevas, sin tocar el Kardex ni `StockUnit`, ni el Caddyfile ni `request_limits.py`.
+
+| | Decisión | Qué hace ahora |
+|---|---|---|
+| D1 | Productos nuevos importados: «Solo stock interno» por defecto | Un producto NUEVO sin «Destino» (celda vacía o sin columna) nace interno. Un «Destino» explícito se respeta (con D2). Uno existente sin «Destino» se queda como está. La ficha y las demás altas no cambian |
+| D2 | Publicación masiva: rechazar sólo lo inelegible, con motivo por fila; imagen sólo si se configura | Regla única: activo, con precio y con categoría; imagen sólo con `CompanySettings.publication_requires_image` (casilla en Configuración, apagada). En la carga, una fila que pide la web para algo inelegible NO es error: se carga, queda interna y dice el motivo; la vista previa y el resultado cuentan los rechazos. Aplicar vuelve a preguntar con el producto bloqueado. Lo ya publicado no se despublica por esta regla |
+| D3 | Exportación reimportable: activos e inactivos; no reactivar al importar | El archivo para volver a cargar (y el ZIP) lleva activos e inactivos y respeta el filtro de estado; gana la columna «Estado» (se lee Activo/Inactivo, Sí/No, 1/0, verdadero/falso). La carga nunca cambia `is_active` de un producto existente (lo avisa si el archivo dice otra cosa); un producto nuevo «Inactivo» nace inactivo e interno |
+| D4 | Descargas: 6/min configurable, 429 claro | `ADMIN_EXPORT_RATE` (6/min), comprobado al arrancar: un valor inválido vuelve al de por omisión con una línea en el registro. El 429 dice en castellano que están limitadas y en cuántos segundos volver, con `Retry-After`; el panel lo muestra. Las cinco tarjetas seguidas caben |
+| D5 | Productos sin código: identidad estable, sin emparejar nombres ambiguos | El archivo para volver a cargar lleva «Identificador» (`<empresa>-<producto>`). Si nombra un producto de ESTA empresa decide: un renombrado se actualiza. Otro, ajeno o inexistente: se ignora con un aviso y deciden los códigos. Identificador y código en productos distintos: error. Sin identificador ni código, un nombre que llevan dos productos es error (ya lo era) |
+| D6 | App v1: lo oculto no se expone; el pedido conserva lo suyo | «Mis pedidos» de la app: de un producto que ya no se vende, nombre e imagen (lo mismo que la web) y `product_slug` vacío; cantidad y precio son los del pedido. Lo que se vende no cambia |
+| D7 | Excel sin apóstrofos visibles, sin fórmulas | Un texto que empieza por `= + - @`, tabulador o retorno se escribe como celda de texto (`quotePrefix`), sin apóstrofo. El lector ya no quita ninguno y rechaza las fórmulas por el tipo de celda. `errors.csv` conserva el apóstrofo: un CSV no tiene tipos |
+
+**Cambió, además de lo pedido.** El lector de Excel lee como texto una celda de TEXTO que
+empieza por `=` (antes la rechazaba como fórmula); una celda que ES fórmula se sigue
+rechazando. `effective_filters` desapareció y la auditoría de una descarga anota los
+filtros tal como se pidieron. En la carga, el `destination` de la vista previa es lo que
+va a pasar (un rechazo de D2 muestra «Sin cambios» o «Solo stock interno»). La columna
+«Estado» se lee por el campo de carga `is_active`, que ya existía y no se usaba. La línea
+cerrada de «Mis pedidos» en la web ya no construye el producto entero (deuda
+ORDER-LINE-CLOSED-WASTE). Dos especificaciones de Playwright (`product-destination.spec.ts`
+e `import-split.spec.ts`) se ajustaron a D1/D2 sin correrlas aquí.
+
+**Pruebas.** Cada decisión con su prueba vista en rojo antes del código. Pasadas focales
+(PostgreSQL, `blackdog_focal`) sobre `4a46012`: 656 OK (módulos nuevos, importación,
+plantilla, equipos, medios, límites, visibilidad, stock por serie, `test_preflight`,
+`test_deploy_scripts`); sobre los commits de D1–D6, las clases de importación, producto,
+pedidos, carrito, checkout y configuración de `store/tests.py`, `Ip1ParityManifestTest`,
+`test_delivery_base` y `test_serial_pick`, en verde. Mutaciones: 32 sobre el código de D1–D7; 28 detectadas en la
+primera pasada; tres supervivientes eran huecos de prueba y se cerraron (`a94c8fa`, `0dbf3b3`);
+la cuarta es equivalente (marcar como texto una cabecera: ninguna cabecera puede empezar por
+`=`, `+`, `-` o `@`).
+`makemigrations --check`: una migración nueva, `0123`.
+- Suite completa del backend sobre `4a46012`: pendiente.
+- Jest, `tsc --noEmit` y lint sobre `4a46012`: pendiente.
+- Playwright: pendiente.
+- `sh deploy/rehearsal.sh`: pendiente.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
 
 Misma rama (`feat/inventory-unified`), sobre `ac6a061`. **Sólo en la rama: sin push, sin PR, sin
