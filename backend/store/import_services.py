@@ -628,8 +628,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             category_id = default_category.pk
             category_is_default = True
 
-        # PRODUCT-DESTINATION-01. An empty cell decides nothing: what is new is
-        # published, what exists stays where it is.
+        # PRODUCT-DESTINATION-01. An empty cell decides nothing: what exists
+        # stays where it is. And it publishes nothing (owner's decision,
+        # 2026-10-13): a NEW product with no destination is born «solo stock
+        # interno» — going onto the web is always something a row SAYS.
         destination = import_formats.parse_destination(fields.get('destination', ''))
         if destination is None:
             labels = import_formats.DESTINATION_LABELS
@@ -640,7 +642,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             )
             destination = ''
         elif not destination and not product_id:
-            destination = import_formats.DESTINATION_ONLINE
+            destination = import_formats.DESTINATION_INTERNAL
 
         # §18 — a code this row would WRITE that another product already holds.
         #
@@ -994,7 +996,9 @@ def apply_products(*, job, actor):
                 price=price if price is not None else Decimal('0.00'),
                 image_url=data.get('image_url', ''),
                 category_id=category_id,
-                is_published_online=data.get('destination', '') != import_formats.DESTINATION_INTERNAL,
+                # Only what the approved row says. A row with no key (a job
+                # staged before the column existed) asked for nothing: internal.
+                is_published_online=data.get('destination', '') == import_formats.DESTINATION_ONLINE,
             )
             product.full_clean()
             product.save()

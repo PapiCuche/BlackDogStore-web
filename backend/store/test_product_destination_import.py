@@ -10,8 +10,9 @@ Lo que estas pruebas fijan del importador y de su plantilla:
 
   * la columna «Destino» —y «Destino (pendiente web)», como la escribió quien
     preparó la plantilla— se reconoce sola, se valida y se ve en la vista previa;
-  * vacía no cambia nada: un producto nuevo se publica, uno existente se queda
-    como estaba. Un archivo de antes de esta columna se importa igual;
+  * vacía no publica nada: un producto nuevo nace «sólo stock interno» (decisión
+    del propietario, 2026-10-13) y uno existente se queda como estaba. Publicar
+    es siempre algo que la fila dice;
   * la plantilla trae las categorías DE ESA EMPRESA y sólo las suyas, y sus
     hojas de ayuda nunca se importan;
   * una categoría se valida contra las de la empresa. Ninguna está escrita en
@@ -145,7 +146,7 @@ class DestinationColumnTest(_Base):
                 self.assertIn(self.apply(body['id']).status_code, (400, 409))        # nothing with an error is applied
         self.assertFalse(Product.objects.filter(company=self.company).exists())
 
-    def test_an_empty_cell_publishes_what_is_new_and_leaves_alone_what_exists(self):
+    def test_an_empty_cell_leaves_what_is_new_internal_and_leaves_alone_what_exists(self):
         self.imported([product_row('CODE-1', 'Cargador', destination=INTERNAL)])
         self.assertFalse(self.product('Cargador').is_published_online)
 
@@ -157,10 +158,31 @@ class DestinationColumnTest(_Base):
         by_name = {row['data']['name']: row for row in body['rows']}
         self.assertEqual(by_name['Cargador']['action'], 'update')
         self.assertEqual(by_name['Cargador']['data']['destination'], '')          # no dice nada: no cambia nada
-        self.assertEqual(by_name['Cable']['data']['destination'], 'online')       # lo que va a pasar, a la vista
+        self.assertEqual(by_name['Cable']['data']['destination'], 'internal')     # lo que va a pasar, a la vista
         self.assertFalse(self.product('Cargador').is_published_online)
         self.assertEqual(self.product('Cargador').price, 120)
-        self.assertTrue(self.product('Cable').is_published_online)
+        self.assertFalse(self.product('Cable').is_published_online)
+        self.assertTrue(self.product('Cable').is_active)                          # interno no es inactivo
+
+    def test_an_empty_cell_never_takes_an_existing_product_off_the_web(self):
+        self.imported([product_row('CODE-9', 'Parlante', category='Repuestos', destination=ONLINE)])
+        self.assertTrue(self.product('Parlante').is_published_online)
+
+        body = self.imported([product_row('CODE-9', 'Parlante', price=130)])
+
+        self.assertEqual(body['rows'][0]['data']['destination'], '')
+        self.assertTrue(self.product('Parlante').is_published_online)
+
+    def test_a_new_product_is_published_only_when_its_row_says_so(self):
+        body = self.imported([
+            product_row('NEW-WEB', 'Nuevo a la web', category='Repuestos', destination=ONLINE),
+            product_row('NEW-INT', 'Nuevo interno', category='Repuestos', destination=INTERNAL),
+            product_row('NEW-NIL', 'Nuevo sin decir', category='Repuestos'),
+        ])
+        self.assertEqual(body['counts']['create'], 3)
+        self.assertEqual(
+            {p.name: p.is_published_online for p in Product.objects.filter(company=self.company)},
+            {'Nuevo a la web': True, 'Nuevo interno': False, 'Nuevo sin decir': False})
 
     def test_an_explicit_cell_changes_an_existing_product_and_says_so(self):
         self.imported([product_row('CODC-1', 'Batería', destination=ONLINE)])
@@ -184,7 +206,7 @@ class DestinationColumnTest(_Base):
 
         self.assertFalse(self.product('Pantalla').is_published_online)             # nadie lo pidió: no se toca
         self.assertEqual(self.product('Pantalla').price, 60)
-        self.assertTrue(self.product('Mica').is_published_online)
+        self.assertFalse(self.product('Mica').is_published_online)                 # nuevo y sin columna: interno
 
     def test_a_preview_made_before_this_version_still_applies(self):
         body = self.preview(workbook_bytes([product_row('CODP-1', 'Soporte', destination=INTERNAL)])).json()
@@ -193,7 +215,18 @@ class DestinationColumnTest(_Base):
             row.save(update_fields=['normalized_data'])
 
         self.assertEqual(self.apply(body['id']).status_code, 200)
-        self.assertTrue(self.product('Soporte').is_published_online)
+        # Sin la clave nadie pidió publicarlo: nace interno.
+        self.assertFalse(self.product('Soporte').is_published_online)
+
+    def test_a_preview_made_by_the_previous_version_applies_as_it_said(self):
+        """The release before this one wrote «online» on a new row with an empty cell, and showed it."""
+        body = self.preview(workbook_bytes([product_row('CODP-2', 'Trípode', category='Repuestos')])).json()
+        for row in BulkImportRow.objects.filter(job_id=body['id']):
+            row.normalized_data['destination'] = 'online'
+            row.save(update_fields=['normalized_data'])
+
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertTrue(self.product('Trípode').is_published_online)
 
     def test_the_column_can_be_assigned_by_hand(self):
         data = workbook_bytes([product_row('CODM-1', 'Lápiz', destination=INTERNAL)], destination_header='A dónde va')
@@ -259,7 +292,7 @@ class PublishingThroughTheLoadIsSaidBeforeItHappensTest(_Base):
         body = self.preview(workbook_bytes([
             product_row('WEBB-1', 'Ya en la web', destination=ONLINE),        # already there: nothing turns on
             product_row('INTT-1', 'Sigue interno'),                           # empty cell: decides nothing
-            product_row('WEBB-1X', 'Nuevo sin foto', price=10),               # new: published by default, as always
+            product_row('WEBB-1X', 'Nuevo sin foto', price=10),               # new: internal unless its row says web
         ])).json()
         self.assertEqual([row['warnings'] for row in body['rows'] if 'publicarse' in ' '.join(row['warnings'])], [])
 
@@ -610,6 +643,10 @@ class TemplateTest(_Base):
         self.assertIn(ONLINE, notes['Destino'])
         self.assertIn(INTERNAL, notes['Destino'])
         self.assertIn('caja', notes['Destino'])                         # sigue vendiéndose en tienda
+        # Vacío no publica: lo nuevo queda interno (decisión del propietario).
+        self.assertIn('Vacío: lo nuevo queda como «Solo stock interno» y lo existente no cambia.', notes['Destino'])
+        self.assertNotIn('lo nuevo se publica', notes['Destino'])
+        self.assertNotIn('lo nuevo se publica', ' '.join(import_exports.PRODUCT_TEMPLATE_HELP))
         # Esta carga no mueve stock: lo dice donde alguien buscaría una cantidad.
         self.assertIn('stock', notes['Código'].lower())
 

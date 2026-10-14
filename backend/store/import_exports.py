@@ -57,7 +57,7 @@ PRODUCT_TEMPLATE_HELP = [
     'Debe existir, salvo que se active «crear las que falten».',
     'Opcional. Nombre del archivo que verá el catálogo: telefono-frontal.webp',
     'Opcional. Nombres de archivo separados por | : frontal.webp|trasera.webp',
-    'Opcional. «Publicar en e-commerce» o «Solo stock interno». Vacío: lo nuevo se publica y lo existente no cambia.',
+    'Opcional. «Publicar en e-commerce» o «Solo stock interno». Vacío: lo nuevo queda interno y lo existente no cambia.',
 ]
 
 #: How many rows below the example get the drop-downs and the text format.
@@ -320,7 +320,8 @@ def _product_header_notes() -> dict:
         'Destino': (
             f'Opcional. «{online}» o «{internal}». '
             'Solo stock interno: sigue en inventario y se vende en caja y en servicio técnico, pero no aparece '
-            'en la tienda en línea. Vacío: lo nuevo se publica y lo existente no cambia. No es lo mismo que «activo».'
+            'en la tienda en línea. Vacío: lo nuevo queda como «Solo stock interno» y lo existente no cambia. '
+            'No es lo mismo que «activo».'
         ),
     }
 

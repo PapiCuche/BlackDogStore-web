@@ -323,8 +323,8 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
               </label>
               <DefaultCategoryField categories={categories} value={defaultCategory} onChange={setDefaultCategory} />
               <p className="text-muted">
-                Una celda vacía nunca borra lo que ya está guardado. En «Destino», vacío publica lo nuevo y
-                deja lo existente como está.
+                Una celda vacía nunca borra lo que ya está guardado. En «Destino», vacío deja lo nuevo como
+                «Solo stock interno» y lo existente como está: un producto sólo se publica si su fila lo dice.
               </p>
             </div>
 
