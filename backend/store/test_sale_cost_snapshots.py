@@ -178,6 +178,23 @@ class WebPaymentSnapshotTest(_Shop):
         self.assertEqual(after, before)
         self.assertEqual(before['unit_cost'], D('20.0000'))
 
+    def test_the_writers_themselves_refuse_to_overwrite(self):
+        # Not only "nobody calls them twice": called again, they change nothing.
+        self.stock(self.case, 10, D('20'))
+        order = self.pay(self.web_order([(self.case, 2)], discount=D('5.00')))
+        item = self.line(order, self.case)
+        frozen = (item.unit_cost, item.cost_source, item.net_amount, item.discount_net, item.unit_price_net)
+
+        other = StockMovement(unit_cost=D('999.0000'), cost_source='average')
+        margin_services.snapshot_cost(item, other)
+        Order.objects.filter(pk=order.pk).update(taxable_amount=D('1.00'), total=D('1.18'))
+        order.refresh_from_db()
+        margin_services.snapshot_nets(order)
+
+        item.refresh_from_db()
+        self.assertEqual(
+            (item.unit_cost, item.cost_source, item.net_amount, item.discount_net, item.unit_price_net), frozen)
+
     def test_historical_lines_stay_pending(self):
         # A line written before DC1 (no snapshot) is not valued from today's catalogue.
         self.stock(self.case, 3, D('20'))
