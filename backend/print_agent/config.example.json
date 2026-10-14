@@ -3,5 +3,8 @@
   "token": "bdpa_PEGA_AQUI_EL_TOKEN_DEL_PANEL",
   "poll_seconds": 3,
   "printer_timeout": 10,
-  "journal": "print-agent-journal.json"
+  "journal": "print-agent-journal.json",
+  "printers": {
+    "Caja": {"transport": "tcp"}
+  }
 }

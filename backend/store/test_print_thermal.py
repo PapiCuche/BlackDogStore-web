@@ -143,11 +143,18 @@ class AgentTestBase(SimpleTestCase):
         directory = tempfile.mkdtemp(prefix='print-thermal-')
         self.journal_path = os.path.join(directory, 'journal.json')
 
-    def agent(self, **extra):
+    def agent(self, *, queue_model=None, cups_printer=None, **extra):
+        """Un agente con todo lo que toca fuera simulado: red, `lp` y `lpoptions`."""
         config = {'server': 'https://tienda.invalid', 'token': TOKEN,
                   'journal': self.journal_path, **extra}
+
+        def no_cups(*args):
+            raise AssertionError('esta prueba no debía llegar a CUPS')
+
         return Agent(config, http=self.server.http,
-                     printer=lambda *args: self.sent.append(('tcp', *args)))
+                     printer=lambda *args: self.sent.append(('tcp', *args)),
+                     cups_printer=cups_printer or no_cups,
+                     queue_model=queue_model or no_cups)
 
 
 class AgentPayloadGuardTest(AgentTestBase):
@@ -187,3 +194,175 @@ class AgentPayloadGuardTest(AgentTestBase):
 
     def test_a_refusal_waits_like_a_failure(self):
         self.assertGreater(self.agent().pause_after('refused'), 0)
+
+
+# ---------------------------------------------------------------------------
+# Una térmica USB en un Mac: la cola RAW de CUPS
+# ---------------------------------------------------------------------------
+
+RAW = {'transport': 'cups_raw', 'queue': 'POS80_RAW'}
+
+
+def completed(args, returncode=0, stdout=b'', stderr=b''):
+    import subprocess
+
+    return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=stderr)
+
+
+class AgentTransportConfigTest(AgentTestBase):
+    def test_a_config_without_transport_keeps_printing_by_network(self):
+        config = agent_module.validate_config({'server': 'https://t.invalid', 'token': TOKEN})
+        self.assertEqual(config['printers'], {})
+
+        config = agent_module.validate_config({
+            'server': 'https://t.invalid', 'token': TOKEN, 'printers': {'Caja': {}}})
+        self.assertEqual(config['printers'], {'Caja': {'transport': 'tcp'}})
+
+    def test_cups_raw_needs_a_queue_with_a_plain_cups_name(self):
+        for queue in ('', '-oraw', 'a b', 'POS/80', 'POS#80', 'x;rm -rf', 'cola\n', 'é'):
+            with self.subTest(queue=queue):
+                with self.assertRaises(agent_module.AgentError):
+                    agent_module.validate_config({
+                        'server': 'https://t.invalid', 'token': TOKEN,
+                        'printers': {'Caja': {'transport': 'cups_raw', 'queue': queue}}})
+        config = agent_module.validate_config({
+            'server': 'https://t.invalid', 'token': TOKEN, 'printers': {'Caja': RAW}})
+        self.assertEqual(config['printers']['Caja'], RAW)
+
+    def test_an_unknown_transport_is_refused(self):
+        with self.assertRaises(agent_module.AgentError):
+            agent_module.validate_config({
+                'server': 'https://t.invalid', 'token': TOKEN,
+                'printers': {'Caja': {'transport': 'usb'}}})
+
+    def test_it_refuses_to_start_on_a_queue_with_a_postscript_or_pdf_driver(self):
+        for model in ('Generic PostScript Printer', 'Generic PDF Printer', 'HP postscript'):
+            with self.subTest(model):
+                with self.assertRaises(agent_module.AgentError) as caught:
+                    self.agent(printers={'Caja': RAW}, queue_model=lambda queue, m=model: m)
+                message = str(caught.exception)
+                self.assertIn('POS80_RAW', message)
+                self.assertIn('-m raw', message)
+
+    def test_it_refuses_to_start_on_a_queue_that_does_not_exist(self):
+        def missing(queue):
+            raise OSError('lpoptions: Unknown destination')
+
+        with self.assertRaises(agent_module.AgentError):
+            self.agent(printers={'Caja': RAW}, queue_model=missing)
+
+    def test_a_raw_queue_starts(self):
+        seen = []
+        self.agent(printers={'Caja': RAW},
+                   queue_model=lambda queue: seen.append(queue) or 'Local Raw Printer')
+        self.assertEqual(seen, ['POS80_RAW'])
+
+    def test_a_network_only_config_never_asks_cups(self):
+        def never(queue):
+            raise AssertionError('no debía preguntar a CUPS')
+
+        self.agent(queue_model=never)
+
+
+class AgentCupsRawTest(AgentTestBase):
+    def raw_agent(self):
+        return self.agent(
+            printers={'Caja': RAW}, queue_model=lambda queue: 'Local Raw Printer',
+            cups_printer=lambda *args: self.sent.append(('cups', *args)))
+
+    def test_a_ticket_for_a_raw_printer_goes_to_its_cups_queue(self):
+        self.server.job(1, TICKET, name='Caja', host='192.168.1.50')
+
+        self.assertEqual(self.raw_agent().run_once(), 'printed')
+
+        self.assertEqual(len(self.sent), 1)
+        transport, queue, payload, _timeout = self.sent[0]
+        self.assertEqual((transport, queue, payload), ('cups', 'POS80_RAW', TICKET))
+        self.assertTrue(self.server.results[-1][1]['ok'])
+
+    def test_a_printer_not_listed_still_prints_by_network(self):
+        self.server.job(1, TICKET, name='Barra', host='192.168.1.60', port=9100)
+
+        self.assertEqual(self.raw_agent().run_once(), 'printed')
+
+        self.assertEqual(self.sent[0][:3], ('tcp', '192.168.1.60', 9100))
+
+    def test_a_pdf_never_reaches_the_cups_queue_either(self):
+        self.server.job(1, NOT_ESCPOS['pdf'], name='Caja')
+
+        with self.assertLogs('print_agent', level='ERROR'):
+            self.assertEqual(self.raw_agent().run_once(), 'refused')
+        self.assertEqual(self.sent, [])
+
+    def test_a_cups_failure_is_reported_and_nothing_is_recorded(self):
+        def broken(*args):
+            raise OSError('lp: The printer or class does not exist.')
+
+        agent = self.agent(printers={'Caja': RAW}, queue_model=lambda q: 'Local Raw Printer',
+                           cups_printer=broken)
+        self.server.job(1, TICKET, name='Caja')
+
+        self.assertEqual(agent.run_once(), 'failed')
+        self.assertFalse(self.server.results[-1][1]['ok'])
+        self.assertEqual(agent_module.Journal(self.journal_path).printed, [])
+
+
+class CupsCommandsTest(SimpleTestCase):
+    """Las dos órdenes de CUPS, con `subprocess` simulado: aquí no se ejecuta nada."""
+
+    def test_lp_gets_an_argument_list_raw_and_a_timeout(self):
+        from unittest import mock
+
+        with mock.patch.object(agent_module.subprocess, 'run',
+                               return_value=completed([], 0, b'request id is POS80_RAW-7')) as run:
+            agent_module.send_to_cups_queue('POS80_RAW', TICKET, 5.0)
+
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ['lp', '-d', 'POS80_RAW', '-o', 'raw'])
+        self.assertEqual(kwargs['input'], TICKET)
+        self.assertEqual(kwargs['timeout'], 5.0)
+        self.assertNotIn('shell', kwargs)
+
+    def test_lp_failing_or_hanging_is_an_oserror(self):
+        import subprocess
+        from unittest import mock
+
+        with mock.patch.object(agent_module.subprocess, 'run',
+                               return_value=completed([], 1, stderr=b'lp: Unknown destination')):
+            with self.assertRaises(OSError):
+                agent_module.send_to_cups_queue('POS80_RAW', TICKET, 5.0)
+        with mock.patch.object(agent_module.subprocess, 'run',
+                               side_effect=subprocess.TimeoutExpired(['lp'], 5.0)):
+            with self.assertRaises(OSError):
+                agent_module.send_to_cups_queue('POS80_RAW', TICKET, 5.0)
+
+    def test_lp_is_never_called_with_a_bad_queue_name(self):
+        from unittest import mock
+
+        with mock.patch.object(agent_module.subprocess, 'run') as run:
+            with self.assertRaises(OSError):
+                agent_module.send_to_cups_queue('-oraw', TICKET, 5.0)
+        run.assert_not_called()
+
+    def test_the_queue_driver_is_read_with_lpoptions(self):
+        from unittest import mock
+
+        out = (b"copies=1 device-uri=usb://STMicroelectronics/USB%20POS%20Printer "
+               b"printer-make-and-model='Generic PostScript Printer' printer-is-shared=false")
+        with mock.patch.object(agent_module.subprocess, 'run',
+                               return_value=completed([], 0, out)) as run:
+            model = agent_module.read_queue_model('STMicroelectronics_USB_POS_Printer')
+
+        self.assertEqual(model, 'Generic PostScript Printer')
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ['lpoptions', '-p', 'STMicroelectronics_USB_POS_Printer'])
+        self.assertIn('timeout', kwargs)
+        self.assertNotIn('shell', kwargs)
+
+    def test_a_queue_that_does_not_exist_is_an_oserror(self):
+        from unittest import mock
+
+        with mock.patch.object(agent_module.subprocess, 'run',
+                               return_value=completed([], 1, stderr=b'Unknown destination')):
+            with self.assertRaises(OSError):
+                agent_module.read_queue_model('POS80_RAW')

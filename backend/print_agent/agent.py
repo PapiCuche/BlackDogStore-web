@@ -35,7 +35,9 @@ import json
 import logging
 import os
 import re
+import shlex
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -91,7 +93,54 @@ def validate_config(config: dict) -> dict:
         'journal': str(config.get('journal', 'print-agent-journal.json')),
         # Sólo para pruebas: una impresora simulada en este mismo equipo.
         'allow_loopback': bool(config.get('allow_loopback', False)),
+        'printers': _validate_printers(config.get('printers')),
     }
+
+
+#: Un nombre de cola de CUPS sin nada que `lp` pudiera leer como otra cosa: sin
+#: espacios, barras, `#`, comillas ni un guion delante (sería una opción).
+_CUPS_QUEUE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,126}$')
+TRANSPORTS = ('tcp', 'cups_raw')
+
+
+def valid_queue_name(queue) -> bool:
+    return isinstance(queue, str) and bool(_CUPS_QUEUE.fullmatch(queue))
+
+
+def _validate_printers(raw) -> dict:
+    """
+    Cómo llega este agente a cada impresora, por el NOMBRE que tiene en el panel.
+
+        "printers": {"Caja": {"transport": "cups_raw", "queue": "POS80_RAW"}}
+
+    `tcp` (lo de siempre, y lo que vale si no se dice nada): la dirección y el
+    puerto que manda el servidor. `cups_raw`: una cola RAW de CUPS de ESTE
+    equipo, para una térmica USB. Una impresora que no está aquí va por red.
+    """
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise AgentError('"printers" tiene que ser un objeto: {"Nombre en el panel": {...}}.')
+    printers = {}
+    for name, entry in raw.items():
+        entry = entry or {}
+        if not isinstance(entry, dict):
+            raise AgentError(f'"printers" › "{name}" tiene que ser un objeto.')
+        transport = str(entry.get('transport') or 'tcp')
+        if transport not in TRANSPORTS:
+            raise AgentError(
+                f'"printers" › "{name}": transporte "{transport}" desconocido. '
+                f'Use "tcp" o "cups_raw".')
+        if transport == 'tcp':
+            printers[str(name)] = {'transport': 'tcp'}
+            continue
+        queue = entry.get('queue')
+        if not valid_queue_name(queue):
+            raise AgentError(
+                f'"printers" › "{name}": "cups_raw" necesita "queue" con el nombre de una cola '
+                f'RAW de CUPS (letras, números, "_", "-" o "."; por ejemplo POS80_RAW).')
+        printers[str(name)] = {'transport': 'cups_raw', 'queue': queue}
+    return printers
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +274,81 @@ def send_to_printer(host: str, port: int, payload: bytes, timeout: float) -> Non
             pass
 
 
+#: Lo que delata un controlador que convierte el trabajo en PostScript o PDF.
+_DOCUMENT_DRIVERS = ('postscript', 'pdf')
+_CUPS_TIMEOUT = 10.0
+
+
+def send_to_cups_queue(queue: str, payload: bytes, timeout: float) -> None:
+    """
+    Entrega los bytes a una cola RAW de CUPS de este equipo. Levanta OSError si no se pudo.
+
+    `lp -d <cola> -o raw`, con una lista de argumentos (sin intérprete de
+    órdenes) y un tiempo máximo. `-o raw` pide a CUPS que no convierta nada;
+    la cola, además, tiene que ser RAW (lo comprueba el agente al arrancar).
+    """
+    if not valid_queue_name(queue):
+        raise OSError(f'nombre de cola de CUPS no válido: {queue!r}')
+    try:
+        done = subprocess.run(
+            ['lp', '-d', queue, '-o', 'raw'], input=payload, capture_output=True,
+            timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise OSError(f'lp no respondió en {timeout:.0f} s') from None
+    if done.returncode != 0:
+        detail = (done.stderr or b'').decode('utf-8', 'replace').strip()[:150]
+        raise OSError(f'lp terminó con {done.returncode}: {detail}')
+
+
+def read_queue_model(queue: str) -> str:
+    """
+    El controlador de una cola de CUPS («make and model»), con `lpoptions -p`.
+
+    Sólo lee. Levanta OSError si la cola no existe o CUPS no contesta.
+    """
+    if not valid_queue_name(queue):
+        raise OSError(f'nombre de cola de CUPS no válido: {queue!r}')
+    try:
+        done = subprocess.run(
+            ['lpoptions', '-p', queue], capture_output=True, timeout=_CUPS_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        raise OSError('lpoptions no respondió') from None
+    if done.returncode != 0:
+        detail = (done.stderr or b'').decode('utf-8', 'replace').strip()[:150]
+        raise OSError(f'lpoptions terminó con {done.returncode}: {detail}')
+    text = (done.stdout or b'').decode('utf-8', 'replace')
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        words = text.split()
+    for word in words:
+        key, _, value = word.partition('=')
+        if key == 'printer-make-and-model':
+            return value
+    return ''
+
+
+def check_raw_queue(queue: str, model_of=read_queue_model) -> None:
+    """
+    Arrancar con `cups_raw` sólo sobre una cola RAW. Levanta AgentError si no lo es.
+
+    PRINT-THERMAL-01. Una cola con un controlador PostScript o PDF convierte lo
+    que recibe; una térmica ESC/POS imprime el resultado como texto.
+    """
+    try:
+        model = model_of(queue)
+    except OSError as exc:
+        raise AgentError(
+            f'La cola de CUPS "{queue}" no existe o CUPS no contesta ({exc}). Créala como cola '
+            f"RAW: lpadmin -p {queue} -E -v '<URI usb:// de la térmica>' -m raw") from None
+    if any(word in (model or '').lower() for word in _DOCUMENT_DRIVERS):
+        raise AgentError(
+            f'La cola de CUPS "{queue}" usa el controlador «{model}», que convierte los '
+            f'trabajos en PostScript o PDF: la térmica los imprimiría como texto. Usa una '
+            f"cola RAW (lpadmin -p POS80_RAW -E -v '<la misma URI usb://>' -m raw) y pon "
+            f'su nombre en "queue". Mira el README del agente.')
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """
     El agente no sigue redirecciones.
@@ -268,10 +392,16 @@ def http_json(method: str, url: str, token: str, body=None, timeout: float = 20.
 # ---------------------------------------------------------------------------
 
 class Agent:
-    def __init__(self, config: dict, *, http=http_json, printer=send_to_printer, journal=None):
+    def __init__(self, config: dict, *, http=http_json, printer=send_to_printer, journal=None,
+                 cups_printer=send_to_cups_queue, queue_model=read_queue_model):
         self.config = validate_config(config)
         self.http = http
         self.printer = printer
+        self.cups_printer = cups_printer
+        # Antes de recoger nada: una cola `cups_raw` que no es RAW no arranca.
+        for route in self.config['printers'].values():
+            if route['transport'] == 'cups_raw':
+                check_raw_queue(route['queue'], queue_model)
         self.journal = journal or Journal(self.config['journal'])
 
     def _url(self, path: str) -> str:
@@ -349,18 +479,29 @@ class Agent:
             return 'refused'
 
         printer = job.get('printer') or {}
+        route = self.config['printers'].get(str(printer.get('name') or ''), {'transport': 'tcp'})
         host, port = str(printer.get('host', '')), int(printer.get('port') or 9100)
-        if not is_local_address(host, allow_loopback=self.config['allow_loopback']):
-            logger.error('Trabajo %s: la impresora no está en la red local; no se imprime.', job_id)
-            self._report(job_id, claim_token, ok=False,
-                         error='La dirección de la impresora no es de la red local.')
-            return 'failed'
+        if route['transport'] == 'cups_raw':
+            # Una térmica USB de este equipo: la dirección del panel no se usa.
+            target = f"cola CUPS {route['queue']}"
+            deliver = lambda: self.cups_printer(  # noqa: E731
+                route['queue'], payload, self.config['printer_timeout'])
+        else:
+            if not is_local_address(host, allow_loopback=self.config['allow_loopback']):
+                logger.error(
+                    'Trabajo %s: la impresora no está en la red local; no se imprime.', job_id)
+                self._report(job_id, claim_token, ok=False,
+                             error='La dirección de la impresora no es de la red local.')
+                return 'failed'
+            target = host
+            deliver = lambda: self.printer(  # noqa: E731
+                host, port, payload, self.config['printer_timeout'])
 
         try:
-            self.printer(host, port, payload, self.config['printer_timeout'])
+            deliver()
         except (OSError, ValueError) as exc:
             reason = f'{type(exc).__name__}: {exc}'[:200]
-            logger.warning('Trabajo %s: la impresora %s no respondió (%s).', job_id, host, reason)
+            logger.warning('Trabajo %s: la impresora %s no respondió (%s).', job_id, target, reason)
             self._report(job_id, claim_token, ok=False, error=reason)
             return 'failed'
 
