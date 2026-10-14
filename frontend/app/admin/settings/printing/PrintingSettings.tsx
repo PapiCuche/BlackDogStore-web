@@ -11,11 +11,11 @@
  * se pierde, se revoca el agente y se crea otro.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PRINT_JOB_STATUS_LABEL, PrintingFieldError, createPrintAgent, createPrinter,
   deactivatePrinter, downloadTestPage, fetchPrintAgents, fetchPrintJobs, fetchPrinters,
-  requestTestPrint, retryPrintJob, revokePrintAgent, type PrintAgent, type PrintJob,
+  newIdempotencyKey, requestTestPrint, retryPrintJob, revokePrintAgent, type PrintAgent, type PrintJob,
   type Printer,
 } from "../../lib/printing-api";
 import { ThermalPrintHint } from "../../components/ThermalPrintHint";
@@ -43,6 +43,9 @@ export function PrintingSettings({
   const [jobs, setJobs] = useState<PrintJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** La prueba en curso: mientras dura, el botón no manda otra. */
+  const [testing, setTesting] = useState(false);
+  const testingRef = useRef(false);
   const [fields, setFields] = useState<Record<string, string[]>>({});
   const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
   const [printer, setPrinter] = useState({ branch: branches[0]?.id ?? 0, name: "", host: "", auto: true });
@@ -116,16 +119,26 @@ export function PrintingSettings({
 
   // PRINT-THERMAL-01: unas pocas líneas antes de un ticket entero.
   async function testPrint(row: Printer) {
+    // Un doble clic llega antes de que React vuelva a pintar el botón desactivado.
+    if (testingRef.current) return;
+    testingRef.current = true;
+    setTesting(true);
     setError(null); setNotice(null);
+    const key = newIdempotencyKey();
     try {
-      const job = await requestTestPrint(companyId, row.id);
+      const job = await requestTestPrint(companyId, row.id, key);
       setJobs((rows) => [job, ...rows.filter((j) => j.id !== job.id)]);
       setNotice(
         `Prueba enviada a «${row.name}»: deben salir unas pocas líneas y un corte. ` +
         "Si sale texto técnico (%!PS, %PDF), apaga la impresora y cancela la cola de " +
         "impresión del equipo.",
       );
-    } catch (err) { fail(err); }
+    } catch (err) {
+      fail(err);
+    } finally {
+      testingRef.current = false;
+      setTesting(false);
+    }
   }
 
   async function testPage() {
@@ -174,8 +187,8 @@ export function PrintingSettings({
                 </div>
                 {canManage && row.is_active ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" onClick={() => void testPrint(row)}
-                      className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
+                    <button type="button" onClick={() => void testPrint(row)} disabled={testing}
+                      className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground disabled:cursor-not-allowed disabled:opacity-40">
                       Imprimir prueba
                     </button>
                     <button type="button" onClick={() => void removePrinter(row)}
@@ -322,7 +335,8 @@ export function PrintingSettings({
                   </p>
                   {job.last_error ? <p className="text-xs text-danger [overflow-wrap:anywhere]">{job.last_error}</p> : null}
                 </div>
-                {job.status === "failed" || job.status === "cancelled" ? (
+                {(job.status === "failed" || job.status === "cancelled") &&
+                (job.kind !== "test_ticket" || canManage) ? (
                   <button type="button" onClick={() => void retry(job)}
                     className="min-h-11 rounded-lg border border-bd-border px-4 text-sm font-semibold text-foreground">
                     Reenviar

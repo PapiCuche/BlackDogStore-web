@@ -111,7 +111,8 @@ export async function retryPrintJob(companyId: number | null, id: number): Promi
   return handle<PrintJob>(res, "No se pudo reenviar el trabajo.");
 }
 
-function newKey(): string {
+/** Una clave por acción de quien usa el panel: un doble clic reusa la misma. */
+export function newIdempotencyKey(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -119,12 +120,15 @@ function newKey(): string {
 
 /**
  * PRINT-THERMAL-01. Unas pocas líneas ESC/POS en esta impresora, por la cola y
- * el agente del local, antes de gastar un ticket entero. Una clave por clic.
+ * el agente del local, antes de gastar un ticket entero. `key` la pone quien
+ * llama, una por acción: repetir la petición con la misma no imprime dos.
  */
-export async function requestTestPrint(companyId: number | null, printerId: number): Promise<PrintJob> {
+export async function requestTestPrint(
+  companyId: number | null, printerId: number, key: string,
+): Promise<PrintJob> {
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/printers/${printerId}/test/${query(companyId)}`,
-    json("POST", {}, { "Idempotency-Key": newKey() }));
+    json("POST", {}, { "Idempotency-Key": key }));
   return handle<PrintJob>(res, "No se pudo enviar la prueba de impresión.");
 }
 

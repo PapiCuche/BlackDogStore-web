@@ -162,7 +162,7 @@ describe('PRINT-THERMAL-01: probar antes de imprimir un ticket entero', () => {
 
     await userEvent.click(within(row).getByRole('button', { name: 'Imprimir prueba' }));
 
-    await waitFor(() => expect(mockApi.requestTestPrint).toHaveBeenCalledWith(7, 5));
+    await waitFor(() => expect(mockApi.requestTestPrint).toHaveBeenCalledWith(7, 5, expect.any(String)));
     expect(await screen.findByText(/Prueba enviada a «Caja»/)).toBeInTheDocument();
     expect(screen.getByText(/Si sale texto técnico/)).toBeInTheDocument();
     const queued = screen.getByText('Prueba de impresión').closest('li') as HTMLElement;
@@ -178,6 +178,37 @@ describe('PRINT-THERMAL-01: probar antes de imprimir un ticket entero', () => {
 
     await waitFor(() => expect(mockApi.downloadTestPage).toHaveBeenCalledWith(7));
     expect(screen.getByText(/controlador de la propia térmica/)).toBeInTheDocument();
+  });
+
+  it('un doble clic manda una sola prueba, con una clave por acción', async () => {
+    let finish: (job: unknown) => void = () => {};
+    mockApi.requestTestPrint.mockImplementation(
+      () => new Promise((resolve) => { finish = resolve; }));
+    mount();
+    const row = (await screen.findByText('Caja')).closest('li') as HTMLElement;
+    const button = within(row).getByRole('button', { name: 'Imprimir prueba' });
+
+    await userEvent.dblClick(button);
+
+    expect(button).toBeDisabled();
+    expect(mockApi.requestTestPrint).toHaveBeenCalledTimes(1);
+    const [, , key] = mockApi.requestTestPrint.mock.calls[0];
+    expect(typeof key).toBe('string');
+    expect(key.length).toBeGreaterThan(8);
+
+    finish(TEST_JOB);
+    await waitFor(() => expect(button).toBeEnabled());
+    await userEvent.click(button);
+    await waitFor(() => expect(mockApi.requestTestPrint).toHaveBeenCalledTimes(2));
+    expect(mockApi.requestTestPrint.mock.calls[1][2]).not.toBe(key);
+  });
+
+  it('quien no configura impresoras no reenvía una prueba fallida', async () => {
+    mockApi.fetchPrintJobs.mockResolvedValue([{ ...TEST_JOB, status: 'failed' }]);
+    render(<PrintingSettings companyId={7} branches={BRANCHES} canManage={false} />);
+
+    const row = (await screen.findByText('Prueba de impresión')).closest('li') as HTMLElement;
+    expect(within(row).queryByRole('button', { name: 'Reenviar' })).toBeNull();
   });
 
   it('quien no configura impresoras no manda pruebas', async () => {
