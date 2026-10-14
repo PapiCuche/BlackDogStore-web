@@ -13,6 +13,7 @@ import {
   fetchSalesNote,
   type SalesNote,
 } from "../../lib/inventory";
+import { SalesNoteStatusBadge } from "./sales-notes/SalesNoteStatusBadge";
 
 type Props = {
   orderId: number;
@@ -123,7 +124,9 @@ export function SalesNotePanel({ orderId, isPaid, cancelled = false }: Props) {
                 <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Estado
                 </dt>
-                <dd className="mt-0.5 text-sm text-foreground/85">{note.status_label}</dd>
+                <dd className="mt-0.5 text-sm text-foreground/85">
+                  {note.is_void ? <SalesNoteStatusBadge note={note} /> : note.status_label}
+                </dd>
               </div>
               <div>
                 <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
@@ -133,6 +136,17 @@ export function SalesNotePanel({ orderId, isPaid, cancelled = false }: Props) {
                   {note.created_by_username ?? "—"}
                 </dd>
               </div>
+              {note.is_void && note.void_reason ? (
+                <div className="sm:col-span-2">
+                  <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+                    Motivo de la anulación
+                  </dt>
+                  <dd className="mt-0.5 whitespace-pre-wrap text-sm text-foreground/85">
+                    {note.void_reason_type_label ? `${note.void_reason_type_label}: ` : ""}
+                    {note.void_reason}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           ) : (
             <p className="mb-4 text-sm text-muted">

@@ -141,10 +141,11 @@ export const INTERNAL_MODULES: InternalModule[] = [
     id: "sales.notes",
     group: "sales",
     label: "Notas de venta",
-    description: "Documento interno de venta. Se emite desde el detalle del pedido.",
+    description: "Documento interno de venta: consulta, anuladas y observaciones. Se emite desde el pedido o el POS.",
+    href: "/admin/sales/notes",
     requiredCapabilities: ["sales.notes.manage"],
     legacyRoles: ["sales", "admin", "superadmin"],
-    status: "partial",
+    status: "implemented",
   },
   {
     id: "sales.summary",
