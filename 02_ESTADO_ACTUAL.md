@@ -3,6 +3,65 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-13 — CI-OPTIMIZATION-01: auditoría de GitHub Actions y suite del backend en fragmentos
+
+Rama `chore/ci-optimization` (desde `14e658c`), commits locales, **sin push**: PARCIAL hasta que corra en
+GitHub. Sólo CI, dos scripts de desarrollo y sus pruebas. Cómo queda organizado: `docs/CODEBASE_MAP.md` § CI.
+
+**Auditoría (85 runs del backend, 2026-10-02 → 10-13).** El paso de tests es más del 99 % del trabajo;
+checkout, Python, `pip` (caché ya activa, acierta) y migraciones (~30 s) suman menos de 1 min. 60 runs
+verdes: mediana 72 min, de 43 a 99, bimodal según la máquina que toca (los últimos 30: mediana 82). 21
+cancelados, 10 de ellos en `master` (el grupo de concurrencia cancelaba también ahí: el 2026-10-11, de
+siete merges seguidos sólo se probó el último). El 28 % de los minutos son runs verdes de `master`, que
+con el PR al día repiten el árbol que ese PR ya validó. Frontend: 1–2 min; su caché de npm nunca se guardaba donde otro PR
+pudiera leerla. `master` no tiene protección de rama ni checks obligatorios.
+
+| | Antes (medido) | Después |
+|---|---|---|
+| Backend, un run en GitHub | mediana 72 min (43–99) | **esperado** 12–20 min: 6 fragmentos a la vez; sin medir hasta el primer push |
+| Aviso de un fallo | a los 15–73 min, un solo trabajo | cada fragmento informa por separado, con su lista de fallos en el resumen |
+| Suite completa en local, un proceso | 6747 tests, 2285 s (38 min) | igual; los 6 fragmentos uno tras otro: 6783 tests, 2316 s |
+| Fragmento más pesado / media (local) | — | 394 s / 386 s medido en el primer reparto; 385 s / 383 s por pesos en el definitivo |
+| Runs de `master` cancelados | 10 de 30 | 0 (cada merge se valida) |
+| Disparo por `deploy/**`, `frontend/app/admin/**`… | no | sí (los leen tests del backend) |
+
+**Equivalencia.** Descubrimiento del runner: 923 clases, 6791 tests (6747 + 44 nuevos), ningún id
+repetido. De 1 a 16 fragmentos, la unión es la suite y ninguna clase está en dos; las etiquetas de cada
+fragmento cargan por el runner exactamente sus tests; cada fragmento conserva el orden de la suite
+entera. Corridos en local los seis fragmentos del primer reparto: 1141 + 1039 + 1057 + 1054 + 1405 +
+1087 = 6783 = la suite de ese commit, 6 omitidos como en la corrida entera, y **un error**, que es el
+hallazgo de abajo. Del reparto definitivo (`5f22aff`) se corrieron de punta a punta dos fragmentos: el 6,
+que lleva las 24 clases que vacían la base (1120 tests, 374 s, OK), y el 3, el más numeroso (1566 tests,
+385 s, OK); en los dos, «Ran» coincide con lo repartido. 22 mutaciones deliberadas de los scripts y del
+workflow (quitar un fragmento de la matriz, una puerta que se puede saltar, una clase en dos fragmentos,
+un import roto que se calla, un archivo externo olvidado…): las pruebas de guarda detectan todas.
+
+**Hallazgo: dependencia de orden que la suite entera esconde.** `store.tests.C15InitialRaceTest`
+(`TransactionTestCase` con `reset_sequences`) sólo pasa si antes corrió otra clase que vacía la base; sola
+falla con «duplicate key store_company_pkey (id)=(1)» — también en `master`, a mano. Hay cinco clases
+así. No se tocó ningún test: las 24 `TransactionTestCase` van siempre juntas al último fragmento, en el
+orden de la suite, y el reparto dejó de depender de qué otras clases existen (añadir un test no mueve a
+ningún otro). Queda como deuda **TEST-TTC-RESET-SEQ** (PENDIENTE, baja): que esas cinco clases no
+dependan de que otra limpie antes.
+
+**Lo que no se implementó, y por qué.**
+- `--parallel`: en un subconjunto de 601 tests (7 clases de concurrencia real) pasa y va 3,7× más rápido,
+  pero aquí arranca procesos con `spawn` y el CI con `fork`: no es prueba. PROPUESTA.
+- Hasher de contraseñas rápido en tests: ~74 % del tiempo medido en tres módulos es PBKDF2 (229 tests,
+  150,6 s → 39,3 s con MD5, todos verdes). Cambia lo que ejercitan los tests de autenticación: decisión
+  del propietario. PROPUESTA **TEST-HASHER**.
+- Saltarse en `master` la suite de un árbol idéntico al del PR: ahorra minutos, no tiempo de espera, y
+  añade lógica que podría saltarse algo. No.
+
+**Del propietario.** Nada en los ajustes de GitHub para mergear esto (no hay checks obligatorios y el
+nombre `Django tests on PostgreSQL` se conserva). Si algún día se exigen checks, ver la advertencia de
+`docs/CODEBASE_MAP.md` § CI sobre los filtros por ruta.
+
+**Sin verificar hasta el push.** La duración real; la sintaxis del workflow en GitHub (no hay
+`actionlint` aquí: se analizó el YAML y se contrastaron las expresiones con la documentación); Python
+3.12 y PostgreSQL 16 (en local: 3.14 y 14); los fragmentos 1, 2, 4 y 5 del reparto definitivo de punta
+a punta.
+
 ## 2026-10-13 — #110 y #111 en `master` y desplegados
 
 **#111 (CLIENT-SEC-01 fase 1 y base de DELIVERY-01)** se fusionó con commit de merge y CI

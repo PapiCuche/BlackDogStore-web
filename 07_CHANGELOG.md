@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — CI-OPTIMIZATION-01: la suite del backend, en fragmentos paralelos
+
+En la rama `chore/ci-optimization`; sin push. Sólo CI, scripts de desarrollo y sus pruebas: ningún cambio
+de comportamiento, de migraciones ni de settings.
+
+**Changed**
+- `Backend PostgreSQL Validation` corre la suite completa en 6 trabajos a la vez (`Django shard N/6`) y
+  un trabajo final, `Django tests on PostgreSQL`, que falla si alguno no pasó. Antes: un solo trabajo de
+  50–100 min. Esperado: 12–20 min (por medir en GitHub).
+- El backend también se dispara cuando cambia un archivo de fuera de `backend/` que leen sus tests:
+  `deploy/**`, `docker-compose.prod.yml`, `docs/internal-parity-matrix.md`, `frontend/app/admin/**`,
+  `frontend/app/auth/components/DevQuickLogin.tsx`.
+- Un push a `master` ya no cancela el run del push anterior (en los PR, sí). `Frontend UX/UI Validation`
+  corre también en `master`: valida el merge y deja la caché de npm donde los PR pueden leerla.
+
+**Added**
+- `backend/scripts/ci_shards.py` (reparto por clase, sin lista que mantener) y `ci_shard_weights.json`.
+  Añadir o borrar un test no mueve a ningún otro de fragmento, y las `TransactionTestCase` van siempre
+  juntas: cinco de ellas sólo pasan después de que otra haya vaciado la base (TEST-TTC-RESET-SEQ).
+- `backend/scripts/affected_tests.py`: qué tests correr primero según lo que cambió. Ayuda local; el CI
+  no la usa.
+- `store/test_ci_shards.py`, `test_affected_tests.py`, `test_ci_workflow.py` (44 pruebas).
+
 ## 2026-10-13 — Despliegue de #111 (y constancia del de #110)
 
 **Deployed**

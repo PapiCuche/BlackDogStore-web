@@ -1,9 +1,14 @@
 name: Frontend UX/UI Validation
 
+# On pull requests, and on master after the merge. The run on master is also
+# what lets the next pull request start warm: a cache saved by a pull request
+# can only be read by that same pull request, one saved on master by all of
+# them. (The push trigger used to name `uxui/header-hero-foundations`, a branch
+# merged long ago, so no run ever saved the npm cache where others could use it.)
 on:
   push:
     branches:
-      - uxui/header-hero-foundations
+      - master
     paths:
       - "frontend/**"
       - ".github/workflows/frontend-uxui-validation.yml"
@@ -17,9 +22,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run of the older commit. A push to
+# master is never cancelled and never waits behind another one.
 concurrency:
-  group: frontend-uxui-${{ github.ref }}
-  cancel-in-progress: true
+  group: frontend-uxui-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
