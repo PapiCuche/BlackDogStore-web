@@ -43,6 +43,14 @@ RETRY_DELAYS = (10, 30, 60, 120)
 MAX_AGE_HOURS = 12
 #: Un agente que no pregunta desde hace más que esto se considera desconectado.
 AGENT_ONLINE_SECONDS = 120
+#: Una prueba de impresión que nadie recogió en este tiempo ya no sirve: quien
+#: la pidió está delante de la impresora ahora, no dentro de una hora. Además,
+#: pocas pruebas pendientes facilitan volver a la versión anterior.
+TEST_MAX_AGE_SECONDS = 600
+#: Lo que el agente da por terminado sin éxito y no se debe reintentar solo:
+#: `refused` (los bytes no eran ESC/POS) y `queued_not_printed` (CUPS aceptó el
+#: trabajo y no consta impreso; repetirlo podría imprimir dos veces).
+FINAL_OUTCOMES = ('refused', 'queued_not_printed')
 TOKEN_PREFIX = 'bdpa_'
 
 
@@ -264,6 +272,13 @@ def _requeue_expired(branch, now) -> None:
     expired.filter(attempts__lt=MAX_ATTEMPTS).update(
         status=PrintJob.Status.PENDING, claim_token='', lease_expires_at=None,
         available_at=None, updated_at=now)
+    # Una prueba de impresión caduca en minutos.
+    PrintJob.objects.filter(
+        branch=branch, status=PrintJob.Status.PENDING, kind=PrintJob.Kind.TEST_TICKET,
+        created_at__lt=now - timedelta(seconds=TEST_MAX_AGE_SECONDS),
+    ).update(
+        status=PrintJob.Status.FAILED, updated_at=now,
+        last_error='La prueba caducó sin imprimirse: nadie la recogió a tiempo.')
     # Lo que lleva demasiado en la cola ya no se imprime.
     PrintJob.objects.filter(
         branch=branch, status=PrintJob.Status.PENDING,
@@ -394,7 +409,7 @@ def reject_payload(job, reason: str) -> None:
         'status', 'claim_token', 'lease_expires_at', 'last_error', 'available_at', 'updated_at'])
 
 
-def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
+def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outcome: str = ''):
     """
     El agente dice cómo terminó una entrega.
 
@@ -423,7 +438,7 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
             job.last_error = ''
         else:
             job.last_error = ' '.join(str(error or 'La impresora no respondió.').split())[:300]
-            if job.attempts >= MAX_ATTEMPTS:
+            if outcome in FINAL_OUTCOMES or job.attempts >= MAX_ATTEMPTS:
                 job.status = PrintJob.Status.FAILED
             else:
                 job.status = PrintJob.Status.PENDING

@@ -126,7 +126,8 @@ class PrintAgentResultView(APIView):
         try:
             job = printing.complete(
                 agent, pk, str(data.get('claim_token') or ''),
-                ok=data.get('ok') is True, error=str(data.get('error') or ''))
+                ok=data.get('ok') is True, error=str(data.get('error') or ''),
+                outcome=str(data.get('outcome') or ''))
         except printing.PrintNotFound:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         except printing.PrintConflict as exc:
@@ -563,6 +564,11 @@ class AdminPrintJobRetryView(APIView):
             pk=pk, company=company, branch__in=visible_branches(request.user, company)).first()
         if job is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if job.kind == PrintJob.Kind.TEST_TICKET:
+            # Una prueba la manda quien configura las impresoras, y la reenvía él.
+            _company, error = _context(request, CAP_CONFIGURE)
+            if error:
+                return error
         try:
             job = printing.retry(job, actor=request.user)
         except printing.PrintError as exc:

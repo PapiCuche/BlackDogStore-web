@@ -93,6 +93,8 @@ def validate_config(config: dict) -> dict:
         'journal': str(config.get('journal', 'print-agent-journal.json')),
         # Sólo para pruebas: una impresora simulada en este mismo equipo.
         'allow_loopback': bool(config.get('allow_loopback', False)),
+        # Cuánto esperar a que CUPS saque un trabajo de una cola `cups_raw`.
+        'cups_wait_seconds': max(1.0, float(config.get('cups_wait_seconds', 30))),
         'printers': _validate_printers(config.get('printers')),
     }
 
@@ -279,25 +281,102 @@ _DOCUMENT_DRIVERS = ('postscript', 'pdf')
 _CUPS_TIMEOUT = 10.0
 
 
-def send_to_cups_queue(queue: str, payload: bytes, timeout: float) -> None:
+class CupsNotPrinted(Exception):
     """
-    Entrega los bytes a una cola RAW de CUPS de este equipo. Levanta OSError si no se pudo.
+    CUPS aceptó el trabajo (o pudo aceptarlo) y no consta que haya salido.
 
-    `lp -d <cola> -o raw`, con una lista de argumentos (sin intérprete de
-    órdenes) y un tiempo máximo. `-o raw` pide a CUPS que no convierta nada;
-    la cola, además, tiene que ser RAW (lo comprueba el agente al arrancar).
+    `lp` termina bien en cuanto el trabajo ENTRA en la cola, no cuando sale
+    por la impresora. Si sigue en la cola al acabar la espera, o si `lp` no
+    contestó, el papel puede salir más tarde: reintentar solo imprimiría dos
+    veces. El agente lo dice al servidor como `queued_not_printed` y una
+    persona decide. No es un OSError a propósito: no es un fallo reintentable.
+    """
+
+
+#: Salida de `lpstat` y `lp` en inglés, la misma en cualquier Mac.
+_C_LOCALE = {'LC_ALL': 'C', 'LANG': 'C'}
+_REQUEST_ID = re.compile(r'request id is (\S+)')
+
+
+def _cups(args: list, timeout: float, payload: bytes | None = None):
+    """Una orden de CUPS: lista de argumentos, sin intérprete, con tiempo máximo y en C."""
+    return subprocess.run(
+        args, input=payload, capture_output=True, timeout=timeout, check=False,
+        env={**os.environ, **_C_LOCALE})
+
+
+def _text(done) -> str:
+    return (done.stdout or b'').decode('utf-8', 'replace')
+
+
+def _queue_ready(queue: str) -> None:
+    """Levanta OSError si la cola está detenida o no acepta trabajos. Nada se envió."""
+    try:
+        printer = _cups(['lpstat', '-p', queue], _CUPS_TIMEOUT)
+        accepting = _cups(['lpstat', '-a', queue], _CUPS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise OSError('lpstat no respondió') from None
+    state = _text(printer).lower()
+    if printer.returncode != 0 or not state.strip():
+        raise OSError(f'la cola de CUPS {queue} no existe o CUPS no contesta')
+    if 'disabled' in state:
+        raise OSError(f'la cola de CUPS {queue} está detenida (disabled): cupsenable {queue}')
+    answer = _text(accepting).lower()
+    if accepting.returncode != 0 or 'not accepting' in answer or 'accepting' not in answer:
+        raise OSError(f'la cola de CUPS {queue} no acepta trabajos: cupsaccept {queue}')
+
+
+def _still_queued(queue: str, job_id: str) -> bool:
+    """¿Sigue el trabajo en la cola? Si no se puede saber, se considera que sí."""
+    try:
+        done = _cups(['lpstat', '-W', 'not-completed', '-o', queue], _CUPS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return True
+    if done.returncode != 0:
+        return True
+    return any(line.split()[0] == job_id for line in _text(done).splitlines() if line.split())
+
+
+def send_to_cups_queue(queue: str, payload: bytes, timeout: float, wait: float = 30.0, *,
+                       sleep=time.sleep, clock=time.monotonic, poll: float = 0.5) -> str:
+    """
+    Entrega los bytes a una cola RAW de CUPS de este equipo y espera a que salgan.
+
+    1. `lpstat -p` y `lpstat -a`: la cola está activa y acepta trabajos. Si no,
+       OSError: no se envió nada y el reintento es seguro.
+    2. `lp -d <cola> -o raw` (sin convertir nada). Si `lp` falla, OSError.
+    3. `lpstat -W not-completed -o <cola>` hasta que el trabajo ya no está, con
+       un máximo de `wait` segundos. Si sigue ahí, o si `lp` no contestó o no
+       dio número de trabajo: `CupsNotPrinted`, que NO se reintenta solo.
+
+    Devuelve el número de trabajo de CUPS.
     """
     if not valid_queue_name(queue):
         raise OSError(f'nombre de cola de CUPS no válido: {queue!r}')
+    _queue_ready(queue)
     try:
-        done = subprocess.run(
-            ['lp', '-d', queue, '-o', 'raw'], input=payload, capture_output=True,
-            timeout=timeout, check=False)
+        done = _cups(['lp', '-d', queue, '-o', 'raw'], timeout, payload)
     except subprocess.TimeoutExpired:
-        raise OSError(f'lp no respondió en {timeout:.0f} s') from None
+        raise CupsNotPrinted(
+            f'lp no respondió en {timeout:.0f} s: el trabajo pudo quedar en la cola {queue}. '
+            f'Revísela antes de reenviar.') from None
     if done.returncode != 0:
         detail = (done.stderr or b'').decode('utf-8', 'replace').strip()[:150]
         raise OSError(f'lp terminó con {done.returncode}: {detail}')
+    match = _REQUEST_ID.search(_text(done))
+    if not match:
+        raise CupsNotPrinted(
+            f'lp no dio número de trabajo: no se sabe si quedó en la cola {queue}. '
+            f'Revísela antes de reenviar.')
+    job_id = match.group(1)
+    deadline = clock() + max(0.0, wait)
+    while _still_queued(queue, job_id):
+        if clock() >= deadline:
+            raise CupsNotPrinted(
+                f'CUPS aceptó {job_id} pero sigue en la cola {queue} tras {wait:.0f} s: puede '
+                f'salir más tarde. Revise la cola antes de reenviar.')
+        sleep(poll)
+    return job_id
 
 
 def read_queue_model(queue: str) -> str:
@@ -309,8 +388,7 @@ def read_queue_model(queue: str) -> str:
     if not valid_queue_name(queue):
         raise OSError(f'nombre de cola de CUPS no válido: {queue!r}')
     try:
-        done = subprocess.run(
-            ['lpoptions', '-p', queue], capture_output=True, timeout=_CUPS_TIMEOUT, check=False)
+        done = _cups(['lpoptions', '-p', queue], _CUPS_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise OSError('lpoptions no respondió') from None
     if done.returncode != 0:
@@ -407,12 +485,16 @@ class Agent:
     def _url(self, path: str) -> str:
         return f"{self.config['server']}/api/v1/print-agent/{path}"
 
-    def _report(self, job_id, claim_token: str, *, ok: bool, error: str = '') -> bool:
+    def _report(self, job_id, claim_token: str, *, ok: bool, error: str = '',
+                outcome: str = '') -> bool:
         """True si el servidor cerró (o ya había cerrado) esta entrega."""
         try:
             code, _body = self.http(
                 'POST', self._url(f'jobs/{job_id}/result/'), self.config['token'],
-                {'claim_token': claim_token, 'ok': ok, 'error': error[:300]})
+                {'claim_token': claim_token, 'ok': ok, 'error': error[:300],
+                 # `refused` y `queued_not_printed`: el servidor lo cierra como
+                 # fallido sin volver a encolarlo. PRINT-THERMAL-01.
+                 **({'outcome': outcome} if outcome else {})})
         except OSError as exc:
             logger.warning('No se pudo confirmar el trabajo %s (%s).', job_id, type(exc).__name__)
             return False
@@ -427,8 +509,8 @@ class Agent:
 
     def run_once(self) -> str:
         """
-        Un ciclo. Devuelve qué pasó: idle, printed, failed, refused, skipped,
-        offline, unauthorised, error.
+        Un ciclo. Devuelve qué pasó: idle, printed, failed, refused,
+        queued_not_printed, skipped, offline, unauthorised, error.
         """
         self._flush_unconfirmed()
         try:
@@ -475,7 +557,7 @@ class Agent:
             else f"Tipo de documento desconocido ({job.get('kind')}): no se imprime.")
         if problem:
             logger.error('Trabajo %s rechazado sin enviarlo: %s', job_id, problem)
-            self._report(job_id, claim_token, ok=False, error=problem)
+            self._report(job_id, claim_token, ok=False, error=problem, outcome='refused')
             return 'refused'
 
         printer = job.get('printer') or {}
@@ -485,7 +567,8 @@ class Agent:
             # Una térmica USB de este equipo: la dirección del panel no se usa.
             target = f"cola CUPS {route['queue']}"
             deliver = lambda: self.cups_printer(  # noqa: E731
-                route['queue'], payload, self.config['printer_timeout'])
+                route['queue'], payload, self.config['printer_timeout'],
+                self.config['cups_wait_seconds'])
         else:
             if not is_local_address(host, allow_loopback=self.config['allow_loopback']):
                 logger.error(
@@ -499,6 +582,13 @@ class Agent:
 
         try:
             deliver()
+        except CupsNotPrinted as exc:
+            # Pudo salir o salir más tarde: no se apunta como impreso (una
+            # persona puede reenviarlo) ni se reintenta solo (saldría dos veces).
+            logger.error('Trabajo %s: %s', job_id, exc)
+            self._report(job_id, claim_token, ok=False, error=str(exc),
+                         outcome='queued_not_printed')
+            return 'queued_not_printed'
         except (OSError, ValueError) as exc:
             reason = f'{type(exc).__name__}: {exc}'[:200]
             logger.warning('Trabajo %s: la impresora %s no respondió (%s).', job_id, target, reason)
@@ -527,7 +617,7 @@ class Agent:
             return 0.0                              # puede haber otro esperando
         if outcome == 'unauthorised':
             return 60.0
-        if outcome in ('failed', 'refused', 'error', 'offline'):
+        if outcome in ('failed', 'refused', 'queued_not_printed', 'error', 'offline'):
             # Con la impresora apagada o el servidor caído, insistir sin pausa
             # sólo quema los intentos del trabajo.
             return max(10.0, self.config['poll_seconds'] * 3)
