@@ -411,6 +411,7 @@ class AdminInventorySummaryView(APIView):
         )
         summary = get_inventory_summary(
             company=company, branches=branches, low_stock_threshold=threshold,
+            include_cost=may_view_costs(request),
         )
         return Response({**summary, 'scope': _scope_payload(branch, branches)})
 
@@ -420,9 +421,8 @@ class AdminInventoryDashboardView(APIView):
     GET /api/admin/inventory/dashboard/?branch= — KPIs and chart series.
 
     Everything here is computed over the caller's visible branches. There is
-    deliberately no profit, margin or cost figure: the system has no purchase
-    cost, so any of the three would be a number wearing a name it has not
-    earned. See docs/saas-multiempresa.md.
+    deliberately no profit or margin figure here. DC1: the value at cost of the
+    shelf is in `summary`, and only for `costs.view`.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -440,6 +440,7 @@ class AdminInventoryDashboardView(APIView):
         )
         summary = get_inventory_summary(
             company=company, branches=branches, low_stock_threshold=threshold,
+            include_cost=may_view_costs(request),
         )
         flow = get_movement_flow_trend(branches, days=7)
 

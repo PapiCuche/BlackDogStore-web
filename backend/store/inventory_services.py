@@ -1633,15 +1633,17 @@ def get_best_selling_products(company=None, date_from=None, date_to=None, limit:
 
 def get_inventory_summary(
     company=None, branches=None, low_stock_threshold: int = DEFAULT_LOW_STOCK_THRESHOLD,
+    include_cost: bool = False,
 ) -> dict:
     """
     Headline inventory counters for the branches the caller may see.
 
     `inventory_value` is stock × SALE PRICE, and it is labelled that way
-    everywhere it is rendered. It is NOT the cost of the inventory and NOT
-    capital invested: there is no cost model in the system, so any figure
-    claiming to be either would be a number with a false name on it. Real
-    valuation waits for purchase costs.
+    everywhere it is rendered. It is NOT the cost of the inventory.
+
+    DC1 — `include_cost` (the caller holds `costs.view`) adds the value AT COST
+    next to it: `inventory_cost_value` (see `_inventory_at_cost`) and the
+    units that have no cost yet, counted apart rather than valued at zero.
     """
     stock_rows = branch_stock_queryset(branches)
 
@@ -1685,6 +1687,44 @@ def get_inventory_summary(
         'low_stock_threshold': low_stock_threshold,
         'best_selling_product': best[0] if best else None,
         **_equipment_counts(company, branches),
+        **(_inventory_at_cost(company, stock_rows, branches) if include_cost else {}),
+    }
+
+
+def _inventory_at_cost(company, stock_rows, branches) -> dict:
+    """
+    DC1 — what the shelf cost, by the owner's rule.
+
+      · a product counted by quantity: its units × THEIR BRANCH's weighted
+        average (`BranchStock.average_cost`);
+      · a serialized product: the specific cost of each AVAILABLE unit — the
+        units `BranchStock.quantity` counts (a reserved one has left it);
+      · anything without a cost: counted in `inventory_cost_pending_units`,
+        never valued at zero.
+    """
+    from .models import StockUnit
+
+    money = DecimalField(max_digits=20, decimal_places=4)
+    loose = stock_rows.filter(product__is_serialized=False, quantity__gt=0)
+    by_quantity = loose.aggregate(
+        value=Coalesce(Sum(F('quantity') * F('average_cost'), filter=Q(average_cost__isnull=False),
+                           output_field=money), Decimal('0'), output_field=money),
+        pending=Coalesce(Sum('quantity', filter=Q(average_cost__isnull=True)), 0),
+    )
+    devices = StockUnit.objects.filter(product__is_active=True, status=StockUnit.Status.AVAILABLE)
+    if branches is not None:
+        devices = devices.filter(branch_id__in=_branch_ids(branches))
+    elif company is not None:
+        devices = devices.filter(company=company)
+    by_unit = devices.aggregate(
+        value=Coalesce(Sum('cost', output_field=money), Decimal('0'), output_field=money),
+        pending=Count('id', filter=Q(cost__isnull=True)),
+    )
+    value = Decimal(by_quantity['value']) + Decimal(by_unit['value'])
+    return {
+        'inventory_cost_value': str(value.quantize(Decimal('0.01'))),
+        'inventory_cost_pending_units': by_quantity['pending'] + by_unit['pending'],
+        'inventory_cost_basis': 'average_and_unit_cost',
     }
 
 

@@ -21,6 +21,7 @@ import {
   ErrorBox,
   Panel,
   Spinner,
+  InventoryCostCard,
   StatCard,
   TableWrap,
   Td,
@@ -177,10 +178,11 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
               <StatCard
                 label="Valor estimado"
                 value={formatSoles(summary.inventory_value)}
-                // Not "cost" and not "capital invertido": there is no purchase
-                // cost in the system, so the only honest basis is sale price.
+                // At sale price. DC1: the value at cost is its own card, for
+                // `costs.view` only (`InventoryCostCard`).
                 hint="A precio de venta — no es costo"
               />
+              <InventoryCostCard summary={summary} />
             </div>
 
             <div className="grid gap-6 lg:grid-cols-2">

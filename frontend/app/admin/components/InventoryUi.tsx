@@ -303,3 +303,29 @@ export function TransferStatusBadge({ transfer }: { transfer: StockTransfer }) {
     </span>
   );
 }
+
+/**
+ * DEVICE-COMMERCE-01 · DC1 — the shelf valued AT COST, next to the value at
+ * sale price. The server sends the figure only to `costs.view`; without it
+ * there is no card. Units with no cost are said, never valued at zero.
+ */
+export function InventoryCostCard({
+  summary,
+}: {
+  summary: { inventory_cost_value?: string; inventory_cost_pending_units?: number };
+}) {
+  if (summary.inventory_cost_value === undefined) return null;
+  const pending = summary.inventory_cost_pending_units ?? 0;
+  return (
+    <StatCard
+      label="Valor al costo"
+      value={formatSoles(summary.inventory_cost_value)}
+      hint={
+        pending > 0
+          ? `${pending} unidades sin costo, no incluidas`
+          : "Promedio por sucursal y costo de cada equipo"
+      }
+      emphasis={pending > 0}
+    />
+  );
+}
