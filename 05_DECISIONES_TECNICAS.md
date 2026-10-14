@@ -43,6 +43,14 @@ usuario Master necesita administrarlas». Lo que el código cumple:
   no cambia.
 - **Notas existentes.** La migración no escribe datos y nada marca una nota como prueba por
   su cuenta: el Master las anula una a una con su motivo.
+- **Una sola idea de «anulada».** La del papel (`sales_note_services.is_void`): el estado o
+  un pedido cancelado. El guardia de anular la usa, así que una nota que su PDF ya imprime
+  ANULADA responde 409.
+- **Observaciones, también en bloque.** El gestor por defecto rechaza `update` y `delete`
+  de un queryset; `_base_manager` queda el de Django para que borrar un usuario siga
+  poniendo `author` a NULL (SET_NULL, como `AdminAuditLog.actor`).
+- **`db_default`** en `void_reason` y `void_reason_type`: la regla del repositorio para
+  columnas nuevas, porque `0125` corre con la versión anterior sirviendo.
 
 ### DEC-ORDER-CANCEL-01 · Cancelar un pedido pagado no es devolver el dinero
 

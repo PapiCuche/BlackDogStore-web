@@ -573,7 +573,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | 0122 | `BulkImportJob.import_type` gana `product_images` (sólo las opciones del campo) | INVENTORY-UNIFIED-01 |
 | 0123 | `CompanySettings.publication_requires_image`, booleano con `db_default` apagado. Sólo esquema; deshacerla quita la columna | INVENTORY-UNIFIED-01 (D2) |
 | 0124 | `OrderCancellation` (tabla nueva, `OneToOne` al pedido) y el tipo `order_cancel_return` en las opciones de `StockMovement.movement_type` (sin SQL). Sólo esquema; deshacerla borra los registros de cancelación | ORDER-CANCEL-01 |
-| 0125 | `SalesNote` gana `voided_at`, `voided_by`, `void_reason_type`, `void_reason` (vacíos/NULL en las filas existentes) y la tabla `SalesNoteRemark`. Sólo esquema, no escribe datos; deshacerla borra el registro de anulación y las observaciones (el `status=void` queda) | SALES-NOTE-CONTROL-01 |
+| 0125 | `SalesNote` gana `voided_at`, `voided_by`, `void_reason_type`, `void_reason` (vacíos/NULL en las filas existentes; las dos de texto con `db_default=''`) y la tabla `SalesNoteRemark`. Sólo esquema, no escribe datos; deshacerla borra el registro de anulación y las observaciones (el `status=void` queda) | SALES-NOTE-CONTROL-01 |
 
 ---
 

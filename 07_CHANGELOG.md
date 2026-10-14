@@ -24,6 +24,10 @@ En la rama `feat/sales-note-control` (sin push), sobre #119. Migración nueva `0
   pedido muestra ANULADA y el motivo.
 - La térmica no reimprime una nota anulada; un ticket encolado antes sale con ANULADA.
 - El admin de Django de las notas de venta es entero de sólo lectura.
+- (Revisión) Las columnas nuevas de texto llevan valor por defecto en la base: la versión
+  anterior sigue emitiendo notas mientras se migra. Una nota de un pedido cancelado ya se
+  trata como anulada (409). Un ticket de una nota anulada encolado antes se cancela al
+  entregarlo y no se reenvía. La nota anulada con el filtro «Vigentes» sale de la lista.
 
 **Not changed**
 - Número, fecha, líneas, importes, impuestos y pago de una nota emitida; el pedido, los

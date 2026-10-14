@@ -7,7 +7,8 @@ documentación real, sin reemplazar su historial.
 
 Rama `feat/sales-note-control`, apilada sobre `feat/order-cancel-sales-note` (#119, `3dd4f54`).
 **EN LA RAMA: sin push, sin PR, sin desplegar.** Una migración nueva, `0125` (aditiva: cuatro
-columnas en `store_salesnote` y la tabla `store_salesnoteremark`; no escribe datos). Sin
+columnas en `store_salesnote`, las de texto con `db_default`, y la tabla
+`store_salesnoteremark`; no escribe datos). Sin
 capacidades nuevas ni cambios de rol.
 
 - **Anular una nota de venta es un acto del usuario Master**: el master de plataforma
@@ -32,10 +33,16 @@ capacidades nuevas ni cambios de rol.
 - La térmica no reimprime una nota anulada, y un ticket encolado antes sale con ANULADA. El
   admin de Django de `SalesNote` queda entero de sólo lectura (antes `status`, `sequence` y
   `sequence_value` se podían editar sin auditoría).
-- Pruebas: `test_sales_note_control` (35, con dos carreras de dos conexiones; mutación 18/20 muertas, M2 cubierta después, M19 equivalente); regresión
+- Revisión independiente (`093ea47`): las dos columnas de texto de `0125` llevan
+  `db_default=''` (P1: sin él, la versión anterior fallaba al emitir una nota mientras se
+  migra); las observaciones tampoco se reescriben ni se borran en bloque; una nota de un
+  pedido cancelado ya cuenta como anulada (409); un ticket encolado antes de anular se
+  cancela al entregarlo al agente; en el panel, la nota anulada sale de «Vigentes» y el
+  tipo de motivo es un solo grupo de radio (una parada de Tab, flechas).
+- Pruebas: `test_sales_note_control` (41, con dos carreras de dos conexiones; mutación 18/20 muertas, M2 cubierta después, M19 equivalente); regresión
   focal de 417 pruebas (notas, series, POS, analítica, impresión, `test_order_cancel`,
   `test_document_design`, `test_ci_shards`) en verde; Jest 1370/1370; `tsc` y lint sin
-  errores; `makemigrations --check` sin cambios (sólo `0125`). Decisión en
+  errores (Jest 1372/1372 tras la revisión); `makemigrations --check` sin cambios (sólo `0125`). Decisión en
   DEC-SALES-NOTE-CONTROL-01; deuda en `docs/AUDIT_MEMORY.md` §10.
 
 ## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01 (rama, sin push)
