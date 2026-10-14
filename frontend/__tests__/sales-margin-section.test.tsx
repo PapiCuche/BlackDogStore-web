@@ -31,6 +31,7 @@ const REPORT: api.SalesMargin = {
   refunds: { orders: 1, amount: '118.00' },
   by_product: [
     { key: 4, name: 'Funda', units: 5, net_sales: '250.00', cost: '150.00', margin: '100.00', margin_percent: '40.00', pending_lines: 0 },
+    { key: 9, name: 'Cargador', units: 1, net_sales: '200.00', cost: '0.00', margin: '0.00', margin_percent: null, pending_lines: 1, net_estimated: true },
   ],
   by_branch: [
     { key: 1, name: 'Centro', units: 5, net_sales: '250.00', cost: '150.00', margin: '100.00', margin_percent: '40.00', pending_lines: 1 },
@@ -91,5 +92,13 @@ describe('Margen comercial', () => {
     mocked.fetchSalesMargin.mockRejectedValue(new Error('403'));
     await show();
     expect(screen.queryByRole('region', { name: 'Margen comercial' })).toBeNull();
+  });
+
+  it('una venta anterior a los costos dice que su neto es estimado', async () => {
+    await show();
+    const row = screen.getByText('Cargador').closest('tr') as HTMLElement;
+    expect(within(row).getByText(/estimado/i)).toBeInTheDocument();
+    const funda = screen.getAllByText('Funda')[0].closest('tr') as HTMLElement;
+    expect(within(funda).queryByText(/estimado/i)).toBeNull();
   });
 });

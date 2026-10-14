@@ -224,7 +224,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
             <ChartCard
               title="Ventas últimos 7 días"
               description="Importe pagado por día, fechado por la fecha de pago."
-              footnote="No se muestra utilidad: el sistema no tiene un modelo de costos, así que cualquier margen sería una cifra inventada."
+              footnote="Importe cobrado, no utilidad. El margen comercial (ventas netas menos el costo de lo vendido) está en su propia sección, para quien tiene permiso de costos."
             >
               <VerticalBarChart
                 series={sales.revenue_trend}
@@ -312,7 +312,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
                 <ChartCard
                   title="Stock por sucursal"
                   description="Unidades disponibles en cada sucursal a la que tienes acceso."
-                  footnote={`Valor estimado a precio de venta: ${formatSoles(inventory.inventory_value)}. No es costo ni capital invertido: el sistema no registra precios de compra.`}
+                  footnote={`Valor estimado a precio de venta: ${formatSoles(inventory.inventory_value)}. No es el costo: el inventario al costo se muestra a quien tiene permiso de costos.`}
                 >
                   <HorizontalBarChart
                     series={inventory.stock_by_branch}

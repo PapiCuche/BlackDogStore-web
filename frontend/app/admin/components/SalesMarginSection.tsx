@@ -61,7 +61,12 @@ function Breakdown({ title, rows }: { title: string; rows: SalesMarginRow[] }) {
             <tr key={String(row.key)} className="border-b border-bd-border/70 last:border-0">
               <td className="px-4 py-3 text-foreground">{row.name}</td>
               <td className="px-4 py-3 text-right font-mono text-foreground">{row.units}</td>
-              <td className="px-4 py-3 text-right font-mono text-foreground">{money(row.net_sales)}</td>
+              <td className="px-4 py-3 text-right font-mono text-foreground">
+                {money(row.net_sales)}
+                {row.net_estimated ? (
+                  <span className="ml-1 block text-xs font-sans text-muted">incluye neto estimado</span>
+                ) : null}
+              </td>
               <td className="px-4 py-3 text-right font-mono text-foreground">{money(row.cost)}</td>
               <td className="px-4 py-3 text-right font-mono text-foreground">{money(row.margin)}</td>
               <td className="px-4 py-3 text-right font-mono text-muted">{percent(row.margin_percent)}</td>

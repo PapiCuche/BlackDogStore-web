@@ -1112,6 +1112,8 @@ export type SalesMarginRow = {
   margin: string;
   margin_percent: string | null;
   pending_lines: number;
+  /** Parte de `net_sales` viene de ventas anteriores a los costos, calculada desde su pedido. */
+  net_estimated?: boolean;
 };
 
 /** Margen COMERCIAL estimado: ventas netas con costo conocido − su costo. No es utilidad. */
