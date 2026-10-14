@@ -553,6 +553,12 @@ def record_sale_stock_movements(
     """
     movements: list[StockMovement] = []
 
+    # DC1 — each line's share of the order's base and discount, frozen now:
+    # it is the order's, not the shelf's, so a shortfall does not delay it.
+    from . import margin_services
+
+    margin_services.snapshot_nets(order)
+
     branch = order.fulfillment_branch
     if branch is None:
         # AN ORDER WITH NO BRANCH — and why this repairs rather than refuses.
@@ -668,6 +674,8 @@ def record_sale_stock_movements(
             if movement is not None:
                 movements.append(movement)
                 already_recorded.add(item.product_id)
+                # DC1 — the cost this line left at, from its own Kardex line.
+                margin_services.snapshot_cost(item, movement)
 
     return movements
 

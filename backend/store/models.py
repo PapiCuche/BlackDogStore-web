@@ -768,6 +768,38 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
+    # --- DEVICE-COMMERCE-01 · DC1: the sale line's snapshots -------------
+    #
+    # Written ONCE, when the line's exit leaves the shelf (web payment
+    # confirmation or POS sale), by `margin_services`, and never again: a
+    # change of catalogue cost, price or branch average does not touch them.
+    # Lines from before DC1 stay NULL / 'unknown' («costo pendiente»).
+    COST_AVERAGE = 'average'
+    COST_UNIT = 'unit'
+    COST_REFERENCE = 'reference'
+    COST_UNKNOWN = 'unknown'
+    COST_SOURCE_CHOICES = [
+        (COST_AVERAGE, 'Costo promedio de la sucursal'),
+        (COST_UNIT, 'Costo específico del equipo'),
+        (COST_REFERENCE, 'Costo de referencia del catálogo'),
+        (COST_UNKNOWN, 'Costo pendiente'),
+    ]
+    SNAPSHOT_SOURCES = frozenset([COST_AVERAGE, COST_UNIT, COST_REFERENCE])
+    #: Cost of ONE unit of this line. For several devices, the mean of their
+    #: specific costs.
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # `db_default`: the previous release keeps inserting lines while this
+    # migrates, and every line it writes is honestly «costo pendiente».
+    cost_source = models.CharField(
+        max_length=16, choices=COST_SOURCE_CHOICES, default=COST_UNKNOWN, db_default=COST_UNKNOWN,
+    )
+    #: Unit price without IGV, before the order discount.
+    unit_price_net = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    #: This line's share of the order discount, without IGV.
+    discount_net = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    #: This line's share of `Order.taxable_amount`; the lines add up to it exactly.
+    net_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
     class Meta:
         constraints = [
             # ONE LINE PER PRODUCT PER ORDER — Phase 0.3 / P0-E.
