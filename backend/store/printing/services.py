@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, connection, transaction
@@ -463,6 +464,10 @@ def retry(job, *, actor):
         if replacement is None:
             raise PrintError('Este local no tiene una impresora disponible.')
         job.printer = replacement
+    # UNA ENTREGA NUEVA, CON OTRO IDENTIFICADOR. El agente no vuelve a mandar
+    # un uid que ya entregó (impreso, o retenido en una cola de CUPS); quien
+    # pulsa «Reenviar» pide otra impresión, a sabiendas. PRINT-THERMAL-01.
+    job.uid = uuid.uuid4()
     job.status = PrintJob.Status.PENDING
     job.attempts = 0
     job.claim_token = ''
@@ -474,6 +479,6 @@ def retry(job, *, actor):
     if getattr(actor, 'is_authenticated', False):
         job.requested_by = actor
     job.save(update_fields=[
-        'printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
+        'uid', 'printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
         'last_error', 'created_at', 'requested_by', 'updated_at'])
     return job

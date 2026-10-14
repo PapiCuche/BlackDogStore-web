@@ -73,6 +73,15 @@ texto: sale `%!PS-Adobe-3.0 …` y metros de papel. Por eso:
    se imprime: si sigue en la cola al acabar la espera, o si `lp` no contestó, el
    agente lo informa como `queued_not_printed` y el servidor lo da por fallido **sin
    reintentarlo solo** (podría salir dos veces). Una persona mira la cola y decide.
+   El agente lo apunta en su diario antes de avisar: aunque el aviso se pierda y el
+   servidor vuelva a entregar el mismo trabajo, **no lo manda otra vez a CUPS**; repite
+   el aviso hasta que el servidor lo recibe. «Reenviar» en el panel crea una entrega
+   nueva (otro identificador) que sí se imprime. `cups_wait_seconds` va de 1 a 45: la
+   espera tiene que caber en los 90 s que el servidor da a cada entrega.
+
+   **Primero el servidor, después el agente.** Un servidor anterior a esta versión no
+   entiende esos resultados y vuelve a encolar el trabajo: actualiza el servidor antes
+   de configurar ningún agente con `cups_raw`.
 4. **Al arrancar**, el agente lee el controlador de la cola con `lpoptions -p POS80_RAW`
    (sólo lee) y **no arranca** si dice «PostScript» o «PDF», o si la cola no existe. El
    mensaje dice qué hacer.

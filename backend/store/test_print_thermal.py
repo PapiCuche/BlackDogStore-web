@@ -120,6 +120,8 @@ class ClaimRefusesNonEscposTest(PrintApiBase):
 class FakeServer:
     def __init__(self):
         self.queue, self.results = [], []
+        #: Cuántas confirmaciones se pierden por el camino (la red se cae).
+        self.fail_results = 0
 
     def job(self, job_id, payload, *, kind='sales_note_ticket', name='Caja',
             host='192.168.1.50', port=9100):
@@ -133,6 +135,9 @@ class FakeServer:
     def http(self, method, url, token, body=None, timeout=20.0):
         if url.endswith('/jobs/claim/'):
             return 200, {'job': self.queue.pop(0) if self.queue else None}
+        if self.fail_results:
+            self.fail_results -= 1
+            raise OSError('connection reset')
         self.results.append((url, body))
         return 200, {'status': 'printed' if body['ok'] else 'pending'}
 
@@ -793,7 +798,7 @@ class CupsDeliveryTest(SimpleTestCase):
 
 
 class AgentReportsFinalOutcomesTest(AgentTestBase):
-    def test_a_job_left_in_the_cups_queue_is_reported_once_and_not_journaled(self):
+    def test_a_job_left_in_the_cups_queue_is_reported_and_held_in_the_journal(self):
         def stuck(*args):
             raise agent_module.CupsNotPrinted('CUPS aceptó POS80_RAW-12 y no lo imprimió')
 
@@ -807,7 +812,10 @@ class AgentReportsFinalOutcomesTest(AgentTestBase):
         body = self.server.results[-1][1]
         self.assertEqual((body['ok'], body['outcome']), (False, 'queued_not_printed'))
         self.assertIn('POS80_RAW-12', body['error'])
-        self.assertEqual(agent_module.Journal(self.journal_path).printed, [])
+        # Retenido: este uid no vuelve a CUPS (segunda revisión), y el servidor ya lo sabe.
+        journal = agent_module.Journal(self.journal_path)
+        self.assertEqual(journal.held_outcome(f'{1:032x}')[0], 'queued_not_printed')
+        self.assertEqual(journal.unconfirmed, {})
         self.assertGreater(agent.pause_after('queued_not_printed'), 0)
 
     def test_a_refusal_tells_the_server_it_is_final(self):
@@ -891,3 +899,148 @@ class TestRetryNeedsConfigureTest(PrintApiBase):
             f'/api/admin/printing/jobs/{job.pk}/retry/{self.q()}', {}, format='json')
 
         self.assertEqual(res.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# Segunda revisión: lo que CUPS ya tiene no se manda otra vez
+# ---------------------------------------------------------------------------
+
+class HeldInCupsTest(AgentTestBase):
+    """Un `queued_not_printed` queda en el diario: su uid no vuelve a CUPS."""
+
+    def stuck_agent(self):
+        def stuck(*args):
+            self.sent.append(('cups', *args))
+            raise agent_module.CupsNotPrinted('CUPS aceptó POS80_RAW-12 y sigue en la cola')
+
+        return self.agent(printers={'Caja': RAW}, queue_model=lambda q: 'Local Raw Printer',
+                          cups_printer=stuck)
+
+    def test_a_lost_report_is_resent_and_the_job_never_goes_to_cups_twice(self):
+        agent = self.stuck_agent()
+        self.server.job(1, TICKET, name='Caja')
+        self.server.fail_results = 1               # el aviso al servidor se pierde
+
+        with self.assertLogs('print_agent', level='ERROR'):
+            self.assertEqual(agent.run_once(), 'queued_not_printed')
+        self.assertEqual(self.server.results, [])
+        self.assertEqual(len(self.sent), 1)
+
+        # Siguiente ciclo, tras un reinicio: el aviso pendiente sale primero, y
+        # cuando el servidor vuelve a entregar el mismo trabajo (su plazo venció)
+        # no va otra vez a CUPS.
+        agent = self.stuck_agent()
+        self.server.job(1, TICKET, name='Caja')
+        self.server.queue[-1]['claim_token'] = 'segunda-entrega'
+        agent.run_once()
+
+        self.assertEqual(len(self.sent), 1)
+        outcomes = [(body['ok'], body.get('outcome'), body['claim_token'])
+                    for _url, body in self.server.results]
+        self.assertEqual(outcomes, [
+            (False, 'queued_not_printed', 'entrega-1'),
+            (False, 'queued_not_printed', 'segunda-entrega')])
+        self.assertTrue(all('POS80_RAW-12' in body['error'] for _url, body in self.server.results))
+        self.assertEqual(agent_module.Journal(self.journal_path).unconfirmed, {})
+
+    def test_a_job_resent_by_a_person_has_a_new_uid_and_prints(self):
+        agent = self.stuck_agent()
+        self.server.job(1, TICKET, name='Caja')
+        with self.assertLogs('print_agent', level='ERROR'):
+            agent.run_once()
+
+        printed = []
+        agent = self.agent(printers={'Caja': RAW}, queue_model=lambda q: 'Local Raw Printer',
+                           cups_printer=lambda *args: printed.append(args))
+        self.server.job(1, TICKET, name='Caja')
+        self.server.queue[-1]['uid'] = 'f' * 32            # «Reenviar» da otro uid
+
+        self.assertEqual(agent.run_once(), 'printed')
+        self.assertEqual(len(printed), 1)
+
+    def test_an_old_journal_without_outcomes_still_loads(self):
+        import json
+
+        with open(self.journal_path, 'w', encoding='utf-8') as handle:
+            json.dump({'printed': ['a'], 'unconfirmed': {'a': [3, 'tok']}}, handle)
+
+        journal = agent_module.Journal(self.journal_path)
+
+        self.assertTrue(journal.was_printed('a'))
+        self.assertIsNone(journal.held_outcome('a'))
+        self.assertEqual(journal.unconfirmed['a'][:2], (3, 'tok'))
+
+
+class PollingErrorsTest(SimpleTestCase):
+    def send(self, cups, *, wait=3.0):
+        from unittest import mock
+
+        clock = iter(float(n) for n in range(1000))
+        with mock.patch.object(agent_module.subprocess, 'run', side_effect=cups):
+            return agent_module.send_to_cups_queue(
+                'POS80_RAW', TICKET, 5.0, wait=wait,
+                sleep=lambda seconds: None, clock=lambda: next(clock))
+
+    def test_lpstat_breaking_after_lp_is_not_printed_never_a_retryable_failure(self):
+        cups = FakeCups()
+        original = cups.__call__
+
+        def broken_poll(args, **kwargs):
+            if args[:3] == ['lpstat', '-W', 'not-completed']:
+                raise FileNotFoundError('lpstat')
+            return original(args, **kwargs)
+
+        with self.assertRaises(agent_module.CupsNotPrinted):
+            self.send(broken_poll)
+
+    def test_a_queue_whose_name_contains_the_words_is_read_by_its_status(self):
+        from unittest import mock
+
+        def cups(args, **kwargs):
+            if args[:2] == ['lpstat', '-p']:
+                return completed(args, 0, b'printer disabled_accepting is idle.  enabled since Tue\n')
+            if args[:2] == ['lpstat', '-a']:
+                return completed(args, 0, b'disabled_accepting accepting requests since Tue\n')
+            if args[0] == 'lp':
+                return completed(args, 0, b'request id is disabled_accepting-3 (0 file(s))\n')
+            return completed(args, 0, b'')
+
+        with mock.patch.object(agent_module.subprocess, 'run', side_effect=cups):
+            self.assertEqual(
+                agent_module.send_to_cups_queue('disabled_accepting', TICKET, 5.0, wait=1.0,
+                                                sleep=lambda s: None),
+                'disabled_accepting-3')
+
+        def stopped(args, **kwargs):
+            if args[:2] == ['lpstat', '-p']:
+                return completed(args, 0, b'printer accepting_q disabled since Tue -\n\treason\n')
+            return completed(args, 0, b'accepting_q accepting requests since Tue\n')
+
+        with mock.patch.object(agent_module.subprocess, 'run', side_effect=stopped):
+            with self.assertRaises(OSError):
+                agent_module.send_to_cups_queue('accepting_q', TICKET, 5.0, sleep=lambda s: None)
+
+
+class CupsWaitBoundTest(SimpleTestCase):
+    def test_the_wait_must_fit_inside_the_lease(self):
+        base = {'server': 'https://t.invalid', 'token': TOKEN}
+        self.assertEqual(agent_module.validate_config(base)['cups_wait_seconds'], 30.0)
+        self.assertEqual(
+            agent_module.validate_config({**base, 'cups_wait_seconds': 45})['cups_wait_seconds'], 45.0)
+        for bad in (46, 600, 0, -1):
+            with self.subTest(bad):
+                with self.assertRaises(agent_module.AgentError):
+                    agent_module.validate_config({**base, 'cups_wait_seconds': bad})
+
+
+class ResendGetsANewUidTest(PrintingBase):
+    def test_a_person_resending_a_failed_job_gives_it_a_new_uid(self):
+        job = printing.enqueue_test(printer=self.printer, key='uid', actor=None)
+        PrintJob.objects.filter(pk=job.pk).update(status=PrintJob.Status.FAILED)
+        job.refresh_from_db()
+        before = job.uid
+
+        printing.retry(job, actor=None)
+
+        job.refresh_from_db()
+        self.assertNotEqual(job.uid, before)

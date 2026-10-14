@@ -94,9 +94,26 @@ def validate_config(config: dict) -> dict:
         # Sólo para pruebas: una impresora simulada en este mismo equipo.
         'allow_loopback': bool(config.get('allow_loopback', False)),
         # Cuánto esperar a que CUPS saque un trabajo de una cola `cups_raw`.
-        'cups_wait_seconds': max(1.0, float(config.get('cups_wait_seconds', 30))),
+        'cups_wait_seconds': _cups_wait(config.get('cups_wait_seconds', 30)),
         'printers': _validate_printers(config.get('printers')),
     }
+
+
+#: La espera a CUPS tiene que caber en el plazo de la entrega (90 s) junto con
+#: las comprobaciones de la cola, `lp` y la última consulta: si no, el servidor
+#: volvería a entregar el trabajo mientras el agente aún espera.
+CUPS_WAIT_MAX = 45.0
+
+
+def _cups_wait(raw) -> float:
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        wait = -1.0
+    if not 1.0 <= wait <= CUPS_WAIT_MAX:
+        raise AgentError(
+            f'"cups_wait_seconds" tiene que estar entre 1 y {CUPS_WAIT_MAX:.0f} segundos.')
+    return wait
 
 
 #: Un nombre de cola de CUPS sin nada que `lp` pudiera leer como otra cosa: sin
@@ -151,21 +168,31 @@ def _validate_printers(raw) -> dict:
 
 class Journal:
     """
-    `printed`: claves de los trabajos que ya salieron por la impresora.
-    `unconfirmed`: los impresos cuya confirmación todavía no llegó al servidor,
-    con el número de trabajo y el token de la entrega para volver a intentarlo.
+    `printed`: claves de los trabajos que ya se entregaron y NO se vuelven a
+    mandar: los que salieron por la impresora y los que quedaron en una cola de
+    CUPS sin constar impresos.
+    `held`: de esos, los que quedaron en CUPS, con el resultado que se repite al
+    servidor (`queued_not_printed` y su motivo) cada vez que lo vuelve a entregar.
+    `unconfirmed`: lo que el servidor todavía no sabe, con el número de trabajo,
+    el token de la entrega y, si no salió, el resultado y el motivo.
     """
 
     def __init__(self, path: str):
         self.path = path
         self.printed: list[str] = []
+        self.held: dict[str, tuple] = {}
         self.unconfirmed: dict[str, tuple] = {}
         try:
             with open(path, encoding='utf-8') as handle:
                 data = json.load(handle)
             self.printed = [str(key) for key in data.get('printed', [])]
+            self.held = {
+                str(key): (str(value[0]), str(value[1]))
+                for key, value in data.get('held', {}).items()}
+            # Un diario de antes de PRINT-THERMAL-01 sólo tiene (trabajo, token).
             self.unconfirmed = {
-                str(key): (value[0], value[1]) for key, value in data.get('unconfirmed', {}).items()}
+                str(key): tuple(value) for key, value in data.get('unconfirmed', {}).items()
+                if len(value) >= 2}
         except (OSError, ValueError, TypeError, IndexError):
             pass
 
@@ -175,9 +202,12 @@ class Journal:
         if overflow > 0:
             self.printed = [
                 key for index, key in enumerate(self.printed) if index >= overflow or key in keep]
+        alive = set(self.printed)
+        self.held = {key: value for key, value in self.held.items() if key in alive}
         temporary = self.path + '.tmp'
         with open(temporary, 'w', encoding='utf-8') as handle:
-            json.dump({'printed': self.printed, 'unconfirmed': self.unconfirmed}, handle)
+            json.dump({'printed': self.printed, 'held': self.held,
+                       'unconfirmed': self.unconfirmed}, handle)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, self.path)
@@ -191,8 +221,22 @@ class Journal:
         self.unconfirmed[str(key)] = (job_id, claim_token)
         self._save()
 
-    def needs_confirmation(self, key, job_id, claim_token: str):
-        self.unconfirmed[str(key)] = (job_id, claim_token)
+    def held_outcome(self, key):
+        """(resultado, motivo) si este trabajo quedó en una cola de CUPS; si no, None."""
+        return self.held.get(str(key))
+
+    def record_held(self, key, job_id, claim_token: str, outcome: str, error: str):
+        """Quedó en CUPS: no se vuelve a mandar, y el servidor tiene que saberlo."""
+        if str(key) not in self.printed:
+            self.printed.append(str(key))
+        self.held[str(key)] = (outcome, error)
+        self.unconfirmed[str(key)] = (job_id, claim_token, outcome, error)
+        self._save()
+
+    def needs_confirmation(self, key, job_id, claim_token: str, outcome: str = '',
+                           error: str = ''):
+        self.unconfirmed[str(key)] = (
+            (job_id, claim_token, outcome, error) if outcome else (job_id, claim_token))
         self._save()
 
     def confirmed(self, key):
@@ -309,6 +353,14 @@ def _text(done) -> str:
     return (done.stdout or b'').decode('utf-8', 'replace')
 
 
+def _status_after(text: str, prefix: str):
+    """Lo que sigue a `prefix` en la línea que empieza por él, o None."""
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip().lower()
+    return None
+
+
 def _queue_ready(queue: str) -> None:
     """Levanta OSError si la cola está detenida o no acepta trabajos. Nada se envió."""
     try:
@@ -316,13 +368,17 @@ def _queue_ready(queue: str) -> None:
         accepting = _cups(['lpstat', '-a', queue], _CUPS_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise OSError('lpstat no respondió') from None
-    state = _text(printer).lower()
-    if printer.returncode != 0 or not state.strip():
+    # Se lee el estado DETRÁS del nombre de la cola: un nombre puede contener
+    # «disabled» o «accepting». En C: `printer <cola> is idle.  enabled since …`
+    # o `printer <cola> disabled since …`; `<cola> accepting requests since …` o
+    # `<cola> not accepting requests since …`.
+    state = _status_after(_text(printer), f'printer {queue} ')
+    if printer.returncode != 0 or state is None:
         raise OSError(f'la cola de CUPS {queue} no existe o CUPS no contesta')
-    if 'disabled' in state:
+    if state.startswith('disabled'):
         raise OSError(f'la cola de CUPS {queue} está detenida (disabled): cupsenable {queue}')
-    answer = _text(accepting).lower()
-    if accepting.returncode != 0 or 'not accepting' in answer or 'accepting' not in answer:
+    answer = _status_after(_text(accepting), f'{queue} ')
+    if accepting.returncode != 0 or answer is None or not answer.startswith('accepting'):
         raise OSError(f'la cola de CUPS {queue} no acepta trabajos: cupsaccept {queue}')
 
 
@@ -330,7 +386,8 @@ def _still_queued(queue: str, job_id: str) -> bool:
     """¿Sigue el trabajo en la cola? Si no se puede saber, se considera que sí."""
     try:
         done = _cups(['lpstat', '-W', 'not-completed', '-o', queue], _CUPS_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
+        # `lp` ya lo aceptó: no saber es «sigue ahí», nunca un fallo reintentable.
         return True
     if done.returncode != 0:
         return True
@@ -503,8 +560,15 @@ class Agent:
         return code in (200, 404, 409)
 
     def _flush_unconfirmed(self):
-        for key, (job_id, claim_token) in list(self.journal.unconfirmed.items()):
-            if self._report(job_id, claim_token, ok=True):
+        for key, entry in list(self.journal.unconfirmed.items()):
+            job_id, claim_token = entry[0], entry[1]
+            outcome, error = (entry[2], entry[3]) if len(entry) >= 4 else ('', '')
+            if outcome:
+                reported = self._report(
+                    job_id, claim_token, ok=False, error=error, outcome=outcome)
+            else:
+                reported = self._report(job_id, claim_token, ok=True)
+            if reported:
                 self.journal.confirmed(key)
 
     def run_once(self) -> str:
@@ -534,6 +598,19 @@ class Agent:
         # El número de trabajo se repite si la base se restaura o si el agente
         # cambia de servidor; el identificador estable, no.
         printed_key = str(job.get('uid') or f"{self.config['server']}#{job_id}")
+
+        held = self.journal.held_outcome(printed_key)
+        if held is not None:
+            # Ya está en una cola de CUPS: mandarlo otra vez podría imprimirlo
+            # dos veces. Se repite al servidor lo que se sabe. PRINT-THERMAL-01.
+            outcome, error = held
+            logger.info('Trabajo %s ya está en la cola de CUPS: no se vuelve a enviar.', job_id)
+            if self._report(job_id, claim_token, ok=False, error=error, outcome=outcome):
+                self.journal.confirmed(printed_key)
+            else:
+                self.journal.needs_confirmation(
+                    printed_key, job_id, claim_token, outcome, error)
+            return 'skipped'
 
         if self.journal.was_printed(printed_key):
             # Ya salió por la impresora; lo que se perdió fue la confirmación.
@@ -583,11 +660,16 @@ class Agent:
         try:
             deliver()
         except CupsNotPrinted as exc:
-            # Pudo salir o salir más tarde: no se apunta como impreso (una
-            # persona puede reenviarlo) ni se reintenta solo (saldría dos veces).
-            logger.error('Trabajo %s: %s', job_id, exc)
-            self._report(job_id, claim_token, ok=False, error=str(exc),
-                         outcome='queued_not_printed')
+            # Pudo salir o salir más tarde. PRIMERO el diario: este uid no vuelve
+            # a CUPS aunque el aviso al servidor se pierda y el plazo venza. Una
+            # persona que lo reenvía desde el panel crea otro uid.
+            reason = str(exc)[:300]
+            logger.error('Trabajo %s: %s', job_id, reason)
+            self.journal.record_held(
+                printed_key, job_id, claim_token, 'queued_not_printed', reason)
+            if self._report(job_id, claim_token, ok=False, error=reason,
+                            outcome='queued_not_printed'):
+                self.journal.confirmed(printed_key)
             return 'queued_not_printed'
         except (OSError, ValueError) as exc:
             reason = f'{type(exc).__name__}: {exc}'[:200]
