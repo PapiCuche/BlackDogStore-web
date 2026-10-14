@@ -20,6 +20,7 @@ import {
 } from "../lib/account";
 import { getCurrentUser } from "../lib/auth";
 import { AddressBook } from "../components/AddressBook";
+import { LinkedAccounts } from "../components/LinkedAccounts";
 
 const DOCUMENT_TYPES: { value: DocumentType; label: string }[] = [
   { value: "", label: "Sin documento" },
@@ -369,6 +370,9 @@ export default function AccountPage() {
 
           {/* DELIVERY-01: where this buyer receives their orders in this shop. */}
           <AddressBook defaultRecipient={`${profile.first_name} ${profile.last_name}`.trim()} />
+
+          {/* SOCIAL-AUTH-01: the providers that open this account. */}
+          <LinkedAccounts />
         </>
       ) : null}
     </main>

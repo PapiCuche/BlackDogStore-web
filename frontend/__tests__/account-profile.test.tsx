@@ -21,6 +21,7 @@ jest.mock('next/navigation', () => ({ useRouter: () => mockRouter }));
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn(), getCurrentUser: jest.fn() }));
 // The address book has its own tests; here it would only add requests.
 jest.mock('@/app/components/AddressBook', () => ({ AddressBook: () => null }));
+jest.mock('@/app/components/LinkedAccounts', () => ({ LinkedAccounts: () => null }));
 const send = fetchWithAuth as jest.MockedFunction<typeof fetchWithAuth>;
 const who = getCurrentUser as jest.MockedFunction<typeof getCurrentUser>;
 
