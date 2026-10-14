@@ -36,8 +36,8 @@ from . import security_log
 from . import social_identity as social
 from .auth_views import _set_auth_cookies
 from .models import ExternalIdentity
-from .throttles import SocialLinkThrottle, SocialSignInThrottle
-from .token_revocation import token_is_revoked
+from .throttles import SocialConfigThrottle, SocialLinkThrottle, SocialSignInThrottle
+from .token_revocation import refresh_is_revoked, token_is_revoked
 
 User = get_user_model()
 
@@ -61,7 +61,7 @@ class SocialConfigView(APIView):
 
     authentication_classes: list = []
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [SocialSignInThrottle]
+    throttle_classes = [SocialConfigThrottle]
 
     def get(self, request):
         return _no_store(Response({
@@ -85,19 +85,44 @@ class SocialStartView(APIView):
         return _no_store(response)
 
 
-def _signed_in_user(request):
-    """The account of this browser's cookie session, or None. Read-only: a GET carries no CSRF token."""
-    raw = request.COOKIES.get(settings.JWT_COOKIE_ACCESS_NAME)
+def _session_user(raw, token_class, is_revoked):
     if not raw:
         return None
     try:
-        token = AccessToken(raw)
+        token = token_class(raw)          # signature, expiry and, for a refresh, the blacklist
     except TokenError:
         return None
     user = User.objects.filter(pk=token.get(jwt_settings.USER_ID_CLAIM)).first()
-    if user is None or not user.is_active or token_is_revoked(user, token):
+    if user is None or not user.is_active or is_revoked(user, token):
         return None
     return user
+
+
+def _signed_in_user(request):
+    """
+    The account of this browser's cookie session, or None. Read-only: nothing is
+    issued or rotated here, and a GET carries no CSRF token.
+
+    The access cookie lives half an hour and may run out while the person is at
+    the provider; the refresh cookie — the same checks `RefreshView` makes
+    (blacklist, revocation stamp, active account) — then says who is signed in.
+    With `JWT_COOKIE_SAMESITE=Strict` neither cookie travels on the return from
+    the provider and linking is refused (see the setup guide).
+    """
+    access = request.COOKIES.get(settings.JWT_COOKIE_ACCESS_NAME)
+    user = _session_user(access, AccessToken, token_is_revoked)
+    if user is not None or access and _is_valid_access(access):
+        return user
+    return _session_user(request.COOKIES.get(settings.JWT_COOKIE_REFRESH_NAME), RefreshToken, refresh_is_revoked)
+
+
+def _is_valid_access(raw) -> bool:
+    """A well-signed, unexpired access token: if IT says no (revoked), the refresh does not overrule it."""
+    try:
+        AccessToken(raw)
+    except TokenError:
+        return False
+    return True
 
 
 class SocialCallbackView(APIView):
@@ -127,10 +152,7 @@ class SocialCallbackView(APIView):
     def get(self, request):
         adapter, conf = _adapter_and_config(self.provider)
         try:
-            attempt = social.finish(
-                self.provider, request.query_params.get('state'),
-                request.COOKIES.get(social.ATTEMPT_COOKIE, ''),
-            )
+            attempt = self.finish(request)
         except social.SocialAuthError:
             return self.refused(request)
 
@@ -147,6 +169,11 @@ class SocialCallbackView(APIView):
         if attempt.intent == social.INTENT_LINK:
             return self.linked(request, attempt, identity)
         return self.signed_in(request, attempt, identity)
+
+    def finish(self, request):
+        return social.finish(
+            self.provider, request.query_params.get('state'), request.COOKIES.get(social.ATTEMPT_COOKIE, ''),
+        )
 
     def returned_for(self, request, attempt):
         """What the provider sent back: the query string here; Apple's handed-over POST below."""
@@ -183,10 +210,11 @@ class AppleCallbackView(SocialCallbackView):
 
     A cross-site POST: the browser does not send SameSite=Lax cookies with it,
     so nothing can be decided here. What was posted is handed to the attempt it
-    names and the browser is sent (303) to a GET of this same address on this
-    site, which carries the cookies and finishes the attempt. Exempt from CSRF
-    as every API view is (DRF; no session cookie is read here): the attempt's
-    state and the browser binding are what protect it.
+    names, under a one-time secret, and the browser is sent (303) to a GET of
+    this same address with that secret. The GET needs BOTH the attempt's cookie
+    (the browser that started) and the secret (the browser Apple posted from):
+    the same browser, in an honest sign-in. Exempt from CSRF as every API view
+    is (DRF; no session cookie is read here).
     """
 
     parser_classes = [FormParser]
@@ -200,11 +228,27 @@ class AppleCallbackView(SocialCallbackView):
             name: data.get(name)[:4096] for name in ('code', 'user', 'error')
             if isinstance(data.get(name), str)
         }
-        if not social.hand_over(self.provider, state, posted):
-            return self.refused(request)
-        response = HttpResponseRedirect(f'{social.redirect_uri(self.provider)}?{urlencode({"state": state})}')
+        handoff = social.hand_over(self.provider, state, posted)
+        if handoff is None:
+            # Says no and touches nothing else: a stray or forged post must not
+            # clear the cookie of an attempt that is still in flight here.
+            security_log.login_failed(request, channel=self.provider, identifier='-')
+            return _no_store(HttpResponseRedirect(
+                social.landing('/auth', social_error=social.REFUSED, provider=self.provider),
+            ))
+        # The hand-off secret goes to THIS browser only, in the address it is
+        # sent to. The browser that started the attempt never sees it.
+        response = HttpResponseRedirect(
+            f'{social.redirect_uri(self.provider)}?{urlencode({"state": state, "h": handoff})}',
+        )
         response.status_code = status.HTTP_303_SEE_OTHER
         return _no_store(response)
+
+    def finish(self, request):
+        return social.finish(
+            self.provider, request.query_params.get('state'), request.COOKIES.get(social.ATTEMPT_COOKIE, ''),
+            handoff=request.query_params.get('h', ''),
+        )
 
     def returned_for(self, request, attempt):
         return attempt.posted

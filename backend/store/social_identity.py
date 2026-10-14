@@ -211,27 +211,41 @@ def _valid_state(state) -> bool:
     return isinstance(state, str) and 16 <= len(state) <= 128
 
 
-def hand_over(provider_id: str, state, posted: dict) -> bool:
+def hand_over(provider_id: str, state, posted: dict) -> str | None:
     """
-    Apple's form_post: keep what was posted for the attempt it names. The FIRST
-    post of an attempt is the one kept. False when there is no such attempt.
+    Apple's form_post: keep what was posted for the attempt it names, under a
+    one-time hand-off secret that is returned ONLY to the browser that posted
+    (in the 303 to the GET). None when there is no such attempt, or it was
+    already handed over: the first post of an attempt is the only one.
 
-    This step never sees the browser's cookie (a cross-site POST does not carry
-    a SameSite=Lax one), so it decides nothing: `finish`, on the GET that
-    follows in the same browser, does.
+    This step never sees the attempt's cookie (a cross-site POST does not carry
+    a SameSite=Lax one), so it opens nothing. Without the secret, the browser
+    holding the cookie — the one that STARTED the attempt — could otherwise
+    redeem a code Apple posted from another person's browser.
     """
     if not _valid_state(state):
-        return False
+        return None
     record = cache.get(_key(state))
     if record is None or record.get('provider') != provider_id:
-        return False
-    cache.add(_posted_key(state), dict(posted), ATTEMPT_TTL)
-    return True
+        return None
+    handoff = secrets.token_urlsafe(32)
+    if not cache.add(_posted_key(state), {'posted': dict(posted), 'handoff': _digest(handoff)}, ATTEMPT_TTL):
+        return None
+    return handoff
 
 
-def finish(provider_id: str, state, binding) -> Attempt:
-    """The attempt this state opened, taken out once, for this browser only."""
-    if not _valid_state(state) or not isinstance(binding, str) or not binding:
+def finish(provider_id: str, state, binding, *, handoff=None) -> Attempt:
+    """
+    The attempt this state opened, taken out once, for this browser only.
+
+    ANY callback that reaches a live state SPENDS it, before the browser is
+    checked: a return without the cookie (the victim's browser, when somebody
+    else started the attempt) burns it, so the browser that has the cookie
+    cannot finish it afterwards with the code that came back.
+
+    `handoff` — Apple only — is the secret `hand_over` gave the posting browser.
+    """
+    if not _valid_state(state):
         raise SocialAuthError()
     record = cache.get(_key(state))
     if record is None:
@@ -241,14 +255,21 @@ def finish(provider_id: str, state, binding) -> Attempt:
     if not cache.add(_used_key(state), 1, ATTEMPT_TTL):
         raise SocialAuthError()
     cache.delete(_key(state))
-    posted = cache.get(_posted_key(state))
+    stashed = cache.get(_posted_key(state))
     cache.delete(_posted_key(state))
     if record.get('provider') != provider_id:
         raise SocialAuthError()
     if _now() - float(record.get('created') or 0) > ATTEMPT_TTL:
         raise SocialAuthError()
-    if not hmac.compare_digest(str(record.get('binding')), _digest(binding)):
+    presented = binding if isinstance(binding, str) else ''
+    if not hmac.compare_digest(str(record.get('binding')), _digest(presented)):
         raise SocialAuthError()
+    posted = None
+    if handoff is not None:
+        given = handoff if isinstance(handoff, str) else ''
+        if not stashed or not hmac.compare_digest(str(stashed.get('handoff')), _digest(given)):
+            raise SocialAuthError()
+        posted = stashed.get('posted')
     return Attempt(
         provider=provider_id, intent=record['intent'], user_id=record.get('user_id'),
         next_path=safe_next(record.get('next')), verifier=record['verifier'], nonce=record['nonce'],

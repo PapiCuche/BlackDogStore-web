@@ -161,11 +161,15 @@ class SocialBase(TestCase):
             APPLE_CALLBACK, urlencode(body), content_type='application/x-www-form-urlencoded',
         )
 
+    def follow(self, posted, client=None):
+        """What the browser does with Apple's 303: GET it, on this site."""
+        self.assertEqual(posted.status_code, 303, posted.content)
+        location = urlparse(posted['Location'])
+        return (client or self.client).get(f'{location.path}?{location.query}')
+
     def apple_sign_in(self, **form):
         state = self.apple_start()['state']
-        posted = self.apple_post(state, **form)
-        self.assertEqual(posted.status_code, 303, posted.content)
-        return self.client.get(APPLE_CALLBACK, {'state': state})
+        return self.follow(self.apple_post(state, **form))
 
     def assertLanded(self, res, path, **params):
         self.assertEqual(res.status_code, 302, res.content)
@@ -457,7 +461,12 @@ class AppleFlowTest(SocialBase):
         state = self.apple_start()['state']
         posted = self.apple_post(state)
         self.assertEqual(posted.status_code, 303)
-        self.assertEqual(posted['Location'], f'{FRONTEND}/api/auth/apple/callback/?state={state}')
+        location = urlparse(posted['Location'])
+        self.assertEqual(f'{location.scheme}://{location.netloc}{location.path}', f'{FRONTEND}/api/auth/apple/callback/')
+        sent = parse_qs(location.query)
+        self.assertEqual(sent['state'], [state])
+        # A one-time hand-off secret: only the browser Apple posted from learns it.
+        self.assertGreaterEqual(len(sent['h'][0]), 32)
         self.assertNotSignedIn(posted)
         self.assertEqual(self.apple_calls, [])
 
@@ -517,9 +526,7 @@ class AppleFlowTest(SocialBase):
 
     def test_the_person_said_no_at_apple(self):
         state = self.apple_start()['state']
-        posted = self.apple_post(state, code='', error='user_cancelled_authorize')
-        self.assertEqual(posted.status_code, 303)
-        res = self.client.get(APPLE_CALLBACK, {'state': state})
+        res = self.follow(self.apple_post(state, code='', error='user_cancelled_authorize'))
         self.assertLanded(res, '/auth', social_error='cancelled', provider='apple')
         self.assertEqual(self.apple_calls, [])
 
@@ -529,16 +536,17 @@ class AppleFlowTest(SocialBase):
 
     def test_only_the_first_form_post_of_an_attempt_counts(self):
         state = self.apple_start()['state']
-        self.apple_post(state, code='primero')
-        self.apple_post(state, code='segundo')
-        self.client.get(APPLE_CALLBACK, {'state': state})
+        first = self.apple_post(state, code='primero')
+        # A second post for the same attempt gets no way back in.
+        self.assertLanded(self.apple_post(state, code='segundo'), '/auth', social_error='refused')
+        self.follow(first)
         self.assertEqual(self.apple_calls[0][1]['code'], 'primero')
 
     def test_a_replayed_return_is_refused_and_the_code_is_exchanged_once(self):
         state = self.apple_start()['state']
-        self.apple_post(state)
-        self.assertLanded(self.client.get(APPLE_CALLBACK, {'state': state}), '/auth', social='apple')
-        self.assertLanded(self.client.get(APPLE_CALLBACK, {'state': state}), '/auth', social_error='refused')
+        posted = self.apple_post(state)
+        self.assertLanded(self.follow(posted), '/auth', social='apple')
+        self.assertLanded(self.follow(posted), '/auth', social_error='refused')
         self.assertEqual(len(self.apple_calls), 1)
 
     def test_a_return_without_the_form_post_is_refused(self):
@@ -786,8 +794,7 @@ class LinkTest(SocialBase):
         authorize = urlparse(self.start_link('apple').json()['authorize_url'])
         sent = {key: values[0] for key, values in parse_qs(authorize.query).items()}
         self.nonce = sent['nonce']
-        self.apple_post(sent['state'])
-        back = self.client.get(APPLE_CALLBACK, {'state': sent['state']})
+        back = self.follow(self.apple_post(sent['state']))
         self.assertLanded(back, '/account', linked='apple')
         self.assertEqual(ExternalIdentity.objects.get(provider='apple').user, self.ana)
 
@@ -1015,3 +1022,158 @@ class ConsoleTest(SocialBase):
         with mock.patch.object(apple_identity, 'signing_keys_reachable', return_value=True):
             res = self.console.post('/api/admin/integrations/apple/test/', {}, format='json')
         self.assertEqual(res.json()['status'], 'unverified', res.content)
+
+
+# ---------------------------------------------------------------------------------
+# Review P1/P3: finishing somebody else's attempt
+# ---------------------------------------------------------------------------------
+
+class AttemptTheftTest(SocialBase):
+    """
+    The attacker starts an attempt in THEIR browser and gets the victim to
+    authorize at the provider with it. Whatever the victim's browser does next,
+    the attacker's browser — which holds the binding cookie — must not be able
+    to finish it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        configure_facebook()
+        configure_apple()
+        self.attacker = APIClient()
+        self.victim = APIClient()
+
+    def assertNothingOpened(self, res):
+        self.assertNotSignedIn(res)
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+    def test_apple_victim_follows_without_the_cookie_then_the_attacker_cannot_finish(self):
+        state = self.apple_start(client=self.attacker)['state']
+        posted = self.apple_post(state, client=self.victim)             # Apple, from the victim
+        self.assertLanded(self.follow(posted, client=self.victim), '/auth', social_error='refused')
+        res = self.attacker.get(APPLE_CALLBACK, {'state': state})
+        self.assertLanded(res, '/auth', social_error='refused')
+        self.assertNothingOpened(res)
+        # Even knowing the whole address the victim was sent to.
+        self.assertLanded(self.follow(posted, client=self.attacker), '/auth', social_error='refused')
+        self.assertEqual(self.apple_calls, [])
+        self.assertFalse(User.objects.exists())
+
+    def test_apple_victim_never_follows_and_the_attacker_cannot_finish(self):
+        state = self.apple_start(client=self.attacker)['state']
+        self.apple_post(state, client=self.victim)
+        res = self.attacker.get(APPLE_CALLBACK, {'state': state})
+        self.assertLanded(res, '/auth', social_error='refused')
+        self.assertNothingOpened(res)
+        self.assertEqual(self.apple_calls, [])
+
+    def test_apple_link_attempt_cannot_be_finished_by_its_owner_with_a_victims_code(self):
+        mallory = User.objects.create_user('mallory', 'm@example.com', 'clave-segura-123')
+        self.attacker.post('/api/auth/login/', {'username': 'mallory', 'password': 'clave-segura-123'},
+                           format='json')
+        authorize = urlparse(self.attacker.post(link_url('apple'), {'password': 'clave-segura-123'},
+                                                format='json').json()['authorize_url'])
+        sent = {key: values[0] for key, values in parse_qs(authorize.query).items()}
+        self.nonce = sent['nonce']
+        posted = self.apple_post(sent['state'], client=self.victim)
+        self.follow(posted, client=self.victim)
+        res = self.attacker.get(APPLE_CALLBACK, {'state': sent['state']})
+        self.assertEqual(res.status_code, 302)
+        # Refused before the attempt is even read: it was spent by the victim's return.
+        self.assertIn('error=refused', res['Location'])
+        self.assertFalse(ExternalIdentity.objects.filter(user=mallory).exists())
+
+    def test_apple_link_attempt_without_the_victim_following(self):
+        mallory = User.objects.create_user('mallory', 'm@example.com', 'clave-segura-123')
+        self.attacker.post('/api/auth/login/', {'username': 'mallory', 'password': 'clave-segura-123'},
+                           format='json')
+        authorize = urlparse(self.attacker.post(link_url('apple'), {'password': 'clave-segura-123'},
+                                                format='json').json()['authorize_url'])
+        state = parse_qs(authorize.query)['state'][0]
+        self.apple_post(state, client=self.victim)
+        res = self.attacker.get(APPLE_CALLBACK, {'state': state})
+        self.assertIn('error=refused', res['Location'])
+        self.assertFalse(ExternalIdentity.objects.filter(user=mallory).exists())
+
+    def test_facebook_a_cookieless_return_burns_the_attempt(self):
+        state = self.facebook_start(client=self.attacker)['state']
+        # Facebook sends the victim back with the victim's code; no cookie there.
+        self.assertLanded(self.facebook_callback(state, client=self.victim, code='codigo-de-la-victima'),
+                          '/auth', social_error='refused')
+        res = self.facebook_callback(state, client=self.attacker, code='codigo-de-la-victima')
+        self.assertLanded(res, '/auth', social_error='refused')
+        self.assertNothingOpened(res)
+        self.assertEqual(self.fb_calls, [])
+
+    def test_a_link_started_by_one_account_is_not_finished_for_another(self):
+        User.objects.create_user('ana', 'ana@example.com', 'clave-segura-123')
+        User.objects.create_user('beto', 'beto@example.com', 'clave-segura-456')
+        client = self.attacker
+        client.post('/api/auth/login/', {'username': 'ana', 'password': 'clave-segura-123'}, format='json')
+        authorize = client.post(link_url('facebook'), {'password': 'clave-segura-123'},
+                                format='json').json()['authorize_url']
+        state = parse_qs(urlparse(authorize).query)['state'][0]
+        client.post('/api/auth/login/', {'username': 'beto', 'password': 'clave-segura-456'}, format='json')
+        res = self.facebook_callback(state, client=client)
+        self.assertLanded(res, '/account', link_error='refused')
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+    def test_a_link_survives_an_access_cookie_that_expired_at_the_provider(self):
+        ana = User.objects.create_user('ana', 'ana@example.com', 'clave-segura-123')
+        client = self.attacker
+        client.post('/api/auth/login/', {'username': 'ana', 'password': 'clave-segura-123'}, format='json')
+        authorize = client.post(link_url('facebook'), {'password': 'clave-segura-123'},
+                                format='json').json()['authorize_url']
+        state = parse_qs(urlparse(authorize).query)['state'][0]
+        del client.cookies['blackdog_access']
+        self.assertLanded(self.facebook_callback(state, client=client), '/account', linked='facebook')
+        self.assertEqual(ExternalIdentity.objects.get().user, ana)
+
+
+class LinkSessionTest(SocialBase):
+    """Who is signed in when a link comes back: the access cookie, else the refresh one."""
+
+    def setUp(self):
+        super().setUp()
+        configure_facebook()
+        self.ana = User.objects.create_user('ana', 'ana@example.com', 'clave-segura-123')
+        self.client.post('/api/auth/login/', {'username': 'ana', 'password': 'clave-segura-123'}, format='json')
+        authorize = self.client.post(link_url('facebook'), {'password': 'clave-segura-123'},
+                                     format='json').json()['authorize_url']
+        self.state = parse_qs(urlparse(authorize).query)['state'][0]
+
+    def test_a_refresh_revoked_elsewhere_does_not_carry_a_link(self):
+        from store.token_revocation import revoke_all_tokens
+        del self.client.cookies['blackdog_access']
+        revoke_all_tokens(self.ana)              # «cerrar todas las sesiones», a password change
+        self.assertLanded(self.facebook_callback(self.state), '/account', link_error='refused')
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+    def test_a_refresh_older_than_the_revocation_stamp_does_not_carry_a_link(self):
+        # The stamp alone, as when the blacklist could not be written: the
+        # refresh is still well signed and not blacklisted, and still refused.
+        from django.utils import timezone
+        del self.client.cookies['blackdog_access']
+        UserProfile.objects.update_or_create(user=self.ana, defaults={'tokens_valid_after': timezone.now()})
+        self.assertLanded(self.facebook_callback(self.state), '/account', link_error='refused')
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+    def test_a_revoked_access_cookie_is_not_overruled_by_the_refresh_one(self):
+        from rest_framework_simplejwt.tokens import AccessToken
+        from store.token_revocation import revoke_access_token
+        revoke_access_token(self.ana, AccessToken(self.client.cookies['blackdog_access'].value))
+        self.assertLanded(self.facebook_callback(self.state), '/account', link_error='refused')
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+
+class ThrottleScopeTest(TestCase):
+    def test_the_config_has_its_own_looser_scope_and_the_flow_stays_strict(self):
+        from django.conf import settings as django_settings
+        from store.social_views import SocialCallbackView, SocialConfigView, SocialStartView
+
+        rates = django_settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']
+        self.assertEqual(SocialConfigView.throttle_classes[0].scope, 'social_config')
+        self.assertEqual(rates['social_config'], '120/min')
+        for view in (SocialStartView, SocialCallbackView):
+            self.assertEqual(view.throttle_classes[0].scope, 'social_sign_in')
+        self.assertEqual(rates['social_sign_in'], '30/min')
