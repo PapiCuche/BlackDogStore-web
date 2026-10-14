@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — PRINT-THERMAL-01: la térmica nunca recibe PDF ni PostScript
+
+Rama `fix/print-thermal` sobre `master` `abfc6bd`. Sin push ni despliegue.
+
+**Fixed**
+- El servidor y el agente de impresión rechazan, con el motivo, un trabajo cuyos bytes son
+  un PDF o un PostScript, que no es ESC/POS o de un tipo desconocido. Nunca se envía.
+
+**Added**
+- Agente: `printers` en `config.json` con transporte `tcp` (por defecto) o `cups_raw`
+  (`lp -d <cola> -o raw`) para una térmica USB; no arranca sobre una cola cuyo controlador
+  es PostScript o PDF.
+- Prueba de impresión corta (ESC/POS, por la cola) y prueba en PDF de 80 mm, desde
+  Administración › Impresoras. API: `POST /api/admin/printing/printers/<id>/test/`,
+  `GET /api/admin/printing/test-page/`.
+- Junto al PDF de 80 mm y los botones de imprimir: el PDF de 80 mm va con el controlador
+  de la propia térmica; la impresión directa, por el agente.
+- `docs/despliegue-produccion.md` §6.5.1 «Impresora térmica en macOS».
+
+**Migration**
+- `0124_printjob_test_ticket_print_thermal`: tipo `test_ticket`, `PrintJob.order` admite
+  vacío sólo para ese tipo. El PR #119 también trae una `0124`: la segunda en fusionarse
+  pasa a `0125`.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

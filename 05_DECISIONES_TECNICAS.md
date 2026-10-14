@@ -1369,7 +1369,44 @@ serios. Cambian tres decisiones anteriores:
 - **Redes escritas a mano.** `is_private` cambia entre versiones de Python (una IPv4
   metida en una IPv6 pasaba por privada). Servidor y agente comparan contra la lista
   explícita de redes locales. El agente no sigue redirecciones.
-- **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera.
+- **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera. (USB por
+  una cola RAW de CUPS desde PRINT-THERMAL-01, ver DEC-PRINT-THERMAL-01.)
+
+### DEC-PRINT-THERMAL-01 · Una térmica ESC/POS nunca recibe PDF ni PostScript
+
+- **Causa (2026-10-14).** El propietario imprimió el PDF de 80 mm de una nota (un PDF
+  válido de una página, 80 × ~130 mm) desde Vista Previa en la cola de CUPS
+  `STMicroelectronics_USB_POS_Printer`, cuyo PPD es «Generic PostScript Printer». CUPS
+  convirtió el PDF en PostScript y se lo mandó a una impresora ESC/POS, que imprimió el
+  código fuente (`%!PS-Adobe-3.0 …`) como texto y gastó el rollo. La aplicación no envió
+  PostScript: el controlador de la cola era el equivocado.
+- **Tres caminos, separados.** (1) PDF A4: se descarga y se imprime en hojas. (2) PDF de
+  80 mm: se descarga o se imprime con el controlador **de la propia térmica**. (3) Ticket
+  ESC/POS: sólo por la cola del servidor y el agente, con un transporte configurado a
+  propósito. El navegador no imprime por USB por su cuenta, y no se promete.
+- **Guarda en las dos puntas.** El servidor (`render`) y el agente se niegan a enviar
+  unos bytes que empiezan como un PDF (`%PDF`) o un PostScript (`%!`) —también tras
+  blancos, una marca de orden de bytes, un Ctrl-D o un envoltorio PJL—, que no empiezan
+  por `ESC @`, o de un tipo de documento que no conocen. El trabajo queda «Falló» con el
+  motivo; el servidor no lo reintenta solo. El agente lleva una copia de la regla porque
+  se instala como un archivo suelto; una prueba comprueba que las dos coinciden.
+- **Transporte explícito en el agente.** `printers` en `config.json`, por el nombre del
+  panel: `tcp` (lo de siempre y lo que vale sin configurar) o `cups_raw` con una `queue`
+  de nombre validado. `cups_raw` ejecuta `lp -d <cola> -o raw` con una lista de
+  argumentos, sin intérprete, y con tiempo máximo. Al arrancar lee el controlador con
+  `lpoptions -p` (sólo lee) y no arranca si la cola no existe o dice PostScript o PDF.
+  El panel no tiene todavía un tipo «USB»: con `cups_raw` la dirección se guarda pero no
+  se usa (deuda PRINT-USB-PANEL; evitarla habría sido un segundo cambio de esquema).
+- **Probar antes de gastar.** Un trabajo `test_ticket` (sin pedido; una restricción lo
+  permite sólo para ese tipo, migración `0124_printjob_test_ticket_print_thermal`) de unas
+  ocho líneas: tienda, «PRUEBA DE IMPRESIÓN», fecha, la regla de 48 (o 32) columnas,
+  `áéíóú ñ Ñ ¿¡ S/` y la instrucción de parar la cola si sale texto técnico; avance y
+  corte. Y la misma prueba en un PDF de 80 mm para comprobar un controlador de CUPS.
+- **Fijado, sin cambiar el diseño.** ESC/POS: `ESC @`, `ESC t 19` (cp858), ningún renglón
+  más ancho que 48/32 columnas, la letra sin acento antes que un `?` en una página que no
+  la tiene, `ESC d 3` y un solo corte al final. PDF de 80 mm: 226,77 pt, una página, texto
+  dentro de los márgenes de 4 mm, altura según el contenido. Las pruebas no encontraron
+  ningún defecto de formato.
 
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda
 
