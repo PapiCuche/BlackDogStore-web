@@ -117,11 +117,13 @@ class AverageCostOnTheKardexTest(_Shop):
         self.move(StockMovement.PURCHASE_ENTRY, 1, unit_cost=D('55'))
         self.assertEqual(self.average(), D('55.0000'))
 
-    def test_stock_of_unknown_cost_takes_the_first_known_cost(self):
+    def test_stock_of_unknown_cost_stays_pending_when_a_known_cost_arrives(self):
         self.move(StockMovement.INITIAL_STOCK, 6)               # what is on the shelf today
         self.assertIsNone(self.average())
         self.move(StockMovement.PURCHASE_ENTRY, 2, unit_cost=D('25'))
+        # The average is of the two that have a cost; the six stay pending (DC1 review).
         self.assertEqual(self.average(), D('25.0000'))
+        self.assertEqual(self.uncosted(), 6)
 
     def test_without_an_average_an_exit_uses_the_reference_cost_marked_as_such(self):
         self.move(StockMovement.INITIAL_STOCK, 6)
@@ -135,8 +137,60 @@ class AverageCostOnTheKardexTest(_Shop):
         self.assertIsNone(self.average())
 
         self.move(StockMovement.PURCHASE_ENTRY, 1, unit_cost=D('30'))
+        # The four of unknown cost leave first: each of those exits is an estimate.
+        for _ in range(4):
+            estimated = self.move(StockMovement.MANUAL_EXIT, 1)
+            self.assertEqual((estimated.unit_cost, estimated.cost_source), (D('20.0000'), 'reference'))
         averaged = self.move(StockMovement.MANUAL_EXIT, 1)
         self.assertEqual((averaged.unit_cost, averaged.cost_source), (D('30.0000'), 'average'))
+
+    def uncosted(self, branch=None, product=None):
+        return BranchStock.objects.get(branch=branch or self.centro, product=product or self.case).uncosted_quantity
+
+    def valuation(self):
+        summary = inventory.get_inventory_summary(
+            company=self.company, branches=[self.centro], include_cost=True,
+        )
+        return summary['inventory_cost_value'], summary['inventory_cost_pending_units']
+
+    def test_stock_that_came_in_without_cost_is_never_valued_at_a_stale_average(self):
+        """DC1 review, the probe: 10 in at 10, 10 out, 5 in without cost."""
+        self.move(StockMovement.PURCHASE_ENTRY, 10, unit_cost=D('10'))
+        self.move(StockMovement.MANUAL_EXIT, 10)
+        blind = self.move(StockMovement.MANUAL_ENTRY, 5)
+        self.assertEqual((blind.unit_cost, blind.cost_source), (None, 'unknown'))
+        # Nothing on the shelf has a known cost: the average is unknown, and
+        # the five are pending — not 50.00 at the old average.
+        self.assertIsNone(self.average())
+        self.assertEqual(self.uncosted(), 5)
+        self.assertEqual(self.valuation(), ('0.00', 5))
+        out = self.move(StockMovement.MANUAL_EXIT, 1)
+        self.assertEqual((out.unit_cost, out.cost_source), (None, 'unknown'))
+        self.assertEqual(self.uncosted(), 4)
+
+        # A costed entry restarts the average for ITS units only; the four of
+        # unknown cost stay pending, and they are taken as leaving first.
+        self.move(StockMovement.PURCHASE_ENTRY, 2, unit_cost=D('20'))
+        self.assertEqual(self.average(), D('20.0000'))
+        self.assertEqual(self.valuation(), ('40.00', 4))
+        out = self.move(StockMovement.MANUAL_EXIT, 3)
+        self.assertEqual((out.unit_cost, out.cost_source), (None, 'unknown'))
+        self.assertEqual(self.valuation(), ('40.00', 1))
+        mixed = self.move(StockMovement.MANUAL_EXIT, 2)       # one pending + one at 20: not a known cost
+        self.assertEqual((mixed.unit_cost, mixed.cost_source), (None, 'unknown'))
+        self.assertEqual(self.valuation(), ('20.00', 0))
+        known = self.move(StockMovement.MANUAL_EXIT, 1)
+        self.assertEqual((known.unit_cost, known.cost_source), (D('20.0000'), 'average'))
+
+    def test_a_shelf_with_costed_and_uncosted_units_values_only_the_costed(self):
+        self.move(StockMovement.PURCHASE_ENTRY, 4, unit_cost=D('10'))
+        self.move(StockMovement.MANUAL_ENTRY, 3)
+        self.assertEqual(self.average(), D('10.0000'))
+        self.assertEqual(self.valuation(), ('40.00', 3))
+        # A return comes back at the average of the costed part.
+        back = self.move(StockMovement.RETURN_ENTRY, 1)
+        self.assertEqual((back.unit_cost, back.cost_source), (D('10.0000'), 'average'))
+        self.assertEqual(self.valuation(), ('50.00', 3))
 
     def test_a_negative_cost_is_refused_and_writes_nothing(self):
         with self.assertRaises(inventory.InvalidMovementError):

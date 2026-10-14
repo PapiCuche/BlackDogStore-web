@@ -364,10 +364,11 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
                     # to `costs.view` only (`import_views` strips it otherwise).
                     from .cost_services import weighted_average
 
-                    before = averages.get((branch_id, product_id))
+                    before, pending = averages.get((branch_id, product_id), (None, 0))
+                    costed = max(now - min(pending or 0, now), 0)
                     normalized['unit_cost'] = str(unit_cost)
                     normalized['cost_average_before'] = str(before) if before is not None else ''
-                    normalized['cost_average_after'] = str(weighted_average(now, before, delta, unit_cost))
+                    normalized['cost_average_after'] = str(weighted_average(costed, before, delta, unit_cost))
                     warnings.append(f'Entran {delta} unidad(es) con costo unitario {unit_cost}.')
                 else:
                     warnings.append(
@@ -424,11 +425,12 @@ def _current_quantities(company, branches):
 
 
 def _current_averages(company, branches):
+    """(branch, product) -> (average, units of unknown cost). The preview says what the Kardex will do."""
     return {
-        (b, p): a
-        for b, p, a in BranchStock.objects
+        (b, p): (a, u)
+        for b, p, a, u in BranchStock.objects
         .filter(branch__company=company, branch__in=list(branches))
-        .values_list('branch_id', 'product_id', 'average_cost')
+        .values_list('branch_id', 'product_id', 'average_cost', 'uncosted_quantity')
     }
 
 

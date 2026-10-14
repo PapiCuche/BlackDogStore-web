@@ -15,19 +15,27 @@ answer says so, the new average on the stock row. Nothing else writes either.
 
 THE RULES, IN ONE PLACE
 -----------------------
-  entry WITH a stated cost   the line carries that cost ('entry'); the branch
-                             average becomes
-                                 (qty_before × avg + qty_in × cost) / (qty_before + qty_in)
-                             An empty shelf, or a shelf whose units are of
-                             unknown cost, simply takes the new cost: there is
-                             nothing known to weigh it against.
-  entry without one          NULL, 'unknown'; the average is untouched.
-  return / service return    carries the current average; the average is
-                             untouched (adding units at the average does not
-                             move it).
-  exit, transfer out         carries the current average ('average'). With no
-                             average yet, the catalogue's reference cost,
-                             marked 'reference'. With neither, NULL 'unknown'.
+  THE SHELF HAS TWO PARTS (DC1 review): the units of KNOWN cost, valued at
+  the average, and `BranchStock.uncosted_quantity` — units that came in
+  without a cost, «costo pendiente» in every valuation. The average is of the
+  first part only; when that part is empty while stock remains, the average
+  is NULL. Unknown cost is never presented as known.
+
+  entry WITH a stated cost   the line carries that cost ('entry'); the average
+                             of the costed part becomes
+                                 (costed × avg + qty_in × cost) / (costed + qty_in)
+                             No costed units yet: the new cost is the average.
+  entry without one          NULL, 'unknown'; the units join the pending part.
+  return / service return    carries the current average and joins the costed
+                             part; with no average, it is pending.
+  exit, transfer out         the pending units leave FIRST (they are the older
+                             ones: they were there before any cost was known).
+                             An exit only of costed units carries the average
+                             ('average'); one that takes any pending unit is
+                             not of a known cost: the catalogue's reference
+                             cost, marked 'reference', or NULL 'unknown'.
+  empty shelf                keeps its last average for a return; nothing is
+                             valued at it.
   transfer in                the cost and the source the units LEFT with. It
                              feeds the destination's average only when that
                              cost was a real one (entry, average or unit): a
@@ -100,6 +108,8 @@ class MovementCost:
     #: The branch average after this movement. Equal to the one before unless
     #: the movement is an entry with a real cost.
     average_after: Decimal | None
+    #: The shelf's units of unknown cost after this movement.
+    uncosted_after: int = 0
 
 
 def _carried(average, reference) -> tuple[Decimal | None, str]:
@@ -112,7 +122,7 @@ def _carried(average, reference) -> tuple[Decimal | None, str]:
 
 def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_before: int,
             average_before, reference_cost, stated_cost=None, stated_source: str | None = None,
-            unit_costs=None) -> MovementCost:
+            unit_costs=None, uncosted_before: int = 0) -> MovementCost:
     """
     The cost of one movement, and the branch average it leaves.
 
@@ -126,25 +136,42 @@ def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_be
         costs = list(unit_costs)
         if costs and all(cost is not None for cost in costs):
             mean = sum((Decimal(cost) for cost in costs), Decimal('0')) / Decimal(len(costs))
-            return MovementCost(quantize_cost(mean), UNIT, average_before)
-        return MovementCost(None, UNKNOWN, average_before)
+            return MovementCost(quantize_cost(mean), UNIT, average_before, 0)
+        return MovementCost(None, UNKNOWN, average_before, 0)
+
+    shelf = max(int(stock_before or 0), 0)
+    pending = min(max(int(uncosted_before or 0), 0), shelf)
+    costed = shelf - pending
+
+    def done(unit_cost, source, average, pending_after):
+        after = shelf + (quantity if is_entry else -quantity)
+        pending_after = min(max(pending_after, 0), max(after, 0))
+        if after > 0 and after - pending_after <= 0:
+            average = None        # nothing left on the shelf has a known cost
+        return MovementCost(unit_cost, source, average, pending_after)
 
     if not is_entry:
-        unit_cost, source = _carried(average_before, reference_cost)
-        return MovementCost(unit_cost, source, average_before)
+        leaving_pending = min(quantity, pending)
+        if leaving_pending:
+            unit_cost, source = _carried(None, reference_cost)
+        else:
+            unit_cost, source = _carried(average_before if costed else None, reference_cost)
+        return done(unit_cost, source, average_before, pending - leaving_pending)
 
     if stated_cost is not None:
         source = stated_source or ENTRY
         if source in REAL_SOURCES:
-            average = weighted_average(stock_before, average_before, quantity, stated_cost)
-            return MovementCost(quantize_cost(stated_cost), source, average)
-        return MovementCost(quantize_cost(stated_cost), source, average_before)
+            average = weighted_average(costed, average_before, quantity, stated_cost)
+            return done(quantize_cost(stated_cost), source, average, pending)
+        return done(quantize_cost(stated_cost), source, average_before, pending + quantity)
 
+    if carries_average_in and average_before is not None:
+        return done(quantize_cost(average_before), AVERAGE, average_before, pending)
     if carries_average_in:
-        unit_cost, source = _carried(average_before, reference_cost)
-        return MovementCost(unit_cost, source, average_before)
+        unit_cost, source = _carried(None, reference_cost)
+        return done(unit_cost, source, average_before, pending + quantity)
 
-    return MovementCost(None, UNKNOWN, average_before)
+    return done(None, UNKNOWN, average_before, pending + quantity)
 
 
 def user_may_view_costs(user, company) -> bool:

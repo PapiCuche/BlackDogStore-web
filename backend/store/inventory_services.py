@@ -53,7 +53,7 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, F, Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
 from . import cost_services
@@ -327,6 +327,7 @@ def create_stock_movement(
             carries_average_in=movement_type in StockMovement.RETURN_TYPES,
             quantity=quantity, stock_before=stock_before,
             average_before=stock.average_cost, reference_cost=product.reference_cost,
+            uncosted_before=stock.uncosted_quantity,
             stated_cost=unit_cost if is_entry else None,
             stated_source=cost_source,
             unit_costs=(
@@ -338,6 +339,7 @@ def create_stock_movement(
         # Write through the locked row — no read-modify-write race.
         BranchStock.objects.filter(pk=stock.pk).update(
             quantity=stock_after, average_cost=cost.average_after,
+            uncosted_quantity=cost.uncosted_after,
         )
         # Keep the compatibility aggregate in the SAME transaction. An F()
         # expression, not a recomputed sum, so two branches moving the same
@@ -1706,10 +1708,15 @@ def _inventory_at_cost(company, stock_rows, branches) -> dict:
 
     money = DecimalField(max_digits=20, decimal_places=4)
     loose = stock_rows.filter(product__is_serialized=False, quantity__gt=0)
+    # DC1 review: only the units of KNOWN cost are valued at the average; the
+    # ones that came in without a cost are pending, whatever the average says.
+    pending_part = Least(F('uncosted_quantity'), F('quantity'))
     by_quantity = loose.aggregate(
-        value=Coalesce(Sum(F('quantity') * F('average_cost'), filter=Q(average_cost__isnull=False),
-                           output_field=money), Decimal('0'), output_field=money),
-        pending=Coalesce(Sum('quantity', filter=Q(average_cost__isnull=True)), 0),
+        value=Coalesce(Sum((F('quantity') - pending_part) * F('average_cost'),
+                           filter=Q(average_cost__isnull=False), output_field=money),
+                       Decimal('0'), output_field=money),
+        pending=Coalesce(Sum('quantity', filter=Q(average_cost__isnull=True)), 0)
+        + Coalesce(Sum(pending_part, filter=Q(average_cost__isnull=False)), 0),
     )
     devices = StockUnit.objects.filter(product__is_active=True, status=StockUnit.Status.AVAILABLE)
     if branches is not None:

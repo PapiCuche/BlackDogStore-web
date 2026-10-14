@@ -2228,6 +2228,11 @@ class BranchStock(models.Model):
     # writer, under the row lock; never typed. A serialized product keeps it
     # NULL: each of its units has its own specific cost (`StockUnit.cost`).
     average_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # DC1 review — how many of `quantity` came in WITHOUT a known cost. The
+    # average is of the others only; these are «costo pendiente» in every
+    # valuation, and they are taken as leaving first. Maintained only by the
+    # Kardex writer, like the average.
+    uncosted_quantity = models.PositiveIntegerField(default=0, db_default=0)
     minimum_stock = models.PositiveIntegerField(default=0)
     target_stock = models.PositiveIntegerField(default=0)
     # --- Commercial Phase C1: replenishment configuration ----------------
