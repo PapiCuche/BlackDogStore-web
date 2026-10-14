@@ -1407,6 +1407,17 @@ serios. Cambian tres decisiones anteriores:
   la tiene, `ESC d 3` y un solo corte al final. PDF de 80 mm: 226,77 pt, una página, texto
   dentro de los márgenes de 4 mm, altura según el contenido. Las pruebas no encontraron
   ningún defecto de formato.
+- **Revisión independiente (sin P0/P1).** `lp` termina bien cuando el trabajo entra en la
+  cola, no cuando sale: con `cups_raw` el agente comprueba antes con `lpstat -p/-a` (en
+  `LC_ALL=C`) que la cola está activa y acepta, y después espera hasta `cups_wait_seconds`
+  (30 s) a que el número de trabajo salga de `lpstat -W not-completed`. Si no sale, si `lp`
+  no contesta o no da número, el resultado es `queued_not_printed`: no se apunta en el
+  diario y el servidor lo cierra como fallido **sin reintentarlo** (podría salir dos
+  veces); igual con un rechazo del agente (`refused`). Una prueba sin recoger caduca a los
+  10 minutos; reenviar una prueba exige `company.manage`; el panel usa una clave por clic
+  y desactiva el botón mientras dura. Para volver a la versión anterior se **borran** las
+  pruebas (no se cancelan: la versión anterior rompe al mirar su pedido, también al
+  reenviar una cancelada).
 
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda
 

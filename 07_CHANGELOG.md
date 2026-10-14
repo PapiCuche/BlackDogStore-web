@@ -22,6 +22,15 @@ Rama `fix/print-thermal` sobre `master` `abfc6bd`. Sin push ni despliegue.
   de la propia térmica; la impresión directa, por el agente.
 - `docs/despliegue-produccion.md` §6.5.1 «Impresora térmica en macOS».
 
+**Changed (revisión independiente)**
+- `cups_raw` comprueba la cola con `lpstat` antes de enviar y espera a que el trabajo salga;
+  si no sale, `queued_not_printed`: fallido sin reintento. Los rechazos del agente tampoco
+  se reintentan. Una prueba sin recoger caduca a los 10 minutos; reenviarla exige
+  `company.manage`; una prueba por clic.
+- `docs/despliegue-produccion.md` §7: borrar las pruebas antes de volver atrás. §6.5.1
+  opción B: dejar de usar la cola PostScript (`cupsreject` o `lpadmin -x`) y otra
+  impresora por omisión.
+
 **Migration**
 - `0124_printjob_test_ticket_print_thermal`: tipo `test_ticket`, `PrintJob.order` admite
   vacío sólo para ese tipo. El PR #119 también trae una `0124`: la segunda en fusionarse

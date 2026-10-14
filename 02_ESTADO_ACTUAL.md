@@ -19,8 +19,14 @@ Commits locales sobre `master` `abfc6bd`; sin push, sin PR, sin despliegue.
   vaciar la cola (`cancel -a STMicroelectronics_USB_POS_Printer`), instalar el controlador
   del fabricante (PDF de 80 mm) o crear la cola RAW `POS80_RAW` (agente), y hacer la prueba
   corta antes del primer ticket. Nada de eso se ejecutó desde aquí.
+- **Revisión independiente** (sin P0/P1; 2 P2 y 4 P3 corregidos en `f2212c1`, `ccacce3`):
+  `cups_raw` espera a que CUPS saque el trabajo y, si no, lo da por fallido sin reintento;
+  los rechazos no se reintentan; pruebas que caducan a los 10 min; reenviar una prueba exige
+  `company.manage`; una prueba por clic. **Vuelta atrás:** borrar antes las pruebas de
+  impresión (`docs/despliegue-produccion.md` §7).
 - **Deuda:** PRINT-USB-PANEL — el panel no tiene un tipo de impresora «USB»; con
-  `cups_raw` la dirección guardada no se usa.
+  `cups_raw` la dirección guardada no se usa. PRINT-OUTCOME-OLD-SERVER — desplegar el
+  servidor antes que los agentes nuevos.
 
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 

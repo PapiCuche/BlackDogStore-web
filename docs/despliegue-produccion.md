@@ -746,19 +746,41 @@ de 80 mm en esa térmica desde el Mac.
    ```
 
    CUPS avisa de que las colas RAW están «obsoletas» (*deprecated*); en macOS actual
-   siguen funcionando. Comprueba el controlador: `lpoptions -p POS80_RAW` debe decir
-   `printer-make-and-model='Local Raw Printer'` (o no decir PostScript ni PDF).
-3. En el panel, da de alta la impresora (Administración › Impresoras). Con `cups_raw` la
+   siguen funcionando. `lpadmin` puede pedir la contraseña de un administrador del Mac
+   (si dice «Forbidden», repite la orden con `sudo` delante). Comprueba el controlador:
+   `lpoptions -p POS80_RAW` debe decir `printer-make-and-model='Local Raw Printer'` (o no
+   decir PostScript ni PDF).
+3. **Deja de usar la cola PostScript**, para que nadie vuelva a imprimir en ella por
+   costumbre. Una de dos:
+   - que deje de aceptar trabajos (se puede deshacer con `cupsaccept`):
+
+     ```sh
+     cupsreject STMicroelectronics_USB_POS_Printer
+     ```
+
+   - o quitarla del todo (no toca la impresora ni la cola RAW):
+
+     ```sh
+     lpadmin -x STMicroelectronics_USB_POS_Printer
+     ```
+
+   Y que la impresora por omisión del Mac sea otra (Ajustes del Sistema › Impresoras y
+   escáneres › «Impresora por omisión»), **nunca** `POS80_RAW`.
+4. En el panel, da de alta la impresora (Administración › Impresoras). Con `cups_raw` la
    dirección no se usa; escribe la del propio Mac en la red del local.
-4. En el `config.json` del agente, con el **mismo nombre** que en el panel:
+5. En el `config.json` del agente, con el **mismo nombre** que en el panel:
 
    ```json
    "printers": {"Caja": {"transport": "cups_raw", "queue": "POS80_RAW"}}
    ```
 
    El agente lee el controlador de la cola al arrancar y **no arranca** si la cola no
-   existe o si su controlador dice PostScript o PDF.
-5. **La cola RAW es sólo para el agente.** No la elijas en el diálogo de imprimir de
+   existe o si su controlador dice PostScript o PDF. Antes de cada ticket comprueba que
+   la cola está activa y acepta trabajos, y después espera (hasta `cups_wait_seconds`,
+   30 s) a que el trabajo salga de la cola. Si no sale, el panel lo muestra como
+   «Falló» («… sigue en la cola …») y **no se reintenta solo**: revisa la cola
+   (`lpstat -o POS80_RAW`) antes de reenviarlo, porque puede salir más tarde.
+6. **La cola RAW es sólo para el agente.** No la elijas en el diálogo de imprimir de
    Vista Previa ni del navegador: una cola RAW pasa los bytes tal cual, y un PDF saldría
    como texto igual que antes.
 
@@ -802,6 +824,25 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 (`git checkout <commit anterior>`, `$C build`, `$C up -d`): las migraciones **se dejan
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
+
+**PRINT-THERMAL-01 (migración `0124_printjob_test_ticket_print_thermal`).** Añade el tipo
+de trabajo «prueba de impresión», que no tiene pedido. La versión anterior no lo conoce:
+al ir a entregar un trabajo mira su pedido, y con una prueba en la cola **todas** las
+entregas de esa sucursal fallarían (error 500), igual que su botón «Reenviar» sobre una
+prueba. Por eso, **antes** de volver los contenedores a la versión anterior, se borran las
+pruebas (sólo son unas líneas de comprobación; la bitácora del panel conserva quién las
+pidió):
+
+```sh
+$C exec -T backend python manage.py shell -c "from store.models import PrintJob; print(PrintJob.objects.filter(kind='test_ticket').delete())"
+```
+
+Se borran, no se cancelan: una prueba cancelada seguiría rompiendo «Reenviar» en la
+versión anterior. Después, `git checkout <commit anterior>`, `$C build`, `$C up -d`. La
+migración puede quedarse aplicada. Deshacerla (`migrate store 0123`) vuelve a exigir un
+pedido en cada trabajo y **falla si queda alguna prueba**: bórralas antes con la misma
+orden. Una prueba que nadie recoge caduca sola a los 10 minutos, así que rara vez habrá
+alguna pendiente.
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

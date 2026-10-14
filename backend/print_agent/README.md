@@ -63,12 +63,20 @@ texto: sale `%!PS-Adobe-3.0 …` y metros de papel. Por eso:
    ```
 
    CUPS avisa de que las colas RAW están «obsoletas»; en macOS actual siguen funcionando.
+   Después se deja de usar la cola PostScript (`cupsreject <cola>` o `lpadmin -x <cola>`)
+   y la impresora por omisión del equipo es otra.
 2. En `config.json`: `"printers": {"<nombre en el panel>": {"transport": "cups_raw",
    "queue": "POS80_RAW"}}`.
-3. **Al arrancar**, el agente lee el controlador de la cola con `lpoptions -p POS80_RAW`
+3. **Antes de cada ticket** comprueba con `lpstat` que la cola está activa y acepta
+   trabajos; **después** espera a que el trabajo salga de la cola (`cups_wait_seconds`,
+   30 s por defecto). `lp` termina bien en cuanto el trabajo entra en la cola, no cuando
+   se imprime: si sigue en la cola al acabar la espera, o si `lp` no contestó, el
+   agente lo informa como `queued_not_printed` y el servidor lo da por fallido **sin
+   reintentarlo solo** (podría salir dos veces). Una persona mira la cola y decide.
+4. **Al arrancar**, el agente lee el controlador de la cola con `lpoptions -p POS80_RAW`
    (sólo lee) y **no arranca** si dice «PostScript» o «PDF», o si la cola no existe. El
    mensaje dice qué hacer.
-4. Antes de la primera venta, la **prueba de impresión** del panel
+5. Antes de la primera venta, la **prueba de impresión** del panel
    (**Administración › Impresoras**, «Imprimir prueba»): unas pocas líneas, no un
    ticket entero. Si sale texto técnico (`%!PS`, `%PDF`), se apaga la impresora y se
    vacía la cola (`cancel -a <cola>`).
@@ -103,7 +111,8 @@ mismo comando.
 - **Sólo ESC/POS.** Un trabajo cuyos bytes empiezan como un PDF (`%PDF`) o un PostScript
   (`%!`), también tras blancos o un envoltorio PJL, que no empieza por `ESC @`, o de un
   tipo de documento que no conoce, no se envía: se informa al servidor como fallido, con
-  el motivo. El servidor aplica la misma regla antes de entregarlo.
+  el motivo (`refused`), y el servidor lo cierra sin reintentarlo. El servidor aplica la
+  misma regla antes de entregarlo.
 
 ## Qué no hace
 
