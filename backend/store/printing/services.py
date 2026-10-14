@@ -224,6 +224,35 @@ def enqueue_manual(*, order, printer, key: str, actor):
     )
 
 
+def enqueue_test(*, printer, key: str, actor):
+    """
+    La prueba de impresión: unas pocas líneas en esta impresora. PRINT-THERMAL-01.
+
+    No es de ningún pedido. Se pide antes del primer ticket de verdad, para ver
+    el ancho, los acentos y el corte sin gastar papel. `key` la pone quien
+    llama (la cabecera `Idempotency-Key`): un doble clic no imprime dos.
+    """
+    if not printer.is_active:
+        raise PrintError('Esa impresora no está disponible.')
+    key = (key or '').strip()
+    if not key:
+        raise PrintError('Falta la clave de idempotencia.')
+    full_key = f'test:{key}'[:120]
+    earlier = PrintJob.objects.filter(company=printer.company, idempotency_key=full_key).first()
+    if earlier is not None and earlier.printer_id != printer.pk:
+        raise PrintConflict('Esa clave ya se usó para otra prueba.')
+    return _get_or_create(
+        key=full_key, company=printer.company, branch=printer.branch, printer=printer,
+        kind=PrintJob.Kind.TEST_TICKET, reason=PrintJob.Reason.MANUAL, order=None,
+        requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
+    )
+
+
+def _sale_still_paid(job) -> bool:
+    """Una prueba no es de ninguna venta; un ticket, sólo si su pedido sigue pagado."""
+    return job.kind == PrintJob.Kind.TEST_TICKET or _is_authoritative(job.order)
+
+
 # -- entregar --------------------------------------------------------------------
 
 def _requeue_expired(branch, now) -> None:
@@ -273,7 +302,7 @@ def claim_next(agent):
             )
             if job is None:
                 return None
-            if not _is_authoritative(job.order):
+            if not _sale_still_paid(job):
                 job.status = PrintJob.Status.CANCELLED
                 job.last_error = 'El pedido ya no está pagado.'
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
@@ -341,6 +370,10 @@ def render(job) -> bytes:
         payload = escpos.fiscal_ticket(job.fiscal_document, **options)
     elif job.kind == PrintJob.Kind.SALES_NOTE_TICKET:
         payload = escpos.sales_note_ticket(job.sales_note, **options)
+    elif job.kind == PrintJob.Kind.TEST_TICKET:
+        payload = escpos.test_print_ticket(
+            company_name=job.company.name, printer_name=job.printer.name,
+            printed_at=timezone.localtime(job.created_at), **options)
     else:
         raise PrintPayloadRejected(
             f'Tipo de documento desconocido para la térmica ({job.kind}): no se imprime.')
@@ -406,7 +439,7 @@ def retry(job, *, actor):
     """Una persona vuelve a mandar un trabajo fallido o cancelado."""
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
-    if not _is_authoritative(job.order):
+    if not _sale_still_paid(job):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if not job.printer.is_active:
         # La impresora de entonces ya no existe: va a la que el local tiene hoy.

@@ -284,6 +284,28 @@ def fiscal_ticket(document, *, paper_width_mm: int = 80, encoding: str = 'cp858'
     return r.cut().to_bytes()
 
 
+def test_print_ticket(*, company_name: str, printer_name: str, printed_at,
+                      paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
+    """
+    La prueba de impresión: unas ocho líneas, avance y corte. PRINT-THERMAL-01.
+
+    La regla ocupa exactamente un renglón del rollo (48 columnas en 80 mm, 32
+    en 58): si se parte o le faltan cifras, el ancho configurado no es el de la
+    impresora. Los acentos dicen si la página de códigos es la buena.
+    """
+    from . import trial
+
+    r = Receipt(paper_width_mm=paper_width_mm, encoding=encoding)
+    r.line(company_name, align='center', bold=True)
+    r.line(trial.TITLE, align='center', bold=True)
+    r.line(f'Fecha: {trial.stamp(printed_at)}')
+    r.line(f'Impresora: {printer_name} - {paper_width_mm} mm, {r.columns} columnas')
+    r.line(trial.ruler(r.columns))
+    r.line(f'Acentos: {trial.ACCENTS}')
+    r.line(trial.WARNING)
+    return r.cut().to_bytes()
+
+
 def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = 'cp858') -> bytes:
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm."""
     from ..document_style import unit_identifiers

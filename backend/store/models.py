@@ -8739,6 +8739,9 @@ class PrintJob(models.Model):
     class Kind(models.TextChoices):
         FISCAL_TICKET = 'fiscal_ticket', 'Comprobante electrónico (80 mm)'
         SALES_NOTE_TICKET = 'sales_note_ticket', 'Nota de venta (80 mm)'
+        #: Unas pocas líneas para comprobar la impresora antes de un ticket
+        #: entero. No es de ningún pedido. PRINT-THERMAL-01.
+        TEST_TICKET = 'test_ticket', 'Prueba de impresión'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'En cola'
@@ -8756,7 +8759,9 @@ class PrintJob(models.Model):
     printer = models.ForeignKey(Printer, on_delete=models.PROTECT, related_name='jobs')
     kind = models.CharField(max_length=30, choices=Kind.choices)
     reason = models.CharField(max_length=10, choices=Reason.choices, default=Reason.AUTO)
-    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='print_jobs')
+    #: Vacío sólo en una prueba de impresión (lo exige una restricción).
+    order = models.ForeignKey(
+        Order, on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     fiscal_document = models.ForeignKey(
         'FiscalDocument', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     sales_note = models.ForeignKey(
@@ -8791,10 +8796,16 @@ class PrintJob(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['company', 'idempotency_key'], name='print_job_idempotency_per_company'),
+            # Un ticket de venta es siempre de un pedido; sólo la prueba no.
+            models.CheckConstraint(
+                condition=models.Q(kind='test_ticket') | models.Q(order__isnull=False),
+                name='print_job_order_unless_test'),
         ]
         indexes = [models.Index(fields=['branch', 'status', 'id'])]
 
     def __str__(self):
+        if self.order_id is None:
+            return f'{self.get_kind_display()} · {self.get_status_display()}'
         return f'{self.get_kind_display()} · pedido {self.order_id} · {self.get_status_display()}'
 
 

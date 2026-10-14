@@ -121,7 +121,8 @@ from .storefront_content_views import (
 )
 from .print_views import (
     AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
-    AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
+    AdminPrinterListView, AdminPrinterTestView, AdminPrintJobListView, AdminPrintJobRetryView,
+    AdminPrintTestPageView,
 )
 from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
@@ -334,6 +335,9 @@ urlpatterns = [
     # Impresión en la tienda: impresoras, agentes y cola, por sucursal.
     path('admin/printing/printers/', AdminPrinterListView.as_view(), name='admin-printers'),
     path('admin/printing/printers/<int:pk>/', AdminPrinterDetailView.as_view(), name='admin-printer'),
+    path('admin/printing/printers/<int:pk>/test/', AdminPrinterTestView.as_view(),
+         name='admin-printer-test'),
+    path('admin/printing/test-page/', AdminPrintTestPageView.as_view(), name='admin-print-test-page'),
     path('admin/printing/agents/', AdminPrintAgentListView.as_view(), name='admin-print-agents'),
     path('admin/printing/agents/<int:pk>/', AdminPrintAgentDetailView.as_view(), name='admin-print-agent'),
     path('admin/printing/jobs/', AdminPrintJobListView.as_view(), name='admin-print-jobs'),

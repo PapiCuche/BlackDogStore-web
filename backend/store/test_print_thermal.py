@@ -366,3 +366,168 @@ class CupsCommandsTest(SimpleTestCase):
                                return_value=completed([], 1, stderr=b'Unknown destination')):
             with self.assertRaises(OSError):
                 agent_module.read_queue_model('POS80_RAW')
+
+
+# ---------------------------------------------------------------------------
+# La prueba de impresión: unas líneas antes del ticket entero
+# ---------------------------------------------------------------------------
+
+PRINTED_AT = __import__('datetime').datetime(2026, 10, 14, 9, 5)
+RULER_80 = b'123456789012345678901234567890123456789012345678'
+
+
+def readable(payload: bytes, encoding='cp858') -> str:
+    """Lo que se lee en el papel: sin órdenes de estilo, renglones unidos."""
+    import re
+
+    text = re.sub(rb'\x1b[atEd].|\x1d!.|\x1b@|\x1dVB.', b'', payload)
+    return ' '.join(text.decode(encoding, 'replace').split())
+
+
+class TestTicketContentTest(SimpleTestCase):
+    def ticket(self, **options):
+        return escpos.test_print_ticket(
+            company_name='Black Dog Store', printer_name='Caja', printed_at=PRINTED_AT, **options)
+
+    def test_it_is_a_short_escpos_ticket_with_what_to_check(self):
+        payload = self.ticket()
+
+        self.assertEqual(escpos.payload_problem(payload), '')
+        self.assertLessEqual(payload.count(b'\n'), 10)
+        text = readable(payload)
+        for expected in ('Black Dog Store', 'PRUEBA DE IMPRESIÓN', '14/10/2026 09:05', 'Caja',
+                         'áéíóú ñ Ñ ¿¡ S/',
+                         'Si ve texto técnico (%!PS, %PDF) apague la impresora y cancele la cola'):
+            self.assertIn(expected, text)
+
+    def test_the_ruler_fills_exactly_one_line_of_the_roll(self):
+        # Tras las órdenes de estilo (letra normal), la regla entera y el salto.
+        self.assertIn(b'\x1d!\x00' + RULER_80 + b'\n', self.ticket(paper_width_mm=80))
+        narrow = self.ticket(paper_width_mm=58)
+        self.assertIn(b'\x1d!\x00' + RULER_80[:32] + b'\n', narrow)
+        self.assertNotIn(RULER_80[:33], narrow)
+
+    def test_spanish_characters_use_the_printer_code_page(self):
+        payload = self.ticket(encoding='cp858')
+
+        self.assertTrue(payload.startswith(b'\x1b@\x1bt\x13'))     # ESC t 19 = cp858
+        self.assertIn(bytes([0xA0, 0x82, 0xA1, 0xA2, 0xA3]), payload)   # áéíóú
+        self.assertIn(b'\xa4 \xa5 \xa8\xad S/', payload)               # ñ Ñ ¿¡ S/
+
+    def test_it_feeds_and_cuts_once_at_the_end(self):
+        payload = self.ticket()
+
+        self.assertEqual(payload.count(b'\x1dVB\x00'), 1)
+        self.assertTrue(payload.endswith(b'\x1bd\x03\x1dVB\x00'))
+
+
+class TestPrintQueueTest(PrintingBase):
+    def test_a_test_ticket_is_queued_without_an_order_and_delivered(self):
+        job = printing.enqueue_test(printer=self.printer, key='prueba-1', actor=None)
+
+        self.assertEqual((job.kind, job.order_id, job.reason),
+                         (PrintJob.Kind.TEST_TICKET, None, PrintJob.Reason.MANUAL))
+        self.assertEqual(printing.enqueue_test(printer=self.printer, key='prueba-1', actor=None), job)
+        claimed = printing.claim_next(self.agent)
+        self.assertEqual(claimed, job)
+        payload = printing.render(claimed)
+        self.assertIn(b'PRUEBA DE IMPRESI', payload)
+        self.assertIn(self.company.name.encode('cp858'), payload)
+
+    def test_an_inactive_printer_gets_no_test(self):
+        self.printer.is_active = False
+        self.printer.save()
+
+        with self.assertRaises(printing.PrintError):
+            printing.enqueue_test(printer=self.printer, key='prueba-2', actor=None)
+
+    def test_a_failed_test_can_be_sent_again(self):
+        job = printing.enqueue_test(printer=self.printer, key='prueba-3', actor=None)
+        PrintJob.objects.filter(pk=job.pk).update(status=PrintJob.Status.FAILED)
+        job.refresh_from_db()
+
+        self.assertEqual(printing.retry(job, actor=None).status, PrintJob.Status.PENDING)
+
+    def test_only_a_test_ticket_may_have_no_order(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PrintJob.objects.create(
+                company=self.company, branch=self.branch, printer=self.printer,
+                kind=PrintJob.Kind.SALES_NOTE_TICKET, idempotency_key='sin-pedido')
+
+
+class TestPrintApiTest(PrintApiBase):
+    def url(self, printer=None):
+        return f'/api/admin/printing/printers/{(printer or self.printer).pk}/test/' + self.q()
+
+    def test_a_manager_queues_a_test_print_once_per_key(self):
+        from store.models import AdminAuditLog
+
+        client = self.as_user(self.manager)
+        first = client.post(self.url(), {}, format='json', HTTP_IDEMPOTENCY_KEY='k-1')
+        again = client.post(self.url(), {}, format='json', HTTP_IDEMPOTENCY_KEY='k-1')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual((first.data['kind'], first.data['order']), ('test_ticket', None))
+        self.assertEqual((again.status_code, again.data['id']), (200, first.data['id']))
+        self.assertEqual(AdminAuditLog.objects.filter(action='print_test_requested').count(), 1)
+
+        job = self.as_agent().post(CLAIM).data['job']
+        self.assertEqual(job['kind'], 'test_ticket')
+        self.assertEqual(escpos.payload_problem(base64.b64decode(job['payload_base64'])), '')
+
+    def test_it_needs_a_key_and_the_right_to_manage_printers(self):
+        self.assertEqual(self.as_user(self.manager).post(self.url(), {}, format='json').status_code, 400)
+        self.assertEqual(self.as_user(self.seller).post(
+            self.url(), {}, format='json', HTTP_IDEMPOTENCY_KEY='k-2').status_code, 403)
+        self.assertFalse(PrintJob.objects.exists())
+
+    def test_a_printer_of_another_company_does_not_exist_here(self):
+        from store.models import Printer
+        from store.tests import _p3_company
+
+        other = _p3_company('otra-termica', 'Otra')
+        foreign = Printer.objects.create(
+            company=other, branch=other.default_inventory_branch, name='Ajena', host='192.168.9.9')
+
+        res = self.as_user(self.manager).post(
+            self.url(foreign), {}, format='json', HTTP_IDEMPOTENCY_KEY='k-3')
+
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_jobs_list_shows_a_test_without_an_order(self):
+        printing.enqueue_test(printer=self.printer, key='k-4', actor=None)
+
+        row = self.as_user(self.manager).get('/api/admin/printing/jobs/' + self.q()).data['results'][0]
+
+        self.assertEqual((row['kind'], row['order']), ('test_ticket', None))
+
+
+class TestPagePdfTest(PrintApiBase):
+    URL = '/api/admin/printing/test-page/'
+
+    def test_the_test_page_is_a_short_80_mm_pdf_with_the_same_lines(self):
+        from store.test_document_design import TICKET_WIDTH, media_box, text_of
+
+        res = self.as_user(self.manager).get(self.URL + self.q())
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res['Content-Type'], 'application/pdf')
+        self.assertEqual(res['Content-Disposition'],
+                         'attachment; filename="prueba-impresion-ticket80.pdf"')
+        pdf = res.content
+        self.assertTrue(pdf.startswith(b'%PDF'))
+        width, height = media_box(pdf)
+        self.assertAlmostEqual(width, TICKET_WIDTH, places=1)
+        self.assertLess(height, 80 * 72 / 25.4)          # menos de 8 cm de papel
+        self.assertEqual(pdf.count(b'/Type /Page\n') + pdf.count(b'/Type /Page '), 1)
+        text = text_of(pdf)
+        for expected in ('PRUEBA DE IMPRESIÓN', 'áéíóú', 'S/', '%!PS', 'cancele la cola'):
+            self.assertIn(expected, text)
+
+    def test_a_seller_can_download_it_and_an_outsider_cannot(self):
+        from rest_framework.test import APIClient
+
+        self.assertEqual(self.as_user(self.seller).get(self.URL + self.q()).status_code, 200)
+        self.assertIn(APIClient().get(self.URL + self.q()).status_code, (401, 403))
