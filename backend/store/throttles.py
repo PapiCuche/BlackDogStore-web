@@ -399,3 +399,16 @@ class WhatsAppWebhookThrottle(AnonRateThrottle):
 class GoogleSignInThrottle(AnonRateThrottle):
     """Entrar con Google, por dirección. Su propio cupo: no gasta el del login con contraseña."""
     scope = 'google_sign_in'
+
+
+class SocialSignInThrottle(AnonRateThrottle):
+    """
+    Entrar con Facebook o Apple, por dirección (SOCIAL-AUTH-01): empezar, volver
+    del proveedor y preguntar qué proveedores hay comparten cupo.
+    """
+    scope = 'social_sign_in'
+
+
+class SocialLinkThrottle(UserRateThrottle):
+    """Vincular o desvincular un proveedor desde «Mi cuenta», por cuenta. Pide la contraseña."""
+    scope = 'social_link'
