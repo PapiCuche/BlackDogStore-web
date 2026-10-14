@@ -126,7 +126,7 @@ class MarginFiguresTest(MarginFixture):
         products = {row['name']: row for row in body['by_product']}
         self.assertEqual(products['Funda'], {
             'key': self.case.pk, 'name': 'Funda', 'units': 3, 'net_sales': '300.00', 'cost': '190.00',
-            'margin': '110.00', 'margin_percent': '36.67', 'pending_lines': 0,
+            'margin': '110.00', 'margin_percent': '36.67', 'pending_lines': 0, 'net_estimated': False,
         })
         self.assertEqual(products['Cable']['pending_lines'], 1)
         self.assertEqual(products['Cable']['margin_percent'], None)
@@ -143,6 +143,30 @@ class MarginFiguresTest(MarginFixture):
         self.assertEqual(body['sales'], {'orders': 1, 'gross': '118.00', 'net': '100.00'})
         self.assertEqual(body['margin'], '30.00')
         self.assertEqual(body['pending_cost']['lines'], 0)
+        # The refund was of the other branch (DC1 review: the filter is pinned).
+        self.assertEqual(body['refunds'], {'orders': 0, 'amount': '0.00'})
+        self.assertEqual(self.get(branch=self.centro.pk).json()['refunds'], {'orders': 1, 'amount': '118.00'})
+
+    def test_a_line_from_before_dc1_counts_its_net_and_is_pending(self):
+        """DC1 review — a line with no snapshot is not «0.00 net»: its net comes from the order, flagged pending."""
+        charger = _prod(self.company, 'Cargador', 'cargador-margen', price='236.00', inventory=0)
+        tax = breakdown_from_total(total=D('236.00'), subtotal=D('236.00'))
+        old = Order.objects.create(
+            company=self.company, fulfillment_branch=self.centro, customer_email='x@example.com',
+            total=D('236.00'), subtotal_amount=tax.subtotal, taxable_amount=tax.taxable_amount,
+            tax_amount=tax.tax_amount, tax_rate=tax.tax_rate,
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(order=old, product=charger, quantity=1, price=charger.price)
+        body = self.get(branch='all').json()
+        row = {r['name']: r for r in body['by_product']}['Cargador']
+        self.assertEqual((row['net_sales'], row['cost'], row['margin'], row['pending_lines']),
+                         ('200.00', '0.00', '0.00', 1))
+        self.assertEqual(row['margin_percent'], None)
+        self.assertTrue(row['net_estimated'])
+        branches = {r['name']: r for r in body['by_branch']}
+        self.assertEqual(branches[self.centro.name]['net_sales'], '450.00')    # 200 + 50 + 200
+        self.assertEqual(body['pending_cost']['amount'], '250.00')
 
     def test_the_figures_do_not_move_when_the_catalogue_does(self):
         before = self.get(branch='all').json()
@@ -161,6 +185,33 @@ class MarginAccessTest(MarginFixture):
     def test_costs_view_without_analytics_is_refused(self):
         user, _ = _p2d_member(self.company, 'dc1_costos', ['company.view', 'costs.view'])
         self.assertEqual(self.get(_client(user)).status_code, 403)
+
+    def test_a_legacy_admin_membership_sees_the_margin(self):
+        from django.contrib.auth import get_user_model
+        from store.models import Membership
+        user = get_user_model().objects.create_user(username='dc1_legacy_admin', password='Pass123!')
+        Membership.objects.create(user=user, company=self.company, role='admin')
+        res = self.get(_client(user))
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_one_answer_for_a_profile_only_admin(self):
+        """The legacy bridge counts the same in every surface that asks (`user_may_view_costs`)."""
+        from django.contrib.auth import get_user_model
+        from store.cost_services import user_may_view_costs
+        from store.models import UserProfile
+        from store.tenancy import legacy_catalog_company
+
+        admin = get_user_model().objects.create_user(username='dc1_perfil_admin', password='Pass123!')
+        UserProfile.objects.update_or_create(user=admin, defaults={'role': UserProfile.ROLE_ADMIN})
+        seller = get_user_model().objects.create_user(username='dc1_perfil_ventas', password='Pass123!')
+        UserProfile.objects.update_or_create(user=seller, defaults={'role': UserProfile.ROLE_SALES})
+        admin, seller = (get_user_model().objects.get(pk=u.pk) for u in (admin, seller))
+        pilot = legacy_catalog_company(admin)
+        self.assertIsNotNone(pilot)
+        self.assertTrue(user_may_view_costs(admin, pilot))
+        self.assertFalse(user_may_view_costs(seller, pilot))
+        others = [c for c in (self.company, self.other) if c.pk != pilot.pk]
+        self.assertFalse(any(user_may_view_costs(admin, company) for company in others))
 
     def test_anonymous(self):
         self.assertEqual(APIClient().get(URL).status_code, 401)

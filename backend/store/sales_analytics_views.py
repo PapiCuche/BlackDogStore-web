@@ -420,7 +420,10 @@ class AdminSalesMarginView(APIView):
         company, error = _context(request, CAP_ANALYTICS)
         if error:
             return error
-        if not has_capability(request.user, company, CAP_COSTS_VIEW):
+        from .cost_services import user_may_view_costs
+
+        # THE one answer to «may this person see costs» (DC1 review).
+        if not user_may_view_costs(request.user, company):
             return Response(
                 {'detail': 'Se requiere permiso para ver costos y márgenes.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -457,6 +460,7 @@ class AdminSalesMarginView(APIView):
             cost=Coalesce(Sum(line_cost, output_field=_COST), Decimal('0'), output_field=_COST),
         )
         pending = lines.filter(unit_cost__isnull=True)
+        estimated = self._estimated_nets(lines)
 
         refunds = Order.objects.filter(
             company=company, status=Order.Status.REFUNDED,
@@ -487,13 +491,46 @@ class AdminSalesMarginView(APIView):
             },
             'reference_cost_lines': known.filter(cost_source=OrderItem.COST_REFERENCE).count(),
             'refunds': {'orders': refunds['orders'], 'amount': str(_cents(refunds['amount']))},
-            'by_product': self._grouped(lines, 'product_id', 'product__name'),
-            'by_branch': self._grouped(lines, 'order__fulfillment_branch_id', 'order__fulfillment_branch__name'),
-            'by_channel': self._grouped(lines, 'order__sales_channel', None),
+            'by_product': self._grouped(lines, 'product_id', 'product__name', estimated),
+            'by_branch': self._grouped(lines, 'order__fulfillment_branch_id', 'order__fulfillment_branch__name',
+                                       estimated),
+            'by_channel': self._grouped(lines, 'order__sales_channel', None, estimated),
         })
 
     @staticmethod
-    def _grouped(lines, key, name):
+    def _estimated_nets(lines) -> list[dict]:
+        """
+        DC1 review — lines sold before DC1 have no frozen net. Their share of
+        their order's base is computed here, the same way the snapshot would
+        have been (`margin_services.line_nets`), NOT stored, and only for the
+        breakdowns: they stay «costo pendiente» and never count in the margin.
+        """
+        from . import margin_services
+
+        orders = {}
+        for item in lines.filter(net_amount__isnull=True).select_related('order'):
+            orders.setdefault(item.order_id, item.order)
+        out = []
+        for order in orders.values():
+            items = list(OrderItem.objects.filter(order=order).order_by('pk').values_list('pk', flat=True))
+            rows = list(OrderItem.objects.filter(pk__in=items).select_related('product', 'order__fulfillment_branch'))
+            nets = margin_services.line_nets(order, rows)
+            for item in rows:
+                if item.net_amount is not None:
+                    continue
+                out.append({
+                    'product_id': item.product_id, 'product__name': item.product.name,
+                    'order__fulfillment_branch_id': order.fulfillment_branch_id,
+                    'order__fulfillment_branch__name': (
+                        order.fulfillment_branch.name if order.fulfillment_branch_id else None
+                    ),
+                    'order__sales_channel': order.sales_channel,
+                    'net': nets[item.pk][2],
+                })
+        return out
+
+    @staticmethod
+    def _grouped(lines, key, name, estimated=()):
         fields = [key] + ([name] if name else [])
         known = Q(unit_cost__isnull=False)
         rows = (
@@ -510,19 +547,26 @@ class AdminSalesMarginView(APIView):
             .order_by()
         )
         labels = dict(SalesChannel.choices)
+        guessed: dict = {}
+        for line in estimated:
+            guessed[line[key]] = guessed.get(line[key], Decimal('0.00')) + line['net']
         out = []
         for row in rows:
             net_known = _cents(row['net_known'])
             cost = _cents(row['cost'])
+            extra = guessed.get(row[key], Decimal('0.00'))
             out.append({
                 'key': row[key],
                 'name': row[name] if name else str(labels.get(row[key], row[key])),
                 'units': row['units'],
-                'net_sales': str(_cents(row['net_all'])),
+                'net_sales': str(_cents(row['net_all']) + extra),
                 'cost': str(cost),
                 'margin': str(net_known - cost),
                 'margin_percent': _percent(net_known - cost, net_known),
                 'pending_lines': row['pending'],
+                # Part of `net_sales` came from lines sold before DC1, computed
+                # from their order: those lines are «costo pendiente».
+                'net_estimated': row[key] in guessed,
             })
         out.sort(key=lambda r: (-Decimal(r['net_sales']), str(r['name'])))
         return out
