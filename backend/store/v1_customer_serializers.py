@@ -22,9 +22,24 @@ the model, or to the legacy serializer, does not add it to this response.
 from rest_framework import serializers
 
 from .models import Order, OrderItem
+from .serializers import closed_product_payload
 
 
 class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
+    """
+    One line of the customer's OWN order, in the app.
+
+    `quantity` and `price` are what the ORDER recorded: they never change. The
+    other three are read from the product AS IT IS TODAY, and a product that
+    has left the web since (hidden or deactivated) is not on sale to anybody:
+    of it the line carries only what the web's closed line carries
+    (`serializers.closed_product_payload`) — its name and its picture. Its
+    slug, which is its address in the catalogue, is EMPTY. The key stays: the
+    app reads it, and «no address» is the truth.
+
+    A product that is still sold online is exactly what it was.
+    """
+
     product_name = serializers.CharField(source='product.name', read_only=True, default='')
     product_slug = serializers.CharField(source='product.slug', read_only=True, default='')
     image_url = serializers.CharField(source='product.image_url', read_only=True, default='')
@@ -35,6 +50,16 @@ class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
         # is what a customer looking at an old receipt would find confusing and
         # what a refund conversation would have to argue about.
         fields = ['id', 'product_name', 'product_slug', 'image_url', 'quantity', 'price']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        product = instance.product
+        if not product.is_sold_online:
+            closed = closed_product_payload(product)
+            data['product_name'] = closed['name']
+            data['product_slug'] = ''
+            data['image_url'] = closed['image_url']
+        return data
 
 
 class V1CustomerOrderSerializer(serializers.ModelSerializer):

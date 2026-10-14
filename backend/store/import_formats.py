@@ -84,9 +84,14 @@ PRODUCT_FIELDS = {
     'image_main':  {'label': 'Imagen principal (archivo)', 'required': False},
     'image_files': {'label': 'Imágenes (archivos, separados por |)', 'required': False},
     'slug':        {'label': 'Slug',                'required': False},
-    'is_active':   {'label': 'Activo',              'required': False},
+    # «Activo» o «Inactivo». Sólo decide cómo NACE un producto nuevo: la carga
+    # nunca activa ni desactiva uno que ya existe.
+    'is_active':   {'label': 'Estado (Activo o Inactivo)', 'required': False},
     # PRODUCT-DESTINATION-01: «Publicar en e-commerce» o «Solo stock interno».
     'destination': {'label': 'Destino (e-commerce o sólo stock interno)', 'required': False},
+    # «Identificador» de un archivo descargado para volver a cargar: dice de qué
+    # producto de ESTA empresa es la fila aunque haya cambiado de nombre.
+    'identifier':  {'label': 'Identificador (de un archivo descargado)', 'required': False},
 }
 
 # =============================================================================
@@ -148,6 +153,50 @@ def parse_destination(text) -> str | None:
     if not key:
         return ''
     return _DESTINATION_WORDS.get(key)
+
+# =============================================================================
+# Whether a product is in use — the «Estado» column of a file to reload
+# =============================================================================
+
+STATE_HEADER = 'Estado'
+IDENTIFIER_HEADER = 'Identificador'
+
+
+def product_identifier(company_id, product_id) -> str:
+    """
+    What the file to reload writes under «Identificador».
+
+    Stable (a rename does not change it), readable, bound to the company and no
+    secret: both numbers are already in the panel's own addresses. It grants
+    nothing — the importer accepts it only for a product of the company the
+    caller is acting on.
+    """
+    return f'{company_id}-{product_id}'
+
+
+def parse_product_identifier(text):
+    """`(company id, product id)` from an «Identificador» cell, or None when it is not one."""
+    found = re.fullmatch(r'(\d{1,12})-(\d{1,12})', str(text or '').strip())
+    return (int(found.group(1)), int(found.group(2))) if found else None
+STATE_LABELS = {True: 'Activo', False: 'Inactivo'}
+#: Read forgivingly (case, accents, spaces): an older «Activo» column holds
+#: Sí/No, and a spreadsheet may hold 1/0 or TRUE/FALSE.
+_STATE_WORDS = {
+    'activo': True, 'inactivo': False,
+    'si': True, 'no': False,
+    '1': True, '0': False,
+    'true': True, 'false': False,
+    'verdadero': True, 'falso': False,
+}
+
+
+def parse_state(text):
+    """True, False, '' for an empty cell — or None for anything else."""
+    key = normalize_header(text)
+    if not key:
+        return ''
+    return _STATE_WORDS.get(key)
+
 
 STOCK_FIELDS = {
     'external_id': {'label': 'ID del sistema origen', 'required': False},
@@ -268,6 +317,9 @@ def _preset_products_platform():
             # Both spellings: as the template names it now, and as the owner's
             # planning sheet named it while the feature did not exist.
             'destination': DESTINATION_HEADERS,
+            # Only in the file to reload (`inventory_exports`); the template has none.
+            'is_active': 'estado',
+            'identifier': 'identificador',
         },
         'notes': [],
     }
@@ -431,6 +483,11 @@ _DEVICE_HEADERS = {*SERIAL_HEADERS, 'imei', 'imei 1', 'imei1', 'imei 2', 'imei2'
 _WAREHOUSE = re.compile(r'^(almacen|deposito)\b')
 
 
+def is_warehouse_header(key: str) -> bool:
+    """Whether a header, already folded by `normalize_header`, is a quantity column of a warehouse."""
+    return bool(_WAREHOUSE.match(key))
+
+
 def counts_stock(key: str) -> bool:
     """Whether a header, already folded by `normalize_header`, states HOW MANY there are."""
     words = key.split(' ')
@@ -453,6 +510,6 @@ NO_DEVICES_HERE = (
 def _belongs_to_stock(key: str) -> str:
     if key in _DEVICE_HEADERS:
         return NO_DEVICES_HERE
-    if counts_stock(key) or _WAREHOUSE.match(key):
+    if counts_stock(key) or is_warehouse_header(key):
         return NO_STOCK_HERE
     return ''

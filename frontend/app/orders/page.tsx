@@ -11,7 +11,12 @@ import { OrderDeliveryInfo, type BuyerDelivery } from "../components/OrderDelive
 
 type OrderItem = {
   id: number;
-  product: { name: string; slug: string; price: number; image_url?: string };
+  /**
+   * El producto como está HOY. Si dejó de venderse en la web (oculto o
+   * desactivado) el servidor sólo manda su nombre y su imagen: sin `slug`, sin
+   * precio de hoy. La línea —cantidad y precio pagado— es la del pedido.
+   */
+  product: { name: string; slug?: string; price?: number | string; image_url?: string };
   quantity: number;
   price: number | string;
 };
@@ -176,11 +181,17 @@ export default function OrdersPage() {
                         {order.items.map((item) => (
                           <div key={item.id} className="flex items-center justify-between gap-4 py-3">
                             <div className="min-w-0">
-                              <Link href={`/product/${item.product.slug}`} className="block truncate text-sm font-medium text-foreground transition hover:underline">
-                                {item.product.name}
-                              </Link>
+                              {item.product.slug ? (
+                                <Link href={`/product/${item.product.slug}`} className="block truncate text-sm font-medium text-foreground transition hover:underline">
+                                  {item.product.name}
+                                </Link>
+                              ) : (
+                                // Ya no tiene ficha pública: se nombra, no se enlaza.
+                                <p className="truncate text-sm font-medium text-foreground">{item.product.name}</p>
+                              )}
                               <p className="mt-1 text-xs text-muted">
                                 {item.quantity} × S/ {formatMoney(item.price)}
+                                {item.product.slug ? null : " · Ya no se vende en la tienda"}
                               </p>
                             </div>
                             <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">

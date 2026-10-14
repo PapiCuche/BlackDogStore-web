@@ -69,6 +69,7 @@ _MAX_PAGE_SIZE = 100
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import order_fulfillment_services as fulfillment
+from . import product_publication
 from . import storefront_media
 
 CAP_ORDERS_VIEW = 'sales.orders.view'
@@ -464,6 +465,100 @@ def _product_snapshot(product):
     return {f: _fmt(f, getattr(product, f)) for f in _AUDITABLE_PRODUCT_FIELDS}
 
 
+#: The filters of the product list. The bulk visibility action takes these same
+#: keys for «all that match», and refuses any other.
+PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized')
+
+_TRUE_FALSE = ('true', 'false')
+_STOCK_FILTERS = ('in_stock', 'out_of_stock', 'low_stock')
+
+
+class InvalidProductFilter(ValueError):
+    """A filter value that means nothing. Raised only when `strict`."""
+
+
+def _filter_text(params, key, strict):
+    """One filter as text. A JSON `true` is «true»; a list or an object is not a filter."""
+    raw = params.get(key)
+    if raw is None:
+        return ''
+    if isinstance(raw, bool):
+        return 'true' if raw else 'false'
+    if isinstance(raw, int):
+        return str(raw)
+    if not isinstance(raw, str):
+        if strict:
+            raise InvalidProductFilter(key)
+        return ''
+    return raw.strip()
+
+
+def _filter_choice(params, key, allowed, strict):
+    value = _filter_text(params, key, strict).lower()
+    if value in allowed:
+        return value
+    if value and strict:
+        raise InvalidProductFilter(key)
+    return ''
+
+
+def filter_admin_products(queryset, params, *, strict=False):
+    """
+    Narrow `queryset` (already of ONE company) by the product list's filters.
+
+    THE ONE DEFINITION. The list reads `params` from its query string; the bulk
+    visibility action reads the same keys from the filter the screen sent, so
+    «all 312 results» is decided by the code that counted 312.
+
+    A value that means nothing is ignored by the list, as it always was — a
+    hand-typed address shows the whole catalogue. `strict` refuses it instead
+    (`InvalidProductFilter`): for a WRITE, «I did not understand, so everything»
+    is the wrong reading.
+    """
+    search = _filter_text(params, 'search', strict)
+    if '\x00' in search:
+        # No name and no slug can hold a NUL, and the database refuses the
+        # literal outright (it answered 500). For a write it is a filter that
+        # means nothing; for the list, a search that matches nothing.
+        if strict:
+            raise InvalidProductFilter('search')
+        return queryset.none()
+    if search:
+        queryset = queryset.filter(Q(name__icontains=search) | Q(slug__icontains=search)).distinct()
+
+    category_id = _filter_text(params, 'category', strict)
+    if category_id:
+        try:
+            queryset = queryset.filter(category_id=int(category_id))
+        except (ValueError, TypeError):
+            if strict:
+                raise InvalidProductFilter('category') from None
+
+    is_active = _filter_choice(params, 'is_active', _TRUE_FALSE, strict)
+    if is_active:
+        queryset = queryset.filter(is_active=is_active == 'true')
+
+    # PRODUCT-DESTINATION-01: «en la web» o «sólo stock interno».
+    published = _filter_choice(params, 'is_published_online', _TRUE_FALSE, strict)
+    if published:
+        queryset = queryset.filter(is_published_online=published == 'true')
+
+    # How it is counted: device by device, or by quantity.
+    serialized = _filter_choice(params, 'is_serialized', _TRUE_FALSE, strict)
+    if serialized:
+        queryset = queryset.filter(is_serialized=serialized == 'true')
+
+    stock = _filter_choice(params, 'stock', _STOCK_FILTERS, strict)
+    if stock == 'in_stock':
+        queryset = queryset.filter(inventory__gt=0)
+    elif stock == 'out_of_stock':
+        queryset = queryset.filter(inventory=0)
+    elif stock == 'low_stock':
+        queryset = queryset.filter(inventory__gt=0, inventory__lte=_LOW_STOCK_THRESHOLD)
+
+    return queryset
+
+
 class AdminProductListView(APIView):
     """
     GET  /api/admin/products/ — list with search, filters, pagination. CanViewAdminProducts.
@@ -485,44 +580,12 @@ class AdminProductListView(APIView):
             return error
 
         # Born scoped: every filter below narrows within the tenant.
-        products = (
-            Product.objects
-            .filter(company=company)
-            .select_related('category')
-            .order_by('-created_at')
+        products = filter_admin_products(
+            Product.objects.filter(company=company).select_related('category').order_by('-created_at'),
+            request.query_params,
         )
-
-        search = request.query_params.get('search', '').strip()
-        if search:
-            products = products.filter(Q(name__icontains=search) | Q(slug__icontains=search)).distinct()
-
-        category_id = request.query_params.get('category', '').strip()
-        if category_id:
-            try:
-                products = products.filter(category_id=int(category_id))
-            except (ValueError, TypeError):
-                pass
-
-        is_active_param = request.query_params.get('is_active', '').strip().lower()
-        if is_active_param == 'true':
-            products = products.filter(is_active=True)
-        elif is_active_param == 'false':
-            products = products.filter(is_active=False)
-
-        # PRODUCT-DESTINATION-01: «en la web» o «sólo stock interno».
-        published_param = request.query_params.get('is_published_online', '').strip().lower()
-        if published_param == 'true':
-            products = products.filter(is_published_online=True)
-        elif published_param == 'false':
-            products = products.filter(is_published_online=False)
-
-        stock_param = request.query_params.get('stock', '').strip().lower()
-        if stock_param == 'in_stock':
-            products = products.filter(inventory__gt=0)
-        elif stock_param == 'out_of_stock':
-            products = products.filter(inventory=0)
-        elif stock_param == 'low_stock':
-            products = products.filter(inventory__gt=0, inventory__lte=_LOW_STOCK_THRESHOLD)
+        # What each row lacks to be published, without a query per row.
+        products = product_publication.with_gallery_flag(products)
 
         page_qs, meta = _paginate(products, request)
         return Response({**meta, 'results': AdminProductSerializer(page_qs, many=True).data})
@@ -701,6 +764,128 @@ class AdminProductDetailView(APIView):
             )
 
         return Response(AdminProductDetailSerializer(product).data)
+
+
+class AdminProductBulkVisibilityView(APIView):
+    """
+    POST /api/admin/products/bulk-visibility/ — publish or hide many products.
+
+    Body, one of:
+      {"action": "publish"|"hide", "ids": [1, 2, 3]}
+      {"action": "publish"|"hide", "filter": {...}, "expected_count": N}
+
+    The second form is «all that match»: the filter is the product list's own
+    (`filter_admin_products`), evaluated again HERE, and `expected_count` is
+    the total the operator was shown. If the two differ nothing is done and the
+    answer is 409 `selection_changed` with the current count — confirming «312
+    products» must not change 340.
+
+    Answers `{action, changed, unchanged, refused, total}`. A product that is
+    not ready to be published (`product_publication`) is left as it was and
+    comes back in `refused` with its problem codes; the ones that are ready ARE
+    published. That partial result is explicit, not a failure.
+
+    The company is the caller's (`_company_context`); nothing in the body names
+    one. An id of another company refuses the whole batch exactly like an id
+    that does not exist.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminProductWriteThrottle]
+    http_method_names = ['post', 'options']
+
+    def post(self, request):
+        company, error = _company_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+        if error:
+            return error
+
+        data = request.data if isinstance(request.data, dict) else {}
+        action = data.get('action')
+        if action not in ('publish', 'hide'):
+            return _bulk_error('Indica la acción: «publish» o «hide».')
+        has_ids, has_filter = 'ids' in data, 'filter' in data
+        if has_ids == has_filter:
+            return _bulk_error('Indica los productos («ids») o el filtro («filter»), no ambos.')
+
+        ids = filters = expected = select = None
+        if has_ids:
+            ids = data['ids']
+            if (
+                not isinstance(ids, list) or not ids
+                or any(isinstance(i, bool) or not isinstance(i, int) or i <= 0 for i in ids)
+            ):
+                return _bulk_error('«ids» debe ser una lista de identificadores de producto.')
+        else:
+            filters, expected = data['filter'], data.get('expected_count')
+            if not isinstance(filters, dict) or set(filters) - set(PRODUCT_FILTER_KEYS):
+                return _bulk_error('El filtro no es válido.')
+            if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0:
+                return _bulk_error('Indica cuántos productos se seleccionaron («expected_count»).')
+
+            def select(queryset):
+                return filter_admin_products(queryset, filters, strict=True)
+
+        try:
+            with transaction.atomic():
+                result = product_publication.set_visibility(
+                    company=company, publish=action == 'publish',
+                    ids=ids, select=select, expected_count=expected,
+                )
+                changed_ids = result.pop('changed_ids')
+                if changed_ids:
+                    # ONE line for the batch, in the same transaction as the
+                    # change. Counts and ids: no name, no price, nobody's data.
+                    AdminAuditLog.log(
+                        actor=request.user,
+                        action='products_visibility_changed',
+                        target_type='product',
+                        metadata={
+                            'action': action,
+                            'changed': result['changed'],
+                            'unchanged': result['unchanged'],
+                            'refused': len(result['refused']),
+                            'total': result['total'],
+                            'changed_ids': changed_ids[:product_publication.AUDIT_IDS_LIMIT],
+                            'changed_ids_truncated': len(changed_ids) > product_publication.AUDIT_IDS_LIMIT,
+                            'filter': filters,
+                        },
+                        request=request,
+                        company=company,
+                    )
+        except InvalidProductFilter:
+            return _bulk_error('El filtro no es válido.')
+        except product_publication.UnknownProducts:
+            return Response(
+                {'detail': 'Alguno de los productos no existe.'}, status=status.HTTP_404_NOT_FOUND,
+            )
+        except product_publication.TooManyProducts as exc:
+            return Response(
+                {
+                    'code': 'too_many', 'count': exc.count, 'limit': exc.limit,
+                    'detail': (
+                        f'Son {exc.count} productos y se cambian hasta {exc.limit} a la vez. '
+                        'Acota la selección con los filtros.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except product_publication.SelectionChanged as exc:
+            return Response(
+                {
+                    'code': 'selection_changed', 'current_count': exc.current_count,
+                    'detail': (
+                        f'La selección cambió: ahora coinciden {exc.current_count} productos. '
+                        'No se cambió nada. Revisa la lista y vuelve a confirmar.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response({'action': action, **result})
+
+
+def _bulk_error(detail):
+    return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AdminProductInventoryAdjustView(APIView):

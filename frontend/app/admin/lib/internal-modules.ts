@@ -71,6 +71,12 @@ export type InternalModule = {
   href?: string;
   /** Target model: capabilities from the platform catalogue. */
   requiredCapabilities?: string[];
+  /**
+   * ANY of these opens the module (INVENTORY-UNIFIED-01). For a screen that
+   * gathers several things, each with its own capability: whoever may do one of
+   * them has a reason to be there, and the screen shows only that part.
+   */
+  anyCapabilities?: string[];
   /** Transitional: what the endpoint actually checks today. */
   legacyRoles?: string[];
   /**
@@ -263,6 +269,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["inventory.view"],
     status: "implemented",
     quickAction: true,
+  },
+  {
+    // INVENTORY-UNIFIED-01: un centro para importar, exportar, imágenes e
+    // historial. Las tres cargas conservan su entrada y su ruta; esto las reúne,
+    // no las reemplaza.
+    id: "inventory.bulk",
+    group: "inventory",
+    label: "Gestión masiva de inventario",
+    description: "Importar, exportar, imágenes en lote e historial de cargas, en un solo lugar.",
+    href: "/admin/inventory/bulk",
+    anyCapabilities: ["products.manage", "inventory.adjust", "products.view", "inventory.view"],
+    status: "implemented",
   },
   {
     id: "inventory.import",
@@ -515,7 +533,16 @@ export function canAccessModule(
   if (module.platformAdminOnly) return false;
 
   const required = module.requiredCapabilities ?? [];
+  const anyOf = module.anyCapabilities ?? [];
   const legacyRoles = module.legacyRoles ?? [];
+
+  if (anyOf.length) {
+    // Capabilities belong to a company: without one resolved there is none to
+    // ask about, and no legacy role stands in for «any of these».
+    return ctx.hasCompanyContext
+      && required.every((c) => ctx.capabilities.includes(c))
+      && anyOf.some((c) => ctx.capabilities.includes(c));
+  }
 
   if (ctx.hasCompanyContext && required.length) {
     return required.every((c) => ctx.capabilities.includes(c));

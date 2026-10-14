@@ -33,6 +33,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import (
+    image_import_services,
+    import_assistant,
     import_exports,
     import_formats,
     import_media,
@@ -109,6 +111,8 @@ def _import_context(request):
     granted = set()
     if has_capability(request.user, company, CAP_PRODUCTS):
         granted.add(BulkImportJob.PRODUCTS)
+        # Pictures of products are the catalogue's: the same authority.
+        granted.add(BulkImportJob.PRODUCT_IMAGES)
     if has_capability(request.user, company, CAP_STOCK):
         granted.add(BulkImportJob.STOCK)
         # Registering devices is the same authority as moving stock.
@@ -119,6 +123,59 @@ def _import_context(request):
             status=status.HTTP_403_FORBIDDEN,
         )
     return company, granted, None
+
+
+#: `import_type` of an inspection that only asks where a file goes.
+ASSISTANT = 'auto'
+
+#: What somebody must be able to run for a suggestion to name it.
+_SUGGESTION_NEEDS = {
+    import_assistant.PRODUCTS: BulkImportJob.PRODUCTS,
+    import_assistant.IMAGES: BulkImportJob.PRODUCTS,
+    import_assistant.STOCK: BulkImportJob.STOCK,
+    import_assistant.UNITS: BulkImportJob.UNITS,
+}
+
+
+def _granted_kinds(user, company) -> set:
+    """The loads `user` may run in `company`. The same reading as `_import_context`."""
+    granted = set()
+    if has_capability(user, company, CAP_PRODUCTS):
+        granted.add(BulkImportJob.PRODUCTS)
+    if has_capability(user, company, CAP_STOCK):
+        granted.update((BulkImportJob.STOCK, BulkImportJob.UNITS))
+    return granted
+
+
+def _suggestion(workbook, granted) -> dict:
+    """
+    Where this workbook goes, for a caller who may run `granted`.
+
+    Reads the first two rows of each sheet as candidate headers, and nothing
+    below them. A load the caller may not run is not named: they are told they
+    lack the permission, and the same thing whichever load it was.
+    """
+    sheets = []
+    for name in workbook.sheetnames:
+        candidates = []
+        for header_row in (1, 2):
+            headers, _rows, _more = xlsx_reader.read_rows(
+                workbook, name, header_row=header_row, limit=1, mode=xlsx_reader.SAMPLE,
+            )
+            candidates.append(headers)
+        sheets.append((name, candidates))
+    found = import_assistant.classify(sheets)
+
+    needed = _SUGGESTION_NEEDS.get(found['type'])
+    if needed is not None and needed not in granted:
+        return {
+            'suggested_import_type': import_assistant.FORBIDDEN, 'suggestion_reason': 'no_permission',
+            'suggestion_detail': import_assistant.NO_PERMISSION, 'suggestion_sheet': '',
+        }
+    return {
+        'suggested_import_type': found['type'], 'suggestion_reason': found['reason'],
+        'suggestion_detail': found['detail'], 'suggestion_sheet': found['sheet'],
+    }
 
 
 def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
@@ -189,8 +246,14 @@ class AdminImportInspectView(APIView):
 
     def post(self, request):
         import_type = request.data.get('import_type') or BulkImportJob.PRODUCTS
-        capability = CAP_PRODUCTS if import_type == BulkImportJob.PRODUCTS else CAP_STOCK
-        company, error = _context(request, capability)
+        if import_type == ASSISTANT:
+            # «¿Qué archivo tengo?»: whoever may run ANY load may ask. What they
+            # are told is narrowed below to the loads they may run.
+            company, granted, error = _import_context(request)
+        else:
+            capability = CAP_PRODUCTS if import_type == BulkImportJob.PRODUCTS else CAP_STOCK
+            company, error = _context(request, capability)
+            granted = None
         if error:
             return error
 
@@ -202,6 +265,20 @@ class AdminImportInspectView(APIView):
             workbook, notes = xlsx_reader.load_workbook(data)
         except xlsx_reader.XlsxError as exc:
             return _error(exc)
+
+        if granted is None:
+            granted = _granted_kinds(request.user, company)
+        suggestion = _suggestion(workbook, granted)
+        if import_type == ASSISTANT:
+            # The suggestion and the names of the sheets. No row, no header, no
+            # job: this answers «where does it go», and nothing is kept.
+            return Response({
+                'import_type': ASSISTANT, **suggestion,
+                'sheet_names': (
+                    [] if suggestion['suggested_import_type'] == import_assistant.FORBIDDEN
+                    else [str(name) for name in workbook.sheetnames]
+                ),
+            })
 
         sheets = []
         for name in workbook.sheetnames:
@@ -253,6 +330,7 @@ class AdminImportInspectView(APIView):
 
         return Response({
             'import_type': import_type,
+            **suggestion,
             'reader_notes': notes,
             'sheets': sheets,
             'fields': (
@@ -280,10 +358,52 @@ class AdminProductImportPreviewView(APIView):
     throttle_classes = [AdminImportThrottle]
     parser_classes = [MultiPartParser, FormParser]
 
+    KIND_PRODUCTS, KIND_IMAGES = 'products', 'images'
+
+    def _preview_images(self, request, company):
+        """
+        Stage a load of pictures only. Places nothing.
+
+        The company is the caller's; each picture is matched to a product
+        INSIDE it. The envelope of the bundle is checked before anything else
+        is read, exactly as for a product load.
+        """
+        # What is not a mode is refused by the service, with everything else it checks.
+        mode = request.data.get('mode') or image_import_services.MODE_ADD
+        use_main = str(request.data.get('use_main') or '').strip().lower() in ('1', 'true', 'on', 'si', 'sí')
+        try:
+            images = import_media.collect(
+                request.FILES.getlist('images'), request.FILES.get('images_zip'),
+            )
+        except import_media.ImportMediaError as exc:
+            return _error(
+                exc, status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if exc.too_large
+                else status.HTTP_400_BAD_REQUEST,
+            )
+        upload = request.FILES.get('file')
+        try:
+            job = image_import_services.preview_images(
+                company=company, actor=request.user, images=images, upload=upload,
+                filename=upload.name if upload is not None else '', mode=mode, use_main=use_main,
+            )
+        except (xlsx_reader.XlsxError, image_import_services.ImageImportError,
+                import_media.ImportMediaError) as exc:
+            return _error(exc)
+        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+
     def post(self, request):
         company, error = _context(request, CAP_PRODUCTS)
         if error:
             return error
+        # INVENTORY-UNIFIED-01 — `kind=images`: pictures for products that
+        # already exist, with no product workbook. It comes through THIS
+        # address because this is the one route sized to carry a load of
+        # pictures (`request_limits`, tier `product_import`).
+        kind = request.data.get('kind') or self.KIND_PRODUCTS
+        if kind == self.KIND_IMAGES:
+            return self._preview_images(request, company)
+        if kind != self.KIND_PRODUCTS:
+            return _error('Tipo de carga no válido.')
         upload = request.FILES.get('file')
         if upload is None:
             return _error('Adjunta un archivo .xlsx.')
@@ -354,6 +474,49 @@ class AdminProductImportApplyView(APIView):
                 request=request, company=company,
             )
         return Response(_job_payload(job))
+
+
+class AdminProductImagesImportApplyView(APIView):
+    """
+    POST /api/admin/products/images/import/<id>/apply/ — place the staged pictures.
+
+    JSON only: no file travels here. `{"confirm": "REEMPLAZAR"}` is required
+    for a job staged in `replace` mode, and for nothing else.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    http_method_names = ['post', 'options']
+
+    def post(self, request, pk):
+        company, error = _context(request, CAP_PRODUCTS)
+        if error:
+            return error
+        job = BulkImportJob.objects.filter(
+            company=company, pk=pk, import_type=BulkImportJob.PRODUCT_IMAGES,
+        ).first()
+        if job is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            job, _changed = image_import_services.apply_images(
+                job=job, actor=request.user, confirmation=data.get('confirm'), request=request,
+            )
+        except image_import_services.ImageImportError as exc:
+            return _error(exc)
+        return Response(_job_payload(job))
+
+
+class AdminProductImagesImportRulesView(APIView):
+    """GET — how a picture file is named and what a load admits, for the screen."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        _company, error = _context(request, CAP_PRODUCTS)
+        if error:
+            return error
+        return Response({**image_import_services.naming_rule(), 'image_rules': import_exports.image_rules()})
 
 
 # =============================================================================

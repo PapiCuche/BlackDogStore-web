@@ -185,12 +185,51 @@ class CouponSerializer(serializers.ModelSerializer):
         fields = ['code', 'discount_percent']
 
 
+def closed_product_payload(product) -> dict:
+    """
+    What the PUBLIC may still read of a product that is no longer sold online.
+
+    Enough to recognise it — its id, its name, its picture — and nothing that
+    says what it is today: no price, no stock, no description, no address, no
+    gallery. ONE shape, for a line of a cart and for a line of an order.
+
+    Built by hand, not by trimming the full payload: a field added to the
+    public product tomorrow must not reach these lines by default.
+    """
+    return {'id': product.pk, 'name': product.name, 'image_url': product.image_url}
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
+    """
+    One line of the BUYER'S OWN order, on the web.
+
+    The line is theirs: what they bought, how many, at what price. The product
+    nested in it is the LIVE one, and for one that has left the web since
+    (hidden or deactivated) the live product is not on sale to anybody: it is
+    closed to `closed_product_payload`, as the cart closes it. A product that
+    is still sold keeps its whole payload.
+    """
+
     product = ProductSerializer(read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ['id', 'product', 'quantity', 'price']
+
+    def to_representation(self, instance):
+        if instance.product.is_sold_online:
+            return super().to_representation(instance)
+        # Closed BEFORE the product is serialised, not after: the whole public
+        # payload (gallery, rating, stock) is not built just to be thrown away.
+        # Same keys, same order, and the line's own fields rendered by their
+        # own serializer fields.
+        fields = self.fields
+        return {
+            'id': instance.pk,
+            'product': closed_product_payload(instance.product),
+            'quantity': fields['quantity'].to_representation(instance.quantity),
+            'price': fields['price'].to_representation(instance.price),
+        }
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -225,12 +264,43 @@ class OrderSerializer(serializers.ModelSerializer):
 
 
 class CartItemSerializer(serializers.ModelSerializer):
+    """
+    One line of a cart, as the PUBLIC reads it.
+
+    A LINE OUTLIVES ITS PRODUCT'S PLACE ON THE WEB (INVENTORY-UNIFIED-01). A
+    product can be hidden or deactivated after somebody put it in a cart, and
+    the cart still holds the row. Every other public surface stops showing the
+    product at that moment (`tenancy.company_storefront_products`); the cart
+    kept serialising it whole — price, stock, description — as if it were on
+    sale.
+
+    Now such a line carries `available: false` and, of the product, only what
+    lets the buyer recognise it and take it out: its id, its name and its
+    picture. No price, no stock, no description, no address. A line whose
+    product is on sale is unchanged, plus `available: true`.
+    """
+
     product = ProductSerializer(read_only=True)
 
     class Meta:
         model = CartItem
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
+
+    def to_representation(self, instance):
+        product = instance.product
+        if product.is_sold_online:
+            data = super().to_representation(instance)
+            data['available'] = True
+            return data
+        return {
+            'id': instance.pk,
+            'session_key': instance.session_key,
+            'product': closed_product_payload(product),
+            'quantity': instance.quantity,
+            'added_at': self.fields['added_at'].to_representation(instance.added_at),
+            'available': False,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +436,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
     """Read serializer: used for list and detail responses from admin endpoints."""
     category_id = serializers.IntegerField(source='category.id', read_only=True, default=None, allow_null=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='', allow_null=True)
+    publication_problems = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -374,11 +445,24 @@ class AdminProductSerializer(serializers.ModelSerializer):
             'image_url', 'category_id', 'category_name', 'is_active',
             # PRODUCT-DESTINATION-01: offered on the public shop, or internal stock only.
             'is_published_online',
+            # INVENTORY-UNIFIED-01: what it lacks to be published in bulk (codes).
+            'publication_problems',
             # Read-only here. How a product is counted changes only through
             # `stock_unit_services.set_serialized`, which checks the shelf.
             'is_serialized', 'requires_imei',
             'created_at', 'updated_at',
         ]
+
+    def get_publication_problems(self, obj):
+        # The list annotates `has_gallery`; one product in hand asks once. The
+        # company's rule about pictures is asked once per company and response,
+        # not once per row.
+        from .product_publication import publication_problems, requires_image
+
+        asked = self.root.__dict__.setdefault('_publication_requires_image', {})
+        if obj.company_id not in asked:
+            asked[obj.company_id] = requires_image(obj.company_id)
+        return publication_problems(obj, require_image=asked[obj.company_id])
 
 
 class AdminProductDetailSerializer(AdminProductSerializer):
@@ -1312,6 +1396,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
             # them also takes `settings.manage` (see the view).
             'risk_review_amount', 'hold_orders_pending_review',
+            # INVENTORY-UNIFIED-01 — whether publishing in bulk asks for a
+            # picture. Off as created; `company.manage`, like the rest.
+            'publication_requires_image',
             'updated_at',
         ]
         read_only_fields = [

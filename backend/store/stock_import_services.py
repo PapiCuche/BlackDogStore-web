@@ -37,7 +37,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from . import import_formats, inventory_services, xlsx_reader
+from . import import_exports, import_formats, inventory_services, xlsx_reader
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
     Branch,
@@ -145,6 +145,10 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     sha256 = _sha256(data)
     workbook, reader_notes = xlsx_reader.load_workbook(data)
     sheet_name = sheet_name or workbook.sheetnames[0]
+    refusal = import_exports.report_sheet_refusal(sheet_name)
+    if refusal:
+        # INVENTORY-UNIFIED-01: a report is read, not loaded. Before anything is staged.
+        raise StockImportError(refusal)
 
     probe, _rows, _t = xlsx_reader.read_rows(
         workbook, sheet_name, header_row=header_row or 1,

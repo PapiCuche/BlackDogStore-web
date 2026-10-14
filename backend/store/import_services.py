@@ -30,7 +30,8 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from . import (
-    import_exports, import_formats, import_media, product_media, storefront_media, xlsx_reader,
+    import_exports, import_formats, import_media, product_media, product_publication, storefront_media,
+    xlsx_reader,
 )
 from .models import (
     BulkImportJob,
@@ -256,9 +257,12 @@ class CatalogueIndex:
 
         self.by_name = {}
         self.ambiguous_names = set()
+        # Every product of THIS company: what an «Identificador» may name.
+        self.product_ids: set[int] = set()
         for product_id, name in Product.objects.filter(
             company=company,
         ).values_list('pk', 'name'):
+            self.product_ids.add(product_id)
             key = ' '.join(str(name).split()).lower()
             if key in self.by_name:
                 # Two products with the same name cannot be told apart by name.
@@ -278,11 +282,35 @@ class CatalogueIndex:
     def is_inactive(self, code: str) -> bool:
         return normalize_barcode(code) in self.inactive_codes
 
-    def match(self, *, barcode='', code='', name=''):
+    def identified(self, identifier: str):
+        """
+        The product of THIS company an «Identificador» names, or None.
+
+        Another company's identifier, one whose product is not this company's
+        and one that is nobody's are the same None: the caller says one thing
+        for all three, and never whether the product exists somewhere else.
+        """
+        parsed = import_formats.parse_product_identifier(identifier)
+        if parsed is None or parsed[0] != self.company.pk or parsed[1] not in self.product_ids:
+            return None
+        return parsed[1]
+
+    def match(self, *, barcode='', code='', name='', identifier=''):
         """
         Resolve a row to a product, or explain the ambiguity.
 
         Returns `(product_id_or_None, error_or_None, matched_by, warnings)`.
+
+        IDENTITY FIRST (owner's decision, 2026-10-13). An «Identificador» that
+        names a product of this company DECIDES: the name of the row is then
+        just a value to write, so a renamed product is updated, never created
+        again. One that names nothing here is ignored, with a warning, and the
+        row falls back to its codes. When it and a code point at two different
+        products the row is an error: nothing is guessed.
+
+        WITHOUT IDENTIFIER AND WITHOUT A CODE THAT IS HELD, THE NAME — and only
+        a name ONE product of the company carries. Two products with that name:
+        an error that asks for a code.
 
         §30 — when two identifiers on the SAME row point at DIFFERENT products,
         that is an error and not a preference. Choosing one would either update
@@ -291,6 +319,14 @@ class CatalogueIndex:
         """
         hits = {}
         warnings: list[str] = []
+        named = None
+        if identifier:
+            named = self.identified(identifier)
+            if named is None:
+                warnings.append(
+                    f'El identificador «{str(identifier).strip()}» no es de un producto de esta empresa: '
+                    f'se ignora y la fila se identifica por sus códigos.'
+                )
         for label, value in (('barcode', barcode), ('code', code)):
             if not value:
                 continue
@@ -305,6 +341,13 @@ class CatalogueIndex:
                     )
 
         distinct = set(hits.values())
+        if named is not None:
+            if distinct - {named}:
+                return None, (
+                    'El identificador y los códigos de esta fila apuntan a productos distintos. '
+                    'Corrige uno de los dos: no se elige por ti.'
+                ), '', warnings
+            return named, None, 'identifier', warnings
         if len(distinct) > 1:
             return None, (
                 'Los identificadores de esta fila apuntan a productos distintos.'
@@ -434,6 +477,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     workbook, reader_notes = xlsx_reader.load_workbook(data)
 
     sheet_name = sheet_name or workbook.sheetnames[0]
+    refusal = import_exports.report_sheet_refusal(sheet_name)
+    if refusal:
+        # INVENTORY-UNIFIED-01: a report is read, not loaded. Before anything is staged.
+        raise ImportError_(refusal)
     if import_exports.is_help_sheet(sheet_name):
         # The «Instrucciones» and «Ejemplo» of the previous template. Refused before anything
         # is staged: an example must not become catalogue because somebody
@@ -513,11 +560,22 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         Product.objects.filter(company=company, category__isnull=False).values_list('pk', flat=True)
     ) if default_category is not None else set()
     galleries = _GalleryIndex(company)
+    # INVENTORY-UNIFIED-01 — where each existing product stands, read once, to
+    # say BEFORE apply which rows move a product onto the web or off it.
+    standing = {
+        state['pk']: state for state in Product.objects.filter(company=company).values(
+            'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
+        )
+    }
+    # ONE rule for the bulk action and for this load (`product_publication`).
+    require_image = product_publication.requires_image(company)
+    to_web = to_internal = publication_refused = 0
     already_present = 0
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_barcodes: dict[str, int] = {}
     seen_names: dict[str, int] = {}
+    seen_identified: dict[int, int] = {}
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -599,12 +657,19 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     f'activa «crear categorías que falten».'
                 )
 
+        identifier = fields.get('identifier', '').strip()
         product_id, match_error, matched_by, match_warnings = index.match(
-            barcode=barcode, code=code, name=name,
+            barcode=barcode, code=code, name=name, identifier=identifier,
         )
         warnings.extend(match_warnings)
         if match_error:
             errors.append(match_error)
+        if matched_by == 'identifier':
+            previous = seen_identified.get(product_id)
+            if previous:
+                errors.append(f'El identificador «{identifier}» ya aparece en la fila {previous}.')
+            else:
+                seen_identified[product_id] = row_number
 
         # The category chosen on the screen, for a row that names none. Marked
         # as such: on a product that already has a category it changes nothing.
@@ -615,8 +680,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             category_id = default_category.pk
             category_is_default = True
 
-        # PRODUCT-DESTINATION-01. An empty cell decides nothing: what is new is
-        # published, what exists stays where it is.
+        # PRODUCT-DESTINATION-01. An empty cell decides nothing: what exists
+        # stays where it is. And it publishes nothing (owner's decision,
+        # 2026-10-13): a NEW product with no destination is born «solo stock
+        # interno» — going onto the web is always something a row SAYS.
         destination = import_formats.parse_destination(fields.get('destination', ''))
         if destination is None:
             labels = import_formats.DESTINATION_LABELS
@@ -627,7 +694,25 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             )
             destination = ''
         elif not destination and not product_id:
-            destination = import_formats.DESTINATION_ONLINE
+            destination = import_formats.DESTINATION_INTERNAL
+
+        # «Estado», the column of a file to reload. It decides how a NEW product
+        # is born and nothing else: see below, where the product is known.
+        wants_active = import_formats.parse_state(fields.get('is_active', ''))
+        if wants_active is None:
+            # Unreadable. On a NEW product it would decide how it is born: an
+            # error. On one that exists it is ignored anyway — a load never
+            # activates or deactivates — so it is said, and the row applies.
+            labels = import_formats.STATE_LABELS
+            said = f'«{fields.get("is_active", "").strip()}» no es un estado'
+            if product_id:
+                warnings.append(f'{said}: se ignora, porque esta carga no activa ni desactiva productos.')
+            else:
+                errors.append(
+                    f'{said}. Escribe «{labels[True]}» o «{labels[False]}» (o Sí / No), '
+                    f'o deja la celda vacía.'
+                )
+            wants_active = ''
 
         # §18 — a code this row would WRITE that another product already holds.
         #
@@ -735,6 +820,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'images': row_images,
             'slug': fields.get('slug', ''),
             'product_id': product_id, 'matched_by': matched_by,
+            # Kept so that apply resolves the row the same way the preview did.
+            'identifier': identifier,
         }
 
         if errors:
@@ -754,6 +841,67 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 action = BulkImportRow.ERROR
             else:
                 action = BulkImportRow.CREATE
+
+        state = standing.get(product_id)
+        # A LOAD NEVER ACTIVATES OR DEACTIVATES A PRODUCT THAT EXISTS (owner's
+        # decision, 2026-10-13) — in either direction. A file downloaded last
+        # month must not switch back on what was retired since, nor retire what
+        # was switched on. When the file and the product disagree, the row says so.
+        born_active = wants_active is not False
+        if action == BulkImportRow.UPDATE and state is not None and wants_active != '' \
+                and wants_active != state['is_active']:
+            labels = import_formats.STATE_LABELS
+            warnings.append(
+                f'El archivo dice «{labels[wants_active]}» y el producto está '
+                f'{"activo" if state["is_active"] else "inactivo"}: esta carga no activa ni desactiva '
+                f'productos; se queda como está.'
+            )
+        # How a NEW product is born. None on a product that exists: not touched.
+        normalized['is_active'] = born_active if action == BulkImportRow.CREATE else None
+
+        # A ROW THAT ASKS FOR THE WEB FOR WHAT IS NOT ELIGIBLE (owner's decision,
+        # 2026-10-13). Not an error: everything else the row says is applied,
+        # and the product stays — or is born — «solo stock interno», with the
+        # reasons on the row. Judged on the state the product WILL be left in,
+        # counting what this same row brings (a price, a category, pictures).
+        # A product that is already on the web is not taken off by this rule.
+        refused = []
+        asks_to_publish = (
+            destination == import_formats.DESTINATION_ONLINE
+            and action in (BulkImportRow.CREATE, BulkImportRow.UPDATE)
+            and not (state is not None and state['is_published_online'])
+        )
+        if asks_to_publish:
+            refused = product_publication.problems_of(
+                is_active=state['is_active'] if state is not None else born_active,
+                price=price if price is not None else (state['price'] if state is not None else None),
+                has_image=bool(
+                    (state is not None and state['image_url']) or gallery['count'] or row_images or image_url
+                ),
+                has_category=bool(
+                    category_id or (state is not None and state['category_id'])
+                    or (category_name and options['create_missing_categories'])
+                ),
+                require_image=require_image,
+            )
+        if refused:
+            publication_refused += 1
+            warnings.append(
+                'No se publica en e-commerce: '
+                + ' '.join(product_publication.PROBLEM_LABELS[code] for code in refused)
+                + (' Sigue' if state is not None else ' Se crea')
+                + ' como «Solo stock interno»; el resto de la fila se aplica.'
+            )
+            # What the row shows is what will happen.
+            destination = '' if state is not None else import_formats.DESTINATION_INTERNAL
+        normalized['destination'] = destination
+        normalized['publication_refused'] = refused
+
+        if action == BulkImportRow.UPDATE and state is not None:
+            if destination == import_formats.DESTINATION_INTERNAL and state['is_published_online']:
+                to_internal += 1
+            elif destination == import_formats.DESTINATION_ONLINE and not state['is_published_online']:
+                to_web += 1
 
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
         staged.append(BulkImportRow(
@@ -787,6 +935,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
         'media': media_summary,
+        # How many EXISTING products this file moves onto the web or off it.
+        # A new product is not a change of destination: it has none yet.
+        'destination_changes': {'to_web': to_web, 'to_internal': to_internal},
+        # Rows that asked for the web for a product that is not eligible: the
+        # product is loaded, and not published.
+        'publication_refused': publication_refused,
     }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
@@ -824,6 +978,10 @@ def apply_products(*, job, actor):
     taken_slugs: set[str] = set()
     created = updated = images_added = 0
     moved = []          # (product id, published): existing products this job sent to the web or took off it
+    require_image = product_publication.requires_image(company)
+    # Publications this job asked for and did not make: the ones the preview
+    # already refused, plus what stopped being eligible since.
+    not_published = 0
 
     rows = list(
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
@@ -850,7 +1008,7 @@ def apply_products(*, job, actor):
         data = row.normalized_data or {}
         product_id, match_error, _by, _warn = index.match(
             barcode=data.get('barcode', ''), code=data.get('code', ''),
-            name=data.get('name', ''),
+            name=data.get('name', ''), identifier=data.get('identifier', ''),
         )
         if match_error:
             raise ImportError_(f'Fila {row.row_number}: {match_error}')
@@ -860,6 +1018,17 @@ def apply_products(*, job, actor):
                 f'{row.row_number}, «{data.get("name", "")}»). Vuelve a '
                 f'previsualizar antes de aplicar.'
             )
+
+    # EVERY PRODUCT THIS JOB EDITS, LOCKED NOW, LOWEST ID FIRST.
+    #
+    # The loop below used to take each product as its row came up — in FILE
+    # order. The bulk visibility change and the picture load take theirs in id
+    # order, so a file naming the higher id first and one of those, over the
+    # same two products, waited on each other until the database killed one (a
+    # 500). One order for everybody: whoever arrives second waits, and proceeds.
+    # The per-row `select_for_update` further down then finds its row already held.
+    edited = sorted({(row.normalized_data or {}).get('product_id') for row in rows} - {None})
+    list(Product.objects.select_for_update().filter(company=company, pk__in=edited).order_by('pk').only('pk'))
 
     for row in rows:
         data = row.normalized_data or {}
@@ -921,7 +1090,16 @@ def apply_products(*, job, actor):
             wanted = data.get('destination', '')
             if wanted in (import_formats.DESTINATION_ONLINE, import_formats.DESTINATION_INTERNAL):
                 publish = wanted == import_formats.DESTINATION_ONLINE
-                if product.is_published_online != publish:
+                # ASKED AGAIN, WITH THE PRODUCT IN HAND AND LOCKED. The preview
+                # is a forecast: a product deactivated since is not published
+                # because a row approved earlier said so.
+                if publish and not product.is_published_online and product_publication.problems_of(
+                    is_active=product.is_active, price=product.price,
+                    has_image=bool(product.image_url or data.get('images') or product.images.exists()),
+                    has_category=product.category_id is not None, require_image=require_image,
+                ):
+                    not_published += 1
+                elif product.is_published_online != publish:
                     product.is_published_online = publish
                     changes.append('is_published_online')
                     moved.append((product.pk, publish))
@@ -935,6 +1113,18 @@ def apply_products(*, job, actor):
             counted = bool(changes)
         else:
             counted = True
+            # Only what the approved row says. A row with no key (a job staged
+            # before the column existed) asked for nothing: internal.
+            publish = data.get('destination', '') == import_formats.DESTINATION_ONLINE
+            # «Estado» of the file: only here, where the product is born.
+            born_active = data.get('is_active') is not False
+            if publish and product_publication.problems_of(
+                is_active=born_active, price=price,
+                has_image=bool(data.get('image_url') or data.get('images')),
+                has_category=category_id is not None, require_image=require_image,
+            ):
+                publish = False
+                not_published += 1
             product = Product(
                 company=company, name=name,
                 slug=unique_slug(company, data.get('slug') or name, taken=taken_slugs),
@@ -942,7 +1132,8 @@ def apply_products(*, job, actor):
                 price=price if price is not None else Decimal('0.00'),
                 image_url=data.get('image_url', ''),
                 category_id=category_id,
-                is_published_online=data.get('destination', '') != import_formats.DESTINATION_INTERNAL,
+                is_published_online=publish,
+                is_active=born_active,
             )
             product.full_clean()
             product.save()
@@ -964,6 +1155,9 @@ def apply_products(*, job, actor):
                 is_primary=not product.barcodes.filter(is_primary=True).exists(),
             )
             index.by_barcode[key] = product.pk
+
+        if data.get('publication_refused'):
+            not_published += 1
 
         placed = _place_row_images(row, product, data.get('images') or [], actor)
         images_added += placed
@@ -987,6 +1181,7 @@ def apply_products(*, job, actor):
     job.summary = {**(job.summary or {}), 'applied': {
         'created': created, 'updated': updated, 'images_added': images_added,
         'destination_changed': len(moved),
+        'publication_refused': not_published,
     }}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     return job, True

@@ -416,14 +416,27 @@ class Stager:
 
     def discard(self) -> None:
         """El trabajo no se podrá aplicar: lo guardado sobra desde ya."""
-        if self.staged:
+        self.keep_only(())
+
+    def keep_only(self, addresses) -> None:
+        """
+        De lo guardado, sólo `addresses` llegará a colocarse: lo demás sobra ya.
+
+        Una vista previa guarda cada imagen para saber qué es (su huella). La
+        que resulta estar ya en la galería de su producto no se va a colocar:
+        dejarla en espera sería una copia sin dueño hasta la limpieza diaria.
+        """
+        wanted = set(addresses)
+        spare = {digest: image for digest, image in self.staged.items() if image.url not in wanted}
+        if spare:
             storefront_media.release(
-                [image.url for image in self.staged.values()], company=self.company,
+                [image.url for image in spare.values()], company=self.company,
                 actor=self.actor, reason='import_not_applicable',
             )
-        self.staged = {}
+        gone = {image.url for image in spare.values()}
+        self.staged = {digest: image for digest, image in self.staged.items() if digest not in spare}
         for result in self._by_name.values():
-            if 'address' in result:
+            if result.get('address') in gone or (not wanted and 'address' in result):
                 result['address'] = None
 
     def abandon(self) -> None:

@@ -51,7 +51,11 @@ export function Header() {
       const res = await fetch(apiUrl(`/cart?session_key=${sessionKey}`));
       if (!res.ok) return;
       const data = await res.json();
-      setCartCount(Array.isArray(data) ? data.length : 0);
+      // Sólo lo que se puede comprar: una línea «ya no está disponible» sigue
+      // en el carrito hasta que se quita, pero no es un artículo de la compra.
+      setCartCount(
+        Array.isArray(data) ? data.filter((line: { available?: boolean }) => line?.available !== false).length : 0,
+      );
     } catch {}
   }
 

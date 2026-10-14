@@ -248,6 +248,12 @@ Si el proveedor sólo ofrece el puerto 465: `EMAIL_PORT=465`, `EMAIL_USE_TLS=0` 
 claro. La tienda espera al servidor de correo 10 segundos (`EMAIL_TIMEOUT`); si
 no responde, la petición sigue y el fallo queda en el registro.
 
+**Descargas del inventario.** `ADMIN_EXPORT_RATE` (opcional) es cuántas descargas del
+inventario puede pedir una persona: `6/min` si no se pone, que alcanza para bajar los
+cinco archivos seguidos. Formato número/periodo (`s`, `min`, `hour`, `day`). Un valor
+mal escrito no detiene el servidor: usa `6/min` y deja una línea en el registro de
+arranque; `python3 deploy/preflight.py` lo marca antes de publicar.
+
 **Hora del servidor.** La tienda trabaja en la hora de Lima sea cual sea la del
 servidor: los documentos y el panel la muestran bien. Las tareas programadas
 (§6) sí usan la hora del servidor. Para que «la copia de las 3:15» sea a las
@@ -684,6 +690,15 @@ $C ps
 
 Si algo sale mal: `git checkout <commit anterior>`, `$C build`, `$C up -d`. Si
 además una migración cambió datos, restaura la copia del paso 1.
+
+**INVENTORY-UNIFIED-01 (migraciones `0122` y `0123`).** `0122` sólo añade una opción al
+tipo de carga; `0123` añade `CompanySettings.publication_requires_image`, apagada y con
+valor por defecto en la base (`ALTER TABLE … ADD COLUMN … boolean DEFAULT false NOT NULL`),
+así que la versión anterior sigue guardando la configuración mientras `migrate` corre.
+Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen anterior
+(`git checkout <commit anterior>`, `$C build`, `$C up -d`): las migraciones **se dejan
+aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
+Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

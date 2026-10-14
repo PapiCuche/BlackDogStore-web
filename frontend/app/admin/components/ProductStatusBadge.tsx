@@ -29,3 +29,21 @@ export function ProductStatusBadge({ isActive, publishedOnline }: Props) {
     </span>
   );
 }
+
+/**
+ * INVENTORY-UNIFIED-01. «En la web» es otro dato que «activo», y en la lista
+ * tiene su propia columna: «Publicado» o «Solo stock interno».
+ */
+export function ProductVisibilityBadge({ publishedOnline }: { publishedOnline: boolean }) {
+  return (
+    <span
+      className={`${BADGE} ${
+        publishedOnline
+          ? "border-success-border text-success bg-success-surface"
+          : "border-bd-border text-muted bg-background"
+      }`}
+    >
+      {publishedOnline ? "Publicado" : "Solo stock interno"}
+    </span>
+  );
+}

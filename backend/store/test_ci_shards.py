@@ -115,7 +115,12 @@ class EveryTestIsInExactlyOneShardTest(WithTheSuite):
         self.assertEqual(after, {label: before[label] for label in shrunk.tests})
 
     def test_a_class_the_weights_do_not_know_is_dealt_by_its_name(self):
-        unknown = [label for label in self.suite.labels if label not in ci_shards.read_weights()['classes']]
+        # A class that flushes the database goes with the rest of its kind, whatever
+        # its name (pinned by TheClassesThatFlushTheDatabaseStayTogetherTest).
+        unknown = [
+            label for label in self.suite.labels
+            if label not in ci_shards.read_weights()['classes'] and label not in self.suite.flushing
+        ]
         self.assertIn(f'{__name__}.{type(self).__name__}', unknown)
         shards = ci_shards.assign(self.suite, 6)
         for label in unknown:

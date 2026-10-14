@@ -3,6 +3,135 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-13 — INVENTORY-UNIFIED-01: decisiones del propietario
+
+En la rama `feat/inventory-unified`; sin desplegar. Migración nueva `0123` (aditiva).
+
+**Added**
+- Configuración › «Publicación en e-commerce»: exigir imagen para publicar en bloque
+  (apagado por omisión).
+- El archivo del catálogo para volver a cargar trae las columnas «Estado» e «Identificador».
+- `ADMIN_EXPORT_RATE`: cupo configurable de descargas del inventario (6 por minuto).
+
+**Changed**
+- Un producto nuevo cargado sin «Destino» queda como «Solo stock interno».
+- Publicar en bloque —la acción de la lista y la carga de productos— pide estar activo,
+  con precio y con categoría; la imagen, sólo si la empresa lo configura. En la carga, lo
+  que no cumple se carga igual, queda interno y la fila dice por qué.
+- El archivo para volver a cargar lleva productos activos e inactivos y respeta el filtro.
+- Las celdas que empiezan por `=`, `+`, `-` o `@` se ven tal cual en los Excel descargados,
+  sin apóstrofo, y siguen sin ejecutarse.
+- Cuando se piden demasiadas descargas, el panel dice en cuántos segundos volver.
+
+**Fixed**
+- Un producto sin código renombrado ya no se crea otra vez al recargar su archivo.
+- Imágenes en lote (decisión del 2026-10-14): el código se busca sin distinguir mayúsculas, espacios
+  ni forma Unicode; si coincide con más de un producto no se asigna y se dice; lo que no tiene
+  producto se lista y el resto se aplica.
+- Una carga nunca reactiva ni desactiva un producto existente.
+
+**Security**
+- La app ya no da la dirección de un producto que dejó de venderse en «Mis pedidos».
+
+**Verified**
+- Suite completa del backend sobre `6e556c9`: 7056 pruebas, 0 fallos, 6 omitidas.
+- Jest 1341/1341, tipos y lint limpios; Playwright 97/97; `sh deploy/rehearsal.sh` `ENSAYO: OK`
+  (149) con `0122` y `0123`.
+- Tres revisiones independientes sin P0 ni P1.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
+
+En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones nuevas.
+
+**Security**
+- La descarga anterior del inventario y el `errors.csv` de las cargas ya no escriben texto que
+  una hoja de cálculo ejecute como fórmula.
+- «Mis pedidos» ya no muestra el precio de hoy, la descripción, el stock ni la galería de un
+  producto que dejó de venderse en la web.
+- La acción en bloque de productos se aplica en la empresa para la que se abrió la pantalla,
+  aunque otra pestaña cambie de empresa.
+
+**Fixed**
+- «Todo lo que coincide» ya no puede cambiar un producto que no se contó.
+- La carga de productos y la acción en bloque, a la vez sobre los mismos productos, ya no se
+  bloquean entre sí (error 500).
+- El archivo del catálogo para volver a cargar sólo lleva productos activos.
+- Una búsqueda con un carácter nulo, o una sucursal con un carácter de control en el nombre, ya
+  no dan error 500.
+- La carga de imágenes nota si cambió la imagen principal o el orden desde la vista previa, no
+  deja copias de lo que ya estaba en la galería, y su resultado enlaza a cada galería.
+- Lista de productos: una respuesta lenta no pisa a la nueva; la selección se quita al desactivar
+  una fila; no se confirma una selección vacía; tras vaciar la última página se vuelve a la anterior.
+- El pago no deja enviar un carrito con una línea que ya no está disponible y dice qué producto
+  rechazó el servidor; el contador del carrito no cuenta esas líneas.
+
+**Changed**
+- Las descargas del inventario tienen su propio límite: 6 por minuto.
+- La vista previa de la carga de productos avisa de cada producto existente que pasa a publicarse
+  sin estar listo, y dice cuántos cambian de destino antes de aplicar.
+- La tarjeta del ZIP avisa cuando los filtros hacen que no sea el inventario completo.
+- Las tarjetas del catálogo y del ZIP avisan cuando se pidió «Inactivos»: un archivo para volver
+  a cargar lleva sólo productos activos.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4)
+
+En la rama `feat/inventory-unified`; sin desplegar. Migración `0122` (sólo opciones de un campo).
+
+**Added**
+- Panel › Inventario › **Gestión masiva de inventario**: importar, exportar, imágenes en lote e
+  historial en una pantalla. Las tres cargas (productos, stock, equipos) siguen donde estaban.
+- «¿Qué archivo tengo?»: se elige un Excel y el sistema dice a qué carga corresponde y por qué, o
+  que es un reporte, o que mezcla dos cargas. No carga nada.
+- Imágenes en lote para productos que ya existen: muchos archivos o un ZIP, cada uno a su
+  producto por el nombre del archivo (`FUNDA.png`, `FUNDA_2.png`…) o con un libro «Imágenes».
+  Vista previa antes de aplicar; añadir o, con confirmación escrita, reemplazar la galería.
+- El historial de cargas muestra las cargas de imágenes y permite descargar los errores de
+  cualquier carga.
+- `docs/imagenes-y-evidencias.md`: dónde viven las imágenes, cómo se copian y se sirven, y qué
+  haría falta para pasar a un almacenamiento de objetos.
+
+**Changed**
+- `POST /api/admin/imports/inspect/` responde además `suggested_import_type` y acepta
+  `import_type=auto`.
+- `POST /api/admin/products/import/preview/` acepta `kind=images`.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2)
+
+En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones ni capacidades nuevas.
+
+**Added**
+- Publicar u ocultar varios productos a la vez desde Panel › Productos: columna «E-commerce»,
+  filtros Todos / Publicados / Internos y por tipo (por serie / por cantidad), selección por fila,
+  por página o de todos los resultados con su total exacto, confirmación con la cuenta y resultado
+  con lo que cambió, lo que ya estaba y lo que no se publicó y por qué.
+- `POST /api/admin/products/bulk-visibility/` (`products.manage`). Sólo cambia «en la web»: ni
+  activo, ni precio, ni stock, ni equipos, ni Kardex.
+- La lista de productos del panel filtra por `is_serialized` y cada fila dice qué le falta para
+  publicarse en bloque (`publication_problems`).
+- Descargas del inventario: `GET /api/admin/inventory/exports/{products,stock,units,full}/`, en
+  modo «para volver a cargar» o «reporte», con filtros de sucursal, categoría, tipo, existencia,
+  condición, visibilidad y estado. El inventario completo es un ZIP con `Productos.xlsx`,
+  `Stock.xlsx`, `Equipos.xlsx` y `LEEME.txt`.
+- Panel «Exportar» en Inventario › Carga de stock.
+
+**Changed**
+- El carrito marca `available: false` la línea de un producto que dejó de venderse en la web, la
+  muestra como «Ya no está disponible», no la suma y no ofrece seguir al pago mientras esté.
+- Las cargas masivas rechazan los reportes (hojas «Reporte de …») y leen sin el apóstrofo de
+  protección el texto que las descargas guardan delante de `=`, `+`, `-` o `@`.
+- En la lista de productos, «Solo stock interno» se muestra en la columna «E-commerce».
+
+**Fixed**
+- El archivo de stock para volver a cargar ya no incluye productos con número de serie, que la
+  carga de stock rechazaba: lo descargado vuelve a entrar sin filas con error.
+
+**Security**
+- La lectura del carrito ya no entrega precio, stock ni descripción de un producto oculto o
+  desactivado después de añadirse, y no se puede cambiar la cantidad de esa línea.
+- Las descargas nuevas protegen las celdas que una hoja de cálculo ejecutaría como fórmula,
+  entregan «Costo» sólo a quien puede ajustar inventario y no salen de las sucursales de quien
+  descarga.
+
 ## 2026-10-13 — CI-OPTIMIZATION-01: la suite del backend, en fragmentos paralelos
 
 En la rama `chore/ci-optimization`; sin push. Sólo CI, scripts de desarrollo y sus pruebas: ningún cambio

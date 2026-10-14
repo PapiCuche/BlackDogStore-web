@@ -3,6 +3,233 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — INVENTORY-UNIFIED-01: decisión del propietario sobre imágenes en lote
+
+PR #117. `41c164f`, `7099642` (prueba) y `f780088` (docs), luego `master` (#115, #116) fusionado
+en la rama. Sólo la carga de imágenes en lote: el código se compara con NFKC, sin mayúsculas y
+con los espacios normalizados, contra todos los códigos de la empresa; si coincide con dos o más
+productos no se asigna y se dice. Una fila del libro «Imágenes» sin producto (o ambigua) se
+lista como los archivos huérfanos y ya no frena el resto; un error en las imágenes de un producto
+encontrado (archivo roto, dos archivos distintos con un nombre, más del límite) sigue frenando
+la carga. Fotos opcionales sin cambio. La carga de productos sigue comparando exacto
+(deuda IMG-IMPORT-KEY-ONLY-IMAGES). Sin migración.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01: las siete decisiones del propietario
+
+Misma rama (`feat/inventory-unified`), sobre `8dd3e59`: `e2c9c84`…`4a46012`, un commit por
+decisión, más `a94c8fa` y `0dbf3b3` (pruebas que cerraron mutantes; la segunda es G01 de la
+tercera revisión) y `1f21cfe` (F1 de la tercera revisión: «Estado» lee Sí/No, 1/0,
+verdadero/falso, y un valor ilegible sólo es error al CREAR; al actualizar, aviso). **EN LA RAMA, probado por partes: sin push, sin PR, sin desplegar.** Una migración
+nueva, `0123` (aditiva); una variable opcional, `ADMIN_EXPORT_RATE`. Sin capacidades nuevas,
+sin rutas nuevas, sin tocar el Kardex ni `StockUnit`, ni el Caddyfile ni `request_limits.py`.
+
+| | Decisión | Qué hace ahora |
+|---|---|---|
+| D1 | Productos nuevos importados: «Solo stock interno» por defecto | Un producto NUEVO sin «Destino» (celda vacía o sin columna) nace interno. Un «Destino» explícito se respeta (con D2). Uno existente sin «Destino» se queda como está. La ficha y las demás altas no cambian |
+| D2 | Publicación masiva: rechazar sólo lo inelegible, con motivo por fila; imagen sólo si se configura | Regla única: activo, con precio y con categoría; imagen sólo con `CompanySettings.publication_requires_image` (casilla en Configuración, apagada). En la carga, una fila que pide la web para algo inelegible NO es error: se carga, queda interna y dice el motivo; la vista previa y el resultado cuentan los rechazos. Aplicar vuelve a preguntar con el producto bloqueado. Lo ya publicado no se despublica por esta regla |
+| D3 | Exportación reimportable: activos e inactivos; no reactivar al importar | El archivo para volver a cargar (y el ZIP) lleva activos e inactivos y respeta el filtro de estado; gana la columna «Estado» (se lee Activo/Inactivo, Sí/No, 1/0, verdadero/falso). La carga nunca cambia `is_active` de un producto existente (lo avisa si el archivo dice otra cosa); un producto nuevo «Inactivo» nace inactivo e interno |
+| D4 | Descargas: 6/min configurable, 429 claro | `ADMIN_EXPORT_RATE` (6/min), comprobado al arrancar: un valor inválido vuelve al de por omisión con una línea en el registro. El 429 dice en castellano que están limitadas y en cuántos segundos volver, con `Retry-After`; el panel lo muestra. Las cinco tarjetas seguidas caben |
+| D5 | Productos sin código: identidad estable, sin emparejar nombres ambiguos | El archivo para volver a cargar lleva «Identificador» (`<empresa>-<producto>`). Si nombra un producto de ESTA empresa decide: un renombrado se actualiza. Otro, ajeno o inexistente: se ignora con un aviso y deciden los códigos. Identificador y código en productos distintos: error. Sin identificador ni código, un nombre que llevan dos productos es error (ya lo era) |
+| D6 | App v1: lo oculto no se expone; el pedido conserva lo suyo | «Mis pedidos» de la app: de un producto que ya no se vende, nombre e imagen (lo mismo que la web) y `product_slug` vacío; cantidad y precio son los del pedido. Lo que se vende no cambia |
+| D7 | Excel sin apóstrofos visibles, sin fórmulas | Un texto que empieza por `= + - @`, tabulador o retorno se escribe como celda de texto (`quotePrefix`), sin apóstrofo. El lector ya no quita ninguno y rechaza las fórmulas por el tipo de celda. `errors.csv` conserva el apóstrofo: un CSV no tiene tipos |
+
+**Cambió, además de lo pedido.** El lector de Excel lee como texto una celda de TEXTO que
+empieza por `=` (antes la rechazaba como fórmula); una celda que ES fórmula se sigue
+rechazando. `effective_filters` desapareció y la auditoría de una descarga anota los
+filtros tal como se pidieron. En la carga, el `destination` de la vista previa es lo que
+va a pasar (un rechazo de D2 muestra «Sin cambios» o «Solo stock interno»). La columna
+«Estado» se lee por el campo de carga `is_active`, que ya existía y no se usaba. La línea
+cerrada de «Mis pedidos» en la web ya no construye el producto entero (deuda
+ORDER-LINE-CLOSED-WASTE). Dos especificaciones de Playwright (`product-destination.spec.ts`
+e `import-split.spec.ts`) se ajustaron a D1/D2 sin correrlas aquí.
+
+**Pruebas.** Cada decisión con su prueba vista en rojo antes del código. Pasadas focales
+(PostgreSQL, `blackdog_focal`) sobre `4a46012`: 656 OK (módulos nuevos, importación,
+plantilla, equipos, medios, límites, visibilidad, stock por serie, `test_preflight`,
+`test_deploy_scripts`); sobre los commits de D1–D6, las clases de importación, producto,
+pedidos, carrito, checkout y configuración de `store/tests.py`, `Ip1ParityManifestTest`,
+`test_delivery_base` y `test_serial_pick`, en verde. Mutaciones: 32 sobre el código de D1–D7; 28 detectadas en la
+primera pasada; tres supervivientes eran huecos de prueba y se cerraron (`a94c8fa`, `0dbf3b3`);
+la cuarta es equivalente (marcar como texto una cabecera: ninguna cabecera puede empezar por
+`=`, `+`, `-` o `@`).
+`makemigrations --check`: una migración nueva, `0123`.
+- Suite completa del backend en PostgreSQL sobre `6e556c9`: 7056 pruebas, 0 fallos, 6 omitidas
+  (6716 en `master` `14e658c`).
+- Jest 1341/1341 en 121 suites, `tsc --noEmit` limpio, lint 0 errores y 22 avisos, sobre
+  `4a46012` (el frontend no cambia después).
+- Playwright 97/97 sobre `6e556c9` (`product-destination` e `import-split` ya con D1/D2,
+  `storefront`, `tax-breakdown`, `krypton-smartform`), y recorrido en navegador real sin
+  errores de consola: acción en bloque con `?company=`, carrito y pago con un producto
+  ocultado, descarga del catálogo.
+- `sh deploy/rehearsal.sh` sobre `6e556c9`: `ENSAYO: OK` (149), con `0122` y `0123`.
+- Tercera revisión independiente (`8dd3e59..4a46012`): sin P0, sin P1, sin regresiones; sus
+  dos hallazgos menores (F1, G01) corregidos en `1f21cfe` y `0dbf3b3`.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
+
+Misma rama (`feat/inventory-unified`), sobre `ac6a061`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** La revisión no encontró nada P0/P1; estos son sus P2/P3. Sin migraciones nuevas (sigue
+habiendo una, `0122`), sin capacidades, sin cambios en `deploy/` ni en `request_limits.py`. Una
+variable nueva en la configuración de DRF: el cupo `admin_export`.
+
+| | Hallazgo | Estado |
+|---|---|---|
+| N1, O1 | La descarga anterior del inventario escribía nombres y códigos que empiezan por `=`, `+`, `-`, `@` como fórmulas vivas; `errors.csv` repetía lo que traía el archivo | CORREGIDO: los dos pasan por `guard_text`; la descarga anterior sigue recargándose igual |
+| N6 | «Todo lo que coincide» contaba y luego leía los ids en otra consulta, sin compararlos: `expected_count=1` cambió 2 | CORREGIDO: una sola lectura, y es ésa la que se compara |
+| N9 | Un NUL en `search` daba 500 en la lista de productos y en la acción en bloque | CORREGIDO: 400 en la acción; la lista no encuentra nada |
+| N7 | La carga de productos bloqueaba en el orden del archivo; contra la acción en bloque daba abrazo mortal (500) | CORREGIDO: bloquea todo lo que edita, de menor a mayor id, antes de escribir |
+| N2 | El archivo del catálogo «para volver a cargar» incluía productos inactivos, que al recargar podían nacer activos y publicados | CORREGIDO: sólo activos (el reporte los lleva todos) |
+| N3 | La carga de productos publica por «Destino» lo que la acción en bloque dejaría fuera, y un archivo viejo vuelve a publicar lo ocultado después | SE DICE ANTES (no se rechaza): aviso por fila con los motivos y conteo de cambios de destino en la vista previa |
+| N15, N16 | Textos: recargar stock lo deja como dice el archivo; los archivos cubren sucursales activas y «Stock total» es de toda la empresa | CORREGIDO (sólo palabras: nota del ZIP y panel) |
+| N4 | Las descargas compartían el cupo de las cargas (30/min) | CORREGIDO: cupo propio `admin_export`, 6/min |
+| N10 | Un carácter de control en el nombre de una sucursal daba 500 al descargar stock | CORREGIDO: las cabeceras se limpian como las celdas |
+| N11 | Aplicar imágenes no notaba un cambio de principal o de orden desde la vista previa | CORREGIDO: compara imágenes, orden y principal |
+| N13 | Cada vista previa guardaba otra copia de lo que ya estaba en la galería | CORREGIDO: sólo queda en espera lo que se va a colocar |
+| F1 | El resultado de la carga de imágenes nunca listaba las galerías (la respuesta de aplicar no trae filas) | CORREGIDO, y la prueba responde lo que responde el servidor |
+| O2 | «Mis pedidos» mostraba entero el producto actual de cada línea, también de uno oculto o inactivo: precio de hoy, descripción, dirección, stock y galería (anterior a la fase) | CORREGIDO: esa línea lleva el producto cerrado a id, nombre e imagen; la línea no cambia |
+| N5 | La empresa de la acción en bloque se leía del navegador al enviar: con dos pestañas podía caer en otra empresa | CORREGIDO: la lista y la acción mandan explícita la empresa de la pantalla |
+| 9 a–i | Panel: respuesta lenta que pisa a la nueva; selección que sobrevive a desactivar una fila; confirmación con selección vacía; última página vacía; vista previa de imágenes que no se invalida; ZIP filtrado sin decirlo; pago que deja enviar con una línea no disponible y no dice qué producto falló; contador del carrito; enlace a una pantalla que niega al operador antiguo | TODOS REALES, CORREGIDOS |
+| 9 j | Pruebas que leían el código de una página como texto | SUSTITUIDAS por pruebas que montan la página |
+| M03, M04, M06, M53, M54 | Mutantes que sobrevivían en la revisión | FIJADOS con pruebas |
+| N8, N12, N14 | Código que empieza por apóstrofo; `<código>-12.png`; apóstrofo visible en reportes | DEUDA, a propósito (`docs/AUDIT_MEMORY.md` §10) |
+
+**Cambió, además de lo pedido.** `Stager.keep_only` (lo usa también `discard`) en `import_media`;
+el ZIP sigue aplicando los filtros pero su tarjeta avisa cuando los hay (se eligió decirlo, no
+ignorarlos); «Añadir imágenes en lote» sólo se ofrece con empresa resuelta. Cuatro pruebas de las
+partes anteriores cambiaron a propósito: las del catálogo «para volver a cargar» (ya sin el
+producto inactivo) y la del límite de descargas (ahora su propio cupo).
+
+**Pruebas (sobre `179d75c`, PostgreSQL, base `blackdog_focal`).** `test_bulk_visibility` 69,
+`test_inventory_exports` 59, `test_import_assistant` 42, `test_image_import` 71,
+`test_product_destination_import` 53. Pasadas focales: 527 OK (esos módulos más
+`test_import_media`, `test_import_template`, `test_unit_import`, `test_request_limits`,
+`test_storefront_image_cleanup`, `test_storefront_media`, `test_product_visibility`,
+`test_stock_units`) y 327 OK (clases de importación, producto, pedidos, carrito y checkout de
+`store/tests.py`). Jest completo 1331/1331 en 120 suites; `tsc --noEmit` limpio; lint 0 errores y
+22 avisos; `makemigrations --check --dry-run` sin cambios. **La suite completa del backend,
+Playwright y el ensayo NO se corrieron aquí.** Mutaciones de estas correcciones: 64, todas
+detectadas (una sobrevivió a la primera pasada y se cerró con una prueba).
+
+**Validación final de la rama (2026-10-13).** Sobre `0ed1b33`: suite completa del backend en
+PostgreSQL, 6996 pruebas, 0 fallos, 6 omitidas (6716 en `master` `14e658c`); `sh deploy/rehearsal.sh` `ENSAYO: OK` (149);
+Playwright 97/97 (`product-destination`, `import-split`, `storefront`, `tax-breakdown`,
+`krypton-smartform`) contra servidores locales de la rama; y un recorrido en navegador real, sin
+errores de consola: la acción en bloque viaja con `?company=` explícito y deja la selección vacía;
+un producto ocultado con el carrito ya armado sale en el carrito como «Ya no está disponible»,
+el pago no deja enviar y enlaza al carrito, y al quitar la línea el pago vuelve a abrirse; una
+imagen en lote por nombre de archivo se aplica y su resultado enlaza a la galería; la descarga
+del catálogo llega como `productos-para-cargar.xlsx`.
+
+**Segunda revisión independiente (`ac6a061..0ed1b33`).** Sin P0, sin P1, sin regresiones. Cada
+corrección cierra su hallazgo contra la prueba original; 24 mutantes sobre el código de las
+correcciones, 24 detectados. De lo que dejó anotado se corrigió uno (`af0b374`): las tarjetas del
+catálogo y del ZIP avisan cuando se pidió «Inactivos», porque un archivo para volver a cargar
+lleva sólo activos. El resto queda como deuda en `docs/AUDIT_MEMORY.md` §10:
+IMPORT-RELOAD-RENAMED-NO-CODE, ORDERS-V1-HIDDEN-PRODUCT, ORDER-LINE-CLOSED-WASTE e
+IMG-IMPORT-OLD-JOB-WORDING. Sobre `af0b374` (sólo cambia el frontend): Jest 1332/1332 en 120
+suites, `tsc --noEmit` limpio, lint 0 errores y 22 avisos, `ENSAYO: OK` (149).
+
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 3 y 4): centro de gestión masiva e imágenes en lote
+
+Misma rama (`feat/inventory-unified`), sobre `74c6112`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** Una migración, `0122` (sólo opciones de un campo: el tipo de trabajo
+`product_images`). Sin capacidades nuevas, sin rutas bajo `api/v1/internal/`, sin cambios en
+`deploy/` ni en `request_limits.py`, y sin ninguna vista multipart nueva. Decisión:
+DEC-INVENTORY-UNIFIED-01 (ampliada).
+
+| | Qué | Estado |
+|---|---|---|
+| 3.1 | Pantalla `/admin/inventory/bulk` y UNA entrada de menú «Gestión masiva de inventario», visible con cualquiera de `products.manage`, `inventory.adjust`, `products.view`, `inventory.view`. Las tres cargas conservan entrada, ruta y asistente | EN LA RAMA, probado |
+| 3.2 | Secciones: «Importar» (tres tarjetas con qué hace y qué no cada carga, del mismo texto que sus avisos), «Exportar» (el panel de la parte 2, que sigue además en Carga de stock), «Imágenes» e «Historial» (todas las cargas que la persona puede ver, con «Descargar errores») | EN LA RAMA, probado |
+| 3.3 | «¿Qué archivo tengo?»: `POST /api/admin/imports/inspect/` (misma ruta y vista) responde `suggested_import_type` (`products`, `stock`, `units`, `images`, `report`, `unknown`; `forbidden` si no puede hacer esa carga) con un código de motivo y su frase, sólo por hojas y cabeceras. No lee filas ni escribe nada | EN LA RAMA, probado |
+| 3.4 | Pruebas: cada plantilla, cada descarga en sus dos modos, los libros históricos (plantillas de varias hojas, exportaciones del POS con su rótulo y su columna de stock, libro del propietario), ambiguos, permisos y empresa | EN LA RAMA |
+| 4.1 | Carga sólo de imágenes: muchos archivos y/o un ZIP; cada archivo va a su producto por el nombre (`<código>.<ext>`, `_N` / `-N` / ` (N)` para el orden) o por un libro «Imágenes» opcional | EN LA RAMA, probado |
+| 4.2 | Vista previa sin efecto (trabajo `product_images`): por producto, qué se añade, cuál será la principal, qué ya estaba, qué pasa de 12; archivos sin producto o ambiguos; modos `add` y `replace` (éste, con palabra de confirmación) | EN LA RAMA, probado |
+| 4.3 | Aplicar: todo o nada, una vez, trabajo y productos bloqueados en orden, por `product_media`; se detiene si el catálogo o una galería cambiaron; una línea de auditoría por carga | EN LA RAMA, probado |
+| 4.4 | Sólo se escriben filas de galería e `image_url` (fijado con una prueba) | EN LA RAMA, probado |
+| 4.5 | Todas las protecciones de `import_media` por este camino; un código de otra empresa nunca casa; `products.manage`; lo guardado de una vista previa fallida o abandonada se retira | EN LA RAMA, probado |
+| 4.6 | Sección «Imágenes» del centro y enlace «Añadir imágenes en lote» desde Productos | EN LA RAMA, probado |
+| 4.7 | Auditoría de almacenamiento, sobre código y archivos de despliegue: `docs/imagenes-y-evidencias.md` §3.7, §5.3 y §5.4 | DOCUMENTADO (sin acceso al servidor) |
+
+**La restricción de la ruta se cumplió.** El lote de imágenes entra por
+`POST /api/admin/products/import/preview/` con `kind=images` —la misma ruta y la misma vista, la
+única con nivel `product_import`—. `store/test_request_limits.py` pasa sin cambios.
+
+**Decidido aquí, para confirmar con el propietario.** Un archivo sin producto o con nombre
+ambiguo se lista y no se carga, pero no impide aplicar el resto; el código se compara exacto,
+mayúsculas incluidas (deuda IMG-IMPORT-CASE); un catálogo con una columna de stock sigue yendo a la
+carga de productos (como ya lo trataba esa carga) y la respuesta lo dice.
+
+**Pruebas (sobre `406107e`, PostgreSQL, base `blackdog_focal`).** Nuevas:
+`store/test_import_assistant.py` (42) y `store/test_image_import.py` (68, dos con dos conexiones
+reales; la última se añadió en `8786d56`, tras las pasadas de abajo, y el módulo se volvió a correr
+entero: 68 OK); Jest `bulk-inventory-centre` (29) y `bulk-image-import` (27). Pasadas focales: 560 OK
+(los cuatro módulos nuevos de la fase, `test_import_media`, `test_import_template`,
+`test_product_destination_import`, `test_unit_import`, `test_request_limits`,
+`test_storefront_image_cleanup`, `test_storefront_media`, `test_stock_units`, `test_serial_pick`,
+`test_product_visibility`) y 380 OK (clases C14/C15 de importación, las de producto, carrito y
+checkout de `store/tests.py`, y la matriz de paridad). Jest completo 1303/1303 en 115 suites;
+`tsc --noEmit` limpio; lint 0 errores y 22 avisos (ninguno nuevo); `makemigrations --check
+--dry-run` sin cambios. **La suite completa del backend, Playwright y el ensayo NO se corrieron.**
+Mutaciones de estas dos partes: 138; 9 sobrevivieron a la primera pasada: 6 se cerraron con
+pruebas, 2 quitando una comprobación duplicada, y 1 queda como equivalente (el filtro de empresa
+al bloquear productos: la comprobación del catálogo ya rechaza ese caso).
+
+**Deuda registrada** (`docs/AUDIT_MEMORY.md` §10): IMG-IMPORT-CASE, IMG-IMPORT-CODE-CHARS,
+IMG-IMPORT-REUPLOAD, IMG-IMPORT-REPLACE-REENCODE, IMG-IMPORT-ALT-TEXT, IMG-STORAGE-S3,
+ASSISTANT-HEADERS-ONLY, BULK-CENTRE-LEGACY-BRIDGE, DOCS-CADDY-LIMIT-NOTE.
+
+## 2026-10-13 — INVENTORY-UNIFIED-01 (partes 1 y 2): visibilidad en bloque y exportaciones
+
+Rama `feat/inventory-unified`, desde `master` `14e658c`. **Sólo en la rama: sin push, sin PR, sin
+desplegar.** Sin migraciones, sin capacidades nuevas, sin rutas bajo `api/v1/internal/`, sin cambios
+en `deploy/` ni en `request_limits.py`. Decisión: DEC-INVENTORY-UNIFIED-01.
+
+| | Qué | Estado |
+|---|---|---|
+| 1.1 | Una definición de «puede publicarse en bloque» (`store/product_publication.py`): activo, con precio, con imagen, con categoría. La ficha individual guarda como siempre | EN LA RAMA, probado |
+| 1.2 | `POST /api/admin/products/bulk-visibility/` (`products.manage`): por ids o por el filtro de la lista + total esperado; 409 `selection_changed`; tope de 2000; una transacción con filas bloqueadas en orden; sólo escribe `is_published_online` y `updated_at`; resultado parcial con motivos; una línea de auditoría por lote | EN LA RAMA, probado |
+| 1.3 | La lista `GET /api/admin/products/` filtra por `is_serialized` y cada fila trae `publication_problems`, sin una consulta por fila; el filtro es una función compartida con la acción en bloque | EN LA RAMA, probado |
+| 1.4 | Un producto oculto o desactivado DESPUÉS de entrar a un carrito: la lectura del carrito lo devuelve `available: false` con id, nombre e imagen (sin precio ni stock), el cambio de cantidad se rechaza y quitarlo sigue funcionando. Matriz de exposición pública para oculto e inactivo | EN LA RAMA, probado |
+| 1.5 | Panel › Productos: columna «E-commerce», filtros rápidos Todos / Publicados / Internos, filtro de tipo, casilla por fila y por página, «Seleccionar los N productos que coinciden», acciones con confirmación y resultado, 409 explicado | EN LA RAMA, probado |
+| 2.1 | `GET /api/admin/inventory/exports/{products,stock,units,full}/` con `mode=reimport\|report` y filtros de sucursal, categoría, tipo, existencia, condición, visibilidad y estado | EN LA RAMA, probado |
+| 2.2 | `products.view` para el catálogo; `inventory.view` y sucursales visibles para stock y equipos; las dos para el ZIP; «Costo» sólo con `inventory.adjust` | EN LA RAMA, probado |
+| 2.3 | Celdas que no se ejecutan como fórmula (y se leen igual al recargar), códigos / series / IMEI como texto, libros en modo write-only, tope de 20 000 filas y de 25 MB para el ZIP, nombres de archivo fijos, `no-store`, límite de peticiones y una línea de auditoría por descarga | EN LA RAMA, probado |
+| 2.4 | `GET /api/admin/inventory/export/` responde igual que antes (fijado con pruebas) | EN LA RAMA, probado |
+| 2.5 | Panel «Exportar» (`InventoryExportPanel` / `InventoryExports`), por ahora en Inventario › Carga de stock junto a «Descargar inventario» | EN LA RAMA, probado |
+
+**Lo que cambió de comportamiento existente, a propósito.**
+- La lectura del carrito añade `available` a cada línea y recorta el producto de una línea que ya
+  no se vende. `test_the_cart_that_holds_it_still_opens` sigue igual y sigue pasando: el carrito abre.
+- Las tres cargas masivas rechazan una hoja llamada «Reporte de productos», «Reporte de stock» o
+  «Reporte de equipos», y quitan UN apóstrofo inicial cuando va delante de `=`, `+`, `-`, `@`,
+  tabulador o retorno (deuda IMPORT-UNGUARD).
+- En la lista de productos, «Solo stock interno» pasa de la columna Estado a la columna E-commerce.
+
+**No hay campo de marca** en el catálogo: no se añadió filtro ni columna de marca.
+
+**Pruebas (sobre `0a229fb`, PostgreSQL, base `blackdog_focal`).** Nuevas: `store/test_bulk_visibility.py`
+(58, dos con dos conexiones reales) y `store/test_inventory_exports.py` (53); Jest
+`product-bulk-visibility` (34), `cart-unavailable` (10) e `inventory-export-panel` (33). Pasadas
+focales: 550 pruebas OK (módulos nuevos, `test_import_template`, `test_product_destination_import`,
+`test_unit_import`, `test_import_media`, `test_stock_units`, `test_serial_pick`,
+`test_product_visibility`, `test_request_limits`, clases C14/C15 de importación y la matriz de
+paridad) y 392 OK (carrito, `Phase40CheckoutValidationTest`, `M5Checkout*` y las clases que usan
+`/api/admin/products/`). Jest completo 1247/1247 en 113 suites; `tsc --noEmit` limpio; lint 0
+errores y 22 avisos (ninguno nuevo). `makemigrations --check --dry-run`: sin cambios. **La suite
+completa del backend y Playwright NO se corrieron en esta fase.** Mutaciones: 164, las 164
+detectadas (4 sobrevivieron a la primera pasada y se cerraron: tres pruebas que no podían fallar y
+una comprobación duplicada).
+
+**Encontrado, anterior a la fase.** `store.tests.P0ECartConcurrencyTest.test_many_at_once_still_add_up`
+falla en su `setUp` cuando esa clase es la primera `TransactionTestCase` del proceso (reproducido
+igual sobre `14e658c`); deuda P0E-CART-RACE-ORDER.
+
+**Deuda registrada** (`docs/AUDIT_MEMORY.md` §10): INV-EXPORT-LEGACY-GUARD, INV-EXPORT-RESTORE-GAPS,
+INV-EXPORT-IMPORT-LIMITS, INV-EXPORT-NAME-MATCH, INV-EXPORT-SYNC, INV-EXPORT-THROTTLE-SHARED,
+INV-EXPORT-LEGACY-BRIDGE-UI, INV-REPORT-RENAMED-SHEET, IMPORT-UNGUARD, BULK-VIS-CAP,
+BULK-VIS-FORM-HINT, CART-UNAVAILABLE-COUNT, P0E-CART-RACE-ORDER.
+
 ## 2026-10-13 — CI-OPTIMIZATION-01: auditoría de GitHub Actions y suite del backend en fragmentos
 
 Rama `chore/ci-optimization` (desde `14e658c`), commits locales, **sin push**: PARCIAL hasta que corra en

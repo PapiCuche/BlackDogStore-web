@@ -150,6 +150,86 @@ Los equipos con serie no se cargan con el Excel de inventario (escribe cantidade
 con el de productos. Tienen su carga, Inventario › **Carga de equipos**, una fila por
 equipo: `docs/pagos-equipos-documentos.md` §3.
 
+### 3.7 Imágenes en lote, sin libro de productos (INVENTORY-UNIFIED-01)
+
+Panel › Inventario › **Gestión masiva de inventario** › *Imágenes* (también desde
+Productos › «Añadir imágenes en lote»). Añade imágenes a productos que **ya
+existen**; no crea ni edita ninguno, y no toca nombre, precio, categoría, destino,
+estado, stock, series ni Kardex. Pide `products.manage`.
+
+**Cómo se nombra un archivo.** El nombre es el código del producto:
+
+| Archivo | Producto | Orden |
+|---|---|---|
+| `FUNDA.png` | el de código `FUNDA` | 0 (la principal) |
+| `FUNDA_2.png`, `FUNDA-3.jpg`, `FUNDA (4).webp` | el mismo | 2, 3, 4 |
+
+- La gramática exacta: `<código>.<ext>`, con un sufijo opcional `_N`, `-N` o ` (N)`
+  donde `N` tiene de uno a tres dígitos. Un nombre sin número cuenta como 0; la de
+  número más bajo es la principal. Sólo se quita la última extensión y la carpeta
+  no forma parte del nombre.
+- `<código>` se busca entre el código interno y los códigos de barras de los
+  productos de la empresa (también los inactivos), **sin distinguir mayúsculas**:
+  los dos lados se comparan en Unicode NFKC, sin mayúsculas y con los espacios
+  recortados (un espacio duro cuenta como espacio). `funda.png` y `ＦＵＮＤＡ.png`
+  son del producto `FUNDA` (decisión del propietario, 2026-10-14). Sólo esta carga
+  compara así: la de productos y las demás siguen exactas. **Nunca por el nombre del
+  producto.**
+- Si esa comparación da **más de un producto** (códigos `abcd` y `ABCD` en dos
+  productos), el archivo no se asigna a ninguno: se lista con «el código coincide
+  con más de un producto».
+- Un código puede terminar en `-2`. Por eso se prueba el nombre entero como código
+  y, aparte, el nombre sin su número final. Si sale un producto, es ése. Si salen
+  **dos productos distintos**, o el nombre entero ya es ambiguo, el archivo no se
+  carga y la vista previa lo dice. Si no sale ninguno, lo mismo. No se adivina.
+- **Lo que no tiene producto no detiene el resto.** Un archivo —o una fila del
+  libro— cuyo código no es de nadie o es ambiguo se lista antes y después de
+  aplicar, y el resto de la carga se aplica. Lo que está mal en las imágenes de un
+  producto (un archivo roto, dos archivos distintos con el mismo nombre, pasar del
+  límite) sigue siendo un error de ese producto y detiene la carga.
+- Un código con caracteres que un nombre de archivo no admite (`/`, `:`) no se
+  puede escribir así: para ésos está el libro.
+- Dos avisos de lectura: `FUNDA-12.png` es la imagen 12 de `FUNDA` salvo que exista
+  un producto `FUNDA-12`; y dos archivos del mismo lote cuyos nombres son iguales
+  con esa misma comparación cuentan como el mismo nombre: iguales, entra uno;
+  distintos, es un error de ese producto.
+
+**El libro «Imágenes» (opcional).** Una hoja «Imágenes» con `Código`,
+`Imagen principal` e `Imágenes` (varios nombres separados por `|`), leídas igual que
+en la carga de productos. Con libro, los nombres de los archivos no deciden nada.
+También sirve el propio libro de productos: sólo se leen esas columnas.
+
+**Dos modos, elegidos a propósito.**
+
+- **Añadir** (por defecto). Se suman a la galería. Una imagen cuyo contenido ya
+  está en esa galería no se añade otra vez. La principal sólo cambia si la galería
+  estaba vacía o se marcó «usar como principal».
+- **Reemplazar.** La galería de cada producto **de la carga** pasa a ser exactamente
+  lo subido, en su orden. La vista previa dice cuántas imágenes pierde cada producto
+  y aplicar exige escribir `REEMPLAZAR`. Un producto que no está en la carga no se toca.
+
+**La vista previa** no coloca nada. Por producto: qué se añade (con miniatura), cuál
+será la principal, qué ya estaba, cuántas se quitan y qué pasa del límite de 12.
+Aparte: archivos sin producto o con nombre ambiguo (se listan y **no** impiden el
+resto), archivos que no son imágenes (ignorados) y, como errores que sí impiden
+aplicar, una imagen ilegible, dos archivos distintos con el mismo nombre o un
+producto que superaría el límite.
+
+**Aplicar** es todo o nada y una sola vez (un segundo clic devuelve el primer
+resultado). Se detiene si el catálogo o una galería cambiaron desde la vista previa:
+qué imágenes tiene, en qué orden o cuál es la principal. De una vista previa sólo
+queda guardado, en espera, lo que se va a colocar; lo que ya estaba en la galería no
+deja copia.
+Deja una línea de auditoría por carga (`product_images_import_applied`: modo y
+conteos, sin nombres de archivo) además de la de cada imagen en su galería.
+
+**Seguridad.** Es el mismo lote que la carga de productos (`import_media`): rutas
+que salen del ZIP, enlaces simbólicos, ZIP cifrado, demasiadas entradas, expansión
+desproporcionada, topes de archivos y de peso, y cada imagen recodificada desde sus
+píxeles. Viaja por la misma ruta (`POST /api/admin/products/import/preview/` con
+`kind=images`), que es la única dimensionada para ese peso; aplicar va por
+`POST /api/admin/products/images/import/<id>/apply/`, que no recibe archivos.
+
 ## 4. Evidencias fotográficas del servicio técnico
 
 Panel › Servicio técnico › *una orden* › **Evidencias**.
@@ -219,7 +299,61 @@ públicas que nadie muestra y llevan más de 24 horas: las de un formulario que 
 se guardó y las de una previsualización de carga masiva que no se aplicó. Las
 evidencias de servicio no se limpian nunca.
 
-### 5.3 Antes de publicar una versión con estos cambios
+### 5.3 Dónde viven las imágenes y quién las sube (INVENTORY-UNIFIED-01)
+
+Revisado sobre el código y los archivos de despliegue del repositorio, sin acceso al
+servidor.
+
+- **Nadie necesita FTP, SSH ni acceso al disco del servidor.** Las imágenes se suben
+  desde el panel: la galería de cada producto, la carga de productos (con sus
+  imágenes), «Imágenes» en Gestión masiva de inventario, y Configuración › Tienda
+  para hero, categorías y campañas.
+- **Dónde quedan.** Con `EVIDENCE_STORAGE_BACKEND=filesystem` (el valor por defecto
+  y el del despliegue entregado), en el volumen con nombre `evidence`, montado en
+  `/app/private-media` del contenedor `backend` (`docker-compose.prod.yml`). Cada
+  imagen pública tiene la clave `companies/<id de empresa>/storefront/<identificador>.<ext>`;
+  las evidencias de servicio comparten el volumen bajo otras claves.
+- **Sobreviven a recrear el contenedor.** Es un volumen con nombre: `docker compose
+  up -d --build` y `down` lo conservan. `down -v` lo **borra**, igual que la base.
+- **Están en la copia nocturna.** `deploy/backup.sh` empaqueta `/app/private-media`
+  entero en `evidence-AAAAMMDD-HHMMSS.tar.gz`, junto al volcado de la base, y
+  `deploy/crontab.example` lo programa a diario. Una copia en el mismo servidor no
+  es una copia: ver «Copia externa» en [despliegue-produccion.md](despliegue-produccion.md).
+- **Cómo se sirven.** Por `GET /api/storefront/images/<identificador>`: Django lee
+  el archivo del almacén y lo entrega con caché larga (`immutable`); la dirección es
+  un identificador que no se adivina y nunca cambia de contenido. El volumen **no**
+  se publica como archivos estáticos (comparte disco con las evidencias, que son
+  privadas).
+- **Límites.** 8 MB por imagen, 12 por producto, 200 archivos y 100 MB por carga,
+  400 entradas por ZIP (§5.1). El tamaño de la petición lo limitan además
+  `store/request_limits.py` y `deploy/Caddyfile` (nivel `product_import`).
+- **Limpieza.** Una imagen subida y no colocada se retira a las 24 horas (§5.2);
+  una colocada en una galería cuenta como en uso y no se toca.
+
+### 5.4 Almacenamiento de objetos (S3 o compatible): qué hay y qué faltaría
+
+**Lo que ya existe en el código.** `EVIDENCE_STORAGE_BACKEND=s3` con
+`EVIDENCE_STORAGE_BUCKET`, `…_ENDPOINT_URL`, `…_ACCESS_KEY_ID`,
+`…_SECRET_ACCESS_KEY` y `…_REGION` (`store/evidence_storage.py`, con
+`django-storages` y `boto3` ya en `requirements.txt`). Las imágenes públicas y las
+evidencias usan ese mismo almacén, así que el cambio las mueve a las dos.
+
+**Lo que NO está hecho y haría falta para migrar una instalación en marcha.**
+
+1. Copiar lo que hay en `/app/private-media` al bucket conservando las claves
+   (`companies/<id>/storefront/…`): la base guarda la clave de cada archivo.
+2. Una copia de seguridad del bucket (versionado o réplica): `deploy/backup.sh` sólo
+   empaqueta el volumen local y dejaría de cubrir las imágenes.
+3. Comprobar que las direcciones públicas no cambian: siguen siendo
+   `/api/storefront/images/<identificador>` servidas por Django, que leería del
+   bucket. No habría que reescribir productos ni páginas.
+4. Ensayarlo (`deploy/rehearsal.sh` contra un bucket de prueba) y un plan de vuelta
+   atrás mientras el volumen local siga intacto.
+
+Nada de esto se ha ejecutado ni probado contra un proveedor real: **necesita el plan
+y la autorización del propietario** (credenciales, coste y proveedor).
+
+### 5.5 Antes de publicar una versión con estos cambios
 
 - Aplicar las migraciones `0100` y `0101` (añaden tablas y columnas; no borran
   ni reescriben datos).

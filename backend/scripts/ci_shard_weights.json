@@ -2,9 +2,12 @@
  "how": "Seconds of wall time per test class in one whole run of the suite (2026-10-13, one process, PostgreSQL). They are RELATIVE weights: they decide which shard a class goes to and nothing else. To refresh: python manage.py test --noinput --durations 0 2>&1 | python scripts/ci_shards.py weights > scripts/ci_shard_weights.json",
  "seconds_per_test": 0.339,
  "flushing": [
+  "store.test_bulk_visibility.ProductLoadAgainstBulkChangeTest",
+  "store.test_bulk_visibility.TwoBulkRequestsAtOnceTest",
   "store.test_client_sec.FilingAtOnceTest",
   "store.test_client_sec.TwoAtOnceTest",
   "store.test_delivery_base.TwoDefaultsAtOnceTest",
+  "store.test_image_import.TwoAppliesAtOnceTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",

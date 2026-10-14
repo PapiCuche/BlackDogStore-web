@@ -17,6 +17,7 @@
 
 import { useState } from "react";
 import type { ImageRules, ImportJob, ImportRow, InspectedSheet } from "../lib/internal-api";
+import { importErrorReportUrl } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 
 export const STEP_LABELS_PRODUCTS = [
@@ -117,7 +118,19 @@ export function Notices({ job }: { job: ImportJob }) {
   // que entre, así que se dice a la vista y no dentro del desplegable.
   const elsewhere = every.filter((entry) => entry.important);
   const unmapped = every.filter((entry) => !entry.important);
-  if (!reader.length && !format.length && !every.length) return null;
+  // INVENTORY-UNIFIED-01: cuántos productos que YA EXISTEN pasan a la web o
+  // salen de ella con este archivo. Se dice aquí, antes de aplicar: un archivo
+  // descargado hace días vuelve a publicar lo que se ocultó después.
+  const toWeb = job.summary?.destination_changes?.to_web ?? 0;
+  const toInternal = job.summary?.destination_changes?.to_internal ?? 0;
+  const moving = [
+    toWeb ? `${toWeb === 1 ? "1 producto pasa" : `${toWeb} productos pasan`} a publicarse en e-commerce` : "",
+    toInternal ? `${toInternal === 1 ? "1 producto pasa" : `${toInternal} productos pasan`} a sólo stock interno` : "",
+  ].filter(Boolean);
+  // Decisión del propietario D2: una fila que pide la web para un producto que
+  // no es elegible no es un error. Se carga, queda interno, y aquí se cuenta.
+  const refused = job.summary?.publication_refused ?? 0;
+  if (!reader.length && !format.length && !every.length && !moving.length && !refused) return null;
   // There is no "the preview was truncated" case any more, and that is the
   // point: a file over the row limit is now REFUSED outright by the backend
   // with a 400, instead of being trimmed into a job that reported no errors and
@@ -125,6 +138,31 @@ export function Notices({ job }: { job: ImportJob }) {
   // fact; the refusal happens before anything is staged.
   return (
     <div className="mb-4 space-y-2 text-xs">
+      {moving.length > 0 && (
+        <p
+          role="status"
+          aria-label="Cambios de destino"
+          className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-warning"
+        >
+          <span className="font-semibold">Cambian de destino:</span> {moving.join(" y ")}. Todavía no se ha
+          cambiado nada: revisa esas filas antes de aplicar.
+        </p>
+      )}
+      {refused > 0 && (
+        <p
+          role="status"
+          aria-label="Publicaciones que no se harán"
+          className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-warning"
+        >
+          <span className="font-semibold">
+            {refused === 1
+              ? "1 producto no se publicará en e-commerce"
+              : `${refused} productos no se publicarán en e-commerce`}
+          </span>
+          : {refused === 1 ? "se carga y queda" : "se cargan y quedan"} como «Solo stock interno». El motivo está en
+          el aviso de cada fila.
+        </p>
+      )}
       {[...reader, ...format].map((note) => (
         <p
           key={note}
@@ -237,7 +275,21 @@ export function PreviewTable({
   );
 }
 
-export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
+/** Cómo se llama cada carga en el historial. */
+export const IMPORT_TYPE_LABELS: Record<ImportJob["import_type"], string> = {
+  products: "Productos",
+  stock: "Inventario",
+  units: "Equipos con serie",
+  product_images: "Imágenes de productos",
+};
+
+/**
+ * `companyId` (aunque sea `null`) añade la columna «Reporte», con «Descargar
+ * errores» en la carga que los tiene. Las pantallas que ya ofrecen ese enlace
+ * junto a su vista previa no lo pasan y la tabla queda como estaba.
+ */
+export function HistoryTable({ jobs, companyId }: { jobs: ImportJob[]; companyId?: number | null }) {
+  const withReport = companyId !== undefined;
   if (!jobs.length) {
     return (
       <p className="text-sm text-muted">Todavía no se ha importado nada.</p>
@@ -258,6 +310,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
             <th className="px-3 py-2">Actualizar</th>
             <th className="px-3 py-2">Errores</th>
             <th className="px-3 py-2">Sucursales</th>
+            {withReport ? <th className="px-3 py-2">Reporte</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -267,7 +320,7 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                 {new Date(job.created_at).toLocaleString("es-PE")}
               </td>
               <td className="px-3 py-2 text-foreground">
-                {job.import_type === "products" ? "Productos" : job.import_type === "units" ? "Equipos con serie" : "Inventario"}
+                {IMPORT_TYPE_LABELS[job.import_type] ?? job.import_type}
               </td>
               <td className="px-3 py-2 text-muted">{job.original_filename}</td>
               <td className="px-3 py-2 text-muted">{job.created_by || "—"}</td>
@@ -300,6 +353,20 @@ export function HistoryTable({ jobs }: { jobs: ImportJob[] }) {
                   .map((entry) => entry.branch_name)
                   .join(", ") || "—"}
               </td>
+              {withReport ? (
+                <td className="px-3 py-2">
+                  {job.counts.error > 0 ? (
+                    <a
+                      href={importErrorReportUrl(companyId ?? null, job.id)}
+                      className="font-semibold text-foreground underline underline-offset-2"
+                    >
+                      Descargar errores
+                    </a>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
@@ -449,12 +516,15 @@ export function SheetPicker({
 }
 
 export function ImportImagesField({
-  images, zip, onChange, disabled = false,
+  images, zip, onChange, disabled = false, title, description,
 }: {
   images: File[];
   zip: File | null;
   onChange: (images: File[], zip: File | null) => void;
   disabled?: boolean;
+  /** Otra carga que adjunta imágenes (las imágenes en lote) dice aquí lo suyo. */
+  title?: string;
+  description?: React.ReactNode;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -490,11 +560,15 @@ export function ImportImagesField({
   return (
     <div className="space-y-3 rounded-xl border border-bd-border bg-surface px-4 py-4">
       <div>
-        <p className="text-sm font-semibold text-foreground">Imágenes de los productos (opcional)</p>
+        <p className="text-sm font-semibold text-foreground">{title ?? "Imágenes de los productos (opcional)"}</p>
         <p className="mt-1 text-xs text-muted">
-          En el Excel, la columna «Imagen principal» lleva el nombre de un archivo y «Imágenes» varios
-          separados por <code>|</code>. Adjunta aquí esos archivos: se casan por su nombre, sin mirar
-          mayúsculas ni carpetas.
+          {description ?? (
+            <>
+              En el Excel, la columna «Imagen principal» lleva el nombre de un archivo y «Imágenes» varios
+              separados por <code>|</code>. Adjunta aquí esos archivos: se casan por su nombre, sin mirar
+              mayúsculas ni carpetas.
+            </>
+          )}
         </p>
       </div>
 

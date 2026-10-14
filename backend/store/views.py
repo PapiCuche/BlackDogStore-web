@@ -1006,6 +1006,19 @@ class CartViewSet(
             pk=kwargs.get('pk'),
         )
 
+        # INVENTORY-UNIFIED-01. Hidden or deactivated after it was added: the
+        # line may still be removed, but not kept alive by changing its
+        # quantity — that answered with the product's price and stock, and
+        # nothing on the web sells it any more.
+        if not item.product.is_sold_online:
+            return Response(
+                {
+                    'code': 'unavailable',
+                    'detail': f'{item.product.name} ya no está disponible. Quítalo del carrito.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             quantity = int(request.data.get('quantity', item.quantity))
         except (TypeError, ValueError):

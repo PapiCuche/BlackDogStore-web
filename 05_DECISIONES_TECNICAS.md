@@ -1421,3 +1421,217 @@ venta derivados del snapshot (`subtotal_amount`, `taxable_amount`, `tax_rate`).
 reserva a descuentos que no afectan la base y lo resta del importe a pagar (reglas
 3300/3280). Fuente: archivo oficial de reglas de validación (21.04.2025). Detalle:
 [ADR-43](docs/adr-fiscal-c22a1.md#adr-43--un-descuento-se-declara-donde-nació-con-el-código-de-su-nivel-y-no-se-resta-dos-veces).
+
+### DEC-INVENTORY-UNIFIED-01 · Un catálogo, una regla para publicar en bloque y dos clases de archivo
+
+Fase INVENTORY-UNIFIED-01, partes 1 y 2 (rama `feat/inventory-unified`).
+
+- **Un solo catálogo.** No hay «productos de la web» y «productos internos»: hay
+  productos, y `Product.is_published_online` dice de cada uno si se ofrece en la tienda
+  en línea (DEC-PRODUCT-DEST-01). La acción en bloque, los filtros y las descargas leen y
+  escriben ese dato; ninguno crea otra lista ni toca `is_active`, precios, cantidades,
+  equipos o Kardex.
+- **Qué significa «puede publicarse en bloque».** Una definición,
+  `store.product_publication.publication_problems`: activo (`inactive`), con precio mayor
+  que cero (`no_price`), con imagen —`image_url` o alguna imagen de galería— (`no_image`) y
+  con categoría (`no_category`). La devuelve la lista del panel en cada fila
+  (`publication_problems`, sin una consulta por fila) y la usa el reporte de productos.
+- **La regla es del bloque, no de la ficha.** Quien edita UN producto ve lo que hace y
+  puede tener motivo para publicarlo sin foto; quien marca «los 600 resultados» no ve cada
+  uno. Por eso la ficha guarda como siempre y la acción en bloque deja fuera lo que no está
+  listo, diciendo cuál y por qué. Ocultar se permite siempre.
+- **Resultado parcial explícito.** Publicar en bloque publica lo que está listo y devuelve
+  lo demás en `refused`, con sus códigos. No es un fallo ni un «todo o nada»: rechazar 599
+  productos listos por uno sin foto obligaría a trabajar de uno en uno. Lo que sí es todo
+  o nada es un id que no es de la empresa (404, nada cambia).
+- **«Todo lo que coincide» viaja como filtro, no como lista.** El servidor vuelve a
+  evaluar el filtro con la MISMA función que la lista (`admin_views.filter_admin_products`)
+  y compara con el total que se mostró (`expected_count`). Si difieren responde 409
+  `selection_changed` y no cambia nada: confirmar «312 productos» no puede cambiar 340. Un
+  filtro con una clave o un valor que no entiende se rechaza en vez de ignorarse, porque
+  para una escritura «no entendí, así que todo» es la lectura equivocada.
+- **Tope y bloqueo.** Hasta 2000 productos por lote (`MAX_BULK_PRODUCTS`), en una
+  transacción, con las filas bloqueadas en orden de id; la ficha del producto bloquea esa
+  misma fila, así que un guardado y un lote se turnan. Una línea de auditoría por lote que
+  cambió algo, con los conteos y hasta 200 ids.
+- **Un carrito puede tener una línea que ya no se vende.** Se devuelve marcada
+  `available: false` con id, nombre e imagen, sin precio ni stock; no se puede cambiar su
+  cantidad y sí quitarla. Se arma a mano y no recortando el producto público, para que un
+  campo nuevo de mañana no llegue ahí por defecto.
+- **Para volver a cargar o reporte.** Cada descarga (`store.inventory_exports`) sale en uno
+  de dos modos. `reimport` usa la hoja y las cabeceras de la carga correspondiente, tomadas
+  de sus propias constantes: el archivo vuelve a entrar tal cual. `report` añade columnas
+  de sólo lectura, su hoja se llama «Reporte de …» y las tres cargas la rechazan por ese
+  nombre. Se eligió rechazar y no «importar ignorando columnas»: quien edita «Activo» o
+  «Publicado» en un reporte y lo sube esperaría un cambio que no ocurre.
+- **Sin stock doble al restaurar.** Cargar los archivos `reimport` sobre la MISMA tienda
+  no cambia nada: un producto se reconoce por su código (o su nombre) y queda igual, una
+  cantidad igual a la actual no genera movimiento, y un equipo ya registrado se rechaza
+  fila por fila. Para que eso sea cierto, el archivo de stock NO lleva productos con serie
+  (la carga de stock rechaza una cantidad para ellos) y el de equipos NO lleva vendidos ni
+  dados de baja (recargarlos los devolvería al estante).
+- **El ZIP completo es de productos activos.** La plantilla de productos no tiene columna
+  «activo»: un inactivo cargado en una tienda vacía volvería activo y a la venta.
+- **Una celda nunca es una fórmula.** Todo texto exportado que empieza por `=`, `+`, `-`,
+  `@`, tabulador o retorno lleva un apóstrofo delante (`xlsx_reader.guard_text`), y el
+  lector de las cargas se lo quita (`unguard_text`) para leer el mismo valor. Sólo se quita
+  UN apóstrofo y sólo delante de uno de esos caracteres; una celda que ES una fórmula
+  sigue siendo un error de la fila. La descarga anterior (`/api/admin/inventory/export/`)
+  conserva su forma; desde la revisión también protege esas celdas (más abajo).
+- **Permisos de lectura.** El catálogo pide `products.view`; stock y equipos piden
+  `inventory.view` y sólo alcanzan las sucursales de `visible_branches`; el ZIP pide las
+  dos. `inventory.adjust` no abre una descarga: sólo decide si «Costo» lleva datos. No se
+  añadió ninguna capacidad.
+- **No hay marca.** El catálogo no tiene campo de marca y no se inventó uno: no hay filtro
+  ni columna de marca.
+- **Descartado.** Rutas bajo `api/v1/internal/` (no se pidieron en esta fase); un trabajo
+  en segundo plano para exportar (el tope de 20 000 filas por libro cabe en una petición);
+  una capacidad nueva para exportar.
+
+**Partes 3 y 4 (misma decisión, misma rama).**
+
+- **Un centro que reúne, no una carga que mezcla.** «Gestión masiva de inventario»
+  (`/admin/inventory/bulk`) pone a la vista importar, exportar, imágenes e historial.
+  Las tres cargas siguen siendo tres, con sus entradas de menú, sus rutas y sus
+  asistentes; el centro enlaza a ellas. No hay un importador «universal»: un archivo
+  que es dos cargas a la vez no se reparte, se devuelve.
+- **El asistente dice a dónde va un archivo y no lo carga.** `POST
+  /api/admin/imports/inspect/` (la misma dirección y la misma vista) responde además
+  `suggested_import_type`, decidido por `store.import_assistant` SÓLO con los nombres de
+  las hojas y las cabeceras, y con el vocabulario que ya comparten las cargas
+  (`SERIAL_HEADERS`, `counts_stock`, los formatos de `detect`, las hojas «Reporte de …»).
+  No lee filas, no crea un trabajo, no guarda un perfil.
+- **Lo ambiguo es `unknown`.** Serie y cantidad en la misma hoja, columnas de producto
+  y de serie, u hojas de dos cargas: no se elige la que «se lo tragaría». La única
+  mezcla que se resuelve es la que la carga de productos ya resolvía y explicaba: un
+  catálogo con una columna de stock es un catálogo, y la respuesta dice que su stock no
+  se carga ahí. Una fila que cuenta cosas o trae series pero no nombra ningún producto
+  no es una cabecera (así no se confunde el rótulo «Stock …» que el POS del propietario
+  pone encima de sus cabeceras).
+- **Una carga que no puedes hacer no se nombra.** A quien pregunta por un archivo de una
+  carga para la que no tiene permiso se le dice eso, igual sea cual sea la carga.
+- **Una entrada de menú puede pedir CUALQUIERA de varias capacidades**
+  (`anyCapabilities`), sólo con empresa resuelta. No es una capacidad nueva ni cambia
+  lo que piden las demás entradas (`requiredCapabilities` sigue siendo «todas»).
+- **Imágenes en lote: por el nombre del archivo, nunca por el nombre del producto.**
+  `<código>.<ext>` con sufijo opcional `_N`, `-N` o ` (N)` (uno a tres dígitos) para el
+  orden; la de número más bajo es la principal. El código se busca con el mismo
+  `CatalogueIndex` de la carga de productos (código interno y códigos de barras, exacto).
+  Como un código puede terminar en `-2`, se prueban el nombre entero y el nombre sin su
+  número: un producto, es ése; dos distintos o ninguno, el archivo no se carga y se dice.
+- **Un archivo sin producto no detiene la carga; un error de un producto sí.** Lo que
+  nadie reclama (sin producto, nombre ambiguo) se lista y se deja fuera, como los
+  archivos huérfanos de la carga de productos. Lo que falla en un producto que sí tiene
+  destino (imagen ilegible, dos archivos distintos con un nombre, más de 12) es un
+  error de esa fila y nada se aplica: la misma regla de «no se aplica a medias».
+- **Añadir o reemplazar, y reemplazar se escribe.** `add` nunca quita; la principal
+  sólo cambia en una galería vacía o si se marcó. `replace` reconstruye la galería de
+  los productos de la carga con lo subido, enseña cuántas imágenes pierde cada uno y
+  exige `REEMPLAZAR` al aplicar. Reemplazar quita todo y vuelve a colocar: no intenta
+  conservar la fila de una imagen que también viene en la carga.
+- **Aplicar se detiene si lo previsto ya no es cierto.** El código tiene que seguir
+  siendo del mismo producto y la galería tiene que ser, imagen por imagen, la que se
+  previsualizó. Dos cargas sobre los mismos productos se turnan (productos bloqueados
+  en orden de id) y la segunda recibe ese aviso en vez de sumar a ciegas.
+- **Misma ruta para el lote, porque es la única dimensionada para él.** La vista previa
+  es `POST /api/admin/products/import/preview/` con `kind=images` (nivel
+  `product_import` de `request_limits.py` y del Caddyfile, que no cambian). Aplicar y
+  las reglas son rutas JSON nuevas sin archivos. El tipo de trabajo `product_images`
+  es una migración sólo de opciones (`0122`).
+- **Descartado.** Un importador único que adivine; casar imágenes por nombre de
+  producto; borrar imágenes sin confirmación; una vista multipart nueva; mover el
+  almacén a S3 en esta fase (queda documentado qué haría falta).
+
+**Tras la revisión independiente (misma decisión).**
+
+- **Una fórmula no sale de aquí por ningún archivo.** También la descarga anterior del
+  inventario y el `errors.csv` de cualquier carga pasan su texto por `guard_text`.
+- **La selección en bloque se lee una vez.** Los ids de UNA consulta son lo que se compara
+  con el total que vio el operador; contar y volver a leer dejaba cambiar un producto que
+  nadie había contado.
+- **Un solo orden de bloqueo.** El cambio en bloque, la carga de imágenes y la carga de
+  productos toman sus productos de menor a mayor id, en una sola consulta. La carga de
+  productos los tomaba en el orden del archivo y podía quedar en abrazo mortal con las
+  otras dos.
+- **Un archivo para volver a cargar es de productos activos**, también el del catálogo
+  solo (no sólo el ZIP): la plantilla no tiene columna «activo» y un inactivo que no se
+  reconoce al recargar nacería activo y publicado. El reporte los lleva todos.
+- **La carga de productos sigue publicando lo que dice su columna «Destino»**, incluido lo
+  que la acción en bloque dejaría fuera. No se convirtió en error: cambiaría una operación
+  que el propietario ya aprobó. Lo que cambia es que se DICE antes de aplicar: un aviso en
+  cada fila que pasa un producto existente a la web cuando le falta algo, y cuántos
+  cambian de destino. Un producto nuevo sigue naciendo publicado, sin aviso.
+- **Las descargas tienen su propio límite** (`admin_export`, 6 por minuto): cada una arma
+  un libro en el único proceso del servidor y gastaba el cupo de las cargas.
+- **Aplicar imágenes compara la galería entera**: qué imágenes, en qué orden y cuál es la
+  principal. Y de una vista previa sólo queda en espera lo que se va a colocar.
+- **«Mis pedidos» cierra el producto que ya no se vende**, con la misma forma que el
+  carrito (`closed_product_payload`: id, nombre, imagen). La línea —cantidad y precio
+  pagado— es del comprador y no cambia.
+- **La acción en bloque va a la empresa de la lista.** La pantalla de productos manda
+  explícita la empresa para la que el servidor decidió el acceso, en la lista y en la
+  acción; el resto del panel sigue como estaba.
+- **Deuda aceptada, no arreglada:** IMPORT-UNGUARD-APOSTROPHE-CODE (N8),
+  IMG-IMPORT-NAME-READING (N12) y EXPORT-GUARD-VISIBLE (N14), en `docs/AUDIT_MEMORY.md` §10.
+  (N8 y N14 los cerró después la decisión D7.)
+
+**Decisiones del propietario (2026-10-13).** Sustituyen lo que decían arriba sobre los
+archivos de productos activos, el aviso de la carga y el apóstrofo.
+
+- **D1 · Lo nuevo nace interno.** «Productos nuevos importados: por defecto Solo stock
+  interno.» Un producto NUEVO sin «Destino» nace con `is_published_online` apagado; un
+  «Destino» explícito se respeta; uno existente sin «Destino» no cambia. La ficha y las
+  demás altas, igual que antes.
+- **D2 · Una regla de publicación, la misma en la acción en bloque y en la carga.**
+  «Rechazar solo la publicación de productos comercialmente inelegibles, indicando motivo
+  por fila. La importación como stock interno sí se permite. No exigir imagen salvo regla
+  configurable.» Elegible = activo, con precio y con categoría; la imagen sólo con
+  `CompanySettings.publication_requires_image` (migración `0123`, `db_default` apagado,
+  como `hold_orders_pending_review`). En la carga el rechazo no es error de fila: el resto
+  de la fila se aplica y el producto queda interno; aplicar vuelve a preguntar con el
+  producto bloqueado; un producto ya publicado no se despublica por esta regla. Sustituye
+  al aviso de la revisión N3.
+- **D3 · Activos e inactivos viajan; cargar no reactiva.** El archivo para volver a cargar
+  y el ZIP llevan los dos y respetan el filtro; la columna «Estado» sólo decide cómo nace
+  un producto nuevo. Una carga NUNCA cambia `is_active` de uno existente. Sustituye a la
+  regla «sólo activos» de la revisión N2. (Tercera revisión, F1: se lee también Sí/No,
+  1/0 y verdadero/falso, y un valor ilegible sólo es error en una fila que crea.)
+- **D4 · El límite de descargas se configura y se explica.** `ADMIN_EXPORT_RATE` (6/min),
+  validado al arrancar; un 429 en castellano con `Retry-After`. Las cinco descargas
+  seguidas caben en el cupo por omisión.
+- **D5 · Identidad estable, nunca un nombre ambiguo.** «Identificador» = `<empresa>-<producto>`:
+  ni secreto ni nuevo (los dos números ya están en las direcciones del panel) y sólo vale
+  en la empresa sobre la que se actúa. Decide antes que el nombre; ajeno o inexistente se
+  ignora con un aviso que no dice si existe en otra parte; contra un código, error. Sin
+  identificador ni código, el nombre sólo si lo lleva un único producto (como ya era).
+  La plantilla del propietario no gana estas columnas.
+- **D6 · Lo oculto no se expone en la app.** Las líneas de «Mis pedidos» v1 de un producto
+  que ya no se vende llevan lo que lleva la línea cerrada de la web (nombre e imagen) y
+  `product_slug` vacío; cantidad y precio son del pedido. Las claves que lee la app siguen.
+- **D7 · Excel sin apóstrofos, CSV con él.** En un .xlsx la protección es el TIPO de celda:
+  texto marcado como texto (`quotePrefix`), con el valor intacto; el lector rechaza las
+  fórmulas por su tipo y no quita nada. Ningún escritor desplegado puso apóstrofos (la
+  guarda nació en esta rama), así que no hay archivos antiguos que leer de otra manera.
+  En `errors.csv`, que no tiene tipos, el apóstrofo se queda.
+
+**Decisión del propietario (2026-10-14): imágenes en lote.**
+
+- «Imágenes masivas: comparar códigos sin distinguir mayúsculas, normalizando espacios
+  y Unicode. Ante asociación ambigua, rechazarla explícitamente.» Sólo la carga de
+  imágenes: el código del nombre de archivo o del libro y todos los códigos de la
+  empresa (también de productos inactivos) pasan por la misma clave —NFKC, sin
+  mayúsculas, espacios recortados y colapsados, espacio duro como espacio—. Una clave
+  que nombra dos productos no se asigna: el archivo o la fila se lista con el motivo.
+  Un nombre entero ambiguo no cae a su lectura corta. La carga de productos y las
+  demás siguen comparando exacto, como la caja. Cierra IMG-IMPORT-CASE.
+- «Imágenes sin producto: permitir aplicar el resto del lote; informar archivos
+  huérfanos y errores, sin asociarlos arbitrariamente.» Los archivos ya lo hacían;
+  una fila del libro con un código de nadie, o ambiguo, era un error que detenía la
+  carga y ahora se lista como un archivo sin producto. Lo que está mal en las imágenes
+  de un producto sigue deteniéndola: la carga sigue siendo todo o nada sobre lo que
+  sí tiene producto.
+- «Mantener fotografías opcionales y permitir carga posterior.» Sin cambios: una
+  imagen sólo se exige para publicar en bloque si la empresa lo configura (D2), y la
+  carga de imágenes añade a productos que ya existen.
+- Deudas que siguen como están, documentadas: ORDER-HISTORY-LIVE-NAME,
+  IMPORT-STATE-NEVER-WRITES e IMPORT-ID-FOREIGN-WARNINGS.

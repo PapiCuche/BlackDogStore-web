@@ -28,6 +28,7 @@ import { DashboardSection } from "../components/dashboard-ui";
 import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../components/internal-ui";
 import { SequenceSettings } from "../components/SequenceSettings";
 import { OrderReviewSettings } from "../components/OrderReviewSettings";
+import { PublicationSettings } from "../components/PublicationSettings";
 import { CarrierSettings } from "../components/CarrierSettings";
 import {
   fetchCompanyConfiguration,
@@ -479,6 +480,21 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                       amount={config.settings.risk_review_amount ?? null}
                       hold={config.settings.hold_orders_pending_review ?? false}
                       canEdit={Boolean(config.can_manage_order_review) && companyWide}
+                      onSaved={setConfig}
+                    />
+                  </DashboardSection>
+                </div>
+                {/* INVENTORY-UNIFIED-01 — whether publishing in bulk asks for a
+                    picture. Its own save, with only its field. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Publicación en e-commerce"
+                    description="Qué necesita un producto para publicarse en bloque."
+                  >
+                    <PublicationSettings
+                      companyId={companyId}
+                      requiresImage={config.settings.publication_requires_image ?? false}
+                      canEdit={canEdit}
                       onSaved={setConfig}
                     />
                   </DashboardSection>

@@ -40,6 +40,7 @@ from .auth_views import (
 from .admin_views import (
     AdminUserListView, AdminUserRoleView, AdminAuditLogListView,
     AdminProductListView, AdminProductDetailView, AdminProductInventoryAdjustView,
+    AdminProductBulkVisibilityView,
     AdminCategoryDetailView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
@@ -82,6 +83,8 @@ from .import_views import (
     AdminImportInspectView,
     AdminImportJobView,
     AdminInventoryExportView,
+    AdminProductImagesImportApplyView,
+    AdminProductImagesImportRulesView,
     AdminProductImportApplyView,
     AdminProductImportPreviewView,
     AdminProductTemplateView,
@@ -91,6 +94,7 @@ from .import_views import (
     AdminUnitImportTemplateView,
     AdminStockImportPreviewView,
 )
+from .inventory_export_views import AdminInventoryExportsView
 from .promotion_views import (
     AdminCouponView,
     AdminPosCombosView,
@@ -212,6 +216,7 @@ urlpatterns = [
     path('admin/users/<int:pk>/role/', AdminUserRoleView.as_view(), name='admin-user-role'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     path('admin/products/', AdminProductListView.as_view(), name='admin-products'),
+    path('admin/products/bulk-visibility/', AdminProductBulkVisibilityView.as_view(), name='admin-product-bulk-visibility'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
@@ -398,6 +403,10 @@ urlpatterns = [
     path('admin/products/import/preview/', AdminProductImportPreviewView.as_view(), name='admin-product-import-preview'),
     path('admin/products/import/<int:pk>/apply/', AdminProductImportApplyView.as_view(), name='admin-product-import-apply'),
     path('admin/products/import/template/', AdminProductTemplateView.as_view(), name='admin-product-template'),
+    # INVENTORY-UNIFIED-01: pictures in bulk. The preview is `products/import/preview/` with
+    # `kind=images` (the one route sized for it); these two carry no file.
+    path('admin/products/images/import/rules/', AdminProductImagesImportRulesView.as_view(), name='admin-product-images-import-rules'),
+    path('admin/products/images/import/<int:pk>/apply/', AdminProductImagesImportApplyView.as_view(), name='admin-product-images-import-apply'),
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
@@ -415,6 +424,8 @@ urlpatterns = [
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),
+    # INVENTORY-UNIFIED-01: the catalogue, the quantities, the devices and all three in a ZIP.
+    path('admin/inventory/exports/<str:kind>/', AdminInventoryExportsView.as_view(), name='admin-inventory-exports'),
     path('admin/sales/commission-settings/', AdminCommissionSettingsView.as_view(), name='admin-commission-settings'),
     path('admin/sales/commission-settings/<int:pk>/', AdminCommissionSettingsView.as_view(), name='admin-commission-setting-detail'),
     path('admin/sales/replenishment/', AdminSalesReplenishmentView.as_view(), name='admin-sales-replenishment'),

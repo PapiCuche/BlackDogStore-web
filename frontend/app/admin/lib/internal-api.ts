@@ -357,6 +357,8 @@ export type CompanySettingsPayload = {
   risk_review_amount: string | null;
   /** CLIENT-SEC-01: whether an order waiting for its review may be sent or handed over. */
   hold_orders_pending_review: boolean;
+  /** INVENTORY-UNIFIED-01: whether publishing in bulk asks for a picture. Off as created. */
+  publication_requires_image?: boolean;
   updated_at: string;
 };
 
@@ -1436,7 +1438,7 @@ export type ImportMediaSummary = {
 
 export type ImportJob = {
   id: number;
-  import_type: "products" | "stock" | "units";
+  import_type: "products" | "stock" | "units" | "product_images";
   status: "previewed" | "applied" | "failed";
   stock_mode: string;
   original_filename: string;
@@ -1461,6 +1463,17 @@ export type ImportJob = {
     sheets?: string[];
     applied?: Record<string, number>;
     media?: ImportMediaSummary;
+    /** Carga de productos: cuántos que ya existen pasan a la web o salen de ella. */
+    destination_changes?: { to_web: number; to_internal: number };
+    /** Carga de productos: filas que piden la web para un producto no elegible. Se carga, y no se publica. */
+    publication_refused?: number;
+    /** Sólo en una carga de imágenes (`product_images`). */
+    products?: number;
+    images_to_add?: number;
+    images_to_remove?: number;
+    unmatched?: number;
+    /** La palabra que hay que escribir para aplicar un reemplazo. Vacía si no lo es. */
+    confirm_word?: string;
   };
   created_at: string;
   applied_at: string | null;
@@ -1608,7 +1621,7 @@ export async function applyImport(
 
 export async function fetchImportHistory(
   companyId: number | null,
-  importType?: "products" | "stock",
+  importType?: ImportJob["import_type"],
 ): Promise<ImportJob[]> {
   const qs = new URLSearchParams();
   if (companyId) qs.set("company", String(companyId));
@@ -1616,6 +1629,84 @@ export async function fetchImportHistory(
   const res = await fetchWithAuth(`${API_BASE}/admin/imports/?${qs}`);
   if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar el historial."));
   return (await res.json()).results ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// INVENTORY-UNIFIED-01 — «¿Qué archivo tengo?» y las imágenes en lote
+// ---------------------------------------------------------------------------
+
+/** A qué carga pertenece un libro, según el servidor. `forbidden`: una que esta persona no puede hacer. */
+export type ImportSuggestion = {
+  suggested_import_type: "products" | "stock" | "units" | "images" | "report" | "unknown" | "forbidden";
+  suggestion_reason: string;
+  /** La frase que se muestra tal cual. */
+  suggestion_detail: string;
+  suggestion_sheet: string;
+  sheet_names: string[];
+};
+
+/** Cómo se nombra un archivo de imagen y qué admite una carga. Lo dice el servidor. */
+export type ImageImportRules = {
+  pattern: string;
+  suffixes: string[];
+  examples: string[];
+  confirm_word: string;
+  workbook: { sheet: string; headers: string[] };
+  max_per_product: number;
+  image_rules?: ImageRules | null;
+};
+
+export type ImageImportMode = "add" | "replace";
+
+/**
+ * «¿Qué archivo tengo?»: la inspección de siempre, pidiendo sólo a qué carga va
+ * el libro. El servidor mira los nombres de las hojas y las cabeceras; no
+ * guarda nada ni empieza ninguna carga.
+ */
+export function whichImport(companyId: number | null, file: File): Promise<ImportSuggestion> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("import_type", "auto");
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(`/admin/imports/inspect/${qs}`, form, "No se pudo leer el archivo.");
+}
+
+/**
+ * Imágenes en lote, sin libro de productos. Viaja por la vista previa de la
+ * carga de productos (`kind=images`): es la única ruta dimensionada para llevar
+ * un lote de imágenes. No coloca nada: devuelve qué pasaría.
+ */
+export function previewImageImport(
+  companyId: number | null,
+  opts: { images: File[]; imagesZip?: File | null; book?: File | null; mode: ImageImportMode; useMain: boolean },
+): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("kind", "images");
+  form.append("mode", opts.mode);
+  if (opts.useMain) form.append("use_main", "true");
+  for (const image of opts.images) form.append("images", image);
+  if (opts.imagesZip) form.append("images_zip", opts.imagesZip);
+  if (opts.book) form.append("file", opts.book);
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  return postForm(`/admin/products/import/preview/${qs}`, form, "No se pudieron revisar las imágenes.");
+}
+
+/** Coloca lo previsualizado. `confirm` es la palabra que pide un reemplazo. */
+export async function applyImageImport(companyId: number | null, jobId: number, confirm?: string): Promise<ImportJob> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/images/import/${jobId}/apply/${qs}`, {
+    method: "POST",
+    body: JSON.stringify(confirm ? { confirm } : {}),
+  });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron aplicar las imágenes."));
+  return res.json();
+}
+
+export async function fetchImageImportRules(companyId: number | null): Promise<ImageImportRules> {
+  const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
+  const res = await fetchWithAuth(`${API_BASE}/admin/products/images/import/rules/${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron leer las reglas de imágenes."));
+  return res.json();
 }
 
 /** Absolute URLs for the browser to navigate to — downloads, not fetches. */
