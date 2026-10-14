@@ -141,6 +141,10 @@ describe('SalesNoteVoidDialog', () => {
     const confirm = within(dialog).getByRole('button', { name: 'Anular nota' });
     expect(confirm).toBeDisabled();
 
+    // A valid reason without a type is not enough.
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Nota   de prueba' } });
+    expect(confirm).toBeDisabled();
+
     fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: '   abc    ' } });
     fireEvent.click(within(dialog).getByLabelText('Prueba'));
     expect(confirm).toBeDisabled();

@@ -170,6 +170,11 @@ class WhoMayVoidTest(_Base):
         note.refresh_from_db()
         self.assertEqual(note.status, SalesNote.STATUS_ISSUED)
 
+    def test_the_master_without_a_company_is_not_authorised(self):
+        self.assertTrue(control.may_void(self.master, self.company))
+        self.assertFalse(control.may_void(self.master, None))
+        self.assertFalse(control.may_void(self.manager, self.company))
+
     def test_a_member_of_another_company_never_reaches_the_note(self):
         stranger, _ = _p2d_member(self.other, 'ajeno_ctl', ['company.view', 'sales.notes.manage'])
         client = APIClient()
