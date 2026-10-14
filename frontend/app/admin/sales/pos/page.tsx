@@ -36,6 +36,7 @@
  */
 
 import { PosPrintNotice } from "./PosPrintNotice";
+import { ThermalPrintHint } from "../../components/ThermalPrintHint";
 import { retryPrintJob } from "../../lib/printing-api";
 import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
@@ -724,6 +725,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
               >
                 {printing === "a4" ? "Generando…" : "PDF A4"}
               </button>
+              <ThermalPrintHint className="basis-full text-center" />
             </div>
           ) : null}
 

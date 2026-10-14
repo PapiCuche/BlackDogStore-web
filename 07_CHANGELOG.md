@@ -3,6 +3,45 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — PRINT-THERMAL-01: la térmica nunca recibe PDF ni PostScript
+
+Rama `fix/print-thermal` sobre `master` `abfc6bd`. Sin push ni despliegue.
+
+**Fixed**
+- El servidor y el agente de impresión rechazan, con el motivo, un trabajo cuyos bytes son
+  un PDF o un PostScript, que no es ESC/POS o de un tipo desconocido. Nunca se envía.
+
+**Added**
+- Agente: `printers` en `config.json` con transporte `tcp` (por defecto) o `cups_raw`
+  (`lp -d <cola> -o raw`) para una térmica USB; no arranca sobre una cola cuyo controlador
+  es PostScript o PDF.
+- Prueba de impresión corta (ESC/POS, por la cola) y prueba en PDF de 80 mm, desde
+  Administración › Impresoras. API: `POST /api/admin/printing/printers/<id>/test/`,
+  `GET /api/admin/printing/test-page/`.
+- Junto al PDF de 80 mm y los botones de imprimir: el PDF de 80 mm va con el controlador
+  de la propia térmica; la impresión directa, por el agente.
+- `docs/despliegue-produccion.md` §6.5.1 «Impresora térmica en macOS».
+
+**Changed (revisión independiente)**
+- `cups_raw` comprueba la cola con `lpstat` antes de enviar y espera a que el trabajo salga;
+  si no sale, `queued_not_printed`: fallido sin reintento. Los rechazos del agente tampoco
+  se reintentan. Una prueba sin recoger caduca a los 10 minutos; reenviarla exige
+  `company.manage`; una prueba por clic.
+- `docs/despliegue-produccion.md` §7: borrar las pruebas antes de volver atrás. §6.5.1
+  opción B: dejar de usar la cola PostScript (`cupsreject` o `lpadmin -x`) y otra
+  impresora por omisión.
+
+**Changed (segunda revisión)**
+- Un trabajo retenido en CUPS (`queued_not_printed`) queda en el diario del agente y nunca
+  vuelve a CUPS, aunque se pierda el aviso; el aviso se repite hasta que llega. Un error de
+  `lpstat` tras `lp` cuenta como retenido. «Reenviar» da un uid nuevo.
+  `cups_wait_seconds` entre 1 y 45. Actualizar el servidor antes que los agentes.
+
+**Migration**
+- `0124_printjob_test_ticket_print_thermal`: tipo `test_ticket`, `PrintJob.order` admite
+  vacío sólo para ese tipo. El PR #119 también trae una `0124`: la segunda en fusionarse
+  pasa a `0125`.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, connection, transaction
@@ -43,6 +44,14 @@ RETRY_DELAYS = (10, 30, 60, 120)
 MAX_AGE_HOURS = 12
 #: Un agente que no pregunta desde hace más que esto se considera desconectado.
 AGENT_ONLINE_SECONDS = 120
+#: Una prueba de impresión que nadie recogió en este tiempo ya no sirve: quien
+#: la pidió está delante de la impresora ahora, no dentro de una hora. Además,
+#: pocas pruebas pendientes facilitan volver a la versión anterior.
+TEST_MAX_AGE_SECONDS = 600
+#: Lo que el agente da por terminado sin éxito y no se debe reintentar solo:
+#: `refused` (los bytes no eran ESC/POS) y `queued_not_printed` (CUPS aceptó el
+#: trabajo y no consta impreso; repetirlo podría imprimir dos veces).
+FINAL_OUTCOMES = ('refused', 'queued_not_printed')
 TOKEN_PREFIX = 'bdpa_'
 
 
@@ -56,6 +65,15 @@ class PrintNotFound(PrintError):
 
 class PrintConflict(PrintError):
     """La entrega con la que se intenta cerrar ya no es la vigente."""
+
+
+class PrintPayloadRejected(PrintError):
+    """
+    Lo que saldría hacia la impresora no es un ticket ESC/POS. PRINT-THERMAL-01.
+
+    No es pasajero —volver a intentarlo da los mismos bytes—, así que el trabajo
+    se cierra como fallido con este motivo y no se reintenta solo.
+    """
 
 
 # -- agentes ---------------------------------------------------------------------
@@ -215,6 +233,35 @@ def enqueue_manual(*, order, printer, key: str, actor):
     )
 
 
+def enqueue_test(*, printer, key: str, actor):
+    """
+    La prueba de impresión: unas pocas líneas en esta impresora. PRINT-THERMAL-01.
+
+    No es de ningún pedido. Se pide antes del primer ticket de verdad, para ver
+    el ancho, los acentos y el corte sin gastar papel. `key` la pone quien
+    llama (la cabecera `Idempotency-Key`): un doble clic no imprime dos.
+    """
+    if not printer.is_active:
+        raise PrintError('Esa impresora no está disponible.')
+    key = (key or '').strip()
+    if not key:
+        raise PrintError('Falta la clave de idempotencia.')
+    full_key = f'test:{key}'[:120]
+    earlier = PrintJob.objects.filter(company=printer.company, idempotency_key=full_key).first()
+    if earlier is not None and earlier.printer_id != printer.pk:
+        raise PrintConflict('Esa clave ya se usó para otra prueba.')
+    return _get_or_create(
+        key=full_key, company=printer.company, branch=printer.branch, printer=printer,
+        kind=PrintJob.Kind.TEST_TICKET, reason=PrintJob.Reason.MANUAL, order=None,
+        requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
+    )
+
+
+def _sale_still_paid(job) -> bool:
+    """Una prueba no es de ninguna venta; un ticket, sólo si su pedido sigue pagado."""
+    return job.kind == PrintJob.Kind.TEST_TICKET or _is_authoritative(job.order)
+
+
 # -- entregar --------------------------------------------------------------------
 
 def _requeue_expired(branch, now) -> None:
@@ -226,6 +273,13 @@ def _requeue_expired(branch, now) -> None:
     expired.filter(attempts__lt=MAX_ATTEMPTS).update(
         status=PrintJob.Status.PENDING, claim_token='', lease_expires_at=None,
         available_at=None, updated_at=now)
+    # Una prueba de impresión caduca en minutos.
+    PrintJob.objects.filter(
+        branch=branch, status=PrintJob.Status.PENDING, kind=PrintJob.Kind.TEST_TICKET,
+        created_at__lt=now - timedelta(seconds=TEST_MAX_AGE_SECONDS),
+    ).update(
+        status=PrintJob.Status.FAILED, updated_at=now,
+        last_error='La prueba caducó sin imprimirse: nadie la recogió a tiempo.')
     # Lo que lleva demasiado en la cola ya no se imprime.
     PrintJob.objects.filter(
         branch=branch, status=PrintJob.Status.PENDING,
@@ -264,7 +318,7 @@ def claim_next(agent):
             )
             if job is None:
                 return None
-            if not _is_authoritative(job.order):
+            if not _sale_still_paid(job):
                 job.status = PrintJob.Status.CANCELLED
                 job.last_error = 'El pedido ya no está pagado.'
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
@@ -318,16 +372,45 @@ def deactivate_printer(printer) -> None:
             updated_at=timezone.now())
 
 def render(job) -> bytes:
-    """Los bytes que la impresora de este trabajo tiene que recibir."""
+    """
+    Los bytes que la impresora de este trabajo tiene que recibir.
+
+    SÓLO ESC/POS. Un tipo de documento que no se conoce, o unos bytes que no son
+    un ticket ESC/POS (un PDF, un PostScript), levantan `PrintPayloadRejected`
+    en vez de salir hacia la térmica. PRINT-THERMAL-01.
+    """
     from . import escpos
 
     options = {'paper_width_mm': job.printer.paper_width_mm, 'encoding': job.printer.encoding}
     if job.kind == PrintJob.Kind.FISCAL_TICKET:
-        return escpos.fiscal_ticket(job.fiscal_document, **options)
-    return escpos.sales_note_ticket(job.sales_note, **options)
+        payload = escpos.fiscal_ticket(job.fiscal_document, **options)
+    elif job.kind == PrintJob.Kind.SALES_NOTE_TICKET:
+        payload = escpos.sales_note_ticket(job.sales_note, **options)
+    elif job.kind == PrintJob.Kind.TEST_TICKET:
+        payload = escpos.test_print_ticket(
+            company_name=job.company.name, printer_name=job.printer.name,
+            printed_at=timezone.localtime(job.created_at), **options)
+    else:
+        raise PrintPayloadRejected(
+            f'Tipo de documento desconocido para la térmica ({job.kind}): no se imprime.')
+    problem = escpos.payload_problem(payload)
+    if problem:
+        raise PrintPayloadRejected(problem)
+    return payload
 
 
-def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
+def reject_payload(job, reason: str) -> None:
+    """Cierra como fallido un trabajo cuyos bytes no son para una térmica."""
+    job.status = PrintJob.Status.FAILED
+    job.claim_token = ''
+    job.lease_expires_at = None
+    job.available_at = None
+    job.last_error = ' '.join(str(reason).split())[:300]
+    job.save(update_fields=[
+        'status', 'claim_token', 'lease_expires_at', 'last_error', 'available_at', 'updated_at'])
+
+
+def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = '', outcome: str = ''):
     """
     El agente dice cómo terminó una entrega.
 
@@ -356,7 +439,7 @@ def complete(agent, job_id, claim_token: str, *, ok: bool, error: str = ''):
             job.last_error = ''
         else:
             job.last_error = ' '.join(str(error or 'La impresora no respondió.').split())[:300]
-            if job.attempts >= MAX_ATTEMPTS:
+            if outcome in FINAL_OUTCOMES or job.attempts >= MAX_ATTEMPTS:
                 job.status = PrintJob.Status.FAILED
             else:
                 job.status = PrintJob.Status.PENDING
@@ -372,7 +455,7 @@ def retry(job, *, actor):
     """Una persona vuelve a mandar un trabajo fallido o cancelado."""
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
-    if not _is_authoritative(job.order):
+    if not _sale_still_paid(job):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if not job.printer.is_active:
         # La impresora de entonces ya no existe: va a la que el local tiene hoy.
@@ -381,6 +464,10 @@ def retry(job, *, actor):
         if replacement is None:
             raise PrintError('Este local no tiene una impresora disponible.')
         job.printer = replacement
+    # UNA ENTREGA NUEVA, CON OTRO IDENTIFICADOR. El agente no vuelve a mandar
+    # un uid que ya entregó (impreso, o retenido en una cola de CUPS); quien
+    # pulsa «Reenviar» pide otra impresión, a sabiendas. PRINT-THERMAL-01.
+    job.uid = uuid.uuid4()
     job.status = PrintJob.Status.PENDING
     job.attempts = 0
     job.claim_token = ''
@@ -392,6 +479,6 @@ def retry(job, *, actor):
     if getattr(actor, 'is_authenticated', False):
         job.requested_by = actor
     job.save(update_fields=[
-        'printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
+        'uid', 'printer', 'status', 'attempts', 'claim_token', 'lease_expires_at', 'available_at',
         'last_error', 'created_at', 'requested_by', 'updated_at'])
     return job

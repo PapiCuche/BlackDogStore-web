@@ -1369,7 +1369,64 @@ serios. Cambian tres decisiones anteriores:
 - **Redes escritas a mano.** `is_private` cambia entre versiones de Python (una IPv4
   metida en una IPv6 pasaba por privada). Servidor y agente comparan contra la lista
   explícita de redes locales. El agente no sigue redirecciones.
-- **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera.
+- **Límite conocido.** Sólo impresoras en red. USB y Bluetooth quedan fuera. (USB por
+  una cola RAW de CUPS desde PRINT-THERMAL-01, ver DEC-PRINT-THERMAL-01.)
+
+### DEC-PRINT-THERMAL-01 · Una térmica ESC/POS nunca recibe PDF ni PostScript
+
+- **Causa (2026-10-14).** El propietario imprimió el PDF de 80 mm de una nota (un PDF
+  válido de una página, 80 × ~130 mm) desde Vista Previa en la cola de CUPS
+  `STMicroelectronics_USB_POS_Printer`, cuyo PPD es «Generic PostScript Printer». CUPS
+  convirtió el PDF en PostScript y se lo mandó a una impresora ESC/POS, que imprimió el
+  código fuente (`%!PS-Adobe-3.0 …`) como texto y gastó el rollo. La aplicación no envió
+  PostScript: el controlador de la cola era el equivocado.
+- **Tres caminos, separados.** (1) PDF A4: se descarga y se imprime en hojas. (2) PDF de
+  80 mm: se descarga o se imprime con el controlador **de la propia térmica**. (3) Ticket
+  ESC/POS: sólo por la cola del servidor y el agente, con un transporte configurado a
+  propósito. El navegador no imprime por USB por su cuenta, y no se promete.
+- **Guarda en las dos puntas.** El servidor (`render`) y el agente se niegan a enviar
+  unos bytes que empiezan como un PDF (`%PDF`) o un PostScript (`%!`) —también tras
+  blancos, una marca de orden de bytes, un Ctrl-D o un envoltorio PJL—, que no empiezan
+  por `ESC @`, o de un tipo de documento que no conocen. El trabajo queda «Falló» con el
+  motivo; el servidor no lo reintenta solo. El agente lleva una copia de la regla porque
+  se instala como un archivo suelto; una prueba comprueba que las dos coinciden.
+- **Transporte explícito en el agente.** `printers` en `config.json`, por el nombre del
+  panel: `tcp` (lo de siempre y lo que vale sin configurar) o `cups_raw` con una `queue`
+  de nombre validado. `cups_raw` ejecuta `lp -d <cola> -o raw` con una lista de
+  argumentos, sin intérprete, y con tiempo máximo. Al arrancar lee el controlador con
+  `lpoptions -p` (sólo lee) y no arranca si la cola no existe o dice PostScript o PDF.
+  El panel no tiene todavía un tipo «USB»: con `cups_raw` la dirección se guarda pero no
+  se usa (deuda PRINT-USB-PANEL; evitarla habría sido un segundo cambio de esquema).
+- **Probar antes de gastar.** Un trabajo `test_ticket` (sin pedido; una restricción lo
+  permite sólo para ese tipo, migración `0124_printjob_test_ticket_print_thermal`) de unas
+  ocho líneas: tienda, «PRUEBA DE IMPRESIÓN», fecha, la regla de 48 (o 32) columnas,
+  `áéíóú ñ Ñ ¿¡ S/` y la instrucción de parar la cola si sale texto técnico; avance y
+  corte. Y la misma prueba en un PDF de 80 mm para comprobar un controlador de CUPS.
+- **Fijado, sin cambiar el diseño.** ESC/POS: `ESC @`, `ESC t 19` (cp858), ningún renglón
+  más ancho que 48/32 columnas, la letra sin acento antes que un `?` en una página que no
+  la tiene, `ESC d 3` y un solo corte al final. PDF de 80 mm: 226,77 pt, una página, texto
+  dentro de los márgenes de 4 mm, altura según el contenido. Las pruebas no encontraron
+  ningún defecto de formato.
+- **Revisión independiente (sin P0/P1).** `lp` termina bien cuando el trabajo entra en la
+  cola, no cuando sale: con `cups_raw` el agente comprueba antes con `lpstat -p/-a` (en
+  `LC_ALL=C`) que la cola está activa y acepta, y después espera hasta `cups_wait_seconds`
+  (30 s) a que el número de trabajo salga de `lpstat -W not-completed`. Si no sale, si `lp`
+  no contesta o no da número, el resultado es `queued_not_printed`: no se apunta en el
+  diario y el servidor lo cierra como fallido **sin reintentarlo** (podría salir dos
+  veces); igual con un rechazo del agente (`refused`). Una prueba sin recoger caduca a los
+  10 minutos; reenviar una prueba exige `company.manage`; el panel usa una clave por clic
+  y desactiva el botón mientras dura. Para volver a la versión anterior se **borran** las
+  pruebas (no se cancelan: la versión anterior rompe al mirar su pedido, también al
+  reenviar una cancelada).
+- **Segunda revisión: lo que CUPS ya tiene no se manda otra vez.** Un
+  `queued_not_printed` se apunta en el diario del agente ANTES de avisar (el uid entra en
+  los entregados, con su resultado): si el aviso se pierde y el plazo de 90 s vence, el
+  servidor vuelve a entregarlo y el agente contesta lo mismo sin pasar por CUPS, y repite
+  el aviso hasta que el servidor lo recibe. Cualquier error del `lpstat` de espera, con
+  el trabajo ya aceptado por `lp`, cuenta como «sigue en la cola». «Reenviar» en el panel
+  da al trabajo un uid nuevo: es otra impresión, pedida a sabiendas. `cups_wait_seconds`
+  va de 1 a 45 para caber en el plazo. El estado de `lpstat` se lee detrás del nombre de
+  la cola. Primero se actualiza el servidor; después, los agentes con `cups_raw`.
 
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda
 

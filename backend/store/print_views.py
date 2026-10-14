@@ -85,6 +85,12 @@ class PrintAgentClaimView(APIView):
                 return Response({'job': None})
             try:
                 payload = printing.render(job)
+            except printing.PrintPayloadRejected as exc:
+                # No es un ticket ESC/POS: la térmica lo imprimiría como texto.
+                # Se cierra con el motivo, sin reintentos. PRINT-THERMAL-01.
+                logger.error('Trabajo de impresión %s rechazado: %s', job.pk, exc)
+                printing.reject_payload(job, str(exc))
+                continue
             except Exception:  # noqa: BLE001
                 logger.exception('Trabajo de impresión %s: no se pudo preparar.', job.pk)
                 printing.release_unrenderable(
@@ -120,7 +126,8 @@ class PrintAgentResultView(APIView):
         try:
             job = printing.complete(
                 agent, pk, str(data.get('claim_token') or ''),
-                ok=data.get('ok') is True, error=str(data.get('error') or ''))
+                ok=data.get('ok') is True, error=str(data.get('error') or ''),
+                outcome=str(data.get('outcome') or ''))
         except printing.PrintNotFound:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         except printing.PrintConflict as exc:
@@ -321,6 +328,77 @@ class AdminPrinterDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class AdminPrinterTestView(APIView):
+    """
+    POST /api/admin/printing/printers/<id>/test/?company=<id> — prueba de impresión.
+
+    PRINT-THERMAL-01. Unas pocas líneas ESC/POS por la cola y el agente, antes
+    de gastar un ticket entero. Cabecera `Idempotency-Key`: un doble clic no
+    imprime dos pruebas.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminUsersThrottle]
+
+    def post(self, request, pk):
+        company, error = _context(request, CAP_CONFIGURE)
+        if error:
+            return error
+        printer = Printer.objects.select_related('branch').filter(
+            pk=pk, company=company, branch__in=visible_branches(request.user, company)).first()
+        if printer is None:
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        key = (request.headers.get('Idempotency-Key') or '').strip()
+        if not key:
+            return Response(
+                {'detail': 'Falta la cabecera Idempotency-Key.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        existed = PrintJob.objects.filter(
+            company=company, idempotency_key=f'test:{key}'[:120]).exists()
+        try:
+            job = printing.enqueue_test(printer=printer, key=key, actor=request.user)
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except printing.PrintError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if not existed:
+            AdminAuditLog.log(
+                actor=request.user, action='print_test_requested', target_type='print_job',
+                target_id=job.pk, metadata={'printer_id': printer.pk},
+                request=request, company=company)
+        return Response(
+            _job_payload(job),
+            status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED)
+
+
+class AdminPrintTestPageView(APIView):
+    """
+    GET /api/admin/printing/test-page/?company=<id> — la prueba en PDF de 80 mm.
+
+    PRINT-THERMAL-01. Para comprobar, sin gastar un ticket, que el controlador
+    de la impresora del equipo imprime un PDF de 80 mm. No toca la cola.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminUsersThrottle]
+
+    def get(self, request):
+        from django.http import HttpResponse
+        from django.utils import timezone
+
+        from .printing import trial
+
+        company, error = _context(request, (CAP_CONFIGURE, *CAP_OPERATE))
+        if error:
+            return error
+        pdf = trial.test_page_pdf(
+            company_name=company.name, printed_at=timezone.localtime(timezone.now()))
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{trial.FILENAME}"'
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
 def _agent_payload(agent: PrintAgent) -> dict:
     return {
         'id': agent.pk, 'branch': agent.branch_id, 'branch_name': agent.branch.name,
@@ -486,6 +564,11 @@ class AdminPrintJobRetryView(APIView):
             pk=pk, company=company, branch__in=visible_branches(request.user, company)).first()
         if job is None:
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if job.kind == PrintJob.Kind.TEST_TICKET:
+            # Una prueba la manda quien configura las impresoras, y la reenvía él.
+            _company, error = _context(request, CAP_CONFIGURE)
+            if error:
+                return error
         try:
             job = printing.retry(job, actor=request.user)
         except printing.PrintError as exc:

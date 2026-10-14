@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — PRINT-THERMAL-01 en rama local (`fix/print-thermal`)
+
+Commits locales sobre `master` `abfc6bd`; sin push, sin PR, sin despliegue.
+
+- **Causa del papel gastado:** la cola de CUPS de la térmica USB del propietario usa
+  «Generic PostScript Printer»; al imprimir el PDF de 80 mm desde Vista Previa la térmica
+  recibió PostScript y lo imprimió como texto. No fue la aplicación (DEC-PRINT-THERMAL-01).
+- **Qué cambia:** guarda «sólo ESC/POS» en servidor y agente; transporte `cups_raw` del
+  agente para una térmica USB (cola RAW); prueba de impresión corta y prueba en PDF de 80 mm
+  en Administración › Impresoras; frase sobre el controlador junto a los botones de imprimir.
+- **Migración `0124_printjob_test_ticket_print_thermal`.** Choca en número con la `0124` del
+  PR #119: renumerar la que se fusione después.
+- **Pendiente del propietario (en su Mac, ver `docs/despliegue-produccion.md` §6.5.1):**
+  vaciar la cola (`cancel -a STMicroelectronics_USB_POS_Printer`), instalar el controlador
+  del fabricante (PDF de 80 mm) o crear la cola RAW `POS80_RAW` (agente), y hacer la prueba
+  corta antes del primer ticket. Nada de eso se ejecutó desde aquí.
+- **Revisión independiente** (sin P0/P1; 2 P2 y 4 P3 corregidos en `f2212c1`, `ccacce3`):
+  `cups_raw` espera a que CUPS saque el trabajo y, si no, lo da por fallido sin reintento;
+  los rechazos no se reintentan; pruebas que caducan a los 10 min; reenviar una prueba exige
+  `company.manage`; una prueba por clic. Segunda revisión (`be04ee4`): un trabajo retenido
+  en CUPS queda en el diario del agente y no vuelve a CUPS aunque se pierda el aviso;
+  «Reenviar» da un uid nuevo; `cups_wait_seconds` ≤ 45. **Vuelta atrás:** borrar antes las pruebas de
+  impresión (`docs/despliegue-produccion.md` §7).
+- **Deuda:** PRINT-USB-PANEL — el panel no tiene un tipo de impresora «USB»; con
+  `cups_raw` la dirección guardada no se usa. PRINT-OUTCOME-OLD-SERVER — desplegar el
+  servidor antes que los agentes nuevos.
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |

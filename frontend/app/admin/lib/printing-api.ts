@@ -24,7 +24,8 @@ export type CreatedPrintAgent = PrintAgent & { token: string };
 export type PrintJobStatus = "pending" | "printing" | "printed" | "failed" | "cancelled";
 
 export type PrintJob = {
-  id: number; kind: string; reason: string; status: PrintJobStatus; order: number; branch: number;
+  /** `order` es nulo sólo en una prueba de impresión (`kind: "test_ticket"`). */
+  id: number; kind: string; reason: string; status: PrintJobStatus; order: number | null; branch: number;
   printer: number; printer_name: string; attempts: number; last_error: string;
   created_at: string; printed_at: string | null;
 };
@@ -108,4 +109,44 @@ export async function retryPrintJob(companyId: number | null, id: number): Promi
   const res = await fetchWithAuth(
     `${API_BASE}/admin/printing/jobs/${id}/retry/${query(companyId)}`, json("POST", {}));
   return handle<PrintJob>(res, "No se pudo reenviar el trabajo.");
+}
+
+/** Una clave por acción de quien usa el panel: un doble clic reusa la misma. */
+export function newIdempotencyKey(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * PRINT-THERMAL-01. Unas pocas líneas ESC/POS en esta impresora, por la cola y
+ * el agente del local, antes de gastar un ticket entero. `key` la pone quien
+ * llama, una por acción: repetir la petición con la misma no imprime dos.
+ */
+export async function requestTestPrint(
+  companyId: number | null, printerId: number, key: string,
+): Promise<PrintJob> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/printing/printers/${printerId}/test/${query(companyId)}`,
+    json("POST", {}, { "Idempotency-Key": key }));
+  return handle<PrintJob>(res, "No se pudo enviar la prueba de impresión.");
+}
+
+/**
+ * La misma prueba en un PDF de 80 mm, para comprobar el controlador de la
+ * impresora de este equipo sin gastar un ticket. Sólo se descarga: imprimirla
+ * es cosa del sistema, con el controlador de la propia térmica.
+ */
+export async function downloadTestPage(companyId: number | null): Promise<void> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/printing/test-page/${query(companyId)}`);
+  if (!res.ok) await handle<void>(res, "No se pudo descargar la prueba en PDF.");
+  const served = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1];
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = served ?? "prueba-impresion-ticket80.pdf";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
