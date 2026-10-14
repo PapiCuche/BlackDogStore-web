@@ -73,6 +73,9 @@ texto: sale `%!PS-Adobe-3.0 …` y metros de papel. Por eso:
    ticket entero. Si sale texto técnico (`%!PS`, `%PDF`), se apaga la impresora y se
    vacía la cola (`cancel -a <cola>`).
 
+**La cola RAW es sólo para el agente.** No se elige en el diálogo de imprimir de un
+navegador o de Vista Previa: pasa los bytes tal cual, y un PDF saldría como texto.
+
 El nombre de la cola sólo admite letras, números, `_`, `-` y `.`; no puede empezar por
 guion. En el panel la impresora sigue pidiendo una dirección de la red del local: con
 `cups_raw` no se usa, y vale la del propio equipo del agente.

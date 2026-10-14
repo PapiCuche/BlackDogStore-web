@@ -674,6 +674,109 @@ HTTPS; **no se abre ningún puerto del local**.
 El detalle —garantías, límites y cómo dejarlo como servicio— está en
 `backend/print_agent/README.md`. Un agente perdido se revoca en el panel.
 
+**Tres caminos, separados** (PRINT-THERMAL-01). No se mezclan:
+
+| Qué | Cómo sale | Quién habla con la impresora |
+|---|---|---|
+| PDF A4 | Se descarga y se imprime en una impresora de hojas | El sistema del equipo |
+| PDF de 80 mm | Se descarga o se abre el diálogo de imprimir | El sistema del equipo, **con el controlador de la propia térmica** |
+| Ticket ESC/POS | Cola de impresión del servidor → agente del local | El agente, por red (`tcp`) o por una cola RAW de CUPS (`cups_raw`) |
+
+El navegador no imprime por USB por su cuenta: la impresión directa en la térmica es
+siempre la del agente. El servidor y el agente se niegan a enviar a la térmica unos
+bytes que sean un PDF o un PostScript.
+
+### 6.5.1 Impresora térmica en macOS
+
+**Qué pasó.** Una térmica USB de 80 mm («USB POS Printer», cola
+`STMicroelectronics_USB_POS_Printer`) quedó instalada en el Mac con el controlador
+**«Generic PostScript Printer»**. Al imprimir el PDF de 80 mm desde Vista Previa, macOS
+lo convierte en PostScript y se lo manda a una impresora que sólo entiende ESC/POS: la
+térmica escribe el PostScript como texto (`%!PS-Adobe-3.0`, `%%Creator`, `%%BoundingBox`…)
+y gasta el rollo. La aplicación no manda PostScript; el controlador de esa cola es el
+equivocado.
+
+Todo lo de abajo lo ejecuta el propietario en su Mac, en **Terminal**. Nada de esto lo
+hace la aplicación.
+
+**a) Cortar el gasto de papel, ya.**
+
+1. Apaga la impresora (o abre la tapa del papel).
+2. Vacía la cola:
+
+   ```sh
+   cancel -a STMicroelectronics_USB_POS_Printer
+   ```
+
+   Borra **sólo los trabajos pendientes** de esa cola. No borra la impresora ni cambia
+   su configuración. (Lo mismo, sin Terminal: Ajustes del Sistema › Impresoras y
+   escáneres › la térmica › Cola de impresión… › borrar cada trabajo.)
+3. Comprueba que está vacía: `lpstat -o STMicroelectronics_USB_POS_Printer` no
+   debe listar nada. Ya puedes volver a encenderla.
+
+**b) Opción A, recomendada para imprimir el PDF de 80 mm desde el Mac.**
+
+1. Averigua la marca y el modelo de la térmica (etiqueta de debajo o caja; el chip
+   «STMicroelectronics» lo usan muchas marcas) e instala **el controlador para macOS
+   (CUPS) de ese fabricante**.
+2. En Ajustes del Sistema › Impresoras y escáneres, elimina la térmica y vuelve a
+   añadirla; en «Usar», elige **el controlador del fabricante**, no «Generic PostScript
+   Printer» ni «Impresora PostScript genérica».
+3. En las opciones de la impresora, papel **80 mm** (el rollo que ofrezca el
+   controlador, por ejemplo «80 × 297 mm» o «Roll Paper 80 mm»), márgenes mínimos.
+4. Prueba primero con la **prueba en PDF de 80 mm** del panel (Administración ›
+   Impresoras › «Descargar prueba PDF 80 mm»): unas pocas líneas, no una nota entera.
+
+Si el fabricante no tiene controlador para macOS, usa la opción B y no imprimas el PDF
+de 80 mm en esa térmica desde el Mac.
+
+**c) Opción B, para el ticket directo (ESC/POS) por el agente.**
+
+1. Mira la URI de la térmica (sólo lee):
+
+   ```sh
+   lpstat -v STMicroelectronics_USB_POS_Printer
+   ```
+
+   Sale algo como `usb://STMicroelectronics/USB%20POS%20Printer?serial=…`.
+2. Crea una cola **RAW** con esa misma URI (cópiala entera, entre comillas simples):
+
+   ```sh
+   lpadmin -p POS80_RAW -E -v 'usb://STMicroelectronics/USB%20POS%20Printer?serial=…' -m raw
+   ```
+
+   CUPS avisa de que las colas RAW están «obsoletas» (*deprecated*); en macOS actual
+   siguen funcionando. Comprueba el controlador: `lpoptions -p POS80_RAW` debe decir
+   `printer-make-and-model='Local Raw Printer'` (o no decir PostScript ni PDF).
+3. En el panel, da de alta la impresora (Administración › Impresoras). Con `cups_raw` la
+   dirección no se usa; escribe la del propio Mac en la red del local.
+4. En el `config.json` del agente, con el **mismo nombre** que en el panel:
+
+   ```json
+   "printers": {"Caja": {"transport": "cups_raw", "queue": "POS80_RAW"}}
+   ```
+
+   El agente lee el controlador de la cola al arrancar y **no arranca** si la cola no
+   existe o si su controlador dice PostScript o PDF.
+5. **La cola RAW es sólo para el agente.** No la elijas en el diálogo de imprimir de
+   Vista Previa ni del navegador: una cola RAW pasa los bytes tal cual, y un PDF saldría
+   como texto igual que antes.
+
+**d) Siempre, antes del primer ticket de verdad: la prueba corta.** En el panel,
+Administración › Impresoras › «Imprimir prueba». Deben salir unas ocho líneas: el
+nombre de la tienda, «PRUEBA DE IMPRESIÓN», la fecha, una regla
+`123456789012345678901234567890123456789012345678` que ocupa **exactamente un renglón**
+(si se parte, el ancho configurado no es el de la impresora), los acentos
+`áéíóú ñ Ñ ¿¡ S/` bien escritos (si salen símbolos raros, la página de códigos no es la
+buena), y un avance con corte.
+
+**e) Cómo reconocer el fallo y pararlo.** Si en lugar de esas líneas sale texto técnico
+—`%!PS-Adobe-3.0`, `%%BoundingBox`, `%PDF-1.4`, `obj`, `endstream`— o la impresora no
+para de sacar papel: apágala, vacía la cola con `cancel -a <nombre de la cola>` (paso
+a) y revisa qué controlador tiene esa cola (`lpoptions -p <cola>`). En el panel, un
+trabajo que el servidor o el agente se negaron a enviar aparece en la cola reciente como
+«Falló», con el motivo («Son los bytes de un PDF…»).
+
 ## 7. Actualizar la web
 
 ```sh
