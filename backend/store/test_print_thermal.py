@@ -15,6 +15,7 @@ LO QUE SE FIJA AQUÍ, en las dos puntas de la cola:
 """
 import base64
 import os
+import re
 import tempfile
 
 from django.test import SimpleTestCase
@@ -531,3 +532,164 @@ class TestPagePdfTest(PrintApiBase):
 
         self.assertEqual(self.as_user(self.seller).get(self.URL + self.q()).status_code, 200)
         self.assertIn(APIClient().get(self.URL + self.q()).status_code, (401, 403))
+
+
+# ---------------------------------------------------------------------------
+# Lo que sale hoy por la térmica y en el PDF de 80 mm, fijado
+# ---------------------------------------------------------------------------
+
+#: Las órdenes de estilo que `Receipt` pone delante de un renglón.
+_STYLE = __import__('re').compile(rb'\x1b@|\x1bt.|\x1ba.|\x1bE.|\x1d!.|\x1bd.|\x1dVB.')
+
+
+def printed_lines(payload: bytes) -> list[bytes]:
+    """Los renglones de texto, sin órdenes de estilo, QR ni imagen."""
+    return [_STYLE.sub(b'', line) for line in payload.split(b'\n')
+            if b'\x1d(k' not in line and b'\x1dv0' not in line]
+
+
+class SalesNoteEscposPinTest(PrintingBase):
+    """El ticket ESC/POS de la nota de venta: ancho, códigos, avance y corte."""
+
+    def note(self, **issue):
+        from store.sales_note_services import get_or_create_sales_note
+
+        document = self.issue(**issue)
+        return get_or_create_sales_note(document.order, actor=None)[0]
+
+    def test_it_fits_the_roll_starts_clean_and_ends_with_feed_and_one_cut(self):
+        note = self.note(name='Ñahui Peña Ávila')
+        for width, columns in ((80, 48), (58, 32)):
+            with self.subTest(width=width):
+                payload = escpos.sales_note_ticket(note, paper_width_mm=width)
+
+                self.assertTrue(payload.startswith(b'\x1b@\x1bt\x13'))   # init + cp858
+                self.assertEqual(escpos.payload_problem(payload), '')
+                self.assertNotIn(b'%PDF-', payload)
+                self.assertNotIn(b'%!PS', payload)
+                self.assertEqual(payload.count(b'\x1dVB\x00'), 1)
+                self.assertTrue(payload.endswith(b'\x1bd\x03\x1dVB\x00'))
+                too_wide = [line for line in printed_lines(payload) if len(line) > columns]
+                self.assertEqual(too_wide, [])
+
+    def test_spanish_text_and_the_sol_sign_use_the_code_page(self):
+        payload = escpos.sales_note_ticket(self.note(name='Ñahui Peña Ávila'))
+
+        self.assertIn('Ñahui Peña Ávila'.encode('cp858'), payload)
+        self.assertIn(b'S/ 118.00', payload)
+
+    def test_a_code_page_without_a_letter_drops_the_accent_not_the_letter(self):
+        receipt = escpos.Receipt(encoding='cp437')
+        receipt.line('Ávila Ñandú ¿¡')
+
+        self.assertTrue(receipt.to_bytes().startswith(b'\x1b@\x1bt\x00'))
+        self.assertIn(b'Avila \xa5and\xa3 \xa8\xad', receipt.to_bytes())
+        self.assertTrue(escpos.Receipt(encoding='utf-8').to_bytes().startswith(b'\x1b@\x1bt\x13'))
+
+
+class Ticket80PdfPinTest(PrintingBase):
+    """El PDF de 80 mm de la nota: ancho, márgenes, una página y altura del contenido."""
+
+    def note(self, notes=''):
+        from store.models import Order
+        from store.sales_note_services import get_or_create_sales_note
+
+        document = self.issue()
+        if notes:
+            Order.objects.filter(pk=document.order_id).update(notes=notes)
+        return get_or_create_sales_note(document.order, actor=None)[0]
+
+    def measure(self, pdf: bytes):
+        import re
+
+        from store.test_document_design import media_box
+
+        width, height = media_box(pdf)
+        origins = [(float(x), float(y)) for x, y in re.findall(
+            rb'1 0 0 1 ([\d.]+) ([\d.]+) Tm', self.content(pdf))]
+        return width, height, origins
+
+    @staticmethod
+    def content(pdf: bytes) -> bytes:
+        import base64 as b64
+        import re
+        import zlib
+
+        out = b''
+        for body in re.findall(rb'[^d]stream\r?\n(.*?)endstream', pdf, re.S):
+            body = body.strip(b'\r\n')
+            if body.endswith(b'~>'):
+                body = b64.a85decode(body[:-2])
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                pass
+            out += body
+        return out
+
+    def test_80_mm_wide_one_page_inside_the_margins_and_as_tall_as_its_content(self):
+        from store.test_document_design import TICKET_WIDTH
+        from store.ticket_services import (
+            TICKET_MARGIN_MM, TICKET_WIDTH_MM, generate_sales_note_ticket_pdf,
+        )
+
+        self.assertEqual((TICKET_WIDTH_MM, TICKET_MARGIN_MM), (80, 4))
+        margin = 4 * 72 / 25.4
+        short = generate_sales_note_ticket_pdf(self.note())
+        long = generate_sales_note_ticket_pdf(self.note(notes='Entregar en recepción. ' * 40))
+
+        heights = []
+        for pdf in (short, long):
+            width, height, origins = self.measure(pdf)
+            self.assertAlmostEqual(width, TICKET_WIDTH, places=1)     # 226.77 pt
+            self.assertEqual(len(re.findall(rb'/Type /Page[^s]', pdf)), 1)
+            self.assertTrue(origins)
+            self.assertGreaterEqual(min(x for x, _y in origins), margin - 0.5)
+            self.assertGreaterEqual(min(y for _x, y in origins), margin - 0.5)
+            self.assertLessEqual(max(y for _x, y in origins), height - margin)
+            heights.append(height)
+        short_height, long_height = heights
+        # Unos 10–20 cm para una venta de una línea; la altura crece con el texto.
+        self.assertGreater(short_height, 100 * 72 / 25.4, short_height)
+        self.assertLess(short_height, 200 * 72 / 25.4, short_height)
+        self.assertGreater(long_height, short_height + 50)
+        self.assertLess(long_height, 400 * 72 / 25.4, long_height)
+
+
+class DownloadHeadersPinTest(PrintApiBase):
+    """A4 y 80 mm se descargan con nombres que no se confunden."""
+
+    def test_sales_note_a4_and_ticket80_are_distinct_pdf_downloads(self):
+        from store.sales_note_services import get_or_create_sales_note
+        from store.tests import _p2d_member
+
+        clerk, _ = _p2d_member(self.company, 'print_notas', ['company.view', 'sales.notes.manage'])
+        document = self.issue()
+        get_or_create_sales_note(document.order, actor=None)
+        url = f'/api/admin/orders/{document.order_id}/sales-note/pdf/{self.q()}'
+
+        a4 = self.as_user(clerk).get(url)
+        roll = self.as_user(clerk).get(url + '&formato=ticket80')
+
+        for res in (a4, roll):
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res['Content-Type'], 'application/pdf')
+            self.assertRegex(res['Content-Disposition'], r'^attachment; filename="[A-Za-z0-9._-]+\.pdf"$')
+        self.assertNotIn('ticket80', a4['Content-Disposition'])
+        self.assertIn('-ticket80.pdf"', roll['Content-Disposition'])
+
+    def test_fiscal_a4_and_ticket80_are_distinct_pdf_downloads(self):
+        from store.tests import _p2d_member
+
+        viewer, _ = _p2d_member(self.company, 'print_fiscal', ['company.view', 'sales.fiscal.view'])
+        document = self.issue()
+        url = f'/api/admin/fiscal-documents/{document.pk}/pdf/{self.q()}'
+
+        a4 = self.as_user(viewer).get(url)
+        roll = self.as_user(viewer).get(url + '&formato=ticket80')
+
+        for res in (a4, roll):
+            self.assertEqual(res.status_code, 200, getattr(res, 'data', None))
+            self.assertEqual(res['Content-Type'], 'application/pdf')
+        self.assertNotIn('ticket80', a4['Content-Disposition'])
+        self.assertIn('-ticket80.pdf"', roll['Content-Disposition'])
