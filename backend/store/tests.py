@@ -62549,11 +62549,16 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS,
         )
+        # …DC1 (`costs.view`) starts where QUOTE-DECISION ended…
+        latest = self.migration('0126_costs_view_capability')
+        self.assertEqual(
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
+        )
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
         self.assertEqual(
-            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
+            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 
