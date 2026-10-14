@@ -3,9 +3,39 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
+
+| | #115 | #116 | #117 |
+|---|---|---|---|
+| Qué | Registro de los despliegues de #110 y #111 | CI del backend en seis fragmentos | INVENTORY-UNIFIED-01 |
+| Merge en `master` | `071e021` | `133a3ec` | `041d0fd` |
+| CI del SHA fusionado | sin CI (sólo docs) | 6791 pruebas, verde (`0bd808a`) | 7109 pruebas, verde (`ce2f8d0`) |
+
+**Producción en `041d0fd`** desde el 2026-10-14, 01:14 (Lima), desde `14e658c`.
+- Antes: copia `20261014-011108` (base y evidencias), restaurada en un PostgreSQL
+  desechable (103 tablas, 6 usuarios, 1 empresa, 1 producto, 5 pedidos). Imágenes en uso
+  etiquetadas `blackdog-{backend,frontend}:rollback-14e658c`.
+- Ensayo sobre una copia de esa base con la imagen nueva: `0122` y `0123` aplicadas,
+  deshechas (`migrate store 0121`) y aplicadas otra vez; esquema idéntico en cada vuelta.
+- En producción: `migrate` aplicó `0122` y `0123`; `up -d` cambió `backend` y `frontend`
+  (sanos). `deploy/healthcheck.sh`: todo OK. Recuentos de empresas, productos, imágenes,
+  movimientos, pedidos por estado, total pagado e intentos de pago: iguales antes y después.
+  Pasarela «Mi Cuenta Web» en TEST, sin pausa, sin cambios. Caddyfile y cron sin tocar.
+- Smoke sin sesión: `/`, `/cart`, `/checkout`, `/auth`, `/product`, `/services`, `/orders`,
+  `/admin/inventory/bulk`, catálogo, categorías y configuración de la tienda en 200; carrito
+  por clave en 200; exportaciones, reglas de imágenes y acción en bloque piden sesión (401);
+  la notificación de pago responde 405 a un GET.
+- **Pendiente del propietario (con sesión):** ocultar y publicar un producto en bloque,
+  descargar un archivo, subir una imagen en lote a un producto real y un pago TEST. No creo
+  cuentas ni escribo contraseñas en producción.
+
+**Vuelta atrás:** volver los contenedores a `rollback-14e658c` (`git checkout 14e658c`,
+`docker tag … :latest`, `up -d`) y dejar `0122`/`0123` aplicadas: la versión anterior
+funciona con ellas. Deshacer `0123` borraría la elección de imagen de cada empresa.
+
 ## 2026-10-14 — INVENTORY-UNIFIED-01: decisión del propietario sobre imágenes en lote
 
-PR #117. `41c164f`, `7099642` (prueba) y `f780088` (docs), luego `master` (#115, #116) fusionado
+PR #117 (fusionado y desplegado, ver arriba). `41c164f`, `7099642` (prueba) y `f780088` (docs), luego `master` (#115, #116) fusionado
 en la rama. Sólo la carga de imágenes en lote: el código se compara con NFKC, sin mayúsculas y
 con los espacios normalizados, contra todos los códigos de la empresa; si coincide con dos o más
 productos no se asigna y se dice. Una fila del libro «Imágenes» sin producto (o ambigua) se

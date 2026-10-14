@@ -1,6 +1,11 @@
 # NEXT ACTION
 
-## En curso: INVENTORY-UNIFIED-01 (rama `feat/inventory-unified`, sin fusionar)
+## Hecho: INVENTORY-UNIFIED-01 en `master` (#117, `041d0fd`) y desplegado el 2026-10-14
+
+Siguiente fase ordenada por el propietario: ORDER-LIFECYCLE-01 y después PAYABLES-01,
+desde `master` y en ramas propias.
+
+## Historia de la fase (para consulta)
 
 Las cuatro partes están en la rama, con commits locales: visibilidad en bloque y
 exportaciones (hasta `74c6112`), centro de gestión masiva con asistente e imágenes en

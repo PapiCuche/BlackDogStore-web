@@ -3,9 +3,32 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — Despliegue de #115, #116 y #117
+
+**Deployed**
+- `master` `041d0fd` (merge de #117) en producción desde el 2026-10-14, 01:14 (Lima). El
+  servidor pasó de `14e658c` a `041d0fd` con copia previa (`db-20261014-011108.sql.gz`,
+  `evidence-20261014-011108.tar.gz`) y las migraciones `0122` y `0123`.
+- Entra INVENTORY-UNIFIED-01: visibilidad en bloque, exportaciones, centro de gestión masiva
+  e imágenes en lote, con las decisiones del propietario del 13 y 14 de octubre.
+- #116 cambia sólo el CI (seis fragmentos); #115, sólo documentación.
+
+**Verified**
+- Copia previa restaurada en un PostgreSQL desechable; `0122` y `0123` aplicadas, deshechas y
+  aplicadas otra vez sobre esa copia con la imagen nueva, con el esquema de vuelta idéntico.
+- Empresas, productos, imágenes, movimientos de stock, pedidos, totales e intentos de pago,
+  iguales antes y después. Chequeo de salud en verde; páginas públicas, catálogo, carrito y
+  checkout responden; las rutas nuevas del panel piden sesión; la ruta de notificación de pago
+  responde 405 a un GET.
+- CI de `ce2f8d0` (árbol de `041d0fd`): 7109 pruebas en seis fragmentos, en verde.
+
+**Not changed**
+- Pasarela de pago («Mi Cuenta Web» en TEST, sin pausa), variables de entorno (no se definió
+  `ADMIN_EXPORT_RATE`: vale 6/min), `deploy/Caddyfile` y cron del servidor.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01: decisiones del propietario
 
-En la rama `feat/inventory-unified`; sin desplegar. Migración nueva `0123` (aditiva).
+En `master` por #117 y desplegado el 2026-10-14. Migración nueva `0123` (aditiva).
 
 **Added**
 - Configuración › «Publicación en e-commerce»: exigir imagen para publicar en bloque
