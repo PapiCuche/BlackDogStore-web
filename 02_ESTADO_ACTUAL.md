@@ -22,7 +22,9 @@ Commits locales sobre `master` `abfc6bd`; sin push, sin PR, sin despliegue.
 - **Revisión independiente** (sin P0/P1; 2 P2 y 4 P3 corregidos en `f2212c1`, `ccacce3`):
   `cups_raw` espera a que CUPS saque el trabajo y, si no, lo da por fallido sin reintento;
   los rechazos no se reintentan; pruebas que caducan a los 10 min; reenviar una prueba exige
-  `company.manage`; una prueba por clic. **Vuelta atrás:** borrar antes las pruebas de
+  `company.manage`; una prueba por clic. Segunda revisión (`be04ee4`): un trabajo retenido
+  en CUPS queda en el diario del agente y no vuelve a CUPS aunque se pierda el aviso;
+  «Reenviar» da un uid nuevo; `cups_wait_seconds` ≤ 45. **Vuelta atrás:** borrar antes las pruebas de
   impresión (`docs/despliegue-produccion.md` §7).
 - **Deuda:** PRINT-USB-PANEL — el panel no tiene un tipo de impresora «USB»; con
   `cups_raw` la dirección guardada no se usa. PRINT-OUTCOME-OLD-SERVER — desplegar el

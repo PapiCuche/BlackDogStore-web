@@ -1418,6 +1418,15 @@ serios. Cambian tres decisiones anteriores:
   y desactiva el botón mientras dura. Para volver a la versión anterior se **borran** las
   pruebas (no se cancelan: la versión anterior rompe al mirar su pedido, también al
   reenviar una cancelada).
+- **Segunda revisión: lo que CUPS ya tiene no se manda otra vez.** Un
+  `queued_not_printed` se apunta en el diario del agente ANTES de avisar (el uid entra en
+  los entregados, con su resultado): si el aviso se pierde y el plazo de 90 s vence, el
+  servidor vuelve a entregarlo y el agente contesta lo mismo sin pasar por CUPS, y repite
+  el aviso hasta que el servidor lo recibe. Cualquier error del `lpstat` de espera, con
+  el trabajo ya aceptado por `lp`, cuenta como «sigue en la cola». «Reenviar» en el panel
+  da al trabajo un uid nuevo: es otra impresión, pedida a sabiendas. `cups_wait_seconds`
+  va de 1 a 45 para caber en el plazo. El estado de `lpstat` se lee detrás del nombre de
+  la cola. Primero se actualiza el servidor; después, los agentes con `cups_raw`.
 
 ### DEC-SF-06 · Las imágenes de la tienda las sube la tienda
 

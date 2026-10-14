@@ -31,6 +31,12 @@ Rama `fix/print-thermal` sobre `master` `abfc6bd`. Sin push ni despliegue.
   opción B: dejar de usar la cola PostScript (`cupsreject` o `lpadmin -x`) y otra
   impresora por omisión.
 
+**Changed (segunda revisión)**
+- Un trabajo retenido en CUPS (`queued_not_printed`) queda en el diario del agente y nunca
+  vuelve a CUPS, aunque se pierda el aviso; el aviso se repite hasta que llega. Un error de
+  `lpstat` tras `lp` cuenta como retenido. «Reenviar» da un uid nuevo.
+  `cups_wait_seconds` entre 1 y 45. Actualizar el servidor antes que los agentes.
+
 **Migration**
 - `0124_printjob_test_ticket_print_thermal`: tipo `test_ticket`, `PrintJob.order` admite
   vacío sólo para ese tipo. El PR #119 también trae una `0124`: la segunda en fusionarse
