@@ -206,7 +206,8 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     for (const producto of creados) {
       expect(producto.inventory, "la carga de productos no mueve stock").toBe(0);
       expect(producto.is_active).toBe(true);                                    // destino no es «activo»
-      expect(producto.is_published_online).toBe(producto.name === publico);
+      // Publicar por la carga pide categoría (decisión D2): sin ninguna en la empresa, queda interno.
+      expect(producto.is_published_online).toBe(producto.name === publico && categoria !== null);
     }
   });
 

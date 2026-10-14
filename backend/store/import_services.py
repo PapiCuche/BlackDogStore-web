@@ -525,7 +525,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
         )
     }
-    to_web = to_internal = 0
+    # ONE rule for the bulk action and for this load (`product_publication`).
+    require_image = product_publication.requires_image(company)
+    to_web = to_internal = publication_refused = 0
     already_present = 0
     staged = []
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
@@ -771,29 +773,49 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 action = BulkImportRow.CREATE
 
         state = standing.get(product_id)
+        # A ROW THAT ASKS FOR THE WEB FOR WHAT IS NOT ELIGIBLE (owner's decision,
+        # 2026-10-13). Not an error: everything else the row says is applied,
+        # and the product stays — or is born — «solo stock interno», with the
+        # reasons on the row. Judged on the state the product WILL be left in,
+        # counting what this same row brings (a price, a category, pictures).
+        # A product that is already on the web is not taken off by this rule.
+        refused = []
+        asks_to_publish = (
+            destination == import_formats.DESTINATION_ONLINE
+            and action in (BulkImportRow.CREATE, BulkImportRow.UPDATE)
+            and not (state is not None and state['is_published_online'])
+        )
+        if asks_to_publish:
+            refused = product_publication.problems_of(
+                is_active=state['is_active'] if state is not None else True,
+                price=price if price is not None else (state['price'] if state is not None else None),
+                has_image=bool(
+                    (state is not None and state['image_url']) or gallery['count'] or row_images or image_url
+                ),
+                has_category=bool(
+                    category_id or (state is not None and state['category_id'])
+                    or (category_name and options['create_missing_categories'])
+                ),
+                require_image=require_image,
+            )
+        if refused:
+            publication_refused += 1
+            warnings.append(
+                'No se publica en e-commerce: '
+                + ' '.join(product_publication.PROBLEM_LABELS[code] for code in refused)
+                + (' Sigue' if state is not None else ' Se crea')
+                + ' como «Solo stock interno»; el resto de la fila se aplica.'
+            )
+            # What the row shows is what will happen.
+            destination = '' if state is not None else import_formats.DESTINATION_INTERNAL
+        normalized['destination'] = destination
+        normalized['publication_refused'] = refused
+
         if action == BulkImportRow.UPDATE and state is not None:
             if destination == import_formats.DESTINATION_INTERNAL and state['is_published_online']:
                 to_internal += 1
             elif destination == import_formats.DESTINATION_ONLINE and not state['is_published_online']:
                 to_web += 1
-                # SAID, NOT REFUSED. The load publishes what its file says, as it
-                # always did; the bulk action would have left this one out, so the
-                # row says what the product will lack once it is on the web —
-                # counting what this same row brings (a price, a category, pictures).
-                lacking = product_publication.problems_of(
-                    is_active=state['is_active'],
-                    price=price if price is not None else state['price'],
-                    has_image=bool(state['image_url'] or gallery['count'] or row_images or image_url),
-                    has_category=bool(
-                        category_id or state['category_id']
-                        or (category_name and options['create_missing_categories'])
-                    ),
-                )
-                if lacking:
-                    warnings.append(
-                        'Pasa a publicarse en e-commerce y la acción en bloque no lo habría publicado: '
-                        + ' '.join(product_publication.PROBLEM_LABELS[code] for code in lacking)
-                    )
 
         counts[action if action != BulkImportRow.NO_CHANGE else 'no_change'] += 1
         staged.append(BulkImportRow(
@@ -830,6 +852,9 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
         # How many EXISTING products this file moves onto the web or off it.
         # A new product is not a change of destination: it has none yet.
         'destination_changes': {'to_web': to_web, 'to_internal': to_internal},
+        # Rows that asked for the web for a product that is not eligible: the
+        # product is loaded, and not published.
+        'publication_refused': publication_refused,
     }
     job.save(update_fields=[
         'rows_total', 'rows_create', 'rows_update', 'rows_no_change',
@@ -867,6 +892,10 @@ def apply_products(*, job, actor):
     taken_slugs: set[str] = set()
     created = updated = images_added = 0
     moved = []          # (product id, published): existing products this job sent to the web or took off it
+    require_image = product_publication.requires_image(company)
+    # Publications this job asked for and did not make: the ones the preview
+    # already refused, plus what stopped being eligible since.
+    not_published = 0
 
     rows = list(
         job.rows.filter(action__in=[BulkImportRow.CREATE, BulkImportRow.UPDATE])
@@ -975,7 +1004,16 @@ def apply_products(*, job, actor):
             wanted = data.get('destination', '')
             if wanted in (import_formats.DESTINATION_ONLINE, import_formats.DESTINATION_INTERNAL):
                 publish = wanted == import_formats.DESTINATION_ONLINE
-                if product.is_published_online != publish:
+                # ASKED AGAIN, WITH THE PRODUCT IN HAND AND LOCKED. The preview
+                # is a forecast: a product deactivated since is not published
+                # because a row approved earlier said so.
+                if publish and not product.is_published_online and product_publication.problems_of(
+                    is_active=product.is_active, price=product.price,
+                    has_image=bool(product.image_url or data.get('images') or product.images.exists()),
+                    has_category=product.category_id is not None, require_image=require_image,
+                ):
+                    not_published += 1
+                elif product.is_published_online != publish:
                     product.is_published_online = publish
                     changes.append('is_published_online')
                     moved.append((product.pk, publish))
@@ -989,6 +1027,16 @@ def apply_products(*, job, actor):
             counted = bool(changes)
         else:
             counted = True
+            # Only what the approved row says. A row with no key (a job staged
+            # before the column existed) asked for nothing: internal.
+            publish = data.get('destination', '') == import_formats.DESTINATION_ONLINE
+            if publish and product_publication.problems_of(
+                is_active=True, price=price,
+                has_image=bool(data.get('image_url') or data.get('images')),
+                has_category=category_id is not None, require_image=require_image,
+            ):
+                publish = False
+                not_published += 1
             product = Product(
                 company=company, name=name,
                 slug=unique_slug(company, data.get('slug') or name, taken=taken_slugs),
@@ -996,9 +1044,7 @@ def apply_products(*, job, actor):
                 price=price if price is not None else Decimal('0.00'),
                 image_url=data.get('image_url', ''),
                 category_id=category_id,
-                # Only what the approved row says. A row with no key (a job
-                # staged before the column existed) asked for nothing: internal.
-                is_published_online=data.get('destination', '') == import_formats.DESTINATION_ONLINE,
+                is_published_online=publish,
             )
             product.full_clean()
             product.save()
@@ -1020,6 +1066,9 @@ def apply_products(*, job, actor):
                 is_primary=not product.barcodes.filter(is_primary=True).exists(),
             )
             index.by_barcode[key] = product.pk
+
+        if data.get('publication_refused'):
+            not_published += 1
 
         placed = _place_row_images(row, product, data.get('images') or [], actor)
         images_added += placed
@@ -1043,6 +1092,7 @@ def apply_products(*, job, actor):
     job.summary = {**(job.summary or {}), 'applied': {
         'created': created, 'updated': updated, 'images_added': images_added,
         'destination_changed': len(moved),
+        'publication_refused': not_published,
     }}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     return job, True

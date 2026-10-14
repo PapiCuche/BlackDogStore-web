@@ -210,3 +210,36 @@ describe('cuántos productos cambian de destino, antes de aplicar', () => {
     expect(screen.queryByRole('status', { name: 'Cambios de destino' })).toBeNull();
   });
 });
+
+describe('publicaciones que la carga no hará, antes de aplicar', () => {
+  // Decisión del propietario D2: una fila que pide la web para un producto que no
+  // es elegible no es un error. El producto se carga y queda interno; la vista
+  // previa dice cuántos, y el motivo está en el aviso de cada fila.
+  const job = (refused?: number) => ({
+    id: 1, import_type: 'products', status: 'previewed',
+    counts: { total: 3, create: 1, update: 2, no_change: 0, skip: 0, error: 0 },
+    summary: refused === undefined ? {} : { publication_refused: refused },
+  }) as unknown as ImportJob;
+
+  it('dice cuántos productos se cargan sin publicarse y dónde está el motivo', () => {
+    render(<Notices job={job(2)} />);
+    const said = screen.getByRole('status', { name: 'Publicaciones que no se harán' });
+    expect(said).toHaveTextContent('2 productos no se publicarán en e-commerce');
+    expect(said).toHaveTextContent(/quedan como «Solo stock interno»/);
+    expect(said).toHaveTextContent(/El motivo está en el aviso de cada fila/);
+  });
+
+  it('con uno solo lo dice en singular', () => {
+    render(<Notices job={job(1)} />);
+    expect(screen.getByRole('status', { name: 'Publicaciones que no se harán' }))
+      .toHaveTextContent('1 producto no se publicará en e-commerce');
+  });
+
+  it('si no hay ninguna, o la vista previa es de antes, no dice nada', () => {
+    const none = render(<Notices job={job(0)} />);
+    expect(screen.queryByRole('status', { name: 'Publicaciones que no se harán' })).toBeNull();
+    none.unmount();
+    render(<Notices job={job()} />);
+    expect(screen.queryByRole('status', { name: 'Publicaciones que no se harán' })).toBeNull();
+  });
+});

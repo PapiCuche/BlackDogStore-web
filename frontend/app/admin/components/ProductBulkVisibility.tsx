@@ -101,7 +101,7 @@ export function BulkVisibilityConfirm({
         </h2>
         <p className="mt-3 text-sm text-muted">
           {action === "publish"
-            ? "Se publican en la tienda en línea los que estén listos (activos, con precio, imagen y categoría). Los que no, se quedan como están y se indica el motivo."
+            ? "Se publican en la tienda en línea los que estén listos (activos, con precio y con categoría; con imagen sólo si la empresa lo exige). Los que no, se quedan como están y se indica el motivo."
             : one
               ? "Dejará de verse y de venderse en la tienda en línea. Seguirá en inventario, en caja y en servicio técnico."
               : "Dejarán de verse y de venderse en la tienda en línea. Seguirán en inventario, en caja y en servicio técnico."}

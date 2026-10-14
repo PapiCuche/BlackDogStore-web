@@ -34,7 +34,8 @@ from rest_framework.test import APIClient
 
 from store import admin_views, import_exports, import_services, product_publication, stock_unit_services
 from store.models import (
-    AdminAuditLog, BranchStock, BulkImportJob, CartItem, Category, Order, OrderItem, Product, ProductBarcode,
+    AdminAuditLog, BranchStock, BulkImportJob, CartItem, Category, CompanySettings, Order, OrderItem, Product,
+    ProductBarcode,
     ProductImage, Review, StockMovement, StockUnit,
 )
 from store.tests import (
@@ -85,6 +86,11 @@ class _Base(TestCase):
         fields.update(over)
         return Product.objects.create(company=company, name=name, slug=f'bv-{self.serial}', **fields)
 
+    def require_picture(self, company=None, on=True):
+        """The company's own rule: a product needs a picture to be published in bulk. Off as created."""
+        CompanySettings.objects.update_or_create(
+            company=company or self.company, defaults={'publication_requires_image': on})
+
     def published(self, *products):
         return [Product.objects.get(pk=p.pk).is_published_online for p in products]
 
@@ -104,6 +110,7 @@ class MayBePublishedTest(_Base):
         self.assertEqual(product_publication.publication_problems(self.product('Funda')), [])
 
     def test_each_thing_missing_is_its_own_code(self):
+        self.require_picture()
         cases = {
             'inactive': {'is_active': False},
             'no_price': {'price': Decimal('0.00')},
@@ -115,11 +122,40 @@ class MayBePublishedTest(_Base):
                 self.assertEqual(product_publication.publication_problems(self.product(code, **missing)), [code])
 
     def test_several_at_once_come_in_a_fixed_order(self):
+        self.require_picture()
         bare = self.product('Sin nada', is_active=False, price=Decimal('0.00'), image_url='', category=None)
         self.assertEqual(
             product_publication.publication_problems(bare), ['inactive', 'no_price', 'no_image', 'no_category'])
 
+    def test_a_picture_is_asked_only_by_the_company_that_asks_for_it(self):
+        """Owner's decision (2026-10-13): no picture is required unless the company configures it."""
+        self.assertFalse(CompanySettings._meta.get_field('publication_requires_image').default)
+        self.assertFalse(CompanySettings.objects.filter(publication_requires_image=True).exists())
+        product = self.product('Sin foto', image_url='')
+        bare = self.product('Sin nada', is_active=False, price=Decimal('0.00'), image_url='', category=None)
+
+        self.assertEqual(product_publication.publication_problems(product), [])
+        self.assertEqual(product_publication.publication_problems(bare), ['inactive', 'no_price', 'no_category'])
+
+        self.require_picture()
+        self.assertEqual(product_publication.publication_problems(product), ['no_image'])
+        self.require_picture(on=False)
+        self.assertEqual(product_publication.publication_problems(product), [])
+
+    def test_one_companys_rule_is_not_anothers(self):
+        self.require_picture(self.other)
+        mine = self.product('Sin foto', image_url='')
+        theirs = self.product('Sin foto', company=self.other, image_url='', category=Category.objects.create(
+            company=self.other, name='Accesorios', slug='accesorios'))
+        self.assertEqual(product_publication.publication_problems(mine), [])
+        self.assertEqual(product_publication.publication_problems(theirs), ['no_image'])
+
+    def test_a_company_without_a_settings_row_asks_for_no_picture(self):
+        CompanySettings.objects.filter(company=self.company).delete()
+        self.assertEqual(product_publication.publication_problems(self.product('Sin foto', image_url='')), [])
+
     def test_a_gallery_picture_is_a_picture(self):
+        self.require_picture()
         product = self.product('Con galería', image_url='')
         ProductImage.objects.create(
             company=self.company, product=product, image_url='/api/storefront/images/abc', is_primary=True)
@@ -154,7 +190,18 @@ class BulkByIdsTest(_Base):
         self.assertEqual(response.json()['changed'], 1)
         self.assertEqual(self.published(bare), [False])
 
+    def test_without_the_companys_rule_a_product_with_no_picture_is_published(self):
+        no_picture = self.product('Sin foto', published=False, image_url='')
+        no_category = self.product('Sin categoría', published=False, image_url='', category=None)
+
+        body = self.post({'action': 'publish', 'ids': [no_picture.pk, no_category.pk]}).json()
+
+        self.assertEqual(body['changed'], 1)
+        self.assertEqual(body['refused'], [{'id': no_category.pk, 'name': 'Sin categoría', 'problems': ['no_category']}])
+        self.assertEqual(self.published(no_picture, no_category), [True, False])
+
     def test_publishing_leaves_out_what_is_not_ready_and_says_why(self):
+        self.require_picture()
         ready = self.product('Funda', published=False)
         no_picture = self.product('Sin foto', published=False, image_url='')
         off = self.product('Inactivo sin precio', published=False, is_active=False, price=Decimal('0.00'))
@@ -172,6 +219,7 @@ class BulkByIdsTest(_Base):
         self.assertEqual(self.published(ready, no_picture, off, there), [True, False, False, True])
 
     def test_a_gallery_picture_lets_it_be_published(self):
+        self.require_picture()
         product = self.product('Con galería', published=False, image_url='')
         ProductImage.objects.create(
             company=self.company, product=product, image_url='/api/storefront/images/abc', is_primary=True)
@@ -246,7 +294,7 @@ class BulkByIdsTest(_Base):
 
     def test_one_audit_line_per_batch_with_what_changed_and_nobody_s_data(self):
         ready = self.product('Funda', published=False)
-        no_picture = self.product('Sin foto', published=False, image_url='')
+        no_picture = self.product('Sin categoría', published=False, category=None)
 
         self.post({'action': 'publish', 'ids': [ready.pk, no_picture.pk]})
 
@@ -269,7 +317,7 @@ class BulkByIdsTest(_Base):
         self.assertTrue(metadata['changed_ids_truncated'])
 
     def test_a_batch_that_changes_nothing_leaves_no_audit_line(self):
-        product = self.product('Sin foto', published=False, image_url='')
+        product = self.product('Sin categoría', published=False, category=None)
         self.assertEqual(self.post({'action': 'publish', 'ids': [product.pk]}).json()['changed'], 0)
         self.assertEqual(self.audit().count(), 0)
 
@@ -578,7 +626,16 @@ class ProductListTest(_Base):
         self.assertEqual((found['count'], found['results']), (0, []))
         self.assertEqual(self.rows('search=Funda')['count'], 1)
 
+    def test_each_row_follows_the_companys_rule_about_pictures(self):
+        no_picture = self.product('Sin foto', image_url='')
+        self.assertEqual(self.rows()['results'][0]['publication_problems'], [])
+        self.assertEqual(self.api.get(f'{LIST_URL}{no_picture.pk}/').json()['publication_problems'], [])
+        self.require_picture()
+        cache.clear()
+        self.assertEqual(self.rows()['results'][0]['publication_problems'], ['no_image'])
+
     def test_each_row_says_why_it_cannot_be_published(self):
+        self.require_picture()
         ready = self.product('Funda')
         bare = self.product('Sin nada', is_active=False, price=Decimal('0.00'), image_url='', category=None)
         gallery = self.product('Con galería', image_url='')
@@ -601,6 +658,7 @@ class ProductListTest(_Base):
                 rows = self.rows()['results']
             return len(captured), len(rows)
 
+        self.require_picture()
         for n in range(2):
             self.product(f'Sin foto {n}', image_url='')
         with_two, shown = queries()
@@ -614,6 +672,7 @@ class ProductListTest(_Base):
         self.assertEqual(with_eight, with_two)
 
     def test_the_detail_carries_them_too(self):
+        self.require_picture()
         product = self.product('Sin foto', image_url='')
         self.assertEqual(self.api.get(f'{LIST_URL}{product.pk}/').json()['publication_problems'], ['no_image'])
 
@@ -628,11 +687,77 @@ class ProductListTest(_Base):
 
     def test_the_individual_edit_still_publishes_what_the_bulk_action_would_refuse(self):
         """La regla es del bloque. La ficha del producto guarda como siempre."""
+        self.require_picture()
         product = self.product('Sin foto', published=False, image_url='')
         response = self.api.patch(f'{LIST_URL}{product.pk}/', {'is_published_online': True}, format='json')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(self.published(product), [True])
         self.assertEqual(response.json()['publication_problems'], ['no_image'])
+
+
+# =============================================================================
+# The company's own rule about pictures
+# =============================================================================
+
+class PictureRuleSettingTest(_Base):
+    """
+    `CompanySettings.publication_requires_image`. Read and written with the
+    rest of the company's configuration (`company.view` / `company.manage`),
+    off as created, and never told to the public.
+    """
+
+    SETTINGS = '/api/admin/company-settings/'
+
+    def setUp(self):
+        super().setUp()
+        self.admin, _ = _p2d_member(self.company, 'bv_admin', ['company.view', 'company.manage'])
+        self.viewer, _ = _p2d_member(self.company, 'bv_lectora', ['company.view'])
+
+    def stored(self, company=None):
+        return CompanySettings.objects.get(company=company or self.company).publication_requires_image
+
+    def test_it_is_read_with_the_rest_and_starts_off(self):
+        body = _client(self.viewer).get(self.SETTINGS).json()
+        self.assertIs(body['settings']['publication_requires_image'], False)
+
+    def test_whoever_administers_the_company_sets_it_and_it_is_written_down(self):
+        response = _client(self.admin).patch(self.SETTINGS, {'publication_requires_image': True}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIs(response.json()['settings']['publication_requires_image'], True)
+        self.assertIs(self.stored(), True)
+        entry = AdminAuditLog.objects.get(action='company_settings_updated')
+        self.assertEqual((entry.actor, entry.company), (self.admin, self.company))
+        self.assertEqual(entry.metadata['changed_fields'], ['publication_requires_image'])
+
+    def test_reading_is_not_enough_and_a_word_is_not_a_yes(self):
+        self.assertEqual(
+            _client(self.viewer).patch(self.SETTINGS, {'publication_requires_image': True}, format='json').status_code, 403)
+        self.assertEqual(
+            _client(self.manager).patch(self.SETTINGS, {'publication_requires_image': True}, format='json').status_code, 403)
+        self.assertEqual(
+            _client(self.admin).patch(self.SETTINGS, {'publication_requires_image': 'quizás'}, format='json').status_code,
+            400)
+        self.assertIs(self.stored(), False)
+
+    def test_another_companys_rule_is_out_of_reach(self):
+        response = _client(self.admin).patch(
+            f'{self.SETTINGS}?company={self.other.pk}', {'publication_requires_image': True}, format='json')
+        self.assertEqual(response.status_code, 404)
+        _client(self.admin).patch(self.SETTINGS, {'publication_requires_image': True}, format='json')
+        self.assertIs(self.stored(self.other), False)
+
+    def test_the_bulk_action_obeys_it_from_the_next_request(self):
+        product = self.product('Sin foto', published=False, image_url='')
+        _client(self.admin).patch(self.SETTINGS, {'publication_requires_image': True}, format='json')
+        body = self.post({'action': 'publish', 'ids': [product.pk]}).json()
+        self.assertEqual((body['changed'], [row['problems'] for row in body['refused']]), (0, [['no_image']]))
+
+    @override_settings(ALLOWED_HOSTS=['*'])
+    def test_the_public_never_learns_it(self):
+        self.require_picture()
+        response = APIClient().get(f'/api/v1/storefront/{self.company.slug}/config/')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotIn('publication_requires_image', response.content.decode())
 
 
 # =============================================================================

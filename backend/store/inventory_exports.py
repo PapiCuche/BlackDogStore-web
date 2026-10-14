@@ -310,6 +310,7 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
 
     codes = import_exports.product_codes(company)
     labels = product_publication.PROBLEM_LABELS
+    require_image = product_publication.requires_image(company) if report else False
     rows = []
     for product in queryset.iterator(chunk_size=2000):
         slot = codes.get(product.pk, {})
@@ -325,7 +326,7 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
             DESTINATION_LABELS[DESTINATION_ONLINE if product.is_published_online else DESTINATION_INTERNAL],
         ]
         if report:
-            problems = product_publication.publication_problems(product)
+            problems = product_publication.publication_problems(product, require_image=require_image)
             row += [
                 'Sí' if product.is_active else 'No',
                 TYPE_LABELS[product.is_serialized],

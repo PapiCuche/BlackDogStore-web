@@ -445,9 +445,15 @@ class AdminProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_publication_problems(self, obj):
-        # The list annotates `has_gallery`; one product in hand asks once.
-        from .product_publication import publication_problems
-        return publication_problems(obj)
+        # The list annotates `has_gallery`; one product in hand asks once. The
+        # company's rule about pictures is asked once per company and response,
+        # not once per row.
+        from .product_publication import publication_problems, requires_image
+
+        asked = self.root.__dict__.setdefault('_publication_requires_image', {})
+        if obj.company_id not in asked:
+            asked[obj.company_id] = requires_image(obj.company_id)
+        return publication_problems(obj, require_image=asked[obj.company_id])
 
 
 class AdminProductDetailSerializer(AdminProductSerializer):
@@ -1381,6 +1387,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
             # them also takes `settings.manage` (see the view).
             'risk_review_amount', 'hold_orders_pending_review',
+            # INVENTORY-UNIFIED-01 — whether publishing in bulk asks for a
+            # picture. Off as created; `company.manage`, like the rest.
+            'publication_requires_image',
             'updated_at',
         ]
         read_only_fields = [

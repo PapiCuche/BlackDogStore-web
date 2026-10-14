@@ -419,8 +419,17 @@ class ProductsExportTest(_Base):
             [rows['Teléfono X'][key] for key in headers[9:]], ['Sí', 'Por serie', 3, 'Sí', None])
         self.assertEqual(
             [rows['Batería vieja'][key] for key in headers[9:]],
-            ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene imagen. No tiene categoría.'])
+            ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene categoría.'])
         self.assertEqual(rows['Cable']['Publicado'], 'No')
+
+    def test_the_report_asks_for_a_picture_only_when_the_company_does(self):
+        from store.models import CompanySettings
+
+        CompanySettings.objects.update_or_create(company=self.company, defaults={'publication_requires_image': True})
+        rows = {row['Nombre']: row for row in self.records(self.get('products', mode='report'))}
+        self.assertEqual(
+            rows['Batería vieja']['Problemas para publicar'],
+            'El producto está inactivo. No tiene imagen. No tiene categoría.')
 
     def test_reloading_it_into_the_same_shop_changes_nothing(self):
         before = list(Product.objects.filter(company=self.company).order_by('pk').values())
@@ -436,7 +445,7 @@ class ProductsExportTest(_Base):
         self.assertEqual(applied.status_code, 200, applied.content)
         self.assertEqual(
             applied.json()['summary']['applied'],
-            {'created': 0, 'updated': 0, 'images_added': 0, 'destination_changed': 0})
+            {'created': 0, 'updated': 0, 'images_added': 0, 'destination_changed': 0, 'publication_refused': 0})
         self.assertEqual(list(Product.objects.filter(company=self.company).order_by('pk').values()), before)
         self.assertEqual(list(ProductBarcode.objects.order_by('pk').values()), codes)
         self.assertFalse(AdminAuditLog.objects.filter(action='product_destination_changed').exists())

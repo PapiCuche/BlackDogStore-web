@@ -30,7 +30,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from store import import_exports
-from store.models import BulkImportRow, Category, Product, ProductBarcode
+from store.models import AdminAuditLog, BulkImportRow, Category, CompanySettings, Product, ProductBarcode
 from store.tests import _p2d_member, _p3_company
 
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -100,7 +100,7 @@ class _Base(TestCase):
 class DestinationColumnTest(_Base):
     def test_each_row_goes_where_its_cell_says(self):
         body = self.imported([
-            product_row('WEB-1', 'Funda de silicona', destination=ONLINE),
+            product_row('WEB-1', 'Funda de silicona', category='Repuestos', destination=ONLINE),
             product_row('INT-1', 'Flex de carga', destination=INTERNAL),
         ])
 
@@ -129,7 +129,7 @@ class DestinationColumnTest(_Base):
         )):
             with self.subTest(written):
                 body = self.preview(workbook_bytes(
-                    [product_row(f'CODW-{position}', f'Producto {position}', destination=written)])).json()
+                    [product_row(f'CODW-{position}', f'Producto {position}', category='Repuestos', destination=written)])).json()
                 self.assertEqual(body['counts']['error'], 0, body['rows'])
                 self.assertEqual(body['rows'][0]['data']['destination'], meaning)
 
@@ -185,13 +185,13 @@ class DestinationColumnTest(_Base):
             {'Nuevo a la web': True, 'Nuevo interno': False, 'Nuevo sin decir': False})
 
     def test_an_explicit_cell_changes_an_existing_product_and_says_so(self):
-        self.imported([product_row('CODC-1', 'Batería', destination=ONLINE)])
+        self.imported([product_row('CODC-1', 'Batería', category='Repuestos', destination=ONLINE)])
 
         body = self.imported([product_row('CODC-1', 'Batería', destination=INTERNAL)])
         self.assertEqual(body['rows'][0]['action'], 'update')
         self.assertFalse(self.product('Batería').is_published_online)
 
-        body = self.imported([product_row('CODC-1', 'Batería', destination=ONLINE)])
+        body = self.imported([product_row('CODC-1', 'Batería', category='Repuestos', destination=ONLINE)])
         self.assertTrue(self.product('Batería').is_published_online)
 
     def test_a_file_from_before_the_column_imports_as_it_did(self):
@@ -235,14 +235,16 @@ class DestinationColumnTest(_Base):
         self.assertEqual(body['rows'][0]['data']['destination'], 'internal')
 
 
-class PublishingThroughTheLoadIsSaidBeforeItHappensTest(_Base):
+class PublishingWhatIsNotEligibleIsRefusedRowByRowTest(_Base):
     """
-    INVENTORY-UNIFIED-01, review N3. The load may publish a product that the
-    bulk action would leave out (no price, no picture, no category, inactive),
-    and a file downloaded last week publishes again what was hidden since. It
-    still does — that is how the load works, and the owner approved it — but
-    the preview now SAYS it: a warning on each such row with what the product
-    lacks, and how many products change destination, before anything is applied.
+    INVENTORY-UNIFIED-01, owner's decision D2 (2026-10-13). The load and the
+    bulk action obey ONE rule (`product_publication`): a row that asks for the
+    web for a product that is inactive, has no price or has no category does
+    not publish it — and is NOT an error. The product is created or updated as
+    the row says and stays (or is born) «solo stock interno»; the row carries
+    the reasons, and the preview and the result count the refusals. A picture
+    is asked only by the company that configured it. Loading as internal stock
+    is always allowed.
     """
 
     def hidden(self, name, code, **fields):
@@ -252,49 +254,120 @@ class PublishingThroughTheLoadIsSaidBeforeItHappensTest(_Base):
         ProductBarcode.objects.create(company=self.company, product=product, code=code)
         return product
 
-    def test_a_row_that_publishes_a_product_that_is_not_ready_carries_a_warning_with_the_reasons(self):
+    def require_picture(self):
+        CompanySettings.objects.update_or_create(company=self.company, defaults={'publication_requires_image': True})
+
+    def warned(self, body):
+        return {row['data']['name']: ' '.join(row['warnings']) for row in body['rows']}
+
+    def test_a_row_that_asks_for_the_web_for_what_is_not_eligible_is_not_an_error_and_does_not_publish(self):
         self.hidden('Sin nada', 'BARE-1', price=0, category=None, image_url='')
         self.hidden('Apagado', 'OFFF-1', is_active=False)
         self.hidden('Listo', 'REDY-1')
 
         body = self.preview(workbook_bytes([
             product_row('BARE-1', 'Sin nada', price=None, destination=ONLINE),
-            product_row('OFFF-1', 'Apagado', price=59, category='Repuestos', destination=ONLINE),
+            product_row('OFFF-1', 'Apagado', price=75, category='Repuestos', destination=ONLINE),
             product_row('REDY-1', 'Listo', price=59, category='Repuestos', destination=ONLINE),
         ])).json()
 
         self.assertEqual(body['counts']['error'], 0, body['rows'])
-        warned = {row['data']['name']: ' '.join(row['warnings']) for row in body['rows']}
-        self.assertIn('Pasa a publicarse en e-commerce', warned['Sin nada'])
-        for reason in ('No tiene precio de venta.', 'No tiene imagen.', 'No tiene categoría.'):
+        warned = self.warned(body)
+        self.assertIn('No se publica en e-commerce:', warned['Sin nada'])
+        for reason in ('No tiene precio de venta.', 'No tiene categoría.'):
             self.assertIn(reason, warned['Sin nada'])
-        self.assertIn('El producto está inactivo.', warned['Apagado'])
-        self.assertNotIn('No tiene imagen.', warned['Apagado'])
+        self.assertNotIn('No tiene imagen.', warned['Sin nada'])            # nobody configured that rule
+        self.assertIn('No se publica en e-commerce: El producto está inactivo.', warned['Apagado'])
         self.assertEqual(warned['Listo'], '')
-        # Said, not refused: the load still does what it always did.
-        self.assertEqual(self.apply(body['id']).json()['summary']['applied']['destination_changed'], 3)
-        self.assertTrue(self.product('Sin nada').is_published_online)
+        self.assertEqual(body['summary']['publication_refused'], 2)
+        self.assertEqual(body['summary']['destination_changes'], {'to_web': 1, 'to_internal': 0})
+        # The row shows what WILL happen: nothing about its destination changes.
+        by_name = {row['data']['name']: row['data']['destination'] for row in body['rows']}
+        self.assertEqual(by_name, {'Sin nada': '', 'Apagado': '', 'Listo': 'online'})
+
+        applied = self.apply(body['id']).json()['summary']['applied']
+        self.assertEqual((applied['destination_changed'], applied['publication_refused']), (1, 2))
+        self.assertFalse(self.product('Sin nada').is_published_online)
+        self.assertFalse(self.product('Apagado').is_published_online)
+        self.assertTrue(self.product('Listo').is_published_online)
+        # The rest of the row was applied as it says.
+        self.assertEqual(self.product('Apagado').price, 75)
+        self.assertFalse(self.product('Apagado').is_active)
+
+    def test_a_new_product_that_is_not_eligible_is_created_internal_with_the_reason(self):
+        body = self.preview(workbook_bytes([
+            product_row('NEWW-1', 'Nuevo sin categoría', price=30, destination=ONLINE),
+            product_row('NEWW-2', 'Nuevo gratis', price=0, category='Repuestos', destination=ONLINE),
+            product_row('NEWW-3', 'Nuevo listo', price=30, category='Repuestos', destination=ONLINE),
+        ])).json()
+
+        self.assertEqual((body['counts']['create'], body['counts']['error']), (3, 0), body['rows'])
+        warned = self.warned(body)
+        self.assertIn('No se publica en e-commerce: No tiene categoría.', warned['Nuevo sin categoría'])
+        self.assertIn('No se publica en e-commerce: No tiene precio de venta.', warned['Nuevo gratis'])
+        self.assertEqual(warned['Nuevo listo'], '')
+        self.assertEqual(
+            {row['data']['name']: row['data']['destination'] for row in body['rows']},
+            {'Nuevo sin categoría': 'internal', 'Nuevo gratis': 'internal', 'Nuevo listo': 'online'})
+        self.assertEqual(body['summary']['publication_refused'], 2)
+
+        self.assertEqual(self.apply(body['id']).json()['summary']['applied']['publication_refused'], 2)
+        self.assertEqual(
+            {p.name: p.is_published_online for p in Product.objects.filter(company=self.company)},
+            {'Nuevo sin categoría': False, 'Nuevo gratis': False, 'Nuevo listo': True})
+
+    def test_a_picture_is_asked_only_when_the_company_configured_it(self):
+        self.hidden('Sin foto', 'NOPI-1', image_url='')
+        rows = [
+            product_row('NOPI-1', 'Sin foto', destination=ONLINE),
+            product_row('NOPI-2', 'Nuevo sin foto', price=20, category='Repuestos', destination=ONLINE),
+        ]
+        free = self.preview(workbook_bytes(rows)).json()
+        self.assertEqual((free['summary']['publication_refused'], self.warned(free)['Sin foto']), (0, ''))
+
+        self.require_picture()
+        asked = self.preview(workbook_bytes(rows)).json()
+        self.assertEqual(asked['counts']['error'], 0, asked['rows'])
+        self.assertEqual(asked['summary']['publication_refused'], 2)
+        for name in ('Sin foto', 'Nuevo sin foto'):
+            self.assertIn('No se publica en e-commerce: No tiene imagen.', self.warned(asked)[name])
+        self.apply(asked['id'])
+        self.assertFalse(self.product('Sin foto').is_published_online)
+        self.assertFalse(self.product('Nuevo sin foto').is_published_online)
 
     def test_what_the_same_row_brings_counts(self):
         """The state the product will be LEFT in: a price or a category in the row is not missing."""
         self.hidden('Sin nada', 'BARE-1', price=0, category=None, image_url='')
-        body = self.preview(workbook_bytes([
-            product_row('BARE-1', 'Sin nada', price=45, category='Repuestos', destination=ONLINE)])).json()
-        warning = ' '.join(body['rows'][0]['warnings'])
-        self.assertIn('No tiene imagen.', warning)
-        self.assertNotIn('No tiene precio de venta.', warning)
-        self.assertNotIn('No tiene categoría.', warning)
+        body = self.imported([product_row('BARE-1', 'Sin nada', price=45, category='Repuestos', destination=ONLINE)])
+        self.assertEqual((body['summary']['publication_refused'], body['rows'][0]['warnings']), (0, []))
+        self.assertTrue(self.product('Sin nada').is_published_online)
 
-    def test_no_warning_when_nothing_is_being_published(self):
-        published = self.hidden('Ya en la web', 'WEBB-1', image_url='')
+    def test_a_category_the_load_will_create_counts_too(self):
+        preview = self.preview(workbook_bytes(
+            [product_row('CATN-1', 'Con categoría nueva', price=45, category='Estrenos', destination=ONLINE)]),
+            options={'create_missing_categories': True}).json()
+        self.assertEqual((preview['counts']['error'], preview['summary']['publication_refused']), (0, 0), preview['rows'])
+        self.assertEqual(self.apply(preview['id']).status_code, 200)
+        self.assertTrue(self.product('Con categoría nueva').is_published_online)
+
+    def test_loading_as_internal_stock_is_always_allowed(self):
+        body = self.imported([
+            product_row('INTR-1', 'Repuesto sin categoría', price=0, destination=INTERNAL),
+            product_row('INTR-2', 'Repuesto sin decir', price=0),
+        ])
+        self.assertEqual((body['counts']['create'], body['summary']['publication_refused']), (2, 0))
+        self.assertEqual([row['warnings'] for row in body['rows']], [[], []])
+
+    def test_a_product_already_on_the_web_is_not_taken_off_by_this_rule(self):
+        published = self.hidden('Ya en la web', 'WEBB-1', category=None)
         Product.objects.filter(pk=published.pk).update(is_published_online=True)
-        self.hidden('Sigue interno', 'INTT-1', image_url='')
-        body = self.preview(workbook_bytes([
-            product_row('WEBB-1', 'Ya en la web', destination=ONLINE),        # already there: nothing turns on
-            product_row('INTT-1', 'Sigue interno'),                           # empty cell: decides nothing
-            product_row('WEBB-1X', 'Nuevo sin foto', price=10),               # new: internal unless its row says web
-        ])).json()
-        self.assertEqual([row['warnings'] for row in body['rows'] if 'publicarse' in ' '.join(row['warnings'])], [])
+
+        body = self.imported([product_row('WEBB-1', 'Ya en la web', price=61, destination=ONLINE)])
+
+        self.assertEqual((body['summary']['publication_refused'], body['rows'][0]['warnings']), (0, []))
+        self.assertEqual(body['summary']['destination_changes'], {'to_web': 0, 'to_internal': 0})
+        self.assertTrue(self.product('Ya en la web').is_published_online)
+        self.assertEqual(self.product('Ya en la web').price, 61)
 
     def test_the_preview_counts_how_many_products_change_destination(self):
         self.hidden('A la web 1', 'TOWB-1')
@@ -318,20 +391,25 @@ class PublishingThroughTheLoadIsSaidBeforeItHappensTest(_Base):
         self.assertEqual(self.apply(body['id']).json()['summary']['applied']['destination_changed'], 3)
 
     def test_a_row_that_will_not_be_applied_counts_nothing_and_warns_of_nothing(self):
-        self.hidden('Sin foto', 'SKIP-1', image_url='')
-        rows = [product_row('SKIP-1', 'Sin foto', destination=ONLINE)]
+        self.hidden('Sin categoría', 'SKIP-1', category=None)
+        rows = [product_row('SKIP-1', 'Sin categoría', destination=ONLINE)]
         skipped = self.preview(workbook_bytes(rows), options={'mode': 'create_only'}).json()
         self.assertEqual(skipped['summary']['destination_changes'], {'to_web': 0, 'to_internal': 0})
-        self.assertNotIn('publicarse', ' '.join(skipped['rows'][0]['warnings']))
-        wrong = self.preview(workbook_bytes([product_row('SKIP-1', 'Sin foto', price='gratis', destination=ONLINE)])).json()
-        self.assertEqual((wrong['counts']['error'], wrong['summary']['destination_changes']['to_web']), (1, 0))
+        self.assertEqual(skipped['summary']['publication_refused'], 0)
+        self.assertNotIn('No se publica', ' '.join(skipped['rows'][0]['warnings']))
+        wrong = self.preview(workbook_bytes(
+            [product_row('SKIP-1', 'Sin categoría', price='gratis', destination=ONLINE)])).json()
+        self.assertEqual(
+            (wrong['counts']['error'], wrong['summary']['destination_changes']['to_web'],
+             wrong['summary']['publication_refused']), (1, 0, 0))
 
     def test_a_file_without_the_column_changes_no_destination_and_says_zero(self):
         self.hidden('Igual', 'SAME-1')
         body = self.preview(workbook_bytes([['', 'SAME-1', 'Igual', '', 59, 'Repuestos', '', '']], headers=HEADERS)).json()
         self.assertEqual(body['summary']['destination_changes'], {'to_web': 0, 'to_internal': 0})
+        self.assertEqual(body['summary']['publication_refused'], 0)
 
-    def test_a_stale_file_that_would_publish_again_what_was_hidden_since_says_so(self):
+    def test_a_stale_file_does_not_publish_again_what_was_deactivated_since(self):
         """The reviewer's case: downloaded, then hidden and deactivated, then reloaded."""
         product = self.hidden('Funda', 'FUND-1')
         Product.objects.filter(pk=product.pk).update(is_published_online=True)
@@ -340,14 +418,33 @@ class PublishingThroughTheLoadIsSaidBeforeItHappensTest(_Base):
 
         body = self.preview(stale).json()
 
-        self.assertEqual(body['summary']['destination_changes'], {'to_web': 1, 'to_internal': 0})
+        self.assertEqual(body['summary']['destination_changes'], {'to_web': 0, 'to_internal': 0})
+        self.assertEqual(body['summary']['publication_refused'], 1)
         self.assertIn('El producto está inactivo.', ' '.join(body['rows'][0]['warnings']))
+        self.apply(body['id'])
+        self.assertFalse(self.product('Funda').is_published_online)
+
+    def test_what_stopped_being_eligible_after_the_preview_is_not_published_either(self):
+        """A preview is a forecast: apply asks the rule again, with the product in hand."""
+        product = self.hidden('Funda', 'FUND-2')
+        body = self.preview(workbook_bytes([product_row('FUND-2', 'Funda', price=64, destination=ONLINE)])).json()
+        self.assertEqual((body['summary']['publication_refused'], body['rows'][0]['data']['destination']), (0, 'online'))
+        Product.objects.filter(pk=product.pk).update(is_active=False)
+
+        response = self.apply(body['id'])
+
+        self.assertEqual(response.status_code, 200, response.content)
+        applied = response.json()['summary']['applied']
+        self.assertEqual((applied['destination_changed'], applied['publication_refused']), (0, 1))
+        self.assertFalse(self.product('Funda').is_published_online)
+        self.assertEqual(self.product('Funda').price, 64)
+        self.assertFalse(AdminAuditLog.objects.filter(action='product_destination_changed').exists())
 
     def test_a_row_with_this_warning_is_listed_with_the_other_warned_rows(self):
-        self.hidden('Sin foto', 'WARN-1', image_url='')
+        self.hidden('Sin categoría', 'WARN-1', category=None)
         rows = [product_row(f'FINE-{n}', f'Bien {n}', price=10) for n in range(3)]
-        body = self.preview(workbook_bytes([*rows, product_row('WARN-1', 'Sin foto', destination=ONLINE)])).json()
-        self.assertEqual(body['rows'][0]['data']['name'], 'Sin foto')
+        body = self.preview(workbook_bytes([*rows, product_row('WARN-1', 'Sin categoría', destination=ONLINE)])).json()
+        self.assertEqual(body['rows'][0]['data']['name'], 'Sin categoría')
 
 
 class TheColumnIsNeverSilentlyIgnoredTest(_Base):
@@ -771,7 +868,7 @@ class AuthorityTest(_Base):
     def test_an_import_that_moves_a_product_off_the_web_or_onto_it_is_written_down(self):
         from store.models import AdminAuditLog
 
-        self.imported([product_row('CODA-1', 'Batería', destination=ONLINE), product_row('CODA-2', 'Tapa')])
+        self.imported([product_row('CODA-1', 'Batería', category='Repuestos', destination=ONLINE), product_row('CODA-2', 'Tapa')])
         before = AdminAuditLog.objects.filter(action='product_destination_changed').count()
         self.assertEqual(before, 0)                                # being born somewhere is not a change
 

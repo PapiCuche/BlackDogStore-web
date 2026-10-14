@@ -127,7 +127,10 @@ export function Notices({ job }: { job: ImportJob }) {
     toWeb ? `${toWeb === 1 ? "1 producto pasa" : `${toWeb} productos pasan`} a publicarse en e-commerce` : "",
     toInternal ? `${toInternal === 1 ? "1 producto pasa" : `${toInternal} productos pasan`} a sólo stock interno` : "",
   ].filter(Boolean);
-  if (!reader.length && !format.length && !every.length && !moving.length) return null;
+  // Decisión del propietario D2: una fila que pide la web para un producto que
+  // no es elegible no es un error. Se carga, queda interno, y aquí se cuenta.
+  const refused = job.summary?.publication_refused ?? 0;
+  if (!reader.length && !format.length && !every.length && !moving.length && !refused) return null;
   // There is no "the preview was truncated" case any more, and that is the
   // point: a file over the row limit is now REFUSED outright by the backend
   // with a 400, instead of being trimmed into a job that reported no errors and
@@ -143,6 +146,21 @@ export function Notices({ job }: { job: ImportJob }) {
         >
           <span className="font-semibold">Cambian de destino:</span> {moving.join(" y ")}. Todavía no se ha
           cambiado nada: revisa esas filas antes de aplicar.
+        </p>
+      )}
+      {refused > 0 && (
+        <p
+          role="status"
+          aria-label="Publicaciones que no se harán"
+          className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-warning"
+        >
+          <span className="font-semibold">
+            {refused === 1
+              ? "1 producto no se publicará en e-commerce"
+              : `${refused} productos no se publicarán en e-commerce`}
+          </span>
+          : {refused === 1 ? "se carga y queda" : "se cargan y quedan"} como «Solo stock interno». El motivo está en
+          el aviso de cada fila.
         </p>
       )}
       {[...reader, ...format].map((note) => (

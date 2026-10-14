@@ -255,6 +255,9 @@ describe('la confirmación', () => {
     expect(dialog()).toHaveAttribute('aria-modal', 'true');
     expect(dialog()).toHaveAccessibleName('Publicar 2 productos en e-commerce');
     expect(within(dialog()).getByText(/No cambia si están activos, ni su precio, ni su stock/)).toBeInTheDocument();
+    // Decisión D2: la imagen sólo se exige si la empresa lo configuró; el diálogo no promete otra cosa.
+    expect(within(dialog()).getByText(/activos, con precio y con categoría; con imagen sólo si la empresa lo exige/))
+      .toBeInTheDocument();
 
     fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancelar' }));
     expect(screen.queryByRole('dialog')).toBeNull();

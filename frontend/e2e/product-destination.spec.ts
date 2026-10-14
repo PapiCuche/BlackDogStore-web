@@ -12,7 +12,10 @@ import { test, expect, type Page } from "@playwright/test";
  * interno» no está en el catálogo, ni en la búsqueda, ni tiene página, ni entra
  * en un carrito, ni se puede cotizar. Lo demás de la misma carga, sí.
  *
- * Y un archivo de antes de la columna «Destino» se importa como siempre.
+ * Y un archivo sin la columna «Destino» no publica nada: lo nuevo nace interno
+ * (decisión del propietario, 2026-10-13), y lo que existe se queda donde está.
+ * Publicar por la carga pide además que el producto sea elegible —activo, con
+ * precio y con categoría—, así que la fila que va a la web trae su categoría.
  *
  * Los libros se escriben con openpyxl desde el backend local (`E2E_BACKEND_DIR`),
  * que es con lo que el servidor escribe su propia plantilla.
@@ -26,7 +29,10 @@ const INTERNO = `Flex interno ${RUN}`;
 const PUBLICO = `Funda web ${RUN}`;
 const VIEJO = `Cable de antes ${RUN}`;
 
-type Fila = { codigo: string; nombre: string; precio: number; destino?: string };
+type Fila = { codigo: string; nombre: string; precio: number; destino?: string; categoria?: string };
+
+/** La categoría de lo que va a la web. Si la empresa no la tiene, la carga la crea. */
+const CATEGORIA = "Accesorios E2E";
 
 /** Un libro de productos. Con `destino` lleva la columna; sin él, es un archivo de antes. */
 function libro(nombre: string, filas: Fila[], conDestino: boolean): string {
@@ -39,7 +45,7 @@ function libro(nombre: string, filas: Fila[], conDestino: boolean): string {
     "headers = ['Código de barras', 'Código', 'Nombre', 'Descripción', 'Precio de venta', 'Categoría', 'Imagen principal', 'Imágenes']",
     "ws.append(headers + (['Destino (pendiente web)'] if with_destination else []))",
     "for row in rows:",
-    "    line = [None, row['codigo'], row['nombre'], None, row['precio'], None, None, None]",
+    "    line = [None, row['codigo'], row['nombre'], None, row['precio'], row.get('categoria'), None, None]",
     "    ws.append(line + ([row.get('destino')] if with_destination else []))",
     "wb.save(os.environ['E2E_OUT'])",
   ].join("\n");
@@ -75,6 +81,7 @@ async function importar(page: Page, archivo: string): Promise<string> {
   await page.goto("/admin/products/import", { waitUntil: "networkidle" });
   await page.locator('input[type="file"][accept=".xlsx"]').setInputFiles(archivo);
   await page.getByRole("button", { name: "Continuar" }).click();              // hoja
+  await page.getByLabel(/Crear las categorías que falten/).check();           // la de CATEGORIA, si no existe
   await page.getByRole("button", { name: "Previsualizar" }).click();          // columnas
   await expect(page.getByRole("heading", { name: /Previsualización/ })).toBeVisible({ timeout: 30_000 });
   const vista = await page.locator("main").innerText();
@@ -108,7 +115,7 @@ test.describe("solo stock interno", () => {
     await signIn(page);
     const vista = await importar(page, libro("con-destino.xlsx", [
       { codigo: `INT-${RUN}`, nombre: INTERNO, precio: 35, destino: "Solo stock interno" },
-      { codigo: `WEB-${RUN}`, nombre: PUBLICO, precio: 59, destino: "Publicar en e-commerce" },
+      { codigo: `WEB-${RUN}`, nombre: PUBLICO, precio: 59, destino: "Publicar en e-commerce", categoria: CATEGORIA },
     ], true));
 
     // La vista previa lo dijo antes de aplicar nada.
@@ -194,22 +201,25 @@ test.describe("solo stock interno", () => {
     await visitante.context().close();
   });
 
-  test("B · un archivo de antes, sin la columna «Destino», se importa como siempre: publicado", async ({ page, browser, baseURL }) => {
+  test("B · un archivo sin la columna «Destino» no publica: lo nuevo nace «Solo stock interno»", async ({ page, browser, baseURL }) => {
     await signIn(page);
     const vista = await importar(page, libro("sin-destino.xlsx", [
       { codigo: `OLD-${RUN}`, nombre: VIEJO, precio: 19 },
     ], false));
     expect(vista).toContain(VIEJO);
-    expect(vista).toContain("Publicar en e-commerce");                         // lo que va a pasar, a la vista
-    expect(vista).not.toContain("Solo stock interno");
+    expect(vista).toContain("Solo stock interno");                             // lo que va a pasar, a la vista
 
-    await page.goto("/admin/products", { waitUntil: "networkidle" });
-    await expect(page.locator("tr").filter({ hasText: VIEJO }).getByText("Solo stock interno")).toHaveCount(0);
+    const estado = await page.evaluate(async (nombre) => {
+      const res = await fetch(`/api/admin/products/?search=${encodeURIComponent(nombre)}`, { credentials: "include" });
+      const fila = (await res.json()).results[0];
+      return { activo: fila.is_active as boolean, publicado: fila.is_published_online as boolean };
+    }, VIEJO);
+    expect(estado).toEqual({ activo: true, publicado: false });
 
     const visitante = await (await browser.newContext({ baseURL })).newPage();
     await visitante.goto(`/product?search=${encodeURIComponent(VIEJO)}`, { waitUntil: "networkidle" });
-    await expect(tarjeta(visitante, VIEJO).first()).toBeVisible({ timeout: 20_000 });
-    expect(nombres((await tienda(visitante, `/api/products/?search=${encodeURIComponent(VIEJO)}`)).body)).toEqual([VIEJO]);
+    await expect(tarjeta(visitante, VIEJO)).toHaveCount(0);
+    expect(nombres((await tienda(visitante, `/api/products/?search=${encodeURIComponent(VIEJO)}`)).body)).toEqual([]);
     await visitante.context().close();
   });
 

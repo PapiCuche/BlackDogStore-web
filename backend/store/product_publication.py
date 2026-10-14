@@ -13,12 +13,17 @@ public shop (PRODUCT-DESTINATION-01). This module adds two things and no data:
   · the bulk change (`set_visibility`): many products, one transaction, one
     field.
 
-THE RULE GATES THE BULK ACTION, NOT THE PRODUCT FORM
----------------------------------------------------
+THE RULE GATES WHAT PUBLISHES MANY AT ONCE, NOT THE PRODUCT FORM
+---------------------------------------------------------------
 Somebody editing ONE product sees what they are doing and may have a reason to
-publish it before its picture is ready. Somebody ticking «all 600 results»
-does not see each one, so the bulk action leaves out what is not ready and says
-which and why. Hiding is always allowed: hiding shows nothing to anybody.
+publish it before it is ready. Somebody ticking «all 600 results», or loading
+a file of 600 rows, does not see each one: the bulk action and the product
+load leave out what is not eligible and say which and why. Hiding is always
+allowed: hiding shows nothing to anybody.
+
+WHAT IS ASKED (owner's decision, 2026-10-13): active, a price, a category.
+A PICTURE ONLY IF THE COMPANY ASKS FOR ONE
+(`CompanySettings.publication_requires_image`, off as created).
 
 Nothing here touches `is_active`, a price, a quantity, a device or the Kardex.
 """
@@ -29,7 +34,7 @@ from django.db import transaction
 from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
-from .models import Product, ProductImage
+from .models import CompanySettings, Product, ProductImage
 
 #: code -> what the panel says. The ORDER is the order problems are reported in.
 PROBLEM_LABELS = {
@@ -78,16 +83,33 @@ def with_gallery_flag(queryset):
     )
 
 
-def publication_problems(product, *, has_gallery=None) -> list[str]:
+def requires_image(company) -> bool:
+    """
+    Whether `company` (or its id) asks for a picture before publishing in bulk.
+
+    One query. A company with no settings row asks for nothing. A caller with
+    many products in hand asks ONCE and passes the answer on.
+    """
+    company_id = getattr(company, 'pk', company)
+    return CompanySettings.objects.filter(company_id=company_id, publication_requires_image=True).exists()
+
+
+def publication_problems(product, *, has_gallery=None, require_image=None) -> list[str]:
     """
     The codes of what `product` lacks to be published in bulk. Empty = ready.
+
+    `require_image` is the company's own rule (`requires_image`): given by a
+    caller that already asked, read here otherwise. Without it a picture is
+    not looked for at all.
 
     `has_gallery` is taken from the argument, then from the `with_gallery_flag`
     annotation, and only then asked of the database — one product in hand costs
     one query, a page of them costs none.
     """
+    if require_image is None:
+        require_image = requires_image(product.company_id)
     has_image = bool(product.image_url)
-    if not has_image:
+    if require_image and not has_image:
         if has_gallery is None:
             has_gallery = getattr(product, 'has_gallery', None)
         if has_gallery is None:
@@ -95,21 +117,21 @@ def publication_problems(product, *, has_gallery=None) -> list[str]:
         has_image = bool(has_gallery)
     return problems_of(
         is_active=product.is_active, price=product.price, has_image=has_image,
-        has_category=product.category_id is not None,
+        has_category=product.category_id is not None, require_image=require_image,
     )
 
 
-def problems_of(*, is_active, price, has_image, has_category) -> list[str]:
+def problems_of(*, is_active, price, has_image, has_category, require_image) -> list[str]:
     """
     The same rule over plain facts, for a caller that knows the state a product
-    WILL be left in rather than the one it is in (the product load's preview).
+    WILL be left in rather than the one it is in (the product load).
     """
     problems = []
     if not is_active:
         problems.append('inactive')
     if price is None or price <= 0:
         problems.append('no_price')
-    if not has_image:
+    if require_image and not has_image:
         problems.append('no_image')
     if not has_category:
         problems.append('no_category')
@@ -171,8 +193,10 @@ def set_visibility(*, company, publish: bool, ids=None, select=None, expected_co
         if still != wanted or len(locked) != len(wanted):
             raise SelectionChanged(select(base).count())
 
-    pictured = set()
+    pictured, require_image = set(), False
     if publish:
+        require_image = requires_image(company)
+    if publish and require_image:
         pictured = set(
             ProductImage.objects.filter(product_id__in=[p.pk for p in locked]).values_list('product_id', flat=True)
         )
@@ -183,7 +207,8 @@ def set_visibility(*, company, publish: bool, ids=None, select=None, expected_co
             unchanged += 1
             continue
         if publish:
-            problems = publication_problems(product, has_gallery=product.pk in pictured)
+            problems = publication_problems(
+                product, has_gallery=product.pk in pictured, require_image=require_image)
             if problems:
                 refused.append({'id': product.pk, 'name': product.name, 'problems': problems})
                 continue

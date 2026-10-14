@@ -357,6 +357,8 @@ export type CompanySettingsPayload = {
   risk_review_amount: string | null;
   /** CLIENT-SEC-01: whether an order waiting for its review may be sent or handed over. */
   hold_orders_pending_review: boolean;
+  /** INVENTORY-UNIFIED-01: whether publishing in bulk asks for a picture. Off as created. */
+  publication_requires_image?: boolean;
   updated_at: string;
 };
 
@@ -1463,6 +1465,8 @@ export type ImportJob = {
     media?: ImportMediaSummary;
     /** Carga de productos: cuántos que ya existen pasan a la web o salen de ella. */
     destination_changes?: { to_web: number; to_internal: number };
+    /** Carga de productos: filas que piden la web para un producto no elegible. Se carga, y no se publica. */
+    publication_refused?: number;
     /** Sólo en una carga de imágenes (`product_images`). */
     products?: number;
     images_to_add?: number;

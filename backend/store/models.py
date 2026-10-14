@@ -2874,6 +2874,15 @@ class CompanySettings(models.Model):
     # release before this column keeps inserting settings rows.
     hold_orders_pending_review = models.BooleanField(default=False, db_default=False)
 
+    # INVENTORY-UNIFIED-01 — whether a product needs a picture to be PUBLISHED
+    # IN BULK (the bulk action and the product load; `product_publication`).
+    # OFF BY DEFAULT (owner's decision, 2026-10-13): being active, having a
+    # price and a category is what the platform asks; a picture is asked only
+    # by the company that turns this on. It gates nothing else — the product
+    # form publishes as it always did. `db_default` too: the release before
+    # this column keeps inserting settings rows while `migrate` runs.
+    publication_requires_image = models.BooleanField(default=False, db_default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -445,6 +445,9 @@ function ProductImportScreen({ ctx }: { ctx: InternalContext }) {
             {job.summary?.applied?.images_added
               ? `, con ${job.summary.applied.images_added} imagen(es) en sus galerías`
               : ""}.
+            {job.summary?.applied?.publication_refused
+              ? ` ${job.summary.applied.publication_refused} producto(s) pedían publicarse y quedaron como «Solo stock interno» porque no cumplen lo necesario.`
+              : ""}
           </p>
           <div className="flex flex-wrap gap-2">
             <Link className={GHOST} href="/admin/products">
