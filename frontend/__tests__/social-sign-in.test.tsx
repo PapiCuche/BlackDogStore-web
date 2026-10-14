@@ -170,6 +170,17 @@ describe('LinkedAccounts («Mi cuenta»)', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  test('an authorize address that is not https is never followed', async () => {
+    linkReply = { status: 200, body: { authorize_url: 'javascript:alert(1)' } };
+    const navigate = jest.fn();
+    render(<LinkedAccounts navigate={navigate} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vincular Facebook' }));
+    fireEvent.change(screen.getByLabelText('Contraseña actual'), { target: { value: 'clave-segura-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar con Facebook' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   test('an account without a password is told to create one first', async () => {
     identities = { status: 200, body: { has_password: false, email_is_private_relay: false, providers: PROVIDERS({ google: true }) } };
     render(<LinkedAccounts />);

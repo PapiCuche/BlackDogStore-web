@@ -382,6 +382,23 @@ class StateTest(SocialBase):
         self.assertLanded(again, '/auth', social_error='refused')
         self.assertEqual(len([c for c in self.fb_calls if c[0].endswith('access_token')]), 1)
 
+    def test_a_replay_with_the_cookie_copied_back_is_still_refused(self):
+        # Single use is the server's, not the cookie's: clearing the cookie on
+        # the way back is not what stops a second exchange.
+        state = self.facebook_start()['state']
+        binding = self.client.cookies[social_identity.ATTEMPT_COOKIE].value
+        self.assertLanded(self.facebook_callback(state), '/auth', social='facebook')
+        self.client.cookies[social_identity.ATTEMPT_COOKIE] = binding
+        self.assertLanded(self.facebook_callback(state), '/auth', social_error='refused')
+        self.assertEqual(len([c for c in self.fb_calls if c[0].endswith('access_token')]), 1)
+
+    def test_an_apple_attempt_does_not_open_facebook(self):
+        configure_apple()
+        state = self.apple_start()['state']
+        self.assertLanded(self.facebook_callback(state), '/auth', social_error='refused')
+        self.assertEqual(self.fb_calls, [])
+        self.assertFalse(User.objects.exists())
+
     def test_an_expired_attempt_is_refused(self):
         state = self.facebook_start()['state']
         later = time.time() + social_identity.ATTEMPT_TTL + 1
@@ -407,7 +424,7 @@ class StateTest(SocialBase):
     def test_a_state_of_one_provider_does_not_open_another(self):
         configure_apple()
         state = self.facebook_start()['state']
-        self.apple_post(state)
+        self.assertLanded(self.apple_post(state), '/auth', social_error='refused')
         res = self.client.get(APPLE_CALLBACK, {'state': state})
         self.assertLanded(res, '/auth', social_error='refused')
         self.assertEqual(self.apple_calls, [])
@@ -590,6 +607,8 @@ class AppleTokenTest(SocialBase):
         with mock.patch.object(apple_identity, '_post', side_effect=unsigned):
             self.assertLanded(self.apple_sign_in(), '/auth', social_error='refused')
         self.assertFalse(User.objects.exists())
+        # The algorithm is refused before any key is fetched.
+        apple_identity._signing_key.assert_not_called()
 
     def test_a_token_signed_with_a_shared_secret(self):
         def hmac_signed(url, data):
@@ -600,6 +619,8 @@ class AppleTokenTest(SocialBase):
         with mock.patch.object(apple_identity, '_post', side_effect=hmac_signed):
             self.assertLanded(self.apple_sign_in(), '/auth', social_error='refused')
         self.assertFalse(User.objects.exists())
+        # The algorithm is refused before any key is fetched.
+        apple_identity._signing_key.assert_not_called()
 
     def test_apple_refusing_the_code(self):
         with mock.patch.object(apple_identity, '_post', return_value={'error': 'invalid_grant'}):
@@ -806,6 +827,13 @@ class LinkTest(SocialBase):
         self.ana.save()
         self.sign_in_with_password()
         self.assertEqual(self.start_link().status_code, 403)
+        self.assertFalse(ExternalIdentity.objects.exists())
+
+    def test_an_account_that_became_staff_meanwhile_is_not_linked(self):
+        self.sign_in_with_password()
+        state = parse_qs(urlparse(self.start_link().json()['authorize_url']).query)['state'][0]
+        User.objects.filter(pk=self.ana.pk).update(is_staff=True)
+        self.assertLanded(self.facebook_callback(state), '/account', link_error='not_allowed')
         self.assertFalse(ExternalIdentity.objects.exists())
 
     def test_google_is_not_linked_from_here(self):
