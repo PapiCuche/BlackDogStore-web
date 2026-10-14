@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1 en rama local
+
+- Rama `feat/device-commerce` desde `master` `abfc6bd`, commits locales sin push.
+- Costos y margen comercial (DEC-DEVICE-COMMERCE-01): `costs.view`, costo promedio por
+  sucursal y costo específico por equipo en el Kardex, instantáneas de costo y base sin IGV
+  en cada línea vendida, `GET /api/admin/sales/margin/`, inventario al costo y columnas de
+  costo en las cargas y descargas. Cierra la fuga de costo de la lista de equipos.
+- Migraciones `0126`–`0128` dependen de `0123`; hay PR abiertos con `0124`/`0125`: se
+  renumeran al fusionar.
+- Pendiente del propietario: confirmar las decisiones marcadas en DEC-DEVICE-COMMERCE-01
+  (costos sin IGV, «Precio costo» como referencia, margen sólo sobre líneas con costo).
+- Siguiente: DC2 (desgloses por unidad/variante).
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |

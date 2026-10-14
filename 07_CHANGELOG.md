@@ -3,6 +3,32 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1: costos y margen comercial
+
+En la rama `feat/device-commerce` (sin push). Migraciones `0126` (datos), `0127` y `0128`
+(aditivas, `db_default` en las columnas NOT NULL, reversibles). DEC-DEVICE-COMMERCE-01.
+
+**Security**
+- `GET /api/admin/inventory/units/` devolvía el costo de cada equipo a quien tenía sólo
+  `inventory.view`. Ahora el costo viaja sólo con `costs.view`, en la lista, el detalle, la
+  recepción y las descargas.
+
+**Added**
+- Capacidad `costs.view` («Ver costos y márgenes») para el preset `Administrador` sin
+  modificar (`0126`) y los roles heredados `admin`/`superadmin`.
+- Costo promedio ponderado por sucursal, costo específico por equipo y costo de cada línea
+  de Kardex; `Product.reference_cost`.
+- Costo y base sin IGV congelados en cada línea vendida (web y caja).
+- `GET /api/admin/sales/margin/` y la sección «Margen comercial» del resumen de ventas.
+- «Valor al costo» junto al valor a precio de venta en el inventario.
+- Columnas «Costo de referencia» (productos) y «Costo unitario» (stock, opcional).
+
+**Changed**
+- El costo en las descargas es de `costs.view`, no de `inventory.adjust`.
+- «Precio costo» de la plantilla POS ya no se ignora: es el costo de referencia.
+- El reporte de stock trae «Costo promedio» (vacío sin `costs.view`).
+- El costo de un equipo vendido no se puede cambiar.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

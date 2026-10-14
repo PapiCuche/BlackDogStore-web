@@ -1635,3 +1635,53 @@ archivos de productos activos, el aviso de la carga y el apóstrofo.
   carga de imágenes añade a productos que ya existen.
 - Deudas que siguen como están, documentadas: ORDER-HISTORY-LIVE-NAME,
   IMPORT-STATE-NEVER-WRITES e IMPORT-ID-FOREIGN-WARNINGS.
+
+### DEC-DEVICE-COMMERCE-01 · DC1 — costos y margen comercial
+
+Fase DEVICE-COMMERCE-01, subfase DC1 (rama `feat/device-commerce`, migraciones `0126`–`0128`).
+
+**Decisiones del propietario (2026-10-14).**
+- Valoración: **costo promedio ponderado POR SUCURSAL** para productos por cantidad
+  (accesorios) y **costo específico por unidad** para equipos con serie.
+- Capacidad nueva `costs.view` («Ver costos y márgenes»), por omisión sólo para el
+  preset `Administrador` y los roles heredados `admin`/`superadmin`.
+- Nunca se llama «utilidad neta» al margen; es **margen comercial**.
+- La historia no se recalcula desde el catálogo.
+- Un pedido pendiente o cancelado sin pagar no es un cobro.
+
+**Cómo queda.**
+- `costs.view` decide TODA superficie que devuelve un costo: lista y detalle de equipos
+  (sin ella la clave `cost` no viaja), las descargas (antes usaban `inventory.adjust`),
+  el inventario valorizado y el margen. Corregir el costo de un equipo existente también
+  la exige (403); registrar el costo al RECIBIR sigue siendo de `inventory.adjust`. El
+  IMEI completo no cambia: es la regla del inventario para el personal.
+- `inventory_services.create_stock_movement` decide el costo de cada línea de Kardex
+  (`StockMovement.unit_cost`, `cost_source`) y el promedio de la sucursal
+  (`BranchStock.average_cost`, 4 decimales, media al alza) bajo el mismo
+  `select_for_update`; las reglas viven en `store.cost_services`. Entrada con costo →
+  `(qty×prom + n×costo)/(qty+n)`; sin costo → `unknown`, promedio intacto; salidas,
+  transferencias y devoluciones → el promedio; una transferencia llega al costo con que
+  salió y sólo alimenta el promedio si ese costo era real (no de referencia). Un estante
+  de costo desconocido toma el primer costo conocido. Estante vacío conserva el último
+  promedio. `Product.reference_cost` sólo se usa sin promedio, marcado `reference`, y
+  nunca se convierte en promedio.
+- El costo de un equipo VENDIDO no se reescribe (servicio, API y carga de equipos).
+- Cada `OrderItem` congela al escribirse su salida (pago web o venta de caja):
+  `unit_cost`/`cost_source` y su parte de la base imponible (`net_amount`), del descuento
+  sin IGV (`discount_net`) y el precio unitario sin IGV (`unit_price_net`). Las partes se
+  reparten por peso bruto con el resto mayor (empates al id menor), así que **las líneas
+  suman exactamente `Order.taxable_amount`**. Varias unidades con serie: la media de sus
+  costos específicos (no se lee `OrderUnit`, que puede cambiar al entregar). Líneas
+  anteriores: NULL/`unknown`, sin backfill.
+- `GET /api/admin/sales/margin/` (`sales.analytics.view` + `costs.view`): ventas netas y
+  brutas, cobros confirmados (PAGADOS por `paid_at`, la regla del tablero), costo de lo
+  vendido, **margen = ventas netas de las líneas con costo − ese costo**, margen %,
+  ventas con costo pendiente (líneas, ventas e importe), reembolsos (`REFUNDED`) y
+  desgloses por producto, sucursal y canal. Restar el costo conocido de TODAS las ventas
+  netas contaría cada venta sin costo como margen del 100 %.
+- Excel: «Costo de referencia» en la plantilla de productos (y «Precio costo» de la
+  plantilla POS de 18 columnas se lee como tal); «Costo unitario» opcional en la carga de
+  stock (sólo en filas que aumentan); «Costo» de la carga de equipos es su costo
+  específico. La vista previa enseña el costo anterior y el promedio resultante sólo a
+  `costs.view`. Las descargas llevan costos sólo para `costs.view`.
+
