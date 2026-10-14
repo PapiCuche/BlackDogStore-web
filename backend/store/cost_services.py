@@ -145,3 +145,23 @@ def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_be
         return MovementCost(unit_cost, source, average_before)
 
     return MovementCost(None, UNKNOWN, average_before)
+
+
+def user_may_view_costs(user, company) -> bool:
+    """
+    DC1 — whether `user` may see (or set) what things cost in `company`.
+
+    THE one answer for code that holds a user and a company (a service, the
+    margin view); `inventory_views.may_view_costs` is the same answer for a
+    request. The legacy bridge counts like everywhere else: a pre-SaaS admin
+    of the pilot tenant has always seen costs.
+    """
+    from .models import UserProfile
+    from .permissions import get_user_role
+    from .tenancy import has_capability, uses_legacy_bridge
+
+    if company is None or user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if uses_legacy_bridge(user, company):
+        return get_user_role(user) in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN)
+    return has_capability(user, company, 'costs.view')

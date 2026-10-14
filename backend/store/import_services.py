@@ -372,6 +372,11 @@ class CatalogueIndex:
 # Preview
 # =============================================================================
 
+#: DC1 review — what a caller without `costs.view` reads on a row that brings
+#: a «Costo de referencia»: the same sentence whatever the cell says, so no
+#: value can be compared against the stored one.
+COST_COLUMN_IGNORED = 'Columna «Costo de referencia» ignorada: requiere permiso de costos.'
+
 DEFAULT_OPTIONS = {
     'mode': 'upsert',                    # or 'create_only'
     'create_missing_categories': False,  # §33 — default FALSE, deliberately
@@ -468,6 +473,10 @@ class _GalleryIndex:
 def _preview_products(*, company, actor, upload, filename, sheet_name, header_row,
                       mapping, options, stager):
     options = {**DEFAULT_OPTIONS, **(options or {})}
+    # Decided here, from who is asking — never from the request's options.
+    from .cost_services import user_may_view_costs
+
+    costs_allowed = user_may_view_costs(actor, company)
     # Before the file is even opened: an option that names another company's
     # category refuses the whole request, and leaves no job behind.
     default_category = _default_category(company, options.get('default_category_id'))
@@ -635,7 +644,11 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
 
         # DC1 — the catalogue's reference cost. Blank changes nothing.
         reference_cost = None
-        if 'reference_cost' in mapping:
+        if 'reference_cost' in mapping and not costs_allowed:
+            # Not read at all: neither its value nor whether it is valid.
+            if str(fields.get('reference_cost') or '').strip():
+                warnings.append(COST_COLUMN_IGNORED)
+        elif 'reference_cost' in mapping:
             reference_cost, cost_error = clean_price(fields.get('reference_cost'))
             if cost_error:
                 errors.append('Costo de referencia: ' + cost_error.replace('El precio', 'el costo'))
@@ -997,6 +1010,9 @@ def apply_products(*, job, actor):
 
     options = {**DEFAULT_OPTIONS, **(job.options_snapshot or {})}
     company = job.company
+    from .cost_services import user_may_view_costs
+
+    costs_allowed = user_may_view_costs(actor, company)
     index = CatalogueIndex(company)
     taken_slugs: set[str] = set()
     created = updated = images_added = 0
@@ -1082,7 +1098,9 @@ def apply_products(*, job, actor):
         price_text = data.get('price', '')
         price = Decimal(price_text) if price_text else None
         cost_text = data.get('reference_cost', '')
-        reference_cost = Decimal(cost_text) if cost_text else None
+        # Whoever APPLIES needs `costs.view` too: a job previewed by somebody
+        # who has it is not a way to write a cost for somebody who has not.
+        reference_cost = Decimal(cost_text) if cost_text and costs_allowed else None
 
         if product_id:
             product = Product.objects.select_for_update().get(

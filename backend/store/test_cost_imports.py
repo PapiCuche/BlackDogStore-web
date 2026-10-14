@@ -130,19 +130,55 @@ class ProductReferenceCostTest(_Shop):
         notes = import_formats.unmapped_notes(headers, detected['mapping'])
         self.assertNotIn('Precio costo', [note['column'] for note in notes])
 
+    def catalogue_user(self):
+        user, _ = _p2d_member(self.company, 'dc1_excel_catalogo',
+                              ['company.view', 'products.view', 'products.manage'])
+        return user
+
     def test_without_costs_view_the_previous_cost_is_not_shown(self):
         Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
-        catalogue, _ = _p2d_member(self.company, 'dc1_excel_catalogo',
-                                   ['company.view', 'products.view', 'products.manage'])
-        res = _client(catalogue).post('/api/admin/products/import/preview/', {
+        res = _client(self.catalogue_user()).post('/api/admin/products/import/preview/', {
             'file': upload(self.HEADERS, [['FUN-001', 'Funda', '59.90', '22.50']]),
         }, format='multipart')
         self.assertEqual(res.status_code, 201, res.content)
         [row] = res.json()['rows']
         self.assertNotIn('reference_cost_before', row['data'])
         self.assertNotIn('20.00', res.content.decode())
-        # What the file itself says is not a secret to whoever uploaded it.
-        self.assertEqual(row['data']['reference_cost'], '22.50')
+        # DC1 review: the column is not read at all for this caller.
+        self.assertNotIn('reference_cost', row['data'])
+        self.assertIn(import_services.COST_COLUMN_IGNORED, row['warnings'])
+
+    def test_without_costs_view_no_value_of_the_column_tells_the_stored_cost(self):
+        """The equality probe: whatever the cell says, the row reads the same."""
+        Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
+        client = _client(self.catalogue_user())
+        shapes = set()
+        for value in ['20.00', '20', '21.00', '19.99', '0', 'caro', '-1']:
+            res = client.post('/api/admin/products/import/preview/', {
+                'file': upload(self.HEADERS, [['FUN-001', 'Funda', '59.90', value]]),
+            }, format='multipart')
+            self.assertEqual(res.status_code, 201, res.content)
+            [row] = res.json()['rows']
+            shapes.add(repr((row['action'], row['errors'], row['warnings'], sorted(row['data'].items()))))
+        self.assertEqual(len(shapes), 1, shapes)
+
+    def test_without_costs_view_apply_leaves_the_reference_cost_alone(self):
+        Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
+        catalogue = self.catalogue_user()
+        job = self.preview([['FUN-001', 'Funda', '59.90', '35.00']], actor=catalogue)
+        import_services.apply_products(job=job, actor=catalogue)
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.reference_cost, D('20.00'))
+        new = self.preview([['NEW-777', 'Cable', '20.00', '9.00']], actor=catalogue)
+        import_services.apply_products(job=new, actor=catalogue)
+        self.assertIsNone(Product.objects.get(name='Cable').reference_cost)
+
+    def test_a_job_previewed_with_costs_is_not_applied_with_them_by_somebody_without(self):
+        Product.objects.filter(pk=self.case.pk).update(reference_cost=D('20.00'))
+        job = self.preview([['FUN-001', 'Funda', '59.90', '35.00']])
+        import_services.apply_products(job=job, actor=self.catalogue_user())
+        self.case.refresh_from_db()
+        self.assertEqual(self.case.reference_cost, D('20.00'))
 
 
 class StockUnitCostTest(_Shop):
