@@ -49,6 +49,23 @@ SALES_NOTE_CONTROL_LINE = "Documento de control interno, sin validez tributaria"
 _TITLE = "Nota de venta"
 
 
+#: What a void note prints next to its heading (ORDER-CANCEL-01).
+VOID_STAMP = 'ANULADA'
+
+
+def printable(order) -> bool:
+    """
+    Whether the papers of `order` may be drawn: a paid order, or one that was
+    paid and then cancelled (ORDER-CANCEL-01) — its papers stay available,
+    marked as void.
+    """
+    return bool(order.paid) and order.status in (Order.Status.PAID, Order.Status.CANCELLED)
+
+
+def is_void(sales_note) -> bool:
+    return sales_note.status == SalesNote.STATUS_VOID or sales_note.order.status == Order.Status.CANCELLED
+
+
 class SalesNoteError(Exception):
     """Business-rule violation. Views map this to HTTP 400."""
 
@@ -193,6 +210,9 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': amount_in_words(tax['total'], tax['currency']),
         'title': _TITLE,
+        # ORDER-CANCEL-01: a note of a cancelled order is kept, as void, and
+        # every paper of it says so where it says what it is.
+        'stamp': VOID_STAMP if is_void(sales_note) else '',
         'control_line': SALES_NOTE_CONTROL_LINE,
         'number': sales_note.number,
         'issued_at': local_stamp(sales_note.issued_at),
@@ -274,7 +294,7 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     Raises SalesNoteError if the underlying order is no longer paid.
     """
     order = sales_note.order
-    if not order.paid or order.status != Order.Status.PAID:
+    if not printable(order):
         raise SalesNoteError(
             f'No se puede generar el PDF de la nota {sales_note.number}: la orden no está pagada.'
         )
@@ -303,6 +323,7 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
 
     pdf_bytes = document_layout.render_a4({
         'title': ctx['title'].upper(),
+        'stamp': ctx['stamp'],
         'number': ctx['number'],
         # No es una serie fiscal, y el papel lo dice junto al número.
         'number_note': 'Número interno del sistema. No es una serie fiscal.',

@@ -827,6 +827,10 @@ def mark_payment_failure(order: Order, message: str) -> None:
     written at the view, generic on purpose: a provider's error text can name
     internal endpoints and configuration.
     """
-    order.status = Order.Status.FAILED
-    order.payment_error = (message or '')[:500]
-    order.save(update_fields=['status', 'payment_error'])
+    # ORDER-CANCEL-01: only an order still waiting for its payment can fail
+    # it. A paid or cancelled one is not rewritten by a failure to open a form.
+    updated = Order.objects.filter(pk=order.pk, status=Order.Status.PENDING_PAYMENT, paid=False).update(
+        status=Order.Status.FAILED, payment_error=(message or '')[:500])
+    if updated:
+        order.status = Order.Status.FAILED
+        order.payment_error = (message or '')[:500]

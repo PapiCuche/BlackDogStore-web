@@ -102,6 +102,8 @@ class FulfillmentBlocked(Exception):
 
     UNITS_PENDING = 'units_pending'
     REVIEW_PENDING = 'review_pending'
+    #: ORDER-CANCEL-01: a cancelled order's fulfilment does not move.
+    ORDER_CANCELLED = 'order_cancelled'
 
     def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING):
         super().__init__(detail)
@@ -169,15 +171,27 @@ def change_fulfillment_status(
     from . import unit_identification
 
     leaving = new_status in unit_identification.LEAVING
-    previous = order.fulfillment_status
     with transaction.atomic():
         # SERIAL-PICK-01. As at the till: a device does not leave without
         # somebody saying which one it is. Getting an order ready is free;
         # sending it or handing it over is not. Decided with the order LOCKED —
         # the same lock identifying or taking back a device holds — so nobody
         # un-names a device between this check and the write below.
-        if leaving or new_status in HELD_WHILE_REVIEW_PENDING:
-            Order.objects.select_for_update(of=('self',)).filter(pk=order.pk).first()
+        #
+        # ORDER-CANCEL-01: EVERY change takes the lock now, because a
+        # cancellation takes it too and a cancelled order does not move. Read
+        # under the lock, not from `order`, which may have been read before
+        # somebody cancelled it.
+        current = (
+            Order.objects.select_for_update(of=('self',)).filter(pk=order.pk)
+            .values_list('status', 'fulfillment_status').first()
+        )
+        if current is not None and current[0] == Order.Status.CANCELLED:
+            raise FulfillmentBlocked(
+                'Este pedido está cancelado: su estado de despacho ya no cambia.',
+                pending={}, code=FulfillmentBlocked.ORDER_CANCELLED,
+            )
+        previous = current[1] if current is not None else order.fulfillment_status
         # CLIENT-SEC-01. Only where the company asked for it: an order waiting
         # for its review does not leave — nor is its buyer told to come for it —
         # until somebody has decided. Asked with the order locked, like the

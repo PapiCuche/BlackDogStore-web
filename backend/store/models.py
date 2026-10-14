@@ -1324,6 +1324,12 @@ class StockMovement(models.Model):
     # "devolución" cannot tell a customer return from a technician correcting a
     # mis-scanned part, and those are different conversations.
     SERVICE_RETURN = 'service_return'
+    # ORDER-CANCEL-01 — a paid web order cancelled before its goods left: each
+    # of its sale exits comes back as its own line, with the order on it. Not
+    # `return_entry`, for the same reason as `service_return`: a customer
+    # bringing something back and a sale that never happened are different
+    # conversations, and the Kardex has to say which one this was.
+    ORDER_CANCEL_RETURN = 'order_cancel_return'
     # --- Exits (remove stock) ---
     MANUAL_EXIT = 'manual_exit'
     SALE_EXIT = 'sale_exit'
@@ -1341,6 +1347,7 @@ class StockMovement(models.Model):
         (RETURN_ENTRY, 'Entrada por devolución'),
         (CORRECTION_POSITIVE, 'Corrección positiva'),
         (SERVICE_RETURN, 'Entrada por reverso de servicio técnico'),
+        (ORDER_CANCEL_RETURN, 'Devolución por pedido cancelado'),
         (TRANSFER_IN, 'Entrada por transferencia'),
         (MANUAL_EXIT, 'Salida manual'),
         (SALE_EXIT, 'Salida por venta'),
@@ -1352,7 +1359,7 @@ class StockMovement(models.Model):
 
     ENTRY_TYPES = frozenset([
         INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY,
-        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN,
+        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN, ORDER_CANCEL_RETURN,
     ])
     EXIT_TYPES = frozenset([
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
@@ -1545,6 +1552,53 @@ class SalesNote(models.Model):
 
     def __str__(self):
         return f"SalesNote({self.number}, order={self.order_id})"
+
+
+class OrderCancellation(models.Model):
+    """
+    ORDER-CANCEL-01 — the record that a PAID web order was cancelled.
+
+    ONE PER ORDER, AND THE DATABASE SAYS SO. The one-to-one is the last guard
+    against a second cancellation: the service already re-checks under the
+    order's lock, and a second row could only come from a path that skipped
+    both.
+
+    CANCELLING IS NOT REFUNDING. Nothing here says money went back: the order
+    keeps `paid=True`, no payment row changes and no gateway is called. A
+    refund is a separate process with its own record, when it exists.
+
+    What it keeps is what the order looked like before, who did it and why,
+    and what the cancellation did — stock returned, the internal note voided —
+    and what it could NOT do: a live boleta/factura is kept untouched and
+    `fiscal_pending` says a credit note or a void still has to be handled
+    through the fiscal flow.
+    """
+
+    order = models.OneToOneField(Order, on_delete=models.PROTECT, related_name='cancellation')
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='order_cancellations')
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_cancellations',
+    )
+    reason = models.CharField(max_length=500)
+    previous_status = models.CharField(max_length=20)
+    previous_fulfillment_status = models.CharField(max_length=30)
+    #: Whether any stock came back. False for an order whose exits were all
+    #: skipped at payment (a shortfall): there was nothing to return.
+    stock_restored = models.BooleanField(default=False)
+    #: A live boleta/factura exists and is kept: its credit note or void is
+    #: still to be handled through the fiscal flow. Never issued from here.
+    fiscal_pending = models.BooleanField(default=False)
+    #: The affected document as people read it («Boleta B001-12»), or empty.
+    fiscal_document = models.CharField(max_length=80, blank=True)
+    sales_note_voided = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['company', '-created_at'])]
+
+    def __str__(self):
+        return f"OrderCancellation(order={self.order_id})"
 
 
 # ---------------------------------------------------------------------------

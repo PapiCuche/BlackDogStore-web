@@ -1166,8 +1166,23 @@ def _order_detail_payload(request, order, company):
         item['units_pending'] = 0 if product_id in shown else pending.get(product_id, 0)
         shown.add(product_id)
     transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
+    # ORDER-CANCEL-01: a cancelled order does not move any more.
+    from . import order_cancellation as cancelling
+
+    if cancelling.is_cancelled(order):
+        transitions = []
+    cancel_blockers = cancelling.blockers(order)
     return {
         **data,
+        # ORDER-CANCEL-01: whether THIS caller may cancel it now, why not, and
+        # what the cancellation did once it happened. Server-decided.
+        'can_cancel': not cancel_blockers and cancelling.may_cancel(request.user, company),
+        'cancel_blockers': cancel_blockers,
+        'cancellation': cancelling.payload(order),
+        # What the dialog warns about before anyone confirms: the boleta or
+        # factura a cancellation would leave pending its credit note.
+        'cancel_fiscal_document': (
+            cancelling.fiscal_label(cancelling.live_fiscal_document(order)) if not cancel_blockers else ''),
         # CLIENT-SEC-01: what was noticed about this order and what a person
         # decided, for whoever may see orders; null when it was not assessed.
         'risk': _risk_block(request, order, company),
@@ -1460,7 +1475,8 @@ class AdminOrderReceiptPdfView(APIView):
         if order is None:
             return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
-        if not order.paid or order.status != Order.Status.PAID:
+        # ORDER-CANCEL-01: a cancelled order keeps its receipt, marked void.
+        if not order.paid or order.status not in (Order.Status.PAID, Order.Status.CANCELLED):
             return Response(
                 {"detail": "El PDF solo está disponible para órdenes pagadas."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1537,6 +1553,43 @@ class AdminOrderFulfillmentView(APIView):
                 {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderCancelView(APIView):
+    """
+    POST /api/admin/orders/{pk}/cancel/ — ORDER-CANCEL-01, body `{reason}`.
+
+    Cancels a PAID web order whose goods have not left the shop: the stock
+    comes back once, the internal note is voided and kept, a live boleta or
+    factura is kept and flagged as pending its credit note. It does NOT refund:
+    `paid` stays true and no payment is touched. See `order_cancellation`.
+
+    `sales.orders.manage` decides (the legacy bridge: sales, admin and
+    superadmin). Out of scope is 404, like every order view. A rule that says
+    no is 400 (the request) or 409 (the order), with a `code`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        reason = request.data.get('reason') if isinstance(request.data, dict) else None
+        try:
+            cancelling.cancel_paid_order(order, request.user, reason, request=request)
+        except cancelling.OrderCancelError as exc:
+            return Response(exc.body(), status=exc.http_status)
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))

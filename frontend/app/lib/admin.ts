@@ -630,6 +630,14 @@ export type AdminOrderDetail = AdminOrder & {
   units_pending?: number;
   /** Si QUIEN CONSULTA puede identificar o quitar equipos. Lo decide el servidor. */
   units_can_change?: boolean;
+  /** ORDER-CANCEL-01: si QUIEN CONSULTA puede cancelar el pedido ahora. Lo decide el servidor. */
+  can_cancel?: boolean;
+  /** ORDER-CANCEL-01: por qué no se puede cancelar (vacío cuando se puede). */
+  cancel_blockers?: OrderCancelBlocker[];
+  /** ORDER-CANCEL-01: la cancelación, o null si el pedido no está cancelado. */
+  cancellation?: OrderCancellation | null;
+  /** ORDER-CANCEL-01: la boleta/factura que quedaría pendiente de nota de crédito, o "". */
+  cancel_fiscal_document?: string;
   /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
   risk?: OrderRisk | null;
   /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
@@ -696,6 +704,47 @@ export async function fetchAdminOrderDetail(orderId: number): Promise<AdminOrder
   if (res.status === 403) throw new Error('No tienes permisos.');
   if (res.status === 404) throw new Error('Orden no encontrada.');
   if (!res.ok) throw new Error('No se pudo cargar la orden.');
+  return res.json();
+}
+
+// ── ORDER-CANCEL-01: cancelar un pedido pagado ──────────────────────────────
+
+export type OrderCancelBlocker = { code: string; detail: string };
+
+export type OrderCancellation = {
+  cancelled_at: string;
+  cancelled_by: string;
+  reason: string;
+  previous_status: string;
+  previous_fulfillment_status: string;
+  stock_restored: boolean;
+  fiscal_pending: boolean;
+  fiscal_document: string;
+  sales_note_voided: boolean;
+};
+
+/** Lo que el servidor exige del motivo. El botón espera a que se cumpla. */
+export const CANCEL_REASON_MIN = 5;
+export const CANCEL_REASON_MAX = 500;
+
+/**
+ * Cancela un pedido PAGADO cuyos productos no han salido. No devuelve el
+ * dinero: el reembolso se gestiona aparte. Devuelve el detalle actualizado.
+ */
+export async function cancelAdminOrder(orderId: number, reason: string): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/cancel/`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+  if (res.status === 403) throw new Error('No tienes permisos para cancelar pedidos.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  if (res.status === 400 || res.status === 409) {
+    // El motivo lo dice el servidor: ya cancelado, ya salió, motivo corto…
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'No se pudo cancelar el pedido.');
+  }
+  if (!res.ok) throw new Error('No se pudo cancelar el pedido.');
   return res.json();
 }
 

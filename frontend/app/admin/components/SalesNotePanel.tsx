@@ -14,7 +14,12 @@ import {
   type SalesNote,
 } from "../../lib/inventory";
 
-type Props = { orderId: number; isPaid: boolean };
+type Props = {
+  orderId: number;
+  isPaid: boolean;
+  /** ORDER-CANCEL-01: pedido cancelado. Su nota (anulada) se descarga; no se emite otra. */
+  cancelled?: boolean;
+};
 
 function formatWhen(iso: string | null): string {
   if (!iso) return "—";
@@ -29,7 +34,7 @@ function formatWhen(iso: string | null): string {
   });
 }
 
-export function SalesNotePanel({ orderId, isPaid }: Props) {
+export function SalesNotePanel({ orderId, isPaid, cancelled = false }: Props) {
   const [note, setNote] = useState<SalesNote | null>(null);
   // Starts false for unpaid orders so the effect never has to setState synchronously.
   const [loading, setLoading] = useState(isPaid);
@@ -131,7 +136,9 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
             </dl>
           ) : (
             <p className="mb-4 text-sm text-muted">
-              Esta orden todavía no tiene nota de venta interna.
+              {cancelled
+                ? "Pedido cancelado: no se emite nota de venta."
+                : "Esta orden todavía no tiene nota de venta interna."}
             </p>
           )}
 
@@ -142,7 +149,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            {!note ? (
+            {!note ? (cancelled ? null : (
               <button
                 type="button"
                 onClick={() => void handleIssue()}
@@ -151,7 +158,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
               >
                 {issuing ? "Emitiendo…" : "Generar nota de venta"}
               </button>
-            ) : (
+            )) : (
               <>
                 <button
                   type="button"

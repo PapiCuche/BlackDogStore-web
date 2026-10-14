@@ -321,7 +321,7 @@ def generate_order_receipt_pdf(order) -> bytes:
     """
     from .models import Order  # local import to avoid circular
 
-    if not order.paid or order.status != Order.Status.PAID:
+    if not order.paid or order.status not in (Order.Status.PAID, Order.Status.CANCELLED):
         raise ValueError(
             f"Cannot generate PDF for order {order.pk}: not paid "
             f"(paid={order.paid}, status={order.status!r})"
@@ -351,6 +351,8 @@ def generate_order_receipt_pdf(order) -> bytes:
     title, _, requested = ctx["title"].partition(" — ")
     return document_layout.render_a4({
         "title": title.upper(),
+        # ORDER-CANCEL-01: the receipt of a cancelled order says so.
+        "stamp": "PEDIDO ANULADO" if order.status == Order.Status.CANCELLED else "",
         "number": f"Pedido #{ctx['order_id']}",
         "number_note": requested,
         # PDF metadata carries the tenant's name too — it is what a reader sees

@@ -23,6 +23,7 @@ import {
 import { StockShortfallPanel } from "../../components/StockShortfallPanel";
 import { OrderRiskCard } from "../../components/OrderRiskCard";
 import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
+import { OrderCancelPanel } from "../../components/OrderCancelPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -165,6 +166,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
               )}
             </div>
           )}
+          {/* ORDER-CANCEL-01: el botón sólo si el servidor dice que se puede;
+              una vez cancelado, quién, cuándo, por qué y qué hizo. */}
+          <div className="mt-4">
+            <OrderCancelPanel order={order} onCancelled={setOrder} />
+          </div>
         </div>
 
         {/* Summary cards */}
@@ -401,7 +407,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
 
         {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
         {access.can("sales.notes.manage", ["sales", "admin", "superadmin"]) && (
-          <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
+          <SalesNotePanel
+            orderId={order.id}
+            isPaid={order.paid && (order.status === "paid" || order.status === "cancelled")}
+            cancelled={order.status === "cancelled"}
+          />
         )}
 
         {/* El backend vuelve a comprobar la capacidad para cada acción fiscal. */}

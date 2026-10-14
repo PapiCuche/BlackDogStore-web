@@ -8,6 +8,7 @@
   "store.test_client_sec.TwoAtOnceTest",
   "store.test_delivery_base.TwoDefaultsAtOnceTest",
   "store.test_image_import.TwoAppliesAtOnceTest",
+  "store.test_order_cancel.CancelAtTheSameInstantTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",

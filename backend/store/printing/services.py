@@ -91,6 +91,9 @@ def authenticate_agent(raw_token: str):
 
 # -- encolar ---------------------------------------------------------------------
 
+CANCELLED_REFUSAL = 'El pedido está cancelado: su ticket no se imprime. Descarga el PDF, que lo marca como anulado.'
+
+
 def _is_authoritative(order) -> bool:
     return bool(order.paid) and order.status == Order.Status.PAID
 
@@ -189,6 +192,10 @@ def enqueue_manual(*, order, printer, key: str, actor):
     otro local. `key` la pone quien llama (la cabecera `Idempotency-Key`), de
     modo que un doble clic no imprime dos veces.
     """
+    if order.status == Order.Status.CANCELLED:
+        # ORDER-CANCEL-01: the thermal roll does not get a cancelled order's
+        # ticket. Its PDF (marked «ANULADA») is still downloadable.
+        raise PrintError(CANCELLED_REFUSAL)
     if not _is_authoritative(order):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if printer.company_id != order.company_id or not printer.is_active:
@@ -266,7 +273,9 @@ def claim_next(agent):
                 return None
             if not _is_authoritative(job.order):
                 job.status = PrintJob.Status.CANCELLED
-                job.last_error = 'El pedido ya no está pagado.'
+                job.last_error = (
+                    CANCELLED_REFUSAL if job.order.status == Order.Status.CANCELLED
+                    else 'El pedido ya no está pagado.')
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
                 continue
             job.status = PrintJob.Status.PRINTING
@@ -372,6 +381,8 @@ def retry(job, *, actor):
     """Una persona vuelve a mandar un trabajo fallido o cancelado."""
     if job.status not in (PrintJob.Status.FAILED, PrintJob.Status.CANCELLED):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
+    if job.order.status == Order.Status.CANCELLED:
+        raise PrintError(CANCELLED_REFUSAL)
     if not _is_authoritative(job.order):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if not job.printer.is_active:
