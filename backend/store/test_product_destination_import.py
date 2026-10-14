@@ -209,7 +209,8 @@ class DestinationColumnTest(_Base):
         self.assertFalse(self.product('Mica').is_published_online)                 # nuevo y sin columna: interno
 
     def test_a_preview_made_before_this_version_still_applies(self):
-        body = self.preview(workbook_bytes([product_row('CODP-1', 'Soporte', destination=INTERNAL)])).json()
+        # Eligible to publish (it has a category): only the missing key can keep it internal.
+        body = self.preview(workbook_bytes([product_row('CODP-1', 'Soporte', category='Repuestos', destination=INTERNAL)])).json()
         for row in BulkImportRow.objects.filter(job_id=body['id']):
             row.normalized_data.pop('destination', None)
             row.save(update_fields=['normalized_data'])
@@ -439,6 +440,18 @@ class PublishingWhatIsNotEligibleIsRefusedRowByRowTest(_Base):
         self.assertFalse(self.product('Funda').is_published_online)
         self.assertEqual(self.product('Funda').price, 64)
         self.assertFalse(AdminAuditLog.objects.filter(action='product_destination_changed').exists())
+
+    def test_a_new_product_that_stopped_being_eligible_after_the_preview_is_created_internal(self):
+        """The company asked for a picture between the preview and apply: the rule of apply is the one that counts."""
+        body = self.preview(workbook_bytes(
+            [product_row('LATE-1', 'Nuevo sin foto', price=20, category='Repuestos', destination=ONLINE)])).json()
+        self.assertEqual((body['summary']['publication_refused'], body['rows'][0]['data']['destination']), (0, 'online'))
+        self.require_picture()
+
+        applied = self.apply(body['id']).json()['summary']['applied']
+
+        self.assertEqual((applied['created'], applied['publication_refused']), (1, 1))
+        self.assertFalse(self.product('Nuevo sin foto').is_published_online)
 
     def test_a_row_with_this_warning_is_listed_with_the_other_warned_rows(self):
         self.hidden('Sin categoría', 'WARN-1', category=None)
