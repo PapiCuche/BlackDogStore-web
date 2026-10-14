@@ -700,6 +700,16 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
 
+**DEVICE-COMMERCE-01 · DC1 (`0126`–`0129`): quién puede ver costos.** `0126` sólo da
+«Ver costos y márgenes» (`costs.view`) a un rol `Administrador` que nadie editó; una empresa
+que personalizó ese rol se queda sin nadie que vea costos, y desde ahí sólo su gestor de
+roles o un MASTER puede otorgarlo. **Después de `migrate`, corre**
+`$C run --rm backend python manage.py costs_view_report` (sólo lectura, sólo cuentas: no
+nombra empresas ni cambia nada). Si alguna cifra no es 0, otórgalo a mano donde
+corresponda (Accesos › Roles de la empresa) tras confirmarlo con el propietario. `0129`
+marca como «costo pendiente» el stock que ya había sin promedio
+(`BranchStock.uncosted_quantity = quantity`): es el único dato que escribe.
+
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
 duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista

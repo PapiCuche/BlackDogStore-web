@@ -73,3 +73,37 @@ class CostsViewMigrationTest(TestCase):
             self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
+
+
+class CostsViewReportCommandTest(TestCase):
+    """DC1 review — after `migrate`, who still has nobody able to see costs. Read-only, counts only."""
+
+    def test_counts_the_companies_whose_administrator_lacks_it(self):
+        import io
+
+        from django.core.management import call_command
+        from store.models import Company, CompanyRole
+
+        def company(slug, caps, *, role_slug='administrador'):
+            row = Company.objects.create(name=slug, legal_name=f'{slug} SAC', tax_id='20' + str(abs(hash(slug)))[:9],
+                                         slug=slug)
+            CompanyRole.objects.filter(company=row).delete()
+            if caps is not None:
+                CompanyRole.objects.create(company=row, name='Administrador', slug=role_slug, capabilities=caps)
+            return row
+
+        company('dc1-rep-ok', ['company.view', 'costs.view'])
+        company('dc1-rep-edited', ['company.view', 'products.view'])
+        company('dc1-rep-noadmin', None)
+        company('dc1-rep-other', ['costs.view'], role_slug='gerencia')
+        before = sorted(CompanyRole.objects.values_list('pk', 'capabilities'))
+
+        out = io.StringIO()
+        call_command('costs_view_report', stdout=out)
+        text = out.getvalue()
+        self.assertIn('Rol «administrador» sin costs.view: 1', text)
+        self.assertIn('Sin rol «administrador»: 2', text)
+        self.assertIn('Sin ningún rol activo con costs.view: 2', text)
+        # Counts only, and nothing changed.
+        self.assertNotIn('dc1-rep', text)
+        self.assertEqual(sorted(CompanyRole.objects.values_list('pk', 'capabilities')), before)
