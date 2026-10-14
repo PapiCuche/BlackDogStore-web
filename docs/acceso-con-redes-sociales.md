@@ -36,13 +36,20 @@ el servidor, qué se guarda y cómo se configura cada proveedor. Fase SOCIAL-AUT
 **El intento** (Facebook y Apple): al pulsar el botón, `GET /api/auth/<p>/start/` crea en el
 servidor un `state`, un `nonce` y un verificador PKCE, válidos 10 minutos y de un solo uso,
 y deja en el navegador una cookie HttpOnly (`blackdog_social`, ruta `/api/auth/`) cuyo
-resumen guarda el intento. La vuelta sólo se acepta en el navegador que tiene esa cookie:
-un enlace de vuelta copiado, repetido, vencido o de otro proveedor se rechaza sin canjear
-nada. El código se canjea una sola vez.
+resumen guarda el intento. **Cualquier vuelta que llegue con un `state` vivo lo gasta**, y
+sólo después se compara la cookie: una vuelta sin la cookie (la del navegador de otra
+persona, si alguien le pasó su enlace) quema el intento, y quien tiene la cookie ya no puede
+terminarlo con el código que volvió. Un enlace de vuelta copiado, repetido, vencido o de
+otro proveedor se rechaza sin canjear nada. El código se canjea una sola vez.
 
 **Apple vuelve con un POST** desde appleid.apple.com. Ese POST no lleva las cookies de la
-tienda (son `SameSite=Lax`), así que no decide nada: entrega el código al intento y manda
-al navegador (303) a un GET de la misma dirección, que sí las lleva y termina el intento.
+tienda (son `SameSite=Lax`), así que no decide nada: entrega el código al intento junto con un
+**secreto de un solo uso** y manda al navegador (303) a un GET de la misma dirección con
+ese secreto (`?state=…&h=…`). El GET exige la cookie del intento (el navegador que empezó)
+y el secreto (el navegador desde el que Apple publicó): en un inicio honrado, el mismo.
+Se eligió esto y no una cookie `SameSite=None; Secure` porque funciona también en
+desarrollo sin HTTPS y no añade una cookie que viaje entre sitios. Un segundo POST para el
+mismo intento se rechaza sin tocar la cookie.
 El `id_token` que viene en ese POST no se lee: sólo vale el que devuelve Apple al canjear.
 
 **Adónde vuelve la persona:** a `/auth?social=<p>` (sesión abierta; la página la lleva a
@@ -55,7 +62,12 @@ comprar; el checkout pide el correo del pedido como siempre.
 ### Vincular y desvincular («Mi cuenta» › Cuentas vinculadas)
 
 - **Vincular Facebook o Apple** pide la contraseña actual; luego va al proveedor y vuelve a
-  `/account?linked=<p>`. Una cuenta sin contraseña (creada con un proveedor) primero crea
+  `/account?linked=<p>`. A la vuelta, la sesión se reconoce por la cookie de acceso o, si
+  caducó mientras la persona estaba en el proveedor, por la de renovación (mismas
+  comprobaciones que la renovación; un acceso revocado no lo rescata la renovación). Con
+  `JWT_COOKIE_SAMESITE=Strict` ninguna de las dos viaja en la vuelta desde el proveedor y
+  **vincular no funciona** (entrar sí: la cookie del intento es siempre `Lax`). Una cuenta
+  sin contraseña (creada con un proveedor) primero crea
   una con «¿Olvidaste tu contraseña?». Si esa cuenta del proveedor ya abre otra cuenta de
   la tienda: `already_linked`, y no se mueve. La vuelta exige que siga abierta la misma
   sesión que empezó.
@@ -146,6 +158,19 @@ Hace falta una membresía del Apple Developer Program.
    contenido completo del `.p8`. «Probar» comprueba que la clave firma y que el servidor
    alcanza las claves públicas de Apple; si Apple acepta el conjunto sólo se sabe
    entrando.
+
+### Límites y caché
+
+- `GET /api/auth/social/config/` tiene su propio cupo (`social_config`, 120/min por
+  dirección): se pide en cada visita a `/auth` y muchos clientes comparten dirección
+  (CGNAT de los operadores). Empezar, el POST de Apple y la vuelta comparten
+  `social_sign_in` (30/min por dirección). Vincular y desvincular: `social_link`, 10/min
+  por cuenta.
+- Los intentos viven en la caché por defecto de Django, `LocMemCache` del proceso (no hay
+  `CACHES`; producción corre un solo proceso de gunicorn, así que `add` es atómico). Un
+  reinicio entre la ida y la vuelta pierde el intento (la persona repite), y el tope de
+  300 entradas de `LocMemCache` puede expulsar intentos ante una avalancha de inicios
+  (cada intento ocupa hasta tres). Deuda SOCIAL-CACHE.
 
 ## 4. Lo que no se ha podido comprobar sin credenciales
 

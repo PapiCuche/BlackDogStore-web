@@ -18,6 +18,11 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
   emisor, audiencia, caducidad y `nonce`; ningún token del proveedor guardado; ninguna
   vinculación automática por correo; Facebook/Apple nunca abren cuentas del equipo.
 
+**Fixed** (revisión independiente)
+- P1: un intento de Apple ya no puede terminarse con el código de otra persona; una vuelta
+  sin la cookie del intento lo gasta (también en Facebook).
+- Vincular tras caducar la cookie de acceso; cupo propio para `GET /api/auth/social/config/`.
+
 **Not verified**
 - Sin credenciales: ningún inicio real con Facebook o Apple.
 

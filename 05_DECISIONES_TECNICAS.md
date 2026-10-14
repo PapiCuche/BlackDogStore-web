@@ -1654,6 +1654,15 @@ Fase SOCIAL-AUTH-01 (rama `feat/social-auth`). Operación: `docs/acceso-con-rede
   `id_token` del POST no se lee.
 - **El intento vive en el servidor** (caché, como el `nonce` de Google): diez minutos, un
   solo uso (`cache.add`), y atado al navegador por una cookie HttpOnly cuyo resumen guarda.
+- **Toda vuelta gasta el intento antes de mirar el navegador** (revisión independiente,
+  P1): si sólo se gastaba al coincidir la cookie, quien empezó un intento podía hacer que
+  otra persona entrara con él y canjear después, desde su navegador, el código de ella.
+  Apple, además, entrega el código bajo un secreto de un solo uso que sólo recibe el
+  navegador desde el que Apple publicó (en el 303), y el GET exige cookie y secreto. Se
+  descartó la cookie `SameSite=None; Secure`: no funciona sin HTTPS y añade una cookie que
+  viaja entre sitios.
+- **Vincular a la vuelta** reconoce la sesión por la cookie de acceso o, si caducó, por la
+  de renovación (sin emitir ni rotar nada). Con `SameSite=Strict` vincular no funciona.
 - **El correo de Facebook no es el de la cuenta.** La Graph API no dice si está verificado:
   usarlo como correo de la cuenta permitiría a quien controle una cuenta de Facebook con
   la dirección de otra persona ocupar esa dirección (índice único) y conservar el acceso

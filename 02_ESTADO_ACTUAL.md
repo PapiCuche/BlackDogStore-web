@@ -23,6 +23,11 @@ de Google Cloud, Meta y Apple: `docs/acceso-con-redes-sociales.md`. Decisión DE
   (19). Módulos de auth relacionados: 680 en verde; Jest 1360; `tsc` limpio; lint con los
   22 avisos de siempre; `makemigrations --check` sin cambios. Mutaciones: 28/28 backend y
   4/4 frontend tras cerrar 6 supervivientes con pruebas.
+- **Revisión independiente**: un P1 (Apple: terminar el intento de otra persona) y cuatro
+  P3, corregidos en `a0554f4` — toda vuelta gasta el intento antes de mirar la cookie;
+  secreto de entrega de un solo uso en el 303 de Apple; vincular reconoce la sesión por la
+  cookie de renovación si la de acceso caducó; cupo propio de 120/min para la
+  configuración. 107 pruebas en `store.test_social_auth`; módulos de auth 691 en verde.
 - **BLOQUEADO por credenciales**: ningún inicio real con Facebook ni Apple
   (SOCIAL-CREDENTIALS). La app móvil no tiene entrada con proveedores (SOCIAL-MOBILE).
 
