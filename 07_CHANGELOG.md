@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — SALES-NOTE-CONTROL-01
+
+En la rama `feat/sales-note-control` (sin push), sobre #119. Migración nueva `0125` (aditiva).
+
+**Added**
+- Panel › Ventas › Notas de venta: lista con filtros (vigentes, anuladas, prueba, fechas,
+  sucursal, emisor), marca ANULADA y detalle con el registro de anulación.
+- «Anular nota de venta», sólo para el usuario Master en la empresa de la nota: tipo de
+  motivo (prueba, error de emisión, otro) y motivo obligatorios; auditoría `sales_note_voided`.
+  `POST /api/admin/sales-notes/<id>/void/`.
+- Observaciones internas de una nota, sólo añadir, nunca impresas; auditoría
+  `sales_note_remark_added`. `POST /api/admin/sales-notes/<id>/remarks/`.
+- `GET /api/admin/sales-notes/` y `GET /api/admin/sales-notes/<id>/` (PUT, PATCH y DELETE
+  responden 405).
+
+**Changed**
+- La nota de un pedido cancelado guarda el mismo registro de anulación (`pedido_cancelado`).
+- La API de la nota del pedido devuelve el registro de anulación y la sucursal; el panel del
+  pedido muestra ANULADA y el motivo.
+- La térmica no reimprime una nota anulada; un ticket encolado antes sale con ANULADA.
+- El admin de Django de las notas de venta es entero de sólo lectura.
+
+**Not changed**
+- Número, fecha, líneas, importes, impuestos y pago de una nota emitida; el pedido, los
+  pagos, el stock, los comprobantes SUNAT, la serie y su «Próximo número»; tableros e
+  ingresos. Ninguna nota existente se marca como prueba automáticamente.
+
 ## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01
 
 En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (aditiva).

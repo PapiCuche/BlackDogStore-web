@@ -573,6 +573,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | 0122 | `BulkImportJob.import_type` gana `product_images` (sólo las opciones del campo) | INVENTORY-UNIFIED-01 |
 | 0123 | `CompanySettings.publication_requires_image`, booleano con `db_default` apagado. Sólo esquema; deshacerla quita la columna | INVENTORY-UNIFIED-01 (D2) |
 | 0124 | `OrderCancellation` (tabla nueva, `OneToOne` al pedido) y el tipo `order_cancel_return` en las opciones de `StockMovement.movement_type` (sin SQL). Sólo esquema; deshacerla borra los registros de cancelación | ORDER-CANCEL-01 |
+| 0125 | `SalesNote` gana `voided_at`, `voided_by`, `void_reason_type`, `void_reason` (vacíos/NULL en las filas existentes) y la tabla `SalesNoteRemark`. Sólo esquema, no escribe datos; deshacerla borra el registro de anulación y las observaciones (el `status=void` queda) | SALES-NOTE-CONTROL-01 |
 
 ---
 
@@ -707,6 +708,10 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | ORDER-NO-REFUND-TRACKING | PAGOS | cancelar no devuelve dinero y no hay registro de reembolso: el estado `refunded` existe y nada lo escribe; el reembolso se hace en la pasarela, fuera del sistema | Media | decisión del propietario |
 | FISCAL-NOTES-API-ONLY | FISCAL | la nota de crédito y la baja que deja pendientes una cancelación (`fiscal_pending`) sólo existen por API; el panel no las ofrece | Media | FISCAL en producción |
 | ORDER-CANCEL-UNPAID | PEDIDOS | los pedidos sin pagar (pendientes, fallidos) no se cancelan desde el panel | Baja | fase posterior (D1) |
+| SALES-NOTE-VOID-MASTER-ONLY | VENTAS | (SALES-NOTE-CONTROL-01) anular una nota sólo lo puede el master de plataforma (`is_superuser`); no hay capacidad de empresa para delegarlo | Baja | decisión del propietario |
+| SALES-NOTE-VOID-PRE-0125 | VENTAS | una nota anulada por una cancelación de #119 ANTES de 0125 tiene `status=void` pero columnas vacías: la API lee el motivo de `metadata`; `voided_at`/`voided_by` sólo están en `metadata` (no se rellenan) | Baja | sólo si #119 se despliega antes que 0125 |
+| SALES-NOTE-LIST-BRANCH | VENTAS | la lista de notas usa `order.fulfillment_branch` como sucursal; una nota de un pedido sin sucursal (historia anterior a 2D) sólo la ve quien tiene alcance de empresa, igual que el pedido | Baja | — |
+| SALES-NOTE-ISSUER-FILTER | VENTAS | el filtro «Emitida por» lista a quien emitió alguna nota visible; no hay filtro por quién anuló | Baja | uso real |
 
 ---
 

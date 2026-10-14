@@ -14,6 +14,36 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
+
+Pedido del propietario del 2026-10-14: «las primeras notas de venta fueron de prueba y el
+usuario Master necesita administrarlas». Lo que el código cumple:
+
+- **Quién.** «Master» es el master de plataforma (`tenancy.is_platform_admin`, hoy
+  `is_superuser`) actuando en la empresa que nombra (`?company=`); es la misma regla de la
+  consola de integraciones. No existe un rol ni una capacidad de empresa «Master», y no se
+  crea: un administrador de empresa con todas las capacidades recibe 403. Delegar la
+  anulación a una capacidad de empresa sería otra decisión del propietario.
+- **Qué es anular.** Marcar el documento interno: `status=void` más `voided_at`,
+  `voided_by`, `void_reason_type` (`prueba`/`error`/`otro`; `pedido_cancelado` sólo lo
+  escribe la cancelación) y `void_reason` (5–500). Un único escritor
+  (`sales_note_control.mark_void`) para las dos vías; bloqueo pedido → nota, el mismo orden
+  que la cancelación, así que las dos se esperan en lugar de competir.
+- **Qué NO es.** No es cancelar el pedido, revertir un pago, una devolución, una nota de
+  crédito ni una baja SUNAT. Nada de eso se toca: el pedido sigue pagado y los tableros, que
+  leen pedidos pagados y no notas, conservan el dinero cobrado. Ningún reporte cuenta notas;
+  la lista nueva las etiqueta (ANULADA) en vez de excluirlas.
+- **Inmutable.** Número, serie, ordinal, fecha de emisión, emisor, líneas, importes,
+  impuestos y pago. No hay ruta que los escriba (405) y el admin de Django es de sólo
+  lectura. El número no se reutiliza: la serie no retrocede y «Próximo número» sigue
+  bloqueado porque `has_issued` lee el contador, no las notas vivas.
+- **Observaciones.** Tabla aparte, sólo añadir (`save` rechaza actualizar, `delete` rechaza);
+  las añade el Master o quien tenga `sales.notes.manage` con el alcance de sucursal de los
+  pedidos. No se imprimen: la nota ya imprime las «Notas» del pedido (`order.notes`) y eso
+  no cambia.
+- **Notas existentes.** La migración no escribe datos y nada marca una nota como prueba por
+  su cuenta: el Master las anula una a una con su motivo.
+
 ### DEC-ORDER-CANCEL-01 · Cancelar un pedido pagado no es devolver el dinero
 
 Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código las cumple:
