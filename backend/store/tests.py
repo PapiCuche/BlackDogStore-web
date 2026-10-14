@@ -55225,6 +55225,7 @@ from .admin_views import (  # noqa: E402
 )
 from .inventory_views import (  # noqa: E402
     _LEGACY_INVENTORY_VIEW_ROLES,
+    _LEGACY_SALES_NOTES_ROLES,
     _LEGACY_SALES_REPORT_ROLES,
 )
 
@@ -55737,6 +55738,10 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # La bitácora no tiene puente: sin Membership el backend responde 403
         # venga el rol que venga, así que la lista tiene que estar vacía.
         'audit-logs/page.tsx': ('memberships.view', frozenset()),
+        # SALES-NOTE-CONTROL-01: `/api/admin/sales-notes/` opens with the note
+        # authority and its legacy set. Voiding is the platform master's alone
+        # (`can_void`), whatever the screen shows; the guard only opens the list.
+        'sales/notes/page.tsx': ('sales.notes.manage', _LEGACY_SALES_NOTES_ROLES),
     }
 
     _GUARD = _h412b_re.compile(
