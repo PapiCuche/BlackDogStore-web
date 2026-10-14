@@ -19,8 +19,9 @@ Hecho antes de abrir el PR:
 3. Tres revisiones independientes: HECHAS (sin P0/P1), sus P2/P3 corregidos y las dos últimas sin
    regresiones; `af0b374` cierra el último aviso. El propietario decidió los puntos
    abiertos el 2026-10-13 (D1–D7 en DEC-INVENTORY-UNIFIED-01): implementados en la rama.
-   Siguen pidiendo su palabra: un archivo de imagen sin producto no impide aplicar el
-   resto; el código de las imágenes se compara exacto, mayúsculas incluidas.
+   Las imágenes en lote también se decidieron (2026-10-14): el código se compara sin
+   mayúsculas ni espacios, lo ambiguo no se asigna y lo que no tiene producto no
+   detiene el resto.
 4. Con autorización expresa: merge y despliegue (migrar `0122` y `0123`;
    vuelta atrás en `docs/despliegue-produccion.md` §7). El Caddyfile del servidor NO
    cambia. Variable nueva y opcional: `ADMIN_EXPORT_RATE` (6/min si no se pone).

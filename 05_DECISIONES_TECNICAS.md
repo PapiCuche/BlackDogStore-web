@@ -1613,3 +1613,25 @@ archivos de productos activos, el aviso de la carga y el apóstrofo.
   fórmulas por su tipo y no quita nada. Ningún escritor desplegado puso apóstrofos (la
   guarda nació en esta rama), así que no hay archivos antiguos que leer de otra manera.
   En `errors.csv`, que no tiene tipos, el apóstrofo se queda.
+
+**Decisión del propietario (2026-10-14): imágenes en lote.**
+
+- «Imágenes masivas: comparar códigos sin distinguir mayúsculas, normalizando espacios
+  y Unicode. Ante asociación ambigua, rechazarla explícitamente.» Sólo la carga de
+  imágenes: el código del nombre de archivo o del libro y todos los códigos de la
+  empresa (también de productos inactivos) pasan por la misma clave —NFKC, sin
+  mayúsculas, espacios recortados y colapsados, espacio duro como espacio—. Una clave
+  que nombra dos productos no se asigna: el archivo o la fila se lista con el motivo.
+  Un nombre entero ambiguo no cae a su lectura corta. La carga de productos y las
+  demás siguen comparando exacto, como la caja. Cierra IMG-IMPORT-CASE.
+- «Imágenes sin producto: permitir aplicar el resto del lote; informar archivos
+  huérfanos y errores, sin asociarlos arbitrariamente.» Los archivos ya lo hacían;
+  una fila del libro con un código de nadie, o ambiguo, era un error que detenía la
+  carga y ahora se lista como un archivo sin producto. Lo que está mal en las imágenes
+  de un producto sigue deteniéndola: la carga sigue siendo todo o nada sobre lo que
+  sí tiene producto.
+- «Mantener fotografías opcionales y permitir carga posterior.» Sin cambios: una
+  imagen sólo se exige para publicar en bloque si la empresa lo configura (D2), y la
+  carga de imágenes añade a productos que ya existen.
+- Deudas que siguen como están, documentadas: ORDER-HISTORY-LIVE-NAME,
+  IMPORT-STATE-NEVER-WRITES e IMPORT-ID-FOREIGN-WARNINGS.

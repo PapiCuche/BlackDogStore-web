@@ -168,17 +168,31 @@ estado, stock, series ni Kardex. Pide `products.manage`.
   donde `N` tiene de uno a tres dígitos. Un nombre sin número cuenta como 0; la de
   número más bajo es la principal. Sólo se quita la última extensión y la carpeta
   no forma parte del nombre.
-- `<código>` se busca como lo busca la carga de productos: código interno y códigos
-  de barras, **exacto** (mayúsculas incluidas). **Nunca por el nombre del producto.**
+- `<código>` se busca entre el código interno y los códigos de barras de los
+  productos de la empresa (también los inactivos), **sin distinguir mayúsculas**:
+  los dos lados se comparan en Unicode NFKC, sin mayúsculas y con los espacios
+  recortados (un espacio duro cuenta como espacio). `funda.png` y `ＦＵＮＤＡ.png`
+  son del producto `FUNDA` (decisión del propietario, 2026-10-14). Sólo esta carga
+  compara así: la de productos y las demás siguen exactas. **Nunca por el nombre del
+  producto.**
+- Si esa comparación da **más de un producto** (códigos `abcd` y `ABCD` en dos
+  productos), el archivo no se asigna a ninguno: se lista con «el código coincide
+  con más de un producto».
 - Un código puede terminar en `-2`. Por eso se prueba el nombre entero como código
   y, aparte, el nombre sin su número final. Si sale un producto, es ése. Si salen
-  **dos productos distintos**, el archivo no se carga y la vista previa lo dice. Si
-  no sale ninguno, lo mismo. No se adivina.
+  **dos productos distintos**, o el nombre entero ya es ambiguo, el archivo no se
+  carga y la vista previa lo dice. Si no sale ninguno, lo mismo. No se adivina.
+- **Lo que no tiene producto no detiene el resto.** Un archivo —o una fila del
+  libro— cuyo código no es de nadie o es ambiguo se lista antes y después de
+  aplicar, y el resto de la carga se aplica. Lo que está mal en las imágenes de un
+  producto (un archivo roto, dos archivos distintos con el mismo nombre, pasar del
+  límite) sigue siendo un error de ese producto y detiene la carga.
 - Un código con caracteres que un nombre de archivo no admite (`/`, `:`) no se
   puede escribir así: para ésos está el libro.
 - Dos avisos de lectura: `FUNDA-12.png` es la imagen 12 de `FUNDA` salvo que exista
-  un producto `FUNDA-12`; y dos archivos del mismo lote cuyos nombres sólo difieren
-  en mayúsculas cuentan como el mismo nombre, aunque el código se busque exacto.
+  un producto `FUNDA-12`; y dos archivos del mismo lote cuyos nombres son iguales
+  con esa misma comparación cuentan como el mismo nombre: iguales, entra uno;
+  distintos, es un error de ese producto.
 
 **El libro «Imágenes» (opcional).** Una hoja «Imágenes» con `Código`,
 `Imagen principal` e `Imágenes` (varios nombres separados por `|`), leídas igual que
