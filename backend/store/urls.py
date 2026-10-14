@@ -75,6 +75,7 @@ from .pos_views import (
 from .sales_analytics_views import (
     AdminCommissionsView,
     AdminSalesDashboardView,
+    AdminSalesMarginView,
     AdminSalesReplenishmentView,
 )
 from .import_views import (
@@ -384,6 +385,8 @@ urlpatterns = [
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
     path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
     path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
+    # DC1 — margen comercial: `sales.analytics.view` + `costs.view`.
+    path('admin/sales/margin/', AdminSalesMarginView.as_view(), name='admin-sales-margin'),
     path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
     # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
     path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),

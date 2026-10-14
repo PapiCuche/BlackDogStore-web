@@ -1099,6 +1099,49 @@ export async function fetchSalesDashboard(
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// DEVICE-COMMERCE-01 · DC1 — margen comercial (`costs.view`)
+// ---------------------------------------------------------------------------
+
+export type SalesMarginRow = {
+  key: number | string;
+  name: string;
+  units: number;
+  net_sales: string;
+  cost: string;
+  margin: string;
+  margin_percent: string | null;
+  pending_lines: number;
+};
+
+/** Margen COMERCIAL estimado: ventas netas con costo conocido − su costo. No es utilidad. */
+export type SalesMargin = {
+  window_days: number;
+  sales: { orders: number; gross: string; net: string };
+  collected: { orders: number; amount: string };
+  net_sales_with_cost: string;
+  cost_of_goods_sold: string;
+  margin: string;
+  margin_percent: string | null;
+  pending_cost: { lines: number; orders: number; amount: string };
+  refunds: { orders: number; amount: string };
+  by_product: SalesMarginRow[];
+  by_branch: SalesMarginRow[];
+  by_channel: SalesMarginRow[];
+};
+
+export async function fetchSalesMargin(
+  companyId: number | null,
+  branchId?: number | null,
+): Promise<SalesMargin> {
+  const qs = new URLSearchParams();
+  if (companyId) qs.set("company", String(companyId));
+  if (branchId) qs.set("branch", String(branchId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/sales/margin/?${qs}`);
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo cargar el margen comercial."));
+  return res.json();
+}
+
 export async function fetchReplenishment(
   companyId: number | null,
   branchId?: number | null,
