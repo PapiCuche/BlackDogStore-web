@@ -582,6 +582,16 @@ class IdentifierColumnTest(_Base):
         self.assertEqual(self.loose.name, 'Mica templada 9H')
         self.assertEqual(Product.objects.filter(company=self.company).count(), 2)
 
+    def test_the_company_part_is_checked_even_for_an_id_the_index_holds(self):
+        """Review G01: the tenant guard of the identifier, on its own, without the outer company filter."""
+        from store.import_services import CatalogueIndex
+
+        index = CatalogueIndex(self.company)
+        index.product_ids.add(self.foreign.pk)                  # as if the id set ever held another's product
+        self.assertIsNone(index.identified(self.ident(self.foreign, self.other)))
+        self.assertIsNone(index.identified(self.ident(self.loose, self.other)))
+        self.assertEqual(index.identified(self.ident(self.loose)), self.loose.pk)
+
     def test_it_is_read_with_spaces_around_and_as_a_number_like_text(self):
         body = self.staged([self.row(None, 'Mica nueva', f'  {self.ident(self.loose)}  ')])
         self.assertEqual(body['rows'][0]['data']['matched_by'], 'identifier')
@@ -589,6 +599,8 @@ class IdentifierColumnTest(_Base):
     def test_another_companys_or_nobodys_is_ignored_with_one_same_warning_and_codes_decide(self):
         cases = {
             'another company\'s': self.ident(self.foreign, self.other),
+            # Review G01: the identifier is bound to the company — this product, named with the other's id.
+            'this product under another company\'s id': self.ident(self.loose, self.other),
             'this company with another\'s product': self.ident(self.foreign),
             'nobody\'s': f'{self.company.pk}-999999999',
             'not an identifier': 'abc',
