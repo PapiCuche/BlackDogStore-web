@@ -700,6 +700,15 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
 
+**ORDER-CANCEL-01 (migración `0124`).** Crea la tabla `store_ordercancellation` (un
+registro por pedido cancelado) y añade el tipo `order_cancel_return` a las opciones del
+Kardex, que no genera SQL. No cambia datos. Para volver atrás: los contenedores de la imagen
+anterior (`git checkout <commit anterior>`, `$C build`, `$C up -d`) y **la migración se deja
+aplicada**: la versión anterior no lee esa tabla. Ojo: con la versión anterior, un pedido ya
+cancelado se ve «Cancelado» pero su despacho vuelve a poder moverse y sus PDF dejan de
+descargarse; sus movimientos `order_cancel_return` se siguen leyendo en el Kardex. Deshacer
+`0124` (`migrate store 0123`) borraría los registros de cancelación.
+
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
 duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista

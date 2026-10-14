@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01 (rama, sin push)
+
+Rama `feat/order-cancel-sales-note` desde `abfc6bd`. **EN LA RAMA: sin push, sin PR, sin
+desplegar.** Una migración nueva, `0124` (aditiva). Sin capacidades nuevas ni cambios de rol.
+
+- **SALES-NOTE-DESIGN-01** (`2ba90e7`). La nota de venta (A4, ticket de 80 mm y térmica
+  ESC/POS) se titula «NOTA DE VENTA» y la franja inferior enmarcada se sustituye por una línea
+  discreta: «Documento de control interno, sin validez tributaria» (una sola constante,
+  `SALES_NOTE_CONTROL_LINE`, que también repite el aviso de la API). RUC, datos de la empresa,
+  numeración `NV-`, importes e información comercial sin cambios. La constancia de pedido
+  conserva su franja (`legal` de `render_a4` intacto). Comprobantes fiscales sin tocar.
+- **ORDER-CANCEL-01** (`169362b`). Cancelar desde el detalle del pedido un pedido EN LÍNEA
+  PAGADO cuyos productos no han salido (pendiente, confirmado, en preparación, listo para
+  retiro o «Cancelado operativo»), con motivo obligatorio (5–500 caracteres). Enviado o
+  entregado: 409 «requiere devolución»; caja (POS) y pedidos sin pagar: fuera de este flujo.
+  El stock vuelve una vez (`order_cancel_return`, con el pedido, a la misma sucursal; los
+  equipos con serie a «disponible» y sin su identificación). La nota interna queda anulada y
+  se conserva; sus PDF y la constancia se descargan con «ANULADA» / «PEDIDO ANULADO»; la
+  térmica no imprime un pedido cancelado. Una boleta/factura viva se conserva y queda
+  «nota de crédito / baja pendiente» (nada fiscal se emite solo). **No es un reembolso:**
+  `paid` sigue verdadero, ningún intento de pago cambia y no se llama a la pasarela; un cobro
+  que llegue después queda como cobro duplicado (evidencia) y el pedido sigue cancelado.
+  Detalle de decisiones en DEC-ORDER-CANCEL-01; deuda en `docs/AUDIT_MEMORY.md` §10.
+- Pruebas en la rama: `test_order_cancel` (31, con tres carreras de dos conexiones),
+  regresión focal 2271 pruebas en verde; Jest 1354/1354; `tsc` y lint sin errores;
+  `makemigrations --check` sin cambios.
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |

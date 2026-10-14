@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01
+
+En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (aditiva).
+
+**Added**
+- Panel › Pedido: «Cancelar pedido» para un pedido en línea pagado cuyos productos no han
+  salido, con confirmación y motivo obligatorio; después, el bloque «Pedido cancelado» (quién,
+  cuándo, por qué, stock, aviso fiscal). `POST /api/admin/orders/<id>/cancel/`.
+- Kardex: tipo «Devolución por pedido cancelado» (`order_cancel_return`).
+- Registro `OrderCancellation` (uno por pedido) y entrada de auditoría `order_cancelled`.
+
+**Changed**
+- La nota de venta se titula «NOTA DE VENTA» y termina con la línea «Documento de control
+  interno, sin validez tributaria», sin la franja enmarcada (A4, 80 mm y térmica).
+- Un pedido cancelado no cambia de estado de despacho (409 `order_cancelled`).
+- Los PDF de un pedido cancelado (nota A4 y 80 mm, constancia) se siguen descargando,
+  marcados «ANULADA» / «PEDIDO ANULADO»; su ticket no se imprime en la térmica.
+- Un cobro que llega para un pedido cancelado se archiva como cobro duplicado, con el estado
+  del pedido en la auditoría; el pedido sigue cancelado y pagado.
+- Marcar un fallo de pago sólo afecta a un pedido que todavía espera su pago.
+
+**Not changed**
+- Pagos (no hay reembolso), comprobantes fiscales (ni nota de crédito ni baja automáticas),
+  avisos al comprador, tableros e ingresos, y el «Cancelado operativo» del despacho.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

@@ -572,6 +572,7 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | 0121 | un `OrderDelivery` por pedido en línea existente con método de entrega; por lotes, no atómica, repetible. Deshacerla no borra nada (los registros los quita deshacer 0119) | DELIVERY-01 |
 | 0122 | `BulkImportJob.import_type` gana `product_images` (sólo las opciones del campo) | INVENTORY-UNIFIED-01 |
 | 0123 | `CompanySettings.publication_requires_image`, booleano con `db_default` apagado. Sólo esquema; deshacerla quita la columna | INVENTORY-UNIFIED-01 (D2) |
+| 0124 | `OrderCancellation` (tabla nueva, `OneToOne` al pedido) y el tipo `order_cancel_return` en las opciones de `StockMovement.movement_type` (sin SQL). Sólo esquema; deshacerla borra los registros de cancelación | ORDER-CANCEL-01 |
 
 ---
 
@@ -699,6 +700,11 @@ Backend: `backend/store/tests.py` (≈60 k líneas, 539 clases). Frontend: `fron
 | ASSISTANT-HEADERS-ONLY | INVENTARIO | «¿Qué archivo tengo?» decide por hojas y cabeceras (dos primeras filas): un libro con cabeceras en la fila 3 o con nombres propios de columna sale «no se reconoce» y hay que ir a su carga a mano | Baja | — |
 | BULK-CENTRE-LEGACY-BRIDGE | FRONTEND | «Gestión masiva de inventario» no se ofrece a un operador del puente legacy (sin empresa resuelta): sus tres cargas siguen en el menú como antes | Baja | — |
 | DOCS-CADDY-LIMIT-NOTE | DOCS | `docs/imagenes-y-evidencias.md` §5.5 aún dice «Caddy, tal como se entrega, no pone tope», anterior a los niveles de `request_limits.py` y del Caddyfile | Baja | revisar con quien mantiene el despliegue |
+| ORDER-TWO-CANCELLED | PEDIDOS | (ORDER-CANCEL-01) conviven dos «cancelado»: `Order.status=cancelled` (la cancelación con efectos: stock, nota, auditoría) y `fulfillment_status=cancelled` («Cancelado operativo», sólo una etiqueta sin efectos). Una cancelación pone los dos; el operativo solo no cancela nada | Media | ORDER-LIFECYCLE |
+| ORDER-CANCEL-DASHBOARDS | PEDIDOS | un pedido cancelado sigue con `paid=True`. Lo que filtra por `status=paid` lo deja fuera (tablero `access_views` ingresos/pedidos, `sales_analytics_views`, más vendidos de `inventory_services`, historial de `order_risk`, `customer_services`/`customer_profile`); lo que filtra por `paid=True` lo sigue contando (resumen del cliente en `customer_views`: pedidos e importe pagados y última compra; filtro `?paid=true` de la lista) | Media | ORDER-LIFECYCLE |
+| ORDER-NO-REFUND-TRACKING | PAGOS | cancelar no devuelve dinero y no hay registro de reembolso: el estado `refunded` existe y nada lo escribe; el reembolso se hace en la pasarela, fuera del sistema | Media | decisión del propietario |
+| FISCAL-NOTES-API-ONLY | FISCAL | la nota de crédito y la baja que deja pendientes una cancelación (`fiscal_pending`) sólo existen por API; el panel no las ofrece | Media | FISCAL en producción |
+| ORDER-CANCEL-UNPAID | PEDIDOS | los pedidos sin pagar (pendientes, fallidos) no se cancelan desde el panel | Baja | fase posterior (D1) |
 
 ---
 

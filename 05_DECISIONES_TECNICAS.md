@@ -14,6 +14,35 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-ORDER-CANCEL-01 · Cancelar un pedido pagado no es devolver el dinero
+
+Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código las cumple:
+
+- **D1 · Alcance.** Sólo pedidos EN LÍNEA con `status=paid` cuyos productos no han salido:
+  `pending`, `confirmed`, `preparing`, `ready_for_pickup` y también `cancelled` («Cancelado
+  operativo», que nunca movió nada). `shipped`/`delivered` se rechazan (409 `goods_left`, «ya
+  salió: requiere devolución», flujo futuro). Ventas de caja (409 `pos_sale`) y pedidos sin
+  pagar (409 `not_paid`) quedan fuera; estos últimos, para una fase posterior.
+- **D2 · Stock.** Siempre se repone, una vez: cada `sale_exit` del pedido vuelve con su propio
+  `order_cancel_return` (con el pedido) a la misma sucursal, por `create_stock_movement` y sus
+  bloqueos; los equipos con serie vendidos al pedido vuelven a «disponible», uno por línea, y
+  su `OrderUnit` se suelta (`released_by_return`). Una línea que no descontó stock al pagar
+  (faltante) no tiene nada que devolver.
+- **D3 · Permiso.** `sales.orders.manage` con el alcance de empresa y sucursal de las demás
+  vistas de pedidos (fuera de alcance, 404). Sin capacidad nueva ni cambios de rol. En el
+  puente legacy del piloto: ventas, administrador y superadministrador (no inventario, como
+  la regla histórica del despacho).
+- **D4 · Fiscal.** Una boleta/factura viva (01/03 no rechazada) se conserva intacta; la
+  cancelación procede y registra «nota de crédito / baja pendiente» (`fiscal_pending` y el
+  documento en texto), también en la auditoría y en el detalle. Nunca se emite una nota de
+  crédito ni una baja automáticamente.
+
+Además: `paid` se queda en verdadero y no se toca ningún `PaymentTransaction` ni la pasarela;
+el pago lee ese `paid` para archivar como `DUPLICATE` cualquier cobro posterior (con
+`order_status: cancelled` en `payment_duplicate`). Todo ocurre en una transacción con el
+pedido bloqueado primero; `change_fulfillment_status` toma el mismo bloqueo siempre. La
+`OneToOne` de `OrderCancellation` es la última barrera contra una segunda cancelación.
+
 ### DEC-DELIVERY-01 · La entrega es un registro propio JUNTO al pedido, y el flete es un dato
 
 Base de DELIVERY-01 (transportistas, libreta de direcciones, registro de entrega). Lo que el
