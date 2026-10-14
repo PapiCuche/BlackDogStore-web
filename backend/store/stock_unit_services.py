@@ -358,8 +358,18 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
         locked.condition = _condition(fields['condition'])
         changed.append('condition')
     if 'cost' in fields:
-        locked.cost = _money(fields['cost'], 'El costo', 'cost')
-        changed.append('cost')
+        cost = _money(fields['cost'], 'El costo', 'cost')
+        if cost != locked.cost:
+            # DC1 — A SOLD UNIT'S COST IS HISTORY. Its sale line was valued at
+            # it; rewriting it now would make the margin of that sale say
+            # something it did not say when it was made.
+            if locked.status == StockUnit.Status.SOLD:
+                raise StockUnitError(
+                    f'El equipo {locked.serial_number} ya se vendió: su costo no se puede cambiar.',
+                    field='cost',
+                )
+            locked.cost = cost
+            changed.append('cost')
     if 'notes' in fields:
         locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]
         changed.append('notes')

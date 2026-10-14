@@ -228,6 +228,12 @@ class Product(models.Model):
     is_serialized = models.BooleanField(default=False)
     # A cellular device: every unit must also carry a valid IMEI.
     requires_imei = models.BooleanField(default=False)
+    # DEVICE-COMMERCE-01 · DC1. The catalogue's REFERENCE cost: what the shop
+    # expects to pay for one unit, typed or imported. NOT a valuation. It is
+    # used only when a branch has no average yet for this product, and every
+    # movement or sale line that took it says so (`cost_source='reference'`).
+    # Changing it never rewrites the history: snapshots were taken already.
+    reference_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1358,6 +1364,9 @@ class StockMovement(models.Model):
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
         TRANSFER_OUT,
     ])
+    # DC1 — entries that bring units BACK. They are valued at the branch's
+    # current average, not at a cost of their own.
+    RETURN_TYPES = frozenset([RETURN_ENTRY, SERVICE_RETURN])
     # Types an operator may create through the admin API. sale_exit is excluded
     # on purpose: it is only ever produced by the payment pipeline, and the two
     # transfer types likewise only by the transfer pipeline — a hand-written
@@ -1429,6 +1438,37 @@ class StockMovement(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     metadata = models.JSONField(default=dict, blank=True)
+
+    # --- DEVICE-COMMERCE-01 · DC1: the cost this line moved at ---------------
+    #
+    # Written by `inventory_services.create_stock_movement` and by nobody else,
+    # under the same lock as the quantity. Rules (`cost_services`):
+    #   entry WITH a stated cost  -> that cost; the branch average is recomputed
+    #   entry without one         -> NULL, 'unknown'; the average is untouched
+    #   exit / transfer / return  -> the branch average ('average'), or the
+    #                                catalogue reference ('reference'), or NULL
+    #   serialized product        -> the specific cost of its units ('unit')
+    # Historical lines (before DC1) stay NULL with an empty source: nothing is
+    # backfilled from today's catalogue.
+    COST_ENTRY = 'entry'
+    COST_AVERAGE = 'average'
+    COST_UNIT = 'unit'
+    COST_REFERENCE = 'reference'
+    COST_UNKNOWN = 'unknown'
+    COST_SOURCE_CHOICES = [
+        ('', 'Sin registro'),
+        (COST_ENTRY, 'Costo de la entrada'),
+        (COST_AVERAGE, 'Costo promedio'),
+        (COST_UNIT, 'Costo específico del equipo'),
+        (COST_REFERENCE, 'Costo de referencia'),
+        (COST_UNKNOWN, 'Costo desconocido'),
+    ]
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # `db_default` too: the release before this column keeps inserting Kardex
+    # lines while a deployment migrates, and after a rollback.
+    cost_source = models.CharField(
+        max_length=16, choices=COST_SOURCE_CHOICES, blank=True, default='', db_default='',
+    )
 
     class Meta:
         ordering = ['-created_at', '-id']
@@ -2150,6 +2190,12 @@ class BranchStock(models.Model):
         Product, on_delete=models.PROTECT, related_name='branch_stocks',
     )
     quantity = models.PositiveIntegerField(default=0)
+    # DEVICE-COMMERCE-01 · DC1. The weighted average cost of THIS branch's units
+    # (owner's decision: per branch, for products counted by quantity). NULL
+    # while no entry with a cost has arrived. Maintained only by the Kardex
+    # writer, under the row lock; never typed. A serialized product keeps it
+    # NULL: each of its units has its own specific cost (`StockUnit.cost`).
+    average_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
     minimum_stock = models.PositiveIntegerField(default=0)
     target_stock = models.PositiveIntegerField(default=0)
     # --- Commercial Phase C1: replenishment configuration ----------------
@@ -8906,7 +8952,9 @@ class StockUnit(models.Model):
         max_length=16, choices=Status.choices, default=Status.AVAILABLE, db_index=True,
     )
 
-    # What this unit cost, when known. Informative: there is no cost model yet.
+    # What this unit cost, when known: its SPECIFIC cost (DC1). Every Kardex
+    # line that moves it carries it, and a sale line is valued at it. Shown
+    # only to `costs.view`; never rewritten once the unit is sold.
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     # SERIAL-PICK-01: a device has NO price of its own. It is sold at the
     # product's price, at the till and on the web (the owner's decision).

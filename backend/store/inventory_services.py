@@ -56,6 +56,7 @@ from django.db.models import Count, DecimalField, F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from . import cost_services
 from .models import (
     AdminAuditLog,
     Branch,
@@ -68,6 +69,7 @@ from .models import (
     StockMovement,
     StockTransfer,
     StockTransferItem,
+    StockUnit,
 )
 
 # Fallback threshold for "low stock" when a branch has configured no minimum
@@ -233,6 +235,8 @@ def create_stock_movement(
     expected_unit_status: str | None = None,
     assign_units_for_sale: bool = False,
     sell_units: bool = False,
+    unit_cost=None,
+    cost_source: str | None = None,
 ) -> StockMovement:
     """
     Apply one stock movement to one branch atomically and return the Kardex row.
@@ -256,9 +260,19 @@ def create_stock_movement(
     The PRODUCT is deliberately not the lock: locking it would serialise every
     branch of a chain against every other for the same article, turning
     unrelated shops into each other's queue.
+
+    DC1 — COST. `unit_cost` is the cost the caller KNOWS for an entry (a
+    purchase, the origin of a transfer, with `cost_source` saying which). The
+    line's cost and the branch's weighted average are decided by
+    `cost_services.resolve` HERE, under the same lock as the quantity, so two
+    entries at once cannot both read the old average. See `cost_services`.
     """
     if movement_type not in dict(StockMovement.MOVEMENT_TYPE_CHOICES):
         raise InvalidMovementError(f'Tipo de movimiento no válido: {movement_type}')
+    try:
+        unit_cost = cost_services.clean_cost(unit_cost)
+    except ValueError as exc:
+        raise InvalidMovementError(str(exc)) from None
 
     try:
         quantity = int(quantity)
@@ -308,8 +322,23 @@ def create_stock_movement(
                 f'Stock actual: {stock_before}, salida solicitada: {quantity}.'
             )
 
+        cost = cost_services.resolve(
+            is_entry=is_entry,
+            carries_average_in=movement_type in StockMovement.RETURN_TYPES,
+            quantity=quantity, stock_before=stock_before,
+            average_before=stock.average_cost, reference_cost=product.reference_cost,
+            stated_cost=unit_cost if is_entry else None,
+            stated_source=cost_source,
+            unit_costs=(
+                list(StockUnit.objects.filter(pk__in=unit_ids).values_list('cost', flat=True))
+                if unit_ids is not None else None
+            ),
+        )
+
         # Write through the locked row — no read-modify-write race.
-        BranchStock.objects.filter(pk=stock.pk).update(quantity=stock_after)
+        BranchStock.objects.filter(pk=stock.pk).update(
+            quantity=stock_after, average_cost=cost.average_after,
+        )
         # Keep the compatibility aggregate in the SAME transaction. An F()
         # expression, not a recomputed sum, so two branches moving the same
         # product concurrently add up instead of overwriting each other.
@@ -344,6 +373,8 @@ def create_stock_movement(
             inventory_count=inventory_count,
             actor=actor,
             metadata=metadata or {},
+            unit_cost=cost.unit_cost,
+            cost_source=cost.source,
         )
 
 
@@ -1082,6 +1113,15 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
         if not items:
             raise TransferError('La transferencia no tiene productos.')
 
+        # DC1 — the units arrive at the cost they LEFT with: the origin's
+        # average when it was dispatched, not whatever it is now.
+        departed = {
+            row.product_id: (row.unit_cost, row.cost_source)
+            for row in StockMovement.objects.filter(
+                transfer=locked, movement_type=StockMovement.TRANSFER_OUT,
+            )
+        }
+
         movements = [
             create_stock_movement(
                 branch=locked.destination_branch,
@@ -1097,6 +1137,8 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
                     'transfer_id': locked.pk,
                     'source_branch_id': locked.source_branch_id,
                 },
+                unit_cost=departed.get(item.product_id, (None, None))[0],
+                cost_source=departed.get(item.product_id, (None, None))[1] or None,
             )
             for item in items
         ]
