@@ -1685,3 +1685,35 @@ Fase DEVICE-COMMERCE-01, subfase DC1 (rama `feat/device-commerce`, migraciones `
   específico. La vista previa enseña el costo anterior y el promedio resultante sólo a
   `costs.view`. Las descargas llevan costos sólo para `costs.view`.
 
+
+**Revisión independiente de DC1 (2026-10-14): cinco P2 y cuatro P3 corregidos.**
+- *Fuga del costo de referencia.* La vista previa de productos sólo avisaba «Costo de
+  referencia: pasa a X» cuando el valor guardado era distinto, así que alguien con
+  `products.manage` sin `costs.view` lo encontraba probando filas, y además podía
+  aplicarlo. Ahora, sin `costs.view`, la columna no se lee: un aviso fijo por fila
+  («Columna … ignorada: requiere permiso de costos»), sin comparación, y quien APLICA
+  también necesita `costs.view` para escribirlo. Una sola respuesta para «¿puede ver
+  costos?»: `cost_services.user_may_view_costs` (usuario + empresa, con el puente
+  legacy) y `inventory_views.may_view_costs` (petición); el margen usa la primera.
+- *Promedio rancio sobre stock sin costo* — **decisión del coordinador, por confirmar
+  con el propietario.** `BranchStock.uncosted_quantity` (`0129`) cuenta las unidades que
+  entraron sin costo. El promedio es sólo de la parte con costo (NULL si esa parte está
+  vacía y queda stock); esas unidades son «costo pendiente» en la valoración y **salen
+  primero**: una salida que se lleva alguna no tiene costo conocido (referencia marcada
+  o `unknown`). Una entrada con costo reinicia el promedio para sus unidades; las
+  pendientes siguen pendientes hasta que salen (un conteo no inventa un costo). El
+  estante vacío conserva su último promedio para una devolución. `0129` marca como
+  pendiente todo estante con stock y sin promedio (el stock anterior a DC1).
+- *Promociones.* `margin_services.line_nets` pone la rebaja de una promoción en sus
+  propias líneas con la misma atribución del comprobante F6
+  (`fiscal_services._promotion_line_discounts`); sólo el resto del descuento se
+  reparte por peso. Las líneas siguen sumando exactamente la base.
+- *Admin de Django.* Instantáneas de la línea y promedio/pendiente de la sucursal, sólo
+  lectura.
+- *Roles personalizados.* `costs_view_report` (sólo lectura, sólo cuentas) dice cuántas
+  empresas quedan sin nadie con `costs.view` tras `migrate`; el despliegue lo corre y se
+  otorga a mano donde haga falta.
+- P3: filtro de sucursal de los reembolsos fijado por prueba; las líneas anteriores a
+  DC1 aparecen en los desgloses con su neto calculado desde el pedido (`net_estimated`,
+  costo pendiente) en vez de 0,00; el texto del tablero que decía que no había modelo de
+  costos, corregido.
