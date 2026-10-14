@@ -154,6 +154,10 @@ _LEGACY_SALES_REPORT_ROLES = frozenset([
 _LEGACY_SALES_NOTES_ROLES = frozenset([
     UserProfile.ROLE_SALES, UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN,
 ])
+# DC1 — what a thing cost. The pre-SaaS operator who may see it is the one who
+# ran the business, exactly as `LEGACY_ROLE_CAPABILITIES` says for a membership.
+CAP_COSTS_VIEW = 'costs.view'
+_LEGACY_COSTS_VIEW_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN])
 
 _NO_COMPANY = 'No tienes acceso a los datos de ninguna empresa.'
 _NO_PERMISSION = 'No tienes permisos sobre el inventario.'
@@ -257,6 +261,18 @@ def _branch_context(request, capability, legacy_roles, *, allow_all=False):
     visible = visible_branches(request.user, company)
     branches = visible.filter(pk=branch.pk) if branch is not None else visible
     return company, branch, branches, None
+
+
+def may_view_costs(request) -> bool:
+    """
+    DC1 — whether this caller may see what things cost, in the company the
+    request acts on. THE one answer for every surface that returns a cost: the
+    unit list, the exports, the valuation and the margin. Resolved like any
+    other inventory authority (same company, same legacy bridge), so the same
+    caller gets the same answer everywhere.
+    """
+    _company, error = _company_context(request, CAP_COSTS_VIEW, _LEGACY_COSTS_VIEW_ROLES)
+    return error is None
 
 
 def _scoped_product(company, product_id):

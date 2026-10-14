@@ -36,7 +36,7 @@ type PanelProps = {
   canCatalogue: boolean;
   /** `inventory.view`: stock y equipos, de sus sucursales. */
   canInventory: boolean;
-  /** `inventory.adjust`: el servidor sólo escribe «Costo» para quien lo tiene. */
+  /** `costs.view` (DC1): el servidor sólo escribe los costos para quien lo tiene. */
   canSeeCost?: boolean;
   branches: Option[];
   categories: Option[];
@@ -255,7 +255,7 @@ export function InventoryExportPanel({
                 <p className="mt-1 text-xs text-muted">
                   {canSeeCost
                     ? "Incluye el costo de cada equipo."
-                    : "La columna «Costo» va vacía: sólo se entrega a quien puede ajustar inventario."}
+                    : "La columna «Costo» va vacía: sólo se entrega a quien puede ver costos."}
                 </p>
               ) : null}
             </div>

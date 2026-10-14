@@ -10,6 +10,12 @@ The serial number and the IMEI are shown WHOLE here. This is the screen of the
 people who put the device on the shelf and take it off; they identify it by
 reading those numbers. Everywhere a customer or a message can see them, they
 are masked.
+
+DC1 — THE COST IS NOT PART OF THAT. It travels only to a caller holding
+`costs.view` (`inventory_views.may_view_costs`); for anybody else the key is
+absent, not null, because a null reads as «no cost recorded». Changing the cost
+of a unit that exists needs it too: correcting a valuation blind is not moving
+stock. Receiving a unit WITH its invoice cost stays part of receiving.
 """
 from __future__ import annotations
 
@@ -23,7 +29,7 @@ from .inventory_services import InventoryError
 from .inventory_views import (
     CAP_INVENTORY_ADJUST, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_ADJUST_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
-    _scoped_product,
+    _scoped_product, may_view_costs,
 )
 from .models import BranchStock, Product, StockUnit
 from .tenancy import (
@@ -34,8 +40,8 @@ from .throttles import AdminInventoryReportsThrottle, AdminStockMovementsThrottl
 NOT_FOUND = 'Equipo no encontrado.'
 
 
-def unit_payload(unit) -> dict:
-    return {
+def unit_payload(unit, *, include_cost: bool = False) -> dict:
+    payload = {
         'id': unit.pk,
         'product_id': unit.product_id,
         'product_name': unit.product.name,
@@ -54,6 +60,9 @@ def unit_payload(unit) -> dict:
         'order_id': unit.order_id,
         'notes': unit.notes,
     }
+    if not include_cost:
+        del payload['cost']
+    return payload
 
 
 def _refusal(exc) -> Response:
@@ -116,8 +125,9 @@ class StockUnitListView(APIView):
 
         rows = rows.select_related('product', 'branch').order_by('-received_at', '-pk')
         page, meta = _paginate(rows, request)
+        include_cost = may_view_costs(request)
         return Response({
-            'results': [unit_payload(unit) for unit in page],
+            'results': [unit_payload(unit, include_cost=include_cost) for unit in page],
             'statuses': [{'value': v, 'label': label} for v, label in StockUnit.Status.choices],
             'conditions': [{'value': v, 'label': label} for v, label in StockUnit.Condition.choices],
             **meta,
@@ -161,8 +171,10 @@ class StockUnitListView(APIView):
 
         fresh = StockUnit.objects.filter(pk__in=[u.pk for u in created]).select_related(
             'product', 'branch').order_by('pk')
+        include_cost = may_view_costs(request)
         return Response(
-            {'results': [unit_payload(unit) for unit in fresh]}, status=status.HTTP_201_CREATED,
+            {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh]},
+            status=status.HTTP_201_CREATED,
         )
 
 
@@ -280,9 +292,9 @@ class _UnitMixin:
             return None, Response({'detail': NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         return unit, None
 
-    def answer(self, unit) -> Response:
+    def answer(self, request, unit) -> Response:
         fresh = StockUnit.objects.select_related('product', 'branch').get(pk=unit.pk)
-        return Response(unit_payload(fresh))
+        return Response(unit_payload(fresh, include_cost=may_view_costs(request)))
 
 
 class StockUnitDetailView(_UnitMixin, APIView):
@@ -294,11 +306,16 @@ class StockUnitDetailView(_UnitMixin, APIView):
             return error
         data = request.data if isinstance(request.data, dict) else {}
         fields = {k: data[k] for k in ('condition', 'cost', 'notes') if k in data}
+        if 'cost' in fields and not may_view_costs(request):
+            return Response(
+                {'detail': 'No tienes permiso para ver ni corregir costos.', 'field': 'cost'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             units.update_unit(unit, actor=request.user, request=request, **fields)
         except InventoryError as exc:
             return _refusal(exc)
-        return self.answer(unit)
+        return self.answer(request, unit)
 
 
 class StockUnitActionView(_UnitMixin, APIView):
@@ -322,4 +339,4 @@ class StockUnitActionView(_UnitMixin, APIView):
                 units.return_unit(unit, reason=reason, actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
-        return self.answer(unit)
+        return self.answer(request, unit)

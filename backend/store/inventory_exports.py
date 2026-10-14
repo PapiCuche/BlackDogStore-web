@@ -172,7 +172,7 @@ class ExportFilters:
     condition: str = ''
     visibility: str = ''
     is_active: str = ''
-    #: Whether «Costo» is written: only for a caller who may adjust inventory.
+    #: Whether any cost column carries data: only for a caller holding `costs.view` (DC1).
     include_cost: bool = False
 
     def audit(self) -> dict:
@@ -576,7 +576,7 @@ def readme_text() -> str:
         '  - Un texto que empieza por = + - o @ (una descripción con guiones, un teléfono con',
         '    +) va en una celda de texto: se ve tal cual y Excel no lo ejecuta como fórmula.',
         '  - El catálogo no tiene campo de marca: no hay columna de marca.',
-        '  - La columna «Costo» sólo trae datos si quien descargó puede ajustar inventario.',
+        '  - Las columnas de costo sólo traen datos si quien descargó puede ver costos (permiso «Ver costos y márgenes»).',
         '',
     ])
 

@@ -28,12 +28,14 @@ import { internalButtonClass } from "./internal-ui";
 export type BulkCentreAccess = {
   /** `products.manage`: carga de productos e imágenes. */
   productsManage: boolean;
-  /** `inventory.adjust`: carga de stock y de equipos; el costo en las descargas. */
+  /** `inventory.adjust`: carga de stock y de equipos. */
   inventoryAdjust: boolean;
   /** `products.view`: descargar el catálogo. */
   productsView: boolean;
   /** `inventory.view`: descargar stock y equipos. */
   inventoryView: boolean;
+  /** `costs.view` (DC1): el costo en las descargas. Ajustar inventario no lo implica. */
+  costsView: boolean;
 };
 
 function Section({
@@ -197,7 +199,7 @@ export function BulkInventoryCentre({ companyId, can }: { companyId: number | nu
             companyId={companyId}
             canCatalogue={can.productsView}
             canInventory={can.inventoryView}
-            canSeeCost={can.inventoryAdjust}
+            canSeeCost={can.costsView}
           />
         </Section>
       ) : null}

@@ -37,6 +37,7 @@ export default function BulkInventoryPage() {
                   inventoryAdjust: access.can("inventory.adjust", ["inventory", "admin", "superadmin"]),
                   productsView: access.can("products.view", ["inventory", "sales", "admin", "superadmin"]),
                   inventoryView: access.can("inventory.view", ["inventory", "admin", "superadmin"]),
+                  costsView: access.can("costs.view", ["admin", "superadmin"]),
                 }}
               />
             </div>

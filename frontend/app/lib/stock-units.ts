@@ -22,7 +22,8 @@ export type StockUnit = {
   condition_label: string;
   status: "available" | "reserved" | "sold" | "written_off";
   status_label: string;
-  cost: string | null;
+  /** DC1: only present for a caller holding `costs.view`; absent otherwise (not null). */
+  cost?: string | null;
   received_at: string;
   sold_at: string | null;
   order_id: number | null;

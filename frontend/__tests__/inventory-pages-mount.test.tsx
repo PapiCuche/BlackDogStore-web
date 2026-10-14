@@ -55,14 +55,14 @@ describe('Gestión masiva de inventario', () => {
     expect(screen.getByRole('heading', { name: 'Gestión masiva de inventario' })).toBeInTheDocument();
     expect(props('centro')).toEqual({
       companyId: 7,
-      can: { productsManage: false, inventoryAdjust: true, productsView: true, inventoryView: false },
+      can: { productsManage: false, inventoryAdjust: true, productsView: true, inventoryView: false, costsView: false },
     });
   });
 
   it('sin empresa resuelta no concede nada por el rol antiguo', async () => {
     ctx = { user: { username: 'ana', role: 'admin' }, dashboard: null, selectedCompanyId: null, selectCompany: jest.fn(), reload: jest.fn() };
     await act(async () => { render(<BulkInventoryPage />); });
-    expect(props('centro').can).toEqual({ productsManage: false, inventoryAdjust: false, productsView: false, inventoryView: false });
+    expect(props('centro').can).toEqual({ productsManage: false, inventoryAdjust: false, productsView: false, inventoryView: false, costsView: false });
   });
 });
 
@@ -78,7 +78,14 @@ describe('Carga de stock', () => {
     expect(within(old).getByRole('link', { name: 'Con las cantidades actuales' }).getAttribute('href'))
       .toMatch(/\/admin\/inventory\/export\/\?quantities=current&company=7$/);
     expect(within(old).getByRole('link', { name: 'En blanco, para conteo físico' })).toBeInTheDocument();
-    expect(props('exportar')).toEqual({ companyId: 7, canCatalogue: false, canInventory: true, canSeeCost: true });
+    // DC1: ajustar inventario ya no basta para ver el costo; `costs.view` sí.
+    expect(props('exportar')).toEqual({ companyId: 7, canCatalogue: false, canInventory: true, canSeeCost: false });
+  });
+
+  it('con `costs.view`, «Exportar» trae el costo', async () => {
+    member(['inventory.adjust', 'inventory.view', 'costs.view']);
+    await act(async () => { render(<StockImportPage />); });
+    expect(props('exportar').canSeeCost).toBe(true);
   });
 
   it('quien sólo puede ajustar, sin poder consultar, no ve «Exportar»', async () => {

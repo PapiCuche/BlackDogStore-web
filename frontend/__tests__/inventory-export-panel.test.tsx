@@ -153,14 +153,14 @@ describe('lo que la persona puede descargar', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('el costo sólo se anuncia a quien puede ajustar inventario', () => {
+  it('el costo sólo se anuncia a quien puede ver costos (`costs.view`)', () => {
     show({ canSeeCost: true });
     expect(card(DEVICES)).toHaveTextContent(/incluye el costo/i);
   });
 
   it('a quien no puede, se le dice que la columna va vacía', () => {
     show({ canSeeCost: false });
-    expect(card(DEVICES)).toHaveTextContent(/«Costo» va vacía/i);
+    expect(card(DEVICES)).toHaveTextContent(/«Costo» va vacía: sólo se entrega a quien puede ver costos/i);
   });
 });
 

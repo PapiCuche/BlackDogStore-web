@@ -16,7 +16,7 @@ Lo que estas pruebas fijan:
   * el contenido de cada libro y sus filtros;
   * la ida y vuelta por cada importador sin cambios y sin stock doble;
   * que ninguna celda pueda ejecutarse como fórmula, y que al volver se lea igual;
-  * el costo sólo para quien puede ajustar inventario;
+  * el costo sólo para quien puede ver costos (`costs.view`, DC1);
   * que la descarga de siempre (`/api/admin/inventory/export/`) responde igual.
 """
 import io
@@ -44,7 +44,7 @@ from store.tests import _p2d_branch, _p2d_member, _p2d_stock, _p3_company
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 PICTURE = 'https://imagenes.example.test/producto.png'
 
-ALL = ['company.view', 'products.view', 'products.manage', 'inventory.view', 'inventory.adjust']
+ALL = ['company.view', 'products.view', 'products.manage', 'inventory.view', 'inventory.adjust', 'costs.view']
 
 
 def url(kind, **query):
@@ -800,7 +800,10 @@ class UnitsExportTest(_Base):
             self.assertEqual((first[index].data_type, first[index].number_format), ('s', '@'))
         self.assertEqual(first[4].value, IMEI_A)
 
-    def test_the_cost_is_only_for_who_may_adjust_inventory(self):
+    def test_the_cost_is_only_for_who_may_view_costs(self):
+        # DC1: `inventory.adjust` no longer implies it.
+        adjuster = self.member('exp_ajuste', 'inventory.view', 'inventory.adjust')
+        self.assertEqual({row['Costo'] for row in self.records(self.get('units', adjuster))}, {None})
         reader = self.member('exp_lectora', 'inventory.view')
         for mode in ('reimport', 'report'):
             with self.subTest(mode):

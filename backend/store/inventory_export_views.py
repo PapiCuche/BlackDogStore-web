@@ -14,8 +14,10 @@ TWO AXES, AS EVERYWHERE IN INVENTORY
   · `full` holds all three, so it needs both.
 
 Reading is what these capabilities are for. `products.manage` and
-`inventory.adjust` do not open a download on their own; `inventory.adjust`
-only decides whether «Costo» is written.
+`inventory.adjust` do not open a download on their own. DC1: whether any cost
+column carries data is decided by `costs.view` and nothing else — it used to
+borrow `inventory.adjust`, while the unit list showed the cost to anybody with
+`inventory.view`; now both answer to the same capability.
 
 The company is the caller's (`admin_views._company_context`). A branch or a
 category named in the query is looked up INSIDE that company and inside the
@@ -31,11 +33,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import inventory_exports
-from .admin_views import (
-    CAP_INVENTORY_ADJUST, CAP_PRODUCTS_VIEW, _LEGACY_ADJUST_INVENTORY_ROLES,
-    _LEGACY_VIEW_CATALOG_ROLES, _company_context,
-)
-from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES
+from .admin_views import CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES, _company_context
+from .inventory_views import CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, may_view_costs
 from .models import AdminAuditLog, Category
 from .tenancy import visible_branches
 from .throttles import AdminExportThrottle, ExportThrottled
@@ -131,9 +130,8 @@ class AdminInventoryExportsView(APIView):
             if not filters.branches:
                 return _bad('No tienes acceso a ninguna sucursal.')
 
-            # What a device cost is for who may move stock, not for who may look.
-            _company, no_cost = _company_context(request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)
-            filters.include_cost = no_cost is None
+        # DC1 — what a thing cost is for who holds `costs.view`.
+        filters.include_cost = may_view_costs(request)
 
         try:
             payload, rows = inventory_exports.build(kind, mode, company, filters)
