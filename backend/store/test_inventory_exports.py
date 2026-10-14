@@ -457,14 +457,16 @@ class ProductsExportTest(_Base):
         title, headers, rows = self.sheet(self.get('products'))
 
         self.assertEqual(title, 'Productos')
-        self.assertEqual(headers[:10], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
-        self.assertEqual(headers[10:], ['Identificador'])
-        self.assertEqual([row[:10] for row in rows], [
-            [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', 'Inactivo'],
-            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', 'Activo'],
+        # DC1: «Costo de referencia» is the template's tenth column (empty here: none set).
+        self.assertEqual(headers[:11], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual(headers[11:], ['Identificador'])
+        self.assertEqual([row[:11] for row in rows], [
+            [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', None, 'Inactivo'],
+            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', None, 'Activo'],
             ['7751234567892', 'FUN-001', 'Funda', 'Funda de silicona.', 59.9, 'Accesorios', None, None,
-             'Publicar en e-commerce', 'Activo'],
-            [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce', 'Activo'],
+             'Publicar en e-commerce', None, 'Activo'],
+            [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce', None,
+             'Activo'],
         ])
 
     def test_every_row_carries_the_identifier_of_its_product_as_text(self):
@@ -476,7 +478,7 @@ class ProductsExportTest(_Base):
             {row['Nombre']: row['Identificador'] for row in self.records(response)},
             {product.name: f'{self.company.pk}-{product.pk}' for product in (self.old, self.cable, self.case, self.phone)})
         page = load_workbook(io.BytesIO(response.content)).active
-        cell = page.cell(row=2, column=11)
+        cell = page.cell(row=2, column=12)
         self.assertEqual((cell.data_type, cell.number_format), ('s', '@'))
         # Only the file to reload: the report is read, not loaded.
         self.assertNotIn('Identificador', self.sheet(self.get('products', mode='report'))[1])
@@ -628,11 +630,11 @@ class ProductsExportTest(_Base):
             'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar'])
         rows = {row['Nombre']: row for row in self.records(response)}
         self.assertEqual(
-            [rows['Funda'][key] for key in headers[9:]], ['Sí', 'Por cantidad', 5, 'Sí', None])
+            [rows['Funda'][key] for key in headers[10:]], ['Sí', 'Por cantidad', 5, 'Sí', None])
         self.assertEqual(
-            [rows['Teléfono X'][key] for key in headers[9:]], ['Sí', 'Por serie', 3, 'Sí', None])
+            [rows['Teléfono X'][key] for key in headers[10:]], ['Sí', 'Por serie', 3, 'Sí', None])
         self.assertEqual(
-            [rows['Batería vieja'][key] for key in headers[9:]],
+            [rows['Batería vieja'][key] for key in headers[10:]],
             ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene categoría.'])
         self.assertEqual(rows['Cable']['Publicado'], 'No')
 
@@ -753,7 +755,8 @@ class StockExportTest(_Base):
         title, headers, _rows = self.sheet(response)
 
         self.assertEqual(title, 'Reporte de stock')
-        self.assertEqual(headers, ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad'])
+        self.assertEqual(headers, ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad',
+                                   'Costo promedio'])
         found = {(row['Producto'], row['Sucursal']): (row['Tipo'], row['Cantidad']) for row in self.records(response)}
         self.assertEqual(found, {
             ('Batería vieja', 'Centro'): ('Por cantidad', 2), ('Batería vieja', 'Norte'): ('Por cantidad', 0),
@@ -937,8 +940,8 @@ class FullExportTest(_Base):
         devices = self.page(archive, 'Equipos.xlsx')
 
         self.assertEqual(
-            [cell.value for cell in products[1]][:10], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
-        self.assertEqual([(row[2], row[9]) for row in products.iter_rows(min_row=2, values_only=True)], [
+            [cell.value for cell in products[1]][:11], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual([(row[2], row[10]) for row in products.iter_rows(min_row=2, values_only=True)], [
             ('Batería vieja', 'Inactivo'), ('Cable', 'Activo'), ('Funda', 'Activo'), ('Teléfono X', 'Activo')])
         self.assertEqual([row[2] for row in stock.iter_rows(min_row=2, values_only=True)],
                          ['Batería vieja', 'Cable', 'Funda'])

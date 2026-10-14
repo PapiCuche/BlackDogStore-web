@@ -913,8 +913,9 @@ class TemplateTest(_Base):
 
         self.assertEqual(workbook.sheetnames, ['Productos'])
         sheet = workbook['Productos']
-        self.assertEqual([c.value for c in sheet[1]], [*HEADERS, 'Destino'])
-        self.assertEqual(import_exports.PRODUCT_TEMPLATE_HEADERS, [*HEADERS, 'Destino'])
+        # DC1 added «Costo de referencia» after «Destino».
+        self.assertEqual([c.value for c in sheet[1]], [*HEADERS, 'Destino', 'Costo de referencia'])
+        self.assertEqual(import_exports.PRODUCT_TEMPLATE_HEADERS, [*HEADERS, 'Destino', 'Costo de referencia'])
         self.assertEqual(sheet.max_row, 1)                             # no help row, no example row
         self.assertEqual(sheet.freeze_panes, 'A2')
 

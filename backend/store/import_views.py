@@ -50,6 +50,7 @@ from .models import (
     BulkImportRow,
     ImportMappingProfile,
 )
+from .inventory_views import may_view_costs
 from .pos_views import _NOT_FOUND, _context
 from .throttles import AdminImportThrottle
 from .tenancy import (
@@ -178,7 +179,19 @@ def _suggestion(workbook, granted) -> dict:
     }
 
 
-def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
+#: DC1 — what a staged row may carry that the system ALREADY knew about costs.
+#: The value the file states is the uploader's own; these are the company's,
+#: and travel only to `costs.view`.
+_KNOWN_COST_KEYS = ('reference_cost_before', 'cost_average_before', 'cost_average_after')
+
+
+def _without_known_costs(data):
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in _KNOWN_COST_KEYS}
+
+
+def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False):
     payload = {
         'id': job.pk,
         'import_type': job.import_type,
@@ -216,7 +229,8 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS):
                 ordered += list(more[:remaining])
         payload['rows'] = [{
             'sheet': r.sheet_name, 'row': r.row_number, 'action': r.action,
-            'match_key': r.match_key, 'data': r.normalized_data,
+            'match_key': r.match_key,
+            'data': r.normalized_data if include_cost else _without_known_costs(r.normalized_data),
             'errors': r.errors, 'warnings': r.warnings,
         } for r in ordered]
         payload['rows_truncated'] = job.rows_total > len(ordered)
@@ -389,7 +403,7 @@ class AdminProductImportPreviewView(APIView):
         except (xlsx_reader.XlsxError, image_import_services.ImageImportError,
                 import_media.ImportMediaError) as exc:
             return _error(exc)
-        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)), status=status.HTTP_201_CREATED)
 
     def post(self, request):
         company, error = _context(request, CAP_PRODUCTS)
@@ -438,7 +452,7 @@ class AdminProductImportPreviewView(APIView):
             return _error(exc)
 
         _remember_profile(company, request.user, job, BulkImportJob.PRODUCTS)
-        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)), status=status.HTTP_201_CREATED)
 
 
 class AdminProductImportApplyView(APIView):
@@ -577,7 +591,7 @@ class AdminUnitImportPreviewView(APIView):
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)
-        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)), status=status.HTTP_201_CREATED)
 
 
 class AdminUnitImportApplyView(APIView):
@@ -639,7 +653,7 @@ class AdminStockImportPreviewView(APIView):
             return _error(exc)
 
         _remember_profile(company, request.user, job, BulkImportJob.STOCK)
-        return Response(_job_payload(job, rows=True), status=status.HTTP_201_CREATED)
+        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)), status=status.HTTP_201_CREATED)
 
 
 class AdminStockImportApplyView(APIView):
@@ -733,7 +747,7 @@ class AdminImportJobView(APIView):
         company, job, error = _job_or_error(request, pk)
         if error:
             return error
-        return Response(_job_payload(job, rows=True))
+        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)))
 
 
 class AdminImportErrorReportView(APIView):

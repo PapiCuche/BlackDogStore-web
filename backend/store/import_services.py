@@ -540,6 +540,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 f'(e-commerce o sólo stock interno).'
             )
 
+    # DC1 — the same for the reference cost: a remembered mapping predates it.
+    if 'reference_cost' not in mapping:
+        found = import_formats.find_column(
+            headers, import_formats.REFERENCE_COST_HEADERS, taken=mapping.values())
+        if found is not None:
+            mapping['reference_cost'] = found
+
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
         original_filename=_safe_filename(filename),
@@ -565,6 +572,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     standing = {
         state['pk']: state for state in Product.objects.filter(company=company).values(
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
+            'reference_cost',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -624,6 +632,13 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             price, price_error = clean_price(fields.get('price'))
             if price_error:
                 errors.append(price_error)
+
+        # DC1 — the catalogue's reference cost. Blank changes nothing.
+        reference_cost = None
+        if 'reference_cost' in mapping:
+            reference_cost, cost_error = clean_price(fields.get('reference_cost'))
+            if cost_error:
+                errors.append('Costo de referencia: ' + cost_error.replace('El precio', 'el costo'))
 
         if barcode:
             warnings.extend(barcode_warnings(
@@ -823,6 +838,14 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             # Kept so that apply resolves the row the same way the preview did.
             'identifier': identifier,
         }
+        if reference_cost is not None:
+            normalized['reference_cost'] = str(reference_cost)
+            before = (standing.get(product_id) or {}).get('reference_cost')
+            if product_id and before != reference_cost:
+                # What it was is the company's knowledge: `costs.view` only
+                # (stripped from the job for anybody else, `import_views`).
+                normalized['reference_cost_before'] = str(before) if before is not None else ''
+                warnings.append(f'Costo de referencia: pasa a {reference_cost}.')
 
         if errors:
             action = BulkImportRow.ERROR
@@ -1058,6 +1081,8 @@ def apply_products(*, job, actor):
 
         price_text = data.get('price', '')
         price = Decimal(price_text) if price_text else None
+        cost_text = data.get('reference_cost', '')
+        reference_cost = Decimal(cost_text) if cost_text else None
 
         if product_id:
             product = Product.objects.select_for_update().get(
@@ -1067,6 +1092,10 @@ def apply_products(*, job, actor):
             if price is not None and product.price != price:
                 product.price = price
                 changes.append('price')
+            # DC1. A blank cell leaves the reference cost alone, like any other.
+            if reference_cost is not None and product.reference_cost != reference_cost:
+                product.reference_cost = reference_cost
+                changes.append('reference_cost')
             # §37 — a blank cell means "leave it alone", never "erase it".
             # Wiping a description because a column was empty destroys work
             # nobody asked to destroy.
@@ -1134,6 +1163,7 @@ def apply_products(*, job, actor):
                 category_id=category_id,
                 is_published_online=publish,
                 is_active=born_active,
+                reference_cost=reference_cost,
             )
             product.full_clean()
             product.save()

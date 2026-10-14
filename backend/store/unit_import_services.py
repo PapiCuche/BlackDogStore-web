@@ -108,7 +108,10 @@ def _header_notes() -> dict:
         ),
         'IMEI 2': 'Opcional, sólo para equipos con dos líneas y con el primer IMEI indicado. Distinto del primero.',
         'Condición': f'{labels}. Vacío = Nuevo.',
-        'Costo': 'Opcional. Lo que costó ese equipo, sin símbolo de moneda.',
+        'Costo': (
+            'Opcional. Lo que costó ese equipo, sin IGV ni símbolo de moneda: es su costo específico, '
+            'con el que se calcula el margen cuando se vende.'
+        ),
         'Motivo / referencia': (
             'El documento con el que entró: factura de compra, guía, inventario inicial. '
             'Queda en el Kardex de cada equipo.'
@@ -230,6 +233,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     products = {product.pk: product for product in Product.objects.filter(company=company)}
     conditions = _conditions()
     in_stock_serials = set(StockUnit.objects.filter(company=company).values_list('product_id', 'serial_number'))
+    # DC1 — a SOLD device is history: its sale was valued at its cost.
+    sold_serials = set(StockUnit.objects.filter(
+        company=company, status=StockUnit.Status.SOLD).values_list('product_id', 'serial_number'))
     in_stock_imeis = set()
     for imei, imei2 in StockUnit.objects.filter(company=company).filter(
         Q(imei__isnull=False) | Q(imei2__isnull=False),
@@ -361,6 +367,10 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             if serial_key in seen_serials:
                 errors.append(
                     f'Este número de serie está repetido en el archivo (fila {seen_serials[serial_key]}).')
+            elif serial_key in sold_serials:
+                errors.append(
+                    f'El equipo {cleaned["serial_number"]} ya fue vendido: no se vuelve a cargar y su costo '
+                    f'no se puede cambiar.')
             elif serial_key in in_stock_serials:
                 errors.append(
                     f'El número de serie {cleaned["serial_number"]} ya está registrado para este producto.')

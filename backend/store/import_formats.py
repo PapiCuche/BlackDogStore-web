@@ -92,7 +92,25 @@ PRODUCT_FIELDS = {
     # «Identificador» de un archivo descargado para volver a cargar: dice de qué
     # producto de ESTA empresa es la fila aunque haya cambiado de nombre.
     'identifier':  {'label': 'Identificador (de un archivo descargado)', 'required': False},
+    # DC1: el costo de referencia del catálogo. Vacío no borra el que hay.
+    'reference_cost': {'label': 'Costo de referencia', 'required': False},
 }
+
+#: DC1 — the headers that ARE a cost column, already folded by `normalize_header`.
+#: Looked for by header when the mapping that arrived does not name one, for the
+#: same reason as the destination: a remembered mapping predates the column.
+REFERENCE_COST_HEADERS = ('costo de referencia', 'costo referencia', 'precio costo')
+UNIT_COST_HEADERS = ('costo unitario', 'costo', 'costo de compra')
+
+
+def find_column(headers, wanted, taken=()) -> int | None:
+    """The first column whose folded header is one of `wanted`, outside `taken`."""
+    taken = set(taken)
+    for key in wanted:
+        for index, header in enumerate(headers):
+            if index not in taken and normalize_header(header) == key:
+                return index
+    return None
 
 # =============================================================================
 # Where a product goes — PRODUCT-DESTINATION-01
@@ -203,6 +221,8 @@ STOCK_FIELDS = {
     'code':        {'label': 'Código interno',        'required': False},
     'barcode':     {'label': 'Código de barras',      'required': False},
     'name':        {'label': 'Nombre',                'required': False},
+    # DC1: what one unit cost, for rows that INCREASE the stock. Optional.
+    'unit_cost':   {'label': 'Costo unitario',        'required': False},
 }
 
 # Columns the presets below deliberately leave UNMAPPED, and why. Surfaced in
@@ -213,7 +233,6 @@ UNMAPPED_NOTES = {
     'afectacion': 'Campo tributario: esta plataforma no emite comprobantes electrónicos.',
     'unidad de medida': 'No hay unidades de medida en el catálogo todavía.',
     'peso': 'El catálogo no registra peso.',
-    'precio costo': 'El catálogo no registra costos; no se puede calcular margen.',
     'marca': 'No hay marcas en el catálogo todavía.',
     'stock minimo': 'El punto de reposición se configura por sucursal, no por producto.',
     'compra': 'El catálogo no distingue artículos de compra y de venta.',
@@ -273,6 +292,8 @@ def _preset_products_sunat_pos():
             'code': 'codigo',
             'name': 'nombre',
             'description': 'descripcion',
+            # DC1: what that POS calls its cost is the catalogue's reference cost.
+            'reference_cost': 'precio costo',
         },
         # Filled in by `detect()` once the real headers are known, because the
         # branch numbers in them belong to whoever exported the file.
@@ -320,6 +341,7 @@ def _preset_products_platform():
             # Only in the file to reload (`inventory_exports`); the template has none.
             'is_active': 'estado',
             'identifier': 'identificador',
+            'reference_cost': ('costo de referencia', 'costo referencia'),
         },
         'notes': [],
     }
@@ -433,9 +455,10 @@ def unmapped_notes(headers, mapping):
     """
     Explain the columns that will be ignored.
 
-    An operator who uploads a file with a `Precio costo` column and sees nothing
-    about it reasonably assumes costs were imported. Saying "recognised, not
-    imported, here is why" costs one line and prevents that.
+    An operator who uploads a file with a `Peso` column and sees nothing about
+    it reasonably assumes weights were imported. Saying "recognised, not
+    imported, here is why" costs one line and prevents that. (DC1: `Precio
+    costo` used to be the example; it is now read as the reference cost.)
     """
     used = set(mapping.values())
     out = []

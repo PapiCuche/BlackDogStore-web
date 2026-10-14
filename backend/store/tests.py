@@ -25525,7 +25525,9 @@ class C14ProductImportTest(TestCase):
         ignored = {u['column'] for u in job.summary['unmapped']}
         self.assertIn('Código SUNAT', ignored)
         self.assertIn('Afectación', ignored)
-        self.assertIn('Precio costo', ignored)
+        # DC1: «Precio costo» is no longer ignored — it is the reference cost.
+        self.assertNotIn('Precio costo', ignored)
+        self.assertIn('reference_cost', job.mapping_snapshot['mapping'])
 
     def test_the_stock_column_of_the_product_sheet_is_not_imported(self):
         """

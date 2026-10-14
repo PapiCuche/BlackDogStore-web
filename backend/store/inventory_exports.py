@@ -101,7 +101,8 @@ _IDENTIFIER_COLUMN = len(PRODUCT_RELOAD_HEADERS) - 1
 PRODUCT_REPORT_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [
     'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar',
 ]
-STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad']
+STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad',
+                        'Costo promedio']
 #: The report says what happened to each device instead of asking why it came in.
 UNIT_REPORT_HEADERS = unit_import_services.HEADERS[:-1] + ['Estado', 'Fecha de ingreso', 'Pedido', 'Notas']
 
@@ -330,6 +331,9 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
             '',
             '',
             DESTINATION_LABELS[DESTINATION_ONLINE if product.is_published_online else DESTINATION_INTERNAL],
+            # DC1 — «Costo de referencia»: only for `costs.view`; empty otherwise,
+            # and an empty cell changes nothing when the file comes back.
+            product.reference_cost if filters.include_cost else None,
         ]
         if report:
             problems = product_publication.publication_problems(product, require_image=require_image)
@@ -347,12 +351,12 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
     if report:
         payload = _workbook_bytes(
             import_exports.REPORT_SHEETS['products'], PRODUCT_REPORT_HEADERS, rows, text_columns=(0, 1),
-            widths=[22, 19, 42, 47, 18, 28, 20, 20, 28, 10, 16, 14, 12, 60],
+            widths=[22, 19, 42, 47, 18, 28, 20, 20, 28, 20, 10, 16, 14, 12, 60],
         )
     else:
         payload = _workbook_bytes(
             PRODUCT_SHEET, PRODUCT_RELOAD_HEADERS, rows, text_columns=(0, 1, _IDENTIFIER_COLUMN),
-            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 12, 16],
+            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 20, 12, 16],
         )
     return payload, len(rows)
 
@@ -396,11 +400,11 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
     queryset = queryset.select_related('category').order_by('name', 'pk')
     _check_rows(queryset.count() * len(branches))
     codes = import_exports.product_codes(company)
-    quantities = {
-        (branch_id, product_id): quantity
-        for branch_id, product_id, quantity in BranchStock.objects.filter(branch__in=branches)
-        .values_list('branch_id', 'product_id', 'quantity')
-    }
+    quantities, averages = {}, {}
+    for branch_id, product_id, quantity, average in BranchStock.objects.filter(branch__in=branches) \
+            .values_list('branch_id', 'product_id', 'quantity', 'average_cost'):
+        quantities[(branch_id, product_id)] = quantity
+        averages[(branch_id, product_id)] = average
     rows = []
     for product in queryset.iterator(chunk_size=2000):
         slot = codes.get(product.pk, {})
@@ -412,10 +416,12 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
                 slot.get('internal', ''), slot.get('external', ''), product.name,
                 product.category.name if product.category_id else '',
                 TYPE_LABELS[product.is_serialized], branch.name, quantity,
+                # DC1 — the branch's weighted average, `costs.view` only.
+                averages.get((branch.pk, product.pk)) if filters.include_cost else None,
             ])
     payload = _workbook_bytes(
         import_exports.REPORT_SHEETS['stock'], STOCK_REPORT_HEADERS, rows, text_columns=(0, 1),
-        widths=[16, 18, 46, 28, 16, 24, 12],
+        widths=[16, 18, 46, 28, 16, 24, 12, 16],
     )
     return payload, len(rows)
 
