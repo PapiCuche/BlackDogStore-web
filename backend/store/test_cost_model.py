@@ -41,8 +41,8 @@ class AverageMathTest(TestCase):
     def test_four_decimals_half_up(self):
         # (1 × 10 + 2 × 10.01) / 3 = 10.00666… → 10.0067
         self.assertEqual(cost_services.weighted_average(1, D('10'), 2, D('10.01')), D('10.0067'))
-        # (1 × 0.0001 + 1 × 0.0002) / 2 = 0.00015 → 0.0002 (half up, not banker's)
-        self.assertEqual(cost_services.weighted_average(1, D('0.0001'), 1, D('0.0002')), D('0.0002'))
+        # (1 × 0.0002 + 1 × 0.0003) / 2 = 0.00025 → 0.0003 (half up; banker's would say 0.0002)
+        self.assertEqual(cost_services.weighted_average(1, D('0.0002'), 1, D('0.0003')), D('0.0003'))
 
     def test_an_empty_shelf_or_an_unknown_average_takes_the_new_cost(self):
         self.assertEqual(cost_services.weighted_average(0, D('50'), 3, D('80')), D('80.0000'))
