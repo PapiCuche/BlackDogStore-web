@@ -26,6 +26,26 @@ de comportamiento, de migraciones ni de settings.
   no la usa.
 - `store/test_ci_shards.py`, `test_affected_tests.py`, `test_ci_workflow.py` (44 pruebas).
 
+## 2026-10-13 — Despliegue de #111 (y constancia del de #110)
+
+**Deployed**
+- `master` `14e658c` (merge de #111) en producción desde el 2026-10-13, 15:35 (Lima). El
+  servidor pasó de `dfc817a` a `14e658c` con copia previa (`db-20261013-152521.sql.gz`,
+  `evidence-20261013-152521.tar.gz`) y las migraciones `0118`–`0121`.
+- Entran CLIENT-SEC-01 (fase 1) y la base de DELIVERY-01.
+- #110 («Mi Cuenta Web», migración `0117`) estaba en producción desde el 2026-10-11,
+  22:46 (Lima), de `3057dd2` a `dfc817a`.
+
+**Verified**
+- Copia previa restaurada en un PostgreSQL desechable; `0118`–`0121` aplicadas,
+  deshechas y aplicadas otra vez sobre esa copia, con el esquema de vuelta idéntico al
+  de `0117`.
+- Pedidos, totales, pagos e intentos, iguales antes y después. Salud, páginas, rutas
+  nuevas y registro, sin sesión y sin crear datos.
+
+**Not changed**
+- Pasarela de pago (TEST), variables de entorno, `deploy/Caddyfile` y cron del servidor.
+
 ## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
 
 En la rama `feat/client-sec-delivery`; sin desplegar. Sin migraciones.

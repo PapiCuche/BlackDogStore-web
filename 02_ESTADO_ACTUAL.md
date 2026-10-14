@@ -62,6 +62,54 @@ nombre `Django tests on PostgreSQL` se conserva). Si algún día se exigen check
 3.12 y PostgreSQL 16 (en local: 3.14 y 14); los fragmentos 1, 2, 4 y 5 del reparto definitivo de punta
 a punta.
 
+## 2026-10-13 — #110 y #111 en `master` y desplegados
+
+**#111 (CLIENT-SEC-01 fase 1 y base de DELIVERY-01)** se fusionó con commit de merge y CI
+verde en `c76317e`. `master` quedó en `14e658c`, con el mismo árbol: el que pasó la
+suite completa (6747, 0 fallos, 6 omitidas), el ensayo (`ENSAYO: OK`) y cuatro
+revisiones independientes, la última sin P0 ni P1.
+
+**Desplegado el 2026-10-13, 15:35 (Lima).** El servidor pasó de `dfc817a` a `14e658c`
+siguiendo `docs/despliegue-produccion.md` §7: copia previa `db-20261013-152521.sql.gz` y
+`evidence-20261013-152521.tar.gz`, imágenes construidas con la web en línea, `migrate
+--plan` con cuatro operaciones (`0118`–`0121`), `migrate` sin incidencias, contenedores
+reemplazados y sanos, `deploy/healthcheck.sh` en verde, `manage.py check` sin
+incidencias y sin errores en el registro. El `deploy/Caddyfile` local del servidor no
+cambió. No se tocó la pasarela ni ninguna variable.
+
+**Antes de migrar:** 5 pedidos en línea (2 pagados, 3 por pagar), 5 intentos de pago, 1
+cliente, 6 usuarios; pasarela «Mi Cuenta Web» en TEST. La copia previa se restauró en un
+PostgreSQL desechable sin red; sobre esa copia, con la imagen nueva, `0118`–`0121` se
+aplicaron, se deshicieron y se aplicaron otra vez, y tras deshacerlas el esquema es
+idéntico al de `0117`.
+
+**Lo que hicieron las migraciones aquí:** un registro de entrega por cada uno de los 5
+pedidos (los cinco «recojo en tienda») y «correo verificado» en 2 cuentas. Pedidos,
+totales (S/ 24 950,00), pagos e intentos, iguales que antes. Ninguna evaluación de
+riesgo: se crean con los pedidos nuevos.
+
+**Vuelta atrás.** Lo recomendado es volver sólo los contenedores a las imágenes
+guardadas como `rollback-dfc817a` y dejar las migraciones aplicadas: el código anterior
+funciona sobre el esquema nuevo. Revertir el esquema (`migrate store 0117` con la
+imagen nueva) borra transportistas, libretas, registros de entrega, evaluaciones y
+decisiones; sólo como último recurso y con la copia previa a mano.
+
+**Comprobado en producción después**, sin sesión y sin enviar formularios: tienda,
+carrito, checkout, «Mi cuenta», pedidos y panel responden 200; el perfil, la libreta de
+direcciones, los transportistas, la entrega y la revisión de un pedido responden 401
+sin sesión; las rutas de pago responden 405 a una lectura. `PAYMENTS_PUBLIC_TEST`
+apagado; la retención de envíos y el importe de revisión, sin configurar.
+
+**#110 («Mi Cuenta Web»)** estaba desplegado desde el 2026-10-11, 22:46 (Lima), de
+`3057dd2` a `dfc817a`, con la migración `0117`; no quedó escrito entonces. El 12 de
+octubre el propietario escribió sus claves de TEST en la consola y completó pagos de
+prueba con Mastercard y American Express; con VISA la autenticación 3DS de la tienda en
+TEST falla en Izipay (`PSP_727`), también en el formulario mínimo oficial.
+
+**Falta, y sólo puede hacerlo el propietario con su sesión:** abrir «Mi cuenta»,
+verificar el correo con el código, guardar una dirección, y en el panel revisar un
+pedido y completar su entrega con transportista y guía.
+
 ## 2026-10-13 — CLIENT-SEC-01: ajustes tras la revisión previa al despliegue
 
 Misma rama (`feat/client-sec-delivery`, PR #111, detenido hasta estos ajustes). La revisión de
@@ -278,7 +326,7 @@ la cabecera con el enlace nuevo no se midió en un navegador (por eso sólo apar
 
 Rama `feat/izipay-smartform-v4` (PR #110). **Sin migración, sin rutas, sin ajustes
 nuevos.** La auditoría dio por cumplidos los puntos de aceptación; quedaban seis defectos
-pequeños. No desplegado. Nada se probó contra la pasarela real.
+pequeños. En `master` y desplegado el 2026-10-11 (`dfc817a`). Nada se probó contra la pasarela real.
 
 | | Defecto | Estado |
 |---|---|---|
@@ -350,7 +398,7 @@ Playwright ni el ensayo Docker.
 
 Rama `feat/izipay-smartform-v4`. **Con migración (`0117_payment_attempt_origin`). Sin
 rutas nuevas. Sin dependencias nuevas.** Decisiones: DEC-PAY-04, DEC-PAY-05, DEC-PAY-06.
-No desplegado. **Nada se probó contra la pasarela real: no hay credenciales.**
+En `master` y desplegado el 2026-10-11 (`dfc817a`). **Nada se probó contra la pasarela real: no hay credenciales.**
 
 **1. Un cambio de pasarela que dejaría un cobro sin confirmar no se hace** (DEC-PAY-04).
 Activar el otro producto, apagar o revocar el que cobra, cambiar de tienda o de entorno:
@@ -410,7 +458,7 @@ de backend, Playwright ni el ensayo Docker.
 ## 2026-10-11 — IZIPAY-MCW-AUDIT-01: «Mi Cuenta Web» contra su documentación, y la consulta que faltaba
 
 Rama `feat/izipay-smartform-v4`. **Sin migración. Sin rutas nuevas. Sin dependencias
-nuevas.** Decisión: DEC-PAY-03. No desplegado. **Nada se probó contra la pasarela real:
+nuevas.** Decisión: DEC-PAY-03. En `master` y desplegado el 2026-10-11 (`dfc817a`). **Nada se probó contra la pasarela real:
 no hay credenciales.**
 
 Se leyó la documentación oficial de la API REST V4 (inicio rápido del SmartForm, claves,
