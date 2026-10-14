@@ -95,6 +95,15 @@ export function SalesNotesScreen() {
     setDetail((current) => (current && current.id === updated.id ? updated : current));
   }
 
+  function dropRow(id: number) {
+    setData((current) => current && {
+      ...current,
+      count: Math.max(0, current.count - 1),
+      results: current.results.filter((row) => row.id !== id),
+    });
+    setDetail((current) => (current && current.id === id ? null : current));
+  }
+
   const totalPages = data ? Math.max(1, Math.ceil(data.count / data.page_size)) : 1;
 
   return (
@@ -264,7 +273,14 @@ export function SalesNotesScreen() {
           onClose={() => setVoiding(null)}
           onVoided={(updated) => {
             setVoiding(null);
-            replaceRow(updated);
+            if (filters.status === "vigente") {
+              // It no longer matches «Vigentes»: out of the list now, and the page
+              // is read again so its count and its next row are right.
+              dropRow(updated.id);
+              void load(filters);
+            } else {
+              replaceRow(updated);
+            }
           }}
         />
       ) : null}

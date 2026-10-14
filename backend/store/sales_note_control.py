@@ -105,7 +105,14 @@ def may_void(user, company) -> bool:
 
 
 def is_void(note) -> bool:
-    return note.status == SalesNote.STATUS_VOID
+    """
+    ONE meaning of void, the papers' (`sales_note_services.is_void`): the status,
+    or an order that was cancelled. A note its PDF already prints as ANULADA is
+    not voided a second time.
+    """
+    from .sales_note_services import is_void as printed_as_void
+
+    return printed_as_void(note)
 
 
 def mark_void(note, *, actor, reason_type, reason, extra_metadata=None) -> None:
@@ -139,6 +146,7 @@ def void_sales_note(note, user, reason_type, reason, *, request=None) -> SalesNo
     with transaction.atomic():
         order = Order.objects.select_for_update(of=('self',)).get(pk=note.order_id)
         locked = SalesNote.objects.select_for_update().get(pk=note.pk)
+        locked.order = order    # the locked row, so the check reads what is committed
         if is_void(locked):
             raise SalesNoteControlError('already_void', f'La nota {locked.number} ya está anulada.')
         mark_void(locked, actor=actor, reason_type=reason_type, reason=reason)

@@ -46,6 +46,17 @@ export function SalesNoteVoidDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ready = reasonType !== "" && normaliseVoidReason(reason).length >= SALES_NOTE_VOID_REASON_MIN;
+  const radios = useRef<(HTMLInputElement | null)[]>([]);
+
+  function moveWithArrows(event: React.KeyboardEvent<HTMLInputElement>, index: number) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const count = SALES_NOTE_VOID_REASON_TYPES.length;
+    const next = (index + step + count) % count;
+    setReasonType(SALES_NOTE_VOID_REASON_TYPES[next].value);
+    radios.current[next]?.focus();
+  }
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -61,7 +72,8 @@ export function SalesNoteVoidDialog({
       }
       if (event.key !== "Tab" || !panel.current) return;
       const stops = [...panel.current.querySelectorAll<HTMLElement>(
-        "input:not([disabled]), textarea:not([disabled]), button:not([disabled])",
+        // A radio group is ONE stop: only its roving radio (tabindex 0) counts.
+        'input:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]), button:not([disabled])',
       )];
       if (stops.length === 0) return;
       const at = stops.indexOf(document.activeElement as HTMLElement);
@@ -104,20 +116,28 @@ export function SalesNoteVoidDialog({
         </ul>
 
         <fieldset className="mt-4" disabled={busy}>
-          <legend className="text-sm font-semibold text-foreground">Tipo de motivo</legend>
-          <div className="mt-2 flex flex-wrap gap-3">
-            {SALES_NOTE_VOID_REASON_TYPES.map((option) => (
-              <label key={option.value} className="inline-flex items-center gap-2 text-sm text-foreground">
-                <input
-                  type="radio"
-                  name={`${reasonId}-type`}
-                  value={option.value}
-                  checked={reasonType === option.value}
-                  onChange={() => setReasonType(option.value)}
-                />
-                {option.label}
-              </label>
-            ))}
+          <legend id={`${reasonId}-legend`} className="text-sm font-semibold text-foreground">Tipo de motivo</legend>
+          {/* ARIA radio group: one tab stop (the chosen radio, or the first), arrows move and choose. */}
+          <div role="radiogroup" aria-labelledby={`${reasonId}-legend`} className="mt-2 flex flex-wrap gap-3">
+            {SALES_NOTE_VOID_REASON_TYPES.map((option, index) => {
+              const chosen = reasonType === option.value;
+              const stop = chosen || (reasonType === "" && index === 0);
+              return (
+                <label key={option.value} className="inline-flex items-center gap-2 text-sm text-foreground">
+                  <input
+                    ref={(element) => { radios.current[index] = element; }}
+                    type="radio"
+                    name={`${reasonId}-type`}
+                    value={option.value}
+                    checked={chosen}
+                    tabIndex={stop ? 0 : -1}
+                    onChange={() => setReasonType(option.value)}
+                    onKeyDown={(event) => moveWithArrows(event, index)}
+                  />
+                  {option.label}
+                </label>
+              );
+            })}
           </div>
         </fieldset>
 

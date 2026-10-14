@@ -1549,8 +1549,12 @@ class SalesNote(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='sales_notes_voided',
     )
-    void_reason_type = models.CharField(max_length=20, choices=VOID_REASON_CHOICES, blank=True)
-    void_reason = models.CharField(max_length=500, blank=True)
+    # `db_default`: 0125 runs while the previous release still serves, and its
+    # inserts do not name these columns (the repo rule, DEC: «Las columnas nuevas
+    # llevan valor por defecto en la base»).
+    void_reason_type = models.CharField(
+        max_length=20, choices=VOID_REASON_CHOICES, blank=True, default='', db_default='')
+    void_reason = models.CharField(max_length=500, blank=True, default='', db_default='')
 
     class Meta:
         ordering = ['-created_at', '-id']
@@ -1576,6 +1580,16 @@ class SalesNote(models.Model):
         return f"SalesNote({self.number}, order={self.order_id})"
 
 
+class SalesNoteRemarkQuerySet(models.QuerySet):
+    """Append-only in bulk too: no queryset rewrites or deletes remarks."""
+
+    def update(self, **kwargs):
+        raise ValueError('Una observación de la nota de venta no se modifica: añade otra.')
+
+    def delete(self):
+        raise ValueError('Una observación de la nota de venta no se borra.')
+
+
 class SalesNoteRemark(models.Model):
     """
     SALES-NOTE-CONTROL-01 — an internal observation about an issued note.
@@ -1593,6 +1607,12 @@ class SalesNoteRemark(models.Model):
     )
     text = models.CharField(max_length=1000)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # The default manager (and so `note.remarks`) refuses bulk update/delete.
+    # `_base_manager` stays Django's plain one on purpose: deleting a user sets
+    # `author` NULL through it (SET_NULL, as `AdminAuditLog.actor`), and that
+    # must keep working — the remark stays, without a name.
+    objects = SalesNoteRemarkQuerySet.as_manager()
 
     class Meta:
         ordering = ['created_at', 'id']

@@ -221,6 +221,18 @@ class VoidRulesTest(_Base):
         self.assertEqual((note.voided_at, note.void_reason_type), (first, 'prueba'))
         self.assertEqual(AdminAuditLog.objects.filter(action='sales_note_voided').count(), 1)
 
+    def test_a_note_whose_order_is_cancelled_reads_as_void_like_its_papers(self):
+        """A legacy note left `issued` on a cancelled order: its papers say ANULADA, so it is void."""
+        note = self.note()
+        Order.objects.filter(pk=note.order_id).update(status=Order.Status.CANCELLED)
+
+        response = self.post_void(note)
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'already_void')
+        note.refresh_from_db()
+        self.assertEqual((note.status, note.voided_at), (SalesNote.STATUS_ISSUED, None))
+
     def test_the_note_of_a_cancelled_order_is_already_void(self):
         order = self.paid_order()
         note = self.note(order)
@@ -363,6 +375,27 @@ class VoidPapersTest(_Base):
 
 # -- internal remarks ------------------------------------------------------------------------
 
+class QueuedTicketOfAVoidNoteTest(_Base):
+    def test_a_ticket_queued_before_the_void_is_cancelled_when_the_agent_claims_it(self):
+        from store.models import Printer, PrintJob
+        from store.printing import services as printing
+
+        note = self.note()
+        printer = Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja 1', host='192.168.1.50', is_active=True)
+        agent, _ = printing.create_agent(company=self.company, branch=self.branch_a, name='Mostrador', actor=None)
+        job = printing.enqueue_manual(order=note.order, printer=printer, key='k-ctl-queued', actor=self.master)
+        self.post_void(note)
+
+        self.assertIsNone(printing.claim_next(agent))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, PrintJob.Status.CANCELLED)
+        self.assertEqual(job.last_error, printing.VOID_NOTE_REFUSAL)
+        with self.assertRaises(printing.PrintError):
+            printing.retry(job, actor=self.master)
+
+
 class RemarksTest(_Base):
     def test_the_master_and_the_note_manager_add_remarks_kept_in_order(self):
         note = self.note()
@@ -404,6 +437,28 @@ class RemarksTest(_Base):
             remark.delete()
         remark.refresh_from_db()
         self.assertEqual(remark.text, 'Revisado con contabilidad')
+
+    def test_a_remark_cannot_be_rewritten_or_deleted_in_bulk(self):
+        note = self.note()
+        self.post_remark(note)
+        with self.assertRaises(ValueError):
+            SalesNoteRemark.objects.filter(sales_note=note).update(text='Texto reescrito')
+        with self.assertRaises(ValueError):
+            SalesNoteRemark.objects.filter(sales_note=note).delete()
+        with self.assertRaises(ValueError):
+            note.remarks.all().delete()
+        self.assertEqual(list(SalesNoteRemark.objects.values_list('text', flat=True)), ['Revisado con contabilidad'])
+
+    def test_deleting_the_author_keeps_the_remark_without_a_name(self):
+        author = User.objects.create_user(username='autora_ctl', password='Pass123!')
+        note = self.note()
+        remark = SalesNoteRemark.objects.create(sales_note=note, author=author, text='Observación de la autora')
+
+        author.delete()
+
+        remark.refresh_from_db()
+        self.assertIsNone(remark.author_id)
+        self.assertEqual(remark.text, 'Observación de la autora')
 
     def test_a_member_of_one_branch_cannot_remark_a_note_of_another(self):
         seller, _ = _p2d_member(
@@ -591,3 +646,36 @@ class DjangoAdminDoesNotBypassTheRecordTest(TestCase):
                       'voided_at', 'voided_by', 'void_reason_type', 'void_reason', 'metadata'):
             self.assertIn(field, note_admin.readonly_fields, field)
         self.assertNotIn(Remark, django_admin.site._registry)
+
+
+class PreviousReleaseKeepsIssuingNotesTest(TestCase):
+    """
+    Migration 0125 runs while the previous release still serves. Its
+    `SalesNote.objects.create` names only the old columns, so the new text
+    columns need a default IN THE DATABASE (`db_default`), not only in Django.
+    """
+
+    def test_the_new_text_columns_have_a_database_default(self):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT column_name, column_default, is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'store_salesnote' AND column_name IN ('void_reason', 'void_reason_type')")
+            rows = {name: (default, nullable) for name, default, nullable in cursor.fetchall()}
+        self.assertEqual(set(rows), {'void_reason', 'void_reason_type'})
+        for name, (default, nullable) in rows.items():
+            self.assertIsNotNone(default, name)
+            self.assertEqual(nullable, 'NO', name)
+
+    def test_an_insert_with_only_the_pre_0125_columns_succeeds(self):
+        company = Company.objects.create(
+            name='Anterior', legal_name='Anterior SAC', tax_id='20911111114', slug='release-anterior')
+        order = Order.objects.create(
+            company=company, customer_email='x@example.com', total=Decimal('10.00'),
+            status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO store_salesnote (order_id, number, status, created_at, metadata) "
+                "VALUES (%s, 'NV-OLD-1', 'issued', NOW(), '{}'::jsonb) RETURNING id", [order.pk])
+            pk = cursor.fetchone()[0]
+        note = SalesNote.objects.get(pk=pk)
+        self.assertEqual((note.void_reason, note.void_reason_type, note.voided_at), ('', '', None))

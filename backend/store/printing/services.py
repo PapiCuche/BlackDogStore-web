@@ -95,6 +95,14 @@ CANCELLED_REFUSAL = 'El pedido está cancelado: su ticket no se imprime. Descarg
 VOID_NOTE_REFUSAL = 'La nota de venta está anulada: su ticket no se imprime. Descarga el PDF, que la marca como anulada.'
 
 
+def _note_is_void(job) -> bool:
+    """Whether the job prints a sales note that was voided (SALES-NOTE-CONTROL-01)."""
+    from ..models import SalesNote
+
+    return bool(job.sales_note_id) and SalesNote.objects.filter(
+        pk=job.sales_note_id, status=SalesNote.STATUS_VOID).exists()
+
+
 def _is_authoritative(order) -> bool:
     return bool(order.paid) and order.status == Order.Status.PAID
 
@@ -283,6 +291,12 @@ def claim_next(agent):
                     else 'El pedido ya no está pagado.')
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
                 continue
+            if _note_is_void(job):
+                # SALES-NOTE-CONTROL-01: a ticket queued before its note was voided.
+                job.status = PrintJob.Status.CANCELLED
+                job.last_error = VOID_NOTE_REFUSAL
+                job.save(update_fields=['status', 'last_error', 'updated_at'])
+                continue
             job.status = PrintJob.Status.PRINTING
             job.attempts += 1
             job.claimed_by = agent
@@ -388,6 +402,8 @@ def retry(job, *, actor):
         raise PrintError('Sólo se reenvía un trabajo fallido o cancelado.')
     if job.order.status == Order.Status.CANCELLED:
         raise PrintError(CANCELLED_REFUSAL)
+    if _note_is_void(job):
+        raise PrintError(VOID_NOTE_REFUSAL)
     if not _is_authoritative(job.order):
         raise PrintError('Sólo se imprime un pedido pagado.')
     if not job.printer.is_active:

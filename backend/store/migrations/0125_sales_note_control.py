@@ -3,7 +3,8 @@
 SALES-NOTE-CONTROL-01 — the void record of a sales note, and internal remarks.
 
 ADDITIVE ONLY. Four columns on `store_salesnote` (empty/NULL for every existing
-row) and one new table. NO DATA IS WRITTEN: an issued note is never touched by
+row; the two text columns with a DATABASE default, so the previous release's
+inserts keep working while this runs) and one new table. NO DATA IS WRITTEN: an issued note is never touched by
 a migration — the owner's rule is that test notes are voided by hand, by the
 master, with a reason. A note voided by ORDER-CANCEL-01 before this migration
 keeps its reason in `metadata`; the API reads it from there.
@@ -25,12 +26,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='salesnote',
             name='void_reason',
-            field=models.CharField(blank=True, max_length=500),
+            field=models.CharField(blank=True, db_default='', default='', max_length=500),
         ),
         migrations.AddField(
             model_name='salesnote',
             name='void_reason_type',
-            field=models.CharField(blank=True, choices=[('prueba', 'Prueba'), ('error', 'Error de emisión'), ('otro', 'Otro motivo'), ('pedido_cancelado', 'Pedido cancelado')], max_length=20),
+            field=models.CharField(blank=True, db_default='', default='', choices=[('prueba', 'Prueba'), ('error', 'Error de emisión'), ('otro', 'Otro motivo'), ('pedido_cancelado', 'Pedido cancelado')], max_length=20),
         ),
         migrations.AddField(
             model_name='salesnote',

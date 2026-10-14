@@ -175,6 +175,23 @@ describe('SalesNoteVoidDialog', () => {
     expect(onVoided).not.toHaveBeenCalled();
   });
 
+  it('makes the reason type one tab stop that arrows move through', () => {
+    const { dialog } = open();
+    const radios = within(dialog).getAllByRole('radio');
+    expect(within(dialog).getByRole('radiogroup', { name: 'Tipo de motivo' })).toBeInTheDocument();
+    // Nothing chosen: only the first is reachable with Tab.
+    expect(radios.map((radio) => radio.getAttribute('tabindex'))).toEqual(['0', '-1', '-1']);
+
+    fireEvent.keyDown(radios[0], { key: 'ArrowRight' });
+    expect(radios[1]).toBeChecked();
+    expect(radios[1]).toHaveFocus();
+    expect(radios.map((radio) => radio.getAttribute('tabindex'))).toEqual(['-1', '0', '-1']);
+
+    fireEvent.keyDown(radios[1], { key: 'ArrowLeft' });
+    fireEvent.keyDown(radios[0], { key: 'ArrowLeft' });
+    expect(radios[2]).toBeChecked();
+  });
+
   it('closes with Escape', () => {
     const { onClose } = open();
     fireEvent.keyDown(window, { key: 'Escape' });
@@ -258,6 +275,28 @@ describe('SalesNotesScreen', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(within(screen.getByTestId('sales-note-row-7')).getByText('ANULADA')).toBeInTheDocument();
+  });
+});
+
+describe('SalesNotesScreen · filtro «Vigentes»', () => {
+  it('drops a note voided while the list shows only live notes', async () => {
+    mockFetchNotes.mockResolvedValue(listing({ results: [note()], count: 1 }));
+    mockVoid.mockResolvedValue({ ...note(VOID), remarks: [], can_void: true, can_remark: true });
+    render(<SalesNotesScreen />);
+    await screen.findByTestId('sales-note-row-7');
+    fireEvent.change(screen.getByLabelText('Estado'), { target: { value: 'vigente' } });
+    await waitFor(() => expect(mockFetchNotes).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'vigente' })));
+    const calls = mockFetchNotes.mock.calls.length;
+
+    fireEvent.click(within(await screen.findByTestId('sales-note-row-7')).getByRole('button', { name: 'Anular' }));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByLabelText('Prueba'));
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Nota de prueba' } });
+    mockFetchNotes.mockResolvedValue(listing({ results: [], count: 0 }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Anular nota' }));
+
+    await waitFor(() => expect(screen.queryByTestId('sales-note-row-7')).toBeNull());
+    expect(mockFetchNotes.mock.calls.length).toBeGreaterThan(calls);
   });
 });
 
