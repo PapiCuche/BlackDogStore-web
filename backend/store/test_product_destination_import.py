@@ -526,6 +526,137 @@ class StateColumnTest(_Base):
             (self.product('De antes').is_active, self.product('De antes').is_published_online), (True, True))
 
 
+class IdentifierColumnTest(_Base):
+    """
+    INVENTORY-UNIFIED-01, owner's decision D5 (2026-10-13). A product without a
+    code had only its NAME to be recognised by, so renaming it and reloading
+    its file created it again. The file to reload carries «Identificador»
+    (`<company id>-<product id>`): when it names a product of THIS company it
+    decides the match. It is optional; another company's, or nobody's, is
+    ignored with a warning and the row falls back to its codes; when it and a
+    code point at two different products the row is an error — nothing guessed.
+    """
+
+    HEADERS = [*HEADERS, 'Destino', 'Estado', 'Identificador']
+
+    def setUp(self):
+        super().setUp()
+        self.other = _p3_company('destino-vecina', 'Tienda Vecina')
+        self.loose = Product.objects.create(
+            company=self.company, name='Mica suelta', slug='mica-suelta', price=12, category=self.parts)
+        self.coded = Product.objects.create(
+            company=self.company, name='Cargador', slug='cargador', price=40, category=self.parts)
+        ProductBarcode.objects.create(company=self.company, product=self.coded, code='CARG-1')
+        self.foreign = Product.objects.create(company=self.other, name='Mica ajena', slug='mica-ajena', price=9)
+
+    def ident(self, product, company=None):
+        return f'{(company or self.company).pk}-{product.pk}'
+
+    def row(self, code, name, identifier, *, price=12):
+        return [None, code, name, None, price, 'Repuestos', None, None, None, None, identifier]
+
+    def staged(self, rows):
+        return self.preview(workbook_bytes(rows, headers=self.HEADERS)).json()
+
+    def test_it_decides_the_match_so_a_new_name_is_an_update(self):
+        body = self.staged([self.row(None, 'Mica templada 9H', self.ident(self.loose))])
+
+        self.assertEqual((body['counts']['update'], body['counts']['create'], body['counts']['error']), (1, 0, 0), body['rows'])
+        self.assertEqual(
+            (body['rows'][0]['data']['product_id'], body['rows'][0]['data']['matched_by']), (self.loose.pk, 'identifier'))
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.loose.refresh_from_db()
+        self.assertEqual(self.loose.name, 'Mica templada 9H')
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 2)
+
+    def test_it_is_read_with_spaces_around_and_as_a_number_like_text(self):
+        body = self.staged([self.row(None, 'Mica nueva', f'  {self.ident(self.loose)}  ')])
+        self.assertEqual(body['rows'][0]['data']['matched_by'], 'identifier')
+
+    def test_another_companys_or_nobodys_is_ignored_with_one_same_warning_and_codes_decide(self):
+        cases = {
+            'another company\'s': self.ident(self.foreign, self.other),
+            'this company with another\'s product': self.ident(self.foreign),
+            'nobody\'s': f'{self.company.pk}-999999999',
+            'not an identifier': 'abc',
+            'negative': f'{self.company.pk}--5',
+        }
+        warnings = set()
+        for label, identifier in cases.items():
+            with self.subTest(label):
+                body = self.staged([self.row('CARG-1', 'Cargador', identifier, price=41)])
+                row = body['rows'][0]
+                self.assertEqual((row['action'], row['data']['product_id'], row['data']['matched_by']),
+                                 ('update', self.coded.pk, 'code'), row)
+                said = [w for w in row['warnings'] if 'Identificador' in w or 'identificador' in w]
+                self.assertEqual(len(said), 1, row['warnings'])
+                self.assertIn('no es de un producto de esta empresa', said[0])
+                warnings.add(said[0].replace(identifier, '<id>'))
+        # Whether it exists somewhere else is not said: one wording for all of them.
+        self.assertEqual(len(warnings), 1, warnings)
+        self.foreign.refresh_from_db()
+        self.assertEqual((self.foreign.name, self.foreign.price), ('Mica ajena', 9))
+
+    def test_an_ignored_identifier_never_creates_or_touches_anything_of_the_other_company(self):
+        body = self.staged([self.row(None, 'Mica ajena', self.ident(self.foreign, self.other))])
+        self.assertEqual((body['counts']['create'], body['counts']['error']), (1, 0), body['rows'])
+        self.apply(body['id'])
+        self.assertEqual(Product.objects.filter(company=self.other).count(), 1)
+        self.assertEqual(Product.objects.filter(company=self.company, name='Mica ajena').count(), 1)
+
+    def test_when_it_and_a_code_point_at_two_products_the_row_is_an_error(self):
+        body = self.staged([self.row('CARG-1', 'Mica suelta', self.ident(self.loose))])
+        self.assertEqual(body['counts']['error'], 1, body['rows'])
+        self.assertIn('El identificador y los códigos de esta fila apuntan a productos distintos',
+                      ' '.join(body['rows'][0]['errors']))
+        self.assertIn(self.apply(body['id']).status_code, (400, 409))
+        self.loose.refresh_from_db()
+        self.coded.refresh_from_db()
+        self.assertEqual((self.loose.name, self.coded.name), ('Mica suelta', 'Cargador'))
+
+    def test_with_a_code_nobody_holds_it_still_decides_and_the_code_becomes_the_products(self):
+        body = self.staged([self.row('MICA-1', 'Mica suelta', self.ident(self.loose))])
+        self.assertEqual((body['counts']['update'], body['counts']['error']), (1, 0), body['rows'])
+        self.apply(body['id'])
+        self.assertEqual(ProductBarcode.objects.get(company=self.company, code='MICA-1').product_id, self.loose.pk)
+
+    def test_the_same_identifier_twice_in_a_file_is_an_error_of_the_second_row(self):
+        body = self.staged([
+            self.row(None, 'Mica A', self.ident(self.loose)), self.row(None, 'Mica B', self.ident(self.loose))])
+        self.assertEqual(body['counts']['error'], 1, body['rows'])
+        errors = ' '.join(e for row in body['rows'] for e in row['errors'])
+        self.assertIn('ya aparece en la fila 2', errors)
+
+    def test_a_product_that_went_away_after_the_preview_stops_the_load(self):
+        body = self.staged([self.row(None, 'Mica renombrada', self.ident(self.loose))])
+        Product.objects.filter(pk=self.loose.pk).delete()
+        response = self.apply(body['id'])
+        self.assertIn(response.status_code, (400, 409), response.content)
+        self.assertFalse(Product.objects.filter(company=self.company, name='Mica renombrada').exists())
+
+    # ---- no identifier and no code: the name, and only when it is nobody else's ----
+
+    def test_without_identifier_or_code_a_name_two_products_carry_is_an_error_that_asks_for_a_code(self):
+        Product.objects.create(company=self.company, name='mica  SUELTA', slug='mica-suelta-2', price=15)
+        body = self.staged([self.row(None, 'Mica suelta', None, price=20)])
+        self.assertEqual(body['counts']['error'], 1, body['rows'])
+        self.assertIn('Hay más de un producto con este nombre', body['rows'][0]['errors'][0])
+        self.assertIn('código', body['rows'][0]['errors'][0])
+        # With the identifier the same row is not ambiguous at all.
+        body = self.staged([self.row(None, 'Mica suelta', self.ident(self.loose), price=20)])
+        self.assertEqual((body['counts']['error'], body['rows'][0]['data']['product_id']), (0, self.loose.pk))
+
+    def test_without_identifier_or_code_a_name_only_one_product_carries_still_finds_it(self):
+        body = self.staged([self.row(None, ' mica   SUELTA ', None, price=20)])
+        self.assertEqual((body['counts']['update'], body['counts']['error']), (1, 0), body['rows'])
+        self.assertEqual(
+            (body['rows'][0]['data']['product_id'], body['rows'][0]['data']['matched_by']), (self.loose.pk, 'name'))
+
+    def test_a_file_without_the_column_loads_as_before(self):
+        body = self.imported([product_row('CARG-1', 'Cargador', price=45)])
+        self.assertEqual((body['counts']['update'], body['rows'][0]['data']['matched_by']), (1, 'code'))
+
+
 class TheColumnIsNeverSilentlyIgnoredTest(_Base):
     """
     A cell that says «Solo stock interno» and is not read publishes the product.

@@ -18,7 +18,10 @@ same headers, taken from the importers' own constants — so the file goes back
 in unchanged. The catalogue adds «Estado» (Activo / Inactivo) to the template's
 columns: active AND inactive products travel (owner's decision, 2026-10-13),
 and the importer reads that column only to decide how a NEW product is born —
-it never activates or deactivates one that exists. Loaded into the SAME shop it changes nothing: a product matches
+it never activates or deactivates one that exists. It also adds «Identificador»
+(`<company id>-<product id>`), which is what lets a product WITHOUT A CODE be
+recognised after it was renamed: without it the name was all it had, and a
+reload created it a second time. Loaded into the SAME shop it changes nothing: a product matches
 itself, a quantity equals itself, and a device that is already registered is
 refused row by row. That last one is the point: reloading can never make stock
 twice.
@@ -57,7 +60,8 @@ from django.utils import timezone
 
 from . import import_exports, product_publication, unit_import_services
 from .import_formats import (
-    DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE, STATE_HEADER, STATE_LABELS,
+    DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE, IDENTIFIER_HEADER, STATE_HEADER, STATE_LABELS,
+    product_identifier,
 )
 from .models import BranchStock, Product, StockUnit
 from .xlsx_reader import guard_text
@@ -91,7 +95,8 @@ ZIP_PRODUCTS, ZIP_STOCK, ZIP_UNITS, ZIP_NOTE = 'Productos.xlsx', 'Stock.xlsx', '
 PRODUCT_SHEET = 'Productos'
 #: The file to RELOAD: the owner's template plus what only a download knows.
 #: The template itself does not gain these columns.
-PRODUCT_RELOAD_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [STATE_HEADER]
+PRODUCT_RELOAD_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [STATE_HEADER, IDENTIFIER_HEADER]
+_IDENTIFIER_COLUMN = len(PRODUCT_RELOAD_HEADERS) - 1
 PRODUCT_REPORT_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [
     'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar',
 ]
@@ -327,7 +332,7 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
                 ' '.join(labels[code] for code in problems),
             ]
         else:
-            row += [STATE_LABELS[product.is_active]]
+            row += [STATE_LABELS[product.is_active], product_identifier(company.pk, product.pk)]
         rows.append(row)
 
     if report:
@@ -337,8 +342,8 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
         )
     else:
         payload = _workbook_bytes(
-            PRODUCT_SHEET, PRODUCT_RELOAD_HEADERS, rows, text_columns=(0, 1),
-            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 12],
+            PRODUCT_SHEET, PRODUCT_RELOAD_HEADERS, rows, text_columns=(0, 1, _IDENTIFIER_COLUMN),
+            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 12, 16],
         )
     return payload, len(rows)
 
@@ -553,8 +558,11 @@ def readme_text() -> str:
         '----------------',
         f'  - Cada carga admite hasta {xlsx_reader.MAX_DATA_ROWS} filas, y la de equipos hasta',
         f'    {unit_import_services.MAX_UNITS} por archivo. Si un archivo trae más, divídalo.',
-        '  - Un producto se reconoce por su código o su código de barras. Sin ninguno, por su',
-        '    nombre; si dos productos sin código se llaman igual, la carga pide asignarles uno.',
+        '  - En la misma tienda un producto se reconoce por la columna «Identificador», aunque',
+        '    le hayan cambiado el nombre. No la modifique. En otra tienda ese identificador no',
+        '    vale: se ignora (con un aviso por fila) y el producto se reconoce por su código o',
+        '    su código de barras. Sin ninguno, por su nombre; si dos productos sin código se',
+        '    llaman igual, la carga pide asignarles uno.',
         '  - Si un producto tiene varios códigos, viaja uno de cada tipo.',
         '  - Un texto que empieza por = + - o @ lleva un apóstrofo delante para que Excel no lo',
         '    ejecute como fórmula. Al cargar el archivo se lee sin el apóstrofo.',

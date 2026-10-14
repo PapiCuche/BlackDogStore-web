@@ -89,6 +89,9 @@ PRODUCT_FIELDS = {
     'is_active':   {'label': 'Estado (Activo o Inactivo)', 'required': False},
     # PRODUCT-DESTINATION-01: «Publicar en e-commerce» o «Solo stock interno».
     'destination': {'label': 'Destino (e-commerce o sólo stock interno)', 'required': False},
+    # «Identificador» de un archivo descargado para volver a cargar: dice de qué
+    # producto de ESTA empresa es la fila aunque haya cambiado de nombre.
+    'identifier':  {'label': 'Identificador (de un archivo descargado)', 'required': False},
 }
 
 # =============================================================================
@@ -156,6 +159,25 @@ def parse_destination(text) -> str | None:
 # =============================================================================
 
 STATE_HEADER = 'Estado'
+IDENTIFIER_HEADER = 'Identificador'
+
+
+def product_identifier(company_id, product_id) -> str:
+    """
+    What the file to reload writes under «Identificador».
+
+    Stable (a rename does not change it), readable, bound to the company and no
+    secret: both numbers are already in the panel's own addresses. It grants
+    nothing — the importer accepts it only for a product of the company the
+    caller is acting on.
+    """
+    return f'{company_id}-{product_id}'
+
+
+def parse_product_identifier(text):
+    """`(company id, product id)` from an «Identificador» cell, or None when it is not one."""
+    found = re.fullmatch(r'(\d{1,12})-(\d{1,12})', str(text or '').strip())
+    return (int(found.group(1)), int(found.group(2))) if found else None
 STATE_LABELS = {True: 'Activo', False: 'Inactivo'}
 _STATE_WORDS = {'activo': True, 'inactivo': False}
 
@@ -289,6 +311,7 @@ def _preset_products_platform():
             'destination': DESTINATION_HEADERS,
             # Only in the file to reload (`inventory_exports`); the template has none.
             'is_active': 'estado',
+            'identifier': 'identificador',
         },
         'notes': [],
     }

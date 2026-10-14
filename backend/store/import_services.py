@@ -257,9 +257,12 @@ class CatalogueIndex:
 
         self.by_name = {}
         self.ambiguous_names = set()
+        # Every product of THIS company: what an «Identificador» may name.
+        self.product_ids: set[int] = set()
         for product_id, name in Product.objects.filter(
             company=company,
         ).values_list('pk', 'name'):
+            self.product_ids.add(product_id)
             key = ' '.join(str(name).split()).lower()
             if key in self.by_name:
                 # Two products with the same name cannot be told apart by name.
@@ -279,11 +282,35 @@ class CatalogueIndex:
     def is_inactive(self, code: str) -> bool:
         return normalize_barcode(code) in self.inactive_codes
 
-    def match(self, *, barcode='', code='', name=''):
+    def identified(self, identifier: str):
+        """
+        The product of THIS company an «Identificador» names, or None.
+
+        Another company's identifier, one whose product is not this company's
+        and one that is nobody's are the same None: the caller says one thing
+        for all three, and never whether the product exists somewhere else.
+        """
+        parsed = import_formats.parse_product_identifier(identifier)
+        if parsed is None or parsed[0] != self.company.pk or parsed[1] not in self.product_ids:
+            return None
+        return parsed[1]
+
+    def match(self, *, barcode='', code='', name='', identifier=''):
         """
         Resolve a row to a product, or explain the ambiguity.
 
         Returns `(product_id_or_None, error_or_None, matched_by, warnings)`.
+
+        IDENTITY FIRST (owner's decision, 2026-10-13). An «Identificador» that
+        names a product of this company DECIDES: the name of the row is then
+        just a value to write, so a renamed product is updated, never created
+        again. One that names nothing here is ignored, with a warning, and the
+        row falls back to its codes. When it and a code point at two different
+        products the row is an error: nothing is guessed.
+
+        WITHOUT IDENTIFIER AND WITHOUT A CODE THAT IS HELD, THE NAME — and only
+        a name ONE product of the company carries. Two products with that name:
+        an error that asks for a code.
 
         §30 — when two identifiers on the SAME row point at DIFFERENT products,
         that is an error and not a preference. Choosing one would either update
@@ -292,6 +319,14 @@ class CatalogueIndex:
         """
         hits = {}
         warnings: list[str] = []
+        named = None
+        if identifier:
+            named = self.identified(identifier)
+            if named is None:
+                warnings.append(
+                    f'El identificador «{str(identifier).strip()}» no es de un producto de esta empresa: '
+                    f'se ignora y la fila se identifica por sus códigos.'
+                )
         for label, value in (('barcode', barcode), ('code', code)):
             if not value:
                 continue
@@ -306,6 +341,13 @@ class CatalogueIndex:
                     )
 
         distinct = set(hits.values())
+        if named is not None:
+            if distinct - {named}:
+                return None, (
+                    'El identificador y los códigos de esta fila apuntan a productos distintos. '
+                    'Corrige uno de los dos: no se elige por ti.'
+                ), '', warnings
+            return named, None, 'identifier', warnings
         if len(distinct) > 1:
             return None, (
                 'Los identificadores de esta fila apuntan a productos distintos.'
@@ -533,6 +575,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     counts = dict(create=0, update=0, no_change=0, skip=0, error=0)
     seen_barcodes: dict[str, int] = {}
     seen_names: dict[str, int] = {}
+    seen_identified: dict[int, int] = {}
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -614,12 +657,19 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                     f'activa «crear categorías que falten».'
                 )
 
+        identifier = fields.get('identifier', '').strip()
         product_id, match_error, matched_by, match_warnings = index.match(
-            barcode=barcode, code=code, name=name,
+            barcode=barcode, code=code, name=name, identifier=identifier,
         )
         warnings.extend(match_warnings)
         if match_error:
             errors.append(match_error)
+        if matched_by == 'identifier':
+            previous = seen_identified.get(product_id)
+            if previous:
+                errors.append(f'El identificador «{identifier}» ya aparece en la fila {previous}.')
+            else:
+                seen_identified[product_id] = row_number
 
         # The category chosen on the screen, for a row that names none. Marked
         # as such: on a product that already has a category it changes nothing.
@@ -763,6 +813,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             'images': row_images,
             'slug': fields.get('slug', ''),
             'product_id': product_id, 'matched_by': matched_by,
+            # Kept so that apply resolves the row the same way the preview did.
+            'identifier': identifier,
         }
 
         if errors:
@@ -949,7 +1001,7 @@ def apply_products(*, job, actor):
         data = row.normalized_data or {}
         product_id, match_error, _by, _warn = index.match(
             barcode=data.get('barcode', ''), code=data.get('code', ''),
-            name=data.get('name', ''),
+            name=data.get('name', ''), identifier=data.get('identifier', ''),
         )
         if match_error:
             raise ImportError_(f'Fila {row.row_number}: {match_error}')

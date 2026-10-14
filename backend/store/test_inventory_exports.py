@@ -342,6 +342,7 @@ class ProductsExportTest(_Base):
 
         self.assertEqual(title, 'Productos')
         self.assertEqual(headers[:10], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual(headers[10:], ['Identificador'])
         self.assertEqual([row[:10] for row in rows], [
             [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', 'Inactivo'],
             [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', 'Activo'],
@@ -350,8 +351,59 @@ class ProductsExportTest(_Base):
             [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce', 'Activo'],
         ])
 
+    def test_every_row_carries_the_identifier_of_its_product_as_text(self):
+        """Owner's decision D5: a stable identity, bound to the company, that survives a rename."""
+        response = self.get('products')
+        _title, headers, _rows = self.sheet(response)
+        self.assertEqual(headers, import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado', 'Identificador'])
+        self.assertEqual(
+            {row['Nombre']: row['Identificador'] for row in self.records(response)},
+            {product.name: f'{self.company.pk}-{product.pk}' for product in (self.old, self.cable, self.case, self.phone)})
+        page = load_workbook(io.BytesIO(response.content)).active
+        cell = page.cell(row=2, column=11)
+        self.assertEqual((cell.data_type, cell.number_format), ('s', '@'))
+        # Only the file to reload: the report is read, not loaded.
+        self.assertNotIn('Identificador', self.sheet(self.get('products', mode='report'))[1])
+
+    def test_a_codeless_product_renamed_after_the_download_is_updated_not_created_again(self):
+        """The reviewer's R1, for an inactive and for an active product."""
+        loose = self.product('Mica suelta', 'mica-suelta', '12.00', self.accessories)        # active, no code
+        content = self.get('products').content
+        Product.objects.filter(pk=self.old.pk).update(name='Batería vieja (renombrada)')
+        Product.objects.filter(pk=loose.pk).update(name='Mica suelta (renombrada)')
+
+        staged, applied = self.reload(content)
+
+        self.assertEqual((staged['counts']['create'], staged['counts']['update'], staged['counts']['total']), (0, 5, 5))
+        self.assertEqual((applied['created'], applied['updated']), (0, 2))
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 5)
+        self.old.refresh_from_db()
+        loose.refresh_from_db()
+        # The file says the old name: it is an update of the name, of the same product.
+        self.assertEqual((self.old.name, self.old.is_active), ('Batería vieja', False))
+        self.assertEqual((loose.name, loose.is_active), ('Mica suelta', True))
+        by_name = {row['data']['name']: row['data'] for row in staged['rows']}
+        self.assertEqual(by_name['Batería vieja']['matched_by'], 'identifier')
+        self.assertEqual(by_name['Batería vieja']['product_id'], self.old.pk)
+
+    def test_loaded_into_another_shop_the_identifiers_are_ignored_and_say_so(self):
+        content = self.get('products').content
+        Category.objects.create(company=self.other, name='Accesorios', slug='accesorios')
+        Category.objects.create(company=self.other, name='Teléfonos', slug='telefonos')
+        there, _ = _p2d_member(self.other, 'exp_otra_id', ALL)
+        before = list(Product.objects.filter(company=self.company).order_by('pk').values())
+
+        staged, applied = self.reload(content, _client(there))
+
+        self.assertEqual((staged['counts']['create'], applied['created']), (4, 4))
+        for row in staged['rows']:
+            self.assertIn('no es de un producto de esta empresa', ' '.join(row['warnings']))
+            self.assertNotEqual(row['data']['matched_by'], 'identifier')
+        self.assertEqual(list(Product.objects.filter(company=self.company).order_by('pk').values()), before)
+
     def test_the_owners_template_does_not_gain_the_state_column(self):
         self.assertNotIn('Estado', import_exports.PRODUCT_TEMPLATE_HEADERS)
+        self.assertNotIn('Identificador', import_exports.PRODUCT_TEMPLATE_HEADERS)
         template = load_workbook(io.BytesIO(self.api.get('/api/admin/products/import/template/').content)).active
         self.assertEqual([cell.value for cell in template[1]], import_exports.PRODUCT_TEMPLATE_HEADERS)
 
