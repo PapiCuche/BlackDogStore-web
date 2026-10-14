@@ -72,7 +72,11 @@ class OrderItemInline(admin.TabularInline):
     # removing or re-quantifying one changes what was sold without touching the
     # Kardex or the frozen tax breakdown. The whole row is read-only here.
     can_delete = False
-    readonly_fields = ('product', 'quantity', 'price')
+    # DC1 — the snapshots are frozen when the line leaves the shelf; nobody types them.
+    readonly_fields = (
+        'product', 'quantity', 'price',
+        'unit_cost', 'cost_source', 'unit_price_net', 'discount_net', 'net_amount',
+    )
 
     def has_add_permission(self, request, obj=None):
         return False
@@ -442,7 +446,8 @@ class BranchStockAdmin(admin.ModelAdmin):
     )
     list_filter = ('branch__company', 'branch')
     search_fields = ('product__name', 'product__slug', 'branch__name')
-    readonly_fields = ('quantity', 'created_at', 'updated_at')
+    # DC1 — the average and the units of unknown cost belong to the Kardex writer.
+    readonly_fields = ('quantity', 'average_cost', 'uncosted_quantity', 'created_at', 'updated_at')
     list_select_related = ('branch', 'product')
 
     def has_add_permission(self, request):

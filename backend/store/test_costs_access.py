@@ -18,6 +18,7 @@ quien opera el stock); sólo se enmascara hacia el cliente.
 import io
 
 from django.core.cache import cache
+from django.test import TestCase
 from openpyxl import load_workbook
 from rest_framework.test import APIClient
 
@@ -137,3 +138,40 @@ class CostInTheExportsTest(UnitsBase):
         _assign(self.membership, _role(self.company, 'Lectura con costos', slug='lectura-costos',
                                        capabilities=['company.view', 'inventory.view', 'costs.view']))
         self.assertEqual(self.costs(), {3800})
+
+
+class DjangoAdminCannotEditCostsTest(TestCase):
+    """DC1 review — the frozen snapshots and the averages are written by the Kardex only."""
+
+    SNAPSHOT_FIELDS = {'unit_cost', 'cost_source', 'unit_price_net', 'discount_net', 'net_amount'}
+
+    def request(self):
+        from django.contrib.auth import get_user_model
+        from django.test import RequestFactory
+
+        request = RequestFactory().get('/admin/')
+        request.user = get_user_model().objects.create_superuser('dc1_admin_root', 'r@example.com', 'Pass123!')
+        return request
+
+    def test_sale_line_snapshots_are_read_only(self):
+        from django.contrib import admin as dj_admin
+        from store.admin import OrderItemInline
+        from store.models import Order
+
+        inline = OrderItemInline(Order, dj_admin.site)
+        request = self.request()
+        self.assertLessEqual(self.SNAPSHOT_FIELDS, set(inline.get_readonly_fields(request)))
+        form_fields = set(inline.get_formset(request).form.base_fields)
+        self.assertEqual(form_fields & self.SNAPSHOT_FIELDS, set())
+
+    def test_branch_averages_are_read_only(self):
+        from django.contrib import admin as dj_admin
+        from store.models import BranchStock
+
+        model_admin = dj_admin.site._registry[BranchStock]
+        request = self.request()
+        self.assertIn('average_cost', model_admin.get_readonly_fields(request))
+        self.assertIn('uncosted_quantity', model_admin.get_readonly_fields(request))
+        form_fields = set(model_admin.get_form(request).base_fields)
+        self.assertNotIn('average_cost', form_fields)
+        self.assertNotIn('uncosted_quantity', form_fields)
