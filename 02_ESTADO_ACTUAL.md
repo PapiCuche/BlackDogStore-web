@@ -42,10 +42,17 @@ primera pasada; tres supervivientes eran huecos de prueba y se cerraron (`a94c8f
 la cuarta es equivalente (marcar como texto una cabecera: ninguna cabecera puede empezar por
 `=`, `+`, `-` o `@`).
 `makemigrations --check`: una migración nueva, `0123`.
-- Suite completa del backend sobre `4a46012`: pendiente.
-- Jest, `tsc --noEmit` y lint sobre `4a46012`: pendiente.
-- Playwright: pendiente.
-- `sh deploy/rehearsal.sh`: pendiente.
+- Suite completa del backend en PostgreSQL sobre `6e556c9`: 7056 pruebas, 0 fallos, 6 omitidas
+  (6716 en `master` `14e658c`).
+- Jest 1341/1341 en 121 suites, `tsc --noEmit` limpio, lint 0 errores y 22 avisos, sobre
+  `4a46012` (el frontend no cambia después).
+- Playwright 97/97 sobre `6e556c9` (`product-destination` e `import-split` ya con D1/D2,
+  `storefront`, `tax-breakdown`, `krypton-smartform`), y recorrido en navegador real sin
+  errores de consola: acción en bloque con `?company=`, carrito y pago con un producto
+  ocultado, descarga del catálogo.
+- `sh deploy/rehearsal.sh` sobre `6e556c9`: `ENSAYO: OK` (149), con `0122` y `0123`.
+- Tercera revisión independiente (`8dd3e59..4a46012`): sin P0, sin P1, sin regresiones; sus
+  dos hallazgos menores (F1, G01) corregidos en `1f21cfe` y `0dbf3b3`.
 
 ## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
 

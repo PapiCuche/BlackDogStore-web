@@ -30,6 +30,12 @@ En la rama `feat/inventory-unified`; sin desplegar. Migración nueva `0123` (adi
 **Security**
 - La app ya no da la dirección de un producto que dejó de venderse en «Mis pedidos».
 
+**Verified**
+- Suite completa del backend sobre `6e556c9`: 7056 pruebas, 0 fallos, 6 omitidas.
+- Jest 1341/1341, tipos y lint limpios; Playwright 97/97; `sh deploy/rehearsal.sh` `ENSAYO: OK`
+  (149) con `0122` y `0123`.
+- Tres revisiones independientes sin P0 ni P1.
+
 ## 2026-10-13 — INVENTORY-UNIFIED-01: correcciones tras la revisión independiente
 
 En la rama `feat/inventory-unified`; sin desplegar. Sin migraciones nuevas.

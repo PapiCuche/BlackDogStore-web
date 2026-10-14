@@ -6,23 +6,22 @@ Las cuatro partes están en la rama, con commits locales: visibilidad en bloque 
 exportaciones (hasta `74c6112`), centro de gestión masiva con asistente e imágenes en
 lote (hasta `ac6a061`), las correcciones de la revisión independiente (`8b9dda1`…
 `af0b374`) y las siete decisiones del propietario del 2026-10-13 (`e2c9c84`…`4a46012`,
-más `a94c8fa`, `0dbf3b3` y `1f21cfe` tras la tercera revisión, y la documentación). **Sin push, sin PR, sin desplegar.**
+más `a94c8fa`, `0dbf3b3` y `1f21cfe` tras la tercera revisión, y la documentación). **Publicada con push y PR a `master`; sin fusionar ni desplegar.**
 Detalle en `02_ESTADO_ACTUAL.md` (las cuatro entradas de arriba) y DEC-INVENTORY-UNIFIED-01.
 
-Antes de abrir un PR:
-1. Sobre `0ed1b33`/`af0b374`: suite completa, Jest, tipos, lint, Playwright, recorrido en
-   navegador y ensayo en verde. Sobre el último commit de la rama: PENDIENTE — suite
-   completa del backend, Jest, tipos, lint, Playwright (con `product-destination.spec.ts` e
-   `import-split.spec.ts` editados y sin correr) y `sh deploy/rehearsal.sh`.
+Hecho antes de abrir el PR:
+1. Sobre `6e556c9`: suite completa del backend (7056, 0 fallos), Playwright 97/97,
+   recorrido en navegador y `sh deploy/rehearsal.sh` en verde; Jest, tipos y lint sobre
+   `4a46012` (el frontend no cambia después). Cifras en `02_ESTADO_ACTUAL.md`.
 2. La rama añade las migraciones `0122` (sólo opciones) y `0123` (una columna con valor por
    defecto en la base) y cambia el carrito público, «Mis pedidos» (web y app), la lista de
    productos, la configuración de la empresa, las descargas y las tres cargas.
-3. Dos revisiones independientes: HECHAS (sin P0/P1), sus P2/P3 corregidos y la segunda sin
+3. Tres revisiones independientes: HECHAS (sin P0/P1), sus P2/P3 corregidos y las dos últimas sin
    regresiones; `af0b374` cierra el último aviso. El propietario decidió los puntos
    abiertos el 2026-10-13 (D1–D7 en DEC-INVENTORY-UNIFIED-01): implementados en la rama.
    Siguen pidiendo su palabra: un archivo de imagen sin producto no impide aplicar el
    resto; el código de las imágenes se compara exacto, mayúsculas incluidas.
-4. Con autorización expresa: push, PR, CI, merge y despliegue (migrar `0122` y `0123`;
+4. Con autorización expresa: merge y despliegue (migrar `0122` y `0123`;
    vuelta atrás en `docs/despliegue-produccion.md` §7). El Caddyfile del servidor NO
    cambia. Variable nueva y opcional: `ADMIN_EXPORT_RATE` (6/min si no se pone).
 
