@@ -256,9 +256,16 @@ def _restore_stock(order, actor, reason, request):
                 quantity=sale_exit.quantity, metadata=metadata, **common))
             continue
 
-        # A device of this sale already given back (`stock_unit_services.return_unit`,
-        # which writes a `return_entry` naming the order) is back on the shelf:
-        # it is not restored a second time.
+        # WHICH DEVICES COME BACK: every one still sold to THIS order. The goods
+        # never left (`ever_left`), so whatever is out of the shelf for the order
+        # is the order's: the unit the payment set aside, the one swapped in for
+        # it at the hand-over, or the one handed over after a return (the
+        # «second exit» of `unit_identification`). A unit sold to another order
+        # does not carry this order, so it is never touched here.
+        #
+        # A device of this sale already given back (`stock_unit_services.return_unit`
+        # writes a `return_entry` naming the order) is on the shelf: it is only
+        # counted, never restored a second time.
         given_back = [
             unit_id for metadata in StockMovement.objects.filter(
                 movement_type=StockMovement.RETURN_ENTRY, product_id=sale_exit.product_id,
@@ -267,20 +274,18 @@ def _restore_stock(order, actor, reason, request):
             for unit_id in (metadata or {}).get('unit_ids', [])
         ]
         already_returned.extend(given_back)
-        expected = sale_exit.quantity - len(given_back)
-        if expected <= 0:
-            continue
         unit_ids = list(
             StockUnit.objects
             .filter(order=order, product_id=sale_exit.product_id, branch=sale_exit.branch,
                     status=StockUnit.Status.SOLD)
             .exclude(pk__in=units_returned)
-            .order_by('pk').values_list('pk', flat=True)[:expected]
+            .order_by('pk').values_list('pk', flat=True)
         )
-        if len(unit_ids) != expected:
+        if len(unit_ids) + len(given_back) < sale_exit.quantity:
+            missing = sale_exit.quantity - len(given_back)
             raise OrderCancelError(
                 'stock_mismatch',
-                f'No se encuentran los {expected} equipo(s) de «{sale_exit.product.name}» '
+                f'No se encuentran los {missing} equipo(s) de «{sale_exit.product.name}» '
                 'vendidos a este pedido. Revisa el inventario antes de cancelarlo.')
         for unit_id in unit_ids:
             # The unit is locked by the movement, after the shelf row.

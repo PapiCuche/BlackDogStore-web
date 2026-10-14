@@ -332,6 +332,67 @@ class StockComesBackOnceTest(_Base):
         self.assertEqual(audit.metadata['units_returned'], [second.pk])
         self.assertEqual(audit.metadata['units_already_returned'], [first.pk])
 
+    def test_a_device_handed_over_after_a_return_comes_back_too(self):
+        """
+        Payment set A aside, A was given back, B was handed over in its place
+        (the «second exit»). Cancelling restores B: it is this order's device.
+        """
+        from store import stock_unit_services as units
+
+        a, b = self.receive(self.row('F2LXK1ONE01', IMEI_A), self.row('F2LXK1TWO02', IMEI_B))
+        order = self.web_order((self.phone, 1))
+        self.assertEqual(StockUnit.objects.get(order=order), a)
+        units.return_unit(a, reason='Vuelve antes de entregar', actor=self.manager)
+        picking.identify_for_order(order=order, code=IMEI_B, method='scanner', actor=self.manager)
+        b.refresh_from_db()
+        self.assertEqual((b.status, b.order_id), ('sold', order.pk))
+        self.assertEqual(self.quantity(), 1)
+
+        response = self.post_cancel(order)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        b.refresh_from_db()
+        self.assertEqual((b.status, b.order_id), ('available', None))
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())
+        self.assertEqual(self.quantity(), 2)
+        self.assert_invariant()
+        self.assertEqual(self.returns(order).get().metadata['unit_ids'], [b.pk])
+        audit = AdminAuditLog.objects.get(action='order_cancelled')
+        self.assertEqual((audit.metadata['units_returned'], audit.metadata['units_already_returned']),
+                         ([b.pk], [a.pk]))
+
+    def test_a_plain_return_then_a_cancellation_changes_no_count(self):
+        from store import stock_unit_services as units
+
+        a, = self.receive(self.row('F2LXK1ONE01', IMEI_A))
+        order = self.web_order((self.phone, 1))
+        units.return_unit(a, reason='Vuelve antes de entregar', actor=self.manager)
+        self.assertEqual(self.quantity(), 1)
+
+        self.assertEqual(self.post_cancel(order).status_code, 200)
+
+        self.assertEqual(self.quantity(), 1)
+        self.assert_invariant()
+        self.assertFalse(self.returns(order).filter(product=self.phone).exists())
+
+    def test_a_device_returned_from_another_order_is_not_counted(self):
+        from store import stock_unit_services as units
+
+        self.receive(self.row('F2LXK1ONE01', IMEI_A), self.row('F2LXK1TWO02', IMEI_B))
+        first = self.web_order((self.phone, 1))
+        second = self.web_order((self.phone, 1))
+        units.return_unit(StockUnit.objects.get(order=first), reason='Vuelve', actor=self.manager)
+        theirs = StockUnit.objects.get(order=second)
+
+        self.assertEqual(self.post_cancel(second).status_code, 200)
+
+        theirs.refresh_from_db()
+        self.assertEqual((theirs.status, theirs.order_id), ('available', None))
+        self.assertEqual(self.returns(second).get().metadata['unit_ids'], [theirs.pk])
+        self.assertEqual(AdminAuditLog.objects.get(action='order_cancelled').metadata['units_already_returned'], [])
+        self.assertEqual(self.quantity(), 2)
+        self.assert_invariant()
+
     def test_a_line_that_was_short_at_payment_has_nothing_to_give_back(self):
         _m7_stock(self.branch_a, self.cable, 1)
         order = self.web_order((self.cable, 3))                       # the exit was skipped: shortfall
