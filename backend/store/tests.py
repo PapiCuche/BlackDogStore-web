@@ -17915,6 +17915,24 @@ class Phase4ApiTest(TestCase):
         self.assertEqual(Decimal(summary['paid_amount']), Decimal('250.00'))
         self.assertIsNotNone(summary['last_purchase_at'])
 
+    def test_a_cancelled_order_is_not_a_purchase(self):
+        """ORDER-CANCEL-01: a cancelled order keeps `paid=True` — the money was taken — and is not a sale."""
+        paid = _p3_order(self.a, total=Decimal('250.00'))
+        paid.customer = self.customer_a
+        paid.save(update_fields=['customer'])
+        cancelled = _p3_order(self.a, total=Decimal('999.00'))
+        cancelled.customer = self.customer_a
+        cancelled.status = Order.Status.CANCELLED
+        cancelled.paid_at = paid.paid_at + timedelta(days=1)
+        cancelled.save(update_fields=['customer', 'status', 'paid_at'])
+
+        summary = self._as(self.manager_a).get(f'/api/admin/customers/{self.customer_a.pk}/').data['summary']
+
+        self.assertEqual(summary['orders_total'], 2)
+        self.assertEqual(summary['paid_orders'], 1)
+        self.assertEqual(Decimal(summary['paid_amount']), Decimal('250.00'))
+        self.assertEqual(summary['last_purchase_at'], paid.paid_at)
+
     def test_the_history_carries_no_payment_internals(self):
         order = _p3_order(self.a)
         order.customer = self.customer_a

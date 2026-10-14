@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection
-from django.test import TransactionTestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -168,6 +168,10 @@ class WhichOrdersTest(_Base):
         self.assertEqual(self.post_cancel(order, client=client).status_code, 403)
         self.assertFalse(self.detail(order, client=client)['can_cancel'])
         self.assertEqual(Order.objects.get(pk=order.pk).status, 'paid')
+        # Why it could not be cancelled is said to whoever could cancel it.
+        sent = self.web_order(fulfillment_status='shipped')
+        self.assertEqual(self.detail(sent, client=client)['cancel_blockers'], [])
+        self.assertEqual([b['code'] for b in self.detail(sent)['cancel_blockers']], ['goods_left'])
 
     def test_the_reason_is_required_and_bounded(self):
         order = self.web_order()
@@ -181,6 +185,81 @@ class WhichOrdersTest(_Base):
         response = self.post_cancel(order, reason='  Error  ')                  # five characters, trimmed
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(OrderCancellation.objects.get(order=order).reason, 'Error')
+
+
+class GoodsThatLeftTest(_Base):
+    """
+    «Has not left» is about the order's history, not its current label. Moving
+    an order back from sent or delivered does not bring the goods back.
+    """
+
+    def move(self, order, *states):
+        for state in states:
+            fulfillment.change_fulfillment_status(
+                order=Order.objects.get(pk=order.pk), new_status=state, actor=self.manager, company=self.company)
+
+    def test_a_device_that_left_does_not_come_back_by_moving_the_order_backwards(self):
+        self.receive(self.row('F2LXK1ONE01', IMEI_A), self.row('F2LXK1TWO02', IMEI_B))
+        order = self.web_order((self.phone, 1))
+        picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
+        self.move(order, 'delivered', 'preparing')
+        unit = StockUnit.objects.get(order=order)
+
+        response = self.post_cancel(order)
+
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'goods_left'), response.content)
+        unit.refresh_from_db()
+        self.assertEqual((unit.status, unit.order_id), ('sold', order.pk))
+        self.assertEqual(self.quantity(), 1)
+        self.assertTrue(OrderUnit.objects.get(order=order).left_at)
+        self.assertFalse(self.returns(order).exists())
+        body = self.detail(order)
+        self.assertFalse(body['can_cancel'])
+        self.assertEqual([b['code'] for b in body['cancel_blockers']], ['goods_left'])
+
+    def test_a_device_stamped_as_gone_is_enough_even_without_the_audit_trail(self):
+        """A device that left before moves were audited (migration 0116 copied those) still left."""
+        self.receive(self.row('F2LXK1ONE01', IMEI_A))
+        order = self.web_order((self.phone, 1))
+        picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
+        OrderUnit.objects.filter(order=order).update(left_at=timezone.now())
+        self.assertFalse(AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').exists())
+
+        self.assertEqual(self.post_cancel(order).json()['code'], 'goods_left')
+        self.assertEqual(self.quantity(), 0)
+
+    def test_a_delivered_order_relabelled_cancelado_operativo_is_not_cancellable(self):
+        order = self.web_order((self.cable, 3))
+        self.move(order, 'delivered', 'cancelled')
+
+        response = self.post_cancel(order)
+
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'goods_left'))
+        self.assertEqual(self.cable_stock(), 17)
+        self.assertEqual(Order.objects.get(pk=order.pk).status, 'paid')
+
+    def test_a_sent_order_moved_back_is_not_cancellable_either(self):
+        order = self.web_order((self.cable, 3))
+        self.move(order, 'shipped', 'pending')
+        self.assertEqual(self.post_cancel(order).json()['code'], 'goods_left')
+        self.assertEqual(self.cable_stock(), 17)
+
+    def test_an_order_moved_back_after_ready_for_pickup_only_can_still_be_cancelled(self):
+        order = self.web_order((self.cable, 3))
+        self.move(order, 'ready_for_pickup', 'pending', 'cancelled')
+
+        self.assertEqual(self.post_cancel(order).status_code, 200)
+        self.assertEqual(self.cable_stock(), 20)
+
+    def test_a_shipping_date_written_on_the_delivery_counts_as_having_left(self):
+        from store.models import OrderDelivery
+
+        order = self.web_order((self.cable, 3))
+        OrderDelivery.objects.update_or_create(
+            order=order, defaults={'company': self.company, 'shipped_at': timezone.now()})
+
+        self.assertEqual(self.post_cancel(order).json()['code'], 'goods_left')
+        self.assertEqual(self.cable_stock(), 17)
 
 
 # -- D2: the stock ------------------------------------------------------------------
@@ -230,6 +309,28 @@ class StockComesBackOnceTest(_Base):
         self.assertEqual((device_line.quantity, device_line.metadata['unit_ids']), (1, [sold.pk]))
         self.assertEqual(self.returns(order).get(product=self.cable).quantity, 1)
         self.assertEqual(self.cable_stock(), 20)
+
+    def test_a_device_given_back_before_the_cancellation_is_not_restored_twice(self):
+        from store import stock_unit_services as units
+
+        self.receive(self.row('F2LXK1ONE01', IMEI_A), self.row('F2LXK1TWO02', IMEI_B))
+        order = self.web_order((self.phone, 2))
+        first, second = StockUnit.objects.filter(order=order).order_by('pk')
+        units.return_unit(first, reason='Vuelve antes de entregar', actor=self.manager)
+        self.assertEqual(self.quantity(), 1)
+
+        response = self.post_cancel(order)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.quantity(), 2)
+        self.assert_invariant()
+        back = self.returns(order).get()
+        self.assertEqual(back.metadata['unit_ids'], [second.pk])
+        second.refresh_from_db()
+        self.assertEqual((second.status, second.order_id), ('available', None))
+        audit = AdminAuditLog.objects.get(action='order_cancelled')
+        self.assertEqual(audit.metadata['units_returned'], [second.pk])
+        self.assertEqual(audit.metadata['units_already_returned'], [first.pk])
 
     def test_a_line_that_was_short_at_payment_has_nothing_to_give_back(self):
         _m7_stock(self.branch_a, self.cable, 1)
@@ -343,6 +444,42 @@ class PapersTest(_Base):
         audit = AdminAuditLog.objects.get(action='order_cancelled')
         self.assertTrue(audit.metadata['fiscal_pending'])
         self.assertIn('B001-12', audit.metadata['fiscal_document'])
+
+    def test_a_boleta_is_not_issued_for_an_order_cancelled_meanwhile(self):
+        from store.fiscal_services import FiscalError, get_or_create_fiscal_document
+
+        order = self.web_order(
+            receipt_type='boleta', document_type='dni', document_number='40404040',
+            subtotal_amount=Decimal('147.00'), taxable_amount=Decimal('124.58'), tax_amount=Decimal('22.42'),
+            tax_rate=Decimal('0.18'), tax_treatment='taxed', currency='PEN')
+        series = FiscalSeries.objects.create(
+            company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001')
+        stale = Order.objects.get(pk=order.pk)                          # read before the cancellation
+        self.post_cancel(order)
+
+        with self.assertRaises(FiscalError) as refused:
+            get_or_create_fiscal_document(stale)
+
+        self.assertIn('cancelado', str(refused.exception))
+        self.assertFalse(FiscalDocument.objects.filter(order=order).exists())
+        series.refresh_from_db()
+        self.assertEqual(series.next_number, 1)                                    # no number spent
+
+    def test_a_sales_note_is_not_issued_for_an_order_cancelled_meanwhile(self):
+        from store.models import InternalSequence
+        from store.sales_note_services import SalesNoteError, get_or_create_sales_note
+
+        order = self.web_order()
+        stale = Order.objects.get(pk=order.pk)
+        self.post_cancel(order)
+        sequences = list(InternalSequence.objects.values())
+
+        with self.assertRaises(SalesNoteError) as refused:
+            get_or_create_sales_note(stale, actor=self.manager)
+
+        self.assertIn('cancelado', str(refused.exception))
+        self.assertFalse(SalesNote.objects.filter(order=order).exists())
+        self.assertEqual(list(InternalSequence.objects.values()), sequences)            # no NV- number spent
 
     def test_a_rejected_document_leaves_nothing_pending(self):
         order = self.web_order()
@@ -476,7 +613,93 @@ class PanelAndAuditTest(_Base):
         self.assertFalse(OrderCancellation.objects.exists())
 
 
+# -- the pilot's legacy bridge ------------------------------------------------------
+
+class LegacyBridgeTest(TestCase):
+    """On the pilot, without a Membership, the legacy role decides: warehouse staff do not cancel sales."""
+
+    def setUp(self):
+        from store.tests import _p60_paid_order, _p60_product, _p60_users
+
+        cache.clear()
+        self.users = _p60_users()
+        product = _p60_product(name='Cable legacy', inventory=10, price='49.00')
+        self.orders = []
+        for _ in range(4):
+            order = _p60_paid_order(product, quantity=1)
+            inventory.record_sale_stock_movements(order)
+            self.orders.append(order)
+
+    def cancel(self, role, order):
+        client = APIClient()
+        client.force_authenticate(self.users[role])
+        return client.post(f'/api/admin/orders/{order.pk}/cancel/', {'reason': REASON}, format='json')
+
+    def test_inventory_and_customer_cannot_cancel(self):
+        for role, order in (('inventory', self.orders[0]), ('customer', self.orders[1])):
+            with self.subTest(role):
+                self.assertEqual(self.cancel(role, order).status_code, 403)
+                self.assertEqual(Order.objects.get(pk=order.pk).status, 'paid')
+
+    def test_sales_and_admin_can(self):
+        for role, order in (('sales', self.orders[2]), ('admin', self.orders[3])):
+            with self.subTest(role):
+                response = self.cancel(role, order)
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertEqual(Order.objects.get(pk=order.pk).status, 'cancelled')
+
+
 # -- a payment that arrives afterwards ---------------------------------------------
+
+def _late_charge(attempt, unique='d' * 32):
+    """The payment pipeline's own decision for an authorised charge of `attempt`."""
+    from store import views
+
+    result = SimpleNamespace(signed=True, response_code='00', pay_method='CARD', authorization_code='A1',
+                             reference_number='R1', unique_id=unique)
+    return views.IzipayNotificationView()._confirm(PaymentTransaction.objects.get(pk=attempt.pk), result)
+
+
+class ALateChargeInEitherOrderTest(_Base):
+    """The two orders of arrival of a cancellation and a second charge, each pinned."""
+
+    def setUp(self):
+        super().setUp()
+        self.order = self.web_order()
+        self.attempt = PaymentTransaction.objects.create(
+            order=self.order, provider='izipay', transaction_id='LATE0002', order_number='LATE0002',
+            amount=self.order.total, currency='PEN', environment='test')
+
+    def test_cancelled_first_the_charge_is_filed_as_money_to_give_back_for_a_cancelled_order(self):
+        self.post_cancel(self.order)
+
+        with self.assertLogs('store.views', level='ERROR') as logs:
+            self.assertEqual(_late_charge(self.attempt), 'duplicate')
+
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.status, PaymentTransaction.Status.DUPLICATE)
+        self.assertIn('cancelado', self.attempt.failure_reason)
+        self.assertEqual(AdminAuditLog.objects.get(action='payment_duplicate').metadata['order_status'], 'cancelled')
+        text = '\n'.join(logs.output)
+        self.assertIn('cancelado', text)
+        self.assertNotIn('ya estaba pagado', text)
+        self.assertEqual((Order.objects.get(pk=self.order.pk).status, self.returns(self.order).count()),
+                         ('cancelled', 1))
+
+    def test_charged_first_it_is_a_second_charge_and_the_cancellation_still_happens_once(self):
+        with self.assertLogs('store.views', level='ERROR'):
+            self.assertEqual(_late_charge(self.attempt), 'duplicate')
+        self.attempt.refresh_from_db()
+        self.assertIn('ya estaba pagado', self.attempt.failure_reason)
+        self.assertNotIn('order_status', AdminAuditLog.objects.get(action='payment_duplicate').metadata)
+
+        self.assertEqual(self.post_cancel(self.order).status_code, 200)
+
+        self.assertEqual((Order.objects.get(pk=self.order.pk).status, self.returns(self.order).count()),
+                         ('cancelled', 1))
+        self.assertEqual(self.cable_stock(), 20)
+
+
 
 class APaymentAfterTheCancellationTest(PaymentBase):
     """A second charge for a cancelled order is evidence to give back, never a payment of it."""
@@ -611,6 +834,12 @@ class CancelAtTheSameInstantTest(TransactionTestCase):
             self.assertFalse(StockMovement.objects.filter(movement_type=RETURN).exists())
 
     def test_a_cancellation_and_a_late_charge_at_once_keep_the_order_cancelled(self):
+        """
+        Whichever commits first, the order ends cancelled and paid, restored
+        exactly once, and the charge is ONE duplicate whose reason and audit
+        agree about what the order was when it arrived. Each order of arrival
+        is pinned deterministically in `ALateChargeInEitherOrderTest`.
+        """
         from store import views
 
         attempt = PaymentTransaction.objects.create(
@@ -631,4 +860,9 @@ class CancelAtTheSameInstantTest(TransactionTestCase):
         attempt.refresh_from_db()
         self.assertEqual(attempt.status, PaymentTransaction.Status.DUPLICATE)
         self.assertEqual(StockMovement.objects.filter(movement_type='sale_exit').count(), 1)
+        self.assertEqual(StockMovement.objects.filter(movement_type=RETURN).count(), 1)
         self.assertEqual(self.stock(), 10)
+        filed = AdminAuditLog.objects.get(action='payment_duplicate')
+        after_cancel = filed.metadata.get('order_status') == 'cancelled'
+        self.assertEqual('cancelado' in attempt.failure_reason, after_cancel, attempt.failure_reason)
+        self.assertEqual('ya estaba pagado' in attempt.failure_reason, not after_cancel)

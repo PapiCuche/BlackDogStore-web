@@ -28,10 +28,17 @@ const dangerButtonClass =
 
 type Props = {
   order: AdminOrderDetail;
+  /** Si quien mira tiene la autoridad para cancelar pedidos en esta empresa. */
+  mayCancel: boolean;
   onCancelled: (order: AdminOrderDetail) => void;
 };
 
-export function OrderCancelPanel({ order, onCancelled }: Props) {
+/** El motivo como lo guarda el servidor: sin espacios de sobra, también dentro. */
+export function normaliseReason(text: string): string {
+  return text.split(/\s+/).filter(Boolean).join(" ");
+}
+
+export function OrderCancelPanel({ order, mayCancel, onCancelled }: Props) {
   const [open, setOpen] = useState(false);
 
   if (order.cancellation) {
@@ -40,8 +47,8 @@ export function OrderCancelPanel({ order, onCancelled }: Props) {
   const blockers = order.cancel_blockers ?? [];
   if (!order.can_cancel) {
     // Sólo se explica a quien podría cancelar un pedido pagado: a un pedido sin
-    // pagar no le falta nada de esto.
-    if (!order.paid || blockers.length === 0) return null;
+    // pagar no le falta nada de esto, y a quien sólo mira no le sirve.
+    if (!mayCancel || !order.paid || blockers.length === 0) return null;
     return (
       <p className="text-xs text-muted" data-testid="order-cancel-blockers">
         No se puede cancelar: {blockers.map((blocker) => blocker.detail).join(" ")}
@@ -81,7 +88,7 @@ export function OrderCancelDialog({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ready = reason.trim().length >= CANCEL_REASON_MIN;
+  const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN;
 
   useEffect(() => {
     // Entra por el motivo: es lo primero que hay que escribir, y Enter en un
@@ -117,7 +124,7 @@ export function OrderCancelDialog({
     setBusy(true);
     setError(null);
     try {
-      onCancelled(await cancelAdminOrder(order.id, reason.trim()));
+      onCancelled(await cancelAdminOrder(order.id, normaliseReason(reason)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cancelar el pedido.");
       setBusy(false);

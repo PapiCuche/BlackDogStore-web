@@ -53,7 +53,7 @@ function order(overrides: Record<string, unknown> = {}) {
 
 function openDialog(props: Record<string, unknown> = {}) {
   const onCancelled = jest.fn();
-  render(<OrderCancelPanel order={order(props)} onCancelled={onCancelled} />);
+  render(<OrderCancelPanel order={order(props)} mayCancel onCancelled={onCancelled} />);
   fireEvent.click(screen.getByRole('button', { name: 'Cancelar pedido' }));
   return { onCancelled, dialog: screen.getByRole('dialog') };
 }
@@ -64,16 +64,17 @@ beforeEach(() => {
 
 describe('OrderCancelPanel · el botón', () => {
   it('sólo aparece si el servidor dice que se puede', () => {
-    const { rerender } = render(<OrderCancelPanel order={order()} onCancelled={jest.fn()} />);
+    const { rerender } = render(<OrderCancelPanel order={order()} mayCancel onCancelled={jest.fn()} />);
     expect(screen.getByRole('button', { name: 'Cancelar pedido' })).toBeInTheDocument();
 
-    rerender(<OrderCancelPanel order={order({ can_cancel: false })} onCancelled={jest.fn()} />);
+    rerender(<OrderCancelPanel order={order({ can_cancel: false })} mayCancel onCancelled={jest.fn()} />);
     expect(screen.queryByRole('button', { name: 'Cancelar pedido' })).toBeNull();
   });
 
   it('cuando no se puede, dice por qué con las palabras del servidor', () => {
     render(
       <OrderCancelPanel
+        mayCancel
         order={order({
           can_cancel: false, fulfillment_status: 'shipped',
           cancel_blockers: [{ code: 'goods_left', detail: 'El pedido ya salió: requiere devolución, no cancelación.' }],
@@ -83,6 +84,20 @@ describe('OrderCancelPanel · el botón', () => {
     );
     expect(screen.queryByRole('button', { name: 'Cancelar pedido' })).toBeNull();
     expect(screen.getByTestId('order-cancel-blockers')).toHaveTextContent('requiere devolución');
+  });
+
+  it('a quien no puede cancelar no le explica por qué no se puede', () => {
+    const { container } = render(
+      <OrderCancelPanel
+        mayCancel={false}
+        order={order({
+          can_cancel: false, fulfillment_status: 'shipped',
+          cancel_blockers: [{ code: 'goods_left', detail: 'El pedido ya salió: requiere devolución.' }],
+        })}
+        onCancelled={jest.fn()}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('a un pedido sin pagar no le explica nada', () => {
@@ -127,6 +142,11 @@ describe('OrderCancelPanel · el diálogo', () => {
     expect(mockCancel).not.toHaveBeenCalled();
     fireEvent.change(reason, { target: { value: 'Error' } });
     expect(confirm).toBeEnabled();
+    // Cuenta como el servidor: los espacios de dentro se juntan en uno.
+    fireEvent.change(reason, { target: { value: 'ab     c' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(reason, { target: { value: 'a\n b \n c' } });
+    expect(confirm).toBeEnabled();
   });
 
   it('Esc lo cierra sin cancelar nada', () => {
@@ -169,6 +189,14 @@ describe('OrderCancelPanel · el diálogo', () => {
 
     await waitFor(() => expect(onCancelled).toHaveBeenCalledWith(updated));
     expect(mockCancel).toHaveBeenCalledWith(42, 'Cliente desistió');
+  });
+
+  it('manda el motivo como lo guardará el servidor', async () => {
+    mockCancel.mockResolvedValue(order({ status: 'cancelled', cancellation: CANCELLATION }));
+    const { dialog } = openDialog();
+    fireEvent.change(screen.getByLabelText('Motivo de la cancelación'), { target: { value: ' Cliente\n\n  desistió ' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Cancelar pedido' }).find((b) => dialog.contains(b))!);
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Cliente desistió'));
   });
 
   it('si el servidor se niega, lo dice y el diálogo sigue abierto', async () => {

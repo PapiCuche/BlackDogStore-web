@@ -652,8 +652,9 @@ class _SignedNotificationMixin:
                     metadata=metadata, company=order.company,
                 )
                 logger.error(
-                    'Cobro duplicado: el pedido %s ya estaba pagado y la pasarela cobró otra vez (intento %s). '
-                    'Hay que devolverlo desde el panel de la pasarela.', order.pk, attempt.pk,
+                    'Cobro duplicado: el pedido %s %s y la pasarela cobró otra vez (intento %s). '
+                    'Hay que devolverlo desde el panel de la pasarela.',
+                    order.pk, 'está cancelado' if cancelled else 'ya estaba pagado', attempt.pk,
                 )
                 return 'duplicate'
 

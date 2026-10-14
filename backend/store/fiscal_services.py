@@ -518,6 +518,20 @@ def _reserve(series: FiscalSeries) -> int:
     return number
 
 
+def _locked_paid_order(order: Order) -> None:
+    current = (
+        Order.objects.select_for_update(of=('self',)).filter(pk=order.pk)
+        .values_list('status', 'paid').first()
+    )
+    if current is None or current[0] != Order.Status.PAID or not current[1]:
+        detail = (
+            'El pedido está cancelado: no se emite su comprobante.'
+            if current is not None and current[0] == Order.Status.CANCELLED
+            else 'Sólo se emite comprobante de una venta pagada.'
+        )
+        raise FiscalError(detail)
+
+
 def original_fiscal_documents(order: Order):
     """Original receipts for this sale; correcting notes have their own routes."""
     return FiscalDocument.objects.filter(
@@ -607,6 +621,11 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
 
     try:
         with transaction.atomic():
+            # ORDER-CANCEL-01. The order first, then the series: the lock order
+            # the sales note uses. A cancellation takes the same order lock, so
+            # the status read here is the one that stands — the `order` handed
+            # in may have been read before somebody cancelled it.
+            _locked_paid_order(order)
             number = _reserve(series)
             data = _order_to_invoice_data(order, series, number)
             # Se traduce a `FiscalError` para que quien llame tenga UN tipo de

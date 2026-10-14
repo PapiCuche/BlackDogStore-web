@@ -102,6 +102,14 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
         existing = SalesNote.objects.filter(order=locked_order).first()
         if existing:
             return existing, False
+        # ORDER-CANCEL-01: re-read under the lock. `order` may have been read
+        # before somebody cancelled it, and a number is spent once allocated.
+        if not locked_order.paid or locked_order.status != Order.Status.PAID:
+            raise SalesNoteError(
+                'El pedido está cancelado: no se emite nota de venta.'
+                if locked_order.status == Order.Status.CANCELLED
+                else 'Solo se puede emitir una nota de venta interna para órdenes pagadas.'
+            )
 
         sequence = _sequences.resolve_sequence_for_order(locked_order)
         value, number = _sequences.allocate(sequence)

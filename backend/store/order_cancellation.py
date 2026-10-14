@@ -45,6 +45,7 @@ LEGACY_CANCEL_ROLES = frozenset([
 
 #: The states in which the goods are still in the shop (D1). «Cancelado
 #: operativo» is one of them: that old label moved nothing and sent nothing.
+#: The CURRENT label is not enough on its own — see `ever_left`.
 GOODS_IN_THE_SHOP = frozenset([
     Order.FulfillmentStatus.PENDING,
     Order.FulfillmentStatus.CONFIRMED,
@@ -101,11 +102,39 @@ def blockers(order) -> list[dict]:
     if order.sales_channel == SalesChannel.POS:
         found.append(_blocker(
             'pos_sale', 'Es una venta de mostrador (POS): no se cancela desde el pedido.'))
-    if order.fulfillment_status not in GOODS_IN_THE_SHOP:
+    if order.fulfillment_status not in GOODS_IN_THE_SHOP or ever_left(order):
         found.append(_blocker(
             'goods_left',
-            'El pedido ya salió de la tienda (enviado o entregado): requiere devolución, no cancelación.'))
+            'El pedido ya salió de la tienda (fue enviado o entregado): requiere devolución, no cancelación.'))
     return found
+
+
+#: The fulfilment states in which the goods leave the shop.
+LEAVING = (Order.FulfillmentStatus.SHIPPED, Order.FulfillmentStatus.DELIVERED)
+
+
+def ever_left(order) -> bool:
+    """
+    Whether the goods of `order` have EVER left the shop, whatever its status says now.
+
+    Moving an order back from «enviado» or «entregado» changes a label; the
+    goods are still gone. Three records say it, and any of them is enough:
+
+      * a device identified for the order was stamped as gone (`OrderUnit.left_at`);
+      * the order was ever moved to sent or delivered — every such move goes
+        through `change_fulfillment_status`, which audits the new status;
+      * somebody wrote the date it was shipped on its delivery record.
+    """
+    from .models import OrderDelivery, OrderUnit
+
+    if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exists():
+        return True
+    if AdminAuditLog.objects.filter(
+        action='order_fulfillment_status_changed', target_type='order', target_id=str(order.pk),
+        metadata__new_fulfillment_status__in=list(LEAVING),
+    ).exists():
+        return True
+    return OrderDelivery.objects.filter(order_id=order.pk, shipped_at__isnull=False).exists()
 
 
 def _blocker(code, detail) -> dict:
@@ -159,7 +188,7 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
             raise OrderCancelError('already_cancelled', 'Este pedido ya está cancelado.')
 
         previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
-        movements, units_returned = _restore_stock(locked, actor, reason, request)
+        movements, units_returned, already_returned = _restore_stock(locked, actor, reason, request)
         note_voided = _void_sales_note(locked, actor, reason)
         document = live_fiscal_document(locked)
         label = fiscal_label(document)
@@ -186,6 +215,8 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
                 'new_fulfillment_status': locked.fulfillment_status,
                 'movements': [movement.pk for movement in movements],
                 'units_returned': units_returned,
+                # Devices of this sale given back before (a return): not restored twice.
+                'units_already_returned': already_returned,
                 'fiscal_pending': document is not None,
                 'fiscal_document': label,
                 'sales_note_voided': note_voided,
@@ -206,7 +237,7 @@ def _restore_stock(order, actor, reason, request):
     from . import inventory_services as inventory
     from . import unit_identification
 
-    movements, units_returned = [], []
+    movements, units_returned, already_returned = [], [], []
     exits = (
         StockMovement.objects
         .filter(order=order, movement_type=StockMovement.SALE_EXIT)
@@ -225,17 +256,31 @@ def _restore_stock(order, actor, reason, request):
                 quantity=sale_exit.quantity, metadata=metadata, **common))
             continue
 
+        # A device of this sale already given back (`stock_unit_services.return_unit`,
+        # which writes a `return_entry` naming the order) is back on the shelf:
+        # it is not restored a second time.
+        given_back = [
+            unit_id for metadata in StockMovement.objects.filter(
+                movement_type=StockMovement.RETURN_ENTRY, product_id=sale_exit.product_id,
+                company_id=order.company_id, metadata__returned_from_order=order.pk,
+            ).values_list('metadata', flat=True)
+            for unit_id in (metadata or {}).get('unit_ids', [])
+        ]
+        already_returned.extend(given_back)
+        expected = sale_exit.quantity - len(given_back)
+        if expected <= 0:
+            continue
         unit_ids = list(
             StockUnit.objects
             .filter(order=order, product_id=sale_exit.product_id, branch=sale_exit.branch,
                     status=StockUnit.Status.SOLD)
             .exclude(pk__in=units_returned)
-            .order_by('pk').values_list('pk', flat=True)[:sale_exit.quantity]
+            .order_by('pk').values_list('pk', flat=True)[:expected]
         )
-        if len(unit_ids) != sale_exit.quantity:
+        if len(unit_ids) != expected:
             raise OrderCancelError(
                 'stock_mismatch',
-                f'No se encuentran los {sale_exit.quantity} equipo(s) de «{sale_exit.product.name}» '
+                f'No se encuentran los {expected} equipo(s) de «{sale_exit.product.name}» '
                 'vendidos a este pedido. Revisa el inventario antes de cancelarlo.')
         for unit_id in unit_ids:
             # The unit is locked by the movement, after the shelf row.
@@ -247,7 +292,7 @@ def _restore_stock(order, actor, reason, request):
             unit = StockUnit.objects.get(pk=unit_id)
             unit_identification.released_by_return(unit, order.pk, actor=actor, request=request)
             units_returned.append(unit_id)
-    return movements, units_returned
+    return movements, units_returned, already_returned
 
 
 def _void_sales_note(order, actor, reason) -> bool:

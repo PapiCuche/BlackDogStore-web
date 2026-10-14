@@ -1172,12 +1172,14 @@ def _order_detail_payload(request, order, company):
     if cancelling.is_cancelled(order):
         transitions = []
     cancel_blockers = cancelling.blockers(order)
+    may_cancel = cancelling.may_cancel(request.user, company)
     return {
         **data,
         # ORDER-CANCEL-01: whether THIS caller may cancel it now, why not, and
         # what the cancellation did once it happened. Server-decided.
-        'can_cancel': not cancel_blockers and cancelling.may_cancel(request.user, company),
-        'cancel_blockers': cancel_blockers,
+        'can_cancel': not cancel_blockers and may_cancel,
+        # Why not is said to whoever could cancel it; to a reader it is noise.
+        'cancel_blockers': cancel_blockers if may_cancel else [],
         'cancellation': cancelling.payload(order),
         # What the dialog warns about before anyone confirms: the boleta or
         # factura a cancellation would leave pending its credit note.

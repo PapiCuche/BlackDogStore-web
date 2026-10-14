@@ -169,7 +169,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           {/* ORDER-CANCEL-01: el botón sólo si el servidor dice que se puede;
               una vez cancelado, quién, cuándo, por qué y qué hizo. */}
           <div className="mt-4">
-            <OrderCancelPanel order={order} onCancelled={setOrder} />
+            <OrderCancelPanel
+              order={order}
+              mayCancel={access.can("sales.orders.manage", ["sales", "admin", "superadmin"])}
+              onCancelled={setOrder}
+            />
           </div>
         </div>
 
