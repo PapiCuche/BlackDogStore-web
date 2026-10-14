@@ -32,8 +32,10 @@ Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código
   `order_cancel_return` (con el pedido) a la misma sucursal, por `create_stock_movement` y sus
   bloqueos; los equipos con serie vendidos al pedido vuelven a «disponible», uno por línea, y
   su `OrderUnit` se suelta (`released_by_return`). Una línea que no descontó stock al pagar
-  (faltante) no tiene nada que devolver, y un equipo ya devuelto con `return_unit` antes de
-  cancelar (su `return_entry` nombra el pedido) no se repone dos veces.
+  (faltante) no tiene nada que devolver. Vuelve todo equipo que siga vendido al pedido (el
+  apartado al pagar, el que lo sustituyó al entregar o el que salió tras una devolución); un
+  equipo ya devuelto con `return_unit` (su `return_entry` nombra el pedido) sólo se cuenta,
+  no se repone dos veces, y uno devuelto de otro pedido no cuenta.
 - **D3 · Permiso.** `sales.orders.manage` con el alcance de empresa y sucursal de las demás
   vistas de pedidos (fuera de alcance, 404). Sin capacidad nueva ni cambios de rol. En el
   puente legacy del piloto: ventas, administrador y superadministrador (no inventario, como

@@ -28,7 +28,8 @@ En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (a
   anterior.
 - No se emite boleta/factura ni nota de venta interna de un pedido que se canceló mientras
   tanto; ninguno gasta su número.
-- Un equipo devuelto antes de cancelar no se repone dos veces.
+- Un equipo devuelto antes de cancelar no se repone dos veces, y el que se entregó en su
+  lugar vuelve al estante: se repone todo equipo que siga vendido al pedido.
 - El resumen de un cliente (pedidos e importe pagados, última compra) ya no cuenta los
   pedidos cancelados.
 
