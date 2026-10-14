@@ -491,6 +491,15 @@ class PreviewByWorkbookTest(_Base):
         self.assertEqual(self.apply(body['id']).status_code, 200)
         self.assertEqual(len(self.gallery(self.cable)), 1)
 
+    def test_a_row_whose_code_and_barcode_are_two_products_is_refused_and_not_assigned(self):
+        body = self.staged([picture('a.png', ONE)], book=image_book(
+            [['COD-A2', '7751234567892', '', 'a.png']],
+            headers=('Código', 'Código de barras', 'Imagen principal', 'Imágenes')))
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data'].get('product_id')), ('skip', None))
+        self.assertIn('son de productos distintos', row['warnings'][0])
+        self.assertEqual(StorefrontImage.objects.count(), 0)
+
     def test_a_row_whose_code_two_products_share_once_compared_is_refused_and_not_assigned(self):
         self.product('Minúscula', 'abcd')
         self.product('Mayúscula', 'ABCD')
