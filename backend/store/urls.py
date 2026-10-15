@@ -43,7 +43,7 @@ from .admin_views import (
     AdminProductBulkVisibilityView,
     AdminCategoryDetailView,
     AdminCategoryListView,
-    AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView,
+    AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView, AdminOrderCancelView,
     AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
     AdminOrderReprocessStockExitView, AdminOrderRiskReviewView,
@@ -168,6 +168,9 @@ from .access_views import (
     CapabilityCatalogView, InternalDashboardView, MyCompanyAccessView,
 )
 from django.urls import path, include
+from .sales_note_control_views import (
+    AdminSalesNoteDetailView, AdminSalesNoteListView, AdminSalesNoteRemarkView, AdminSalesNoteVoidView,
+)
 
 router = DefaultRouter()
 router.register('categories', CategoryViewSet, basename='category')
@@ -273,6 +276,7 @@ urlpatterns = [
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
+    path('admin/orders/<int:pk>/cancel/', AdminOrderCancelView.as_view(), name='admin-order-cancel'),
     # SERIAL-PICK-01: the devices of a web order, identified when it is handed over.
     path('admin/orders/<int:pk>/units/', AdminOrderUnitsView.as_view(), name='admin-order-units'),
     path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),
@@ -314,6 +318,11 @@ urlpatterns = [
     path('admin/fiscal-documents/<int:pk>/cdr/', AdminFiscalDocumentCdrView.as_view(), name='admin-fiscal-document-cdr'),
     path('admin/fiscal-documents/<int:pk>/pdf/', AdminFiscalDocumentPdfView.as_view(), name='admin-fiscal-document-pdf'),
     path('admin/orders/<int:pk>/sales-note/pdf/', AdminOrderSalesNotePdfView.as_view(), name='admin-order-sales-note-pdf'),
+    # SALES-NOTE-CONTROL-01 — issued notes: list, detail, the master's void, internal remarks.
+    path('admin/sales-notes/', AdminSalesNoteListView.as_view(), name='admin-sales-notes'),
+    path('admin/sales-notes/<int:pk>/', AdminSalesNoteDetailView.as_view(), name='admin-sales-note-detail'),
+    path('admin/sales-notes/<int:pk>/void/', AdminSalesNoteVoidView.as_view(), name='admin-sales-note-void'),
+    path('admin/sales-notes/<int:pk>/remarks/', AdminSalesNoteRemarkView.as_view(), name='admin-sales-note-remarks'),
 
     # --- Phase 2D: multi-branch inventory ---
     # The Phase 6.0 routes above keep their paths and their names; they gained a

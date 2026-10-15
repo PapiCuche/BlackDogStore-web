@@ -6,7 +6,7 @@ from rest_framework import serializers
 
 from .models import (
     Category, Product, Order, OrderItem, CartItem, Review, Coupon,
-    SalesNote, StockMovement,
+    SalesNote, SalesNoteRemark, StockMovement,
     Branch, Company, Membership,
     CompanyArea, CompanyRole, MembershipRoleAssignment,
     BranchStock, InventoryCount, InventoryCountItem,
@@ -915,6 +915,14 @@ class SalesNoteSerializer(serializers.ModelSerializer):
     )
     customer_name = serializers.CharField(source='order.customer_name', read_only=True)
     status_label = serializers.CharField(source='get_status_display', read_only=True)
+    # SALES-NOTE-CONTROL-01 — the void record, read-only like everything here.
+    is_void = serializers.SerializerMethodField()
+    voided_by_username = serializers.SerializerMethodField()
+    void_reason = serializers.SerializerMethodField()
+    void_reason_type_label = serializers.SerializerMethodField()
+    order_status = serializers.CharField(source='order.status', read_only=True)
+    branch_id = serializers.IntegerField(source='order.fulfillment_branch_id', read_only=True)
+    branch_name = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesNote
@@ -922,11 +930,47 @@ class SalesNoteSerializer(serializers.ModelSerializer):
             'id', 'order', 'number', 'status', 'status_label',
             'issued_at', 'created_at', 'created_by', 'created_by_username',
             'pdf_generated_at', 'order_total', 'customer_name',
+            'is_void', 'voided_at', 'voided_by_username', 'void_reason_type', 'void_reason_type_label',
+            'void_reason', 'order_status', 'branch_id', 'branch_name',
         ]
         read_only_fields = fields
 
     def get_created_by_username(self, obj):
         return obj.created_by.username if obj.created_by_id else None
+
+    def get_is_void(self, obj):
+        from .sales_note_services import is_void
+
+        return is_void(obj)
+
+    def get_voided_by_username(self, obj):
+        return obj.voided_by.username if obj.voided_by_id else None
+
+    def get_void_reason(self, obj):
+        # A note voided by an order cancellation before migration 0125 kept its
+        # reason only in `metadata`; it is read from there, never rewritten.
+        return obj.void_reason or (obj.metadata or {}).get('void_reason', '')
+
+    def get_void_reason_type_label(self, obj):
+        return obj.get_void_reason_type_display() if obj.void_reason_type else ''
+
+    def get_branch_name(self, obj):
+        branch = obj.order.fulfillment_branch
+        return branch.name if branch is not None else ''
+
+
+class SalesNoteRemarkSerializer(serializers.ModelSerializer):
+    """An internal remark. Append-only; never printed."""
+
+    author = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesNoteRemark
+        fields = ['id', 'text', 'author', 'created_at']
+        read_only_fields = fields
+
+    def get_author(self, obj):
+        return obj.author.username if obj.author_id else None
 
 
 # ---------------------------------------------------------------------------

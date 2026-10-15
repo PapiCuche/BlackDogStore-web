@@ -14,6 +14,85 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
+
+Pedido del propietario del 2026-10-14: «las primeras notas de venta fueron de prueba y el
+usuario Master necesita administrarlas». Lo que el código cumple:
+
+- **Quién.** «Master» es el master de plataforma (`tenancy.is_platform_admin`, hoy
+  `is_superuser`) actuando en la empresa que nombra (`?company=`); es la misma regla de la
+  consola de integraciones. No existe un rol ni una capacidad de empresa «Master», y no se
+  crea: un administrador de empresa con todas las capacidades recibe 403. Delegar la
+  anulación a una capacidad de empresa sería otra decisión del propietario.
+- **Qué es anular.** Marcar el documento interno: `status=void` más `voided_at`,
+  `voided_by`, `void_reason_type` (`prueba`/`error`/`otro`; `pedido_cancelado` sólo lo
+  escribe la cancelación) y `void_reason` (5–500). Un único escritor
+  (`sales_note_control.mark_void`) para las dos vías; bloqueo pedido → nota, el mismo orden
+  que la cancelación, así que las dos se esperan en lugar de competir.
+- **Qué NO es.** No es cancelar el pedido, revertir un pago, una devolución, una nota de
+  crédito ni una baja SUNAT. Nada de eso se toca: el pedido sigue pagado y los tableros, que
+  leen pedidos pagados y no notas, conservan el dinero cobrado. Ningún reporte cuenta notas;
+  la lista nueva las etiqueta (ANULADA) en vez de excluirlas.
+- **Inmutable.** Número, serie, ordinal, fecha de emisión, emisor, líneas, importes,
+  impuestos y pago. No hay ruta que los escriba (405) y el admin de Django es de sólo
+  lectura. El número no se reutiliza: la serie no retrocede y «Próximo número» sigue
+  bloqueado porque `has_issued` lee el contador, no las notas vivas.
+- **Observaciones.** Tabla aparte, sólo añadir (`save` rechaza actualizar, `delete` rechaza);
+  las añade el Master o quien tenga `sales.notes.manage` con el alcance de sucursal de los
+  pedidos. No se imprimen: la nota ya imprime las «Notas» del pedido (`order.notes`) y eso
+  no cambia.
+- **Notas existentes.** La migración no escribe datos y nada marca una nota como prueba por
+  su cuenta: el Master las anula una a una con su motivo.
+- **Una sola idea de «anulada».** La del papel (`sales_note_services.is_void`): el estado o
+  un pedido cancelado. El guardia de anular la usa, así que una nota que su PDF ya imprime
+  ANULADA responde 409.
+- **Observaciones, también en bloque.** El gestor por defecto rechaza `update` y `delete`
+  de un queryset; `_base_manager` queda el de Django para que borrar un usuario siga
+  poniendo `author` a NULL (SET_NULL, como `AdminAuditLog.actor`).
+- **`db_default`** en `void_reason` y `void_reason_type`: la regla del repositorio para
+  columnas nuevas, porque `0125` corre con la versión anterior sirviendo.
+
+### DEC-ORDER-CANCEL-01 · Cancelar un pedido pagado no es devolver el dinero
+
+Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código las cumple:
+
+- **D1 · Alcance.** Sólo pedidos EN LÍNEA con `status=paid` cuyos productos no han salido:
+  `pending`, `confirmed`, `preparing`, `ready_for_pickup` y también `cancelled` («Cancelado
+  operativo», que nunca movió nada). `shipped`/`delivered` se rechazan (409 `goods_left`, «ya
+  salió: requiere devolución», flujo futuro). **«No ha salido» se lee de la historia del
+  pedido, no sólo de su estado actual** (revisión, P1): también es `goods_left` si algún
+  equipo del pedido tiene `OrderUnit.left_at`, si el pedido pasó alguna vez a enviado o
+  entregado (registro `order_fulfillment_status_changed`) o si su entrega tiene
+  `shipped_at`. Devolver a «en preparación» o a «Cancelado operativo» un pedido entregado no
+  lo hace cancelable. Ventas de caja (409 `pos_sale`) y pedidos sin pagar (409 `not_paid`)
+  quedan fuera; estos últimos, para una fase posterior.
+- **D2 · Stock.** Siempre se repone, una vez: cada `sale_exit` del pedido vuelve con su propio
+  `order_cancel_return` (con el pedido) a la misma sucursal, por `create_stock_movement` y sus
+  bloqueos; los equipos con serie vendidos al pedido vuelven a «disponible», uno por línea, y
+  su `OrderUnit` se suelta (`released_by_return`). Una línea que no descontó stock al pagar
+  (faltante) no tiene nada que devolver. Vuelve todo equipo que siga vendido al pedido (el
+  apartado al pagar, el que lo sustituyó al entregar o el que salió tras una devolución); un
+  equipo ya devuelto con `return_unit` (su `return_entry` nombra el pedido) sólo se cuenta,
+  no se repone dos veces, y uno devuelto de otro pedido no cuenta.
+- **D3 · Permiso.** `sales.orders.manage` con el alcance de empresa y sucursal de las demás
+  vistas de pedidos (fuera de alcance, 404). Sin capacidad nueva ni cambios de rol. En el
+  puente legacy del piloto: ventas, administrador y superadministrador (no inventario, como
+  la regla histórica del despacho). Los motivos por los que no se puede cancelar sólo se
+  muestran a quien podría cancelar.
+- **D4 · Fiscal.** Una boleta/factura viva (01/03 no rechazada) se conserva intacta; la
+  cancelación procede y registra «nota de crédito / baja pendiente» (`fiscal_pending` y el
+  documento en texto), también en la auditoría y en el detalle. Nunca se emite una nota de
+  crédito ni una baja automáticamente. Emitir el comprobante bloquea el pedido antes de
+  reservar el correlativo (pedido, luego serie) y exige que siga PAGADO: no se emite sobre un
+  pedido cancelado mientras tanto. La nota de venta interna hace lo mismo antes de gastar
+  un número `NV-`.
+
+Además: `paid` se queda en verdadero y no se toca ningún `PaymentTransaction` ni la pasarela;
+el pago lee ese `paid` para archivar como `DUPLICATE` cualquier cobro posterior (con
+`order_status: cancelled` en `payment_duplicate`). Todo ocurre en una transacción con el
+pedido bloqueado primero; `change_fulfillment_status` toma el mismo bloqueo siempre. La
+`OneToOne` de `OrderCancellation` es la última barrera contra una segunda cancelación.
+
 ### DEC-DELIVERY-01 · La entrega es un registro propio JUNTO al pedido, y el flete es un dato
 
 Base de DELIVERY-01 (transportistas, libreta de direcciones, registro de entrega). Lo que el

@@ -249,7 +249,7 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
     """La nota de venta interna, para la térmica. Mismo contenido que su PDF de 80 mm."""
     from ..document_style import unit_identifiers
     from ..sales_note_services import build_sales_note_context
-    from ..sales_note_services import SALES_NOTE_DISCLAIMER
+    from ..sales_note_services import SALES_NOTE_CONTROL_LINE
 
     ctx = build_sales_note_context(sales_note)
     tax = ctx['tax']
@@ -269,7 +269,11 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         r.line(f"Tel. {ctx['store_phone']}", align='center')
     r.rule()
 
-    r.line(ctx['title'], align='center', bold=True)
+    r.line(ctx['title'].upper(), align='center', bold=True)
+    if ctx.get('stamp'):
+        # SALES-NOTE-CONTROL-01: a void note says so on the roll as well — a
+        # ticket queued before the void still prints marked.
+        r.line(ctx['stamp'], align='center', bold=True, large=True)
     r.line(ctx['number'], align='center', bold=True, large=True)
     r.line('Número interno del sistema. No es una serie fiscal.', align='center')
     r.row('Fecha:', ctx['issued_at'])
@@ -317,7 +321,15 @@ def sales_note_ticket(sales_note, *, paper_width_mm: int = 80, encoding: str = '
         r.line(str(ctx['notes']))
     r.rule()
 
-    r.line(SALES_NOTE_DISCLAIMER, align='center', bold=True)
+    # Sin negrita. Si no cabe en un renglón (52 caracteres; el rollo tiene 48
+    # o 32), se parte por la coma: dos mitades enteras, nunca una palabra sola.
+    if len(SALES_NOTE_CONTROL_LINE) <= r.columns:
+        r.line(SALES_NOTE_CONTROL_LINE, align='center')
+    else:
+        head, _, tail = SALES_NOTE_CONTROL_LINE.partition(', ')
+        r.line(f'{head},' if tail else head, align='center')
+        if tail:
+            r.line(tail, align='center')
     if ctx['warranty_note']:
         r.line(str(ctx['warranty_note']), align='center')
     return r.cut().to_bytes()

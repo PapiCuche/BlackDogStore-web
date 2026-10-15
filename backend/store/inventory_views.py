@@ -99,6 +99,7 @@ from .tenancy import (
     visible_orders,
 )
 from .sales_note_services import (
+    SALES_NOTE_CONTROL_LINE,
     SalesNoteError,
     generate_sales_note_pdf,
     get_or_create_sales_note,
@@ -1457,9 +1458,8 @@ class AdminInventoryCountCancelView(APIView):
 # Internal sales notes — NOT SUNAT electronic receipts
 # ---------------------------------------------------------------------------
 
-_SALES_NOTE_NOTICE = (
-    'Documento interno de venta. No válido como comprobante electrónico SUNAT.'
-)
+# The same line the printed note carries, from the same constant.
+_SALES_NOTE_NOTICE = SALES_NOTE_CONTROL_LINE
 
 
 def _sales_note_order(request, pk):

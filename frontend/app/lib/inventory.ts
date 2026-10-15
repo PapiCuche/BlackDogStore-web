@@ -266,6 +266,16 @@ export type SalesNote = {
   order_total: string;
   customer_name: string;
   notice?: string;
+  // SALES-NOTE-CONTROL-01 — the void record. Read-only: no endpoint rewrites a note.
+  is_void?: boolean;
+  voided_at?: string | null;
+  voided_by_username?: string | null;
+  void_reason_type?: SalesNoteVoidReasonType | "pedido_cancelado" | "";
+  void_reason_type_label?: string;
+  void_reason?: string;
+  order_status?: string;
+  branch_id?: number | null;
+  branch_name?: string;
 };
 
 // Manual movement types an operator may register. `sale_exit` is excluded —
@@ -682,6 +692,106 @@ export function cancelCount(id: number): Promise<InventoryCount> {
 
 export const SALES_NOTE_NOTICE =
   "Documento interno. No reemplaza comprobante SUNAT.";
+
+// ---------------------------------------------------------------------------
+// SALES-NOTE-CONTROL-01 — issued notes: list, the master's void, remarks
+// ---------------------------------------------------------------------------
+
+/** What a person may choose. «pedido_cancelado» is written only by the order cancellation. */
+export type SalesNoteVoidReasonType = "prueba" | "error" | "otro";
+
+export const SALES_NOTE_VOID_REASON_TYPES: { value: SalesNoteVoidReasonType; label: string }[] = [
+  { value: "prueba", label: "Prueba" },
+  { value: "error", label: "Error de emisión" },
+  { value: "otro", label: "Otro motivo" },
+];
+
+export const SALES_NOTE_VOID_REASON_MIN = 5;
+export const SALES_NOTE_VOID_REASON_MAX = 500;
+export const SALES_NOTE_REMARK_MAX = 1000;
+
+export type SalesNoteRemark = {
+  id: number;
+  text: string;
+  author: string | null;
+  created_at: string;
+};
+
+export type SalesNoteDetail = SalesNote & {
+  remarks: SalesNoteRemark[];
+  can_void: boolean;
+  can_remark: boolean;
+};
+
+export type SalesNoteStatusFilter = "" | "vigente" | "anulada" | "prueba";
+
+export type SalesNoteFilters = {
+  status?: SalesNoteStatusFilter;
+  date_from?: string;
+  date_to?: string;
+  branch?: number | null;
+  user?: number | null;
+  page?: number;
+};
+
+export type SalesNoteList = Paginated<SalesNote> & {
+  can_void: boolean;
+  can_remark: boolean;
+  branches: { id: number; name: string }[];
+  issuers: { id: number; username: string }[];
+  notice: string;
+};
+
+/** Only the filters that were chosen, in a fixed order. */
+export function buildSalesNoteQuery(filters: SalesNoteFilters): string {
+  const qs = new URLSearchParams();
+  if (filters.status) qs.set("status", filters.status);
+  if (filters.date_from) qs.set("date_from", filters.date_from);
+  if (filters.date_to) qs.set("date_to", filters.date_to);
+  if (filters.branch) qs.set("branch", String(filters.branch));
+  if (filters.user) qs.set("user", String(filters.user));
+  if (filters.page && filters.page > 1) qs.set("page", String(filters.page));
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+export function fetchSalesNotes(filters: SalesNoteFilters = {}): Promise<SalesNoteList> {
+  return getJson<SalesNoteList>(
+    `/admin/sales-notes/${buildSalesNoteQuery(filters)}`,
+    "No tienes permisos sobre las notas de venta.",
+    "No se pudieron cargar las notas de venta.",
+  );
+}
+
+export function fetchSalesNoteDetail(id: number): Promise<SalesNoteDetail> {
+  return getJson<SalesNoteDetail>(
+    `/admin/sales-notes/${id}/`,
+    "No tienes permisos sobre las notas de venta.",
+    "No se pudo cargar la nota de venta.",
+  );
+}
+
+/** Sólo el usuario Master. El servidor vuelve a decidirlo y responde 403 a cualquier otro. */
+export function voidSalesNote(
+  id: number,
+  body: { reason_type: SalesNoteVoidReasonType; reason: string },
+): Promise<SalesNoteDetail> {
+  return writeJson<SalesNoteDetail>(
+    `/admin/sales-notes/${id}/void/`,
+    { method: "POST", body: JSON.stringify(body) },
+    "Sólo el usuario Master puede anular una nota de venta.",
+    "No se pudo anular la nota de venta.",
+  );
+}
+
+export function addSalesNoteRemark(id: number, text: string): Promise<SalesNoteRemark> {
+  return writeJson<SalesNoteRemark>(
+    `/admin/sales-notes/${id}/remarks/`,
+    { method: "POST", body: JSON.stringify({ text }) },
+    "No tienes permisos para añadir observaciones.",
+    "No se pudo guardar la observación.",
+  );
+}
 
 /** Returns null when the order has no note yet (backend answers 404). */
 export async function fetchSalesNote(orderId: number): Promise<SalesNote | null> {

@@ -635,18 +635,31 @@ class _SignedNotificationMixin:
             )
             source = 'notification' if _signed(result) else 'Order/Get'
 
-            if order.status == Order.Status.PAID or order.paid:
+            # ORDER-CANCEL-01. A CANCELLED order is never paid again: a charge
+            # that arrives for it is money to give back, filed exactly like a
+            # second charge — kept, audited, raised by the health check — and
+            # said to be about a cancelled order. Never ignored, and the order
+            # stays cancelled.
+            cancelled = order.status == Order.Status.CANCELLED
+            if order.status == Order.Status.PAID or order.paid or cancelled:
                 PaymentTransaction.objects.filter(pk=attempt.pk).update(
-                    status=Status.DUPLICATE, failure_reason='el pedido ya estaba pagado por otro cobro', **said)
+                    status=Status.DUPLICATE,
+                    failure_reason=(
+                        'el pedido está cancelado; este cobro hay que devolverlo' if cancelled
+                        else 'el pedido ya estaba pagado por otro cobro'),
+                    **said)
+                metadata = {'provider': attempt.provider, 'attempt': attempt.pk, 'source': source,
+                            'gateway_transaction': result.unique_id[:64]}
+                if cancelled:
+                    metadata['order_status'] = Order.Status.CANCELLED
                 AdminAuditLog.log(
                     actor=None, action='payment_duplicate', target_type='order', target_id=order.pk,
-                    metadata={'provider': attempt.provider, 'attempt': attempt.pk, 'source': source,
-                              'gateway_transaction': result.unique_id[:64]},
-                    company=order.company,
+                    metadata=metadata, company=order.company,
                 )
                 logger.error(
-                    'Cobro duplicado: el pedido %s ya estaba pagado y la pasarela cobró otra vez (intento %s). '
-                    'Hay que devolverlo desde el panel de la pasarela.', order.pk, attempt.pk,
+                    'Cobro duplicado: el pedido %s %s y la pasarela cobró otra vez (intento %s). '
+                    'Hay que devolverlo desde el panel de la pasarela.',
+                    order.pk, 'está cancelado' if cancelled else 'ya estaba pagado', attempt.pk,
                 )
                 return 'duplicate'
 

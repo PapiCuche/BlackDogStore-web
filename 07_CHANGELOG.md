@@ -188,6 +188,71 @@ En la rama `feat/device-commerce` (sin push). Migraciones `0126` (datos), `0127`
 - El reporte de stock trae «Costo promedio» (vacío sin `costs.view`).
 - El costo de un equipo vendido no se puede cambiar.
 
+## 2026-10-14 — SALES-NOTE-CONTROL-01
+
+En la rama `feat/sales-note-control` (sin push), sobre #119. Migración nueva `0125` (aditiva).
+
+**Added**
+- Panel › Ventas › Notas de venta: lista con filtros (vigentes, anuladas, prueba, fechas,
+  sucursal, emisor), marca ANULADA y detalle con el registro de anulación.
+- «Anular nota de venta», sólo para el usuario Master en la empresa de la nota: tipo de
+  motivo (prueba, error de emisión, otro) y motivo obligatorios; auditoría `sales_note_voided`.
+  `POST /api/admin/sales-notes/<id>/void/`.
+- Observaciones internas de una nota, sólo añadir, nunca impresas; auditoría
+  `sales_note_remark_added`. `POST /api/admin/sales-notes/<id>/remarks/`.
+- `GET /api/admin/sales-notes/` y `GET /api/admin/sales-notes/<id>/` (PUT, PATCH y DELETE
+  responden 405).
+
+**Changed**
+- La nota de un pedido cancelado guarda el mismo registro de anulación (`pedido_cancelado`).
+- La API de la nota del pedido devuelve el registro de anulación y la sucursal; el panel del
+  pedido muestra ANULADA y el motivo.
+- La térmica no reimprime una nota anulada; un ticket encolado antes sale con ANULADA.
+- El admin de Django de las notas de venta es entero de sólo lectura.
+- (Revisión) Las columnas nuevas de texto llevan valor por defecto en la base: la versión
+  anterior sigue emitiendo notas mientras se migra. Una nota de un pedido cancelado ya se
+  trata como anulada (409). Un ticket de una nota anulada encolado antes se cancela al
+  entregarlo y no se reenvía. La nota anulada con el filtro «Vigentes» sale de la lista.
+
+**Not changed**
+- Número, fecha, líneas, importes, impuestos y pago de una nota emitida; el pedido, los
+  pagos, el stock, los comprobantes SUNAT, la serie y su «Próximo número»; tableros e
+  ingresos. Ninguna nota existente se marca como prueba automáticamente.
+
+## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01
+
+En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (aditiva).
+
+**Added**
+- Panel › Pedido: «Cancelar pedido» para un pedido en línea pagado cuyos productos no han
+  salido, con confirmación y motivo obligatorio; después, el bloque «Pedido cancelado» (quién,
+  cuándo, por qué, stock, aviso fiscal). `POST /api/admin/orders/<id>/cancel/`.
+- Kardex: tipo «Devolución por pedido cancelado» (`order_cancel_return`).
+- Registro `OrderCancellation` (uno por pedido) y entrada de auditoría `order_cancelled`.
+
+**Changed**
+- La nota de venta se titula «NOTA DE VENTA» y termina con la línea «Documento de control
+  interno, sin validez tributaria», sin la franja enmarcada (A4, 80 mm y térmica).
+- Un pedido cancelado no cambia de estado de despacho (409 `order_cancelled`).
+- Los PDF de un pedido cancelado (nota A4 y 80 mm, constancia) se siguen descargando,
+  marcados «ANULADA» / «PEDIDO ANULADO»; su ticket no se imprime en la térmica.
+- Un cobro que llega para un pedido cancelado se archiva como cobro duplicado, con el estado
+  del pedido en la auditoría; el pedido sigue cancelado y pagado.
+- Marcar un fallo de pago sólo afecta a un pedido que todavía espera su pago.
+- Un pedido que alguna vez salió (equipo marcado como entregado, paso por enviado o
+  entregado, o fecha de envío en su entrega) no se cancela aunque se le devuelva a un estado
+  anterior.
+- No se emite boleta/factura ni nota de venta interna de un pedido que se canceló mientras
+  tanto; ninguno gasta su número.
+- Un equipo devuelto antes de cancelar no se repone dos veces, y el que se entregó en su
+  lugar vuelve al estante: se repone todo equipo que siga vendido al pedido.
+- El resumen de un cliente (pedidos e importe pagados, última compra) ya no cuenta los
+  pedidos cancelados.
+
+**Not changed**
+- Pagos (no hay reembolso), comprobantes fiscales (ni nota de crédito ni baja automáticas),
+  avisos al comprador, tableros e ingresos, y el «Cancelado operativo» del despacho.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

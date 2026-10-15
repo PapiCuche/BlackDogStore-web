@@ -11,7 +11,9 @@ Lo que estas pruebas fijan es lo que el papel DICE y de dónde lo saca:
   * un producto sin serie no imprime identificadores;
   * totales, descuento, importe en letras y cantidad de productos salen de la
     venta;
-  * una nota de venta interna NO es un comprobante SUNAT, y lo sigue diciendo.
+  * una nota de venta NO es un comprobante: lo dice con una línea discreta
+    («Documento de control interno, sin validez tributaria»), sin la franja
+    sombreada que llevaba antes; la constancia de pedido conserva la suya.
 
 Se lee el texto y la estructura del PDF. No se comparan bytes: un PDF lleva su
 fecha de creación dentro y dos iguales nunca lo son.
@@ -33,7 +35,7 @@ from store import stock_unit_services as units
 from store.models import CompanySettings, Order, OrderItem, Product, ProductBarcode
 from store.pdf_services import generate_order_receipt_pdf
 from store.sales_note_services import (
-    SALES_NOTE_DISCLAIMER, build_sales_note_context, generate_sales_note_pdf,
+    SALES_NOTE_CONTROL_LINE, build_sales_note_context, generate_sales_note_pdf,
     get_or_create_sales_note,
 )
 from store.test_fiscal_logo import _ROOT as LOGO_ROOT, embedded_images, logo_png
@@ -76,6 +78,53 @@ def page_texts(pdf: bytes) -> list[str]:
 
 def text_of(pdf: bytes) -> str:
     return ' '.join(page_texts(pdf))
+
+
+#: The old framed statement of the sales note. It must not come back.
+OLD_SALES_NOTE_BAND = 'No válido como comprobante electrónico SUNAT'
+#: `document_style.SHADE` (#f1f2f4) as reportlab writes a fill colour.
+SHADE_FILL = b'.945098 .94902 .956863 rg'
+#: `document_style.MUTED` (#4b5563) as reportlab writes a fill colour.
+MUTED_FILL = b'.294118 .333333 .388235 rg'
+
+
+def page_streams(pdf: bytes) -> list[bytes]:
+    """The drawing operators of each page, decompressed, in order."""
+    streams = []
+    for body in re.findall(rb'[^d]stream\r?\n(.*?)endstream', pdf, re.S):
+        body = body.strip(b'\r\n')
+        if body.endswith(b'~>'):
+            try:
+                body = base64.a85decode(body[:-2])
+            except ValueError:
+                continue
+        try:
+            body = zlib.decompress(body)
+        except zlib.error:
+            pass
+        if b'BT' in body:
+            streams.append(body)
+    return streams
+
+
+def after_the_total(pdf: bytes) -> bytes:
+    """What the page draws after «IMPORTE TOTAL»: the bottom of the document."""
+    page = next(stream for stream in page_streams(pdf) if b'(IMPORTE TOTAL) Tj' in stream)
+    return page.split(b'(IMPORTE TOTAL) Tj', 1)[1]
+
+
+def _font(pdf: bytes, base: bytes) -> bytes:
+    match = re.search(rb'/BaseFont /' + base + rb' /Encoding /\w+ /Name /(F\d+)', pdf)
+    return b'/' + match.group(1)
+
+
+def regular_font(pdf: bytes) -> bytes:
+    """The resource name (`/F1`…) the PDF gives plain Helvetica."""
+    return _font(pdf, b'Helvetica')
+
+
+def bold_font(pdf: bytes) -> bytes:
+    return _font(pdf, b'Helvetica-Bold')
 
 
 def media_box(pdf: bytes) -> tuple[float, float]:
@@ -167,9 +216,42 @@ class SalesNoteA4Test(DocumentBase):
             'Tarjeta', 'Recojo en tienda',
         ):
             self.assertIn(expected, text, expected)
-        self.assertIn(SALES_NOTE_DISCLAIMER.split('.')[0], text)
+        self.assertIn(SALES_NOTE_CONTROL_LINE, text)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text)
+        self.assertNotIn(OLD_SALES_NOTE_BAND, text)
         self.assertIn('No es una serie fiscal', text)
         self.assertIn('Página 1 de 1', text)
+
+    def test_the_bottom_is_one_plain_control_line_not_a_shaded_band(self):
+        """
+        SALES-NOTE-DESIGN-01. The owner removed the big framed band at the
+        bottom. What replaces it is one line: no fill, no border, regular
+        Helvetica 8.5 in the muted grey, right after the totals.
+        """
+        from unittest import mock
+
+        from store import document_layout
+
+        note = self.note_for(self.sale([(self.case, 1)]))
+        with mock.patch.object(document_layout, 'render_a4', wraps=document_layout.render_a4) as render:
+            pdf = keep('nota-venta-linea-control', generate_sales_note_pdf(note))
+
+        described = render.call_args.args[0]
+        self.assertNotIn('legal', described)
+        self.assertEqual(described['control_line'], SALES_NOTE_CONTROL_LINE)
+        self.assertEqual(described['title'], 'NOTA DE VENTA')
+
+        bottom = after_the_total(pdf)
+        self.assertNotIn(SHADE_FILL, bottom)            # no shaded band
+        self.assertNotIn(b' re f', bottom)              # no filled rectangle of any colour
+        drawn = re.search(rb'BT [^\n]*?\(Documento de control interno, sin validez tributaria\) Tj[^\n]*ET', bottom)
+        self.assertIsNotNone(drawn, 'the control line is not drawn after the total')
+        self.assertIn(regular_font(pdf) + b' 8.5 Tf', drawn.group(0))
+        fills = re.findall(rb'[\d.]+ [\d.]+ [\d.]+ rg', bottom[:drawn.end()])
+        self.assertEqual(fills[-1], MUTED_FILL)         # the muted grey of the palette
+        # After the line, the only stroke left on the page is the footer rule:
+        # a frame around the line would add four.
+        self.assertEqual(bottom[drawn.end():].count(b' l S'), 1)
 
     def test_the_table_has_the_commercial_columns_and_real_values(self):
         note = self.note_for(self.sale([(self.case, 3)]))
@@ -342,10 +424,17 @@ class SalesNoteTicketTest(DocumentBase):
             'Inventario', '20800000001', 'Tienda Centro', note.number, 'María Fernanda Quispe',
             'Serie: F2LXK1ABC1', f'IMEI: {IMEI_A}', f'IMEI 2: {IMEI_B}', 'IP16-256-N',
             'Tarjeta', 'Descuento', '59.80', 'S/ 4600.00', 'CUATRO MIL SEISCIENTOS CON 00/100 SOLES',
-            'No es una serie fiscal', 'SUNAT',
+            'No es una serie fiscal', 'NOTA DE VENTA', SALES_NOTE_CONTROL_LINE,
         ):
             self.assertIn(expected, text, expected)
         self.assertEqual(text.count('Serie:'), 1)
+        self.assertNotIn('NOTA DE VENTA INTERNA', text.upper())
+        self.assertNotIn(OLD_SALES_NOTE_BAND, text)
+        # One line, in the regular face: the bold band is gone from the roll too.
+        page = page_streams(pdf)[0]
+        drawn = re.search(rb'/(F\d+) ([\d.]+) Tf\n?[^(]*\(Documento de control interno, sin validez tributaria\) Tj', page)
+        self.assertIsNotNone(drawn, 'the control line is not on one line of the ticket')
+        self.assertEqual(b'/' + drawn.group(1), regular_font(pdf))
 
     def test_the_thermal_print_carries_the_same_identifiers(self):
         from store.printing.escpos import sales_note_ticket
@@ -358,6 +447,32 @@ class SalesNoteTicketTest(DocumentBase):
         self.assertIn('Serie: F2LXK1ABC1', raw)
         self.assertIn(f'IMEI: {IMEI_A}', raw)
         self.assertIn('Tienda Centro', raw)
+
+    def test_the_thermal_print_says_nota_de_venta_and_the_control_line(self):
+        """
+        The heading is «NOTA DE VENTA», centred and bold. The control line is
+        centred, NOT bold, and on a roll that cannot hold its 52 characters it
+        breaks at the comma: two whole halves, never a word left alone.
+        """
+        from store.printing.escpos import COLUMNS, sales_note_ticket
+
+        note = self.note_for(self.sale([(self.case, 1)]))
+        centred, plain, bold, normal = b'\x1ba\x01', b'\x1bE\x00', b'\x1bE\x01', b'\x1d!\x00'
+        for paper in (80, 58):
+            with self.subTest(paper=paper):
+                raw = sales_note_ticket(note, paper_width_mm=paper)
+                folder = os.environ.get('DOCUMENT_SAMPLES_DIR')
+                if folder:
+                    Path(folder, f'nota-venta-escpos-{paper}mm.txt').write_text(
+                        raw.decode('cp858', 'replace'), encoding='utf-8')
+
+                self.assertIn(centred + bold + normal + b'NOTA DE VENTA\n', raw)
+                self.assertNotIn(b'INTERNA', raw.upper())
+                self.assertNotIn(b'SUNAT', raw)
+                for half in (b'Documento de control interno,', b'sin validez tributaria'):
+                    self.assertIn(centred + plain + normal + half + b'\n', raw)
+                    self.assertLessEqual(len(half), COLUMNS[paper])
+                self.assertNotIn(b'\ntributaria\n', raw)            # no orphan word
 
 
 class OrderReceiptTest(DocumentBase):
@@ -376,6 +491,28 @@ class OrderReceiptTest(DocumentBase):
             self.assertIn(expected, text, expected)
         for claim in ('BOLETA DE VENTA ELECTR', 'FACTURA ELECTR'):
             self.assertNotIn(claim, text)
+
+    def test_the_order_receipt_keeps_its_framed_legal_statement(self):
+        """
+        SALES-NOTE-DESIGN-01 changed the SALES NOTE only. The order receipt
+        shares `render_a4` and still draws its statement in the shaded,
+        bordered frame, in bold, after the total.
+        """
+        from store.pdf_services import DISCLAIMER
+
+        order = self.sale([(self.case, 1)])
+        pdf = generate_order_receipt_pdf(order)
+
+        bottom = after_the_total(pdf)
+        self.assertIn(SHADE_FILL, bottom)
+        frame = bottom.split(SHADE_FILL, 1)[1]
+        self.assertIn(b' re f', frame.split(b'BT', 1)[0])
+        statement = re.search(
+            rb'BT [^\n]*?\(' + re.escape(DISCLAIMER.split('.')[0].encode('latin-1')) + rb'[^\n]*ET', frame)
+        self.assertIsNotNone(statement, 'the order receipt lost its statement inside the frame')
+        self.assertIn(bold_font(pdf) + b' 8.5 Tf', statement.group(0))
+        self.assertIn(b'.8 w', frame)                   # the frame's border
+        self.assertNotIn(SALES_NOTE_CONTROL_LINE, text_of(pdf))
 
 
 class DocumentDatesTest(DocumentBase):

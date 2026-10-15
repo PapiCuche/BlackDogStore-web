@@ -127,6 +127,79 @@ renumera nada: el PR que se fusione después de #123 añade su migración de fus
   (costos sin IGV, «Precio costo» como referencia, margen sólo sobre líneas con costo).
 - Siguiente: DC2 (desgloses por unidad/variante).
 
+## 2026-10-14 — SALES-NOTE-CONTROL-01 (rama, sin push)
+
+Rama `feat/sales-note-control`, apilada sobre `feat/order-cancel-sales-note` (#119, `3dd4f54`).
+**EN LA RAMA: sin push, sin PR, sin desplegar.** Una migración nueva, `0125` (aditiva: cuatro
+columnas en `store_salesnote`, las de texto con `db_default`, y la tabla
+`store_salesnoteremark`; no escribe datos). Sin
+capacidades nuevas ni cambios de rol.
+
+- **Anular una nota de venta es un acto del usuario Master**: el master de plataforma
+  (`is_platform_admin`, hoy `is_superuser`) actuando en la empresa que nombra. Un
+  administrador de empresa con todas las capacidades recibe 403. `POST
+  /api/admin/sales-notes/<id>/void/` con `reason_type` (`prueba`, `error`, `otro`) y motivo
+  obligatorio (5–500 caracteres); una nota ya anulada, 409 `already_void`. Guarda
+  `voided_at`, `voided_by`, `void_reason_type`, `void_reason` y la auditoría
+  `sales_note_voided` (empresa, sucursal, número, motivo). La nota conserva número, ordinal,
+  fecha de emisión, emisor y lo que imprimió; sus PDF y la térmica dicen ANULADA.
+- **No toca nada más**: ni el pedido (sigue pagado), ni pagos, ni stock, ni comprobantes
+  SUNAT, ni la serie (el número no se reutiliza y «Próximo número» sigue bloqueado). Los
+  tableros leen pedidos pagados, no notas: el dinero cobrado no cambia. La cancelación de
+  pedidos de #119 escribe ahora el mismo registro con `pedido_cancelado`.
+- **Observaciones internas** (`SalesNoteRemark`): sólo se añaden (ni editar ni borrar), las
+  añade el Master o quien tenga `sales.notes.manage`, quedan en auditoría
+  (`sales_note_remark_added`) y no se imprimen.
+- **Panel › Ventas › Notas de venta** (`/admin/sales/notes`): filtros vigentes / anuladas /
+  prueba, fechas, sucursal y emisor, con el alcance de empresa y sucursal de los pedidos;
+  marca ANULADA (y «Prueba»); «Anular» sólo si el servidor dice `can_void`. Las notas ya
+  emitidas no se marcan solas: «prueba» lo escribe el Master al anularlas.
+- La térmica no reimprime una nota anulada, y un ticket encolado antes sale con ANULADA. El
+  admin de Django de `SalesNote` queda entero de sólo lectura (antes `status`, `sequence` y
+  `sequence_value` se podían editar sin auditoría).
+- Revisión independiente (`093ea47`): las dos columnas de texto de `0125` llevan
+  `db_default=''` (P1: sin él, la versión anterior fallaba al emitir una nota mientras se
+  migra); las observaciones tampoco se reescriben ni se borran en bloque; una nota de un
+  pedido cancelado ya cuenta como anulada (409); un ticket encolado antes de anular se
+  cancela al entregarlo al agente; en el panel, la nota anulada sale de «Vigentes» y el
+  tipo de motivo es un solo grupo de radio (una parada de Tab, flechas).
+- Pruebas: `test_sales_note_control` (41, con dos carreras de dos conexiones; mutación 18/20 muertas, M2 cubierta después, M19 equivalente); regresión
+  focal de 417 pruebas (notas, series, POS, analítica, impresión, `test_order_cancel`,
+  `test_document_design`, `test_ci_shards`) en verde; Jest 1370/1370; `tsc` y lint sin
+  errores (Jest 1372/1372 tras la revisión); `makemigrations --check` sin cambios (sólo `0125`). Decisión en
+  DEC-SALES-NOTE-CONTROL-01; deuda en `docs/AUDIT_MEMORY.md` §10.
+
+## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01 (rama, sin push)
+
+Rama `feat/order-cancel-sales-note` desde `abfc6bd`. **EN LA RAMA: sin push, sin PR, sin
+desplegar.** Una migración nueva, `0124` (aditiva). Sin capacidades nuevas ni cambios de rol.
+
+- **SALES-NOTE-DESIGN-01** (`2ba90e7`). La nota de venta (A4, ticket de 80 mm y térmica
+  ESC/POS) se titula «NOTA DE VENTA» y la franja inferior enmarcada se sustituye por una línea
+  discreta: «Documento de control interno, sin validez tributaria» (una sola constante,
+  `SALES_NOTE_CONTROL_LINE`, que también repite el aviso de la API). RUC, datos de la empresa,
+  numeración `NV-`, importes e información comercial sin cambios. La constancia de pedido
+  conserva su franja (`legal` de `render_a4` intacto). Comprobantes fiscales sin tocar.
+- **ORDER-CANCEL-01** (`169362b`). Cancelar desde el detalle del pedido un pedido EN LÍNEA
+  PAGADO cuyos productos no han salido (pendiente, confirmado, en preparación, listo para
+  retiro o «Cancelado operativo»), con motivo obligatorio (5–500 caracteres). Enviado o
+  entregado: 409 «requiere devolución»; caja (POS) y pedidos sin pagar: fuera de este flujo.
+  El stock vuelve una vez (`order_cancel_return`, con el pedido, a la misma sucursal; los
+  equipos con serie a «disponible» y sin su identificación). La nota interna queda anulada y
+  se conserva; sus PDF y la constancia se descargan con «ANULADA» / «PEDIDO ANULADO»; la
+  térmica no imprime un pedido cancelado. Una boleta/factura viva se conserva y queda
+  «nota de crédito / baja pendiente» (nada fiscal se emite solo). **No es un reembolso:**
+  `paid` sigue verdadero, ningún intento de pago cambia y no se llama a la pasarela; un cobro
+  que llegue después queda como cobro duplicado (evidencia) y el pedido sigue cancelado.
+  Detalle de decisiones en DEC-ORDER-CANCEL-01; deuda en `docs/AUDIT_MEMORY.md` §10.
+- Revisión independiente (`e142874`): «no ha salido» se lee de la historia del pedido (P1),
+  boleta/factura y nota interna re-comprueban el pago con el pedido bloqueado (P2), un
+  equipo devuelto antes no impide ni duplica la reposición, estadísticas del cliente sin
+  cancelados y pruebas que antes no fijaban nada.
+- Pruebas en la rama: `test_order_cancel` (44, con tres carreras de dos conexiones),
+  regresión focal 2451 pruebas en verde; Jest 1356/1356; `tsc` y lint sin errores;
+  `makemigrations --check` sin cambios (sólo `0124`).
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |

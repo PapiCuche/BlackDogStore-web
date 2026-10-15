@@ -701,6 +701,15 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
 
+**ORDER-CANCEL-01 (migración `0124`).** Crea la tabla `store_ordercancellation` (un
+registro por pedido cancelado) y añade el tipo `order_cancel_return` a las opciones del
+Kardex, que no genera SQL. No cambia datos. Para volver atrás: los contenedores de la imagen
+anterior (`git checkout <commit anterior>`, `$C build`, `$C up -d`) y **la migración se deja
+aplicada**: la versión anterior no lee esa tabla. Ojo: con la versión anterior, un pedido ya
+cancelado se ve «Cancelado» pero su despacho vuelve a poder moverse y sus PDF dejan de
+descargarse; sus movimientos `order_cancel_return` se siguen leyendo en el Kardex. Deshacer
+`0124` (`migrate store 0123`) borraría los registros de cancelación.
+
 **DEVICE-COMMERCE-01 · DC1 (`0126`–`0129`): quién puede ver costos.** `0126` sólo da
 «Ver costos y márgenes» (`costs.view`) a un rol `Administrador` que nadie editó; una empresa
 que personalizó ese rol se queda sin nadie que vea costos, y desde ahí sólo su gestor de
