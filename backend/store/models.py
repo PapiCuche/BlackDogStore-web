@@ -9,6 +9,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
+from django.contrib.postgres.functions import RandomUUID
 from django.utils import timezone
 
 
@@ -234,6 +235,26 @@ class Product(models.Model):
     # movement or sale line that took it says so (`cost_source='reference'`).
     # Changing it never rewrites the history: snapshots were taken already.
     reference_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    # DEVICE-COMMERCE-01 · DC2 — A VARIANT IS STILL A PRODUCT. A model («iPhone
+    # 16») groups products that differ by its options (capacity, colour) and by
+    # their line (new / used). Each variant keeps its own price, stock, Kardex,
+    # cart line and fiscal line, so nothing downstream learns a new concept. A
+    # product without a model (an accessory) is exactly what it was.
+    CONDITION_NEW = 'new'
+    CONDITION_USED = 'used'
+    CONDITION_LINE_CHOICES = [(CONDITION_NEW, 'Nuevo'), (CONDITION_USED, 'Seminuevo')]
+    product_model = models.ForeignKey(
+        'store.ProductModel', null=True, blank=True, on_delete=models.SET_NULL, related_name='variants',
+    )
+    # `db_default`: the previous release keeps inserting products while this migrates.
+    condition_line = models.CharField(
+        max_length=8, choices=CONDITION_LINE_CHOICES, default=CONDITION_NEW, db_default=CONDITION_NEW,
+    )
+    #: The variant's option ids, sorted and joined («4-17»). Written ONLY by
+    #: `variant_services`, and what lets the database refuse two variants of one
+    #: model with the same options in the same line.
+    variant_key = models.CharField(max_length=120, blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -241,6 +262,11 @@ class Product(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['company', 'slug'], name='unique_product_slug_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['product_model', 'condition_line', 'variant_key'],
+                condition=models.Q(product_model__isnull=False),
+                name='unique_variant_per_model_line',
             ),
         ]
         indexes = [
@@ -259,6 +285,16 @@ class Product(models.Model):
         a third copy somewhere else is how a hidden product ends up for sale.
         """
         return bool(self.is_active and self.is_published_online)
+
+    @property
+    def sells_by_unit(self) -> bool:
+        """
+        DC2 — the web sells THIS product device by device: the buyer's cart
+        holds a concrete unit, and that unit is the one that leaves. True for a
+        serialized variant of a model, new or used. Other serialized products
+        keep SERIAL-PICK-01's rule (the payment sets the oldest aside).
+        """
+        return bool(self.is_serialized and self.product_model_id)
 
     def __str__(self):
         return self.name
@@ -281,6 +317,14 @@ class Product(models.Model):
         ):
             raise ValidationError(
                 {'category': 'La categoría no pertenece a la empresa de este producto.'}
+            )
+        if (
+            self.product_model_id
+            and self.company_id
+            and self.product_model.company_id != self.company_id
+        ):
+            raise ValidationError(
+                {'product_model': 'El modelo no pertenece a la empresa de este producto.'}
             )
 
     def save(self, *args, **kwargs):
@@ -800,6 +844,14 @@ class OrderItem(models.Model):
     #: This line's share of `Order.taxable_amount`; the lines add up to it exactly.
     net_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
+    # DC2 — THE DEVICE THIS LINE SOLD, for a product the web sells by unit.
+    # Such a line is ONE device at ITS price (a used phone is priced on its
+    # own), so two devices of one variant are two lines. Every other line has
+    # no unit and stays one per product.
+    stock_unit = models.ForeignKey(
+        'store.StockUnit', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
+    )
+
     class Meta:
         constraints = [
             # ONE LINE PER PRODUCT PER ORDER — Phase 0.3 / P0-E.
@@ -818,9 +870,24 @@ class OrderItem(models.Model):
             # decrementing stock twice, and it is only sound while an order has
             # at most one line per product. This constraint is what keeps it
             # sound against a writer nobody has written yet.
+            #
+            # DC2: it holds for every line WITHOUT a device. A line of a
+            # device is unique per device, carries exactly one, and the sale
+            # exit of its product is still one per (order, product) — it names
+            # all the devices of that product at once.
             models.UniqueConstraint(
                 fields=['order', 'product'],
+                condition=models.Q(stock_unit__isnull=True),
                 name='unique_order_line_per_product',
+            ),
+            models.UniqueConstraint(
+                fields=['order', 'stock_unit'],
+                condition=models.Q(stock_unit__isnull=False),
+                name='unique_order_line_per_unit',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(stock_unit__isnull=True) | models.Q(quantity=1),
+                name='order_line_of_a_unit_is_one',
             ),
         ]
 
@@ -7370,6 +7437,11 @@ class StorefrontPageSettings(models.Model):
         validators=[MaxLengthValidator(400)],
     )
 
+    #: DC2 — how the shop names its two lines of devices in a category's tabs.
+    #: Empty: the platform's «Nuevos» / «Seminuevos».
+    new_line_label = models.CharField(max_length=40, blank=True, default='', db_default='')
+    used_line_label = models.CharField(max_length=40, blank=True, default='', db_default='')
+
     hero_primary_cta_label = models.CharField(max_length=40, blank=True)
     hero_primary_cta_url = models.CharField(
         max_length=500, blank=True, validators=[validate_cta_url],
@@ -8995,6 +9067,39 @@ class StockUnit(models.Model):
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     # SERIAL-PICK-01: a device has NO price of its own. It is sold at the
     # product's price, at the till and on the web (the owner's decision).
+    # DC2 amends it for USED devices on the web: each one is priced on its own
+    # (`sale_price`), and a used unit without one is not offered online.
+
+    # --- DEVICE-COMMERCE-01 · DC2 ---------------------------------------
+    #: What the public calls this device. Opaque: the pk would tell anybody
+    #: how many devices the shop has received.
+    # `db_default`: a volatile default fills every existing row with its own
+    # value, and the previous release keeps inserting units while this migrates.
+    public_id = models.UUIDField(default=uuid.uuid4, db_default=RandomUUID(), unique=True, editable=False)
+    #: Battery health in %, as MEASURED. NULL is «no informado», never a guess.
+    battery_health = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(100)],
+    )
+    cosmetic_grade = models.ForeignKey(
+        'store.CosmeticGrade', null=True, blank=True, on_delete=models.PROTECT, related_name='units',
+    )
+    #: Shown to buyers. `notes` stays internal.
+    public_notes = models.CharField(max_length=500, blank=True, default='', db_default='')
+    #: The price of THIS device (used units, online). New units sell at their
+    #: variant's price.
+    sale_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # A WEB HOLD (status RESERVED): a buyer's cart holds this very device.
+    # `hold_key` is the SHA-256 of the cart's key, never the key; `hold_until`
+    # is when it goes back to the shelf unless an order is paid;
+    # `hold_price` is the price the buyer was shown, frozen at that moment;
+    # `hold_order` is the pending order that carries it once checked out.
+    # A staff reservation («apartado») has an empty `hold_key` and no expiry.
+    hold_key = models.CharField(max_length=64, blank=True, default='', db_default='')
+    hold_until = models.DateTimeField(null=True, blank=True)
+    hold_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    hold_order = models.ForeignKey(
+        'store.Order', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
 
     received_at = models.DateTimeField(default=timezone.now)
     sold_at = models.DateTimeField(null=True, blank=True)
@@ -9032,6 +9137,10 @@ class StockUnit(models.Model):
             models.CheckConstraint(
                 condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),
                 name='stock_unit_identifiers_null_not_blank',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(battery_health__isnull=True) | models.Q(battery_health__lte=100),
+                name='stock_unit_battery_health_percent',
             ),
         ]
         indexes = [
@@ -9115,6 +9224,8 @@ class OrderUnit(models.Model):
         SCANNER = 'scanner', 'Lector'
         MANUAL = 'manual', 'Ingreso manual'
         LEGACY = 'legacy', 'Asignado por el sistema (regla anterior)'
+        # DC2: the buyer chose this very device online, and paid for it.
+        BUYER = 'buyer', 'Elegido por el comprador'
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='order_units')
     order = models.ForeignKey('store.Order', on_delete=models.PROTECT, related_name='identified_units')
@@ -9546,4 +9657,197 @@ class OrderDelivery(models.Model):
     def save(self, *args, **kwargs):
         if self.order_id is not None and self.order.company_id != self.company_id:
             raise ValueError('La entrega tiene que ser de la empresa del pedido.')
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DEVICE-COMMERCE-01 · DC2 — models, options and variants
+# ---------------------------------------------------------------------------
+#
+# A MODEL GROUPS PRODUCTS; IT HOLDS NO STOCK. «iPhone 16» is a `ProductModel`;
+# «iPhone 16 256 GB Negro» and «iPhone 16 128 GB Azul (seminuevo)» are
+# `Product`s that point at it and name their options. Every rule of stock,
+# price, Kardex, cart, POS and fiscal lines keeps reading the product, so a
+# variant is sold, counted and invoiced exactly like any other article.
+#
+# EVERYTHING BELONGS TO ONE COMPANY. Options and grades are the company's own
+# words: nothing here knows a brand, a model name or a colour of anybody's.
+
+_SWATCH_HEX = re.compile(r'^#[0-9A-Fa-f]{6}$')
+
+
+def validate_swatch_hex(value):
+    from django.core.exceptions import ValidationError
+
+    if value and not _SWATCH_HEX.match(value):
+        raise ValidationError('El color se escribe como #RRGGBB (por ejemplo, #1F2937).')
+
+
+class ProductModel(models.Model):
+    """One model of the catalogue («modelo»), offered as several variants."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='product_models')
+    category = models.ForeignKey(
+        Category, null=True, blank=True, on_delete=models.SET_NULL, related_name='product_models',
+    )
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=120)
+    description = models.TextField(blank=True, default='')
+    #: The model's cover for lists; each variant shows its own gallery.
+    image_url = models.CharField(max_length=500, blank=True, default='', validators=[validate_asset_url])
+    is_published_online = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sort_order', 'name', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'slug'], name='unique_product_model_slug_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.category_id and self.company_id and self.category.company_id != self.company_id:
+            raise ValidationError({'category': 'La categoría no pertenece a la empresa de este modelo.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class VariantAttribute(models.Model):
+    """What variants of a model differ by, in the company's words («Capacidad», «Color»)."""
+
+    KIND_TEXT = 'text'
+    KIND_COLOR = 'color'
+    KIND_CHOICES = [(KIND_TEXT, 'Texto'), (KIND_COLOR, 'Color')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='variant_attributes')
+    name = models.CharField(max_length=60)
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_TEXT)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'name', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'name'], name='unique_variant_attribute_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class VariantOption(models.Model):
+    """One value of an attribute («256 GB», «Azul»). A colour carries its swatch."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='variant_options')
+    attribute = models.ForeignKey(VariantAttribute, on_delete=models.PROTECT, related_name='options')
+    label = models.CharField(max_length=60)
+    sort_order = models.PositiveIntegerField(default=0)
+    swatch_hex = models.CharField(max_length=7, blank=True, default='', validators=[validate_swatch_hex])
+
+    class Meta:
+        ordering = ['sort_order', 'label', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['attribute', 'label'], name='unique_variant_option_per_attribute'),
+        ]
+
+    def __str__(self):
+        return self.label
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        validate_swatch_hex(self.swatch_hex)
+        if self.attribute_id and self.company_id and self.attribute.company_id != self.company_id:
+            raise ValidationError({'attribute': 'El atributo no pertenece a la empresa de esta opción.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class ProductVariantOption(models.Model):
+    """
+    «This product is the 256 GB one.» One option PER ATTRIBUTE per product.
+
+    `attribute` repeats `option.attribute` on purpose: it is what lets the
+    database refuse a product with two capacities.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variant_options')
+    attribute = models.ForeignKey(VariantAttribute, on_delete=models.PROTECT, related_name='+')
+    option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='product_links')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['product', 'attribute'], name='unique_variant_attribute_per_product'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not (self.product.company_id == self.company_id == self.option.company_id
+                and self.option.attribute_id == self.attribute_id):
+            raise ValueError('El producto, la opción y su atributo tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
+class CosmeticGrade(models.Model):
+    """
+    A step of the company's own scale for how a used device LOOKS («Como nuevo»,
+    «Muy bueno»…). Independent from its battery. No scale is written into a
+    company that exists: `seed_cosmetic_grades` offers the default to whoever
+    asks for it, and a new company gets it at its bootstrap.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='cosmetic_grades')
+    code = models.SlugField(max_length=40)
+    label = models.CharField(max_length=60)
+    description = models.CharField(max_length=300, blank=True, default='')
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['sort_order', 'label', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'code'], name='unique_cosmetic_grade_per_company'),
+        ]
+
+    def __str__(self):
+        return self.label
+
+
+class UnitPhoto(models.Model):
+    """
+    A PUBLIC picture of one device (a used phone's real photos).
+
+    Same pipeline as a product gallery (`storefront_media`: re-encoded from
+    pixels, owned by one company, swept when nothing shows it). Never the
+    private evidence store: these are meant to be seen by anybody.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='+')
+    unit = models.ForeignKey('store.StockUnit', on_delete=models.CASCADE, related_name='photos')
+    image_url = models.CharField(max_length=255, validators=[validate_asset_url])
+    alt_text = models.CharField(max_length=160, blank=True, default='')
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        indexes = [models.Index(fields=['company', 'unit'])]
+
+    def save(self, *args, **kwargs):
+        if self.unit.company_id != self.company_id:
+            raise ValueError('La foto y el equipo son de empresas distintas.')
         return super().save(*args, **kwargs)
