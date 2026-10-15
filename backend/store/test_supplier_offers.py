@@ -336,6 +336,23 @@ class OnOrderSaleTest(SupplyShop, TestCase):
         self.assertEqual(line.price, D('110.00'), 'the buyer paid what was paid')
         self.assertEqual(fresh.committed_quantity, 1)
 
+    def test_a_line_already_committed_is_not_confirmed_again(self):
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.pay(order)
+        with self.assertRaises(supply.SupplyError):
+            supply.confirm_line(order.items.get(), actor=self.staff)
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 2)
+
+    def test_checkout_validation_itself_refuses_an_offer_that_no_longer_covers(self):
+        """Not only the cart reader: the validator any surface calls asks the offer again."""
+        line = checkout.CheckoutLine(product=self.case, quantity=2, offer=self.offer)
+        self.assertEqual(checkout.validate_lines_and_subtotal(self.branch, [line]), D('220.00'))
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=4)
+        with self.assertRaises(checkout.CheckoutError):
+            checkout.validate_lines_and_subtotal(self.branch, [line])
+
     def test_receiving_writes_the_entry_at_the_frozen_cost_and_the_sale_exit(self):
         self.stock(self.case, 2)                      # the shelf has other units of its own
         CartItem.objects.all().delete()
