@@ -138,6 +138,18 @@ def order_lines(order) -> list[dict]:
     ).order_by('is_primary', '-code').values_list('product_id', 'code'):
         codes[product_id] = code          # the primary one is written last and wins
     units = sold_units(order)
+    # DC2 — a line of ONE chosen device names that device, not every device
+    # of its product in the order.
+    from .models import OrderUnit
+
+    by_unit = {
+        row.unit_id: {'serial_number': row.unit.serial_number or '', 'imei': row.unit.imei or '',
+                      'imei2': row.unit.imei2 or ''}
+        for row in OrderUnit.objects.filter(
+            order=order, company_id=order.company_id, unit__company_id=order.company_id,
+            unit_id__in=[item.stock_unit_id for item in items if item.stock_unit_id],
+        ).select_related('unit')
+    }
 
     lines = []
     for number, item in enumerate(items, start=1):
@@ -152,7 +164,10 @@ def order_lines(order) -> list[dict]:
             'unit_price': price,
             'quantity': item.quantity,
             'subtotal': price * item.quantity,
-            'units': units.get(item.product_id, []),
+            'units': (
+                [by_unit[item.stock_unit_id]] if item.stock_unit_id in by_unit
+                else [] if item.stock_unit_id else units.get(item.product_id, [])
+            ),
         })
     return lines
 

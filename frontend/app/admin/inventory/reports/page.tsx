@@ -18,6 +18,7 @@ import {
   ErrorBox,
   Panel,
   Spinner,
+  InventoryCostCard,
   StatCard,
   TableWrap,
   Td,
@@ -173,6 +174,7 @@ function ReportsContent({ user }: { user: AuthUser }) {
                 value={formatSoles(data.summary.inventory_value)}
                 hint="A precio de venta — no es costo"
               />
+              <InventoryCostCard summary={data.summary} />
               <StatCard label="Unidades totales" value={data.summary.total_units} />
               <StatCard
                 label="Agotados"

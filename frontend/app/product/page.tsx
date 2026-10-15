@@ -6,6 +6,7 @@ import { track } from "../lib/analytics/service";
 import { useStorefront } from "../components/StorefrontProvider";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ProductCard } from "../components/ProductCard";
+import { CatalogModels } from "../components/CatalogModels";
 import { fetcher, apiUrl } from "../lib/api";
 
 type Category = { id: number; name: string; slug: string };
@@ -23,6 +24,8 @@ type Product = {
   image_url?: string;
   average_rating?: number | null;
   review_count?: number;
+  /** DC2: the model this product is a variant of; its card stands for it when the category shows models. */
+  product_model?: string | null;
 };
 
 const ORDERING_OPTIONS = [
@@ -49,6 +52,11 @@ function CatalogContent() {
   const search = searchParams.get("search") ?? "";
   const inStock = searchParams.get("in_stock") === "true";
   const ordering = searchParams.get("ordering") ?? "";
+  const lineParam = searchParams.get("line");
+  const line = lineParam === "new" || lineParam === "used" ? lineParam : "";
+  // DC2: whether the selected category shows model cards. Until it is known, nothing is hidden.
+  const [modelsShown, setModelsShown] = useState<{ category: string; has: boolean } | null>(null);
+  const hasModels = Boolean(selectedCategory && modelsShown?.category === selectedCategory && modelsShown.has);
   const [searchInput, setSearchInput] = useState(search);
 
   const updateParam = useCallback(
@@ -59,6 +67,19 @@ function CatalogContent() {
       } else {
         params.delete(key);
       }
+      const query = params.toString();
+      router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  const selectCategory = useCallback(
+    (slug: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (slug) params.set("category", slug);
+      else params.delete("category");
+      // A line belongs to a category's models: another category starts from all of them.
+      params.delete("line");
       const query = params.toString();
       router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
     },
@@ -128,6 +149,8 @@ function CatalogContent() {
   }, [selectedCategory, search, inStock, ordering]);
 
   const hasActiveFilters = Boolean(selectedCategory || search || inStock || ordering);
+  // Products a model card already stands for are left out of the grid; accessories stay as they were.
+  const gridProducts = hasModels ? products.filter((product) => !product.product_model) : products;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -153,7 +176,7 @@ function CatalogContent() {
           <div className="flex flex-wrap gap-2" aria-label="Filtrar por categoría">
             <button
               type="button"
-              onClick={() => updateParam("category", "")}
+              onClick={() => selectCategory("")}
               aria-pressed={!selectedCategory}
               className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                 !selectedCategory
@@ -167,7 +190,7 @@ function CatalogContent() {
               <button
                 key={cat.id}
                 type="button"
-                onClick={() => updateParam("category", selectedCategory === cat.slug ? "" : cat.slug)}
+                onClick={() => selectCategory(selectedCategory === cat.slug ? "" : cat.slug)}
                 aria-pressed={selectedCategory === cat.slug}
                 className={`min-h-11 rounded-full border px-4 py-2 text-xs font-bold transition ${
                   selectedCategory === cat.slug
@@ -233,7 +256,7 @@ function CatalogContent() {
           <div className="flex min-h-6 items-center justify-between gap-4">
             {!loading && !error ? (
               <p className="text-xs text-muted" aria-live="polite">
-                {products.length} {products.length === 1 ? "producto" : "productos"}
+                {gridProducts.length} {gridProducts.length === 1 ? "producto" : "productos"}
                 {hasActiveFilters ? " encontrados" : " en catálogo"}
               </p>
             ) : <span />}
@@ -250,6 +273,15 @@ function CatalogContent() {
           </div>
         </div>
 
+        {selectedCategory ? (
+          <CatalogModels
+            category={selectedCategory}
+            line={line}
+            onLineChange={(next) => updateParam("line", next)}
+            onLoaded={(has) => setModelsShown({ category: selectedCategory, has })}
+          />
+        ) : null}
+
         {error ? (
           <div className="rounded-2xl border border-danger-border bg-danger-surface p-6 text-sm text-danger" role="alert">
             No pudimos cargar el catálogo. {error}
@@ -260,7 +292,7 @@ function CatalogContent() {
               <div key={i} className="aspect-[4/3] animate-pulse rounded-2xl bg-surface" />
             ))}
           </div>
-        ) : products.length === 0 ? (
+        ) : gridProducts.length === 0 && hasModels ? null : gridProducts.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-bd-border px-6 py-16 text-center">
             <p className="font-display text-2xl font-extrabold uppercase text-foreground">Sin resultados</p>
             <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">
@@ -284,11 +316,11 @@ function CatalogContent() {
             // itself stays a plain component that knows nothing about measurement.
             onClickCapture={(event) => {
               const slug = (event.target as Element).closest?.('a[href^="/product/"]')?.getAttribute("href")?.split("/")[2];
-              const chosen = products.find((product) => product.slug === slug);
+              const chosen = gridProducts.find((product) => product.slug === slug);
               if (chosen) track({ name: "SELECT_ITEM", listName: LIST_NAME, item: toItem(chosen) });
             }}
           >
-            {products.map((product) => (
+            {gridProducts.map((product) => (
               <ProductCard key={product.id} {...product} />
             ))}
           </div>

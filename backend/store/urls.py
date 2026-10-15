@@ -75,6 +75,7 @@ from .pos_views import (
 from .sales_analytics_views import (
     AdminCommissionsView,
     AdminSalesDashboardView,
+    AdminSalesMarginView,
     AdminSalesReplenishmentView,
 )
 from .import_views import (
@@ -142,7 +143,19 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .supplier_views import (
+    AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
+    AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
+    AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
+    AdminSupplierSettlementView,
+)
+from .device_catalog_views import (
+    AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
+    AdminGradeSeedView, AdminModelDetailView, AdminModelListView, AdminOptionDetailView,
+    AdminProductVariantView, PublicModelDetailView, PublicModelListView,
+)
 from .stock_unit_views import (
+    StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitListView,
 )
@@ -219,6 +232,39 @@ urlpatterns = [
     path('admin/products/bulk-visibility/', AdminProductBulkVisibilityView.as_view(), name='admin-product-bulk-visibility'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
+    # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
+    path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
+    # DC3 — suppliers, offers and the supply of on-order lines.
+    path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
+    path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
+    path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
+    path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
+    path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
+         name='admin-supplier-offers-template'),
+    path('admin/supplier-offers/import/preview/', AdminOfferImportPreviewView.as_view(),
+         name='admin-supplier-offers-preview'),
+    path('admin/supplier-offers/import/<int:pk>/apply/', AdminOfferImportApplyView.as_view(),
+         name='admin-supplier-offers-apply'),
+    path('admin/supplier-offers/export/', AdminOfferExportView.as_view(), name='admin-supplier-offers-export'),
+    path('admin/supplier-offers/<int:pk>/', AdminOfferDetailView.as_view(), name='admin-supplier-offer'),
+    path('admin/supplier-offers/<int:pk>/deactivate/', AdminOfferDeactivateView.as_view(),
+         name='admin-supplier-offer-deactivate'),
+    path('admin/supplier-offers/<int:pk>/history/', AdminOfferHistoryView.as_view(),
+         name='admin-supplier-offer-history'),
+    path('admin/products/<int:pk>/sale-mode/', AdminProductSaleModeView.as_view(), name='admin-product-sale-mode'),
+    path('admin/orders/<int:pk>/supply/<int:line_pk>/<str:action>/', AdminOrderSupplyActionView.as_view(),
+         name='admin-order-supply-action'),
+    path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
+    path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
+    path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),
+    path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),
+         name='admin-catalog-attribute-options'),
+    path('admin/catalog/options/<int:pk>/', AdminOptionDetailView.as_view(), name='admin-catalog-option'),
+    path('admin/catalog/grades/', AdminGradeListView.as_view(), name='admin-catalog-grades'),
+    path('admin/catalog/grades/seed/', AdminGradeSeedView.as_view(), name='admin-catalog-grades-seed'),
+    path('admin/catalog/settings/', AdminCatalogSettingsView.as_view(), name='admin-catalog-settings'),
+    path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
+    path('catalog/models/<slug:slug>/', PublicModelDetailView.as_view(), name='catalog-model'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
     path('admin/products/<int:pk>/images/<int:image_id>/', AdminProductImageDetailView.as_view(), name='admin-product-image'),
     path('admin/products/<int:pk>/inventory-adjust/', AdminProductInventoryAdjustView.as_view(), name='admin-product-inventory-adjust'),
@@ -384,6 +430,8 @@ urlpatterns = [
     path('admin/products/<int:pk>/barcodes/', AdminProductBarcodeView.as_view(), name='admin-product-barcodes'),
     path('admin/pos/preview/', AdminPosPreviewView.as_view(), name='admin-pos-preview'),
     path('admin/sales/dashboard/', AdminSalesDashboardView.as_view(), name='admin-sales-dashboard'),
+    # DC1 — margen comercial: `sales.analytics.view` + `costs.view`.
+    path('admin/sales/margin/', AdminSalesMarginView.as_view(), name='admin-sales-margin'),
     path('admin/sales/commissions/', AdminCommissionsView.as_view(), name='admin-sales-commissions'),
     # --- Commercial Phase C1.3: promotions, combos and coupon administration ---
     path('admin/sales/promotions/', AdminPromotionListView.as_view(), name='admin-promotions'),
@@ -421,6 +469,9 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
     path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
     path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
+    path('admin/inventory/units/<int:pk>/photos/', StockUnitPhotoListView.as_view(), name='admin-inventory-unit-photos'),
+    path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
+         name='admin-inventory-unit-photo'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),

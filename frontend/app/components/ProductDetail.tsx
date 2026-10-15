@@ -7,9 +7,14 @@ import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
-import { getSessionKey, emitCartChange } from "../lib/cart";
+import { emitCartChange } from "../lib/cart";
+import { CartError, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
+import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
+
+/** DC3: how many may be asked «bajo pedido» from this page; the server decides what an offer covers. */
+const ON_ORDER_MAX_QUANTITY = 10;
 
 type Category = { id: number; name: string; slug: string };
 
@@ -26,6 +31,12 @@ type Product = {
   average_rating?: number | null;
   review_count?: number;
   category?: Category;
+  /** DC2: the model this product is one option of (slug), or null. */
+  product_model?: string | null;
+  condition_line?: "new" | "used";
+  sells_by_unit?: boolean;
+  /** DC3: sold «bajo pedido» when the shelf is empty; null when no offer covers it. */
+  on_order?: OnOrder | null;
 };
 
 type Review = {
@@ -133,29 +144,32 @@ export default function ProductDetail({ product }: { product: Product }) {
     }
   }
 
-  async function handleAddToCart() {
+  // DC3: the offer the server proposed when the shelf fell short of the quantity.
+  const [offer, setOffer] = useState<OnOrder | null>(null);
+
+  async function handleAddToCart(onOrder = false) {
     setStatus(null);
+    setOffer(null);
     setLoading(true);
     try {
-      const sessionKey = getSessionKey();
-      // Con `fetchWithAuth`: el carrito es de la sesión del navegador, pero la
-      // cookie de acceso viaja sola y con ella el servidor exige el token CSRF.
-      const res = await fetchWithAuth(`${API_BASE}/cart/add/`, {
-        method: "POST",
-        body: JSON.stringify({ session_key: sessionKey, product: product.id, quantity }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.detail || "No se pudo agregar al carrito.");
-      }
+      // Con `fetchWithAuth` (dentro de `addProductToCart`): el carrito es de la
+      // sesión del navegador, pero la cookie de acceso viaja sola y con ella el
+      // servidor exige el token CSRF.
+      await addProductToCart(product.id, quantity, { onOrder });
+      const unitPrice = onOrder ? Number(product.on_order?.price ?? offer?.price ?? product.price) : Number(product.price);
       setStatusType("success");
-      setStatus("Producto agregado al carrito.");
+      setStatus(onOrder ? "Agregado al carrito bajo pedido." : "Producto agregado al carrito.");
       emitCartChange();
       track({
-        name: "ADD_TO_CART", item: toItem(product, quantity), currency: DEFAULT_CURRENCY,
-        value: Math.round(Number(product.price) * quantity * 100) / 100,
+        name: "ADD_TO_CART", item: toItem({ ...product, price: unitPrice }, quantity), currency: DEFAULT_CURRENCY,
+        value: Math.round(unitPrice * quantity * 100) / 100,
       });
     } catch (error: unknown) {
+      if (error instanceof CartError && error.code === "on_order_available" && error.onOrder) {
+        // Not an error to the buyer: a choice. They decide whether to wait.
+        setOffer(error.onOrder);
+        return;
+      }
       setStatusType("error");
       setStatus(error instanceof Error ? error.message : "Error al agregar.");
     } finally {
@@ -195,6 +209,12 @@ export default function ProductDetail({ product }: { product: Product }) {
 
   const inStock = product.inventory > 0;
   const lowStock = product.inventory > 0 && product.inventory <= 3;
+  // DC3: no shelf, but an offer covers it — sold «bajo pedido», at the offer's price.
+  const onOrder = !inStock && product.on_order ? product.on_order : null;
+  // Owner's decision: with stock, the company may let the buyer ask the supplier anyway — an extra choice, never the default.
+  const overStock = inStock ? overStockOffer(product.on_order) : null;
+  const purchasable = inStock || onOrder !== null;
+  const maxQuantity = inStock ? product.inventory : onOrder ? ON_ORDER_MAX_QUANTITY : 1;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -284,33 +304,54 @@ export default function ProductDetail({ product }: { product: Product }) {
               {product.description || "Consulta el detalle, precio y disponibilidad de este producto."}
             </p>
 
+            {product.product_model ? (
+              <Link
+                href={`/modelo/${product.product_model}${product.condition_line === "used" ? "?line=used" : ""}`}
+                className="mt-4 inline-flex w-fit items-center gap-1 text-sm font-bold text-foreground underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                Ver todas las opciones
+                <span aria-hidden="true">→</span>
+              </Link>
+            ) : null}
+
             <div className="mt-6 flex items-center gap-2 text-sm">
               <span
-                className={`h-2 w-2 rounded-full ${inStock ? "bg-emerald-400" : "bg-muted/40"}`}
+                className={`h-2 w-2 rounded-full ${inStock ? "bg-emerald-400" : onOrder ? "bg-warning" : "bg-muted/40"}`}
                 aria-hidden="true"
               />
-              <span className={inStock ? "text-foreground" : "text-muted"}>
-                {!inStock
-                  ? "Sin stock"
-                  : lowStock
-                    ? `Últimas ${product.inventory} unidades`
-                    : "En stock"}
+              <span data-testid="product-availability" className={purchasable ? "text-foreground" : "text-muted"}>
+                {onOrder
+                  ? onOrderLabel(onOrder.lead_time_days)
+                  : !inStock
+                    ? "Sin stock"
+                    : lowStock
+                      ? `Últimas ${product.inventory} unidades`
+                      : "En stock"}
               </span>
             </div>
 
             <div className="mt-8 rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
-              <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted">Precio</span>
-              <p className="mt-1 font-display text-4xl font-extrabold tabular-nums tracking-[-0.04em] text-foreground sm:text-5xl">
-                S/ {formatMoney(product.price)}
+              <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
+                {onOrder ? "Precio bajo pedido" : "Precio"}
+              </span>
+              <p data-testid="product-price" className="mt-1 font-display text-4xl font-extrabold tabular-nums tracking-[-0.04em] text-foreground sm:text-5xl">
+                S/ {formatMoney(onOrder ? onOrder.price : product.price)}
               </p>
+              {onOrder ? (
+                <p className="mt-2 text-xs leading-5 text-muted">
+                  No lo tenemos en tienda ahora: lo pedimos para ti al confirmar tu compra.
+                </p>
+              ) : null}
 
+              {/* DC2: a product sold device by device adds ONE device per press; there is no quantity to choose. */}
+              {product.sells_by_unit ? null : (
               <div className="mt-6 flex items-center justify-between gap-4 border-t border-bd-border pt-5">
                 <span id="qty-label" className="text-sm font-semibold text-muted">Cantidad</span>
                 <div className="flex overflow-hidden rounded-xl border border-bd-border bg-background" role="group" aria-labelledby="qty-label">
                   <button
                     type="button"
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    disabled={!inStock || quantity <= 1}
+                    disabled={!purchasable || quantity <= 1}
                     className="flex h-11 w-11 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
                     aria-label="Reducir cantidad"
                   >
@@ -321,8 +362,8 @@ export default function ProductDetail({ product }: { product: Product }) {
                   </span>
                   <button
                     type="button"
-                    onClick={() => setQuantity(Math.min(product.inventory, quantity + 1))}
-                    disabled={!inStock || quantity >= product.inventory}
+                    onClick={() => setQuantity(Math.min(maxQuantity, quantity + 1))}
+                    disabled={!purchasable || quantity >= maxQuantity}
                     className="flex h-11 w-11 items-center justify-center text-foreground transition hover:bg-foreground/[0.05] disabled:opacity-30"
                     aria-label="Aumentar cantidad"
                   >
@@ -330,15 +371,22 @@ export default function ProductDetail({ product }: { product: Product }) {
                   </button>
                 </div>
               </div>
+              )}
 
               <button
                 type="button"
-                onClick={handleAddToCart}
-                disabled={loading || !inStock}
+                onClick={() => void handleAddToCart(onOrder !== null)}
+                disabled={loading || !purchasable}
                 className="mt-5 w-full rounded-full bg-foreground px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {loading ? "Agregando…" : !inStock ? "Sin stock" : "Agregar al carrito"}
+                {loading ? "Agregando…" : onOrder ? "Pedir bajo pedido" : !inStock ? "Sin stock" : "Agregar al carrito"}
               </button>
+
+              {offer ? (
+                <OnOrderOfferPrompt offer={offer} busy={loading} onAccept={() => void handleAddToCart(true)} />
+              ) : overStock ? (
+                <OverStockOnOrderOption offer={overStock} busy={loading} onChoose={() => void handleAddToCart(true)} />
+              ) : null}
 
               <Link
                 href="/cart"

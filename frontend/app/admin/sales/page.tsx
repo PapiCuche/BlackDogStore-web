@@ -15,9 +15,10 @@
  *   in separate sections and are labelled as what they are — an estimate is
  *   never printed as though it were a fact.
  *
- * There is no margin, no profit and no ROI here, because the platform does not
- * record what anything cost. A number invented for a dashboard is worse than an
- * absent one.
+ * DC1 — the «Margen comercial» section (`SalesMarginSection`) appears only for
+ * `costs.view`: net sales minus the frozen cost of what was sold, with sales of
+ * unknown cost reported apart. It is a commercial margin, never a profit: no
+ * expenses, commissions or taxes are in it. There is still no ROI here.
  */
 
 import Link from "next/link";
@@ -28,6 +29,8 @@ import {
   type InternalContext,
 } from "../components/InternalControlGuard";
 import { DashboardSection } from "../components/dashboard-ui";
+import { SalesMarginSection } from "../components/SalesMarginSection";
+import { buildInternalAccess } from "../lib/internal-access";
 import { PageHeader, internalButtonClass, internalInputClass } from "../components/internal-ui";
 import {
   fetchReplenishment,
@@ -163,7 +166,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
         <PageHeader
           eyebrow="Ventas"
           title="Resumen comercial"
-          description="Ventas pagadas, comportamiento por canal y señales de reposición sin inventar margen ni rentabilidad."
+          description="Ventas pagadas, comportamiento por canal y señales de reposición. El margen comercial sólo aparece con permiso para ver costos."
           actions={
             <>
               <label className="flex items-center gap-2 text-xs font-semibold text-muted">
@@ -196,6 +199,12 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
             />
           </div>
         </DashboardSection>
+
+        <SalesMarginSection
+          companyId={companyId}
+          branchId={branch}
+          canSeeCosts={buildInternalAccess(ctx.user, ctx.dashboard).can("costs.view", ["admin", "superadmin"])}
+        />
 
         <DashboardSection title="Tendencia" description="Ingresos diarios, últimos 30 días.">
           {data.trend.some((p) => Number(p.revenue) > 0) ? (

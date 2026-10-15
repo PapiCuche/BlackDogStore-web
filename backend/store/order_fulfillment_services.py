@@ -49,7 +49,7 @@ from django.db import transaction
 
 from . import order_risk
 from .commerce_notifications import emit_fulfillment_changed
-from .models import AdminAuditLog, Order, UserProfile
+from .models import AdminAuditLog, Order, OrderItem, UserProfile
 from .permissions import get_user_role
 from .tenancy import has_capability, uses_legacy_bridge
 
@@ -102,6 +102,8 @@ class FulfillmentBlocked(Exception):
 
     UNITS_PENDING = 'units_pending'
     REVIEW_PENDING = 'review_pending'
+    #: DC3 — a line sold on order whose goods have not been received.
+    SUPPLY_PENDING = 'supply_pending'
 
     def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING):
         super().__init__(detail)
@@ -185,6 +187,16 @@ def change_fulfillment_status(
         if new_status in HELD_WHILE_REVIEW_PENDING and order_risk.review_holds_dispatch(order, company):
             raise FulfillmentBlocked(
                 order_risk.REVIEW_PENDING_DETAIL, pending={}, code=FulfillmentBlocked.REVIEW_PENDING,
+            )
+        # DC3. Goods sold «bajo pedido» that have not arrived are not handed
+        # over, sent or announced as ready: nothing fictitious leaves the shop.
+        if new_status in HELD_WHILE_REVIEW_PENDING and order.items.filter(
+            supply_origin=OrderItem.SUPPLY_SUPPLIER,
+        ).exclude(supply_status=OrderItem.SUPPLY_RECEIVED).exists():
+            raise FulfillmentBlocked(
+                'Este pedido tiene productos bajo pedido que aún no se recibieron del proveedor. '
+                'Recíbelos (o resuelve el abastecimiento) antes de marcarlo listo, enviado o entregado.',
+                pending={}, code=FulfillmentBlocked.SUPPLY_PENDING,
             )
         if leaving:
             pending = unit_identification.pending_units(order)

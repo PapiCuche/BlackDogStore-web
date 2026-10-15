@@ -100,6 +100,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         ordering = self.request.query_params.get('ordering')
         if slug:
             queryset = queryset.filter(slug=slug)
+        elif self.action == 'list':
+            # DC2 — a USED variant has no price of its own (each device has
+            # one): it is offered on its model's page, device by device, not
+            # as a card with a price that means nothing.
+            queryset = queryset.exclude(
+                product_model__isnull=False, condition_line=Product.CONDITION_USED,
+            )
         if category:
             queryset = queryset.filter(category__slug=category)
         if search:
@@ -252,10 +259,8 @@ class CreateCheckoutSessionView(APIView):
             if not cart_items:
                 raise checkout.CheckoutError('El carrito está vacío.')
 
-            lines = [
-                checkout.CheckoutLine(product=item.product, quantity=item.quantity)
-                for item in cart_items
-            ]
+            # DC2: a product sold by unit becomes one line per device held.
+            lines = checkout.lines_from_cart(storefront_company, branch, session_key, cart_items)
             subtotal = checkout.validate_lines_and_subtotal(branch, lines)
             pricing = checkout.price_checkout(
                 storefront_company, subtotal, validated.get('coupon_code', ''),
@@ -948,6 +953,32 @@ class PaymentStatusView(APIView):
         return Response(payload)
 
 
+def _shelf_covers_on_order(request, product, quantity):
+    """
+    DC3 — the owner's rule: a sale WITHOUT stock is the only sale «Bajo
+    pedido». While the fulfilment shelf covers the whole line, on order is
+    refused (409 `stock_available`): the buyer takes it from the shelf. Lines
+    are never mixed, so on order is for a line the shelf cannot cover.
+
+    Owner's decision of 2026-10-15: unless the company lets the web buyer
+    choose the supplier anyway (`CompanySettings.web_on_order_over_stock`, off
+    as created). Then the buyer's explicit `on_order` is honoured — the page
+    told them it ships from the supplier in N days — and the order line says
+    it was chosen over stock. Without `on_order` the shelf is always used.
+    """
+    from .supply_services import web_allows_on_order_over_stock
+
+    available = storefront_available_stock(request, product)
+    if available >= quantity and not web_allows_on_order_over_stock(product.company_id):
+        return Response(
+            {'code': 'stock_available',
+             'detail': (f'{product.name} tiene stock en la tienda ({available}): agrégalo con stock, '
+                        'no bajo pedido.')},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None
+
+
 class CartViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -990,6 +1021,41 @@ class CartViewSet(
             'storefront_branch': storefront_fulfillment_branch(self.request),
         }
 
+    def list(self, request, *args, **kwargs):
+        # DC2 — holds that ran out go back to the shelf, and every by-unit line
+        # says what the cart still holds, before the cart is shown.
+        from . import unit_hold_services
+
+        unit_hold_services.sync_cart(
+            request.query_params.get('session_key', ''), resolve_storefront_company(request),
+        )
+        return super().list(request, *args, **kwargs)
+
+    def perform_destroy(self, instance):
+        # DC2 — removing a by-unit line gives its devices back to the shelf.
+        if instance.product.sells_by_unit:
+            from . import unit_hold_services
+
+            unit_hold_services.release(
+                company=instance.product.company, session_key=instance.session_key, product=instance.product,
+            )
+            CartItem.objects.filter(pk=instance.pk).delete()
+            return
+        instance.delete()
+
+    @action(detail=False, methods=['post'], url_path='release-unit')
+    def release_unit(self, request):
+        """POST /api/cart/release-unit/ {session_key, unit} — take one held device out of the cart."""
+        from . import unit_hold_services
+
+        session_key = str(request.data.get('session_key') or '').strip()
+        unit = str(request.data.get('unit') or '').strip()
+        company = resolve_storefront_company(request)
+        if not session_key or not unit or company is None:
+            return Response({'detail': 'session_key y unit son requeridos.'}, status=status.HTTP_400_BAD_REQUEST)
+        released = unit_hold_services.release(company=company, session_key=session_key, unit_public_id=unit)
+        return Response({'released': released})
+
     def partial_update(self, request, *args, **kwargs):
         """PATCH /api/cart/{id}/?session_key=... — only quantity allowed; validates stock."""
         session_key = request.query_params.get('session_key', '').strip()
@@ -1018,6 +1084,12 @@ class CartViewSet(
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if item.product.sells_by_unit and item.supply_origin != CartItem.SUPPLY_SUPPLIER:
+            # DC2 — its quantity is the devices the cart holds: add or remove a device.
+            return Response(
+                {'code': 'by_unit', 'detail': 'Agrega o quita equipos uno por uno.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             quantity = int(request.data.get('quantity', item.quantity))
@@ -1032,6 +1104,24 @@ class CartViewSet(
                 {'detail': 'La cantidad debe ser mayor a 0.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if item.supply_origin == CartItem.SUPPLY_SUPPLIER:
+            # DC3 — on order: an offer has to cover the new quantity, and the
+            # shelf must NOT (sin stock únicamente con «Bajo pedido»).
+            from .supply_services import offer_for_line
+
+            refused = _shelf_covers_on_order(request, item.product, quantity)
+            if refused is not None:
+                return refused
+            if offer_for_line(item.product, quantity) is None:
+                return Response(
+                    {'code': 'not_on_order',
+                     'detail': f'{item.product.name} no está disponible bajo pedido en esa cantidad.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            item.quantity = quantity
+            item.save(update_fields=['quantity'])
+            return Response(CartItemSerializer(item, context=self._cart_context()).data)
 
         # Phase 2D: against the FULFILLMENT branch, the same number checkout
         # will use. Validating against the company aggregate here would let a
@@ -1116,6 +1206,41 @@ class CartViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # DC3 — «Bajo pedido» is asked for, never slid into: the buyer (the
+        # shop's page) says `on_order`, and a line is all shelf or all order.
+        on_order = request.data.get('on_order') in (True, 'true', '1', 1)
+        existing = CartItem.objects.filter(session_key=session_key, product=product).first()
+        if existing is not None and (existing.supply_origin == CartItem.SUPPLY_SUPPLIER) != on_order:
+            return Response(
+                {'code': 'mixed_supply',
+                 'detail': (f'{product.name} ya está en tu carrito '
+                            f'{"bajo pedido" if not on_order else "con stock de la tienda"}. '
+                            'Una línea es de stock o bajo pedido, no las dos: quítala para cambiarla.')},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if on_order:
+            return self._add_on_order(request, session_key, product, quantity)
+
+        if product.sells_by_unit:
+            # DC2 — ONE concrete device per call, held for this cart. The one
+            # the buyer picked (a used device), or the oldest of the variant.
+            from . import order_risk, unit_hold_services
+            from .throttles import DeviceHoldThrottle
+
+            throttle = DeviceHoldThrottle()
+            if not throttle.allow_request(request, self):
+                self.throttled(request, throttle.wait())
+            try:
+                unit_hold_services.hold(
+                    product=product, branch=storefront_fulfillment_branch(request),
+                    session_key=session_key, unit_public_id=str(request.data.get('unit') or '').strip() or None,
+                    origin=order_risk.origin_hash(product.company, request),
+                )
+            except unit_hold_services.HoldError as exc:
+                return Response(exc.body(), status=exc.http_status)
+            item = CartItem.objects.get(session_key=session_key, product=product)
+            return Response(CartItemSerializer(item, context=self._cart_context()).data)
+
         # CONCURRENCY — Phase 0.3 / P0-E.
         #
         # This used to read the row, decide, and then either create or assign
@@ -1153,19 +1278,59 @@ class CartViewSet(
                 # The placeholder row was ours and holds nothing. Leaving it
                 # would put an empty line in a basket the shopper never filled.
                 item.delete()
-            return Response(
-                {
-                    'detail': (
-                        f'Stock insuficiente para {product.name}. '
-                        f'Disponible: {available}, en carrito: {current_qty}.'
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            body = {
+                'detail': (
+                    f'Stock insuficiente para {product.name}. '
+                    f'Disponible: {available}, en carrito: {current_qty}.'
+                )
+            }
+            # DC3 — the shelf does not cover it, an offer would: the page may
+            # offer «Bajo pedido» (the buyer has to take it on purpose).
+            from .supply_services import offer_for_line
+
+            offer = offer_for_line(product, new_qty)
+            if offer is not None:
+                body['code'] = 'on_order_available'
+                body['on_order'] = {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price)}
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
 
         # ADD, not SET. The endpoint's contract is "put n more in the basket",
         # and only the database can add to a number it is holding without first
         # telling us what it is.
         CartItem.objects.filter(pk=item.pk).update(quantity=F('quantity') + quantity)
         item.refresh_from_db(fields=['quantity'])
+        return Response(CartItemSerializer(item, context=self._cart_context()).data)
+
+    def _add_on_order(self, request, session_key, product, quantity):
+        """
+        DC3 — put `quantity` more of `product` in the cart ON ORDER. Nothing is
+        held or committed: an offer must cover the line's new total now, and is
+        checked again at checkout and committed at payment.
+        """
+        from .supply_services import offer_for_line
+
+        with transaction.atomic():
+            item, created = CartItem.objects.select_for_update().get_or_create(
+                session_key=session_key, product=product,
+                defaults={'quantity': 0, 'supply_origin': CartItem.SUPPLY_SUPPLIER},
+            )
+            if item.supply_origin != CartItem.SUPPLY_SUPPLIER:
+                return Response({'code': 'mixed_supply', 'detail': 'Una línea es de stock o bajo pedido.'},
+                                status=status.HTTP_409_CONFLICT)
+            new_qty = item.quantity + quantity
+            refused = _shelf_covers_on_order(request, product, new_qty)
+            if refused is not None:
+                if created:
+                    item.delete()
+                return refused
+            if offer_for_line(product, new_qty) is None:
+                if created:
+                    item.delete()
+                return Response(
+                    {'code': 'not_on_order',
+                     'detail': f'{product.name} no está disponible bajo pedido en esa cantidad.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            CartItem.objects.filter(pk=item.pk).update(quantity=new_qty)
+            item.refresh_from_db(fields=['quantity'])
         return Response(CartItemSerializer(item, context=self._cart_context()).data)

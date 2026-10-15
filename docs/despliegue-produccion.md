@@ -448,9 +448,10 @@ completa. Si una parte falla, el guion termina con error y no toca
 
 ### 6.1.0 Las tareas programadas, de una vez
 
-`deploy/crontab.example` trae las seis líneas de esta sección —copia, sesiones,
-imágenes sin uso, avisos de WhatsApp, conversiones de compra y comprobación de
-estado—. Para instalarlas
+`deploy/crontab.example` trae las líneas de esta sección —copia, sesiones,
+imágenes sin uso, avisos de WhatsApp, conversiones de compra, pagos sin
+notificación, apartados web vencidos (DC2), ofertas de proveedor vencidas (DC3) y
+comprobación de estado—. Para instalarlas
 en el `crontab` del usuario que administra el servidor:
 
 ```sh
@@ -699,6 +700,123 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 (`git checkout <commit anterior>`, `$C build`, `$C up -d`): las migraciones **se dejan
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
+
+**DEVICE-COMMERCE-01 · DC1 (`0126`–`0129`): quién puede ver costos.** `0126` sólo da
+«Ver costos y márgenes» (`costs.view`) a un rol `Administrador` que nadie editó; una empresa
+que personalizó ese rol se queda sin nadie que vea costos, y desde ahí sólo su gestor de
+roles o un MASTER puede otorgarlo. **Después de `migrate`, corre**
+`$C run --rm backend python manage.py costs_view_report` (sólo lectura, sólo cuentas: no
+nombra empresas ni cambia nada). Si alguna cifra no es 0, otórgalo a mano donde
+corresponda (Accesos › Roles de la empresa) tras confirmarlo con el propietario. `0129`
+marca como «costo pendiente» el stock que ya había sin promedio
+(`BranchStock.uncosted_quantity = quantity`): es el único dato que escribe.
+
+**DEVICE-COMMERCE-01 · DC2 (`0130`–`0133`): equipos por unidad y apartados web.** Las
+cuatro son aditivas (columnas nulas o con `db_default`, tablas nuevas vacías) y la versión
+anterior sigue escribiendo mientras `migrate` corre. **Antes de publicar, mide cuánto
+tardan contra el tamaño real de producción**: `0131` da a cada fila de `store_stockunit` su
+`public_id` (`gen_random_uuid()`, volátil: PostgreSQL reescribe la tabla) y `0132` cambia
+índices de `store_orderitem`; cuenta las filas (`SELECT count(*) FROM store_stockunit;` y
+`… store_orderitem;`) y ensaya `migrate` sobre una copia restaurada si son muchas. Después
+de `migrate`, añade al `crontab` la línea `release_expired_unit_holds` de
+`deploy/crontab.example` (cada cinco minutos).
+
+*Volver atrás desde DC2* — en este orden, **antes** de cambiar los contenedores:
+
+1. Pausa los pagos en la consola de integraciones (sólo MASTER, «Pausar pagos nuevos»;
+   ver PAY-PAUSE-ENV si se cobra sólo con variables del servidor): no se abre ningún
+   formulario nuevo.
+2. Pedidos web pendientes de pago con equipos elegidos: la versión anterior no sabe
+   venderlos. Lístalos (simulación, no cambia nada) y luego cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_pending_unit_orders           # lista
+   $C exec -T backend python manage.py cancel_pending_unit_orders --apply   # cancela
+   ```
+   Un formulario que ya estaba abierto todavía puede cobrarse: ese pago lo revisa una
+   persona (devolución o venta a mano).
+3. Todos los apartados web de vuelta al estante (la versión anterior no los vence: se
+   quedarían apartados para siempre). Cada uno deja su línea de Kardex y su registro:
+   ```sh
+   $C exec -T backend python manage.py release_expired_unit_holds --all-web
+   ```
+4. **Quita del `crontab` la línea `release_expired_unit_holds`**: la versión anterior no
+   tiene ese comando.
+5. `git checkout <commit anterior>`, `$C build`, `$C up -d`. Las migraciones `0130`–`0133`
+   **se dejan aplicadas**. Deshacer `0132` se niega si algún pedido tiene dos líneas de
+   equipo de un mismo producto, en vez de perder una.
+
+**DEVICE-COMMERCE-01 · DC3 (`0134`): proveedores y venta bajo pedido.** Aditiva: dos
+tablas nuevas vacías (`store_supplier`, `store_supplieroffer` — con una oferta por proveedor,
+variante y vigencia y un CHECK que exige cantidad confirmada para comprometer) y columnas con `db_default`
+o nulas en `store_product` (`sale_mode` 'stock'), `store_orderitem` (origen, oferta, plazo,
+estado de abastecimiento) y `store_cartitem` (`supply_origin` 'own'). No reescribe datos y
+la versión anterior sigue escribiendo mientras corre. Ningún producto se vende bajo pedido
+hasta que alguien le pone el modo «Stock o bajo pedido» y carga una oferta. Después de
+`migrate`, añade al `crontab` la línea `expire_supplier_offers` de
+`deploy/crontab.example` (cada hora; la tienda ya ignora las ofertas vencidas aunque no
+corra).
+
+*Volver atrás desde DC3* — en este orden, **antes** de cambiar los contenedores:
+
+1. Pausa los pagos en la consola de integraciones (como para DC2).
+2. Pedidos pendientes de pago con líneas bajo pedido: la versión anterior las vendería del
+   estante. Lístalos y cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_pending_on_order_orders           # lista
+   $C exec -T backend python manage.py cancel_pending_on_order_orders --apply   # cancela
+   ```
+   El mismo comando **también vacía las líneas de carrito tomadas bajo pedido** (la versión
+   anterior las leería como de estante y las vendería sin stock): la simulación dice cuántas
+   hay («Líneas de carrito bajo pedido: N») y `--apply` las borra («Quitadas: N»), con una
+   fila de auditoría por empresa (`on_order_cart_lines_removed_before_rollback`).
+3. Pedidos ya PAGADOS con líneas bajo pedido sin recibir (filtro «Abastecimiento» del panel
+   de pedidos): la versión anterior los verá como faltante de stock. Recíbelos antes de
+   volver atrás, o anótalos para resolverlos a mano (recepción de compra + salida, o
+   reembolso). **No uses «Reprocesar salida» en la versión anterior** sobre ellos: los
+   vendería del estante.
+4. **Quita del `crontab` la línea `expire_supplier_offers`**.
+5. `git checkout <commit anterior>`, `$C build`, `$C up -d`. La migración `0134` **se deja
+   aplicada** (la versión anterior no lee sus columnas; sus `db_default` la cubren). Deshacerla
+   borraría proveedores, ofertas y el origen de las líneas vendidas.
+
+**DEVICE-COMMERCE-01 · decisiones del propietario (`0135`).** Aditiva: columnas de
+`CompanySettings` (minutos de apartado 15/45/60, `web_on_order_over_stock` false) y de
+`store_orderitem` (`supply_chosen_over_stock` false, `supply_choice_reason` ''), todas con
+`db_default` igual al comportamiento anterior. **Se deja aplicada** al volver atrás.
+
+*Volver atrás a una versión anterior a DC1 con `0126`–`0135` aplicadas, y regresar.* La
+versión anterior no sabe de costos: escribe sus líneas de Kardex sin costo (`cost_source`
+'', el `db_default`) y **cambia la cantidad del estante sin tocar `average_cost` ni
+`uncosted_quantity`**. Al regresar, un estante podría contar como «de costo conocido»
+unidades que entraron sin costo. Por eso:
+
+1. Anota la hora (con zona) en que la versión anterior quedó en línea: es `--since`.
+2. Al regresar a esta versión (después de `$C up -d`), mira qué estantes quedaron así
+   (sólo lectura, no cambia nada):
+   ```sh
+   $C exec -T backend python manage.py uncosted_after_rollback --since 2026-10-20T14:00:00-05:00
+   ```
+3. Si lista estantes, márcalos:
+   ```sh
+   $C exec -T backend python manage.py uncosted_after_rollback --since 2026-10-20T14:00:00-05:00 --apply
+   ```
+   Bajo el bloqueo de cada estante, lo que entró sin costo desde `--since` pasa a «costo
+   pendiente» (nunca más que el stock; como si cada salida se hubiera llevado unidades de
+   costo conocido, así la parte conocida nunca se exagera), y el promedio se vacía si ya no
+   queda nada de costo conocido. **No inventa ningún costo** y no recalcula el promedio.
+   Marca esas líneas como `unknown`, así que repetirlo no cambia nada, y deja una fila de
+   auditoría por estante (`uncosted_recomputed_after_rollback`). Los equipos (costo por
+   unidad) sólo se listan: revisa su costo en Inventario › Equipos.
+4. Si prefieres no escribir: el informe del paso 2 es la lista para revisar a mano (Kardex
+   del producto en esa sucursal desde esa hora; registra una entrada con costo o deja el
+   estante como está, sabiendo que su margen será sólo estimado).
+
+**Al fusionar con #119 (ORDER-CANCEL-01).** #119 añade el tipo `ORDER_CANCEL_RETURN` y
+devuelve el stock de un pedido cancelado sin pasar costo; esta rama no lo conoce. Lo cubre
+la regla «lo que vuelve de la venta de un pedido vuelve al costo de su salida» **si esa
+entrada se escribe con `order=`**. Si no, antes de desplegar la fusión: añade
+`ORDER_CANCEL_RETURN` a `StockMovement.RETURN_TYPES` o pásale el `unit_cost` de la salida, y
+prueba que una cancelación de una venta por cantidad no vuelve como «costo desconocido».
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

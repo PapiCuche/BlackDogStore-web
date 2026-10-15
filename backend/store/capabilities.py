@@ -103,6 +103,16 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Registrar entradas, salidas, transferencias y recuentos.', STATUS_ACTIVE),
     _cap('inventory.reports', 'inventory', 'Reportes de inventario',
          'Ver reportes de stock, rotación y reposición.', STATUS_ACTIVE),
+    # DEVICE-COMMERCE-01 · DC1. What a thing COST is its own authority, and it
+    # is NOT `inventory.adjust`: whoever puts a device on the shelf does not
+    # thereby see what the shop paid for it, nor the margin it leaves. Owner's
+    # decision (2026-10-14): granted by default to the administration preset and
+    # to the legacy admin/superadmin roles only. It gates every surface that
+    # returns a cost — the unit list, the inventory exports, the valuation at
+    # cost and the commercial margin of the sales dashboard.
+    _cap('costs.view', 'inventory', 'Ver costos y márgenes',
+         'Ver el costo de productos y equipos, el inventario valorizado al costo y '
+         'el margen comercial estimado de las ventas.', STATUS_ACTIVE),
 
     # --- sales (module exists; endpoints still legacy-authorised) ---
     # ENFORCED from M6.

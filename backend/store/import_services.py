@@ -372,6 +372,11 @@ class CatalogueIndex:
 # Preview
 # =============================================================================
 
+#: DC1 review — what a caller without `costs.view` reads on a row that brings
+#: a «Costo de referencia»: the same sentence whatever the cell says, so no
+#: value can be compared against the stored one.
+COST_COLUMN_IGNORED = 'Columna «Costo de referencia» ignorada: requiere permiso de costos.'
+
 DEFAULT_OPTIONS = {
     'mode': 'upsert',                    # or 'create_only'
     'create_missing_categories': False,  # §33 — default FALSE, deliberately
@@ -422,6 +427,29 @@ def _row_values(values, mapping, headers):
     return out, formulas
 
 
+def _drop_foreign_variant_columns(company, headers, mapping) -> str:
+    """
+    DC2 review — the variant columns are read only when the file looks like
+    the DC2 template (it has «Línea» or «Capacidad») AND the company has at
+    least one device model. Otherwise they are dropped from `mapping`, and
+    the one notice for the whole file is returned ('' = nothing dropped).
+    """
+    fields = [field for field in import_formats.VARIANT_HEADERS if field in mapping]
+    if not fields:
+        return ''
+    from .models import ProductModel
+
+    marker = import_formats.find_column(
+        headers, (*import_formats.VARIANT_HEADERS['line'], *import_formats.VARIANT_HEADERS['capacity']))
+    if marker is not None and ProductModel.objects.filter(company=company).exists():
+        return ''
+    names = ', '.join(f'«{str(headers[mapping[field]]).strip()}»' for field in fields)
+    for field in fields:
+        del mapping[field]
+    return (f'Las columnas {names} no se leen como modelo y opciones de equipo: el archivo no tiene «Línea» '
+            'ni «Capacidad», o la empresa no tiene modelos de equipo. El resto del archivo se carga como siempre.')
+
+
 def preview_products(*, company, actor, upload, filename, sheet_name=None,
                      header_row=None, mapping=None, options=None, images=None):
     """
@@ -468,6 +496,10 @@ class _GalleryIndex:
 def _preview_products(*, company, actor, upload, filename, sheet_name, header_row,
                       mapping, options, stager):
     options = {**DEFAULT_OPTIONS, **(options or {})}
+    # Decided here, from who is asking — never from the request's options.
+    from .cost_services import user_may_view_costs
+
+    costs_allowed = user_may_view_costs(actor, company)
     # Before the file is even opened: an option that names another company's
     # category refuses the whole request, and leaves no job behind.
     default_category = _default_category(company, options.get('default_category_id'))
@@ -540,6 +572,23 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 f'(e-commerce o sólo stock interno).'
             )
 
+    # DC1 — the same for the reference cost: a remembered mapping predates it.
+    if 'reference_cost' not in mapping:
+        found = import_formats.find_column(
+            headers, import_formats.REFERENCE_COST_HEADERS, taken=mapping.values())
+        if found is not None:
+            mapping['reference_cost'] = found
+    # DC2 — and for the variant columns.
+    for field, wanted in import_formats.VARIANT_HEADERS.items():
+        if field not in mapping:
+            found = import_formats.find_column(headers, wanted, taken=mapping.values())
+            if found is not None:
+                mapping[field] = found
+    # …but only for a file that IS the DC2 template, in a company that has
+    # device models. A product file from before DC2 often has a «Modelo»
+    # (a part number) or a «Color» column: read as variants, every row failed.
+    variant_note = _drop_foreign_variant_columns(company, headers, mapping)
+
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
         original_filename=_safe_filename(filename),
@@ -565,6 +614,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     standing = {
         state['pk']: state for state in Product.objects.filter(company=company).values(
             'pk', 'is_published_online', 'is_active', 'price', 'image_url', 'category_id',
+            'reference_cost',
         )
     }
     # ONE rule for the bulk action and for this load (`product_publication`).
@@ -576,6 +626,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_barcodes: dict[str, int] = {}
     seen_names: dict[str, int] = {}
     seen_identified: dict[int, int] = {}
+    seen_variants: dict[tuple, int] = {}
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -624,6 +675,17 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             price, price_error = clean_price(fields.get('price'))
             if price_error:
                 errors.append(price_error)
+
+        # DC1 — the catalogue's reference cost. Blank changes nothing.
+        reference_cost = None
+        if 'reference_cost' in mapping and not costs_allowed:
+            # Not read at all: neither its value nor whether it is valid.
+            if str(fields.get('reference_cost') or '').strip():
+                warnings.append(COST_COLUMN_IGNORED)
+        elif 'reference_cost' in mapping:
+            reference_cost, cost_error = clean_price(fields.get('reference_cost'))
+            if cost_error:
+                errors.append('Costo de referencia: ' + cost_error.replace('El precio', 'el costo'))
 
         if barcode:
             warnings.extend(barcode_warnings(
@@ -823,6 +885,42 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             # Kept so that apply resolves the row the same way the preview did.
             'identifier': identifier,
         }
+        if reference_cost is not None:
+            normalized['reference_cost'] = str(reference_cost)
+            before = (standing.get(product_id) or {}).get('reference_cost')
+            if product_id and before != reference_cost:
+                # What it was is the company's knowledge: `costs.view` only
+                # (stripped from the job for anybody else, `import_views`).
+                normalized['reference_cost_before'] = str(before) if before is not None else ''
+                warnings.append(f'Costo de referencia: pasa a {reference_cost}.')
+
+        # DC2 — «Modelo» (+ «Capacidad», «Color», «Línea»): this product is
+        # that variant. Checked now so apply cannot fail on it; without
+        # «Modelo» the other three are not read and nothing changes.
+        model_name = fields.get('model', '') if 'model' in mapping else ''
+        if model_name:
+            from . import device_catalog
+
+            try:
+                spec = device_catalog.resolve_variant_spec(
+                    company, model_name=model_name, line_text=fields.get('line', ''),
+                    labels=[fields.get('capacity', ''), fields.get('colour', '')],
+                )
+            except device_catalog.CatalogError as exc:
+                errors.append(str(exc))
+            else:
+                holder = device_catalog.find_variant(company, spec)
+                key = (spec['model_id'], spec['condition_line'], spec['variant_key'])
+                if holder is not None and holder.pk != product_id:
+                    errors.append(f'«{holder.name}» ya es esa variante de «{spec["model_name"]}».')
+                elif key in seen_variants:
+                    errors.append(f'Otra fila ({seen_variants[key]}) ya es esa variante.')
+                else:
+                    seen_variants[key] = row_number
+                    normalized['variant'] = {
+                        'model_id': spec['model_id'], 'condition_line': spec['condition_line'],
+                        'option_ids': spec['option_ids'],
+                    }
 
         if errors:
             action = BulkImportRow.ERROR
@@ -931,7 +1029,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     job.summary = {
         'reader_notes': reader_notes,
         'detected': (detected or {}).get('label', ''),
-        'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else [])],
+        'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else []),
+                         *([variant_note] if variant_note else [])],
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
         'media': media_summary,
@@ -974,6 +1073,9 @@ def apply_products(*, job, actor):
 
     options = {**DEFAULT_OPTIONS, **(job.options_snapshot or {})}
     company = job.company
+    from .cost_services import user_may_view_costs
+
+    costs_allowed = user_may_view_costs(actor, company)
     index = CatalogueIndex(company)
     taken_slugs: set[str] = set()
     created = updated = images_added = 0
@@ -1058,6 +1160,10 @@ def apply_products(*, job, actor):
 
         price_text = data.get('price', '')
         price = Decimal(price_text) if price_text else None
+        cost_text = data.get('reference_cost', '')
+        # Whoever APPLIES needs `costs.view` too: a job previewed by somebody
+        # who has it is not a way to write a cost for somebody who has not.
+        reference_cost = Decimal(cost_text) if cost_text and costs_allowed else None
 
         if product_id:
             product = Product.objects.select_for_update().get(
@@ -1067,6 +1173,10 @@ def apply_products(*, job, actor):
             if price is not None and product.price != price:
                 product.price = price
                 changes.append('price')
+            # DC1. A blank cell leaves the reference cost alone, like any other.
+            if reference_cost is not None and product.reference_cost != reference_cost:
+                product.reference_cost = reference_cost
+                changes.append('reference_cost')
             # §37 — a blank cell means "leave it alone", never "erase it".
             # Wiping a description because a column was empty destroys work
             # nobody asked to destroy.
@@ -1134,6 +1244,7 @@ def apply_products(*, job, actor):
                 category_id=category_id,
                 is_published_online=publish,
                 is_active=born_active,
+                reference_cost=reference_cost,
             )
             product.full_clean()
             product.save()
@@ -1158,6 +1269,30 @@ def apply_products(*, job, actor):
 
         if data.get('publication_refused'):
             not_published += 1
+
+        # DC2 — the variant the preview approved. A product that already is
+        # exactly that variant is left alone.
+        wanted_variant = data.get('variant')
+        if wanted_variant:
+            from . import device_catalog
+
+            current = (product.product_model_id, product.condition_line, product.variant_key)
+            target = (wanted_variant['model_id'], wanted_variant['condition_line'],
+                      device_catalog.variant_key(wanted_variant['option_ids']))
+            if current != target:
+                try:
+                    device_catalog.set_variant(
+                        product, model_id=wanted_variant['model_id'],
+                        condition_line=wanted_variant['condition_line'],
+                        option_ids=wanted_variant['option_ids'], actor=actor,
+                    )
+                except device_catalog.CatalogError as exc:
+                    raise ImportError_(
+                        f'Fila {row.row_number}: {exc} Vuelve a subir el archivo.'
+                    ) from None
+                if not counted:
+                    updated += 1
+                    counted = True
 
         placed = _place_row_images(row, product, data.get('images') or [], actor)
         images_added += placed

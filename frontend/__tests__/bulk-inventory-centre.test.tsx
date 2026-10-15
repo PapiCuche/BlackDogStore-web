@@ -31,8 +31,8 @@ jest.mock('@/app/admin/components/BulkImageImport', () => ({
 
 const mocked = api as jest.Mocked<typeof api>;
 
-const ALL = { productsManage: true, inventoryAdjust: true, productsView: true, inventoryView: true };
-const NONE = { productsManage: false, inventoryAdjust: false, productsView: false, inventoryView: false };
+const ALL = { productsManage: true, inventoryAdjust: true, productsView: true, inventoryView: true, costsView: true };
+const NONE = { productsManage: false, inventoryAdjust: false, productsView: false, inventoryView: false, costsView: false };
 
 const job = (over: Partial<api.ImportJob> = {}): api.ImportJob => ({
   id: 1, import_type: 'products', status: 'applied', stock_mode: '', original_filename: 'productos.xlsx',
@@ -137,12 +137,17 @@ describe('las secciones, según lo que la persona puede hacer', () => {
   });
 
   it('exportar e imágenes reciben la empresa y lo que la persona puede', async () => {
-    await show({ ...ALL, inventoryAdjust: false });
+    await show({ ...ALL, costsView: false });
     expect(JSON.parse(screen.getByTestId('exportar').dataset.props!)).toEqual({
       companyId: 7, canCatalogue: true, canInventory: true, canSeeCost: false,
     });
     expect(JSON.parse(screen.getByTestId('imagenes').dataset.props!)).toEqual({ companyId: 7 });
     expect(section('Imágenes')).toHaveAttribute('id', 'imagenes');
+  });
+
+  it('el costo en las descargas es de `costs.view`, no de ajustar inventario (DC1)', async () => {
+    await show({ ...ALL, inventoryAdjust: false, costsView: true });
+    expect(JSON.parse(screen.getByTestId('exportar').dataset.props!).canSeeCost).toBe(true);
   });
 });
 

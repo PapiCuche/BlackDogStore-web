@@ -3,6 +3,103 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` por el PR #123 — IMPLEMENTADO, NO DESPLEGADO
+
+El propietario autorizó el merge de #123 (no el despliegue). Producción sigue en `041d0fd`
+(migraciones hasta `0123`); nada de esta fase corre allí.
+
+**Migraciones `0126`–`0135`:** cadena lineal desde `0123`, una sola hoja. Medidas en una base
+desechable con 200 000 pedidos y líneas y 50 000 equipos: ida completa 4–6 s, vuelta a `0123`
+7–9 s; `0131` 2,8 s y `0132` 1,2 s. Son cambios de catálogo salvo `0131` (reescribe
+`store_stockunit`). Una primera corrida quedó 9 minutos en `0128` **esperando un bloqueo**
+(ALTER TABLE pide ACCESS EXCLUSIVE y espera detrás de cualquier transacción abierta sobre
+`store_orderitem`); repetida, tardó 0 s. En producción, `migrate` debe correr con
+`lock_timeout` (p. ej. `PGOPTIONS='-c lock_timeout=5s'`) para fallar rápido en vez de
+encolar el checkout detrás.
+
+**PR abiertos #119–#122:** #119 y #120 traen cada uno su `0124` y #121 una `0125`. No se
+renumera nada: el PR que se fusione después de #123 añade su migración de fusión
+(`makemigrations --merge`), sin AlterField pendientes (revisado sobre los grafos).
+
+**Preflight para autorizar el despliegue (pendiente, no hecho):**
+1. Copia de seguridad y restauración verificada; imágenes etiquetadas `rollback-<sha>`.
+2. Ensayo de `0126`–`0135` sobre una copia de la base de producción con la imagen nueva
+   (ida, vuelta, ida; esquema idéntico), y `migrate` en producción con `lock_timeout`.
+3. `costs_view_report` tras migrar: asignar `costs.view` a mano sólo en empresas cuyo rol
+   Administrador fue personalizado; nunca a vendedores por defecto.
+4. Cron: `release_expired_unit_holds` y `expire_supplier_offers`; `ops_status` revisado.
+5. Prueba con sesión (propietario): reserva y compra de una unidad exacta con pago TEST de
+   Izipay, POS con stock y bajo pedido, oferta vencida → «por confirmar», margen y
+   «Valor al costo» con y sin `costs.view`, carga de ofertas por Excel.
+6. Al fusionar #119 (cancelación): su devolución debe heredar el costo de la salida de venta
+   (lista en `docs/despliegue-produccion.md` §7).
+7. No tocar el `deploy/Caddyfile` local del servidor ni las variables de entorno.
+
+## 2026-10-15 — DEVICE-COMMERCE-01 · decisiones del propietario implementadas en rama local
+
+- Rama `feat/device-commerce`, commits locales sin push; **no desplegado**. Tres decisiones del
+  propietario aprobadas el 2026-10-15 (DEC-DEVICE-COMMERCE-01 · Decisiones del propietario):
+  1. Apartados de equipos con duración por empresa y canal (carrito 15, checkout 45, tope 60
+     al crear; con límites) y un apartado cuyo pedido tiene un pago que la pasarela aún puede
+     confirmar no se libera por vencimiento hasta que la conciliación decida (2 h, o mientras
+     la respuesta sea indecidible); liberación idempotente bajo bloqueo.
+  2. «Bajo pedido» con stock propio sólo por elección explícita: en caja con
+     `sales.orders.manage` y motivo; en la web sólo si la empresa lo permite (apagado al
+     crear). La línea guarda fuente, costo, plazo, la marca y el motivo; queda auditado.
+  3. Margen estimado y realizado, costo desconocido y reembolsos aparte, con importe y %.
+- Migración `0135` (aditiva). Sin cron nuevo.
+- Sigue pendiente (deuda): seminuevos de proveedor externo, reembolsos a mano, bajo pedido
+  en la app nativa, fricciones del carrito.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC3 en rama local (y segunda revisión de DC2)
+
+- Rama `feat/device-commerce`, commits locales sin push. DC3 (DEC-DEVICE-COMMERCE-01 · DC3):
+  proveedores y ofertas por variante (precio comercial, costo pactado sólo con
+  `costs.view`, cantidad confirmada, vigencia, plazo), modo «Bajo pedido» por producto,
+  venta bajo pedido en la web y en caja (la oferta se compromete al pagar, sin movimiento
+  de stock; oferta vencida o agotada al pagar → pago registrado y «abastecimiento por
+  confirmar»), recibir del proveedor (entrada + salida, neto cero), «no se pudo abastecer»,
+  carga Excel semanal y exportación, resumen «pendiente de liquidar al proveedor» (sólo
+  lectura, gancho de PAYABLES-01).
+- Segunda revisión de DC2: el reparto del estante sólo desde 4 equipos más un techo por
+  empresa; el pedido pagado gana su equipo; orden de bloqueos en el apartado; costo de
+  entrada de equipos sin costo propio.
+- Migración `0134` (aditiva). Nuevo cron: `expire_supplier_offers` cada hora.
+- PENDIENTE: seminuevos de proveedor externo (diseño en la DEC). Pendiente del
+  propietario: las decisiones «por confirmar» de DC3 y del techo de apartados.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2 en rama local (y revisión de DC1)
+
+- Rama `feat/device-commerce`, commits locales sin push. DC2 (DEC-DEVICE-COMMERCE-01 · DC2):
+  modelos con variantes (capacidad, color… configurables por empresa), pestañas
+  «Nuevos» / «Seminuevos» con rótulos de la empresa, página de modelo, seminuevos uno por
+  uno (batería o «no informado», estado estético, fotos reales, precio propio, IMEI sólo
+  en sus 4 últimos dígitos) y **compra de unidad concreta** para nuevos y seminuevos: el
+  carrito aparta el equipo y el pago vende ese equipo. Excel con las columnas nuevas.
+- Revisión independiente de DC1: cinco P2 y los P3 corregidos (ver la DEC). Tras `migrate`,
+  correr `costs_view_report`.
+- Migraciones: `0129` (DC1 revisión, `uncosted_quantity` + marca del stock sin costo),
+  `0130`–`0132` (DC2). Dependen de `0128` → `0123`; hay PR abiertos con `0124`/`0125`:
+  se renumeran al fusionar.
+- Nuevo cron: `release_expired_unit_holds` cada pocos minutos (también se libera al leer).
+- Pendiente del propietario: confirmar las decisiones marcadas «por confirmar» (precio por
+  equipo en líneas separadas, productos serializados sin modelo con SERIAL-PICK, salida
+  primero de lo que no tiene costo), y crear modelos/opciones/escala en su empresa.
+- Siguiente: DC3 (disponibilidad de proveedor sobre `availability`).
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1 en rama local
+
+- Rama `feat/device-commerce` desde `master` `abfc6bd`, commits locales sin push.
+- Costos y margen comercial (DEC-DEVICE-COMMERCE-01): `costs.view`, costo promedio por
+  sucursal y costo específico por equipo en el Kardex, instantáneas de costo y base sin IGV
+  en cada línea vendida, `GET /api/admin/sales/margin/`, inventario al costo y columnas de
+  costo en las cargas y descargas. Cierra la fuga de costo de la lista de equipos.
+- Migraciones `0126`–`0128` dependen de `0123`; hay PR abiertos con `0124`/`0125`: se
+  renumeran al fusionar.
+- Pendiente del propietario: confirmar las decisiones marcadas en DEC-DEVICE-COMMERCE-01
+  (costos sin IGV, «Precio costo» como referencia, margen sólo sobre líneas con costo).
+- Siguiente: DC2 (desgloses por unidad/variante).
+
 ## 2026-10-14 — #115, #116 y #117 en `master` y desplegados
 
 | | #115 | #116 | #117 |

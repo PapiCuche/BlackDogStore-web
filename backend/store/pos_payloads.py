@@ -27,7 +27,7 @@ that could grant something would be a permission system nobody reviewed.
 
 from __future__ import annotations
 
-from . import inventory_services, pos_services
+from . import inventory_services, pos_services, supply_services
 from .models import PaymentMethod
 
 
@@ -54,6 +54,8 @@ def product_payload(product, branch, *, barcode=None) -> dict:
         # the IMEI or serial of each one before it can charge.
         'is_serialized': product.is_serialized,
         'requires_imei': product.requires_imei,
+        # DC3: «Bajo pedido» — its lead time and price — or null.
+        'on_order': supply_services.on_order_payload(product),
     }
 
 
@@ -61,6 +63,7 @@ def context_payload(
     company, branches, *, default_branch, actor,
     can_manage_customers: bool, can_assign_seller: bool,
     can_apply_discount: bool, can_view_commissions: bool, sellers, receipt_options=None,
+    can_order_over_stock: bool = False,
 ) -> dict:
     """
     What this till may do, before it opens.
@@ -90,6 +93,8 @@ def context_payload(
         'can_assign_seller': can_assign_seller,
         'can_apply_discount': can_apply_discount,
         'can_view_commissions': can_view_commissions,
+        # Owner, 2026-10-15: may sell on order a line the shelf covers, with a reason.
+        'can_order_over_stock': can_order_over_stock,
         'seller': {
             'id': actor.pk,
             'username': actor.get_username(),
@@ -178,6 +183,9 @@ def preview_payload(priced, *, may_see_commission: bool) -> dict:
             {
                 'product': p.pk, 'name': p.name,
                 'quantity': q, 'price': str(u),
+                'on_order': p.pk in priced.get('offers', {}),
+                'lead_time_days': (priced['offers'][p.pk].lead_time_days
+                                   if p.pk in priced.get('offers', {}) else None),
             }
             for p, q, u in priced['lines']
         ],

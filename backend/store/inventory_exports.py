@@ -97,13 +97,28 @@ PRODUCT_SHEET = 'Productos'
 #: The file to RELOAD: the owner's template plus what only a download knows.
 #: The template itself does not gain these columns.
 PRODUCT_RELOAD_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [STATE_HEADER, IDENTIFIER_HEADER]
-_IDENTIFIER_COLUMN = len(PRODUCT_RELOAD_HEADERS) - 1
 PRODUCT_REPORT_HEADERS = import_exports.PRODUCT_TEMPLATE_HEADERS + [
     'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar',
 ]
-STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad']
+STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad',
+                        'Costo promedio']
+UNIT_REASON_HEADER = 'Motivo / referencia'
 #: The report says what happened to each device instead of asking why it came in.
-UNIT_REPORT_HEADERS = unit_import_services.HEADERS[:-1] + ['Estado', 'Fecha de ingreso', 'Pedido', 'Notas']
+UNIT_REPORT_HEADERS = [header for header in unit_import_services.HEADERS if header != UNIT_REASON_HEADER] + [
+    'Estado', 'Fecha de ingreso', 'Pedido', 'Notas',
+]
+
+#: ROWS ARE WRITTEN BY HEADER, NEVER BY POSITION. Each row is a {header: value}
+#: projected onto its header list (`_project`), so a column the template gains
+#: can never shift «Estado» or «Identificador» under another heading — which is
+#: what happened when DC2 grew the templates and a reload lost its identities.
+#: The template columns a download leaves EMPTY on purpose; every other one is
+#: filled (`test_inventory_exports.TemplateDriftTest` holds both lists to it).
+PRODUCT_LEFT_EMPTY = ('Imagen principal', 'Imágenes')
+UNIT_LEFT_EMPTY = (UNIT_REASON_HEADER,)
+#: Identifiers: text cells whatever they look like.
+PRODUCT_TEXT_HEADERS = ('Código de barras', 'Código', IDENTIFIER_HEADER)
+UNIT_TEXT_HEADERS = ('Código', 'Número de serie', 'IMEI', 'IMEI 2')
 
 TYPE_SERIALIZED, TYPE_QUANTITY = 'serialized', 'quantity'
 TYPE_LABELS = {True: 'Por serie', False: 'Por cantidad'}
@@ -172,7 +187,7 @@ class ExportFilters:
     condition: str = ''
     visibility: str = ''
     is_active: str = ''
-    #: Whether «Costo» is written: only for a caller who may adjust inventory.
+    #: Whether any cost column carries data: only for a caller holding `costs.view` (DC1).
     include_cost: bool = False
 
     def audit(self) -> dict:
@@ -259,6 +274,114 @@ def _check_rows(count: int) -> None:
         raise TooManyRows(count)
 
 
+def _project(headers, values: dict) -> list:
+    """A row in the order of `headers`. A header the row does not fill is empty."""
+    return [values.get(header) for header in headers]
+
+
+def _columns_of(headers, names) -> tuple:
+    return tuple(index for index, header in enumerate(headers) if header in names)
+
+
+# =============================================================================
+# DC2 — model, options, line, grade: written so that they READ BACK the same
+# =============================================================================
+
+def _folded(text) -> str:
+    """How `iexact` compares, after the importer's own whitespace cleaning."""
+    return ' '.join(str(text or '').split()).casefold()
+
+
+class _VariantCells:
+    """
+    «Modelo», «Capacidad», «Color» and «Línea» of a product, as the importers
+    will read them back (`device_catalog.resolve_variant_spec`).
+
+    The four are written ONLY when reading them back names exactly the variant
+    the product is. Otherwise they stay empty — and an empty «Modelo» leaves a
+    product's variant as it is — because a near miss would be worse than
+    nothing: a model name two models share (`iexact`), an option label two
+    attributes share, or a product with options the two columns cannot hold
+    would re-link it, or fail its row, on reload.
+    """
+
+    def __init__(self, company):
+        from collections import Counter, defaultdict
+
+        from .models import ProductModel, ProductVariantOption, VariantAttribute, VariantOption
+
+        self.model_names = Counter(_folded(name) for name in
+                                   ProductModel.objects.filter(company=company).values_list('name', flat=True))
+        self.option_labels = Counter(_folded(label) for label in
+                                     VariantOption.objects.filter(company=company).values_list('label', flat=True))
+        self.options = defaultdict(list)
+        for product_id, label, kind in ProductVariantOption.objects.filter(company=company).values_list(
+                'product_id', 'option__label', 'attribute__kind'):
+            self.options[product_id].append((label, kind))
+        self.colour_kind = VariantAttribute.KIND_COLOR
+        self.lines = dict(Product.CONDITION_LINE_CHOICES)
+
+    def _reads_back(self, text) -> bool:
+        return ' '.join(str(text).split()) == text
+
+    def __call__(self, product) -> dict:
+        model = product.product_model
+        if model is None:
+            return {}
+        name = model.name
+        if not self._reads_back(name) or self.model_names[_folded(name)] != 1:
+            return {}
+        capacity, colour = [], []
+        for label, kind in self.options.get(product.pk, ()):
+            if not self._reads_back(label) or self.option_labels[_folded(label)] != 1:
+                return {}
+            (colour if kind == self.colour_kind else capacity).append(label)
+        if len(capacity) > 1 or len(colour) > 1:
+            return {}
+        return {
+            'Modelo': name,
+            'Capacidad': capacity[0] if capacity else None,
+            'Color': colour[0] if colour else None,
+            'Línea': self.lines.get(product.condition_line),
+        }
+
+
+class _GradeCells:
+    """
+    «Estado estético» as `stock_unit_services.clean_grade` will read it back:
+    the grade's label, or its code when the label would name another grade.
+    An inactive grade is refused on load, so the file to reload leaves it empty.
+    """
+
+    def __init__(self, company):
+        from .models import CosmeticGrade
+
+        self.grades = list(CosmeticGrade.objects.filter(company=company))
+        self.active = [grade for grade in self.grades if grade.is_active]
+
+    def _resolves(self, text):
+        """`clean_grade`, in memory."""
+        text = str(text).strip()
+        if text.isdigit():
+            found = next((grade for grade in self.active if grade.pk == int(text)), None)
+            if found is not None:
+                return found
+        folded = text.casefold()
+        return (next((grade for grade in self.active if grade.code.casefold() == folded), None)
+                or next((grade for grade in self.active if grade.label.casefold() == folded), None))
+
+    def __call__(self, grade_id, *, report: bool):
+        grade = next((grade for grade in self.grades if grade.pk == grade_id), None) if grade_id else None
+        if grade is None:
+            return None
+        if report:
+            return grade.label
+        for text in (grade.label, grade.code):
+            if text and self._resolves(text) == grade:
+                return text
+        return None
+
+
 # =============================================================================
 # Which products
 # =============================================================================
@@ -297,13 +420,15 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
     The catalogue. `(bytes, rows)`.
 
     `reimport` is the product template — its sheet, its headers — plus
-    «Estado». The image columns are left EMPTY: an empty cell changes nothing
+    «Estado» and «Identificador», each value written under ITS header (DC2
+    grew the template; a row built by position put the identifier under
+    «Capacidad»). The image columns are left EMPTY: an empty cell changes nothing
     on import, and a picture travels as a file, not as a cell. Active and
     inactive products, unless `is_active` narrows it.
 
     Existence (`stock`) is the company's total here: the catalogue has no branch.
     """
-    queryset = _products(company, filters).select_related('category')
+    queryset = _products(company, filters).select_related('category', 'product_model')
     if filters.stock == STOCK_IN:
         queryset = queryset.filter(inventory__gt=0)
     elif filters.stock == STOCK_OUT:
@@ -317,42 +442,54 @@ def products_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes
     codes = import_exports.product_codes(company)
     labels = product_publication.PROBLEM_LABELS
     require_image = product_publication.requires_image(company) if report else False
+    variant_cells = _VariantCells(company)
+    headers = PRODUCT_REPORT_HEADERS if report else PRODUCT_RELOAD_HEADERS
     rows = []
     for product in queryset.iterator(chunk_size=2000):
         slot = codes.get(product.pk, {})
-        row = [
-            slot.get('external', ''),
-            slot.get('internal', ''),
-            product.name,
-            product.description,
-            product.price,
-            product.category.name if product.category_id else '',
-            '',
-            '',
-            DESTINATION_LABELS[DESTINATION_ONLINE if product.is_published_online else DESTINATION_INTERNAL],
-        ]
+        # «Imagen principal» and «Imágenes» stay empty (PRODUCT_LEFT_EMPTY).
+        values = {
+            'Código de barras': slot.get('external', ''),
+            'Código': slot.get('internal', ''),
+            'Nombre': product.name,
+            'Descripción': product.description,
+            'Precio de venta': product.price,
+            'Categoría': product.category.name if product.category_id else '',
+            'Destino': DESTINATION_LABELS[
+                DESTINATION_ONLINE if product.is_published_online else DESTINATION_INTERNAL],
+            # DC1 — only for `costs.view`; empty otherwise, and an empty cell
+            # changes nothing when the file comes back.
+            'Costo de referencia': product.reference_cost if filters.include_cost else None,
+            # DC2 — the variant, only when it reads back as itself.
+            **variant_cells(product),
+        }
         if report:
             problems = product_publication.publication_problems(product, require_image=require_image)
-            row += [
-                'Sí' if product.is_active else 'No',
-                TYPE_LABELS[product.is_serialized],
-                product.inventory,
-                'Sí' if product.is_published_online else 'No',
-                ' '.join(labels[code] for code in problems),
-            ]
+            values.update({
+                'Activo': 'Sí' if product.is_active else 'No',
+                'Tipo': TYPE_LABELS[product.is_serialized],
+                'Stock total': product.inventory,
+                'Publicado': 'Sí' if product.is_published_online else 'No',
+                'Problemas para publicar': ' '.join(labels[code] for code in problems),
+            })
         else:
-            row += [STATE_LABELS[product.is_active], product_identifier(company.pk, product.pk)]
-        rows.append(row)
+            values.update({
+                STATE_HEADER: STATE_LABELS[product.is_active],
+                IDENTIFIER_HEADER: product_identifier(company.pk, product.pk),
+            })
+        rows.append(_project(headers, values))
 
+    template_widths = [22, 19, 42, 47, 18, 28, 31, 46, 28, 20, 30, 16, 16, 12]
     if report:
         payload = _workbook_bytes(
-            import_exports.REPORT_SHEETS['products'], PRODUCT_REPORT_HEADERS, rows, text_columns=(0, 1),
-            widths=[22, 19, 42, 47, 18, 28, 20, 20, 28, 10, 16, 14, 12, 60],
+            import_exports.REPORT_SHEETS['products'], headers, rows,
+            text_columns=_columns_of(headers, PRODUCT_TEXT_HEADERS),
+            widths=template_widths + [10, 16, 14, 12, 60],
         )
     else:
         payload = _workbook_bytes(
-            PRODUCT_SHEET, PRODUCT_RELOAD_HEADERS, rows, text_columns=(0, 1, _IDENTIFIER_COLUMN),
-            widths=[22, 19, 42, 47, 18, 28, 31, 46, 28, 12, 16],
+            PRODUCT_SHEET, headers, rows, text_columns=_columns_of(headers, PRODUCT_TEXT_HEADERS),
+            widths=template_widths + [12, 16],
         )
     return payload, len(rows)
 
@@ -396,11 +533,11 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
     queryset = queryset.select_related('category').order_by('name', 'pk')
     _check_rows(queryset.count() * len(branches))
     codes = import_exports.product_codes(company)
-    quantities = {
-        (branch_id, product_id): quantity
-        for branch_id, product_id, quantity in BranchStock.objects.filter(branch__in=branches)
-        .values_list('branch_id', 'product_id', 'quantity')
-    }
+    quantities, averages = {}, {}
+    for branch_id, product_id, quantity, average in BranchStock.objects.filter(branch__in=branches) \
+            .values_list('branch_id', 'product_id', 'quantity', 'average_cost'):
+        quantities[(branch_id, product_id)] = quantity
+        averages[(branch_id, product_id)] = average
     rows = []
     for product in queryset.iterator(chunk_size=2000):
         slot = codes.get(product.pk, {})
@@ -412,10 +549,12 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
                 slot.get('internal', ''), slot.get('external', ''), product.name,
                 product.category.name if product.category_id else '',
                 TYPE_LABELS[product.is_serialized], branch.name, quantity,
+                # DC1 — the branch's weighted average, `costs.view` only.
+                averages.get((branch.pk, product.pk)) if filters.include_cost else None,
             ])
     payload = _workbook_bytes(
         import_exports.REPORT_SHEETS['stock'], STOCK_REPORT_HEADERS, rows, text_columns=(0, 1),
-        widths=[16, 18, 46, 28, 16, 24, 12],
+        widths=[16, 18, 46, 28, 16, 24, 12, 16],
     )
     return payload, len(rows)
 
@@ -448,7 +587,7 @@ def units_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
         queryset = queryset.filter(status__in=ON_THE_SHELF)
     if filters.stock == STOCK_OUT:
         queryset = queryset.exclude(status__in=ON_THE_SHELF)
-    queryset = queryset.select_related('product', 'branch').order_by(
+    queryset = queryset.select_related('product', 'product__product_model', 'branch').order_by(
         'product__name', 'product_id', 'branch__name', 'serial_number', 'pk',
     )
     _check_rows(queryset.count())
@@ -456,40 +595,50 @@ def units_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
     codes = import_exports.product_codes(company)
     conditions = dict(StockUnit.Condition.choices)
     statuses = dict(StockUnit.Status.choices)
+    variant_cells, grade_cell = _VariantCells(company), _GradeCells(company)
+    headers = UNIT_REPORT_HEADERS if report else unit_import_services.HEADERS
     rows = []
     for unit in queryset.iterator(chunk_size=2000):
         slot = codes.get(unit.product_id, {})
-        row = [
-            slot.get('internal') or slot.get('external', ''),
-            unit.product.name,
-            unit.branch.name,
-            unit.serial_number,
-            unit.imei or '',
-            unit.imei2 or '',
-            conditions.get(unit.condition, unit.condition),
-            unit.cost if filters.include_cost else None,
-        ]
+        used = unit.product.condition_line == Product.CONDITION_USED
+        # «Motivo / referencia» stays empty (UNIT_LEFT_EMPTY): it is the reason
+        # of the reception that loads the file.
+        values = {
+            'Código': slot.get('internal') or slot.get('external', ''),
+            'Producto': unit.product.name,
+            'Sucursal': unit.branch.name,
+            'Número de serie': unit.serial_number,
+            'IMEI': unit.imei or '',
+            'IMEI 2': unit.imei2 or '',
+            'Condición': conditions.get(unit.condition, unit.condition),
+            'Costo': unit.cost if filters.include_cost else None,
+            # DC2 — the variant, its grade and its battery.
+            **variant_cells(unit.product),
+            'Estado estético': grade_cell(unit.cosmetic_grade_id, report=report),
+            'Batería %': unit.battery_health,
+            # What THIS used device sells for. A price, not a cost: it is what
+            # the web shows any buyer, so it is not behind `costs.view`. Only
+            # for the used line: a new device sells at its variant's price,
+            # and the device load would only warn that it ignores one.
+            'Precio de venta': unit.sale_price if used or report else None,
+        }
         if report:
-            row += [
-                statuses.get(unit.status, unit.status),
-                timezone.localtime(unit.received_at).strftime('%Y-%m-%d %H:%M'),
-                unit.order_id,
-                unit.notes,
-            ]
-        else:
-            row.append('')
-        rows.append(row)
+            values.update({
+                'Estado': statuses.get(unit.status, unit.status),
+                'Fecha de ingreso': timezone.localtime(unit.received_at).strftime('%Y-%m-%d %H:%M'),
+                'Pedido': unit.order_id,
+                'Notas': unit.notes,
+            })
+        rows.append(_project(headers, values))
 
-    if report:
-        payload = _workbook_bytes(
-            import_exports.REPORT_SHEETS['units'], UNIT_REPORT_HEADERS, rows, text_columns=(0, 3, 4, 5),
-            widths=[20, 43, 25, 27, 22, 22, 23, 18, 16, 20, 12, 48],
-        )
-    else:
-        payload = _workbook_bytes(
-            unit_import_services.SHEET, unit_import_services.HEADERS, rows, text_columns=(0, 3, 4, 5),
-            widths=[20, 43, 25, 27, 22, 22, 23, 18, 48],
-        )
+    widths = {'Código': 20, 'Producto': 43, 'Sucursal': 25, 'Número de serie': 27, 'IMEI': 22, 'IMEI 2': 22,
+              'Condición': 23, 'Costo': 18, UNIT_REASON_HEADER: 48, 'Modelo': 30, 'Estado estético': 20,
+              'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48}
+    payload = _workbook_bytes(
+        import_exports.REPORT_SHEETS['units'] if report else unit_import_services.SHEET, headers, rows,
+        text_columns=_columns_of(headers, UNIT_TEXT_HEADERS),
+        widths=[widths.get(header, 16) for header in headers],
+    )
     return payload, len(rows)
 
 
@@ -573,10 +722,14 @@ def readme_text() -> str:
         '    su código de barras. Sin ninguno, por su nombre; si dos productos sin código se',
         '    llaman igual, la carga pide asignarles uno.',
         '  - Si un producto tiene varios códigos, viaja uno de cada tipo.',
+        '  - «Modelo», «Capacidad», «Color» y «Línea» dicen de qué variante es cada producto y',
+        '    cada equipo. Van vacíos cuando al volver a leerlos no nombrarían exactamente esa',
+        '    variante (un nombre de modelo repetido, una opción que comparten dos atributos); un',
+        '    «Modelo» vacío no cambia la variante de un producto que ya existe.',
         '  - Un texto que empieza por = + - o @ (una descripción con guiones, un teléfono con',
         '    +) va en una celda de texto: se ve tal cual y Excel no lo ejecuta como fórmula.',
         '  - El catálogo no tiene campo de marca: no hay columna de marca.',
-        '  - La columna «Costo» sólo trae datos si quien descargó puede ajustar inventario.',
+        '  - Las columnas de costo sólo traen datos si quien descargó puede ver costos (permiso «Ver costos y márgenes»).',
         '',
     ])
 

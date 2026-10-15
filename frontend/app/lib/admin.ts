@@ -122,6 +122,8 @@ export type AdminProduct = {
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
   images?: AdminProductImage[];
+  /** DC3: `stock` = sólo stock propio; `stock_or_order` = también bajo pedido. Sólo en el detalle. */
+  sale_mode?: 'stock' | 'stock_or_order';
 };
 
 /** Una imagen de la galería de un producto. */
@@ -527,6 +529,16 @@ export type AdminOrderItem = {
   requires_imei?: boolean;
   units?: OrderUnitRecord[];
   units_pending?: number;
+  /** DC3 — del estante (`own`) o bajo pedido (`supplier`). */
+  supply_origin?: 'own' | 'supplier';
+  /** '' | 'awaiting_payment' | 'pending' | 'to_confirm' | 'failed' | 'received'. */
+  supply_status?: string;
+  supply_note?: string;
+  lead_time_days?: number | null;
+  supplier_offer_id?: number | null;
+  supplier_name?: string;
+  /** Recibir del proveedor pide una serie/IMEI por cada unidad de la línea. */
+  product_is_serialized?: boolean;
 };
 
 export type AdminOrder = {
@@ -554,6 +566,8 @@ export type AdminOrder = {
    */
   risk_level?: OrderRiskLevel | null;
   review_status?: OrderReviewStatus | null;
+  /** DC3: cómo va el abastecimiento de lo vendido bajo pedido ('' si no hay nada bajo pedido). */
+  supply_status?: string;
 };
 
 export type OrderRiskLevel = 'low' | 'medium' | 'high';
@@ -634,6 +648,19 @@ export type AdminOrderDetail = AdminOrder & {
   risk?: OrderRisk | null;
   /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
   delivery?: import("./delivery").OrderDelivery | null;
+  /** DC3: si QUIEN CONSULTA puede confirmar o dar por fallido el abastecimiento. Lo decide el servidor. */
+  can_manage_supply?: boolean;
+  /** DC3: si QUIEN CONSULTA puede recibir del proveedor (entra stock). Lo decide el servidor. */
+  can_receive_supply?: boolean;
+};
+
+/** DC3 — el abastecimiento de un pedido, en palabras del panel. */
+export const SUPPLY_STATUS_LABELS: Record<string, string> = {
+  awaiting_payment: 'Esperando el pago',
+  pending: 'Pedido al proveedor',
+  to_confirm: 'Por confirmar con el proveedor',
+  received: 'Recibido del proveedor',
+  failed: 'No se pudo abastecer',
 };
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
@@ -667,6 +694,8 @@ export async function fetchAdminOrders(params?: {
   shortfall?: 'true';
   /** CLIENT-SEC-01: only the orders waiting for a person to review them. */
   review?: 'pending';
+  /** DC3: por estado de abastecimiento de lo vendido bajo pedido. */
+  supply?: 'to_confirm' | 'pending' | 'failed' | 'received';
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -679,6 +708,7 @@ export async function fetchAdminOrders(params?: {
     paid: params?.paid,
     shortfall: params?.shortfall,
     review: params?.review,
+    supply: params?.supply,
     date_from: params?.date_from,
     date_to: params?.date_to,
     page: params?.page,

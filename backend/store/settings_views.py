@@ -69,6 +69,13 @@ CAP_SETTINGS_MANAGE = 'settings.manage'
 
 #: CLIENT-SEC-01 — the two settings that decide how orders are reviewed.
 ORDER_REVIEW_OPTIONS = frozenset({'risk_review_amount', 'hold_orders_pending_review'})
+#: DEVICE-COMMERCE-01 (owner, 2026-10-15) — how long the web holds a device and
+#: whether it sells on order while the shelf has it: they decide how the shop
+#: sells, like the review options, and take `settings.manage` too.
+SALES_POLICY_OPTIONS = frozenset({
+    'device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes',
+    'web_on_order_over_stock',
+})
 
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
 
@@ -340,6 +347,14 @@ class AdminCompanySettingsView(APIView):
         ) and not has_capability(request.user, company, CAP_SETTINGS_MANAGE):
             return Response(
                 {'detail': 'No tienes permisos para cambiar la revisión de pedidos de esta empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if any(
+            field in SALES_POLICY_OPTIONS and getattr(settings_row, field) != value
+            for field, value in settings_ser.validated_data.items()
+        ) and not has_capability(request.user, company, CAP_SETTINGS_MANAGE):
+            return Response(
+                {'detail': 'No tienes permisos para cambiar los apartados ni la venta bajo pedido de esta empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

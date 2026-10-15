@@ -261,7 +261,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 companyId={companyId}
                 canCatalogue={canExportCatalogue}
                 canInventory={canExportInventory}
-                canSeeCost={access.can("inventory.adjust", ["inventory", "admin", "superadmin"])}
+                canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
               />
             </DashboardSection>
           ) : null}

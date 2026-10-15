@@ -8,7 +8,9 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower
 from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
+from django.contrib.postgres.functions import RandomUUID
 from django.utils import timezone
 
 
@@ -228,6 +230,44 @@ class Product(models.Model):
     is_serialized = models.BooleanField(default=False)
     # A cellular device: every unit must also carry a valid IMEI.
     requires_imei = models.BooleanField(default=False)
+    # DEVICE-COMMERCE-01 · DC1. The catalogue's REFERENCE cost: what the shop
+    # expects to pay for one unit, typed or imported. NOT a valuation. It is
+    # used only when a branch has no average yet for this product, and every
+    # movement or sale line that took it says so (`cost_source='reference'`).
+    # Changing it never rewrites the history: snapshots were taken already.
+    reference_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    # DEVICE-COMMERCE-01 · DC2 — A VARIANT IS STILL A PRODUCT. A model («iPhone
+    # 16») groups products that differ by its options (capacity, colour) and by
+    # their line (new / used). Each variant keeps its own price, stock, Kardex,
+    # cart line and fiscal line, so nothing downstream learns a new concept. A
+    # product without a model (an accessory) is exactly what it was.
+    CONDITION_NEW = 'new'
+    CONDITION_USED = 'used'
+    CONDITION_LINE_CHOICES = [(CONDITION_NEW, 'Nuevo'), (CONDITION_USED, 'Seminuevo')]
+    product_model = models.ForeignKey(
+        'store.ProductModel', null=True, blank=True, on_delete=models.SET_NULL, related_name='variants',
+    )
+    # `db_default`: the previous release keeps inserting products while this migrates.
+    condition_line = models.CharField(
+        max_length=8, choices=CONDITION_LINE_CHOICES, default=CONDITION_NEW, db_default=CONDITION_NEW,
+    )
+    #: The variant's option ids, sorted and joined («4-17»). Written ONLY by
+    #: `variant_services`, and what lets the database refuse two variants of one
+    #: model with the same options in the same line.
+    variant_key = models.CharField(max_length=120, blank=True, default='', db_default='')
+
+    # DEVICE-COMMERCE-01 · DC3 — HOW IT MAY BE SOLD. Stock 0 is NOT sellable:
+    # `stock` (what every product did before) sells only what the shelf has;
+    # `stock_or_order` also sells «bajo pedido», but only while a valid offer
+    # of a supplier covers the whole line (`supply_services.availability`).
+    # Written only by `supply_services.set_sale_mode`.
+    SALE_MODE_STOCK = 'stock'
+    SALE_MODE_STOCK_OR_ORDER = 'stock_or_order'
+    SALE_MODE_CHOICES = [(SALE_MODE_STOCK, 'Sólo stock propio'), (SALE_MODE_STOCK_OR_ORDER, 'Stock o bajo pedido')]
+    sale_mode = models.CharField(
+        max_length=16, choices=SALE_MODE_CHOICES, default=SALE_MODE_STOCK, db_default=SALE_MODE_STOCK,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -235,6 +275,11 @@ class Product(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['company', 'slug'], name='unique_product_slug_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['product_model', 'condition_line', 'variant_key'],
+                condition=models.Q(product_model__isnull=False),
+                name='unique_variant_per_model_line',
             ),
         ]
         indexes = [
@@ -253,6 +298,16 @@ class Product(models.Model):
         a third copy somewhere else is how a hidden product ends up for sale.
         """
         return bool(self.is_active and self.is_published_online)
+
+    @property
+    def sells_by_unit(self) -> bool:
+        """
+        DC2 — the web sells THIS product device by device: the buyer's cart
+        holds a concrete unit, and that unit is the one that leaves. True for a
+        serialized variant of a model, new or used. Other serialized products
+        keep SERIAL-PICK-01's rule (the payment sets the oldest aside).
+        """
+        return bool(self.is_serialized and self.product_model_id)
 
     def __str__(self):
         return self.name
@@ -275,6 +330,14 @@ class Product(models.Model):
         ):
             raise ValidationError(
                 {'category': 'La categoría no pertenece a la empresa de este producto.'}
+            )
+        if (
+            self.product_model_id
+            and self.company_id
+            and self.product_model.company_id != self.company_id
+        ):
+            raise ValidationError(
+                {'product_model': 'El modelo no pertenece a la empresa de este producto.'}
             )
 
     def save(self, *args, **kwargs):
@@ -762,6 +825,96 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
+    # --- DEVICE-COMMERCE-01 · DC1: the sale line's snapshots -------------
+    #
+    # Written ONCE, when the line's exit leaves the shelf (web payment
+    # confirmation or POS sale), by `margin_services`, and never again: a
+    # change of catalogue cost, price or branch average does not touch them.
+    # Lines from before DC1 stay NULL / 'unknown' («costo pendiente»).
+    COST_AVERAGE = 'average'
+    COST_UNIT = 'unit'
+    COST_REFERENCE = 'reference'
+    COST_UNKNOWN = 'unknown'
+    # DC3 — a line sold on order: the cost agreed with the supplier, frozen.
+    COST_SUPPLIER_OFFER = 'supplier_offer'
+    COST_SOURCE_CHOICES = [
+        (COST_AVERAGE, 'Costo promedio de la sucursal'),
+        (COST_UNIT, 'Costo específico del equipo'),
+        (COST_REFERENCE, 'Costo de referencia del catálogo'),
+        (COST_SUPPLIER_OFFER, 'Costo pactado con el proveedor'),
+        (COST_UNKNOWN, 'Costo pendiente'),
+    ]
+    SNAPSHOT_SOURCES = frozenset([COST_AVERAGE, COST_UNIT, COST_REFERENCE])
+    #: Cost of ONE unit of this line. For several devices, the mean of their
+    #: specific costs.
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # `db_default`: the previous release keeps inserting lines while this
+    # migrates, and every line it writes is honestly «costo pendiente».
+    cost_source = models.CharField(
+        max_length=16, choices=COST_SOURCE_CHOICES, default=COST_UNKNOWN, db_default=COST_UNKNOWN,
+    )
+    #: Unit price without IGV, before the order discount.
+    unit_price_net = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    #: This line's share of the order discount, without IGV.
+    discount_net = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    #: This line's share of `Order.taxable_amount`; the lines add up to it exactly.
+    net_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    # DC2 — THE DEVICE THIS LINE SOLD, for a product the web sells by unit.
+    # Such a line is ONE device at ITS price (a used phone is priced on its
+    # own), so two devices of one variant are two lines. Every other line has
+    # no unit and stays one per product.
+    stock_unit = models.ForeignKey(
+        'store.StockUnit', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
+    )
+
+    # --- DC3: where the goods of this line come from, frozen at checkout ----
+    #
+    # `own`: the shelf (what every line was before). `supplier`: sold «bajo
+    # pedido» against `supplier_offer`, with its lead time and its agreed cost
+    # (`unit_cost`, `cost_source='supplier_offer'`). Such a line writes NO stock
+    # movement when paid: the payment commits the offer (`supply_status`
+    # 'pending'), or — offer expired or run out — records the money and asks a
+    # person (`to_confirm`). Receiving the goods writes the entry and the sale
+    # exit together (`received`); a supply that cannot happen is `failed` and
+    # goes to the refund flow. `db_default`s: the previous release keeps
+    # inserting lines while this migrates.
+    SUPPLY_OWN = 'own'
+    SUPPLY_SUPPLIER = 'supplier'
+    SUPPLY_ORIGIN_CHOICES = [(SUPPLY_OWN, 'Stock propio'), (SUPPLY_SUPPLIER, 'Bajo pedido a proveedor')]
+    SUPPLY_PENDING = 'pending'
+    SUPPLY_TO_CONFIRM = 'to_confirm'
+    SUPPLY_RECEIVED = 'received'
+    SUPPLY_FAILED = 'failed'
+    SUPPLY_STATUS_CHOICES = [
+        ('', '—'),
+        (SUPPLY_PENDING, 'Pedido al proveedor'),
+        (SUPPLY_TO_CONFIRM, 'Abastecimiento por confirmar'),
+        (SUPPLY_RECEIVED, 'Recibido del proveedor'),
+        (SUPPLY_FAILED, 'No se pudo abastecer'),
+    ]
+    supply_origin = models.CharField(
+        max_length=10, choices=SUPPLY_ORIGIN_CHOICES, default=SUPPLY_OWN, db_default=SUPPLY_OWN,
+    )
+    supplier_offer = models.ForeignKey(
+        'store.SupplierOffer', null=True, blank=True, on_delete=models.PROTECT, related_name='order_lines',
+    )
+    lead_time_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    supply_status = models.CharField(
+        max_length=12, choices=SUPPLY_STATUS_CHOICES, blank=True, default='', db_default='',
+    )
+    supply_note = models.CharField(max_length=300, blank=True, default='', db_default='')
+    # Owner's decision of 2026-10-15 — own stock first, never switched
+    # silently. True when the line went to the supplier although the shelf
+    # covered it, by an explicit choice: the till's (with `sales.orders.manage`
+    # and `supply_choice_reason`) or the buyer's on a web that allows it.
+    supply_chosen_over_stock = models.BooleanField(default=False, db_default=False)
+    supply_choice_reason = models.CharField(max_length=200, blank=True, default='', db_default='')
+
+    @property
+    def on_order(self) -> bool:
+        return self.supply_origin == self.SUPPLY_SUPPLIER
+
     class Meta:
         constraints = [
             # ONE LINE PER PRODUCT PER ORDER — Phase 0.3 / P0-E.
@@ -780,9 +933,24 @@ class OrderItem(models.Model):
             # decrementing stock twice, and it is only sound while an order has
             # at most one line per product. This constraint is what keeps it
             # sound against a writer nobody has written yet.
+            #
+            # DC2: it holds for every line WITHOUT a device. A line of a
+            # device is unique per device, carries exactly one, and the sale
+            # exit of its product is still one per (order, product) — it names
+            # all the devices of that product at once.
             models.UniqueConstraint(
                 fields=['order', 'product'],
+                condition=models.Q(stock_unit__isnull=True),
                 name='unique_order_line_per_product',
+            ),
+            models.UniqueConstraint(
+                fields=['order', 'stock_unit'],
+                condition=models.Q(stock_unit__isnull=False),
+                name='unique_order_line_per_unit',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(stock_unit__isnull=True) | models.Q(quantity=1),
+                name='order_line_of_a_unit_is_one',
             ),
         ]
 
@@ -973,6 +1141,14 @@ class CartItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     added_at = models.DateTimeField(auto_now_add=True)
+    # DC3 — the buyer took this line «bajo pedido» on purpose (the add said so).
+    # A line is all shelf or all on order, never both.
+    SUPPLY_OWN = 'own'
+    SUPPLY_SUPPLIER = 'supplier'
+    supply_origin = models.CharField(
+        max_length=10, choices=[(SUPPLY_OWN, 'Stock propio'), (SUPPLY_SUPPLIER, 'Bajo pedido')],
+        default=SUPPLY_OWN, db_default=SUPPLY_OWN,
+    )
 
     class Meta:
         constraints = [
@@ -1358,6 +1534,9 @@ class StockMovement(models.Model):
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
         TRANSFER_OUT,
     ])
+    # DC1 — entries that bring units BACK. They are valued at the branch's
+    # current average, not at a cost of their own.
+    RETURN_TYPES = frozenset([RETURN_ENTRY, SERVICE_RETURN])
     # Types an operator may create through the admin API. sale_exit is excluded
     # on purpose: it is only ever produced by the payment pipeline, and the two
     # transfer types likewise only by the transfer pipeline — a hand-written
@@ -1429,6 +1608,37 @@ class StockMovement(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     metadata = models.JSONField(default=dict, blank=True)
+
+    # --- DEVICE-COMMERCE-01 · DC1: the cost this line moved at ---------------
+    #
+    # Written by `inventory_services.create_stock_movement` and by nobody else,
+    # under the same lock as the quantity. Rules (`cost_services`):
+    #   entry WITH a stated cost  -> that cost; the branch average is recomputed
+    #   entry without one         -> NULL, 'unknown'; the average is untouched
+    #   exit / transfer / return  -> the branch average ('average'), or the
+    #                                catalogue reference ('reference'), or NULL
+    #   serialized product        -> the specific cost of its units ('unit')
+    # Historical lines (before DC1) stay NULL with an empty source: nothing is
+    # backfilled from today's catalogue.
+    COST_ENTRY = 'entry'
+    COST_AVERAGE = 'average'
+    COST_UNIT = 'unit'
+    COST_REFERENCE = 'reference'
+    COST_UNKNOWN = 'unknown'
+    COST_SOURCE_CHOICES = [
+        ('', 'Sin registro'),
+        (COST_ENTRY, 'Costo de la entrada'),
+        (COST_AVERAGE, 'Costo promedio'),
+        (COST_UNIT, 'Costo específico del equipo'),
+        (COST_REFERENCE, 'Costo de referencia'),
+        (COST_UNKNOWN, 'Costo desconocido'),
+    ]
+    unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # `db_default` too: the release before this column keeps inserting Kardex
+    # lines while a deployment migrates, and after a rollback.
+    cost_source = models.CharField(
+        max_length=16, choices=COST_SOURCE_CHOICES, blank=True, default='', db_default='',
+    )
 
     class Meta:
         ordering = ['-created_at', '-id']
@@ -2150,6 +2360,17 @@ class BranchStock(models.Model):
         Product, on_delete=models.PROTECT, related_name='branch_stocks',
     )
     quantity = models.PositiveIntegerField(default=0)
+    # DEVICE-COMMERCE-01 · DC1. The weighted average cost of THIS branch's units
+    # (owner's decision: per branch, for products counted by quantity). NULL
+    # while no entry with a cost has arrived. Maintained only by the Kardex
+    # writer, under the row lock; never typed. A serialized product keeps it
+    # NULL: each of its units has its own specific cost (`StockUnit.cost`).
+    average_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    # DC1 review — how many of `quantity` came in WITHOUT a known cost. The
+    # average is of the others only; these are «costo pendiente» in every
+    # valuation, and they are taken as leaving first. Maintained only by the
+    # Kardex writer, like the average.
+    uncosted_quantity = models.PositiveIntegerField(default=0, db_default=0)
     minimum_stock = models.PositiveIntegerField(default=0)
     target_stock = models.PositiveIntegerField(default=0)
     # --- Commercial Phase C1: replenishment configuration ----------------
@@ -2883,6 +3104,39 @@ class CompanySettings(models.Model):
     # this column keeps inserting settings rows while `migrate` runs.
     publication_requires_image = models.BooleanField(default=False, db_default=False)
 
+    # DEVICE-COMMERCE-01 — owner's decision of 2026-10-15: how long the web
+    # holds a device is the company's, per channel. The values as created are
+    # the ones every shop had (15 in the cart, 45 once checked out, never past
+    # 60 from when the cart took it). Bounds:
+    #   * cart 5–60;
+    #   * checkout 30–120 — never shorter than the gateway's form lifetime
+    #     (`payments.micuentaweb.FORM_LIFETIME`, 30 min: until then a refused
+    #     card can be retried under the same reference);
+    #   * ceiling ≤ 240 and ≥ cart + 30, so a checkout made in the cart's last
+    #     minute still gets the whole form lifetime.
+    # A hold whose order has a payment the gateway may still confirm is not
+    # released by these clocks at all (`unit_hold_services.payment_keeps_hold`).
+    CART_HOLD_MIN_MINUTES, CART_HOLD_MAX_MINUTES = 5, 60
+    CHECKOUT_HOLD_MIN_MINUTES, CHECKOUT_HOLD_MAX_MINUTES = 30, 120
+    HOLD_CEILING_MAX_MINUTES = 240
+    device_cart_hold_minutes = models.PositiveSmallIntegerField(
+        default=15, db_default=15,
+        validators=[MinValueValidator(CART_HOLD_MIN_MINUTES), MaxValueValidator(CART_HOLD_MAX_MINUTES)],
+    )
+    device_checkout_hold_minutes = models.PositiveSmallIntegerField(
+        default=45, db_default=45,
+        validators=[MinValueValidator(CHECKOUT_HOLD_MIN_MINUTES), MaxValueValidator(CHECKOUT_HOLD_MAX_MINUTES)],
+    )
+    device_hold_ceiling_minutes = models.PositiveSmallIntegerField(
+        default=60, db_default=60,
+        validators=[MinValueValidator(CART_HOLD_MIN_MINUTES + CHECKOUT_HOLD_MIN_MINUTES),
+                    MaxValueValidator(HOLD_CEILING_MAX_MINUTES)],
+    )
+    # Owner's decision of 2026-10-15: the web may let the buyer choose the
+    # supplier («Bajo pedido») while the shelf covers the line ONLY where the
+    # company turns this on. Off as created: own stock first, never switched.
+    web_on_order_over_stock = models.BooleanField(default=False, db_default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2932,8 +3186,28 @@ class CompanySettings(models.Model):
                 validator(getattr(self, field))
             except ValidationError as exc:
                 errors[field] = exc.messages
+        errors.update(self.hold_minutes_errors(
+            self.device_cart_hold_minutes, self.device_checkout_hold_minutes, self.device_hold_ceiling_minutes))
         if errors:
             raise ValidationError(errors)
+
+    @classmethod
+    def hold_minutes_errors(cls, cart, checkout, ceiling) -> dict:
+        """DEVICE-COMMERCE-01 — the bounds of the three hold times, field by field."""
+        errors = {}
+        for field, value, low, high in (
+            ('device_cart_hold_minutes', cart, cls.CART_HOLD_MIN_MINUTES, cls.CART_HOLD_MAX_MINUTES),
+            ('device_checkout_hold_minutes', checkout, cls.CHECKOUT_HOLD_MIN_MINUTES, cls.CHECKOUT_HOLD_MAX_MINUTES),
+            ('device_hold_ceiling_minutes', ceiling, cls.CART_HOLD_MIN_MINUTES + cls.CHECKOUT_HOLD_MIN_MINUTES,
+             cls.HOLD_CEILING_MAX_MINUTES),
+        ):
+            if value is None or not low <= int(value) <= high:
+                errors[field] = [f'Debe estar entre {low} y {high} minutos.']
+        if not errors and int(ceiling) < int(cart) + cls.CHECKOUT_HOLD_MIN_MINUTES:
+            errors['device_hold_ceiling_minutes'] = [
+                f'Debe ser al menos el tiempo del carrito más {cls.CHECKOUT_HOLD_MIN_MINUTES} minutos '
+                '(lo que vive el formulario de pago).']
+        return errors
 
     def save(self, *args, **kwargs):
         self.clean()
@@ -4088,11 +4362,14 @@ class BulkImportJob(models.Model):
     # INVENTORY-UNIFIED-01: pictures for products that already exist. Its own
     # kind because it writes GALLERIES and nothing else of a product.
     PRODUCT_IMAGES = 'product_images'
+    # DC3 — the weekly supplier price list: offers, not stock.
+    SUPPLIER_OFFERS = 'supplier_offers'
     TYPE_CHOICES = [
         (PRODUCTS, 'Productos'),
         (STOCK, 'Inventario'),
         (UNITS, 'Equipos con serie'),
         (PRODUCT_IMAGES, 'Imágenes de productos'),
+        (SUPPLIER_OFFERS, 'Ofertas de proveedor'),
     ]
 
     PREVIEWED = 'previewed'
@@ -7287,6 +7564,11 @@ class StorefrontPageSettings(models.Model):
         validators=[MaxLengthValidator(400)],
     )
 
+    #: DC2 — how the shop names its two lines of devices in a category's tabs.
+    #: Empty: the platform's «Nuevos» / «Seminuevos».
+    new_line_label = models.CharField(max_length=40, blank=True, default='', db_default='')
+    used_line_label = models.CharField(max_length=40, blank=True, default='', db_default='')
+
     hero_primary_cta_label = models.CharField(max_length=40, blank=True)
     hero_primary_cta_url = models.CharField(
         max_length=500, blank=True, validators=[validate_cta_url],
@@ -8906,10 +9188,52 @@ class StockUnit(models.Model):
         max_length=16, choices=Status.choices, default=Status.AVAILABLE, db_index=True,
     )
 
-    # What this unit cost, when known. Informative: there is no cost model yet.
+    # What this unit cost, when known: its SPECIFIC cost (DC1). Every Kardex
+    # line that moves it carries it, and a sale line is valued at it. Shown
+    # only to `costs.view`; never rewritten once the unit is sold.
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     # SERIAL-PICK-01: a device has NO price of its own. It is sold at the
     # product's price, at the till and on the web (the owner's decision).
+    # DC2 amends it for USED devices on the web: each one is priced on its own
+    # (`sale_price`), and a used unit without one is not offered online.
+
+    # --- DEVICE-COMMERCE-01 · DC2 ---------------------------------------
+    #: What the public calls this device. Opaque: the pk would tell anybody
+    #: how many devices the shop has received.
+    # `db_default`: a volatile default fills every existing row with its own
+    # value, and the previous release keeps inserting units while this migrates.
+    public_id = models.UUIDField(default=uuid.uuid4, db_default=RandomUUID(), unique=True, editable=False)
+    #: Battery health in %, as MEASURED. NULL is «no informado», never a guess.
+    battery_health = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(100)],
+    )
+    cosmetic_grade = models.ForeignKey(
+        'store.CosmeticGrade', null=True, blank=True, on_delete=models.PROTECT, related_name='units',
+    )
+    #: Shown to buyers. `notes` stays internal.
+    public_notes = models.CharField(max_length=500, blank=True, default='', db_default='')
+    #: The price of THIS device (used units, online). New units sell at their
+    #: variant's price.
+    sale_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # A WEB HOLD (status RESERVED): a buyer's cart holds this very device.
+    # `hold_key` is the SHA-256 of the cart's key, never the key; `hold_until`
+    # is when it goes back to the shelf unless an order is paid;
+    # `hold_price` is the price the buyer was shown, frozen at that moment;
+    # `hold_order` is the pending order that carries it once checked out.
+    # A staff reservation («apartado») has an empty `hold_key` and no expiry.
+    hold_key = models.CharField(max_length=64, blank=True, default='', db_default='')
+    hold_until = models.DateTimeField(null=True, blank=True)
+    hold_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    hold_order = models.ForeignKey(
+        'store.Order', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    # DC2 review. `hold_origin`: a keyed hash of where the hold came from
+    # (`order_risk.origin_hash`, never the address), so one origin cannot hold
+    # a whole shelf through many carts. `hold_started_at`: when the cart took
+    # it — a checkout extends the hold, but never past this plus the cart's
+    # and the order's minutes.
+    hold_origin = models.CharField(max_length=64, blank=True, default='', db_default='')
+    hold_started_at = models.DateTimeField(null=True, blank=True)
 
     received_at = models.DateTimeField(default=timezone.now)
     sold_at = models.DateTimeField(null=True, blank=True)
@@ -8947,6 +9271,10 @@ class StockUnit(models.Model):
             models.CheckConstraint(
                 condition=~models.Q(imei='') & ~models.Q(imei2='') & ~models.Q(serial_number=''),
                 name='stock_unit_identifiers_null_not_blank',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(battery_health__isnull=True) | models.Q(battery_health__lte=100),
+                name='stock_unit_battery_health_percent',
             ),
         ]
         indexes = [
@@ -9030,6 +9358,8 @@ class OrderUnit(models.Model):
         SCANNER = 'scanner', 'Lector'
         MANUAL = 'manual', 'Ingreso manual'
         LEGACY = 'legacy', 'Asignado por el sistema (regla anterior)'
+        # DC2: the buyer chose this very device online, and paid for it.
+        BUYER = 'buyer', 'Elegido por el comprador'
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='order_units')
     order = models.ForeignKey('store.Order', on_delete=models.PROTECT, related_name='identified_units')
@@ -9462,3 +9792,298 @@ class OrderDelivery(models.Model):
         if self.order_id is not None and self.order.company_id != self.company_id:
             raise ValueError('La entrega tiene que ser de la empresa del pedido.')
         return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DEVICE-COMMERCE-01 · DC2 — models, options and variants
+# ---------------------------------------------------------------------------
+#
+# A MODEL GROUPS PRODUCTS; IT HOLDS NO STOCK. «iPhone 16» is a `ProductModel`;
+# «iPhone 16 256 GB Negro» and «iPhone 16 128 GB Azul (seminuevo)» are
+# `Product`s that point at it and name their options. Every rule of stock,
+# price, Kardex, cart, POS and fiscal lines keeps reading the product, so a
+# variant is sold, counted and invoiced exactly like any other article.
+#
+# EVERYTHING BELONGS TO ONE COMPANY. Options and grades are the company's own
+# words: nothing here knows a brand, a model name or a colour of anybody's.
+
+_SWATCH_HEX = re.compile(r'^#[0-9A-Fa-f]{6}$')
+
+
+def validate_swatch_hex(value):
+    from django.core.exceptions import ValidationError
+
+    if value and not _SWATCH_HEX.match(value):
+        raise ValidationError('El color se escribe como #RRGGBB (por ejemplo, #1F2937).')
+
+
+class ProductModel(models.Model):
+    """One model of the catalogue («modelo»), offered as several variants."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='product_models')
+    category = models.ForeignKey(
+        Category, null=True, blank=True, on_delete=models.SET_NULL, related_name='product_models',
+    )
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=120)
+    description = models.TextField(blank=True, default='')
+    #: The model's cover for lists; each variant shows its own gallery.
+    image_url = models.CharField(max_length=500, blank=True, default='', validators=[validate_asset_url])
+    is_published_online = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sort_order', 'name', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'slug'], name='unique_product_model_slug_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.category_id and self.company_id and self.category.company_id != self.company_id:
+            raise ValidationError({'category': 'La categoría no pertenece a la empresa de este modelo.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class VariantAttribute(models.Model):
+    """What variants of a model differ by, in the company's words («Capacidad», «Color»)."""
+
+    KIND_TEXT = 'text'
+    KIND_COLOR = 'color'
+    KIND_CHOICES = [(KIND_TEXT, 'Texto'), (KIND_COLOR, 'Color')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='variant_attributes')
+    name = models.CharField(max_length=60)
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=KIND_TEXT)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'name', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'name'], name='unique_variant_attribute_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class VariantOption(models.Model):
+    """One value of an attribute («256 GB», «Azul»). A colour carries its swatch."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='variant_options')
+    attribute = models.ForeignKey(VariantAttribute, on_delete=models.PROTECT, related_name='options')
+    label = models.CharField(max_length=60)
+    sort_order = models.PositiveIntegerField(default=0)
+    swatch_hex = models.CharField(max_length=7, blank=True, default='', validators=[validate_swatch_hex])
+
+    class Meta:
+        ordering = ['sort_order', 'label', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['attribute', 'label'], name='unique_variant_option_per_attribute'),
+        ]
+
+    def __str__(self):
+        return self.label
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        validate_swatch_hex(self.swatch_hex)
+        if self.attribute_id and self.company_id and self.attribute.company_id != self.company_id:
+            raise ValidationError({'attribute': 'El atributo no pertenece a la empresa de esta opción.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class ProductVariantOption(models.Model):
+    """
+    «This product is the 256 GB one.» One option PER ATTRIBUTE per product.
+
+    `attribute` repeats `option.attribute` on purpose: it is what lets the
+    database refuse a product with two capacities.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variant_options')
+    attribute = models.ForeignKey(VariantAttribute, on_delete=models.PROTECT, related_name='+')
+    option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='product_links')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['product', 'attribute'], name='unique_variant_attribute_per_product'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not (self.product.company_id == self.company_id == self.option.company_id
+                and self.option.attribute_id == self.attribute_id):
+            raise ValueError('El producto, la opción y su atributo tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
+class CosmeticGrade(models.Model):
+    """
+    A step of the company's own scale for how a used device LOOKS («Como nuevo»,
+    «Muy bueno»…). Independent from its battery. No scale is written into a
+    company that exists: `seed_cosmetic_grades` offers the default to whoever
+    asks for it, and a new company gets it at its bootstrap.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='cosmetic_grades')
+    code = models.SlugField(max_length=40)
+    label = models.CharField(max_length=60)
+    description = models.CharField(max_length=300, blank=True, default='')
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['sort_order', 'label', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'code'], name='unique_cosmetic_grade_per_company'),
+        ]
+
+    def __str__(self):
+        return self.label
+
+
+class UnitPhoto(models.Model):
+    """
+    A PUBLIC picture of one device (a used phone's real photos).
+
+    Same pipeline as a product gallery (`storefront_media`: re-encoded from
+    pixels, owned by one company, swept when nothing shows it). Never the
+    private evidence store: these are meant to be seen by anybody.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='+')
+    unit = models.ForeignKey('store.StockUnit', on_delete=models.CASCADE, related_name='photos')
+    image_url = models.CharField(max_length=255, validators=[validate_asset_url])
+    alt_text = models.CharField(max_length=160, blank=True, default='')
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        indexes = [models.Index(fields=['company', 'unit'])]
+
+    def save(self, *args, **kwargs):
+        if self.unit.company_id != self.company_id:
+            raise ValueError('La foto y el equipo son de empresas distintas.')
+        return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DEVICE-COMMERCE-01 · DC3 — suppliers and «bajo pedido»
+# ---------------------------------------------------------------------------
+
+class Supplier(models.Model):
+    """
+    Who the shop buys from, per company. Never deleted once it has an offer
+    (PROTECT): it is switched off (`is_active`). The document is optional and,
+    when given, validated like a customer's (`identity_validation`).
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='suppliers')
+    name = models.CharField(max_length=200)
+    document_type = models.CharField(max_length=10, choices=DocumentType.choices, blank=True, default='')
+    document_number = models.CharField(max_length=20, blank=True, default='')
+    contact_name = models.CharField(max_length=150, blank=True, default='')
+    phone = models.CharField(max_length=30, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    notes = models.TextField(max_length=1000, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'pk']
+        constraints = [
+            # The weekly file names a supplier by its name: one name, one supplier.
+            models.UniqueConstraint(Lower('name'), 'company', name='unique_supplier_name_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class SupplierOffer(models.Model):
+    """
+    What a supplier offers of ONE sellable variant (a `Product`), for a while.
+
+    `commercial_price` is what the shop CHARGES for it sold on order — frozen
+    on the order line at checkout. `agreed_cost` is what the shop pays the
+    supplier (only `costs.view` sees or writes it; NULL = not stated).
+    `confirmed_quantity` is the cap the supplier confirmed: NULL = not
+    confirmed, and an unconfirmed offer sells nothing. `committed_quantity`
+    is what paid orders took from it; the database refuses more than the cap.
+    Valid from `valid_from` through `valid_until` (both included, the shop's
+    days). Never deleted once an order names it (PROTECT): deactivated, with
+    its history in the audit trail.
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='supplier_offers')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='offers')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='supplier_offers')
+    agreed_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    commercial_price = models.DecimalField(max_digits=10, decimal_places=2)
+    confirmed_quantity = models.PositiveIntegerField(null=True, blank=True)
+    committed_quantity = models.PositiveIntegerField(default=0, db_default=0)
+    valid_from = models.DateField()
+    valid_until = models.DateField()
+    lead_time_days = models.PositiveSmallIntegerField()
+    is_active = models.BooleanField(default=True)
+    deactivated_reason = models.CharField(max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-valid_until', 'pk']
+        indexes = [models.Index(fields=['company', 'product', 'is_active'])]
+        constraints = [
+            # A commitment needs a confirmed quantity that covers it. Spelled with
+            # `isnull=False` on purpose: `NULL >= 1` is NULL, and a CHECK lets NULL
+            # pass — an unconfirmed offer could otherwise hold a commitment.
+            models.CheckConstraint(
+                condition=models.Q(committed_quantity=0) | models.Q(
+                    confirmed_quantity__isnull=False, confirmed_quantity__gte=models.F('committed_quantity')),
+                name='supplier_offer_never_overcommitted',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(valid_until__gte=models.F('valid_from')),
+                name='supplier_offer_valid_window',
+            ),
+            # ONE offer per key (the Excel's key): two previews of one file, or two
+            # people applying at once, never double what can be sold on order.
+            models.UniqueConstraint(
+                fields=['company', 'supplier', 'product', 'valid_from', 'valid_until'],
+                name='unique_supplier_offer_window',
+            ),
+        ]
+
+    @property
+    def remaining(self) -> int:
+        if self.confirmed_quantity is None:
+            return 0
+        return max(self.confirmed_quantity - self.committed_quantity, 0)
+
+    def __str__(self):
+        return f'{self.supplier} · {self.product} ({self.valid_from}–{self.valid_until})'

@@ -76,6 +76,44 @@ def _condition(value) -> str:
     return condition
 
 
+def clean_battery(value) -> int | None:
+    """Battery health in % as measured. Empty is «no informado» — never a guess."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise StockUnitError('La batería se indica en % (0 a 100).', field='battery_health')
+    try:
+        number = Decimal(str(value).strip().rstrip('%').strip())
+    except (InvalidOperation, ValueError):
+        raise StockUnitError('La batería se indica en % (0 a 100).', field='battery_health') from None
+    if not number.is_finite() or number != number.to_integral_value() or not 0 <= number <= 100:
+        raise StockUnitError('La batería se indica en % (0 a 100), sin decimales.', field='battery_health')
+    return int(number)
+
+
+def clean_grade(company, value):
+    """A grade of THIS company's scale, by id or code. Another company's answers like none."""
+    from .models import CosmeticGrade
+
+    if value in (None, ''):
+        return None
+    grades = CosmeticGrade.objects.filter(company=company, is_active=True)
+    text = str(value).strip()
+    found = grades.filter(pk=int(text)).first() if text.isdigit() else None
+    if found is None:
+        found = grades.filter(code__iexact=text).first() or grades.filter(label__iexact=text).first()
+    if found is None:
+        raise StockUnitError('Estado estético desconocido.', field='cosmetic_grade')
+    return found
+
+
+def clean_public_notes(value) -> str:
+    text = ' '.join(str(value or '').split())
+    if len(text) > 500:
+        raise StockUnitError('Los detalles para el comprador admiten hasta 500 caracteres.', field='public_notes')
+    return text
+
+
 def _reason(value, *, required: bool = True) -> str:
     reason = ' '.join(str(value or '').split())
     if required and not reason:
@@ -115,7 +153,7 @@ def _clean_row(product, row: dict) -> dict:
     if imei2 and imei2 == imei:
         raise StockUnitError('El segundo IMEI es distinto del primero.', field='imei2')
 
-    return {
+    cleaned = {
         'serial_number': serial,
         'imei': imei or None,
         'imei2': imei2 or None,
@@ -123,6 +161,18 @@ def _clean_row(product, row: dict) -> dict:
         'cost': _money(row.get('cost'), 'El costo', 'cost'),
         'notes': ' '.join(str(row.get('notes') or '').split())[:300],
     }
+    # DC2 — what the shop tells buyers about the device. Optional, and only
+    # present in the result when the row brought it (an old caller's rows are
+    # cleaned exactly as before).
+    if row.get('battery_health') not in (None, ''):
+        cleaned['battery_health'] = clean_battery(row.get('battery_health'))
+    if row.get('cosmetic_grade') not in (None, ''):
+        cleaned['cosmetic_grade'] = clean_grade(product.company, row.get('cosmetic_grade'))
+    if row.get('public_notes'):
+        cleaned['public_notes'] = clean_public_notes(row.get('public_notes'))
+    if row.get('sale_price') not in (None, ''):
+        cleaned['sale_price'] = _money(row.get('sale_price'), 'El precio de venta', 'sale_price')
+    return cleaned
 
 
 def clean_unit(product, row: dict) -> dict:
@@ -318,10 +368,40 @@ def reserve(unit, *, reason, actor=None, request=None) -> StockUnit:
 
 @transaction.atomic
 def release(unit, *, actor=None, request=None) -> StockUnit:
+    """
+    A reservation ends: the device is back on the shelf.
+
+    DC2 review — a WEB hold too, so the till can sell a device a cart left
+    behind: freed for good (its buyer no longer holds it), with the staff
+    member in the audit row and the hold it was in the Kardex line. Not while
+    an order that may still be paid carries it and its time has not run out:
+    that buyer may be paying right now. Shelf first, then the device — the
+    module's one lock order — so the answer is read under the lock.
+    """
+    from . import inventory_services, unit_hold_services
+
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
+    current = StockUnit.objects.select_for_update().get(pk=unit.pk)
+    metadata = None
+    if current.status == StockUnit.Status.RESERVED and current.hold_key:
+        # Owner, 2026-10-15: nor past its time while the gateway may still
+        # confirm that order's payment (a person who looked at the gateway's
+        # panel may still release one nobody could settle).
+        if ((current.hold_order_id and current.hold_until and current.hold_until > timezone.now()
+                and unit_hold_services._order_is_live(current.hold_order_id))
+                or unit_hold_services.payment_keeps_hold(current, include_unsettled=False)):
+            raise StockUnitError(
+                'Un comprador está pagando este equipo en la web (pedido '
+                f'#{current.hold_order_id}). Podrás liberarlo cuando ese pago venza.',
+                field='status',
+            )
+        metadata = {'web_hold': True, 'hold_order_id': current.hold_order_id}
     return _move(
         unit, expected=StockUnit.Status.RESERVED, to_status=StockUnit.Status.AVAILABLE,
         movement_type=StockMovement.MANUAL_ENTRY, reason='Apartado liberado',
-        actor=actor, action='stock_unit_released', request=request,
+        actor=actor, action='stock_unit_released', request=request, metadata=metadata,
+        extra_fields={'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None,
+                      'hold_origin': '', 'hold_started_at': None},
     )
 
 
@@ -358,11 +438,42 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
         locked.condition = _condition(fields['condition'])
         changed.append('condition')
     if 'cost' in fields:
-        locked.cost = _money(fields['cost'], 'El costo', 'cost')
-        changed.append('cost')
+        cost = _money(fields['cost'], 'El costo', 'cost')
+        if cost != locked.cost:
+            # DC1 — A SOLD UNIT'S COST IS HISTORY. Its sale line was valued at
+            # it; rewriting it now would make the margin of that sale say
+            # something it did not say when it was made.
+            if locked.status == StockUnit.Status.SOLD:
+                raise StockUnitError(
+                    f'El equipo {locked.serial_number} ya se vendió: su costo no se puede cambiar.',
+                    field='cost',
+                )
+            locked.cost = cost
+            changed.append('cost')
     if 'notes' in fields:
         locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]
         changed.append('notes')
+    # DC2 — what the shop says about this device.
+    if 'battery_health' in fields:
+        locked.battery_health = clean_battery(fields['battery_health'])
+        changed.append('battery_health')
+    if 'cosmetic_grade' in fields:
+        locked.cosmetic_grade = clean_grade(locked.company, fields['cosmetic_grade'])
+        changed.append('cosmetic_grade')
+    if 'public_notes' in fields:
+        locked.public_notes = clean_public_notes(fields['public_notes'])
+        changed.append('public_notes')
+    if 'sale_price' in fields:
+        price = _money(fields['sale_price'], 'El precio de venta', 'sale_price')
+        if price != locked.sale_price:
+            # Like its cost: the price a sold device left at is that sale's.
+            if locked.status == StockUnit.Status.SOLD:
+                raise StockUnitError(
+                    f'El equipo {locked.serial_number} ya se vendió: su precio no se puede cambiar.',
+                    field='sale_price',
+                )
+            locked.sale_price = price
+            changed.append('sale_price')
     if changed:
         locked.save(update_fields=[*changed, 'updated_at'])
         AdminAuditLog.log(
@@ -384,10 +495,13 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
 #   · at the till, the ones the sale NAMES (`sell_units=True`): somebody
 #     identified each device, by scanner or by hand. Two tills naming the same
 #     device queue on that lock, and the second finds it sold;
-#   · for a web payment, the oldest AVAILABLE ones are SET ASIDE
-#     (`assign_units_for_sale=True`) so the shelf count is right. Nobody has
-#     identified them: that happens when the order is handed over
-#     (`unit_identification.identify_for_order`), and may swap them.
+#   · for a web payment of a product the web sells BY UNIT (DC2: a
+#     serialized variant of a model, new or used), the devices the buyer's
+#     cart held (`unit_hold_services`) — the one chosen is the one sold;
+#   · for a web payment of any other serialized product, the oldest AVAILABLE
+#     ones are SET ASIDE (`assign_units_for_sale=True`) so the shelf count is
+#     right. Nobody has identified them: that happens when the order is handed
+#     over (`unit_identification.identify_for_order`), and may swap them.
 
 
 __all__ = [

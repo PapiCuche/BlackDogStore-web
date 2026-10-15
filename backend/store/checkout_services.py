@@ -92,10 +92,26 @@ class CheckoutError(Exception):
 
 @dataclass(frozen=True)
 class CheckoutLine:
-    """One product and how many of it. The normalised form both surfaces reach."""
+    """
+    One product and how many of it. The normalised form both surfaces reach.
+
+    DC2 — or ONE device the cart holds (`unit`), at the price the buyer was
+    shown when it was put in the cart (`unit_price`). Such a line is never
+    merged with another: two devices of one variant may cost different things.
+    """
 
     product: Product
     quantity: int
+    unit: object = None
+    unit_price: Decimal | None = None
+    #: DC3 — sold «bajo pedido» against this supplier offer, at its commercial price.
+    offer: object = None
+
+    @property
+    def price(self) -> Decimal:
+        if self.offer is not None:
+            return self.offer.commercial_price
+        return self.unit_price if self.unit is not None else self.product.price
 
 
 def merge_lines(lines: list[CheckoutLine]) -> list[CheckoutLine]:
@@ -127,15 +143,83 @@ def merge_lines(lines: list[CheckoutLine]) -> list[CheckoutLine]:
     """
     merged: dict[int, int] = {}
     first_seen: dict[int, Product] = {}
+    devices: dict[int, CheckoutLine] = {}
+    order: list = []
     for line in lines:
+        if line.unit is not None:
+            # A device is its own line, once.
+            if line.unit.pk not in devices:
+                devices[line.unit.pk] = line
+                order.append(('unit', line.unit.pk))
+            continue
+        if line.offer is not None:
+            # DC3 — an on-order line is its own line (a cart holds one per product).
+            devices[('offer', line.product.pk)] = line
+            order.append(('unit', ('offer', line.product.pk)))
+            continue
         key = line.product.pk
         if key not in first_seen:
             first_seen[key] = line.product
+            order.append(('product', key))
         merged[key] = merged.get(key, 0) + line.quantity
     return [
-        CheckoutLine(product=first_seen[key], quantity=quantity)
-        for key, quantity in merged.items()
+        devices[key] if kind == 'unit' else CheckoutLine(product=first_seen[key], quantity=merged[key])
+        for kind, key in order
     ]
+
+
+def lines_from_cart(company, branch, session_key, cart_items) -> list[CheckoutLine]:
+    """
+    The browser cart as checkout lines. DC2: a product the web sells by unit
+    becomes one line per device THIS cart holds, at its frozen price.
+
+    Checked again here, because time passed since the cart was filled: the
+    hold must still be this cart's, unexpired, in the branch that ships, and
+    the device's price must still be the one the buyer saw. A changed price
+    is not charged silently: the hold takes the new price and the buyer is
+    told before anything is created.
+    """
+    from . import unit_hold_services
+
+    from . import supply_services
+
+    unit_hold_services.release_expired(company=company)
+    lines, errors = [], []
+    for item in cart_items:
+        product = item.product
+        if item.supply_origin == item.SUPPLY_SUPPLIER:
+            # DC3 — taken «bajo pedido»: the offer that covers it NOW, at its price.
+            offer = supply_services.offer_for_line(product, item.quantity)
+            if offer is None:
+                errors.append(f'{product.name} ya no está disponible bajo pedido en esa cantidad.')
+                continue
+            lines.append(CheckoutLine(product=product, quantity=item.quantity, offer=offer))
+            continue
+        if not product.sells_by_unit:
+            lines.append(CheckoutLine(product=product, quantity=item.quantity))
+            continue
+        held = list(unit_hold_services.held_units(session_key, company, product=product))
+        if not held:
+            errors.append(f'Tu reserva de {product.name} venció. Vuelve a agregarlo al carrito.')
+            continue
+        for unit in held:
+            if branch is None or unit.branch_id != branch.pk:
+                errors.append(f'{product.name} ya no está disponible.')
+                continue
+            current = unit_hold_services.price_for(unit, product)
+            if current is None:
+                errors.append(f'{product.name} ya no está disponible.')
+                continue
+            if current != unit.hold_price:
+                type(unit).objects.filter(pk=unit.pk).update(hold_price=current)
+                errors.append(
+                    f'El precio de {product.name} cambió a {current}. Revisa tu carrito antes de pagar.'
+                )
+                continue
+            lines.append(CheckoutLine(product=product, quantity=1, unit=unit, unit_price=unit.hold_price))
+    if errors:
+        raise CheckoutError('Problemas con el carrito.', errors=errors, code='cart_changed')
+    return lines
 
 
 @dataclass
@@ -243,6 +327,14 @@ def resolve_lines_from_intents(company, intents) -> list[CheckoutLine]:
         if product is None:
             missing.append(slug)
             continue
+        if product.sells_by_unit:
+            # DC2 — the app has no cart that holds a device yet. Refused by
+            # name rather than sold as «one of them».
+            raise CheckoutError(
+                'Algunos productos se compran eligiendo el equipo en la tienda web.',
+                errors=[f'{product.name} se compra eligiendo el equipo en la tienda web.'],
+                code='unit_required',
+            )
         lines.append(CheckoutLine(product=product, quantity=quantity))
 
     if missing:
@@ -294,6 +386,24 @@ def validate_lines_and_subtotal(branch, lines: list[CheckoutLine]) -> Decimal:
             continue
         if line.quantity <= 0:
             errors.append(f'Cantidad inválida para {product.name}.')
+            continue
+        if line.unit is not None:
+            # The device is already off the shelf, held for this cart
+            # (`lines_from_cart` checked it): the shelf count does not include it.
+            subtotal += line.price
+            continue
+        if line.offer is not None:
+            # DC3 — on order: the offer must still cover the whole line. The
+            # shelf is not asked; nothing will be taken from it.
+            from . import supply_services
+
+            if supply_services.offer_for_line(product, line.quantity) is None:
+                errors.append(f'{product.name} ya no está disponible bajo pedido en esa cantidad.')
+                continue
+            subtotal += line.price * line.quantity
+            continue
+        if product.sells_by_unit:
+            errors.append(f'{product.name} se compra eligiendo el equipo en la tienda web.')
             continue
         available = stock.get(product.id, 0)
         if available < line.quantity:
@@ -459,13 +569,47 @@ def create_pending_order(
         # document — never a resemblance, never an email.
         link_order_to_customer(order, actor=actor)
 
+        from . import supply_services
+
+        over_stock_allowed = supply_services.web_allows_on_order_over_stock(company.pk)
         for line in lines:
-            OrderItem.objects.create(
+            # Owner, 2026-10-15 — an on-order line the shelf covers when the
+            # order is written is the buyer's explicit choice ONLY where the
+            # company lets the web offer it: then the page told them, and it is
+            # said on the line and in the audit, never a silent switch. With
+            # the switch off the cart only takes «Bajo pedido» while the shelf
+            # cannot cover it, so a shelf that covers it now means stock arrived
+            # afterwards — nobody chose the supplier over stock (integration
+            # review of PR #123, P3): no flag, no audit, the line says why.
+            own = supply_services.own_stock(line.product, branch) if line.offer is not None else 0
+            covered = line.offer is not None and own >= line.quantity
+            chosen = covered and over_stock_allowed
+            if chosen:
+                choice = {'supply_chosen_over_stock': True,
+                          'supply_choice_reason': supply_services.WEB_OVER_STOCK_REASON}
+            elif covered:
+                choice = {'supply_choice_reason': supply_services.WEB_TAKEN_WHILE_EMPTY_REASON}
+            else:
+                choice = {}
+            item = OrderItem.objects.create(
                 order=order,
                 product=line.product,
                 quantity=line.quantity,
-                price=line.product.price,
+                price=line.price,
+                stock_unit=line.unit,
+                # DC3 — origin, offer, lead time and agreed cost, frozen now.
+                **(supply_services.line_snapshot(line.offer) if line.offer is not None else {}),
+                **choice,
             )
+            if chosen:
+                supply_services.over_stock_audit(action='web_on_order_over_stock', order=order, line=item,
+                                                 own=own, reason=supply_services.WEB_OVER_STOCK_REASON)
+        held = [line.unit for line in lines if line.unit is not None]
+        if held:
+            # DC2 — the devices are this order's now, and stay held while it can be paid.
+            from . import unit_hold_services
+
+            unit_hold_services.bind_to_order(held, order, cart_session_key)
 
         # CLIENT-SEC-01. Every order made online is assessed as it is made, in
         # this transaction, so the two exist together or not at all. ADVICE: it
@@ -655,6 +799,21 @@ def start_payment_attempt(order: Order, *, credentials) -> PaymentSession:
     WHICH GATEWAY is decided by the credentials that were loaded, and those by
     the active payment provider: one product per installation, never a mix.
     """
+    # DC2 review — an order whose devices another checkout of the same cart
+    # took (a later one that may still be paid, or any paid one) is not
+    # charged: its devices are not its own any more.
+    from . import unit_hold_services
+
+    later = unit_hold_services.superseded_lines(order)
+    if later:
+        paid = [row for row in later.values() if row.status == Order.Status.PAID]
+        if paid:
+            winner = min(paid, key=lambda row: row.pk)
+            detail = f'Los equipos de este pedido ya se pagaron en el pedido #{winner.pk} del mismo carrito.'
+        else:
+            winner = max(later.values(), key=lambda row: row.pk)
+            detail = f'Este pedido fue reemplazado por el pedido #{winner.pk} del mismo carrito. Paga ese pedido.'
+        raise CheckoutError(detail, status_code=409, code='order_superseded')
     return payment_adapters.adapter_for(credentials).start_attempt(order, credentials)
 
 

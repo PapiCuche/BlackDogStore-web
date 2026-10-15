@@ -81,10 +81,7 @@ class CheckoutQuoteView(APIView):
             if not cart_items:
                 raise checkout.CheckoutError('El carrito está vacío.')
 
-            lines = [
-                checkout.CheckoutLine(product=item.product, quantity=item.quantity)
-                for item in cart_items
-            ]
+            lines = checkout.lines_from_cart(company, branch, session_key, cart_items)
             subtotal = checkout.validate_lines_and_subtotal(branch, lines)
             pricing = checkout.price_checkout(
                 company, subtotal, str(request.data.get('coupon_code') or ''),

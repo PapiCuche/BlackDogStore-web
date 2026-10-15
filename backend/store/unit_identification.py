@@ -23,7 +23,7 @@ from django.db import transaction
 from django.db.models import Q
 
 from . import device_identity
-from .models import AdminAuditLog, Order, OrderUnit, StockMovement, StockUnit
+from .models import AdminAuditLog, Order, OrderItem, OrderUnit, StockMovement, StockUnit
 
 SCANNER, MANUAL = OrderUnit.Method.SCANNER.value, OrderUnit.Method.MANUAL.value
 METHODS = (SCANNER, MANUAL)
@@ -197,6 +197,8 @@ def _wanted(order) -> dict:
     """
     wanted: dict[int, int] = {}
     for item in order.items.select_related('product'):
+        if item.supply_origin == OrderItem.SUPPLY_SUPPLIER and item.supply_status != OrderItem.SUPPLY_RECEIVED:
+            continue      # DC3 — on order: no device exists yet; receiving it names it.
         if item.product.is_serialized:
             wanted[item.product_id] = wanted.get(item.product_id, 0) + item.quantity
     if wanted:
@@ -447,6 +449,10 @@ def forget(*, order, order_unit_id, actor, request=None) -> None:
         raise UnitIdentificationError('not_found', 'Ese equipo no está identificado en este pedido.')
     if row.left_at is not None or left_the_shop(order):
         raise UnitIdentificationError('already_left', 'El pedido ya salió de la tienda: el equipo que se entregó no se cambia aquí.')
+    if row.method == OrderUnit.Method.BUYER:
+        # DC2: the buyer chose and paid for THIS device. Handing over another
+        # one is a change the buyer agrees to, not a correction of the panel.
+        raise UnitIdentificationError('chosen_by_buyer', 'El comprador eligió este equipo: no se cambia desde aquí.')
     metadata = {'order_id': order.pk, 'unit_id': row.unit_id, 'product_id': row.product_id, 'method': row.method}
     row.delete()
     AdminAuditLog.log(

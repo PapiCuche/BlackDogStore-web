@@ -58,6 +58,8 @@ from .throttles import AdminPosThrottle, AdminPosSaleThrottle, AdminSalesAnalyti
 CAP_POS = 'sales.pos.use'
 CAP_ASSIGN_SELLER = 'sales.pos.assign_seller'
 CAP_DISCOUNTS = 'sales.discounts.apply'
+#: Owner, 2026-10-15 — who may sell on order a line the shelf covers (with a reason).
+CAP_ORDERS_MANAGE = 'sales.orders.manage'
 CAP_COMMISSIONS_VIEW = 'sales.commissions.view'
 CAP_COMMISSIONS_MANAGE = 'sales.commissions.manage'
 CAP_ANALYTICS = 'sales.analytics.view'
@@ -140,6 +142,7 @@ class AdminPosContextView(APIView):
             ),
             can_assign_seller=has_capability(request.user, company, CAP_ASSIGN_SELLER),
             can_apply_discount=has_capability(request.user, company, CAP_DISCOUNTS),
+            can_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
             can_view_commissions=has_capability(
                 request.user, company, CAP_COMMISSIONS_VIEW,
             ),
@@ -327,6 +330,8 @@ class AdminPosSaleView(APIView):
                 may_apply_manual_discount=has_capability(
                     request.user, company, CAP_DISCOUNTS,
                 ),
+                # Owner, 2026-10-15: on order although the shelf has it.
+                may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 request=request,
             )
         except pos_services.PosIdempotencyConflict as exc:
@@ -344,6 +349,8 @@ class AdminPosSaleView(APIView):
             # 403, not 400: the request is fine, the caller is not allowed to
             # make it. A 400 would send an operator hunting for a typo.
             return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except pos_services.PosStockAvailableError as exc:
+            return Response({'detail': str(exc), 'code': exc.code}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except inventory_services.InsufficientStockError as exc:
@@ -600,9 +607,13 @@ class AdminPosPreviewView(APIView):
                 may_apply_manual_discount=has_capability(
                     request.user, company, CAP_DISCOUNTS,
                 ),
+                # Owner, 2026-10-15: on order although the shelf has it.
+                may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
             )
         except pos_services.PosPermissionError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except pos_services.PosStockAvailableError as exc:
+            return Response({'detail': str(exc), 'code': exc.code}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

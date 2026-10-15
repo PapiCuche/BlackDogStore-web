@@ -29,6 +29,7 @@ import { PageHeader, internalButtonClass, internalPrimaryButtonClass } from "../
 import { SequenceSettings } from "../components/SequenceSettings";
 import { OrderReviewSettings } from "../components/OrderReviewSettings";
 import { PublicationSettings } from "../components/PublicationSettings";
+import { DeviceHoldSettings } from "../components/DeviceHoldSettings";
 import { CarrierSettings } from "../components/CarrierSettings";
 import {
   fetchCompanyConfiguration,
@@ -495,6 +496,25 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                       companyId={companyId}
                       requiresImage={config.settings.publication_requires_image ?? false}
                       canEdit={canEdit}
+                      onSaved={setConfig}
+                    />
+                  </DashboardSection>
+                </div>
+                {/* DEVICE-COMMERCE — device holds and web sale on order over
+                    stock. Its own save, with only its four fields; the same
+                    pair of capabilities as the order review. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Apartados de equipos y venta bajo pedido"
+                    description="Cuánto queda apartado un equipo para un comprador, y si en la web se puede pedir al proveedor aunque haya stock."
+                  >
+                    <DeviceHoldSettings
+                      companyId={companyId}
+                      cartMinutes={config.settings.device_cart_hold_minutes ?? 15}
+                      checkoutMinutes={config.settings.device_checkout_hold_minutes ?? 45}
+                      ceilingMinutes={config.settings.device_hold_ceiling_minutes ?? 60}
+                      overStock={config.settings.web_on_order_over_stock ?? false}
+                      canEdit={Boolean(config.can_manage_order_review) && companyWide}
                       onSaved={setConfig}
                     />
                   </DashboardSection>

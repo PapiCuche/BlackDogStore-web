@@ -41,6 +41,7 @@ import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
 import { PosServiceIntake } from "./PosServiceIntake";
+import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
@@ -71,8 +72,9 @@ import {
 } from "../../lib/internal-api";
 import { UnitConfirmation, UnitEntry } from "../../components/UnitEntry";
 import {
-  newRhythm, pendingUnits, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, saleItems, unitLabel, unitOfLine,
-  withProduct, withQuantity, withUnit, withoutUnit,
+  lineToOnOrder, missingSupplyReasons, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey,
+  rhythmMethod, saleItems, unitLabel, unitOfLine, withOnOrderProduct, withProduct, withQuantity, withSupplyReason, withUnit,
+  withoutUnit,
   type EntryMethod, type PosLine,
 } from "../../lib/unit-entry";
 import {
@@ -135,6 +137,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const [payment, setPayment] = useState("cash");
   const [receiptType, setReceiptType] = useState("");
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // DC3: un producto escaneado sin estante que una oferta cubre — la opción, a la vista.
+  const [onOrderOffer, setOnOrderOffer] = useState<PosProduct | null>(null);
   const [charging, setCharging] = useState(false);
   const [done, setDone] = useState<PosSaleResult | null>(null);
   // Qué documento se está preparando, para que el botón lo diga y no se puedan
@@ -238,12 +242,36 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   }, []);
 
   const addProduct = useCallback((p: PosProduct) => {
-    setLines((prev) => withProduct(prev, p));
-    setFeedback(
-      p.is_serialized
-        ? { kind: "warn", text: `${p.name}: escanea el IMEI o la serie del equipo que se lleva.` }
-        : { kind: "ok", text: `${p.name} · ${money(p.price)}` },
-    );
+    // Sobre `linesRef`, como `addUnit`: `withProduct` rechaza sumar del estante
+    // a una línea bajo pedido (DC3), y ese motivo se muestra.
+    try {
+      const next = withProduct(linesRef.current, p);
+      linesRef.current = next;
+      setLines(next);
+      setFeedback(
+        p.is_serialized
+          ? { kind: "warn", text: `${p.name}: escanea el IMEI o la serie del equipo que se lleva.` }
+          : { kind: "ok", text: `${p.name} · ${money(p.price)}` },
+      );
+    } catch (err) {
+      setFeedback({ kind: "error", text: err instanceof Error ? err.message : "No se pudo añadir." });
+    }
+  }, []);
+
+  /** DC3 — una unidad bajo pedido, al precio de la oferta y sin equipo. Siempre a propósito. */
+  const addOnOrder = useCallback((p: PosProduct) => {
+    try {
+      const next = withOnOrderProduct(linesRef.current, p);
+      linesRef.current = next;
+      setLines(next);
+      setOnOrderOffer(null);
+      setFeedback({
+        kind: "ok",
+        text: `${p.name} · ${onOrderLineLabel(p.on_order?.lead_time_days)} · ${money(p.on_order?.price ?? p.price)}`,
+      });
+    } catch (err) {
+      setFeedback({ kind: "error", text: err instanceof Error ? err.message : "No se pudo añadir bajo pedido." });
+    }
   }, []);
 
   /**
@@ -275,6 +303,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
     resetRhythm(scanRhythm.current);
     setScan("");
     setUnitToConfirm(null);
+    setOnOrderOffer(null);
     try {
       const product = await posLookup(companyId, branch, clean);
       if (product === null) {
@@ -297,8 +326,11 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       if (product.available <= 0) {
         setFeedback({
           kind: "warn",
-          text: `${product.name} sin stock en esta sucursal.`,
+          text: product.on_order
+            ? `${product.name} sin stock en esta sucursal. Se puede vender bajo pedido.`
+            : `${product.name} sin stock en esta sucursal.`,
         });
+        if (product.on_order) setOnOrderOffer(product);
         return;
       }
       addProduct(product);
@@ -379,7 +411,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
         try {
           const p = await posPreview(companyId, {
             branch,
-            items: lines.map((l) => ({ product: l.product, quantity: l.quantity })),
+            items: previewItems(lines),
             customer: customer?.id ?? null,
             seller,
             payment_method: payment,
@@ -417,6 +449,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const change = isCash && received ? Number(received) - total : null;
 
   const unitsMissing = pendingUnits(lines);
+  // Bajo pedido con estante: sólo quien puede pedirlo así escribe el motivo. Sin
+  // ese permiso nada cambia aquí: la negativa del servidor es lo que se muestra.
+  const canOrderOverStock = Boolean(context?.can_order_over_stock);
+  const reasonsMissing = canOrderOverStock ? missingSupplyReasons(lines) : 0;
 
   function setQuantity(productId: number, quantity: number) {
     setLines((prev) => withQuantity(prev, productId, quantity));
@@ -438,6 +474,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       setFeedback({
         kind: "error",
         text: `Falta identificar ${unitsMissing} equipo${unitsMissing === 1 ? "" : "s"}: escanea su IMEI o su serie.`,
+      });
+      return;
+    }
+    if (reasonsMissing > 0) {
+      setFeedback({
+        kind: "error",
+        text: "Indica el motivo para pedir al proveedor lo que hay en esta sucursal.",
       });
       return;
     }
@@ -857,6 +900,15 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {feedback.text}
               </p>
             ) : null}
+            {onOrderOffer ? (
+              <div className="mt-2">
+                <PosOnOrderOffer
+                  product={onOrderOffer}
+                  onAdd={(p) => { addOnOrder(p); focusScan(); }}
+                  onDismiss={() => setOnOrderOffer(null)}
+                />
+              </div>
+            ) : null}
             </section>
 
             <div>
@@ -943,30 +995,27 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
             {found.length ? (
               <div className="overflow-hidden rounded-xl border border-bd-border bg-surface">
                 {found.map((p) => (
-                  <button
+                  <PosProductHit
                     key={p.id}
-                    type="button"
-                    onClick={() => {
-                      if (p.available <= 0) {
-                        setFeedback({ kind: "warn", text: `${p.name} sin stock aquí.` });
+                    product={p}
+                    onAdd={(hit) => {
+                      if (hit.available <= 0) {
+                        setFeedback({
+                          kind: "warn",
+                          text: hit.on_order ? `${hit.name} sin stock aquí. Puedes agregarlo bajo pedido.` : `${hit.name} sin stock aquí.`,
+                        });
                         return;
                       }
-                      addProduct(p);
+                      addProduct(hit);
                       setTerm("");
                       focusScan();
                     }}
-                    className="flex w-full min-w-0 items-center justify-between gap-3 border-b border-bd-border/70 px-4 py-3 text-left text-sm transition last:border-0 hover:bg-foreground/[0.03]"
-                  >
-                    <span className="min-w-0 flex-1 break-words text-foreground">{p.name}</span>
-                    <span className="flex shrink-0 items-center gap-3 text-xs">
-                      <span
-                        className={p.available > 0 ? "text-muted" : "text-danger"}
-                      >
-                        {p.available} disp.
-                      </span>
-                      <span className="font-mono text-foreground">{money(p.price)}</span>
-                    </span>
-                  </button>
+                    onAddOnOrder={(hit) => {
+                      addOnOrder(hit);
+                      setTerm("");
+                      focusScan();
+                    }}
+                  />
                 ))}
               </div>
             ) : null}
@@ -1003,7 +1052,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 {lines.map((l) => (
                   <div key={l.product} className="rounded-lg bg-background p-3">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm text-foreground">{l.name}</p>
+                      <div className="min-w-0">
+                        <p className="text-sm text-foreground">{l.name}</p>
+                        {l.onOrder ? <PosOnOrderBadge days={l.leadTimeDays} /> : null}
+                      </div>
                       <button
                         type="button"
                         onClick={() => setQuantity(l.product, 0)}
@@ -1065,10 +1117,32 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         ) : null}
                       </div>
                     ) : null}
-                    {l.quantity > l.available ? (
-                      <p className="mt-1.5 text-[11px] text-warning">
-                        Sólo hay {l.available} en esta sucursal.
-                      </p>
+                    {canOrderOverStock ? (
+                      <PosSupplyReason
+                        line={l}
+                        onChange={(reason) => setLines((prev) => withSupplyReason(prev, l.product, reason))}
+                      />
+                    ) : null}
+                    {!l.onOrder && l.quantity > l.available ? (
+                      <div className="mt-1.5 space-y-1">
+                        <p className="text-[11px] text-warning">
+                          Sólo hay {l.available} en esta sucursal.
+                        </p>
+                        {l.offer ? (
+                          // DC3: la línea pasa ENTERA a bajo pedido; no se mezcla con el estante.
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = lineToOnOrder(linesRef.current, l.product);
+                              linesRef.current = next;
+                              setLines(next);
+                            }}
+                            className="text-[11px] font-semibold text-warning underline underline-offset-2"
+                          >
+                            Pasar la línea a bajo pedido ({leadTimeText(l.offer.lead_time_days)}) · {money(l.offer.price)} c/u
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 ))}
@@ -1435,6 +1509,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 branch === null ||
                 !terms ||
                 unitsMissing > 0 ||
+                reasonsMissing > 0 ||
                 previewError !== null ||
                 (isCash && (received === "" || Number(received) < total))
               }

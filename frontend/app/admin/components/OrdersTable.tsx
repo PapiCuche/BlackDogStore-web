@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AdminOrder, formatAdminDate } from "../../lib/admin";
+import { AdminOrder, SUPPLY_STATUS_LABELS, formatAdminDate } from "../../lib/admin";
 import { OrderStatusBadge } from "./OrderStatusBadge";
 import { FulfillmentStatusBadge } from "./FulfillmentStatusBadge";
 
@@ -73,6 +73,19 @@ export function OrdersTable({ orders }: Props) {
                     }
                   >
                     {orderRiskBadge(order)}
+                  </span>
+                )}
+                {/* DC3: lo vendido bajo pedido. «Por confirmar» pide que alguien actúe. */}
+                {order.supply_status && SUPPLY_STATUS_LABELS[order.supply_status] && (
+                  <span
+                    data-testid="order-supply-badge"
+                    className={
+                      order.supply_status === "to_confirm" || order.supply_status === "failed"
+                        ? "ml-1 mt-1 inline-flex items-center rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning first:ml-0"
+                        : "ml-1 mt-1 inline-flex items-center rounded border border-bd-border px-2 py-0.5 text-[11px] font-medium text-muted first:ml-0"
+                    }
+                  >
+                    Bajo pedido · {SUPPLY_STATUS_LABELS[order.supply_status]}
                   </span>
                 )}
               </td>

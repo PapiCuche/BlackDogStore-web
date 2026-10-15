@@ -42,6 +42,15 @@ PRODUCT_TEMPLATE_HEADERS = [
     'Imagen principal',
     'Imágenes',
     'Destino',
+    # DC1. Optional; read as `Product.reference_cost`. Last, so files made with
+    # the previous template keep every other column where it was.
+    'Costo de referencia',
+    # DC2. Optional, after everything else for the same reason: which model the
+    # product is a variant of, its options and its line.
+    'Modelo',
+    'Capacidad',
+    'Color',
+    'Línea',
 ]
 
 #: IMPORT-SPLIT-01 — the template is ONE sheet: these headers and nothing under
@@ -323,6 +332,17 @@ def _product_header_notes() -> dict:
             'en la tienda en línea. Vacío: lo nuevo queda como «Solo stock interno» y lo existente no cambia. '
             'No es lo mismo que «activo».'
         ),
+        'Costo de referencia': (
+            'Opcional. Lo que esperas pagar por una unidad, sin IGV, con punto decimal: 85.50. Sólo se usa '
+            'cuando una sucursal todavía no tiene costo promedio. Vacío: no cambia el que hay.'
+        ),
+        'Modelo': (
+            'Opcional. El modelo del catálogo de equipos del que este producto es una variante, tal como se '
+            'llama en Catálogo › Modelos. Vacío: el producto no cambia de modelo.'
+        ),
+        'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe (por ejemplo «256 GB»).',
+        'Color': 'Opcional, con «Modelo»: una opción de color que ya existe.',
+        'Línea': 'Opcional, con «Modelo»: «Nuevo» o «Seminuevo». Vacío = Nuevo.',
     }
 
 
@@ -353,10 +373,10 @@ def product_template_bytes(company=None) -> bytes:
     _header_row(sheet, PRODUCT_TEMPLATE_HEADERS)
     header_notes(sheet, _product_header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [22, 19, 42, 47, 18, 28, 31, 46, 28])
+    _autosize(sheet, [22, 19, 42, 47, 18, 28, 31, 46, 28, 20])
     text_columns(sheet, ('A', 'B'))
 
-    number_columns(sheet, ('E',))
+    number_columns(sheet, ('E', 'J'))
 
     add_cell_list(sheet, 'F', cell_list(_company_category_names(company)))
     add_cell_list(sheet, 'I', cell_list(_destination_labels()))
@@ -403,6 +423,10 @@ def inventory_export_table(*, company, branches, include_quantities: bool, produ
     products). Without it: the active ones, as this export always did.
     """
     branches = list(branches)
+    # DC1 — NO cost column here, on purpose. This sheet answers as it always
+    # did (`LegacyInventoryExportTest`), and a file that comes back must not
+    # re-state what things cost. The stock importer READS an optional
+    # «Costo unitario» column when somebody adds one (`import_formats.UNIT_COST_HEADERS`).
     headers = INVENTORY_EXPORT_HEADERS + [f'ALMACEN {b.name}' for b in branches]
     if products is None:
         products = Product.objects.filter(company=company, is_active=True)

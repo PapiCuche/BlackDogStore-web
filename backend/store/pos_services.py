@@ -59,6 +59,15 @@ class PosValidationError(PosError):
     """The request is malformed or asks for something that does not exist here."""
 
 
+class PosStockAvailableError(PosValidationError):
+    """
+    DC3 — «Bajo pedido» asked for a line this shelf covers. Answered 409
+    `stock_available`: sin stock únicamente con «Bajo pedido».
+    """
+
+    code = 'stock_available'
+
+
 class PosPermissionError(PosError):
     """
     The request is well-formed; this caller is not allowed to make it.
@@ -82,6 +91,8 @@ class PosIdempotencyConflict(PosError):
 
 
 MAX_LINES = 100
+#: The short reason a till gives for selling on order a line its shelf covers.
+MAX_SUPPLY_REASON = 200
 MAX_QUANTITY_PER_LINE = 1000
 MAX_IDEMPOTENCY_KEY = 64
 
@@ -259,6 +270,12 @@ def normalize_items(raw_items) -> list[dict]:
     # Kept per product, like the quantity, so two lines of one product are one
     # line with both devices.
     devices: dict[int, dict[int, str]] = {}
+    # DC3 — the products sold «bajo pedido». A product is all shelf or all
+    # order in one sale: two lines that disagree are refused, not merged.
+    on_order: dict[int, bool] = {}
+    # Owner, 2026-10-15 — why a line goes to the supplier although the shelf
+    # has it. Kept per product; whether it is needed is decided when priced.
+    reasons: dict[int, str] = {}
     for entry in raw_items:
         if not isinstance(entry, dict):
             raise PosValidationError('Formato de línea inválido.')
@@ -267,6 +284,15 @@ def normalize_items(raw_items) -> list[dict]:
             quantity = int(entry.get('quantity', 1))
         except (TypeError, ValueError):
             raise PosValidationError('Producto o cantidad inválidos.')
+        asked = entry.get('on_order') in (True, 'true', '1', 1)
+        if on_order.setdefault(product_id, asked) != asked:
+            raise PosValidationError(
+                'Un producto se vende del stock o bajo pedido, no las dos cosas en la misma venta.')
+        reason = ' '.join(str(entry.get('supply_reason') or '').split())
+        if len(reason) > MAX_SUPPLY_REASON:
+            raise PosValidationError(f'El motivo del pedido al proveedor admite {MAX_SUPPLY_REASON} caracteres.')
+        if reason and asked:
+            reasons.setdefault(product_id, reason)
         for unit in _line_units(entry.get('units')):
             if unit['id'] in devices.setdefault(product_id, {}):
                 raise PosValidationError('El mismo equipo está dos veces en la venta.')
@@ -288,7 +314,10 @@ def normalize_items(raw_items) -> list[dict]:
     return [
         {'product': pid, 'quantity': qty, 'units': [
             {'id': unit_id, 'method': method} for unit_id, method in sorted(devices.get(pid, {}).items())
-        ]}
+        ],
+         # Only when asked: a basket without it hashes exactly as before DC3.
+         **({'on_order': True} if on_order.get(pid) else {}),
+         **({'supply_reason': reasons[pid]} if pid in reasons else {})}
         for pid, qty in sorted(merged.items())
     ]
 
@@ -331,6 +360,11 @@ def check_line_units(products, items) -> None:
     for entry in items:
         product = products[entry['product']]
         named = len(entry.get('units') or [])
+        if entry.get('on_order'):
+            # DC3 — no device exists yet: it is named when it is received.
+            if named:
+                raise PosValidationError(f'«{product.name}» bajo pedido no lleva equipos: se identifican al recibirlo.')
+            continue
         if product.is_serialized and named != entry['quantity']:
             raise PosValidationError(
                 f'Identifica el equipo: «{product.name}» se vende por su IMEI o serie. '
@@ -396,7 +430,9 @@ def request_fingerprint(
             # sale, not a retry. Absent for an ordinary line, so what a basket
             # without devices hashed to before SERIAL-PICK-01 is unchanged.
             {'p': int(i['product']), 'q': int(i['quantity']),
-             **({'u': [[u['id'], u['method']] for u in i['units']]} if i.get('units') else {})}
+             **({'u': [[u['id'], u['method']] for u in i['units']]} if i.get('units') else {}),
+             # Owner, 2026-10-15: the same key with another reason is another sale.
+             **({'r': i['supply_reason']} if i.get('supply_reason') else {})}
             for i in items
         ],
         # The code AS TYPED, normalised for case and spacing only. Whether it
@@ -591,7 +627,7 @@ def commission_rate_for(company, seller) -> Decimal:
     return Decimal(membership.commission_rate_percent or 0)
 
 
-def calculate_pos_totals(company, products, items, *, discount) -> dict:
+def calculate_pos_totals(company, products, items, *, discount, prices=None) -> dict:
     """
     Subtotal, discount and total — computed HERE and nowhere else.
 
@@ -603,7 +639,8 @@ def calculate_pos_totals(company, products, items, *, discount) -> dict:
     lines = []
     for entry in items:
         product = products[entry['product']]
-        unit_price = Decimal(str(product.price))
+        # DC3 — a line on order is charged at its offer's commercial price.
+        unit_price = Decimal(str((prices or {}).get(product.pk, product.price)))
         quantity = entry['quantity']
         subtotal += unit_price * quantity
         lines.append((product, quantity, unit_price))
@@ -880,6 +917,7 @@ def build_pos_sale(
     amount_received=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
+    may_order_over_stock: bool = False,
     validate_cash: bool = True,
     require_units: bool = True,
 ):
@@ -940,8 +978,43 @@ def build_pos_sale(
         company, operator, seller_id, may_assign=may_assign_seller, branch=branch,
     )
 
+    # DC3 — the lines sold «bajo pedido»: each needs a valid offer covering it
+    # NOW, and is charged at that offer's price. Committed with the sale.
+    from . import supply_services
+
+    offers = {}
+    over_stock = {}
+    for entry in items:
+        if not entry.get('on_order'):
+            continue
+        product = products[entry['product']]
+        shelf = supply_services.own_stock(product, branch)
+        if shelf >= entry['quantity']:
+            # OWNER'S DECISION OF 2026-10-15 — own stock first, never switched
+            # silently. The supplier anyway only by an explicit choice: a
+            # reason, from somebody who manages orders (`sales.orders.manage`,
+            # the capability that follows an on-order line to its supplier).
+            reason = entry.get('supply_reason') or ''
+            if not reason:
+                raise PosStockAvailableError(
+                    f'«{product.name}» tiene stock en esta sucursal ({shelf}): véndelo con stock, no bajo pedido.'
+                    + (' Para pedirlo al proveedor igualmente, indica el motivo.' if may_order_over_stock else ''))
+            if not may_order_over_stock:
+                raise PosPermissionError(
+                    f'«{product.name}» tiene stock en esta sucursal: venderlo bajo pedido requiere permiso para '
+                    'gestionar pedidos.')
+            over_stock[product.pk] = {'reason': reason, 'own_stock': shelf}
+        offer = supply_services.offer_for_line(product, entry['quantity'])
+        if offer is None:
+            raise PosValidationError(
+                f'«{product.name}» no se puede vender bajo pedido: no hay una oferta de proveedor vigente '
+                f'que cubra {entry["quantity"]}.')
+        offers[product.pk] = offer
+    prices = {pid: Decimal(str(offers[pid].commercial_price if pid in offers else p.price))
+              for pid, p in products.items()}
+
     subtotal = _money(sum(
-        (Decimal(str(products[e['product']].price)) * e['quantity'] for e in items),
+        (prices[e['product']] * e['quantity'] for e in items),
         Decimal('0.00'),
     ))
 
@@ -950,7 +1023,6 @@ def build_pos_sale(
     # either qualifies or it does not.
     from . import promotion_services
 
-    prices = {pid: Decimal(str(p.price)) for pid, p in products.items()}
     promo = promotion_services.evaluate(company, branch, items, prices)
 
     asked_for_other_discount = bool(
@@ -984,7 +1056,7 @@ def build_pos_sale(
             may_apply_manual=may_apply_manual_discount,
         )
 
-    totals = calculate_pos_totals(company, products, items, discount=discount)
+    totals = calculate_pos_totals(company, products, items, discount=discount, prices=prices)
     commission = calculate_commission(
         commission_rate_for(company, seller),
         subtotal=totals['subtotal'], discount=totals['discount_amount'],
@@ -1008,6 +1080,8 @@ def build_pos_sale(
         'amount_received': received,
         'change_amount': change,
         'payment_method': payment_method,
+        'offers': offers,
+        'over_stock': over_stock,
         **totals,
     }
 
@@ -1035,6 +1109,7 @@ def create_pos_sale(
     receipt_type=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
+    may_order_over_stock: bool = False,
     request=None,
 ):
     """
@@ -1126,6 +1201,7 @@ def create_pos_sale(
         amount_received=amount_received,
         may_assign_seller=may_assign_seller,
         may_apply_manual_discount=may_apply_manual_discount,
+        may_order_over_stock=may_order_over_stock,
     )
 
     if receipt_type is not None:
@@ -1179,8 +1255,10 @@ def create_pos_sale(
         paid_at=now,
         # DELIVERED, because the customer is holding the goods. Leaving a
         # counter sale "pending fulfilment" would fill the dispatch queue with
-        # work that was finished before the screen refreshed.
-        fulfillment_status=Order.FulfillmentStatus.DELIVERED,
+        # work that was finished before the screen refreshed. DC3: unless a
+        # line is on order — those goods are not here yet.
+        fulfillment_status=(Order.FulfillmentStatus.PENDING if priced['offers']
+                            else Order.FulfillmentStatus.DELIVERED),
         accepted_terms=True,
         accepted_warranty_policy=True,
     )
@@ -1205,10 +1283,25 @@ def create_pos_sale(
             raise PosIdempotencyConflict(existing)
         return existing, False
 
-    OrderItem.objects.bulk_create([
-        OrderItem(order=order, product=product, quantity=quantity, price=unit_price)
+    from . import supply_services
+
+    over_stock = priced['over_stock']
+    written = OrderItem.objects.bulk_create([
+        OrderItem(order=order, product=product, quantity=quantity, price=unit_price,
+                  # DC3 — origin, offer, lead time and agreed cost, frozen with the sale.
+                  **(supply_services.line_snapshot(priced['offers'][product.pk])
+                     if product.pk in priced['offers'] else {}),
+                  # Owner, 2026-10-15 — the supplier chosen over the shelf, and why.
+                  **({'supply_chosen_over_stock': True,
+                      'supply_choice_reason': over_stock[product.pk]['reason']}
+                     if product.pk in over_stock else {}))
         for product, quantity, unit_price in priced['lines']
     ])
+    for item in written:
+        if item.product_id in over_stock:
+            supply_services.over_stock_audit(
+                action='pos_on_order_over_stock', order=order, line=item, actor=actor, request=request,
+                own=over_stock[item.product_id]['own_stock'], reason=over_stock[item.product_id]['reason'])
 
     # THE PROMOTION SNAPSHOT, before any document that has to read it.
     #

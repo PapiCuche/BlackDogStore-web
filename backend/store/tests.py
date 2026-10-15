@@ -25525,7 +25525,9 @@ class C14ProductImportTest(TestCase):
         ignored = {u['column'] for u in job.summary['unmapped']}
         self.assertIn('Código SUNAT', ignored)
         self.assertIn('Afectación', ignored)
-        self.assertIn('Precio costo', ignored)
+        # DC1: «Precio costo» is no longer ignored — it is the reference cost.
+        self.assertNotIn('Precio costo', ignored)
+        self.assertIn('reference_cost', job.mapping_snapshot['mapping'])
 
     def test_the_stock_column_of_the_product_sheet_is_not_imported(self):
         """
@@ -55666,6 +55668,13 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/categories/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        # DEVICE-COMMERCE-01 · DC2 — models and the used-device list.
+        'products/models/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/models/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'inventory/used/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
+        # DEVICE-COMMERCE-01 · DC3 — suppliers and their offers.
+        'products/suppliers/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/suppliers/offers/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
@@ -62549,11 +62558,16 @@ class SvcCollectPresetTest(TestCase):
         self.assertEqual(
             module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), after.ADMIN_PREVIOUS,
         )
+        # …DC1 (`costs.view`) starts where QUOTE-DECISION ended…
+        latest = self.migration('0126_costs_view_capability')
+        self.assertEqual(
+            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES), latest.ADMIN_PREVIOUS,
+        )
         # …and THE TRIPWIRE: the last one ends at today's catalogue. It fails
         # when the catalogue grows, and the node that grows it is the one that
         # has to say what happens to this preset.
         self.assertEqual(
-            after.ADMIN_PREVIOUS | set(after.NEW_CAPABILITIES),
+            latest.ADMIN_PREVIOUS | set(latest.NEW_CAPABILITIES),
             frozenset(ASSIGNABLE_CAPABILITY_CODES),
         )
 

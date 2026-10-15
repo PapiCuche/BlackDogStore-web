@@ -1147,7 +1147,10 @@ def _order_detail_payload(request, order, company):
     may set — computed by the server, exactly as the native surface already
     does, so the panel no longer keeps its own role-keyed copy of the rule.
     """
+    from .supply_services import order_supply_status
+
     shortfall = order_stock_shortfall(order)
+    supply_status = order_supply_status(order)
     data = AdminOrderDetailSerializer(order).data
     # SERIAL-PICK-01: which lines owe a device, the devices somebody already
     # identified, and how many are still to be.
@@ -1186,6 +1189,12 @@ def _order_detail_payload(request, order, company):
         # fulfillment transitions above — the panel never reads a role.
         'can_reprocess_stock_exit': bool(shortfall) and has_capability(
             request.user, company, CAP_INVENTORY_ADJUST),
+        # DC3: the order's supply, derived from its on-order lines ('' when
+        # none), and whether THIS caller may confirm, receive or fail them.
+        'supply_status': supply_status,
+        'can_manage_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE),
+        'can_receive_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE)
+        and has_capability(request.user, company, CAP_INVENTORY_ADJUST),
     }
 
 
@@ -1263,11 +1272,22 @@ class AdminOrderListView(APIView):
         # CLIENT-SEC-01: `?review=pending` narrows to the orders waiting for a
         # person; every row carries its level and review state either way.
         from . import order_risk
+        from .supply_services import order_supply_status
 
         orders = order_risk.filter_by_review(orders, request.query_params.get('review'))
 
+        # DC3: `?supply=to_confirm|pending|failed|received` narrows to orders
+        # with an on-order line in that state; every row says its supply.
+        supply_filter = request.query_params.get('supply', '').strip()
+        if supply_filter in dict(OrderItem.SUPPLY_STATUS_CHOICES) and supply_filter:
+            orders = orders.filter(
+                items__supply_origin=OrderItem.SUPPLY_SUPPLIER, items__supply_status=supply_filter,
+            ).distinct()
+
         page_qs, meta = _paginate(orders, request)
         rows = AdminOrderListSerializer(page_qs, many=True).data
+        for row, order in zip(rows, page_qs):
+            row['supply_status'] = order_supply_status(order)
         page_short_ids = order_ids_with_stock_shortfall(
             [o.pk for o in page_qs if o.status == Order.Status.PAID]
         )

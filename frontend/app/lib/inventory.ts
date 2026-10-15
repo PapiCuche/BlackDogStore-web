@@ -93,9 +93,14 @@ export type InventorySummary = {
   low_stock_count: number;
   stocked_count: number;
   total_units: number;
-  /** Stock x SALE price. Not cost, not capital invested — the platform has no cost model. */
+  /** Stock x SALE price. Not cost — the value at cost is `inventory_cost_value`. */
   inventory_value: string;
   inventory_value_basis: "sale_price";
+  /** DC1: only for `costs.view`. Branch weighted average + each device's specific cost. */
+  inventory_cost_value?: string;
+  /** DC1: units with no cost yet, counted apart (never valued at zero). */
+  inventory_cost_pending_units?: number;
+  inventory_cost_basis?: "average_and_unit_cost";
   low_stock_threshold: number;
   best_selling_product: BestSellingRow | null;
   scope: InventoryScope;

@@ -53,9 +53,10 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, F, Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
+from . import cost_services
 from .models import (
     AdminAuditLog,
     Branch,
@@ -68,6 +69,7 @@ from .models import (
     StockMovement,
     StockTransfer,
     StockTransferItem,
+    StockUnit,
 )
 
 # Fallback threshold for "low stock" when a branch has configured no minimum
@@ -233,6 +235,8 @@ def create_stock_movement(
     expected_unit_status: str | None = None,
     assign_units_for_sale: bool = False,
     sell_units: bool = False,
+    unit_cost=None,
+    cost_source: str | None = None,
 ) -> StockMovement:
     """
     Apply one stock movement to one branch atomically and return the Kardex row.
@@ -256,9 +260,19 @@ def create_stock_movement(
     The PRODUCT is deliberately not the lock: locking it would serialise every
     branch of a chain against every other for the same article, turning
     unrelated shops into each other's queue.
+
+    DC1 — COST. `unit_cost` is the cost the caller KNOWS for an entry (a
+    purchase, the origin of a transfer, with `cost_source` saying which). The
+    line's cost and the branch's weighted average are decided by
+    `cost_services.resolve` HERE, under the same lock as the quantity, so two
+    entries at once cannot both read the old average. See `cost_services`.
     """
     if movement_type not in dict(StockMovement.MOVEMENT_TYPE_CHOICES):
         raise InvalidMovementError(f'Tipo de movimiento no válido: {movement_type}')
+    try:
+        unit_cost = cost_services.clean_cost(unit_cost)
+    except ValueError as exc:
+        raise InvalidMovementError(str(exc)) from None
 
     try:
         quantity = int(quantity)
@@ -308,8 +322,36 @@ def create_stock_movement(
                 f'Stock actual: {stock_before}, salida solicitada: {quantity}.'
             )
 
+        # Stock coming BACK from an order's sale, with no cost stated, comes
+        # back at the cost its sale exit left with — whatever the entry's type
+        # is called (integration review of PR #123, P2-2). Not a purchase, an
+        # opening count or a transfer: those bring new stock, not the sale's.
+        if (is_entry and unit_cost is None and order is not None and unit_ids is None
+                and movement_type not in _NEW_STOCK_TYPES):
+            left_with = _cost_the_sale_left_with(order, product)
+            if left_with is not None:
+                unit_cost, cost_source, exit_ids = left_with
+                metadata = {**(metadata or {}), 'cost_from_movement_ids': exit_ids}
+
+        cost = cost_services.resolve(
+            is_entry=is_entry,
+            carries_average_in=movement_type in StockMovement.RETURN_TYPES,
+            quantity=quantity, stock_before=stock_before,
+            average_before=stock.average_cost, reference_cost=product.reference_cost,
+            uncosted_before=stock.uncosted_quantity,
+            stated_cost=unit_cost if is_entry else None,
+            stated_source=cost_source,
+            unit_costs=(
+                list(StockUnit.objects.filter(pk__in=unit_ids).values_list('cost', flat=True))
+                if unit_ids is not None else None
+            ),
+        )
+
         # Write through the locked row — no read-modify-write race.
-        BranchStock.objects.filter(pk=stock.pk).update(quantity=stock_after)
+        BranchStock.objects.filter(pk=stock.pk).update(
+            quantity=stock_after, average_cost=cost.average_after,
+            uncosted_quantity=cost.uncosted_after,
+        )
         # Keep the compatibility aggregate in the SAME transaction. An F()
         # expression, not a recomputed sum, so two branches moving the same
         # product concurrently add up instead of overwriting each other.
@@ -344,7 +386,40 @@ def create_stock_movement(
             inventory_count=inventory_count,
             actor=actor,
             metadata=metadata or {},
+            unit_cost=cost.unit_cost,
+            cost_source=cost.source,
         )
+
+
+#: Entries that bring NEW stock: never valued at an order's sale exit.
+_NEW_STOCK_TYPES = frozenset([
+    StockMovement.INITIAL_STOCK, StockMovement.PURCHASE_ENTRY, StockMovement.TRANSFER_IN,
+])
+
+
+def _cost_the_sale_left_with(order, product):
+    """
+    (unit cost, source, exit ids) the order's sale exits of `product` left
+    with — quantity-weighted when there are several — or None when there is
+    none or any of them left without a known cost. A source that is not a real
+    cost (the catalogue's reference) stays said, so those units come back
+    pending, as the transfer rule does.
+    """
+    exits = list(StockMovement.objects.filter(
+        order=order, product=product, movement_type=StockMovement.SALE_EXIT,
+    ).order_by('pk').values_list('pk', 'quantity', 'unit_cost', 'cost_source'))
+    if not exits or any(cost is None for _pk, _qty, cost, _source in exits):
+        return None
+    total = sum(qty for _pk, qty, _cost, _source in exits)
+    if total <= 0:
+        return None
+    mean = sum((Decimal(qty) * cost for _pk, qty, cost, _source in exits), Decimal('0')) / Decimal(total)
+    sources = {source for *_rest, source in exits}
+    if not sources <= cost_services.REAL_SOURCES:
+        source = cost_services.REFERENCE
+    else:
+        source = sources.pop() if len(sources) == 1 else cost_services.AVERAGE
+    return cost_services.quantize_cost(mean), source, [pk for pk, *_rest in exits]
 
 
 def _units_for_movement(*, branch, product, quantity, units, expected_status,
@@ -522,6 +597,23 @@ def record_sale_stock_movements(
     """
     movements: list[StockMovement] = []
 
+    # DC1 — each line's share of the order's base and discount, frozen now:
+    # it is the order's, not the shelf's, so a shortfall does not delay it.
+    from . import margin_services
+
+    margin_services.snapshot_nets(order)
+
+    # DC3 — lines sold ON ORDER take nothing from any shelf: their payment
+    # commits the supplier's offer (offer rows before shelf rows: the module's
+    # lock order), and their goods enter and leave when received
+    # (`supply_services.receive_line`). Never a movement here. Committed FIRST,
+    # before the branch is even looked at: an order with no branch anywhere
+    # still owes its supplier lines (DC3 review P3.7).
+    from . import supply_services
+
+    with transaction.atomic():
+        supply_services.commit_order_lines(order, strict=strict)
+
     branch = order.fulfillment_branch
     if branch is None:
         # AN ORDER WITH NO BRANCH — and why this repairs rather than refuses.
@@ -556,7 +648,10 @@ def record_sale_stock_movements(
             .values_list('product_id', flat=True)
         )
 
-        items = list(order.items.select_related('product').all())
+        items = [
+            item for item in order.items.select_related('product').all()
+            if item.supply_origin != OrderItem.SUPPLY_SUPPLIER
+        ]
 
         if strict:
             # VALIDATE EVERYTHING BEFORE WRITING ANYTHING.
@@ -593,9 +688,26 @@ def record_sale_stock_movements(
                             f'salida solicitada: {needed}.'
                         )
 
+        # DC2 — lines that name their device (the web sold it by unit). All
+        # the devices of one product leave in ONE exit, so the idempotency key
+        # (order, product) still means what it meant.
+        chosen: dict[int, list] = {}
+        for item in items:
+            if item.stock_unit_id:
+                chosen.setdefault(item.product_id, []).append(item)
+
         for item in items:
             if item.product_id in already_recorded:
                 continue  # idempotency guard
+
+            if item.product_id in chosen:
+                if strict:
+                    raise InvalidMovementError('Una venta de caja no lleva equipos elegidos en la web.')
+                movement = _sell_chosen_units(order, branch, chosen[item.product_id], actor=actor)
+                already_recorded.add(item.product_id)
+                if movement is not None:
+                    movements.append(movement)
+                continue
 
             try:
                 movement = create_stock_movement(
@@ -637,8 +749,82 @@ def record_sale_stock_movements(
             if movement is not None:
                 movements.append(movement)
                 already_recorded.add(item.product_id)
+                # DC1 — the cost this line left at, from its own Kardex line.
+                margin_services.snapshot_cost(item, movement)
 
     return movements
+
+
+def _sell_chosen_units(order: Order, branch, items, *, actor=None):
+    """
+    DC2 — the payment of a web order sells THE devices its lines name.
+
+    Each device is, by now, either still held for this buyer (its hold steps
+    aside, inside this transaction, under the shelf lock) or back on the
+    shelf because the hold ran out before the gateway answered — then it is
+    sold if nobody took it. A device sold or held by somebody else cannot be
+    this order's: that line is flagged like any shortfall (the money is
+    captured; a person decides), and the others still leave.
+
+    Each line's cost is THAT device's cost, and the device is recorded as the
+    one the buyer chose (`OrderUnit`, method 'buyer'): there is nothing left
+    to identify when it is handed over.
+    """
+    from . import margin_services, unit_hold_services, unit_identification
+    from .models import OrderUnit, StockUnit
+
+    product = items[0].product
+    _locked_branch_stocks(branch, [product])
+    buyer_key = unit_hold_services.key_of(order.cart_session_key) if order.cart_session_key else None
+    # Only a PAID order of the same cart takes a device from this payment: a
+    # later order that may never be paid loses it to money in hand.
+    superseded = unit_hold_services.superseded_lines(order, selling=True)
+    sellable = []
+    for item in items:
+        if item.stock_unit_id in superseded:
+            # The same cart checked out again and that order was paid: the device is its.
+            _flag_stock_shortfall(
+                order, None,
+                f'El equipo elegido de "{product.name}" pasó al pedido #{superseded[item.stock_unit_id].pk} '
+                'del mismo carrito; este cobro no lo vende.',
+            )
+            continue
+        unit = (
+            StockUnit.objects.select_for_update()
+            .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
+            .first()
+        )
+        held_for_us = (
+            unit is not None and unit.status == StockUnit.Status.RESERVED and unit.hold_key
+            and (unit.hold_order_id == order.pk or (buyer_key and unit.hold_key == buyer_key))
+        )
+        if held_for_us:
+            unit_hold_services.release_for_sale(unit, order)
+        elif unit is None or unit.status != StockUnit.Status.AVAILABLE:
+            _flag_stock_shortfall(
+                order, item,
+                f'El equipo elegido de "{product.name}" ya no estaba disponible en {branch.name}.',
+            )
+            continue
+        sellable.append((item, unit))
+
+    if not sellable:
+        return None
+    movement = create_stock_movement(
+        branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
+        quantity=len(sellable), reason=f'Venta confirmada — orden #{order.pk}', actor=actor,
+        order=order, reference_type='order', reference_id=order.pk,
+        metadata={'order_id': order.pk, 'branch_id': branch.pk, 'chosen_by_buyer': True,
+                  'unit_prices': [str(item.price) for item, _unit in sellable]},
+        units=[unit for _item, unit in sellable], expected_unit_status='available', sell_units=True,
+    )
+    for item, unit in sellable:
+        margin_services.snapshot_unit_cost(item, unit)
+        if not OrderUnit.objects.filter(order=order, unit=unit).exists():
+            unit_identification.record(
+                order=order, unit=unit, method=OrderUnit.Method.BUYER.value, actor=actor,
+            )
+    return movement
 
 
 def _flag_stock_shortfall(order: Order, item, message: str) -> None:
@@ -690,6 +876,10 @@ def _flag_stock_shortfall(order: Order, item, message: str) -> None:
 # decremented stock yet; a refunded/cancelled one is no longer owed).
 
 
+#: DC3 — on-order lines whose goods have not arrived: not a shelf shortfall.
+_ON_ORDER_NOT_RECEIVED = Q(supply_origin=OrderItem.SUPPLY_SUPPLIER) & ~Q(supply_status=OrderItem.SUPPLY_RECEIVED)
+
+
 def order_stock_shortfall(order: Order) -> list[dict]:
     """
     Per-product shortfall for one order, derived. Empty unless the order is PAID.
@@ -704,7 +894,8 @@ def order_stock_shortfall(order: Order) -> list[dict]:
 
     ordered: dict[int, int] = {}
     names: dict[int, str] = {}
-    for item in order.items.select_related('product'):
+    # DC3 — a line on order owes nothing to the shelf until its goods arrived.
+    for item in order.items.select_related('product').exclude(_ON_ORDER_NOT_RECEIVED):
         ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
         names[item.product_id] = item.product.name
 
@@ -749,7 +940,7 @@ def order_ids_with_stock_shortfall(order_ids) -> set[int]:
 
     ordered: dict[tuple[int, int], int] = {}
     for row in (
-        OrderItem.objects.filter(order_id__in=order_ids)
+        OrderItem.objects.filter(order_id__in=order_ids).exclude(_ON_ORDER_NOT_RECEIVED)
         .values('order_id', 'product_id')
         .annotate(q=Sum('quantity'))
     ):
@@ -1082,6 +1273,15 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
         if not items:
             raise TransferError('La transferencia no tiene productos.')
 
+        # DC1 — the units arrive at the cost they LEFT with: the origin's
+        # average when it was dispatched, not whatever it is now.
+        departed = {
+            row.product_id: (row.unit_cost, row.cost_source)
+            for row in StockMovement.objects.filter(
+                transfer=locked, movement_type=StockMovement.TRANSFER_OUT,
+            )
+        }
+
         movements = [
             create_stock_movement(
                 branch=locked.destination_branch,
@@ -1097,6 +1297,8 @@ def receive_transfer(transfer: StockTransfer, *, actor=None, request=None) -> li
                     'transfer_id': locked.pk,
                     'source_branch_id': locked.source_branch_id,
                 },
+                unit_cost=departed.get(item.product_id, (None, None))[0],
+                cost_source=departed.get(item.product_id, (None, None))[1] or None,
             )
             for item in items
         ]
@@ -1583,15 +1785,17 @@ def get_best_selling_products(company=None, date_from=None, date_to=None, limit:
 
 def get_inventory_summary(
     company=None, branches=None, low_stock_threshold: int = DEFAULT_LOW_STOCK_THRESHOLD,
+    include_cost: bool = False,
 ) -> dict:
     """
     Headline inventory counters for the branches the caller may see.
 
     `inventory_value` is stock × SALE PRICE, and it is labelled that way
-    everywhere it is rendered. It is NOT the cost of the inventory and NOT
-    capital invested: there is no cost model in the system, so any figure
-    claiming to be either would be a number with a false name on it. Real
-    valuation waits for purchase costs.
+    everywhere it is rendered. It is NOT the cost of the inventory.
+
+    DC1 — `include_cost` (the caller holds `costs.view`) adds the value AT COST
+    next to it: `inventory_cost_value` (see `_inventory_at_cost`) and the
+    units that have no cost yet, counted apart rather than valued at zero.
     """
     stock_rows = branch_stock_queryset(branches)
 
@@ -1635,6 +1839,49 @@ def get_inventory_summary(
         'low_stock_threshold': low_stock_threshold,
         'best_selling_product': best[0] if best else None,
         **_equipment_counts(company, branches),
+        **(_inventory_at_cost(company, stock_rows, branches) if include_cost else {}),
+    }
+
+
+def _inventory_at_cost(company, stock_rows, branches) -> dict:
+    """
+    DC1 — what the shelf cost, by the owner's rule.
+
+      · a product counted by quantity: its units × THEIR BRANCH's weighted
+        average (`BranchStock.average_cost`);
+      · a serialized product: the specific cost of each AVAILABLE unit — the
+        units `BranchStock.quantity` counts (a reserved one has left it);
+      · anything without a cost: counted in `inventory_cost_pending_units`,
+        never valued at zero.
+    """
+    from .models import StockUnit
+
+    money = DecimalField(max_digits=20, decimal_places=4)
+    loose = stock_rows.filter(product__is_serialized=False, quantity__gt=0)
+    # DC1 review: only the units of KNOWN cost are valued at the average; the
+    # ones that came in without a cost are pending, whatever the average says.
+    pending_part = Least(F('uncosted_quantity'), F('quantity'))
+    by_quantity = loose.aggregate(
+        value=Coalesce(Sum((F('quantity') - pending_part) * F('average_cost'),
+                           filter=Q(average_cost__isnull=False), output_field=money),
+                       Decimal('0'), output_field=money),
+        pending=Coalesce(Sum('quantity', filter=Q(average_cost__isnull=True)), 0)
+        + Coalesce(Sum(pending_part, filter=Q(average_cost__isnull=False)), 0),
+    )
+    devices = StockUnit.objects.filter(product__is_active=True, status=StockUnit.Status.AVAILABLE)
+    if branches is not None:
+        devices = devices.filter(branch_id__in=_branch_ids(branches))
+    elif company is not None:
+        devices = devices.filter(company=company)
+    by_unit = devices.aggregate(
+        value=Coalesce(Sum('cost', output_field=money), Decimal('0'), output_field=money),
+        pending=Count('id', filter=Q(cost__isnull=True)),
+    )
+    value = Decimal(by_quantity['value']) + Decimal(by_unit['value'])
+    return {
+        'inventory_cost_value': str(value.quantize(Decimal('0.01'))),
+        'inventory_cost_pending_units': by_quantity['pending'] + by_unit['pending'],
+        'inventory_cost_basis': 'average_and_unit_cost',
     }
 
 

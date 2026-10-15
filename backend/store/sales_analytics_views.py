@@ -40,6 +40,7 @@ from .throttles import AdminSalesAnalyticsThrottle
 
 CAP_ANALYTICS = 'sales.analytics.view'
 CAP_INVENTORY_REPORTS = 'inventory.reports'
+CAP_COSTS_VIEW = 'costs.view'
 
 _MONEY = DecimalField(max_digits=14, decimal_places=2)
 _WINDOWS = (7, 30, 90)
@@ -388,6 +389,264 @@ class AdminSalesDashboardView(APIView):
             'low': rows.filter(minimum_stock__gt=0, quantity__gt=0)
                        .filter(quantity__lte=F('minimum_stock')).count(),
         }
+
+
+class AdminSalesMarginView(APIView):
+    """
+    GET /api/admin/sales/margin/?branch=&days=7|30|90 — DEVICE-COMMERCE-01 · DC1.
+
+    `sales.analytics.view` AND `costs.view`: seeing turnover is not seeing what
+    the goods cost, and the reverse is not either.
+
+    WHAT IS COUNTED. PAID orders by `paid_at` in the shop's own days — the rule
+    of the rest of this dashboard. A pending, failed, expired or cancelled
+    order is not a sale; a REFUNDED one is reported apart, as a refund. (A paid
+    order cancelled afterwards will be excluded the same way the day such a
+    state exists: only PAID counts.)
+
+    THE MARGIN IS ONLY OVER WHAT HAS A COST. `margin = net sales of the lines
+    whose cost is known − that cost`. Subtracting the known cost from ALL net
+    sales would count every sale of unknown cost as 100 % margin; those are
+    reported apart instead («costo pendiente»), with their amount.
+
+    Every figure comes from the line snapshots (`OrderItem.net_amount`,
+    `unit_cost`) and the order's frozen breakdown — never from the catalogue.
+
+    OWNER'S DECISION OF 2026-10-15. margin % = (net sales without IGV −
+    comparable net cost) / net sales × 100, «comparable» = the lines with a
+    known cost; amount and %; ESTIMATED (every known cost: average, device,
+    reference, agreed with the supplier) vs REALISED (`REALISED`: confirmed
+    costs only); unknown costs (`unknown_cost`) and refunds (`refunds`, with
+    and without IGV) apart. There is no cost adjustment of goods sold to show:
+    the history is never recomputed (DC1). Never «utilidad neta».
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminSalesAnalyticsThrottle]
+
+    def get(self, request):
+        company, error = _context(request, CAP_ANALYTICS)
+        if error:
+            return error
+        from .cost_services import user_may_view_costs
+
+        # THE one answer to «may this person see costs» (DC1 review).
+        if not user_may_view_costs(request.user, company):
+            return Response(
+                {'detail': 'Se requiere permiso para ver costos y márgenes.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            days = int(request.query_params.get('days') or 30)
+        except (TypeError, ValueError):
+            days = 30
+        if days not in _WINDOWS:
+            days = 30
+
+        branches = _selected_branches(request, company)
+        tz = _company_tz(company)
+        today = _company_today(company)
+        since = today - timedelta(days=days - 1)
+        paid = _paid_orders(company, branches, since, tz=tz, until=today)
+
+        gross = Decimal('0.00')
+        net = Decimal('0.00')
+        orders = 0
+        from .tax_services import breakdown_for_order
+
+        for order in paid.only('pk', 'total', 'taxable_amount', 'tax_rate', 'subtotal_amount',
+                               'discount_amount', 'tax_amount', 'currency', 'tax_treatment', 'company'):
+            orders += 1
+            gross += order.total
+            net += breakdown_for_order(order).taxable_amount
+
+        lines = OrderItem.objects.filter(order__in=paid)
+        known = lines.filter(unit_cost__isnull=False)
+        line_cost = F('unit_cost') * F('quantity')
+        totals = known.aggregate(
+            net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+            cost=Coalesce(Sum(line_cost, output_field=_COST), Decimal('0'), output_field=_COST),
+        )
+        pending = lines.filter(unit_cost__isnull=True)
+        estimated = self._estimated_nets(lines)
+
+        refunded = Order.objects.filter(
+            company=company, status=Order.Status.REFUNDED,
+            fulfillment_branch__in=[b.pk for b in branches],
+            paid_at__gte=_day_bounds(since, tz)[0], paid_at__lt=_day_bounds(today, tz)[1],
+        )
+        refunds = refunded.aggregate(
+            orders=Count('pk'),
+            amount=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+        )
+        refunds_net = sum(
+            (breakdown_for_order(order).taxable_amount for order in refunded.only(
+                'pk', 'total', 'taxable_amount', 'tax_rate', 'subtotal_amount', 'discount_amount',
+                'tax_amount', 'currency', 'tax_treatment', 'company')),
+            Decimal('0.00'),
+        )
+
+        known_net = _cents(totals['net'])
+        cost = _cents(totals['cost'])
+        realised = self._figures(known.filter(self.REALISED))
+        estimated_only = known.exclude(self.REALISED)
+        return Response({
+            'window_days': days,
+            'label': 'Margen comercial estimado',
+            'sales': {'orders': orders, 'gross': str(_cents(gross)), 'net': str(_cents(net))},
+            # The rule of this dashboard: a sale is a PAID order, by the day it
+            # was paid. Both figures read the same set, and say so.
+            'collected': {'orders': orders, 'amount': str(_cents(gross))},
+            'net_sales_with_cost': str(known_net),
+            'cost_of_goods_sold': str(cost),
+            'margin': str(known_net - cost),
+            'margin_percent': _percent(known_net - cost, known_net),
+            'pending_cost': {
+                'lines': pending.count(),
+                'orders': pending.values('order_id').distinct().count(),
+                'amount': str(_cents(net) - known_net),
+            },
+            'reference_cost_lines': known.filter(cost_source=OrderItem.COST_REFERENCE).count(),
+            # OWNER'S DECISION OF 2026-10-15 — estimated vs realised, unknown
+            # costs and refunds apart. Both margins are (net sales without IGV
+            # − comparable net cost) / net sales × 100 over the lines whose
+            # cost is known; «estimated» counts every known cost, «realised»
+            # only a confirmed one (own stock sold, or on order and received).
+            'estimated': {'lines': known.count(), 'net_sales': str(known_net), 'cost': str(cost),
+                          'margin': str(known_net - cost), 'margin_percent': _percent(known_net - cost, known_net)},
+            'realised': realised,
+            'estimated_only': {
+                'lines': estimated_only.count(),
+                'net_sales': str(known_net - Decimal(realised['net_sales'])),
+                'reference_cost_lines': estimated_only.filter(cost_source=OrderItem.COST_REFERENCE).count(),
+                'on_order_not_received_lines': estimated_only.filter(
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER).count(),
+            },
+            'unknown_cost': {
+                'lines': pending.count(),
+                'orders': pending.values('order_id').distinct().count(),
+                'net_sales': str(_cents(net) - known_net),
+            },
+            'refunds': {'orders': refunds['orders'], 'amount': str(_cents(refunds['amount'])),
+                        'net': str(_cents(refunds_net))},
+            'by_product': self._grouped(lines, 'product_id', 'product__name', estimated),
+            'by_branch': self._grouped(lines, 'order__fulfillment_branch_id', 'order__fulfillment_branch__name',
+                                       estimated),
+            'by_channel': self._grouped(lines, 'order__sales_channel', None, estimated),
+        })
+
+    #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its
+    #: average or its device's own cost, or an on-order line whose goods were
+    #: received (its entry was written at the agreed cost). A reference cost,
+    #: or an agreed cost of goods not received yet, is only an estimate.
+    REALISED = (
+        Q(supply_origin=OrderItem.SUPPLY_OWN, cost_source__in=(OrderItem.COST_AVERAGE, OrderItem.COST_UNIT))
+        | Q(supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED)
+    )
+
+    @staticmethod
+    def _figures(lines) -> dict:
+        """Lines, net sales, cost, margin and margin % of lines that all have a cost."""
+        totals = lines.aggregate(
+            net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+            cost=Coalesce(Sum(F('unit_cost') * F('quantity'), output_field=_COST), Decimal('0'),
+                          output_field=_COST),
+        )
+        net, cost = _cents(totals['net']), _cents(totals['cost'])
+        return {'lines': lines.count(), 'net_sales': str(net), 'cost': str(cost),
+                'margin': str(net - cost), 'margin_percent': _percent(net - cost, net)}
+
+    @staticmethod
+    def _estimated_nets(lines) -> list[dict]:
+        """
+        DC1 review — lines sold before DC1 have no frozen net. Their share of
+        their order's base is computed here, the same way the snapshot would
+        have been (`margin_services.line_nets`), NOT stored, and only for the
+        breakdowns: they stay «costo pendiente» and never count in the margin.
+        """
+        from . import margin_services
+
+        orders = {}
+        for item in lines.filter(net_amount__isnull=True).select_related('order'):
+            orders.setdefault(item.order_id, item.order)
+        out = []
+        for order in orders.values():
+            items = list(OrderItem.objects.filter(order=order).order_by('pk').values_list('pk', flat=True))
+            rows = list(OrderItem.objects.filter(pk__in=items).select_related('product', 'order__fulfillment_branch'))
+            nets = margin_services.line_nets(order, rows)
+            for item in rows:
+                if item.net_amount is not None:
+                    continue
+                out.append({
+                    'product_id': item.product_id, 'product__name': item.product.name,
+                    'order__fulfillment_branch_id': order.fulfillment_branch_id,
+                    'order__fulfillment_branch__name': (
+                        order.fulfillment_branch.name if order.fulfillment_branch_id else None
+                    ),
+                    'order__sales_channel': order.sales_channel,
+                    'net': nets[item.pk][2],
+                })
+        return out
+
+    @staticmethod
+    def _grouped(lines, key, name, estimated=()):
+        fields = [key] + ([name] if name else [])
+        known = Q(unit_cost__isnull=False)
+        rows = (
+            lines.values(*fields)
+            .annotate(
+                units=Coalesce(Sum('quantity'), 0),
+                net_all=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+                net_known=Coalesce(Sum('net_amount', filter=known, output_field=_MONEY),
+                                   Decimal('0.00'), output_field=_MONEY),
+                cost=Coalesce(Sum(F('unit_cost') * F('quantity'), filter=known, output_field=_COST),
+                              Decimal('0'), output_field=_COST),
+                pending=Count('pk', filter=Q(unit_cost__isnull=True)),
+            )
+            .order_by()
+        )
+        labels = dict(SalesChannel.choices)
+        guessed: dict = {}
+        for line in estimated:
+            guessed[line[key]] = guessed.get(line[key], Decimal('0.00')) + line['net']
+        out = []
+        for row in rows:
+            net_known = _cents(row['net_known'])
+            cost = _cents(row['cost'])
+            extra = guessed.get(row[key], Decimal('0.00'))
+            out.append({
+                'key': row[key],
+                'name': row[name] if name else str(labels.get(row[key], row[key])),
+                'units': row['units'],
+                'net_sales': str(_cents(row['net_all']) + extra),
+                'cost': str(cost),
+                'margin': str(net_known - cost),
+                'margin_percent': _percent(net_known - cost, net_known),
+                'pending_lines': row['pending'],
+                # Part of `net_sales` came from lines sold before DC1, computed
+                # from their order: those lines are «costo pendiente».
+                'net_estimated': row[key] in guessed,
+            })
+        out.sort(key=lambda r: (-Decimal(r['net_sales']), str(r['name'])))
+        return out
+
+
+_COST = DecimalField(max_digits=20, decimal_places=4)
+
+
+def _cents(value) -> Decimal:
+    from .tax_services import money
+
+    return money(Decimal(value))
+
+
+def _percent(part: Decimal, whole: Decimal):
+    """Two decimals, or None when there is nothing to divide by — never a made-up 0 %."""
+    if not whole:
+        return None
+    from .tax_services import money
+
+    return str(money(part * Decimal('100') / whole))
 
 
 class AdminSalesReplenishmentView(APIView):

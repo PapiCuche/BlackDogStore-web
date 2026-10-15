@@ -1635,3 +1635,513 @@ archivos de productos activos, el aviso de la carga y el apóstrofo.
   carga de imágenes añade a productos que ya existen.
 - Deudas que siguen como están, documentadas: ORDER-HISTORY-LIVE-NAME,
   IMPORT-STATE-NEVER-WRITES e IMPORT-ID-FOREIGN-WARNINGS.
+
+### DEC-DEVICE-COMMERCE-01 · DC1 — costos y margen comercial
+
+Fase DEVICE-COMMERCE-01, subfase DC1 (rama `feat/device-commerce`, migraciones `0126`–`0128`).
+
+**Decisiones del propietario (2026-10-14).**
+- Valoración: **costo promedio ponderado POR SUCURSAL** para productos por cantidad
+  (accesorios) y **costo específico por unidad** para equipos con serie.
+- Capacidad nueva `costs.view` («Ver costos y márgenes»), por omisión sólo para el
+  preset `Administrador` y los roles heredados `admin`/`superadmin`.
+- Nunca se llama «utilidad neta» al margen; es **margen comercial**.
+- La historia no se recalcula desde el catálogo.
+- Un pedido pendiente o cancelado sin pagar no es un cobro.
+
+**Cómo queda.**
+- `costs.view` decide TODA superficie que devuelve un costo: lista y detalle de equipos
+  (sin ella la clave `cost` no viaja), las descargas (antes usaban `inventory.adjust`),
+  el inventario valorizado y el margen. Corregir el costo de un equipo existente también
+  la exige (403); registrar el costo al RECIBIR sigue siendo de `inventory.adjust`. El
+  IMEI completo no cambia: es la regla del inventario para el personal.
+- `inventory_services.create_stock_movement` decide el costo de cada línea de Kardex
+  (`StockMovement.unit_cost`, `cost_source`) y el promedio de la sucursal
+  (`BranchStock.average_cost`, 4 decimales, media al alza) bajo el mismo
+  `select_for_update`; las reglas viven en `store.cost_services`. Entrada con costo →
+  `(qty×prom + n×costo)/(qty+n)`; sin costo → `unknown`, promedio intacto; salidas,
+  transferencias y devoluciones → el promedio; una transferencia llega al costo con que
+  salió y sólo alimenta el promedio si ese costo era real (no de referencia). Un estante
+  de costo desconocido toma el primer costo conocido. Estante vacío conserva el último
+  promedio. `Product.reference_cost` sólo se usa sin promedio, marcado `reference`, y
+  nunca se convierte en promedio.
+- El costo de un equipo VENDIDO no se reescribe (servicio, API y carga de equipos).
+- Cada `OrderItem` congela al escribirse su salida (pago web o venta de caja):
+  `unit_cost`/`cost_source` y su parte de la base imponible (`net_amount`), del descuento
+  sin IGV (`discount_net`) y el precio unitario sin IGV (`unit_price_net`). Las partes se
+  reparten por peso bruto con el resto mayor (empates al id menor), así que **las líneas
+  suman exactamente `Order.taxable_amount`**. Varias unidades con serie: la media de sus
+  costos específicos (no se lee `OrderUnit`, que puede cambiar al entregar). Líneas
+  anteriores: NULL/`unknown`, sin backfill.
+- `GET /api/admin/sales/margin/` (`sales.analytics.view` + `costs.view`): ventas netas y
+  brutas, cobros confirmados (PAGADOS por `paid_at`, la regla del tablero), costo de lo
+  vendido, **margen = ventas netas de las líneas con costo − ese costo**, margen %,
+  ventas con costo pendiente (líneas, ventas e importe), reembolsos (`REFUNDED`) y
+  desgloses por producto, sucursal y canal. Restar el costo conocido de TODAS las ventas
+  netas contaría cada venta sin costo como margen del 100 %.
+- Excel: «Costo de referencia» en la plantilla de productos (y «Precio costo» de la
+  plantilla POS de 18 columnas se lee como tal); «Costo unitario» opcional en la carga de
+  stock (sólo en filas que aumentan); «Costo» de la carga de equipos es su costo
+  específico. La vista previa enseña el costo anterior y el promedio resultante sólo a
+  `costs.view`. Las descargas llevan costos sólo para `costs.view`.
+
+
+**Revisión independiente de DC1 (2026-10-14): cinco P2 y cuatro P3 corregidos.**
+- *Fuga del costo de referencia.* La vista previa de productos sólo avisaba «Costo de
+  referencia: pasa a X» cuando el valor guardado era distinto, así que alguien con
+  `products.manage` sin `costs.view` lo encontraba probando filas, y además podía
+  aplicarlo. Ahora, sin `costs.view`, la columna no se lee: un aviso fijo por fila
+  («Columna … ignorada: requiere permiso de costos»), sin comparación, y quien APLICA
+  también necesita `costs.view` para escribirlo. Una sola respuesta para «¿puede ver
+  costos?»: `cost_services.user_may_view_costs` (usuario + empresa, con el puente
+  legacy) y `inventory_views.may_view_costs` (petición); el margen usa la primera.
+- *Promedio rancio sobre stock sin costo* — **decisión del coordinador, por confirmar
+  con el propietario.** `BranchStock.uncosted_quantity` (`0129`) cuenta las unidades que
+  entraron sin costo. El promedio es sólo de la parte con costo (NULL si esa parte está
+  vacía y queda stock); esas unidades son «costo pendiente» en la valoración y **salen
+  primero**: una salida que se lleva alguna no tiene costo conocido (referencia marcada
+  o `unknown`). Una entrada con costo reinicia el promedio para sus unidades; las
+  pendientes siguen pendientes hasta que salen (un conteo no inventa un costo). El
+  estante vacío conserva su último promedio para una devolución. `0129` marca como
+  pendiente todo estante con stock y sin promedio (el stock anterior a DC1).
+- *Promociones.* `margin_services.line_nets` pone la rebaja de una promoción en sus
+  propias líneas con la misma atribución del comprobante F6
+  (`fiscal_services._promotion_line_discounts`); sólo el resto del descuento se
+  reparte por peso. Las líneas siguen sumando exactamente la base.
+- *Admin de Django.* Instantáneas de la línea y promedio/pendiente de la sucursal, sólo
+  lectura.
+- *Roles personalizados.* `costs_view_report` (sólo lectura, sólo cuentas) dice cuántas
+  empresas quedan sin nadie con `costs.view` tras `migrate`; el despliegue lo corre y se
+  otorga a mano donde haga falta.
+- P3: filtro de sucursal de los reembolsos fijado por prueba; las líneas anteriores a
+  DC1 aparecen en los desgloses con su neto calculado desde el pedido (`net_estimated`,
+  costo pendiente) en vez de 0,00; el texto del tablero que decía que no había modelo de
+  costos, corregido.
+
+### DEC-DEVICE-COMMERCE-01 · DC2 — variantes y tienda de nuevos y seminuevos
+
+Migraciones `0130`–`0132` (aditivas, nulas o con `db_default`, reversibles).
+
+**Decisión del propietario (2026-10-14).** La compra de unidad concreta vale para equipos
+NUEVOS y SEMINUEVOS: el equipo que el comprador apartó es el que se vende. Reemplaza, para
+lo que se vende por unidad, la regla de SERIAL-PICK-01 («el pago aparta el más antiguo»).
+
+**Cómo queda.**
+- *Una variante sigue siendo un `Product`.* `ProductModel` (por empresa) agrupa variantes;
+  `Product.product_model`, `condition_line` (`new`/`used`) y `variant_key` (ids de opción
+  ordenados). Opciones configurables por empresa: `VariantAttribute` (texto o color) y
+  `VariantOption` (`swatch_hex` `#RRGGBB`). `ProductVariantOption`: una opción por atributo
+  (único `product, attribute`); dos variantes de un modelo con las mismas opciones y línea,
+  imposibles (único parcial `product_model, condition_line, variant_key`). Stock, Kardex,
+  carrito, caja y líneas fiscales siguen leyendo el producto. Un producto sin modelo
+  (accesorio) no cambia.
+- *Se vende por unidad* (`Product.sells_by_unit`) todo producto serializado que es variante
+  de un modelo, nuevo o seminuevo. **Por confirmar con el propietario:** un producto
+  serializado SIN modelo conserva SERIAL-PICK-01 (el pago aparta el más antiguo y se
+  identifica al entregar) hasta que se le asigne modelo.
+- *Navegación.* No se tocan las categorías: `GET /api/catalog/models/?category=&line=`
+  cuenta las dos líneas, y la tienda muestra las pestañas sólo cuando hay de ambas. Los
+  rótulos son de la empresa (`StorefrontPageSettings.new_line_label/used_line_label`;
+  vacío = «Nuevos» / «Seminuevos»). Nada nombra una marca.
+- *API pública.* `GET /api/catalog/models/<slug>/`: atributos y opciones, variantes nuevas
+  con precio, imágenes y disponibilidad (stock propio de la sucursal que despacha; el campo
+  `availability` es el gancho de DC3 para proveedor), y los seminuevos uno por uno. Lista
+  blanca escrita a mano: `id` público (UUID `StockUnit.public_id`, no la pk: la pk dice
+  cuántos equipos recibió la tienda), opciones, batería (`null` = «no informado», nunca un
+  número inventado), estado estético, precio, fotos, notas públicas e `imei_hint` (los 4
+  últimos dígitos). Nunca IMEI completo, serie, costo ni proveedor. La lista general de
+  productos deja de listar variantes SEMINUEVAS (su precio no significa nada) y gana
+  `product_model`, `condition_line`, `sells_by_unit`.
+- *Equipo.* `StockUnit.battery_health` (0–100, nula), `cosmetic_grade` (escala por empresa,
+  `CosmeticGrade`; la sugerida se crea al aprovisionar una empresa nueva, con
+  `seed_cosmetic_grades --company` o desde el panel; nunca por migración), `public_notes`,
+  `sale_price` (seminuevo: sin precio no se ofrece en línea; el precio de un equipo vendido
+  no cambia), `UnitPhoto` (misma tubería pública que las galerías de producto, nunca el
+  almacén de evidencias).
+- *Apartado web.* Agregar al carrito aparta UN equipo (el elegido, o el más antiguo de la
+  variante) con `stock_unit_services._move`: AVAILABLE→RESERVED con línea de Kardex
+  (`manual_exit`, «Apartado web: carrito»), así que la invariante cantidad == disponibles se
+  mantiene, la caja no puede vender un equipo apartado y dos compradores hacen cola en la
+  fila del estante (el segundo recibe `unit_taken`). Titular = SHA-256 de la clave del
+  carrito; plazo `DEVICE_HOLD_MINUTES` (15), se amplía a `DEVICE_ORDER_HOLD_MINUTES` (45) al
+  crear el pedido; tope `DEVICE_HOLD_MAX_PER_CART` (3). Vencido, vuelve al estante al leer
+  (carrito, página del modelo, checkout) y con `release_expired_unit_holds` (cron). Un
+  apartado del personal (sin titular web) no vence.
+- *Precio por unidad en el pedido* — **por confirmar.** Una línea de pedido NO puede llevar
+  dos precios: dos seminuevos de una variante a 1999,00 y 1500,00 en una línea de cantidad 2
+  exigirían un precio unitario de 1749,50 — y con 3 equipos un precio que no existe en
+  céntimos. Por eso cada equipo vendido por unidad es SU línea (`OrderItem.stock_unit`,
+  cantidad 1, su precio congelado al apartar). La regla «una línea por producto» sigue para
+  toda línea sin equipo (índice único parcial) y la salida de Kardex sigue siendo UNA por
+  (pedido, producto), nombrando todos sus equipos: la idempotencia del pago no cambia. El
+  comprobante y los papeles imprimen cada equipo en su línea con su precio; la instantánea
+  DC1 de cada línea es el costo de ESE equipo (`unit`).
+- *Pago.* `_confirm` → `record_sale_stock_movements` → `_sell_chosen_units`: el apartado de
+  este pedido se libera dentro de la misma transacción y bajo el bloqueo del estante, y la
+  salida de venta nombra ese equipo. Si el apartado venció y el equipo sigue libre, se vende
+  igual; si otro lo tomó, la línea queda como faltante (el dinero ya se cobró; decide una
+  persona), nunca se vende otro equipo. Se registra `OrderUnit` con método `buyer`: no hay
+  nada que identificar al entregar, y «olvidar» esa identificación se rechaza.
+- *Checkout.* Antes de crear el pedido se revisa cada apartado: sigue siendo de este
+  carrito, no venció, está en la sucursal que despacha y su precio no cambió; si cambió, el
+  apartado toma el precio nuevo y se avisa (`cart_changed`) sin crear nada. La app nativa
+  no tiene carrito con apartados todavía: rechaza esos productos (`unit_required`).
+- *Excel.* Equipos: «Modelo», «Capacidad», «Color», «Línea», «Estado estético», «Batería %»,
+  «Precio de venta» (opcionales, al final). «Modelo» como única columna de nombre (archivos
+  viejos) sigue siendo el nombre y sólo se prueba como modelo si ningún producto se llama
+  así. Productos: «Modelo», «Capacidad», «Color», «Línea» (el modelo y las opciones deben
+  existir). Un archivo sin esas columnas se carga igual que antes.
+
+
+**Revisión independiente de DC2 (2026-10-14): un P1, cuatro P2 y los P3, corregidos.**
+Migración `0133` (`StockUnit.hold_origin` con `db_default` '', `hold_started_at` nula).
+- *Acaparar equipos (P1).* Tres topes en `unit_hold_services.hold`, contados bajo bloqueos
+  consultivos de la transacción («este carrito», «este origen»; en orden y antes del
+  estante): por carrito (`DEVICE_HOLD_MAX_PER_CART`, 3), **por origen a través de todos
+  los carritos** (`DEVICE_HOLD_MAX_PER_ORIGIN`, 3; el origen es `order_risk.origin_hash`,
+  HMAC de la IP —su /64 en IPv6— con la clave derivada de `order_risk`, nunca la
+  dirección) y **reparto del estante** — **decisión del coordinador, por confirmar con el
+  propietario**: los apartados web de un producto en una sucursal no pasan de
+  `max(1, ⌊(disponibles + apartados web) × DEVICE_WEB_HOLD_MAX_SHARE_PERCENT / 100⌋)`
+  (50 %: con 1 equipo se puede apartar ese; con 2, uno; con 6, tres). Rige también para
+  seminuevos de una misma variante (dos compradores de dos seminuevos de una variante de
+  2 equipos: el segundo espera). Ajuste global por `settings`, no por empresa (`held_by_others`,
+  409). Throttle propio `device_hold` (10/min por dirección, con o sin sesión) para
+  agregar productos por unidad, además del de carrito (60/min).
+- *Apartado eterno (P1).* El pedido amplía el apartado a lo sumo hasta
+  `hold_started_at + 15 + 45` minutos: otro checkout no lo empuja más allá.
+- *La caja.* Liberar un apartado (`inventory.adjust`) ya era posible y auditado; ahora la
+  línea de Kardex dice que era web y de qué pedido, y se niega mientras un pedido que aún
+  puede pagarse lo lleva dentro de su plazo.
+- *`bind_to_order` (P2)* sólo ata apartados RESERVED de este carrito y vigentes; si falta
+  uno, `cart_changed` y no se crea el pedido.
+- *Dos checkouts de un carrito (P2)* — se eligió «el pedido posterior gana» sobre
+  «reutilizar el pendiente»: el checkout web crea pedido e intento juntos y sus datos
+  (cupón, entrega, comprador) pueden cambiar; reutilizar mezclaría intentos de dos
+  formularios. La regla se deriva de las líneas (sobrevive al vencimiento del apartado):
+  un pedido anterior del mismo carrito cuyo equipo nombra un pedido posterior pendiente
+  o pagado no abre intento de pago (`order_superseded`, 409) y, si un formulario ya
+  abierto se paga igual, no vende el equipo (faltante que nombra el pedido posterior;
+  el dinero lo resuelve una persona). Un pedido posterior fallido o cancelado no le quita
+  nada al anterior.
+- *Excel viejo (P2).* «Modelo», «Capacidad», «Color», «Línea» de productos sólo se leen si
+  el archivo tiene «Línea» o «Capacidad» y la empresa tiene algún modelo; si no, se
+  ignoran con un aviso de archivo.
+- *Volver atrás (P2).* `release_expired_unit_holds --all-web`, `cancel_pending_unit_orders`
+  (simulación por defecto, `--apply`), línea de cron y pasos en
+  `docs/despliegue-produccion.md` §7.
+- P3: quitar del carrito un equipo que se está vendiendo responde 200 (sin 500); no se
+  aparta un equipo de un modelo retirado de la web; el precio de un equipo exige
+  `products.manage` (pantalla 403, carga: columna ignorada); la app (v1) no lista ni sirve
+  variantes seminuevas; `used_unit_count` cuenta la sucursal de la tienda. La salida de
+  venta ya llevaba el costo propio del equipo (no el promedio); ahora un equipo sin costo
+  sale —en el Kardex y en su línea— al costo de referencia marcado `reference`.
+
+**Segunda revisión de DC2 (2026-10-14): un P1, un P2 y un P3 introducidos por las correcciones, corregidos.**
+- *Reparto del estante (P1)* — **decisión del coordinador, por confirmar con el propietario.**
+  El tope del 50 % por variante bloqueaba a compradores reales de seminuevos DISTINTOS
+  (variante de 2–3 equipos: tope 1; el segundo comprador recibía `held_by_others`). Ahora
+  el reparto por variante sólo rige desde `DEVICE_WEB_HOLD_SHARE_MIN_UNITS` (4) equipos
+  disponibles en la web; por debajo no se aplica. En su lugar, un **techo por empresa**
+  de apartados web vivos de productos vendidos por unidad:
+  `max(DEVICE_WEB_HOLD_COMPANY_MIN (3), ⌊(disponibles en la web + apartados web) ×
+  DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT (50) / 100⌋)`, contado bajo un bloqueo
+  consultivo «esta empresa» (antes de «este carrito» y «este origen»). Siguen el tope por
+  origen (3), el de carrito (3) y el throttle `device_hold`.
+- *El pedido pagado gana (P2).* Si el primer pedido de un carrito se pagaba con un
+  formulario ya abierto mientras el segundo seguía pendiente, el primero cobraba sin
+  equipo. `superseded_lines(order, selling=True)`: al vender, sólo un pedido PAGADO del
+  mismo carrito se lleva el equipo; el posterior pendiente queda reemplazado (no abre
+  pago: `order_superseded`, que nombra el pedido pagado; si un formulario suyo se paga
+  igual, faltante que lo nombra). El orden inverso no cambia.
+- *Orden de bloqueos (P3).* `hold()` toma los bloqueos consultivos antes de barrer los
+  apartados vencidos (que toman la fila del estante): un solo orden, consultivos → estante.
+- *Costo de una entrada de equipos sin costo propio.* `cost_services.resolve`: equipos sin
+  costo que ENTRAN con un costo declarado (el de su salida) llegan a ese costo y con ese
+  origen («las transferencias llegan al costo con que salieron»). Hoy no hay transferencia
+  de equipos (`set_transfer_item` la rechaza); la regla queda para cuando exista.
+
+### DEC-DEVICE-COMMERCE-01 · DC3 — proveedores y venta bajo pedido
+
+Migración `0134` (aditiva: tablas nuevas vacías, columnas nulas o con `db_default`;
+reversible y segura mientras corre la versión anterior).
+
+**Reglas del propietario.** Stock 0 no es vendible. Sin stock propio sólo se vende con el
+modo «Bajo pedido» del producto **y** una oferta válida de proveedor, en la web y en caja.
+Stock propio → salida y Kardex normales; proveedor → nunca se descuenta stock que no existe.
+Decisión del 2026-10-14: si el pago llega con la oferta vencida o agotada, **el pago se
+registra** y la línea queda «abastecimiento por confirmar»; nunca stock negativo.
+
+**Cómo queda.**
+- *Modelo.* `Supplier` (por empresa; documento opcional validado como el de un cliente;
+  nombre único sin mayúsculas por empresa; se desactiva, no se borra) y `SupplierOffer`
+  (proveedor, **variante** = `Product`, `agreed_cost` (nulo = no declarado; sólo
+  `costs.view`), `commercial_price`, `confirmed_quantity` (nula = sin confirmar → no
+  vende), `committed_quantity` (CHECK: nunca más que lo confirmado), `valid_from`–
+  `valid_until` (días de la tienda, ambos incluidos), `lead_time_days`, `is_active`).
+  Historial en `AdminAuditLog` (`supplier_offer_created/updated/deactivated/expired`, sin
+  el costo: sólo `has_cost`). Una oferta que un pedido nombra no se borra (PROTECT).
+- *Modo de venta.* `Product.sale_mode`: `stock` (por omisión, lo de siempre) o
+  `stock_or_order`. Un seminuevo nunca se vende bajo pedido (es un equipo concreto).
+- *Disponibilidad* (`supply_services.availability`, la única respuesta para catálogo,
+  carrito, checkout y caja): stock propio de la sucursal que despacha ≥ cantidad → propio;
+  si no, con el modo y una oferta **válida** (activa, proveedor activo, confirmada, hoy
+  dentro de la vigencia, saldo ≥ cantidad) → bajo pedido; si no, no se vende. El vencimiento
+  se lee de las fechas: una oferta vencida no vende aunque el comando no haya corrido.
+- *Qué oferta.* Precio comercial más bajo, luego costo pactado más bajo (nulo al final),
+  luego la que vence antes, luego el id. Determinista en todas las superficies.
+- *Qué paga el comprador.* El `commercial_price` de la oferta, congelado en la línea al
+  hacer el pedido (web) o la venta (caja). Puede diferir de `Product.price`: la lista del
+  proveedor cambia cada semana; el pedido no.
+- *Nunca mezclar.* Una línea es toda de stock o toda bajo pedido. El carrito guarda el
+  origen (`CartItem.supply_origin`) y el comprador lo pide a propósito (`on_order`); sin
+  él, una línea sin stock responde `on_order_available` con plazo y precio, y el modo
+  contrario sobre la misma línea es `mixed_supply`. **Stock parcial: la línea entera va
+  bajo pedido** (no se parte: el modelo de línea es uno por producto y la clave de salida
+  (pedido, producto) no admite dos orígenes); el comprador puede elegir menos cantidad del
+  estante. En caja, dos líneas del mismo producto con distinto origen se rechazan.
+- *Instantánea de la línea* (`OrderItem`): `supply_origin`, `supplier_offer`,
+  `lead_time_days` y, con costo declarado, `unit_cost` = costo pactado con
+  `cost_source='supplier_offer'`. No siguen a la oferta después.
+- *Checkout* valida (no compromete: sin denegación de servicio por carritos). *Pago*
+  (`_confirm` → `record_sale_stock_movements` → `supply_services.commit_order_lines`):
+  bajo el bloqueo de la fila de la oferta, `committed + qty ≤ confirmed` → línea `pending`
+  y oferta comprometida; si no (vencida, agotada, inactiva) → `to_confirm`, nota en el
+  pedido, auditoría `order_supply_to_confirm`, y el dinero queda registrado. Ninguna
+  línea bajo pedido escribe movimiento al pagar. Orden de bloqueos: pedido → ofertas →
+  estantes. En caja (estricto) una oferta que no cubre rechaza la venta entera.
+- *Seguimiento.* «Confirmar con proveedor» (`to_confirm` → `pending` contra una oferta
+  vigente, que pasa a ser su oferta, plazo y costo; el precio cobrado no cambia),
+  «Recibir del proveedor» (entrada `purchase_entry` al costo congelado + salida de venta
+  de esa línea en la misma transacción: estante neto cero y Kardex completo; un serializado
+  entra con sus series/IMEI reales y se venden **esos** equipos, con su `OrderUnit`),
+  «No se pudo abastecer» (motivo obligatorio; devuelve lo comprometido a la oferta, marca
+  `failed` y deja la nota de cancelar o reembolsar por el flujo existente — ORDER-CANCEL-01
+  no está en esta rama: el paso es manual). `sales.orders.manage`; recibir además
+  `inventory.adjust`.
+- *Lo que aún no llegó no sale.* Un pedido con una línea bajo pedido no recibida no pasa a
+  listo, enviado ni entregado (`FulfillmentBlocked`, `supply_pending`); una venta de caja
+  con una línea así queda pendiente de despacho, no entregada. El faltante derivado (INV-04)
+  y la identificación de equipos ignoran esas líneas hasta que se reciben, y reprocesar la
+  salida nunca las vende del estante.
+- *Margen.* La línea cuenta con su costo pactado congelado (DC1: costo conocido).
+- *Avisos.* Panel de pedidos: estado de abastecimiento por pedido y filtro `?supply=`;
+  `ops_status` dice «ATENCIÓN abastecimiento» si hay pedidos pagados por confirmar o fallidos.
+- *Vencimiento.* `expire_supplier_offers` (idempotente, auditado, nunca toca lo
+  comprometido) y su línea de cron (cada hora).
+- *Excel.* Plantilla de una hoja «Ofertas de proveedor». Clave (proveedor, variante,
+  vigente desde, vigente hasta): si existe se actualiza (o «sin cambios»); una vigencia
+  nueva crea otra oferta; las demás vigencias quedan. Errores por fila antes de escribir,
+  todo o nada al aplicar, el mismo trabajo dos veces no hace nada, «Costo pactado» ignorado
+  sin `costs.view`. Exportación de las ofertas vigentes que vuelve a cargar sin cambios.
+- *Panel y caja.* Proveedores, ofertas (filtros, historial, desactivar), modo de venta del
+  producto, abastecimiento en el pedido; la caja ofrece «Bajo pedido (N días)» con el
+  precio de la oferta. Tienda: «Bajo pedido — entrega en N días».
+- *PAYABLES-01 (sólo el gancho).* `GET /api/admin/suppliers/settlement/` (`costs.view`):
+  por proveedor, lo recibido bajo pedido al costo congelado. No hay modelo de deuda ni
+  registros: es una suma de lecturas.
+
+**Por confirmar con el propietario.**
+- Precio pagado = precio comercial de la oferta (no `Product.price`).
+- Elección de oferta por precio comercial más bajo (y no por costo más bajo).
+- Stock parcial: la línea entera va bajo pedido si el comprador la pide así.
+- El proveedor de la carga Excel debe existir (no se crea desde el archivo).
+- `to_confirm`/`failed` como «ATENCIÓN» en `ops_status` (avisa por correo vía cron).
+
+**PENDIENTE — seminuevos de proveedor externo (punto 6 del encargo).** No se implementó
+en DC3 para no tocar la tubería de apartados de DC2 a la vez que el proveedor. Diseño:
+`ExternalUnitOffer` (empresa, proveedor, variante seminueva, IMEI/serie guardados y nunca
+públicos, batería, estado estético, fotos por la tubería de `UnitPhoto`, notas públicas,
+costo pactado, precio de venta, `valid_until`, estado ofrecido/apartado/vendido/retirado,
+`public_id` UUID). La tienda la muestra igual que un seminuevo propio (lista blanca de
+`device_catalog.public_unit`, IMEI enmascarado) y el carrito la aparta con el mismo
+`hold_key`/plazo/topes (sin movimiento de Kardex: no hay estante); al pagar pasa a
+«apartado para el pedido» (sin movimiento); «Recibir» crea el `StockUnit` con ese IMEI/serie
+(comprobando que coincide) y lo vende a la línea por `_sell_chosen_units`; vencida o
+retirada antes del pago → la línea queda `to_confirm` como en DC3.
+
+#### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
+
+Migración `0134` editada (sin publicar; sigue aditiva y segura con la versión anterior, que
+no escribe en `store_supplieroffer`):
+
+- **Una oferta por clave** — `UNIQUE(company, supplier, product, valid_from, valid_until)`
+  (`unique_supplier_offer_window`). Antes, previsualizar dos veces el mismo Excel y aplicar
+  los dos trabajos (o dos personas a la vez) creaba dos ofertas idénticas y duplicaba lo
+  vendible bajo pedido (8 → 16). Al aplicar se vuelve a mirar cada clave que la vista previa
+  marcó «crear»; si ya existe, **se rechaza el trabajo entero**: «El archivo cambió: vuelve a
+  previsualizarlo». Dos aplicaciones a la vez se encuentran en el índice (la segunda inserción
+  espera a la primera y falla) y responden lo mismo. La pantalla responde «Ya hay una oferta…
+  con esa misma vigencia» (`duplicate`).
+- **CHECK más estricto** — comprometido > 0 exige confirmado NO nulo (`NULL >= n` pasaba).
+- **El costo lo decide quien aplica** — se escribe sólo si la vista previa lo leyó **y** quien
+  aplica tiene `costs.view`.
+- **Celda de costo vacía = sin cambio**, como en las demás cargas (antes borraba el costo).
+- **Una oferta desactivada a mano no se reactiva** al volver a subir el archivo. Columna
+  opcional «Activa (Sí/No)» (sólo en la plantilla; la exportación no la escribe para que un
+  archivo viejo no reactive nada): «Sí» reactiva, «No» desactiva, vacío no cambia. La vista
+  previa avisa «Oferta desactivada a mano: no se reactiva».
+- **Orden de bloqueos de la carga** — el trabajo, luego todas sus ofertas existentes en una
+  sola consulta por id (el orden del pago), antes de escribir; nunca en el orden de las filas.
+- **Reembolso o cancelación liberan la oferta** — en esta rama nada pone un pedido en
+  `refunded`/`cancelled` (ORDER-CANCEL-01 no está; el paso es manual), así que «No se pudo
+  abastecer» (`fail_line`) acepta pedidos pagados, reembolsados o cancelados, devuelve
+  `min(comprometido, línea)` (nunca bajo cero) y audita `released`. Confirmar y recibir
+  siguen exigiendo pedido pagado.
+- **El pago vuelve a mirar el modo** — si el producto dejó «Bajo pedido» entre el checkout y
+  el pago, la línea queda `to_confirm` (no compromete).
+- **Pedido sin sucursal** — el compromiso de las líneas bajo pedido ocurre antes de la salida
+  temprana «sin sucursal de despacho».
+- **Vuelta atrás** — `cancel_pending_on_order_orders --apply` también borra las líneas de
+  carrito bajo pedido (la versión anterior las leería como de estante), con el conteo en la
+  simulación y una auditoría por empresa.
+
+- **La línea pública del pedido conserva su forma** (`id`, `product`, `quantity`, `price`,
+  fijada por INVENTORY-UNIFIED-01; DC3 la había ampliado y rompía `PublicExposureMatrixTest`).
+  Una línea bajo pedido de un producto aún en la web añade **sólo** `lead_time_days`; la de un
+  producto cerrado sigue siendo el payload cerrado; `supply_status` y `supply_origin` no son
+  públicos. «Mis pedidos» dice «Bajo pedido — N días» y ya no muestra el estado del
+  abastecimiento (antes: «Pedido al proveedor», «Recibido», «No se pudo abastecer»).
+
+Pasada de mutación de la revisión: 25 mutantes, 24 muertos, 1 equivalente (quitar sólo el
+re-chequeo de claves al aplicar: el índice único devuelve el mismo rechazo).
+
+**Decisión mía, por confirmar con el propietario — «sin stock únicamente con Bajo
+pedido».** *Reemplazada el 2026-10-15 por la decisión 2 del propietario (abajo): la regla
+sigue siendo la de por omisión, pero ya no es absoluta.* Mientras el stock propio de la sucursal que despacha cubre la cantidad de la línea,
+«Bajo pedido» se rechaza (409 `stock_available`, con mensaje) en la web (agregar y cambiar
+cantidad de una línea bajo pedido) y en caja (venta y vista previa, las dos API de caja).
+Como una línea nunca se mezcla, bajo pedido queda sólo para stock propio < cantidad pedida
+(el caso «stock parcial» de arriba). El checkout no lo vuelve a exigir: si llega stock entre
+el carrito y el pago, la línea sigue bajo pedido como la pidió el comprador.
+
+### DEC-DEVICE-COMMERCE-01 · Decisiones del propietario (2026-10-15) — APROBADAS
+
+Tres decisiones del propietario que reemplazan las que estaban «por confirmar» sobre el
+plazo de los apartados, «bajo pedido con stock» y el margen. Migración `0135` (aditiva,
+`db_default` igual al comportamiento de antes, reversible). Implementado en la rama
+`feat/device-commerce`, **sin desplegar**.
+
+**1. Apartados: duración por empresa y canal; la pasarela decide antes que el reloj.**
+«Duración configurable por empresa y canal. Referencia inicial 15 minutos para checkout,
+pero ajustar al ciclo efectivo de Izipay, pagos pendientes y expiración. Nunca liberar una
+reserva asociada a una confirmación válida sin conciliación. Liberación idempotente y
+segura ante concurrencia.»
+- *Por empresa y canal.* `CompanySettings.device_cart_hold_minutes` (carrito web, 15),
+  `device_checkout_hold_minutes` (checkout web, 45) y `device_hold_ceiling_minutes` (tope
+  desde que el carrito lo tomó, 60). Los valores al crear son los de siempre. Límites
+  (modelo y API): carrito 5–60; checkout 30–120; tope 35–240 y ≥ carrito + 30. Cambiarlos
+  exige `company.manage` **y** `settings.manage` (como la revisión de pedidos). Sin fila
+  de configuración rigen los de la plataforma (`settings.DEVICE_*`). La caja no tiene
+  plazo: sus apartados del personal no vencen (sin cambio).
+- *El ciclo efectivo de la pasarela en este código* («Mi Cuenta Web»,
+  `payments/micuentaweb.py` y `payments/reconcile.py`): el formToken vive 15 min y la
+  sesión de pago 10; `FORM_LIFETIME` = **30 min** (hasta entonces una tarjeta rechazada
+  puede reintentarse con la misma referencia, el intento sigue `pending`);
+  `reconcile_payments` corre **cada 5 min**, pregunta desde los **3 min** (`MIN_AGE`) y
+  durante **2 h** (`WINDOW`), y cierra como `abandoned` en los últimos **10 min**
+  (`CLOSING`, es decir entre 110 y 120 min) el intento del que la pasarela no tiene nada.
+  El otro producto (SDK web / Checkout) no se concilia: sólo su notificación.
+- *Números elegidos.* El checkout nunca dura menos de 30 min (el formulario aún puede
+  cobrar), por eso su mínimo es 30 y el tope ≥ carrito + 30; el 45 de siempre deja 15 min
+  de margen. Y el reloj ya no es la última palabra: un apartado atado a un pedido que aún
+  puede pagarse, con un intento `pending` **abierto mientras el apartado vivía**, no se
+  libera por vencimiento mientras ese intento tenga menos de **2 h** (la ventana de la
+  conciliación: dentro de ella la notificación o `Order/Get` deciden — autorizado → el
+  pago vende el equipo; rechazado o abandonado → vuelve al estante en el siguiente
+  barrido), ni mientras la respuesta de la pasarela esté marcada `undecided:` /
+  `unreadable:` (puede haber dinero de por medio; `ops_status` ya lo avisa). Pasadas las
+  2 h sin respuesta nada vuelve a preguntar, así que decide el reloj. Un intento abierto
+  después de que el apartado venció no lo revive (si no, reintentar el pago cada 2 h
+  apartaría un equipo para siempre). Con el tope de 60 min, un equipo queda apartado como
+  mucho ~3 h (60 min + 2 h del intento) salvo respuesta indecidible.
+- *A mano en caja* (`inventory.adjust`): tampoco se libera dentro de esas 2 h; un apartado
+  retenido por una respuesta indecidible sí puede liberarlo una persona: quien mira el
+  panel de la pasarela es la conciliación.
+- *Idempotente y concurrente.* `unit_hold_services.release_one_expired`: cada apartado se
+  decide bajo el bloqueo del estante y luego el de la fila del equipo (el orden único del
+  módulo), releyendo estado, titular, vencimiento y pago. El barrido, la lectura del
+  carrito y el cron a la vez escriben **una** línea de Kardex; un checkout que amplió el
+  apartado después de que el barrido lo listó gana. Prueba: `ConcurrentReleaseTest`
+  (`TransactionTestCase`, en `flushing`).
+
+**2. Bajo pedido con stock propio: sólo por elección explícita.** «Preferir stock propio
+disponible, pero permitir seleccionar explícitamente proveedor externo aunque exista
+stock, cuando el flujo y permisos lo justifiquen. Registrar la fuente elegida, costo y
+plazo. No cambiar silenciosamente stock propio por externo.»
+- *Por omisión, sin cambio:* stock propio primero; pedir «bajo pedido» una línea que el
+  estante cubre responde 409 `stock_available` en la web y en caja. Agregar sin `on_order`
+  nunca va al proveedor.
+- *Caja:* la línea lleva `supply_reason` (obligatorio, ≤ 200, espacios normalizados) y quien
+  vende necesita **`sales.orders.manage`**. Se reutiliza esa capacidad y no la de
+  descuentos: elegir proveedor es una decisión de abastecimiento (compromete una oferta,
+  cambia el plazo de entrega) y `sales.orders.manage` es la que ya sigue la línea con el
+  proveedor (confirmar, recibir, «no se pudo abastecer»); `sales.discounts.apply` decide
+  precios. Sin motivo → 409 como antes (con el permiso, el mensaje pide el motivo); con
+  motivo y sin permiso → 403. El motivo entra en la huella de idempotencia (otra clave con
+  otro motivo es otra venta). El contexto de caja dice `can_order_over_stock` (web y v1).
+- *Web:* sólo si la empresa enciende `CompanySettings.web_on_order_over_stock` (apagado al
+  crear; `settings.manage`). Entonces la oferta pública lleva `over_stock: true` (sin esa
+  clave en otro caso: la forma fijada no cambia) y la tienda ofrece, aparte del botón
+  normal, «Pedir al proveedor — entrega en N días» al precio de la oferta. Si la empresa
+  lo apaga, cambiar la cantidad de esa línea vuelve a responder `stock_available`.
+- *Registro:* la línea guarda la fuente (`supply_origin`, `supplier_offer`), el costo
+  pactado (`unit_cost`, `cost_source='supplier_offer'`, sólo `costs.view`), el plazo
+  (`lead_time_days`) y ahora `supply_chosen_over_stock` + `supply_choice_reason` (en la web:
+  «Elegido por el comprador en la web»; la marca se pone si el estante cubría la línea al
+  escribir el pedido). Auditoría `pos_on_order_over_stock` / `web_on_order_over_stock`:
+  producto, cantidad, stock propio, oferta, proveedor, plazo, `has_cost` y motivo — nunca
+  el costo (la auditoría la leen personas sin `costs.view`; el costo está en la línea).
+
+**3. Margen: estimado y realizado, desconocidos y reembolsos aparte.** «(venta neta sin
+IGV recuperable − costo neto comparable) / venta neta × 100. Mostrar importe y porcentaje,
+margen estimado vs. realizado, costos desconocidos y ajustes/reembolsos. No llamarlo
+utilidad neta ni inventar costos.»
+- La fórmula ya era ésa (DC1): venta neta = parte de la base imponible de la línea
+  (`net_amount`, sin IGV); **comparable** = sólo las líneas con costo conocido, en los dos
+  términos. Importe y porcentaje (`null`, nunca 0 %, sin costo conocido).
+- *Estimado* = todas las líneas con costo conocido al vender: promedio de la sucursal,
+  costo del equipo, costo de referencia del catálogo o costo pactado con el proveedor.
+  Son las cifras de siempre (`margin`, `margin_percent`) y ahora también `estimated`.
+- *Realizado* (`realised`) = sólo costo confirmado: stock propio vendido a su promedio o a
+  su costo de equipo, o línea bajo pedido **recibida** (su entrada se escribió al costo
+  pactado). Una línea de costo de referencia o bajo pedido aún no recibida (pendiente,
+  por confirmar o no abastecida) es sólo estimada (`estimated_only`, con su conteo).
+- *Costo desconocido* (`unknown_cost`): líneas, pedidos y venta neta, fuera de los dos
+  márgenes (estimado + desconocido = venta neta). *Reembolsos* (`refunds`): pedidos,
+  importe con IGV y neto sin IGV, aparte. No hay ajustes de costo de lo vendido que mostrar:
+  la historia no se recalcula (DC1) y no se inventa ninguno.
+- Nunca «utilidad» ni «utilidad neta»: «margen comercial».
+
+Pasada de mutación de las tres decisiones: 31 mutantes, 29 muertos a la primera; los 2 que
+sobrevivieron (quitar el bloqueo de fila del barrido; `>=` → `>` en la marca de la web)
+tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto justo) y mueren.
+
+**Revisión de integración del PR #123 (2026-10-15).**
+- *P1 — los apartados que retiene un pago cuentan.* Un apartado vencido que `payment_keeps_hold`
+  mantiene seguía `RESERVED` pero salía de los topes (por carrito, por origen, reparto del
+  estante, techo de la empresa): repetir «agregar, checkout, abrir el formulario, cerrar la
+  pestaña» desde un origen apartaba el estante entero. `_live_web_holds` cuenta ahora los no
+  vencidos **y** los vencidos atados a un pedido que aún puede pagarse; un vencido sin pedido
+  vivo (aún sin barrer) no bloquea a nadie, porque `hold()` sólo barre su propio producto.
+- *P2-1 — `ops_status` los dice.* Línea «apartados web»: cuántos equipos retiene un pago tras
+  su reloj, sin límite de antigüedad. Dentro de la ventana de conciliación (2 h) es `NOTA`
+  (la conciliación decide); si alguno la pasó (respuesta indecidible) es `ATENCIÓN`, con
+  cuántos. Sólo cuentas: el registro `payment_undecided` dice cuál.
+- *P2-2 — lo que vuelve de la venta de un pedido vuelve a su costo.* Toda entrada con `order`,
+  sin costo declarado y que no sea stock nuevo (compra, inicial, transferencia) toma el costo
+  y la fuente con que salió su `sale_exit` (ponderado si hubo varias), sea cual sea su tipo
+  (`inventory_services._cost_the_sale_left_with`). Una salida a costo de referencia vuelve
+  pendiente; una de costo desconocido no da nada. **Al fusionar con #119** (añade
+  `ORDER_CANCEL_RETURN` y devuelve stock sin costo): esta regla ya la cubre si esa entrada
+  lleva `order=`; si no lo lleva, añade `ORDER_CANCEL_RETURN` a `StockMovement.RETURN_TYPES`
+  o pásale el `unit_cost` de la salida. Comprobarlo con una prueba de cancelación.
+- *P3 — atribución.* Con el interruptor web apagado, una línea tomada «Bajo pedido» con el
+  estante vacío y pagada después de que llegó stock ya no se marca `supply_chosen_over_stock`
+  ni se audita como elección: lleva el motivo «Tomado bajo pedido cuando la tienda no tenía
+  stock suficiente». Con el interruptor encendido, mantener la línea bajo pedido cuando el
+  estante la cubre al escribir el pedido sigue siendo la elección del comprador.
+- *P3 — liquidación.* «Pendiente de liquidar al proveedor» se limita a los pedidos que
+  despachan las sucursales visibles de quien consulta (como toda cifra de ventas).
+- *Pruebas por valor.* Las comprobaciones de «no se filtra el costo» comparan valores (ids
+  aparte), no subcadenas de `str(payload)`: `'product_id': 685` contenía «68».

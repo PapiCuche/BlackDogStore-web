@@ -264,6 +264,56 @@ class Command(BaseCommand):
             )
         report('revisión de pedidos', [], 'sin pedidos por revisar ni pedidos en línea sin evaluar', review_notes)
 
+        # DC3. A PAID order whose on-order line is «por confirmar» (the offer
+        # expired or ran out before the payment) or «no se pudo abastecer» has
+        # money in and no goods coming: somebody has to confirm with the
+        # supplier or refund. Counts, never a customer.
+        from store.models import OrderItem
+
+        supply = []
+        for state, words in ((OrderItem.SUPPLY_TO_CONFIRM, 'con abastecimiento por confirmar'),
+                             (OrderItem.SUPPLY_FAILED, 'que no se pudieron abastecer (cancelar o reembolsar)')):
+            count = Order.objects.filter(
+                status=Order.Status.PAID, items__supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                items__supply_status=state,
+            ).distinct().count()
+            if count:
+                supply.append(f'{_plural(count, "pedido pagado", "pedidos pagados")} {words}. '
+                              'Se ven en Pedidos › Abastecimiento.')
+        report('abastecimiento', supply, 'sin pedidos bajo pedido esperando a una persona')
+
+        # DEVICE-COMMERCE-01 (integration review of PR #123, P2-1). A web hold
+        # past its clock that a payment keeps (`payment_keeps_hold`): inside the
+        # reconciliation window the gateway's answer settles it — said, not an
+        # alarm. Past it only an answer nobody could settle keeps it, and it
+        # stays reserved until a person releases it: whatever its age. Counts.
+        from store import unit_hold_services as unit_holds
+        from store.models import StockUnit
+
+        overdue_holds = StockUnit.objects.filter(
+            status=StockUnit.Status.RESERVED, hold_until__lt=now,
+            hold_order__status=Order.Status.PENDING_PAYMENT, hold_order__paid=False,
+        ).exclude(hold_key='')
+        kept = [unit for unit in overdue_holds if unit_holds.payment_keeps_hold(unit, now)]
+        window = unit_holds.payment_horizon()
+        past_window = sum(1 for unit in kept if unit.hold_until < now - window)
+        window_hours = int(window.total_seconds() // 3600)
+        holds_findings, holds_notes = [], []
+        if past_window:
+            holds_findings.append(
+                f'{_plural(len(kept), "equipo apartado en la web sigue reservado", "equipos apartados en la web siguen reservados")} '
+                f'por un pago que la pasarela aún podría confirmar; {past_window} desde hace más de {window_hours} h, '
+                'con una respuesta que nadie pudo decidir. Revisa el pago en el panel de la pasarela y, si no se '
+                'cobró, libera el equipo desde Inventario › Equipos (el registro de auditoría dice cuál: '
+                '`payment_undecided`).'
+            )
+        elif kept:
+            holds_notes.append(
+                f'{_plural(len(kept), "equipo apartado en la web sigue reservado", "equipos apartados en la web siguen reservados")} '
+                f'por un pago que la pasarela aún podría confirmar; la conciliación lo decide en menos de {window_hours} h.'
+            )
+        report('apartados web', holds_findings, 'ningún equipo retenido por un pago sin decidir', holds_notes)
+
         # What a master configured in Configuración › Integraciones, and the two
         # integrations a shop cannot work without. Labels and states, never values.
         findings, summary = integration_health.report()

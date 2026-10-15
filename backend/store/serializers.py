@@ -128,12 +128,31 @@ class ProductSerializer(serializers.ModelSerializer):
     review_count = serializers.SerializerMethodField()
     inventory = serializers.SerializerMethodField()
 
+    # DC2 — added fields: which model it is a variant of (its slug), its line,
+    # and whether the web sells it device by device.
+    product_model = serializers.SerializerMethodField()
+    condition_line = serializers.CharField(read_only=True)
+    sells_by_unit = serializers.BooleanField(read_only=True)
+    # DC3 — added: «Bajo pedido — entrega en N días» at this price, or null.
+    # Only what the buyer may know: never the cost, the supplier or its quantity.
+    on_order = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price',
             'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
+            'product_model', 'condition_line', 'sells_by_unit', 'on_order',
         ]
+
+    def get_on_order(self, obj):
+        from .supply_services import on_order_payload
+
+        return on_order_payload(obj)
+
+    def get_product_model(self, obj):
+        model = obj.product_model if obj.product_model_id else None
+        return model.slug if model is not None and model.is_published_online else None
 
     def get_images(self, obj):
         # `image_url` sigue siendo la principal; esto es la galería completa.
@@ -214,15 +233,22 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
+        # INVENTORY-UNIFIED-01 pins this shape. DC3 adds ONE key, and only to a
+        # line sold on order of a product still on the web: `lead_time_days`
+        # (what the buyer was promised). How its supply goes (`supply_status`)
+        # and where it comes from (`supply_origin`) are the shop's, never shown.
         fields = ['id', 'product', 'quantity', 'price']
 
     def to_representation(self, instance):
         if instance.product.is_sold_online:
-            return super().to_representation(instance)
+            data = super().to_representation(instance)
+            if instance.supply_origin == OrderItem.SUPPLY_SUPPLIER:
+                data['lead_time_days'] = instance.lead_time_days
+            return data
         # Closed BEFORE the product is serialised, not after: the whole public
         # payload (gallery, rating, stock) is not built just to be thrown away.
         # Same keys, same order, and the line's own fields rendered by their
-        # own serializer fields.
+        # own serializer fields. Nothing else — not even an on-order lead time.
         fields = self.fields
         return {
             'id': instance.pk,
@@ -292,6 +318,43 @@ class CartItemSerializer(serializers.ModelSerializer):
         if product.is_sold_online:
             data = super().to_representation(instance)
             data['available'] = True
+            data['sells_by_unit'] = product.sells_by_unit
+            if instance.supply_origin == CartItem.SUPPLY_SUPPLIER:
+                # DC3 — taken on order: the offer that covers it now, at its price.
+                from .supply_services import offer_for_line
+
+                offer = offer_for_line(product, instance.quantity)
+                data['supply'] = {
+                    'origin': 'supplier', 'available': offer is not None,
+                    'lead_time_days': offer.lead_time_days if offer else None,
+                    'price': str(offer.commercial_price) if offer else None,
+                }
+                data['line_total'] = str(offer.commercial_price * instance.quantity) if offer else None
+                return data
+            data['supply'] = {'origin': 'own'}
+            if product.sells_by_unit:
+                # DC2 — the devices this cart holds, each at ITS frozen price.
+                # Never the IMEI: its last four digits at most.
+                from . import device_catalog, unit_hold_services
+
+                held = list(
+                    unit_hold_services.held_units(instance.session_key, product.company, product=product)
+                    .select_related('cosmetic_grade')
+                )
+                options = {o.attribute.name: o.label for o in device_catalog.variant_options_of(product)}
+                data['units'] = [{
+                    'id': str(unit.public_id),
+                    'price': str(unit.hold_price),
+                    'options': options,
+                    'battery_health': unit.battery_health,
+                    'cosmetic_grade': unit.cosmetic_grade.label if unit.cosmetic_grade_id else '',
+                    'imei_hint': device_catalog.mask_imei(unit.imei),
+                    'held_until': unit.hold_until.isoformat() if unit.hold_until else None,
+                } for unit in held]
+                data['quantity'] = len(held)
+                data['line_total'] = str(sum((unit.hold_price for unit in held), Decimal('0.00')))
+            else:
+                data['line_total'] = str(product.price * instance.quantity)
             return data
         return {
             'id': instance.pk,
@@ -450,6 +513,9 @@ class AdminProductSerializer(serializers.ModelSerializer):
             # Read-only here. How a product is counted changes only through
             # `stock_unit_services.set_serialized`, which checks the shelf.
             'is_serialized', 'requires_imei',
+            # DC3: «Bajo pedido» allowed or not. Read-only here; written by
+            # PATCH /api/admin/products/<pk>/sale-mode/.
+            'sale_mode',
             'created_at', 'updated_at',
         ]
 
@@ -621,10 +687,20 @@ class AdminOrderItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source='product.id', read_only=True)
     product_name = serializers.CharField(source='product.name', read_only=True)
     subtotal = serializers.SerializerMethodField()
+    # DC3 — where the line's goods come from and how their supply goes. The
+    # supplier's name is the panel's to see; its cost is not here (costs.view).
+    supplier_name = serializers.SerializerMethodField()
+    product_is_serialized = serializers.BooleanField(source='product.is_serialized', read_only=True)
 
     class Meta:
         model = OrderItem
-        fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal']
+        fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal',
+                  'supply_origin', 'supply_status', 'supply_note', 'lead_time_days', 'supplier_offer_id',
+                  'supplier_name', 'product_is_serialized']
+
+    def get_supplier_name(self, obj):
+        offer = obj.supplier_offer if obj.supplier_offer_id else None
+        return offer.supplier.name if offer is not None else ''
 
     def get_subtotal(self, obj):
         return str(obj.price * obj.quantity)
@@ -1399,6 +1475,11 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # INVENTORY-UNIFIED-01 — whether publishing in bulk asks for a
             # picture. Off as created; `company.manage`, like the rest.
             'publication_requires_image',
+            # DEVICE-COMMERCE-01 (owner, 2026-10-15) — how long the web holds a
+            # device, per channel, and whether the web may sell on order while
+            # the shelf has it. Changing them takes `settings.manage` too.
+            'device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes',
+            'web_on_order_over_stock',
             'updated_at',
         ]
         read_only_fields = [
@@ -1408,6 +1489,17 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
     def get_whatsapp_link(self, obj):
         from .company_settings import build_whatsapp_link
         return build_whatsapp_link(obj.whatsapp_number)
+
+    def validate(self, attrs):
+        """The three hold times are checked together: the ceiling depends on the cart's."""
+        attrs = super().validate(attrs)
+        fields = ('device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes')
+        if any(field in attrs for field in fields):
+            values = [attrs.get(field, getattr(self.instance, field, None)) for field in fields]
+            errors = CompanySettings.hold_minutes_errors(*values)
+            if errors:
+                raise serializers.ValidationError(errors)
+        return attrs
 
     def validate_document_logo_url(self, value):
         """

@@ -175,6 +175,15 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     )
 
     branch_map = {int(k): int(v) for k, v in (branch_map or {}).items()}
+    # DC1 — «Costo unitario», found by its header when the mapping does not
+    # name it (a remembered mapping predates the column). Never a warehouse.
+    if 'unit_cost' not in mapping:
+        found = import_formats.find_column(
+            headers, import_formats.UNIT_COST_HEADERS,
+            taken=set(mapping.values()) | set(branch_map),
+        )
+        if found is not None:
+            mapping['unit_cost'] = found
     if not branch_map:
         raise StockImportError(
             'Indica a qué sucursal corresponde cada columna de almacén.'
@@ -213,6 +222,7 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
 
     index = CatalogueIndex(company)
     current = _current_quantities(company, branches.values())
+    averages = _current_averages(company, branches.values())
     serialized_ids = set(
         Product.objects.filter(company=company, is_serialized=True).values_list('pk', flat=True)
     )
@@ -239,6 +249,15 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             barcode=barcode, code=code, name=name,
         )
 
+        # DC1 — what one unit cost, for the branches this row INCREASES.
+        unit_cost, cost_error = None, None
+        if 'unit_cost' in mapping:
+            from .import_services import clean_price
+
+            unit_cost, cost_error = clean_price(values.get(mapping['unit_cost']))
+            if cost_error:
+                cost_error = 'Costo unitario: ' + cost_error.replace('El precio', 'el costo')
+
         for column_index, branch_id in sorted(branch_map.items()):
             branch = branches[branch_id]
             kind, quantity, quantity_error = parse_quantity(values.get(column_index))
@@ -246,6 +265,8 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
             errors, warnings = [], list(match_warnings)
             if quantity_error:
                 errors.append(quantity_error)
+            if cost_error and kind != 'blank':
+                errors.append(cost_error)
 
             if kind == 'blank':
                 # THE RULE. An empty cell is not a zero, and the preview says so
@@ -337,6 +358,24 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
                 'matched_by': matched_by,
             }
 
+            if unit_cost is not None and product_id and not errors:
+                if delta > 0:
+                    # The average it leaves is the COMPANY's knowledge: shown
+                    # to `costs.view` only (`import_views` strips it otherwise).
+                    from .cost_services import weighted_average
+
+                    before, pending = averages.get((branch_id, product_id), (None, 0))
+                    costed = max(now - min(pending or 0, now), 0)
+                    normalized['unit_cost'] = str(unit_cost)
+                    normalized['cost_average_before'] = str(before) if before is not None else ''
+                    normalized['cost_average_after'] = str(weighted_average(costed, before, delta, unit_cost))
+                    warnings.append(f'Entran {delta} unidad(es) con costo unitario {unit_cost}.')
+                else:
+                    warnings.append(
+                        'Costo unitario ignorado: esta fila no aumenta el stock de la sucursal, '
+                        'y el costo sólo se registra en una entrada.'
+                    )
+
             if errors:
                 action = BulkImportRow.ERROR
             elif delta == 0:
@@ -382,6 +421,16 @@ def _current_quantities(company, branches):
         for b, p, q in BranchStock.objects
         .filter(branch__company=company, branch__in=list(branches))
         .values_list('branch_id', 'product_id', 'quantity')
+    }
+
+
+def _current_averages(company, branches):
+    """(branch, product) -> (average, units of unknown cost). The preview says what the Kardex will do."""
+    return {
+        (b, p): (a, u)
+        for b, p, a, u in BranchStock.objects
+        .filter(branch__company=company, branch__in=list(branches))
+        .values_list('branch_id', 'product_id', 'average_cost', 'uncosted_quantity')
     }
 
 
@@ -569,6 +618,8 @@ def apply_stock(*, job, actor):
                 'import_job': job.pk, 'row': row.row_number,
                 'target': target, 'previous': current,
             },
+            # DC1 — only an entry carries a cost; a decrease leaves at the average.
+            unit_cost=Decimal(data['unit_cost']) if delta > 0 and data.get('unit_cost') else None,
         )
         movements.append(movement)
         applied += 1

@@ -3,6 +3,177 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` (#123) — NO desplegado
+
+**Changed**
+- DEVICE-COMMERCE-01 (costos y margen, nuevos y seminuevos por unidad, proveedores y bajo
+  pedido) entra en `master` por el PR #123. Producción no cambia hasta un despliegue
+  autorizado.
+
+**Verified**
+- CI de `129d82f`: 7417 pruebas en seis fragmentos, en verde. Revisión de integración: GO.
+- Migraciones `0126`–`0135` medidas con 200 000 líneas y 50 000 equipos: 4–6 s de ida.
+
+## 2026-10-15 — DEVICE-COMMERCE-01 · revisión de integración del PR #123 (en rama, NO desplegado)
+
+- **Fixed** — los apartados web que retiene un pago pendiente cuentan en los topes por carrito, por origen, reparto del estante y techo de la empresa; una línea bajo pedido tomada con el estante vacío ya no se atribuye al comprador como «elegida sobre stock» si la web no lo permite; la liquidación pendiente al proveedor se limita a las sucursales de quien consulta; el stock que vuelve de la venta de un pedido sin costo declarado vuelve al costo de su salida.
+- **Added** — `ops_status` «apartados web»; `uncosted_after_rollback` (informe y, con `--apply`, costo pendiente sin inventar costos) para regresar de una versión anterior a DC1.
+
+## 2026-10-15 — DEVICE-COMMERCE-01 · decisiones del propietario (implementado en rama, NO desplegado)
+
+Migración `0135` (aditiva, `db_default` con el comportamiento anterior, reversible).
+
+**Added**
+- Configuración por empresa de los apartados web de equipos: minutos de carrito, de checkout
+  y tope (15/45/60 al crear; checkout nunca menos de 30, lo que vive el formulario de pago).
+  Cambiarlos exige `settings.manage`.
+- «Bajo pedido» aunque haya stock propio, sólo explícito: en caja con `sales.orders.manage` y
+  un motivo; en la web sólo si la empresa enciende «Permitir que el comprador web elija
+  proveedor aunque haya stock», y la tienda dice que sale del proveedor con su plazo. La
+  línea guarda `supply_chosen_over_stock` y `supply_choice_reason`; auditoría
+  `pos_on_order_over_stock` / `web_on_order_over_stock`.
+- Margen comercial estimado y realizado (costo confirmado: stock propio vendido o bajo
+  pedido recibido), «costo desconocido» y reembolsos con y sin IGV, aparte.
+
+**Changed**
+- Un apartado web cuyo pedido tiene un pago pendiente que la pasarela aún puede confirmar
+  ya no vuelve al estante por vencimiento: decide la conciliación (2 h; sin límite si la
+  respuesta fue indecidible). La caja tampoco lo libera dentro de ese plazo.
+- La liberación de apartados vencidos se decide bajo el bloqueo del estante y del equipo:
+  barridos simultáneos escriben una sola línea de Kardex.
+- «Bajo pedido» con stock: el 409 `stock_available` sigue siendo la respuesta por omisión
+  (antes «por confirmar»; ahora aprobado por el propietario con las dos excepciones).
+
+## 2026-10-15 — DEVICE-COMMERCE-01 · DC3: correcciones de la revisión independiente
+
+Migración `0134` editada antes de publicar (índice único de ofertas y CHECK más estricto).
+
+**Fixed**
+- La carga Excel de ofertas ya no crea dos veces la misma oferta (dos vistas previas del mismo
+  archivo, o dos personas a la vez): índice único por proveedor, variante y vigencia, y el
+  segundo intento se rechaza con «El archivo cambió: vuelve a previsualizarlo».
+- El costo pactado sólo lo escribe quien aplica con `costs.view`; una celda de costo vacía no
+  borra el costo; una oferta desactivada a mano no se reactiva (columna opcional «Activa»).
+- Un pedido reembolsado o cancelado devuelve a la oferta lo comprometido («No se pudo
+  abastecer»); el pago deja «por confirmar» una línea cuyo producto salió de «Bajo pedido»;
+  un pedido sin sucursal compromete igual sus líneas bajo pedido.
+- «Bajo pedido» se rechaza (409 `stock_available`) en la web y en caja mientras el stock
+  propio cubre la línea (por confirmar con el propietario).
+- La carga bloquea sus ofertas en orden de id; el CHECK exige cantidad confirmada para
+  comprometer; la vuelta atrás también vacía las líneas de carrito bajo pedido.
+- «Mis pedidos» (`GET /api/orders/`) vuelve a la forma fijada de la línea; una línea bajo
+  pedido añade sólo su plazo y ya no se publica el estado interno del abastecimiento.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC3: proveedores y venta bajo pedido
+
+Migración `0134` (proveedores, ofertas, modo de venta, origen de la línea; aditiva, reversible).
+
+**Added**
+- Proveedores y ofertas de proveedor por variante, con historial y desactivación; modo
+  «Bajo pedido» por producto; carga Excel «Ofertas de proveedor» (vista previa con errores
+  por fila, aplicación idempotente, columna de costo sólo con `costs.view`) y exportación.
+- Venta bajo pedido en la tienda («Bajo pedido — entrega en N días», a pedido explícito del
+  comprador) y en caja; el pago compromete la oferta sin mover stock; recibir del proveedor
+  escribe entrada y salida; «No se pudo abastecer» devuelve lo comprometido y marca el pedido.
+- `expire_supplier_offers` y su línea de cron; `ops_status` avisa de pedidos pagados con
+  abastecimiento por confirmar o fallido; resumen de solo lectura «Pendiente de liquidar al
+  proveedor».
+
+**Changed**
+- Un pedido con productos bajo pedido no recibidos no pasa a listo, enviado ni entregado.
+
+**Fixed (segunda revisión de DC2)**
+- Compradores de seminuevos distintos de una variante pequeña ya no se bloquean entre sí
+  (reparto sólo desde 4 equipos + techo por empresa); el pedido pagado de un carrito gana su
+  equipo frente a un checkout posterior sin pagar; un solo orden de bloqueos al apartar;
+  equipos sin costo entran al costo con que salieron.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: revisión independiente
+
+Migración `0133` (`StockUnit.hold_origin`, `hold_started_at`; aditiva, reversible).
+
+**Security**
+- Un mismo origen aparta a lo sumo 3 equipos entre todos sus carritos; los apartados web no
+  pasan de la mitad de los equipos de un producto en la sucursal (mínimo uno); throttle
+  `device_hold` 10/min por dirección; un apartado no se amplía más allá de 60 minutos desde
+  que se tomó.
+- El precio de venta de un equipo exige `products.manage`.
+
+**Fixed**
+- `bind_to_order` ya no ata el apartado de otro carrito.
+- Dos checkouts de un carrito: el pedido anterior no abre pago ni vende el equipo.
+- Archivos de productos anteriores a DC2 con «Modelo» o «Color» cargan como antes.
+- Quitar un equipo que se está vendiendo ya no da 500; no se aparta un equipo de un modelo
+  retirado de la web; la app no lista seminuevos; el recuento de seminuevos del panel es el
+  de la sucursal de la tienda; un equipo sin costo sale al costo de referencia.
+
+**Added**
+- `release_expired_unit_holds --all-web`, `cancel_pending_unit_orders`, la línea de cron y
+  los pasos para volver atrás.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: variantes, nuevos y seminuevos
+
+En la rama `feat/device-commerce` (sin push). Migraciones `0130`–`0132` (aditivas, nulas o
+con `db_default`, reversibles; `0132` sólo se deshace mientras ningún pedido tenga dos
+equipos de un mismo producto). DEC-DEVICE-COMMERCE-01 · DC2.
+
+**Added**
+- Modelos (`ProductModel`), atributos y opciones con muestra de color, variantes
+  (`Product.product_model`, `condition_line`), escala de estado estético por empresa.
+- `GET /api/catalog/models/` y `/api/catalog/models/<slug>/`; página de modelo con
+  capacidad, colores y combinaciones no disponibles deshabilitadas; seminuevos uno por uno.
+- Apartado web de un equipo concreto en el carrito (`POST /api/cart/add/` con `unit`,
+  `POST /api/cart/release-unit/`), con vencimiento y `release_expired_unit_holds`.
+- Batería, estado estético, notas públicas, precio de venta y fotos públicas por equipo;
+  lista «Seminuevos» en el panel; administración de modelos, opciones y escala.
+- Columnas «Modelo», «Capacidad», «Color», «Línea» (productos y equipos) y «Estado
+  estético», «Batería %», «Precio de venta» (equipos).
+
+**Changed**
+- Lo que se vende por unidad (variante serializada de un modelo): el pago vende el equipo
+  apartado, no el más antiguo; cada equipo es su línea de pedido con su precio y su costo.
+- La lista pública de productos no lista variantes seminuevas.
+- La app nativa rechaza en el checkout los productos que se compran eligiendo el equipo.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1: revisión independiente
+
+**Security**
+- Sin `costs.view`, la columna «Costo de referencia» de la carga de productos se ignora (no
+  se compara ni se escribe).
+
+**Fixed**
+- El stock que entra sin costo queda «costo pendiente» (`0129`, `uncosted_quantity`) en vez
+  de valorarse a un promedio viejo; sale primero.
+- La rebaja de una promoción va a sus líneas, como en el comprobante F6.
+- Instantáneas y promedios de sólo lectura en el admin de Django; `costs_view_report`.
+- Desgloses del margen con el neto estimado de las líneas anteriores a DC1.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1: costos y margen comercial
+
+En la rama `feat/device-commerce` (sin push). Migraciones `0126` (datos), `0127` y `0128`
+(aditivas, `db_default` en las columnas NOT NULL, reversibles). DEC-DEVICE-COMMERCE-01.
+
+**Security**
+- `GET /api/admin/inventory/units/` devolvía el costo de cada equipo a quien tenía sólo
+  `inventory.view`. Ahora el costo viaja sólo con `costs.view`, en la lista, el detalle, la
+  recepción y las descargas.
+
+**Added**
+- Capacidad `costs.view` («Ver costos y márgenes») para el preset `Administrador` sin
+  modificar (`0126`) y los roles heredados `admin`/`superadmin`.
+- Costo promedio ponderado por sucursal, costo específico por equipo y costo de cada línea
+  de Kardex; `Product.reference_cost`.
+- Costo y base sin IGV congelados en cada línea vendida (web y caja).
+- `GET /api/admin/sales/margin/` y la sección «Margen comercial» del resumen de ventas.
+- «Valor al costo» junto al valor a precio de venta en el inventario.
+- Columnas «Costo de referencia» (productos) y «Costo unitario» (stock, opcional).
+
+**Changed**
+- El costo en las descargas es de `costs.view`, no de `inventory.adjust`.
+- «Precio costo» de la plantilla POS ya no se ignora: es el costo de referencia.
+- El reporte de stock trae «Costo promedio» (vacío sin `costs.view`).
+- El costo de un equipo vendido no se puede cambiar.
+
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 
 **Deployed**

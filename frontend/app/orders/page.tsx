@@ -8,7 +8,12 @@ import { API_BASE } from "../lib/api";
 import { getCurrentUser, fetchWithAuth } from "../lib/auth";
 import { formatMoney } from "../lib/format";
 import { OrderDeliveryInfo, type BuyerDelivery } from "../components/OrderDeliveryInfo";
+import { deliveryDaysText } from "../lib/catalog-models";
 
+/**
+ * DC3 — how the buyer is told where a «bajo pedido» line stands. Buyer words,
+ * not the panel's: who the supplier is never reaches this page.
+ */
 type OrderItem = {
   id: number;
   /**
@@ -19,6 +24,11 @@ type OrderItem = {
   product: { name: string; slug?: string; price?: number | string; image_url?: string };
   quantity: number;
   price: number | string;
+  /**
+   * DC3: present ONLY on a line sold «bajo pedido» (the promised lead time).
+   * How its supply goes is the shop's and is not sent.
+   */
+  lead_time_days?: number | null;
 };
 
 type Order = {
@@ -193,6 +203,13 @@ export default function OrdersPage() {
                                 {item.quantity} × S/ {formatMoney(item.price)}
                                 {item.product.slug ? null : " · Ya no se vende en la tienda"}
                               </p>
+                              {item.lead_time_days !== undefined ? (
+                                <p className="mt-1 text-xs" data-testid="order-item-supply">
+                                  <span className="font-semibold text-warning">
+                                    Bajo pedido — {deliveryDaysText(item.lead_time_days, { estimated: true })}
+                                  </span>
+                                </p>
+                              ) : null}
                             </div>
                             <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                               S/ {formatMoney(Number(item.price) * item.quantity)}
