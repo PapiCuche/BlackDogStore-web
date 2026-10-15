@@ -76,6 +76,8 @@ class OrderItemInline(admin.TabularInline):
     readonly_fields = (
         'product', 'quantity', 'price',
         'unit_cost', 'cost_source', 'unit_price_net', 'discount_net', 'net_amount',
+        # DC3 — frozen at checkout; moved only by supply_services.
+        'supply_origin', 'supplier_offer', 'lead_time_days', 'supply_status', 'supply_note',
     )
 
     def has_add_permission(self, request, obj=None):
@@ -828,3 +830,33 @@ class FiscalDocumentAdmin(admin.ModelAdmin):
         # Borrar un comprobante emitido deja un hueco en la numeración que ante
         # SUNAT no se puede explicar.
         return False
+
+
+
+# DC3 — suppliers and their offers are written by `supply_services` (validation,
+# audit, the committed quantity under lock). Here they are read only.
+from .models import Supplier, SupplierOffer  # noqa: E402
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display = ('id', 'company', 'name', 'document_number', 'is_active')
+    list_filter = ('company', 'is_active')
+    search_fields = ('name', 'document_number')
+
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SupplierOffer)
+class SupplierOfferAdmin(SupplierAdmin):
+    list_display = ('id', 'company', 'supplier', 'product', 'commercial_price', 'confirmed_quantity',
+                    'committed_quantity', 'valid_from', 'valid_until', 'is_active')
+    list_filter = ('company', 'is_active')
+    search_fields = ('supplier__name', 'product__name')
