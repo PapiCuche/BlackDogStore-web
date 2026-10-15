@@ -1004,23 +1004,24 @@ class SupersededOrderTest(SaleShop, TestCase):
         self.first = self.checkout()
         self.second = self.checkout()
 
-    def test_the_first_order_cannot_open_a_payment_nor_sell_the_device(self):
+    def test_the_first_order_cannot_open_a_payment_while_the_later_one_may_be_paid(self):
         self.used_a.refresh_from_db()
         self.assertEqual(self.used_a.hold_order_id, self.second.pk)
         with self.assertRaises(checkout.CheckoutError) as caught:
             checkout.start_payment_attempt(self.first, credentials=None)
         self.assertEqual((caught.exception.code, caught.exception.status_code), ('order_superseded', 409))
+
+    def test_the_later_order_paid_first_keeps_the_device(self):
+        self.pay(self.second)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.second.pk))
         # A form of the first order that was already open is paid anyway: the device does not go.
         self.pay(self.first)
         self.first.refresh_from_db()
         self.assertIn(f'#{self.second.pk}', self.first.payment_error)
-        self.used_a.refresh_from_db()
-        self.assertEqual(self.used_a.status, 'reserved')
         self.assertFalse(StockMovement.objects.filter(order=self.first, movement_type='sale_exit').exists())
-        # The later order sells it.
-        self.pay(self.second)
         self.used_a.refresh_from_db()
-        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.second.pk))
+        self.assertEqual(self.used_a.order_id, self.second.pk)
         self.assertEqual(self.shelf(self.used128), self.available(self.used128))
 
     def test_a_later_order_that_failed_does_not_take_the_device_from_the_first(self):
@@ -1028,6 +1029,27 @@ class SupersededOrderTest(SaleShop, TestCase):
         self.pay(self.first)
         self.used_a.refresh_from_db()
         self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.first.pk))
+
+    def test_once_the_first_order_is_paid_it_wins_over_a_later_one_never_paid(self):
+        """DC2 second review (P2): a PAID order wins; the later pending one is the superseded one."""
+        self.pay(self.first)
+        self.first.refresh_from_db()
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.first.pk))
+        self.assertEqual(self.first.payment_error, '')
+        self.assertTrue(StockMovement.objects.filter(order=self.first, movement_type='sale_exit').exists())
+        # The later order is the one that cannot be charged now…
+        with self.assertRaises(checkout.CheckoutError) as caught:
+            checkout.start_payment_attempt(self.second, credentials=None)
+        self.assertEqual(caught.exception.code, 'order_superseded')
+        self.assertIn(f'#{self.first.pk}', caught.exception.detail)
+        # …and a form of it that was already open, paid anyway, does not sell the device again.
+        self.pay(self.second)
+        self.second.refresh_from_db()
+        self.assertIn(f'#{self.first.pk}', self.second.payment_error)
+        self.used_a.refresh_from_db()
+        self.assertEqual(self.used_a.order_id, self.first.pk)
+        self.assertEqual(self.shelf(self.used128), self.available(self.used128))
 
 
 class OldProductFilesTest(DeviceShop, TestCase):

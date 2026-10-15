@@ -405,18 +405,25 @@ def bind_to_order(units, order, session_key) -> None:
         )
 
 
-def superseded_lines(order) -> dict:
+def superseded_lines(order, *, selling: bool = False) -> dict:
     """
-    The device lines of `order` that a LATER checkout of the same cart took:
-    {stock unit id: the later order}. Empty for anything else.
+    The device lines of `order` that another checkout of the same cart took:
+    {stock unit id: that order}. Empty for anything else.
 
-    One cart, two checkouts (two tabs, a retry): the second order binds the
-    same devices, and the first must not be able to sell them too — that is
-    one device and two payments. The later order wins while it may still be
-    paid or was paid; a later order that failed or was cancelled takes
-    nothing from the first. Derived from the order lines, so it survives the
-    hold running out and going back to the shelf.
+    One cart, two checkouts (two tabs, a retry): both orders name the same
+    devices, and only one of them may sell each — one device, one payment.
+    Derived from the order lines, so it survives the hold running out.
+
+      * A PAID order wins, earlier or later: its payment sold the device.
+      * While none is paid, the LATER order is the one that may open a
+        payment; a later order that failed or was cancelled takes nothing.
+      * `selling=True` — this order's payment arrived (its form was already
+        open). Only a PAID order takes the device from it: money in hand wins
+        over an order that may never be paid (DC2 second review, P2), and the
+        later pending order is the superseded one from then on.
     """
+    from django.db.models import Q
+
     from .models import OrderItem
 
     if not order.cart_session_key:
@@ -424,15 +431,18 @@ def superseded_lines(order) -> dict:
     mine = list(order.items.exclude(stock_unit=None).values_list('stock_unit_id', flat=True))
     if not mine:
         return {}
-    later = (
+    winners = Q(order__status=Order.Status.PAID)
+    if not selling:
+        winners |= Q(order__pk__gt=order.pk, order__status=Order.Status.PENDING_PAYMENT)
+    others = (
         OrderItem.objects.filter(
             stock_unit_id__in=mine, order__company_id=order.company_id,
-            order__cart_session_key=order.cart_session_key, order__pk__gt=order.pk,
-            order__status__in=(Order.Status.PENDING_PAYMENT, Order.Status.PAID),
+            order__cart_session_key=order.cart_session_key,
         )
+        .exclude(order__pk=order.pk).filter(winners)
         .select_related('order').order_by('order_id')
     )
-    return {item.stock_unit_id: item.order for item in later}
+    return {item.stock_unit_id: item.order for item in others}
 
 
 def holds_by_product(session_key, company) -> dict:

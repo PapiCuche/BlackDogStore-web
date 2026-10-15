@@ -720,11 +720,13 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None):
     product = items[0].product
     _locked_branch_stocks(branch, [product])
     buyer_key = unit_hold_services.key_of(order.cart_session_key) if order.cart_session_key else None
-    superseded = unit_hold_services.superseded_lines(order)
+    # Only a PAID order of the same cart takes a device from this payment: a
+    # later order that may never be paid loses it to money in hand.
+    superseded = unit_hold_services.superseded_lines(order, selling=True)
     sellable = []
     for item in items:
         if item.stock_unit_id in superseded:
-            # The same cart checked out again: the device is that order's.
+            # The same cart checked out again and that order was paid: the device is its.
             _flag_stock_shortfall(
                 order, None,
                 f'El equipo elegido de "{product.name}" pasó al pedido #{superseded[item.stock_unit_id].pk} '
