@@ -45,6 +45,12 @@ PRODUCT_TEMPLATE_HEADERS = [
     # DC1. Optional; read as `Product.reference_cost`. Last, so files made with
     # the previous template keep every other column where it was.
     'Costo de referencia',
+    # DC2. Optional, after everything else for the same reason: which model the
+    # product is a variant of, its options and its line.
+    'Modelo',
+    'Capacidad',
+    'Color',
+    'Línea',
 ]
 
 #: IMPORT-SPLIT-01 — the template is ONE sheet: these headers and nothing under
@@ -330,6 +336,13 @@ def _product_header_notes() -> dict:
             'Opcional. Lo que esperas pagar por una unidad, sin IGV, con punto decimal: 85.50. Sólo se usa '
             'cuando una sucursal todavía no tiene costo promedio. Vacío: no cambia el que hay.'
         ),
+        'Modelo': (
+            'Opcional. El modelo del catálogo de equipos del que este producto es una variante, tal como se '
+            'llama en Catálogo › Modelos. Vacío: el producto no cambia de modelo.'
+        ),
+        'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe (por ejemplo «256 GB»).',
+        'Color': 'Opcional, con «Modelo»: una opción de color que ya existe.',
+        'Línea': 'Opcional, con «Modelo»: «Nuevo» o «Seminuevo». Vacío = Nuevo.',
     }
 
 

@@ -30,7 +30,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import stock_unit_services, xlsx_reader
+from . import device_catalog, stock_unit_services, xlsx_reader
 from .import_exports import _autosize, _header_row, _workbook, report_sheet_refusal
 from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
@@ -47,7 +47,9 @@ HELP_SHEET = 'Instrucciones'
 MAX_UNITS = 1000
 
 HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
-           'Motivo / referencia']
+           'Motivo / referencia',
+           # DC2 — optional, after everything else so older files keep their columns.
+           'Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético', 'Batería %', 'Precio de venta']
 
 #: field -> the headers it answers to, already folded by `normalize_header`.
 _ALIASES = {
@@ -62,6 +64,16 @@ _ALIASES = {
     'cost': ('costo', 'costo unitario', 'costo de compra'),
     'reason': ('motivo referencia', 'motivo', 'referencia', 'documento', 'motivo o documento de ingreso',
                'documento de ingreso'),
+    # DC2. «Modelo» is ALSO a heading of the product name in older files: when
+    # it is the only one, it stays the name (and is tried as a model only if
+    # no product has that name).
+    'model': ('modelo', 'modelo catalogo'),
+    'capacity': ('capacidad', 'almacenamiento'),
+    'colour': ('color', 'colour'),
+    'line': ('linea', 'linea nuevo seminuevo', 'linea nuevo o seminuevo'),
+    'grade': ('estado estetico', 'estado cosmetico', 'grado estetico'),
+    'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
+    'sale_price': ('precio de venta', 'precio venta'),
 }
 #: A header that says HOW MANY refuses the file: «Cantidad», «Cantidad inicial»,
 #: «Stock inicial - Almacén 1», «Nº de unidades». What counts stock is decided in
@@ -116,6 +128,19 @@ def _header_notes() -> dict:
             'El documento con el que entró: factura de compra, guía, inventario inicial. '
             'Queda en el Kardex de cada equipo.'
         ),
+        'Modelo': (
+            'Opcional. En vez de «Código» o «Producto»: el modelo del catálogo de equipos, con «Capacidad», '
+            '«Color» y «Línea», dice de qué variante es el equipo.'
+        ),
+        'Capacidad': 'Opcional, con «Modelo»: una opción que ya existe (por ejemplo «128 GB»).',
+        'Color': 'Opcional, con «Modelo»: una opción de color que ya existe.',
+        'Línea': 'Opcional: «Nuevo» o «Seminuevo». Vacío = Nuevo.',
+        'Estado estético': 'Opcional, para seminuevos: uno de los estados de la escala de la empresa.',
+        'Batería %': 'Opcional: la salud de la batería MEDIDA, de 0 a 100. Vacío = «no informado».',
+        'Precio de venta': (
+            'Sólo para seminuevos: el precio de ESTE equipo en la tienda. Un seminuevo sin precio no se '
+            'ofrece en línea. Un equipo nuevo se vende al precio de su variante.'
+        ),
     }
 
 
@@ -141,10 +166,11 @@ def template_bytes(branches=()) -> bytes:
     _header_row(sheet, HEADERS)
     header_notes(sheet, _header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48])
+    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 16, 20, 14, 18])
     text_columns(sheet, ('A', 'D', 'E', 'F'))
 
-    number_columns(sheet, ('H',))
+    number_columns(sheet, ('H', 'O', 'P'))
+    add_cell_list(sheet, 'M', cell_list(['Nuevo', 'Seminuevo']))
     add_cell_list(sheet, 'C', cell_list(branches))
     add_cell_list(sheet, 'G', cell_list(label for _value, label in StockUnit.Condition.choices))
 
@@ -172,6 +198,8 @@ def _columns(headers) -> dict[str, int]:
         )
     if 'code' not in columns and 'name' not in columns:
         raise UnitImportError('No se encontró la columna «Código» ni «Producto».')
+    # An older file that heads the product name «Modelo» maps it to both: the
+    # name is tried first, as it always was.
     extra = sorted({str(headers[i]) for i, key in enumerate(folded) if counts_stock(key)})
     if extra:
         raise UnitImportError(
@@ -293,6 +321,24 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         product_id, match_error, _matched_by, match_warnings = index.match(
             code=fields['code'], name=fields['name'],
         )
+        # DC2 — no product by code or name, and the row names a model: the
+        # variant of that model with these options in that line.
+        if (product_id is None or match_error) and fields['model']:
+            try:
+                spec = device_catalog.resolve_variant_spec(
+                    company, model_name=fields['model'], line_text=fields['line'],
+                    labels=[fields['capacity'], fields['colour']],
+                )
+            except device_catalog.CatalogError as exc:
+                if not match_error:
+                    match_error = str(exc)
+            else:
+                variant = device_catalog.find_variant(company, spec)
+                if variant is None:
+                    match_error = (f'«{spec["model_name"]}» no tiene esa variante. '
+                                   f'Créala en Catálogo › Modelos.')
+                else:
+                    product_id, match_error, match_warnings = variant.pk, None, []
         warnings.extend(match_warnings)
         product = products.get(product_id)
         if match_error:
@@ -339,12 +385,28 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 labels = ', '.join(label for _value, label in StockUnit.Condition.choices)
                 errors.append(f'Condición desconocida: «{fields["condition"][:40]}». Usa {labels}.')
 
+        if product is not None and fields['line']:
+            try:
+                wanted_line = device_catalog.clean_line(fields['line'])
+            except device_catalog.CatalogError as exc:
+                errors.append(str(exc))
+            else:
+                if wanted_line != product.condition_line:
+                    errors.append(f'«{product.name}» no es de la línea «{fields["line"][:20]}».')
+        sale_price = fields['sale_price']
+        if sale_price and product is not None and product.condition_line != 'used':
+            warnings.append('Precio de venta ignorado: un equipo nuevo se vende al precio de su variante.')
+            sale_price = ''
+
         cleaned = None
         if product is not None:
             try:
                 cleaned = stock_unit_services.clean_unit(product, {
                     'serial_number': fields['serial_number'], 'imei': fields['imei'], 'imei2': fields['imei2'],
                     'condition': condition or StockUnit.Condition.NEW, 'cost': fields['cost'],
+                    # DC2 — optional; cleaned by the same rules as the screen.
+                    'battery_health': fields['battery'], 'cosmetic_grade': fields['grade'],
+                    'sale_price': sale_price,
                 })
             except stock_unit_services.StockUnitError as exc:
                 errors.append(str(exc))
@@ -387,6 +449,13 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 imei2=cleaned['imei2'] or '', condition=cleaned['condition'],
                 cost=str(cleaned['cost']) if cleaned['cost'] is not None else '',
             )
+            if 'battery_health' in cleaned:
+                data['battery_health'] = cleaned['battery_health']
+            if cleaned.get('cosmetic_grade') is not None:
+                data['cosmetic_grade'] = cleaned['cosmetic_grade'].pk
+                data['cosmetic_grade_label'] = cleaned['cosmetic_grade'].label
+            if cleaned.get('sale_price') is not None:
+                data['sale_price'] = str(cleaned['sale_price'])
         else:
             data.update(serial_number=fields['serial_number'][:64])
 
@@ -483,6 +552,10 @@ def apply_units(*, job, actor, request=None):
                         'serial_number': data(row).get('serial_number'), 'imei': data(row).get('imei'),
                         'imei2': data(row).get('imei2'), 'condition': data(row).get('condition'),
                         'cost': data(row).get('cost'),
+                        # DC2 — absent keys in a job staged before them: nothing.
+                        'battery_health': data(row).get('battery_health'),
+                        'cosmetic_grade': data(row).get('cosmetic_grade'),
+                        'sale_price': data(row).get('sale_price'),
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=StockMovement.PURCHASE_ENTRY, request=request,
                 )

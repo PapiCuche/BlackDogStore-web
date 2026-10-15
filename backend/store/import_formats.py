@@ -94,6 +94,19 @@ PRODUCT_FIELDS = {
     'identifier':  {'label': 'Identificador (de un archivo descargado)', 'required': False},
     # DC1: el costo de referencia del catálogo. Vacío no borra el que hay.
     'reference_cost': {'label': 'Costo de referencia', 'required': False},
+    # DC2: de qué modelo es variante el producto. Sin «Modelo», las otras tres no se usan.
+    'model':       {'label': 'Modelo (catálogo de equipos)', 'required': False},
+    'capacity':    {'label': 'Capacidad', 'required': False},
+    'colour':      {'label': 'Color', 'required': False},
+    'line':        {'label': 'Línea (nuevo o seminuevo)', 'required': False},
+}
+
+#: DC2 — the variant columns, folded. Looked for by header like the cost.
+VARIANT_HEADERS = {
+    'model': ('modelo', 'modelo catalogo'),
+    'capacity': ('capacidad', 'almacenamiento'),
+    'colour': ('color', 'colour'),
+    'line': ('linea', 'linea nuevo seminuevo', 'linea nuevo o seminuevo'),
 }
 
 #: DC1 — the headers that ARE a cost column, already folded by `normalize_header`.
@@ -342,6 +355,10 @@ def _preset_products_platform():
             'is_active': 'estado',
             'identifier': 'identificador',
             'reference_cost': ('costo de referencia', 'costo referencia'),
+            'model': VARIANT_HEADERS['model'],
+            'capacity': VARIANT_HEADERS['capacity'],
+            'colour': VARIANT_HEADERS['colour'],
+            'line': VARIANT_HEADERS['line'],
         },
         'notes': [],
     }

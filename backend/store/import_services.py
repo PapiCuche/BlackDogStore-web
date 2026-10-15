@@ -555,6 +555,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             headers, import_formats.REFERENCE_COST_HEADERS, taken=mapping.values())
         if found is not None:
             mapping['reference_cost'] = found
+    # DC2 — and for the variant columns.
+    for field, wanted in import_formats.VARIANT_HEADERS.items():
+        if field not in mapping:
+            found = import_formats.find_column(headers, wanted, taken=mapping.values())
+            if found is not None:
+                mapping[field] = found
 
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
@@ -593,6 +599,7 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     seen_barcodes: dict[str, int] = {}
     seen_names: dict[str, int] = {}
     seen_identified: dict[int, int] = {}
+    seen_variants: dict[tuple, int] = {}
 
     for row_number, values, numeric_columns in rows:
         if not values:
@@ -859,6 +866,34 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 # (stripped from the job for anybody else, `import_views`).
                 normalized['reference_cost_before'] = str(before) if before is not None else ''
                 warnings.append(f'Costo de referencia: pasa a {reference_cost}.')
+
+        # DC2 — «Modelo» (+ «Capacidad», «Color», «Línea»): this product is
+        # that variant. Checked now so apply cannot fail on it; without
+        # «Modelo» the other three are not read and nothing changes.
+        model_name = fields.get('model', '') if 'model' in mapping else ''
+        if model_name:
+            from . import device_catalog
+
+            try:
+                spec = device_catalog.resolve_variant_spec(
+                    company, model_name=model_name, line_text=fields.get('line', ''),
+                    labels=[fields.get('capacity', ''), fields.get('colour', '')],
+                )
+            except device_catalog.CatalogError as exc:
+                errors.append(str(exc))
+            else:
+                holder = device_catalog.find_variant(company, spec)
+                key = (spec['model_id'], spec['condition_line'], spec['variant_key'])
+                if holder is not None and holder.pk != product_id:
+                    errors.append(f'«{holder.name}» ya es esa variante de «{spec["model_name"]}».')
+                elif key in seen_variants:
+                    errors.append(f'Otra fila ({seen_variants[key]}) ya es esa variante.')
+                else:
+                    seen_variants[key] = row_number
+                    normalized['variant'] = {
+                        'model_id': spec['model_id'], 'condition_line': spec['condition_line'],
+                        'option_ids': spec['option_ids'],
+                    }
 
         if errors:
             action = BulkImportRow.ERROR
@@ -1206,6 +1241,30 @@ def apply_products(*, job, actor):
 
         if data.get('publication_refused'):
             not_published += 1
+
+        # DC2 — the variant the preview approved. A product that already is
+        # exactly that variant is left alone.
+        wanted_variant = data.get('variant')
+        if wanted_variant:
+            from . import device_catalog
+
+            current = (product.product_model_id, product.condition_line, product.variant_key)
+            target = (wanted_variant['model_id'], wanted_variant['condition_line'],
+                      device_catalog.variant_key(wanted_variant['option_ids']))
+            if current != target:
+                try:
+                    device_catalog.set_variant(
+                        product, model_id=wanted_variant['model_id'],
+                        condition_line=wanted_variant['condition_line'],
+                        option_ids=wanted_variant['option_ids'], actor=actor,
+                    )
+                except device_catalog.CatalogError as exc:
+                    raise ImportError_(
+                        f'Fila {row.row_number}: {exc} Vuelve a subir el archivo.'
+                    ) from None
+                if not counted:
+                    updated += 1
+                    counted = True
 
         placed = _place_row_images(row, product, data.get('images') or [], actor)
         images_added += placed
