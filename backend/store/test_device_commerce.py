@@ -1099,3 +1099,35 @@ class RollbackCommandsTest(SaleShop, TestCase):
                                                      target_id=str(self.order.pk)).exists())
         # Its device is no longer kept for it: the buyer's cart may drop it.
         self.assertEqual(holds.release(company=self.company, session_key='carrito-a'), 1)
+
+
+class TillReleaseTest(SaleShop, TestCase):
+    """The till may take back an abandoned web hold — audited — but not one a buyer is paying for."""
+
+    def release(self, unit):
+        return _client(self.staff).post(f'/api/admin/inventory/units/{unit.pk}/release/', {}, format='json')
+
+    def test_a_cart_hold_is_released_by_staff_with_its_trace(self):
+        from store.models import AdminAuditLog
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        self.assertEqual(self.release(self.used_a).status_code, 200)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.hold_key, self.used_a.hold_origin), ('available', '', ''))
+        log = AdminAuditLog.objects.filter(action='stock_unit_released', target_id=str(self.used_a.pk)).get()
+        self.assertEqual(log.actor_id, self.staff.pk)
+        entry = StockMovement.objects.filter(product=self.used128, movement_type='manual_entry').latest('pk')
+        self.assertEqual(entry.metadata.get('web_hold'), True)
+
+    def test_a_hold_whose_order_may_still_be_paid_is_not_taken_from_the_buyer(self):
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        order = self.checkout()
+        refused = self.release(self.used_a)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('pagando', refused.json()['detail'])
+        self.used_a.refresh_from_db()
+        self.assertEqual(self.used_a.status, 'reserved')
+        # Once that order cannot be paid any more, the till may take it.
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.FAILED)
+        self.assertEqual(self.release(self.used_a).status_code, 200)

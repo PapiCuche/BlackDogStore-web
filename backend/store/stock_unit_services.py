@@ -368,11 +368,34 @@ def reserve(unit, *, reason, actor=None, request=None) -> StockUnit:
 
 @transaction.atomic
 def release(unit, *, actor=None, request=None) -> StockUnit:
-    # A web hold freed by staff is freed for good: its buyer no longer holds it.
+    """
+    A reservation ends: the device is back on the shelf.
+
+    DC2 review — a WEB hold too, so the till can sell a device a cart left
+    behind: freed for good (its buyer no longer holds it), with the staff
+    member in the audit row and the hold it was in the Kardex line. Not while
+    an order that may still be paid carries it and its time has not run out:
+    that buyer may be paying right now. Shelf first, then the device — the
+    module's one lock order — so the answer is read under the lock.
+    """
+    from . import inventory_services, unit_hold_services
+
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
+    current = StockUnit.objects.select_for_update().get(pk=unit.pk)
+    metadata = None
+    if current.status == StockUnit.Status.RESERVED and current.hold_key:
+        if (current.hold_order_id and current.hold_until and current.hold_until > timezone.now()
+                and unit_hold_services._order_is_live(current.hold_order_id)):
+            raise StockUnitError(
+                'Un comprador está pagando este equipo en la web (pedido '
+                f'#{current.hold_order_id}). Podrás liberarlo cuando ese pago venza.',
+                field='status',
+            )
+        metadata = {'web_hold': True, 'hold_order_id': current.hold_order_id}
     return _move(
         unit, expected=StockUnit.Status.RESERVED, to_status=StockUnit.Status.AVAILABLE,
         movement_type=StockMovement.MANUAL_ENTRY, reason='Apartado liberado',
-        actor=actor, action='stock_unit_released', request=request,
+        actor=actor, action='stock_unit_released', request=request, metadata=metadata,
         extra_fields={'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None,
                       'hold_origin': '', 'hold_started_at': None},
     )
