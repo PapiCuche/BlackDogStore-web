@@ -761,3 +761,60 @@ class AdminOrderSupplyApiTest(SupplyShop, TestCase):
         self.assertEqual(client.post(url, {'reason': 'x'}, format='json').status_code, 404)
         self.line.refresh_from_db()
         self.assertEqual(self.line.supply_status, 'to_confirm')
+
+
+# ---------------------------------------------------------------------------
+# The till
+# ---------------------------------------------------------------------------
+
+class PosOnOrderTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+        self.cashier, _ = _p2d_member(self.company, 'dc3_cajero', ['company.view', 'sales.pos.use'])
+
+    def sell(self, items):
+        from store.tests import _c1_sale
+        order, _created = _c1_sale(actor=self.cashier, company=self.company, branch=self.branch, items=items)
+        return order
+
+    def test_a_till_sale_on_order_commits_the_offer_and_hands_nothing_over(self):
+        order = self.sell([{'product': self.case.pk, 'quantity': 2, 'on_order': True}])
+        self.assertEqual((order.status, order.total), (Order.Status.PAID, D('220.00')))
+        self.assertNotEqual(order.fulfillment_status, Order.FulfillmentStatus.DELIVERED)
+        line = order.items.get()
+        self.assertEqual((line.supply_origin, line.supply_status, line.lead_time_days, line.price, line.unit_cost),
+                         ('supplier', 'pending', 4, D('110.00'), D('70.0000')))
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 2)
+        self.assertFalse(StockMovement.objects.filter(product=self.case).exists())
+
+    def test_the_till_cannot_sell_on_order_without_an_offer_or_out_of_stock_without_asking(self):
+        from store.pos_services import PosValidationError
+        with self.assertRaises(inventory.InsufficientStockError):
+            self.sell([{'product': self.case.pk, 'quantity': 1}])                    # stock 0, not on order
+        with self.assertRaises(PosValidationError):
+            self.sell([{'product': self.case.pk, 'quantity': 6, 'on_order': True}])  # offer has 5
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_until=today() - timedelta(days=1),
+                                                              valid_from=today() - timedelta(days=3))
+        with self.assertRaises(PosValidationError):
+            self.sell([{'product': self.case.pk, 'quantity': 1, 'on_order': True}])
+        self.assertFalse(Order.objects.exists())
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 0)
+
+    def test_one_product_is_never_half_shelf_half_order_at_the_till(self):
+        from store.pos_services import PosValidationError
+        self.stock(self.case, 1)
+        with self.assertRaises(PosValidationError):
+            self.sell([{'product': self.case.pk, 'quantity': 1},
+                       {'product': self.case.pk, 'quantity': 1, 'on_order': True}])
+
+    def test_the_till_shows_lead_time_and_on_order_price(self):
+        from store import pos_payloads, pos_services
+        self.assertEqual(pos_payloads.product_payload(self.case, self.branch)['on_order'],
+                         {'lead_time_days': 4, 'price': '110.00'})
+        priced = pos_services.build_pos_sale(
+            operator=self.cashier, company=self.company, branch=self.branch,
+            items=[{'product': self.case.pk, 'quantity': 1, 'on_order': True}], validate_cash=False)
+        line = pos_payloads.preview_payload(priced, may_see_commission=False)['lines'][0]
+        self.assertEqual((line['price'], line['on_order'], line['lead_time_days']), ('110.00', True, 4))

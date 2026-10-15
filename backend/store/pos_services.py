@@ -259,6 +259,9 @@ def normalize_items(raw_items) -> list[dict]:
     # Kept per product, like the quantity, so two lines of one product are one
     # line with both devices.
     devices: dict[int, dict[int, str]] = {}
+    # DC3 — the products sold «bajo pedido». A product is all shelf or all
+    # order in one sale: two lines that disagree are refused, not merged.
+    on_order: dict[int, bool] = {}
     for entry in raw_items:
         if not isinstance(entry, dict):
             raise PosValidationError('Formato de línea inválido.')
@@ -267,6 +270,10 @@ def normalize_items(raw_items) -> list[dict]:
             quantity = int(entry.get('quantity', 1))
         except (TypeError, ValueError):
             raise PosValidationError('Producto o cantidad inválidos.')
+        asked = entry.get('on_order') in (True, 'true', '1', 1)
+        if on_order.setdefault(product_id, asked) != asked:
+            raise PosValidationError(
+                'Un producto se vende del stock o bajo pedido, no las dos cosas en la misma venta.')
         for unit in _line_units(entry.get('units')):
             if unit['id'] in devices.setdefault(product_id, {}):
                 raise PosValidationError('El mismo equipo está dos veces en la venta.')
@@ -288,7 +295,9 @@ def normalize_items(raw_items) -> list[dict]:
     return [
         {'product': pid, 'quantity': qty, 'units': [
             {'id': unit_id, 'method': method} for unit_id, method in sorted(devices.get(pid, {}).items())
-        ]}
+        ],
+         # Only when asked: a basket without it hashes exactly as before DC3.
+         **({'on_order': True} if on_order.get(pid) else {})}
         for pid, qty in sorted(merged.items())
     ]
 
@@ -331,6 +340,11 @@ def check_line_units(products, items) -> None:
     for entry in items:
         product = products[entry['product']]
         named = len(entry.get('units') or [])
+        if entry.get('on_order'):
+            # DC3 — no device exists yet: it is named when it is received.
+            if named:
+                raise PosValidationError(f'«{product.name}» bajo pedido no lleva equipos: se identifican al recibirlo.')
+            continue
         if product.is_serialized and named != entry['quantity']:
             raise PosValidationError(
                 f'Identifica el equipo: «{product.name}» se vende por su IMEI o serie. '
@@ -591,7 +605,7 @@ def commission_rate_for(company, seller) -> Decimal:
     return Decimal(membership.commission_rate_percent or 0)
 
 
-def calculate_pos_totals(company, products, items, *, discount) -> dict:
+def calculate_pos_totals(company, products, items, *, discount, prices=None) -> dict:
     """
     Subtotal, discount and total — computed HERE and nowhere else.
 
@@ -603,7 +617,8 @@ def calculate_pos_totals(company, products, items, *, discount) -> dict:
     lines = []
     for entry in items:
         product = products[entry['product']]
-        unit_price = Decimal(str(product.price))
+        # DC3 — a line on order is charged at its offer's commercial price.
+        unit_price = Decimal(str((prices or {}).get(product.pk, product.price)))
         quantity = entry['quantity']
         subtotal += unit_price * quantity
         lines.append((product, quantity, unit_price))
@@ -940,8 +955,26 @@ def build_pos_sale(
         company, operator, seller_id, may_assign=may_assign_seller, branch=branch,
     )
 
+    # DC3 — the lines sold «bajo pedido»: each needs a valid offer covering it
+    # NOW, and is charged at that offer's price. Committed with the sale.
+    from . import supply_services
+
+    offers = {}
+    for entry in items:
+        if not entry.get('on_order'):
+            continue
+        product = products[entry['product']]
+        offer = supply_services.offer_for_line(product, entry['quantity'])
+        if offer is None:
+            raise PosValidationError(
+                f'«{product.name}» no se puede vender bajo pedido: no hay una oferta de proveedor vigente '
+                f'que cubra {entry["quantity"]}.')
+        offers[product.pk] = offer
+    prices = {pid: Decimal(str(offers[pid].commercial_price if pid in offers else p.price))
+              for pid, p in products.items()}
+
     subtotal = _money(sum(
-        (Decimal(str(products[e['product']].price)) * e['quantity'] for e in items),
+        (prices[e['product']] * e['quantity'] for e in items),
         Decimal('0.00'),
     ))
 
@@ -950,7 +983,6 @@ def build_pos_sale(
     # either qualifies or it does not.
     from . import promotion_services
 
-    prices = {pid: Decimal(str(p.price)) for pid, p in products.items()}
     promo = promotion_services.evaluate(company, branch, items, prices)
 
     asked_for_other_discount = bool(
@@ -984,7 +1016,7 @@ def build_pos_sale(
             may_apply_manual=may_apply_manual_discount,
         )
 
-    totals = calculate_pos_totals(company, products, items, discount=discount)
+    totals = calculate_pos_totals(company, products, items, discount=discount, prices=prices)
     commission = calculate_commission(
         commission_rate_for(company, seller),
         subtotal=totals['subtotal'], discount=totals['discount_amount'],
@@ -1008,6 +1040,7 @@ def build_pos_sale(
         'amount_received': received,
         'change_amount': change,
         'payment_method': payment_method,
+        'offers': offers,
         **totals,
     }
 
@@ -1179,8 +1212,10 @@ def create_pos_sale(
         paid_at=now,
         # DELIVERED, because the customer is holding the goods. Leaving a
         # counter sale "pending fulfilment" would fill the dispatch queue with
-        # work that was finished before the screen refreshed.
-        fulfillment_status=Order.FulfillmentStatus.DELIVERED,
+        # work that was finished before the screen refreshed. DC3: unless a
+        # line is on order — those goods are not here yet.
+        fulfillment_status=(Order.FulfillmentStatus.PENDING if priced['offers']
+                            else Order.FulfillmentStatus.DELIVERED),
         accepted_terms=True,
         accepted_warranty_policy=True,
     )
@@ -1205,8 +1240,13 @@ def create_pos_sale(
             raise PosIdempotencyConflict(existing)
         return existing, False
 
+    from . import supply_services
+
     OrderItem.objects.bulk_create([
-        OrderItem(order=order, product=product, quantity=quantity, price=unit_price)
+        OrderItem(order=order, product=product, quantity=quantity, price=unit_price,
+                  # DC3 — origin, offer, lead time and agreed cost, frozen with the sale.
+                  **(supply_services.line_snapshot(priced['offers'][product.pk])
+                     if product.pk in priced['offers'] else {}))
         for product, quantity, unit_price in priced['lines']
     ])
 
