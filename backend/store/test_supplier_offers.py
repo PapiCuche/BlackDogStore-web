@@ -965,3 +965,30 @@ class OfferExcelTest(SupplyShop, TestCase):
                                          'Vigente hasta': self.offer.valid_until.isoformat(),
                                          'Cantidad confirmada': 3})]).json()
         self.assertEqual(body['rows'][0]['action'], 'error')
+
+
+class ExpiryCommandTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+
+    def run_command(self):
+        import io
+        from django.core.management import call_command
+        out = io.StringIO()
+        call_command('expire_supplier_offers', stdout=out)
+        return out.getvalue()
+
+    def test_expired_offers_are_switched_off_once_audited_and_commitments_stay(self):
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.pay(order)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=today() - timedelta(days=9),
+                                                              valid_until=today() - timedelta(days=1))
+        current = self.make_offer()
+        self.assertIn('1', self.run_command())
+        self.offer.refresh_from_db()
+        current.refresh_from_db()
+        self.assertEqual((self.offer.is_active, self.offer.committed_quantity, current.is_active), (False, 2, True))
+        self.assertEqual(order.items.get().supply_status, 'pending')
+        self.assertIn('0', self.run_command())                        # idempotent
+        self.assertEqual(AdminAuditLog.objects.filter(action='supplier_offer_expired').count(), 1)

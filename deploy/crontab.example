@@ -48,6 +48,12 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 # LÍNEA: esa versión no tiene este comando (docs/despliegue-produccion.md §7).
 */5 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py release_expired_unit_holds >> backups/release_expired_unit_holds.log 2>&1
 
+# DC3: ofertas de proveedor cuya vigencia terminó, desactivadas (con su línea de
+# auditoría). La tienda ya no vende contra ellas aunque esto no corra; sólo
+# ordena el panel. Una vez por hora. SI SE VUELVE A UNA VERSIÓN ANTERIOR A DC3,
+# QUITA ESTA LÍNEA: esa versión no tiene este comando (docs/despliegue-produccion.md §7).
+17 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py expire_supplier_offers >> backups/expire_supplier_offers.log 2>&1
+
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
 # minutos. No imprime nada si todo está bien; si algo necesita atención lo
 # escribe (y cron lo envía a MAILTO). El registro completo queda en el archivo.
