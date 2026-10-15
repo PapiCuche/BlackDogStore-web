@@ -33,18 +33,25 @@ from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework.test import APIClient
 
-from store import import_exports, inventory_exports, stock_unit_services, unit_import_services, xlsx_reader
-from store.models import (
-    AdminAuditLog, BranchStock, BulkImportJob, Category, Order, Product, ProductBarcode,
-    StockMovement, StockUnit,
+from store import (
+    device_catalog, import_exports, inventory_exports, stock_unit_services, unit_import_services, xlsx_reader,
 )
-from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, IMEI_D
+from store.models import (
+    AdminAuditLog, BranchStock, BulkImportJob, Category, CosmeticGrade, Order, Product, ProductBarcode,
+    ProductVariantOption, StockMovement, StockUnit,
+)
+from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, IMEI_D, imei
 from store.tests import _p2d_branch, _p2d_member, _p2d_stock, _p3_company
 
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 PICTURE = 'https://imagenes.example.test/producto.png'
 
 ALL = ['company.view', 'products.view', 'products.manage', 'inventory.view', 'inventory.adjust', 'costs.view']
+#: The product template's width. DC2 grew it («Modelo», «Capacidad», «Color»,
+#: «Línea»): «Estado» and «Identificador» come right after it.
+T = len(import_exports.PRODUCT_TEMPLATE_HEADERS)
+#: «Modelo», «Capacidad», «Color», «Línea» of a product that is no variant.
+NO_VARIANT = [None, None, None, None]
 
 
 def url(kind, **query):
@@ -458,15 +465,18 @@ class ProductsExportTest(_Base):
 
         self.assertEqual(title, 'Productos')
         # DC1: «Costo de referencia» is the template's tenth column (empty here: none set).
-        self.assertEqual(headers[:11], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
-        self.assertEqual(headers[11:], ['Identificador'])
-        self.assertEqual([row[:11] for row in rows], [
-            [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', None, 'Inactivo'],
-            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', None, 'Activo'],
+        # DC2: then «Modelo», «Capacidad», «Color», «Línea» (empty here: no variants).
+        self.assertEqual(headers[:T + 1], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual(headers[T + 1:], ['Identificador'])
+        self.assertEqual([row[:T + 1] for row in rows], [
+            [None, None, 'Batería vieja', None, 80, None, None, None, 'Publicar en e-commerce', None,
+             *NO_VARIANT, 'Inactivo'],
+            [None, '00123', 'Cable', None, 25, 'Accesorios', None, None, 'Solo stock interno', None,
+             *NO_VARIANT, 'Activo'],
             ['7751234567892', 'FUN-001', 'Funda', 'Funda de silicona.', 59.9, 'Accesorios', None, None,
-             'Publicar en e-commerce', None, 'Activo'],
+             'Publicar en e-commerce', None, *NO_VARIANT, 'Activo'],
             [None, 'TEL-X', 'Teléfono X', None, 4500, 'Teléfonos', None, None, 'Publicar en e-commerce', None,
-             'Activo'],
+             *NO_VARIANT, 'Activo'],
         ])
 
     def test_every_row_carries_the_identifier_of_its_product_as_text(self):
@@ -478,7 +488,7 @@ class ProductsExportTest(_Base):
             {row['Nombre']: row['Identificador'] for row in self.records(response)},
             {product.name: f'{self.company.pk}-{product.pk}' for product in (self.old, self.cable, self.case, self.phone)})
         page = load_workbook(io.BytesIO(response.content)).active
-        cell = page.cell(row=2, column=12)
+        cell = page.cell(row=2, column=headers.index('Identificador') + 1)
         self.assertEqual((cell.data_type, cell.number_format), ('s', '@'))
         # Only the file to reload: the report is read, not loaded.
         self.assertNotIn('Identificador', self.sheet(self.get('products', mode='report'))[1])
@@ -630,11 +640,11 @@ class ProductsExportTest(_Base):
             'Activo', 'Tipo', 'Stock total', 'Publicado', 'Problemas para publicar'])
         rows = {row['Nombre']: row for row in self.records(response)}
         self.assertEqual(
-            [rows['Funda'][key] for key in headers[10:]], ['Sí', 'Por cantidad', 5, 'Sí', None])
+            [rows['Funda'][key] for key in headers[T:]], ['Sí', 'Por cantidad', 5, 'Sí', None])
         self.assertEqual(
-            [rows['Teléfono X'][key] for key in headers[10:]], ['Sí', 'Por serie', 3, 'Sí', None])
+            [rows['Teléfono X'][key] for key in headers[T:]], ['Sí', 'Por serie', 3, 'Sí', None])
         self.assertEqual(
-            [rows['Batería vieja'][key] for key in headers[10:]],
+            [rows['Batería vieja'][key] for key in headers[T:]],
             ['No', 'Por cantidad', 2, 'Sí', 'El producto está inactivo. No tiene categoría.'])
         self.assertEqual(rows['Cable']['Publicado'], 'No')
 
@@ -790,10 +800,13 @@ class UnitsExportTest(_Base):
 
         self.assertEqual(title, unit_import_services.SHEET)
         self.assertEqual(headers, unit_import_services.HEADERS)
+        # DC2: «Modelo» … «Precio de venta» after «Motivo / referencia», empty here
+        # (no variant, grade, battery or price).
+        dc2 = [None] * 7
         self.assertEqual(rows, [
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None],
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None],
-            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2],
+            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None, *dc2],
         ])
 
     def test_serials_and_imeis_are_text(self):
@@ -850,7 +863,9 @@ class UnitsExportTest(_Base):
         title, headers, _rows = self.sheet(response)
 
         self.assertEqual(title, 'Reporte de equipos')
-        self.assertEqual(headers, unit_import_services.HEADERS[:-1] + ['Estado', 'Fecha de ingreso', 'Pedido', 'Notas'])
+        # The device template without «Motivo / referencia» (a reception's reason), plus what happened.
+        self.assertEqual(headers, [header for header in unit_import_services.HEADERS if header != 'Motivo / referencia']
+                         + ['Estado', 'Fecha de ingreso', 'Pedido', 'Notas'])
         rows = {row['Número de serie']: row for row in self.records(response)}
         self.assertEqual(set(rows), {'SER-0001', 'SER-0002', 'SER-0003', 'SER-0004', 'SER-0005'})
         self.assertEqual((rows['SER-0001']['Estado'], rows['SER-0001']['Pedido']), ('Disponible', None))
@@ -911,6 +926,173 @@ class UnitsExportTest(_Base):
 
 
 # =============================================================================
+# DC2 — the files to reload carry the variant, and read back as themselves
+# =============================================================================
+
+class DeviceCommerceRoundTripTest(_Base):
+    """
+    DC2 grew both templates. A download is «the template plus the state and the
+    identifier», every template column filled from the product or the device
+    and every value under ITS header: a reload creates nothing and moves no
+    model or variant link.
+
+      Teléfono X       — a NEW variant of «Serie 16», 128 GB Negro
+      Teléfono X usado — a USED variant of «Serie 16», 128 GB Azul, one device
+                         with its grade, its battery and its own sale price
+    """
+
+    def setUp(self):
+        super().setUp()
+        device_catalog.seed_cosmetic_grades(self.company)
+        self.grade = CosmeticGrade.objects.filter(company=self.company, is_active=True).order_by('sort_order').first()
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color')
+        self.gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
+        black = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Negro',
+                                             swatch_hex='#111111')
+        blue = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Azul',
+                                            swatch_hex='#1d4ed8')
+        self.model = device_catalog.create_model(company=self.company, name='Serie 16')
+        device_catalog.set_variant(self.phone, model_id=self.model.pk, option_ids=[self.gb128.pk, black.pk])
+        self.used = self.product('Teléfono X usado', 'telefono-x-usado', '1.00', self.phones,
+                                 is_serialized=True, requires_imei=True)
+        self.code(self.used, 'TEL-X-U')
+        device_catalog.set_variant(self.used, model_id=self.model.pk, condition_line=Product.CONDITION_USED,
+                                   option_ids=[self.gb128.pk, blue.pk])
+        Product.objects.filter(pk=self.phone.pk).update(reference_cost=Decimal('3700.00'))
+        self.receive(self.centro, {
+            'serial_number': 'SER-U001', 'imei': imei('35693803564390'), 'condition': 'used', 'cost': '1200.00',
+            'cosmetic_grade': self.grade.pk, 'battery_health': 88, 'sale_price': '1899.90',
+        }, product=self.used)
+
+    def links(self):
+        return (
+            list(Product.objects.filter(company=self.company).order_by('pk')
+                 .values_list('pk', 'product_model_id', 'condition_line', 'variant_key')),
+            sorted(ProductVariantOption.objects.filter(company=self.company)
+                   .values_list('product_id', 'attribute_id', 'option_id')),
+        )
+
+    def test_every_column_of_both_templates_is_filled_under_its_own_header(self):
+        """The drift guard: a column the template gains is written, or left empty ON PURPOSE."""
+        _title, headers, rows = self.sheet(self.get('products'))
+        self.assertEqual(headers, import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado', 'Identificador'])
+        filled = {header for row in rows for header, value in zip(headers, row) if value is not None}
+        self.assertEqual(set(headers) - filled, set(inventory_exports.PRODUCT_LEFT_EMPTY))
+
+        _title, headers, rows = self.sheet(self.get('units'))
+        self.assertEqual(headers, unit_import_services.HEADERS)
+        filled = {header for row in rows for header, value in zip(headers, row) if value is not None}
+        self.assertEqual(set(headers) - filled, set(inventory_exports.UNIT_LEFT_EMPTY))
+
+    def test_the_variant_grade_battery_and_price_are_written_as_the_loads_read_them(self):
+        products = {row['Nombre']: row for row in self.records(self.get('products'))}
+        self.assertEqual(
+            [products['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea', 'Estado', 'Identificador')],
+            ['Serie 16', '128 GB', 'Negro', 'Nuevo', 'Activo', f'{self.company.pk}-{self.phone.pk}'])
+        self.assertEqual(
+            [products['Teléfono X usado'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea')],
+            ['Serie 16', '128 GB', 'Azul', 'Seminuevo'])
+        self.assertEqual([products['Funda'][key] for key in ('Modelo', 'Línea', 'Estado')], [None, None, 'Activo'])
+
+        units = {row['Número de serie']: row for row in self.records(self.get('units'))}
+        self.assertEqual(
+            [units['SER-U001'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético',
+                                                'Batería %', 'Precio de venta', 'Motivo / referencia')],
+            ['Serie 16', '128 GB', 'Azul', 'Seminuevo', self.grade.label, 88, 1899.9, None])
+        # A new device sells at its variant's price: none of its own in the file.
+        self.assertEqual((units['SER-0001']['Línea'], units['SER-0001']['Precio de venta']), ('Nuevo', None))
+        # The report reads the same, and says what happened to each device.
+        report = {row['Número de serie']: row for row in self.records(self.get('units', mode='report'))}
+        self.assertEqual(
+            [report['SER-U001'][key] for key in ('Estado estético', 'Batería %', 'Precio de venta', 'Estado')],
+            [self.grade.label, 88, 1899.9, 'Disponible'])
+        self.assertNotIn('Motivo / referencia', report['SER-U001'])
+
+    def test_the_sale_price_is_not_a_cost_and_the_costs_still_are(self):
+        reader = self.member('exp_dc2_lectora', 'inventory.view', 'products.view')
+        units = {row['Número de serie']: row for row in self.records(self.get('units', reader))}
+        self.assertEqual((units['SER-U001']['Precio de venta'], units['SER-U001']['Costo']), (1899.9, None))
+        products = {row['Nombre']: row for row in self.records(self.get('products', reader))}
+        self.assertIsNone(products['Teléfono X']['Costo de referencia'])
+        mine = {row['Nombre']: row for row in self.records(self.get('products'))}
+        self.assertEqual(mine['Teléfono X']['Costo de referencia'], 3700)
+
+    def test_reloading_the_catalogue_creates_nothing_and_moves_no_variant(self):
+        before, links = list(Product.objects.filter(company=self.company).order_by('pk').values()), self.links()
+        content = self.get('products').content
+
+        staged = self.api.post('/api/admin/products/import/preview/', {'file': upload(content)}, format='multipart')
+
+        self.assertEqual(staged.status_code, 201, staged.content)
+        body = staged.json()
+        self.assertEqual((body['counts']['error'], body['counts']['create'], body['counts']['total']), (0, 0, 5),
+                         body['rows'])
+        by_name = {row['data']['name']: row['data'] for row in body['rows']}
+        # The variant columns were READ (not dropped), each as the variant the product already is.
+        self.assertEqual(by_name['Teléfono X']['variant']['model_id'], self.model.pk)
+        self.assertEqual(by_name['Teléfono X usado']['variant']['condition_line'], Product.CONDITION_USED)
+        for name in ('Teléfono X', 'Teléfono X usado', 'Batería vieja'):
+            self.assertEqual(by_name[name]['matched_by'], 'identifier')
+        applied = self.api.post(f'/api/admin/products/import/{body["id"]}/apply/')
+        self.assertEqual(applied.status_code, 200, applied.content)
+        self.assertEqual((applied.json()['summary']['applied']['created'],
+                          applied.json()['summary']['applied']['updated']), (0, 0))
+        self.assertEqual(list(Product.objects.filter(company=self.company).order_by('pk').values()), before)
+        self.assertEqual(self.links(), links)
+
+    def test_reloading_the_devices_refuses_each_one_only_because_it_is_already_registered(self):
+        units, links = list(StockUnit.objects.order_by('pk').values()), self.links()
+        movements = StockMovement.objects.count()
+
+        staged = self.api.post(
+            '/api/admin/inventory/units/import/preview/',
+            {'file': upload(self.get('units').content), 'reason': 'Recarga de prueba'}, format='multipart')
+
+        self.assertEqual(staged.status_code, 201, staged.content)
+        body = staged.json()
+        self.assertEqual((body['counts']['create'], body['counts']['total']), (0, 4))
+        for row in body['rows']:
+            # Only «already registered» (its serial, its IMEI): model, line, grade,
+            # battery and price all read back clean.
+            self.assertTrue(row['errors'], row)
+            for error in row['errors']:
+                self.assertIn('ya está registrado', error, row)
+        used = next(row['data'] for row in body['rows'] if row['data']['serial_number'] == 'SER-U001')
+        self.assertEqual(used['product_id'], self.used.pk)
+        self.assertEqual((used['cosmetic_grade'], used['battery_health'], used['sale_price']),
+                         (self.grade.pk, 88, '1899.90'))
+        applied = self.api.post(f'/api/admin/inventory/units/import/{body["id"]}/apply/')
+        self.assertEqual(applied.status_code, 400, applied.content)
+        self.assertEqual(list(StockUnit.objects.order_by('pk').values()), units)
+        self.assertEqual(StockMovement.objects.count(), movements)
+        self.assertEqual(self.links(), links)
+
+    def test_a_model_name_two_models_share_is_left_empty_and_the_reload_keeps_the_variant(self):
+        """`resolve_variant_spec` takes the FIRST model of that name: written, it could re-link the product."""
+        device_catalog.create_model(company=self.company, name='SERIE 16')
+        links = self.links()
+        records = {row['Nombre']: row for row in self.records(self.get('products'))}
+        self.assertEqual([records['Teléfono X'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea')],
+                         [None, None, None, None])
+        staged = self.api.post('/api/admin/products/import/preview/',
+                               {'file': upload(self.get('products').content)}, format='multipart')
+        self.assertEqual((staged.json()['counts']['error'], staged.json()['counts']['create']), (0, 0))
+        self.api.post(f'/api/admin/products/import/{staged.json()["id"]}/apply/')
+        self.assertEqual(self.links(), links)
+
+    def test_an_option_label_two_attributes_share_is_left_empty_too(self):
+        storage = device_catalog.create_attribute(company=self.company, name='Almacenamiento')
+        device_catalog.create_option(company=self.company, attribute_id=storage.pk, label='128 gb')
+        records = {row['Nombre']: row for row in self.records(self.get('products'))}
+        self.assertIsNone(records['Teléfono X']['Modelo'])
+        units = {row['Número de serie']: row for row in self.records(self.get('units'))}
+        self.assertIsNone(units['SER-U001']['Modelo'])
+        # The rest of the device still travels.
+        self.assertEqual(units['SER-U001']['Batería %'], 88)
+
+
+# =============================================================================
 # Everything, in one ZIP
 # =============================================================================
 
@@ -940,8 +1122,8 @@ class FullExportTest(_Base):
         devices = self.page(archive, 'Equipos.xlsx')
 
         self.assertEqual(
-            [cell.value for cell in products[1]][:11], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
-        self.assertEqual([(row[2], row[10]) for row in products.iter_rows(min_row=2, values_only=True)], [
+            [cell.value for cell in products[1]][:T + 1], import_exports.PRODUCT_TEMPLATE_HEADERS + ['Estado'])
+        self.assertEqual([(row[2], row[T]) for row in products.iter_rows(min_row=2, values_only=True)], [
             ('Batería vieja', 'Inactivo'), ('Cable', 'Activo'), ('Funda', 'Activo'), ('Teléfono X', 'Activo')])
         self.assertEqual([row[2] for row in stock.iter_rows(min_row=2, values_only=True)],
                          ['Batería vieja', 'Cable', 'Funda'])
