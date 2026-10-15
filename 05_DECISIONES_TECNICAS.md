@@ -1836,3 +1836,27 @@ Migración `0133` (`StockUnit.hold_origin` con `db_default` '', `hold_started_at
   variantes seminuevas; `used_unit_count` cuenta la sucursal de la tienda. La salida de
   venta ya llevaba el costo propio del equipo (no el promedio); ahora un equipo sin costo
   sale —en el Kardex y en su línea— al costo de referencia marcado `reference`.
+
+**Segunda revisión de DC2 (2026-10-14): un P1, un P2 y un P3 introducidos por las correcciones, corregidos.**
+- *Reparto del estante (P1)* — **decisión del coordinador, por confirmar con el propietario.**
+  El tope del 50 % por variante bloqueaba a compradores reales de seminuevos DISTINTOS
+  (variante de 2–3 equipos: tope 1; el segundo comprador recibía `held_by_others`). Ahora
+  el reparto por variante sólo rige desde `DEVICE_WEB_HOLD_SHARE_MIN_UNITS` (4) equipos
+  disponibles en la web; por debajo no se aplica. En su lugar, un **techo por empresa**
+  de apartados web vivos de productos vendidos por unidad:
+  `max(DEVICE_WEB_HOLD_COMPANY_MIN (3), ⌊(disponibles en la web + apartados web) ×
+  DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT (50) / 100⌋)`, contado bajo un bloqueo
+  consultivo «esta empresa» (antes de «este carrito» y «este origen»). Siguen el tope por
+  origen (3), el de carrito (3) y el throttle `device_hold`.
+- *El pedido pagado gana (P2).* Si el primer pedido de un carrito se pagaba con un
+  formulario ya abierto mientras el segundo seguía pendiente, el primero cobraba sin
+  equipo. `superseded_lines(order, selling=True)`: al vender, sólo un pedido PAGADO del
+  mismo carrito se lleva el equipo; el posterior pendiente queda reemplazado (no abre
+  pago: `order_superseded`, que nombra el pedido pagado; si un formulario suyo se paga
+  igual, faltante que lo nombra). El orden inverso no cambia.
+- *Orden de bloqueos (P3).* `hold()` toma los bloqueos consultivos antes de barrer los
+  apartados vencidos (que toman la fila del estante): un solo orden, consultivos → estante.
+- *Costo de una entrada de equipos sin costo propio.* `cost_services.resolve`: equipos sin
+  costo que ENTRAN con un costo declarado (el de su salida) llegan a ese costo y con ese
+  origen («las transferencias llegan al costo con que salieron»). Hoy no hay transferencia
+  de equipos (`set_transfer_item` la rechaza); la regla queda para cuando exista.

@@ -924,6 +924,9 @@ class HoldAbuseTest(DeviceShop, TestCase):
         self.assertGreater(fresh.hold_until, timezone.now() + timedelta(minutes=holds.hold_minutes() - 1))
 
 
+# The variant share would decide which racer wins (it depends on which add of
+# cart «c» landed first); this test is about the cart and origin counts.
+@override_settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
 class CartLimitRaceTest(TransactionTestCase):
     """Two adds of one cart at the same instant, for two products: the limit still holds."""
 
