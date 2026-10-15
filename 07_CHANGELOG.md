@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` (#123) — NO desplegado
+
+**Changed**
+- DEVICE-COMMERCE-01 (costos y margen, nuevos y seminuevos por unidad, proveedores y bajo
+  pedido) entra en `master` por el PR #123. Producción no cambia hasta un despliegue
+  autorizado.
+
+**Verified**
+- CI de `129d82f`: 7417 pruebas en seis fragmentos, en verde. Revisión de integración: GO.
+- Migraciones `0126`–`0135` medidas con 200 000 líneas y 50 000 equipos: 4–6 s de ida.
+
 ## 2026-10-15 — DEVICE-COMMERCE-01 · revisión de integración del PR #123 (en rama, NO desplegado)
 
 - **Fixed** — los apartados web que retiene un pago pendiente cuentan en los topes por carrito, por origen, reparto del estante y techo de la empresa; una línea bajo pedido tomada con el estante vacío ya no se atribuye al comprador como «elegida sobre stock» si la web no lo permite; la liquidación pendiente al proveedor se limita a las sucursales de quien consulta; el stock que vuelve de la venta de un pedido sin costo declarado vuelve al costo de su salida.

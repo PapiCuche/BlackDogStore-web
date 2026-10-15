@@ -1,5 +1,10 @@
 # NEXT ACTION
 
+## En `master` sin desplegar: DEVICE-COMMERCE-01 (#123)
+
+Despliegue pendiente de autorización; preflight en `02_ESTADO_ACTUAL.md` (entrada del
+2026-10-15). PR abiertos sin fusionar: #119, #120, #121 (sobre #119), #122.
+
 ## Hecho: INVENTORY-UNIFIED-01 en `master` (#117, `041d0fd`) y desplegado el 2026-10-14
 
 Siguiente fase ordenada por el propietario: ORDER-LIFECYCLE-01 y después PAYABLES-01,

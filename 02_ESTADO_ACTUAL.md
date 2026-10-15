@@ -3,6 +3,38 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` por el PR #123 — IMPLEMENTADO, NO DESPLEGADO
+
+El propietario autorizó el merge de #123 (no el despliegue). Producción sigue en `041d0fd`
+(migraciones hasta `0123`); nada de esta fase corre allí.
+
+**Migraciones `0126`–`0135`:** cadena lineal desde `0123`, una sola hoja. Medidas en una base
+desechable con 200 000 pedidos y líneas y 50 000 equipos: ida completa 4–6 s, vuelta a `0123`
+7–9 s; `0131` 2,8 s y `0132` 1,2 s. Son cambios de catálogo salvo `0131` (reescribe
+`store_stockunit`). Una primera corrida quedó 9 minutos en `0128` **esperando un bloqueo**
+(ALTER TABLE pide ACCESS EXCLUSIVE y espera detrás de cualquier transacción abierta sobre
+`store_orderitem`); repetida, tardó 0 s. En producción, `migrate` debe correr con
+`lock_timeout` (p. ej. `PGOPTIONS='-c lock_timeout=5s'`) para fallar rápido en vez de
+encolar el checkout detrás.
+
+**PR abiertos #119–#122:** #119 y #120 traen cada uno su `0124` y #121 una `0125`. No se
+renumera nada: el PR que se fusione después de #123 añade su migración de fusión
+(`makemigrations --merge`), sin AlterField pendientes (revisado sobre los grafos).
+
+**Preflight para autorizar el despliegue (pendiente, no hecho):**
+1. Copia de seguridad y restauración verificada; imágenes etiquetadas `rollback-<sha>`.
+2. Ensayo de `0126`–`0135` sobre una copia de la base de producción con la imagen nueva
+   (ida, vuelta, ida; esquema idéntico), y `migrate` en producción con `lock_timeout`.
+3. `costs_view_report` tras migrar: asignar `costs.view` a mano sólo en empresas cuyo rol
+   Administrador fue personalizado; nunca a vendedores por defecto.
+4. Cron: `release_expired_unit_holds` y `expire_supplier_offers`; `ops_status` revisado.
+5. Prueba con sesión (propietario): reserva y compra de una unidad exacta con pago TEST de
+   Izipay, POS con stock y bajo pedido, oferta vencida → «por confirmar», margen y
+   «Valor al costo» con y sin `costs.view`, carga de ofertas por Excel.
+6. Al fusionar #119 (cancelación): su devolución debe heredar el costo de la salida de venta
+   (lista en `docs/despliegue-produccion.md` §7).
+7. No tocar el `deploy/Caddyfile` local del servidor ni las variables de entorno.
+
 ## 2026-10-15 — DEVICE-COMMERCE-01 · decisiones del propietario implementadas en rama local
 
 - Rama `feat/device-commerce`, commits locales sin push; **no desplegado**. Tres decisiones del
