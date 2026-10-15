@@ -104,9 +104,13 @@ class CheckoutLine:
     quantity: int
     unit: object = None
     unit_price: Decimal | None = None
+    #: DC3 — sold «bajo pedido» against this supplier offer, at its commercial price.
+    offer: object = None
 
     @property
     def price(self) -> Decimal:
+        if self.offer is not None:
+            return self.offer.commercial_price
         return self.unit_price if self.unit is not None else self.product.price
 
 
@@ -148,6 +152,11 @@ def merge_lines(lines: list[CheckoutLine]) -> list[CheckoutLine]:
                 devices[line.unit.pk] = line
                 order.append(('unit', line.unit.pk))
             continue
+        if line.offer is not None:
+            # DC3 — an on-order line is its own line (a cart holds one per product).
+            devices[('offer', line.product.pk)] = line
+            order.append(('unit', ('offer', line.product.pk)))
+            continue
         key = line.product.pk
         if key not in first_seen:
             first_seen[key] = line.product
@@ -172,10 +181,20 @@ def lines_from_cart(company, branch, session_key, cart_items) -> list[CheckoutLi
     """
     from . import unit_hold_services
 
+    from . import supply_services
+
     unit_hold_services.release_expired(company=company)
     lines, errors = [], []
     for item in cart_items:
         product = item.product
+        if item.supply_origin == item.SUPPLY_SUPPLIER:
+            # DC3 — taken «bajo pedido»: the offer that covers it NOW, at its price.
+            offer = supply_services.offer_for_line(product, item.quantity)
+            if offer is None:
+                errors.append(f'{product.name} ya no está disponible bajo pedido en esa cantidad.')
+                continue
+            lines.append(CheckoutLine(product=product, quantity=item.quantity, offer=offer))
+            continue
         if not product.sells_by_unit:
             lines.append(CheckoutLine(product=product, quantity=item.quantity))
             continue
@@ -373,6 +392,16 @@ def validate_lines_and_subtotal(branch, lines: list[CheckoutLine]) -> Decimal:
             # (`lines_from_cart` checked it): the shelf count does not include it.
             subtotal += line.price
             continue
+        if line.offer is not None:
+            # DC3 — on order: the offer must still cover the whole line. The
+            # shelf is not asked; nothing will be taken from it.
+            from . import supply_services
+
+            if supply_services.offer_for_line(product, line.quantity) is None:
+                errors.append(f'{product.name} ya no está disponible bajo pedido en esa cantidad.')
+                continue
+            subtotal += line.price * line.quantity
+            continue
         if product.sells_by_unit:
             errors.append(f'{product.name} se compra eligiendo el equipo en la tienda web.')
             continue
@@ -540,6 +569,8 @@ def create_pending_order(
         # document — never a resemblance, never an email.
         link_order_to_customer(order, actor=actor)
 
+        from . import supply_services
+
         for line in lines:
             OrderItem.objects.create(
                 order=order,
@@ -547,6 +578,8 @@ def create_pending_order(
                 quantity=line.quantity,
                 price=line.price,
                 stock_unit=line.unit,
+                # DC3 — origin, offer, lead time and agreed cost, frozen now.
+                **(supply_services.line_snapshot(line.offer) if line.offer is not None else {}),
             )
         held = [line.unit for line in lines if line.unit is not None]
         if held:

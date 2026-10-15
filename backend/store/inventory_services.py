@@ -589,13 +589,24 @@ def record_sale_stock_movements(
         Order.objects.filter(pk=order.pk).update(fulfillment_branch=branch)
 
     with transaction.atomic():
+        # DC3 — lines sold ON ORDER take nothing from this shelf: their payment
+        # commits the supplier's offer (offer rows before shelf rows: the
+        # module's lock order), and their goods enter and leave when received
+        # (`supply_services.receive_line`). Never a movement here.
+        from . import supply_services
+
+        supply_services.commit_order_lines(order, strict=strict)
+
         already_recorded = set(
             StockMovement.objects
             .filter(order=order, movement_type=StockMovement.SALE_EXIT)
             .values_list('product_id', flat=True)
         )
 
-        items = list(order.items.select_related('product').all())
+        items = [
+            item for item in order.items.select_related('product').all()
+            if item.supply_origin != OrderItem.SUPPLY_SUPPLIER
+        ]
 
         if strict:
             # VALIDATE EVERYTHING BEFORE WRITING ANYTHING.
@@ -820,6 +831,10 @@ def _flag_stock_shortfall(order: Order, item, message: str) -> None:
 # decremented stock yet; a refunded/cancelled one is no longer owed).
 
 
+#: DC3 — on-order lines whose goods have not arrived: not a shelf shortfall.
+_ON_ORDER_NOT_RECEIVED = Q(supply_origin=OrderItem.SUPPLY_SUPPLIER) & ~Q(supply_status=OrderItem.SUPPLY_RECEIVED)
+
+
 def order_stock_shortfall(order: Order) -> list[dict]:
     """
     Per-product shortfall for one order, derived. Empty unless the order is PAID.
@@ -834,7 +849,8 @@ def order_stock_shortfall(order: Order) -> list[dict]:
 
     ordered: dict[int, int] = {}
     names: dict[int, str] = {}
-    for item in order.items.select_related('product'):
+    # DC3 — a line on order owes nothing to the shelf until its goods arrived.
+    for item in order.items.select_related('product').exclude(_ON_ORDER_NOT_RECEIVED):
         ordered[item.product_id] = ordered.get(item.product_id, 0) + item.quantity
         names[item.product_id] = item.product.name
 
@@ -879,7 +895,7 @@ def order_ids_with_stock_shortfall(order_ids) -> set[int]:
 
     ordered: dict[tuple[int, int], int] = {}
     for row in (
-        OrderItem.objects.filter(order_id__in=order_ids)
+        OrderItem.objects.filter(order_id__in=order_ids).exclude(_ON_ORDER_NOT_RECEIVED)
         .values('order_id', 'product_id')
         .annotate(q=Sum('quantity'))
     ):

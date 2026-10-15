@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower
 from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
 from django.contrib.postgres.functions import RandomUUID
 from django.utils import timezone
@@ -255,6 +256,18 @@ class Product(models.Model):
     #: `variant_services`, and what lets the database refuse two variants of one
     #: model with the same options in the same line.
     variant_key = models.CharField(max_length=120, blank=True, default='', db_default='')
+
+    # DEVICE-COMMERCE-01 · DC3 — HOW IT MAY BE SOLD. Stock 0 is NOT sellable:
+    # `stock` (what every product did before) sells only what the shelf has;
+    # `stock_or_order` also sells «bajo pedido», but only while a valid offer
+    # of a supplier covers the whole line (`supply_services.availability`).
+    # Written only by `supply_services.set_sale_mode`.
+    SALE_MODE_STOCK = 'stock'
+    SALE_MODE_STOCK_OR_ORDER = 'stock_or_order'
+    SALE_MODE_CHOICES = [(SALE_MODE_STOCK, 'Sólo stock propio'), (SALE_MODE_STOCK_OR_ORDER, 'Stock o bajo pedido')]
+    sale_mode = models.CharField(
+        max_length=16, choices=SALE_MODE_CHOICES, default=SALE_MODE_STOCK, db_default=SALE_MODE_STOCK,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -822,10 +835,13 @@ class OrderItem(models.Model):
     COST_UNIT = 'unit'
     COST_REFERENCE = 'reference'
     COST_UNKNOWN = 'unknown'
+    # DC3 — a line sold on order: the cost agreed with the supplier, frozen.
+    COST_SUPPLIER_OFFER = 'supplier_offer'
     COST_SOURCE_CHOICES = [
         (COST_AVERAGE, 'Costo promedio de la sucursal'),
         (COST_UNIT, 'Costo específico del equipo'),
         (COST_REFERENCE, 'Costo de referencia del catálogo'),
+        (COST_SUPPLIER_OFFER, 'Costo pactado con el proveedor'),
         (COST_UNKNOWN, 'Costo pendiente'),
     ]
     SNAPSHOT_SOURCES = frozenset([COST_AVERAGE, COST_UNIT, COST_REFERENCE])
@@ -851,6 +867,47 @@ class OrderItem(models.Model):
     stock_unit = models.ForeignKey(
         'store.StockUnit', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
     )
+
+    # --- DC3: where the goods of this line come from, frozen at checkout ----
+    #
+    # `own`: the shelf (what every line was before). `supplier`: sold «bajo
+    # pedido» against `supplier_offer`, with its lead time and its agreed cost
+    # (`unit_cost`, `cost_source='supplier_offer'`). Such a line writes NO stock
+    # movement when paid: the payment commits the offer (`supply_status`
+    # 'pending'), or — offer expired or run out — records the money and asks a
+    # person (`to_confirm`). Receiving the goods writes the entry and the sale
+    # exit together (`received`); a supply that cannot happen is `failed` and
+    # goes to the refund flow. `db_default`s: the previous release keeps
+    # inserting lines while this migrates.
+    SUPPLY_OWN = 'own'
+    SUPPLY_SUPPLIER = 'supplier'
+    SUPPLY_ORIGIN_CHOICES = [(SUPPLY_OWN, 'Stock propio'), (SUPPLY_SUPPLIER, 'Bajo pedido a proveedor')]
+    SUPPLY_PENDING = 'pending'
+    SUPPLY_TO_CONFIRM = 'to_confirm'
+    SUPPLY_RECEIVED = 'received'
+    SUPPLY_FAILED = 'failed'
+    SUPPLY_STATUS_CHOICES = [
+        ('', '—'),
+        (SUPPLY_PENDING, 'Pedido al proveedor'),
+        (SUPPLY_TO_CONFIRM, 'Abastecimiento por confirmar'),
+        (SUPPLY_RECEIVED, 'Recibido del proveedor'),
+        (SUPPLY_FAILED, 'No se pudo abastecer'),
+    ]
+    supply_origin = models.CharField(
+        max_length=10, choices=SUPPLY_ORIGIN_CHOICES, default=SUPPLY_OWN, db_default=SUPPLY_OWN,
+    )
+    supplier_offer = models.ForeignKey(
+        'store.SupplierOffer', null=True, blank=True, on_delete=models.PROTECT, related_name='order_lines',
+    )
+    lead_time_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    supply_status = models.CharField(
+        max_length=12, choices=SUPPLY_STATUS_CHOICES, blank=True, default='', db_default='',
+    )
+    supply_note = models.CharField(max_length=300, blank=True, default='', db_default='')
+
+    @property
+    def on_order(self) -> bool:
+        return self.supply_origin == self.SUPPLY_SUPPLIER
 
     class Meta:
         constraints = [
@@ -1078,6 +1135,14 @@ class CartItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     added_at = models.DateTimeField(auto_now_add=True)
+    # DC3 — the buyer took this line «bajo pedido» on purpose (the add said so).
+    # A line is all shelf or all on order, never both.
+    SUPPLY_OWN = 'own'
+    SUPPLY_SUPPLIER = 'supplier'
+    supply_origin = models.CharField(
+        max_length=10, choices=[(SUPPLY_OWN, 'Stock propio'), (SUPPLY_SUPPLIER, 'Bajo pedido')],
+        default=SUPPLY_OWN, db_default=SUPPLY_OWN,
+    )
 
     class Meta:
         constraints = [
@@ -4238,11 +4303,14 @@ class BulkImportJob(models.Model):
     # INVENTORY-UNIFIED-01: pictures for products that already exist. Its own
     # kind because it writes GALLERIES and nothing else of a product.
     PRODUCT_IMAGES = 'product_images'
+    # DC3 — the weekly supplier price list: offers, not stock.
+    SUPPLIER_OFFERS = 'supplier_offers'
     TYPE_CHOICES = [
         (PRODUCTS, 'Productos'),
         (STOCK, 'Inventario'),
         (UNITS, 'Equipos con serie'),
         (PRODUCT_IMAGES, 'Imágenes de productos'),
+        (SUPPLIER_OFFERS, 'Ofertas de proveedor'),
     ]
 
     PREVIEWED = 'previewed'
@@ -9858,3 +9926,95 @@ class UnitPhoto(models.Model):
         if self.unit.company_id != self.company_id:
             raise ValueError('La foto y el equipo son de empresas distintas.')
         return super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# DEVICE-COMMERCE-01 · DC3 — suppliers and «bajo pedido»
+# ---------------------------------------------------------------------------
+
+class Supplier(models.Model):
+    """
+    Who the shop buys from, per company. Never deleted once it has an offer
+    (PROTECT): it is switched off (`is_active`). The document is optional and,
+    when given, validated like a customer's (`identity_validation`).
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='suppliers')
+    name = models.CharField(max_length=200)
+    document_type = models.CharField(max_length=10, choices=DocumentType.choices, blank=True, default='')
+    document_number = models.CharField(max_length=20, blank=True, default='')
+    contact_name = models.CharField(max_length=150, blank=True, default='')
+    phone = models.CharField(max_length=30, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    notes = models.TextField(max_length=1000, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'pk']
+        constraints = [
+            # The weekly file names a supplier by its name: one name, one supplier.
+            models.UniqueConstraint(Lower('name'), 'company', name='unique_supplier_name_per_company'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class SupplierOffer(models.Model):
+    """
+    What a supplier offers of ONE sellable variant (a `Product`), for a while.
+
+    `commercial_price` is what the shop CHARGES for it sold on order — frozen
+    on the order line at checkout. `agreed_cost` is what the shop pays the
+    supplier (only `costs.view` sees or writes it; NULL = not stated).
+    `confirmed_quantity` is the cap the supplier confirmed: NULL = not
+    confirmed, and an unconfirmed offer sells nothing. `committed_quantity`
+    is what paid orders took from it; the database refuses more than the cap.
+    Valid from `valid_from` through `valid_until` (both included, the shop's
+    days). Never deleted once an order names it (PROTECT): deactivated, with
+    its history in the audit trail.
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='supplier_offers')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='offers')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='supplier_offers')
+    agreed_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    commercial_price = models.DecimalField(max_digits=10, decimal_places=2)
+    confirmed_quantity = models.PositiveIntegerField(null=True, blank=True)
+    committed_quantity = models.PositiveIntegerField(default=0, db_default=0)
+    valid_from = models.DateField()
+    valid_until = models.DateField()
+    lead_time_days = models.PositiveSmallIntegerField()
+    is_active = models.BooleanField(default=True)
+    deactivated_reason = models.CharField(max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-valid_until', 'pk']
+        indexes = [models.Index(fields=['company', 'product', 'is_active'])]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(committed_quantity=0) | models.Q(confirmed_quantity__gte=models.F('committed_quantity')),
+                name='supplier_offer_never_overcommitted',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(valid_until__gte=models.F('valid_from')),
+                name='supplier_offer_valid_window',
+            ),
+        ]
+
+    @property
+    def remaining(self) -> int:
+        if self.confirmed_quantity is None:
+            return 0
+        return max(self.confirmed_quantity - self.committed_quantity, 0)
+
+    def __str__(self):
+        return f'{self.supplier} · {self.product} ({self.valid_from}–{self.valid_until})'

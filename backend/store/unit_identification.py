@@ -23,7 +23,7 @@ from django.db import transaction
 from django.db.models import Q
 
 from . import device_identity
-from .models import AdminAuditLog, Order, OrderUnit, StockMovement, StockUnit
+from .models import AdminAuditLog, Order, OrderItem, OrderUnit, StockMovement, StockUnit
 
 SCANNER, MANUAL = OrderUnit.Method.SCANNER.value, OrderUnit.Method.MANUAL.value
 METHODS = (SCANNER, MANUAL)
@@ -197,6 +197,8 @@ def _wanted(order) -> dict:
     """
     wanted: dict[int, int] = {}
     for item in order.items.select_related('product'):
+        if item.supply_origin == OrderItem.SUPPLY_SUPPLIER and item.supply_status != OrderItem.SUPPLY_RECEIVED:
+            continue      # DC3 — on order: no device exists yet; receiving it names it.
         if item.product.is_serialized:
             wanted[item.product_id] = wanted.get(item.product_id, 0) + item.quantity
     if wanted:
