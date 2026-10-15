@@ -450,7 +450,8 @@ completa. Si una parte falla, el guion termina con error y no toca
 
 `deploy/crontab.example` trae las líneas de esta sección —copia, sesiones,
 imágenes sin uso, avisos de WhatsApp, conversiones de compra, pagos sin
-notificación, apartados web vencidos (DC2) y comprobación de estado—. Para instalarlas
+notificación, apartados web vencidos (DC2), ofertas de proveedor vencidas (DC3) y
+comprobación de estado—. Para instalarlas
 en el `crontab` del usuario que administra el servidor:
 
 ```sh
@@ -743,6 +744,35 @@ de `migrate`, añade al `crontab` la línea `release_expired_unit_holds` de
 5. `git checkout <commit anterior>`, `$C build`, `$C up -d`. Las migraciones `0130`–`0133`
    **se dejan aplicadas**. Deshacer `0132` se niega si algún pedido tiene dos líneas de
    equipo de un mismo producto, en vez de perder una.
+
+**DEVICE-COMMERCE-01 · DC3 (`0134`): proveedores y venta bajo pedido.** Aditiva: dos
+tablas nuevas vacías (`store_supplier`, `store_supplieroffer`) y columnas con `db_default`
+o nulas en `store_product` (`sale_mode` 'stock'), `store_orderitem` (origen, oferta, plazo,
+estado de abastecimiento) y `store_cartitem` (`supply_origin` 'own'). No reescribe datos y
+la versión anterior sigue escribiendo mientras corre. Ningún producto se vende bajo pedido
+hasta que alguien le pone el modo «Stock o bajo pedido» y carga una oferta. Después de
+`migrate`, añade al `crontab` la línea `expire_supplier_offers` de
+`deploy/crontab.example` (cada hora; la tienda ya ignora las ofertas vencidas aunque no
+corra).
+
+*Volver atrás desde DC3* — en este orden, **antes** de cambiar los contenedores:
+
+1. Pausa los pagos en la consola de integraciones (como para DC2).
+2. Pedidos pendientes de pago con líneas bajo pedido: la versión anterior las vendería del
+   estante. Lístalos y cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_pending_on_order_orders           # lista
+   $C exec -T backend python manage.py cancel_pending_on_order_orders --apply   # cancela
+   ```
+3. Pedidos ya PAGADOS con líneas bajo pedido sin recibir (filtro «Abastecimiento» del panel
+   de pedidos): la versión anterior los verá como faltante de stock. Recíbelos antes de
+   volver atrás, o anótalos para resolverlos a mano (recepción de compra + salida, o
+   reembolso). **No uses «Reprocesar salida» en la versión anterior** sobre ellos: los
+   vendería del estante.
+4. **Quita del `crontab` la línea `expire_supplier_offers`**.
+5. `git checkout <commit anterior>`, `$C build`, `$C up -d`. La migración `0134` **se deja
+   aplicada** (la versión anterior no lee sus columnas; sus `db_default` la cubren). Deshacerla
+   borraría proveedores, ofertas y el origen de las líneas vendidas.
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC3 en rama local (y segunda revisión de DC2)
+
+- Rama `feat/device-commerce`, commits locales sin push. DC3 (DEC-DEVICE-COMMERCE-01 · DC3):
+  proveedores y ofertas por variante (precio comercial, costo pactado sólo con
+  `costs.view`, cantidad confirmada, vigencia, plazo), modo «Bajo pedido» por producto,
+  venta bajo pedido en la web y en caja (la oferta se compromete al pagar, sin movimiento
+  de stock; oferta vencida o agotada al pagar → pago registrado y «abastecimiento por
+  confirmar»), recibir del proveedor (entrada + salida, neto cero), «no se pudo abastecer»,
+  carga Excel semanal y exportación, resumen «pendiente de liquidar al proveedor» (sólo
+  lectura, gancho de PAYABLES-01).
+- Segunda revisión de DC2: el reparto del estante sólo desde 4 equipos más un techo por
+  empresa; el pedido pagado gana su equipo; orden de bloqueos en el apartado; costo de
+  entrada de equipos sin costo propio.
+- Migración `0134` (aditiva). Nuevo cron: `expire_supplier_offers` cada hora.
+- PENDIENTE: seminuevos de proveedor externo (diseño en la DEC). Pendiente del
+  propietario: las decisiones «por confirmar» de DC3 y del techo de apartados.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC2 en rama local (y revisión de DC1)
 
 - Rama `feat/device-commerce`, commits locales sin push. DC2 (DEC-DEVICE-COMMERCE-01 · DC2):

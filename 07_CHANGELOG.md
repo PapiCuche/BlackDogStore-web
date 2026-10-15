@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC3: proveedores y venta bajo pedido
+
+Migración `0134` (proveedores, ofertas, modo de venta, origen de la línea; aditiva, reversible).
+
+**Added**
+- Proveedores y ofertas de proveedor por variante, con historial y desactivación; modo
+  «Bajo pedido» por producto; carga Excel «Ofertas de proveedor» (vista previa con errores
+  por fila, aplicación idempotente, columna de costo sólo con `costs.view`) y exportación.
+- Venta bajo pedido en la tienda («Bajo pedido — entrega en N días», a pedido explícito del
+  comprador) y en caja; el pago compromete la oferta sin mover stock; recibir del proveedor
+  escribe entrada y salida; «No se pudo abastecer» devuelve lo comprometido y marca el pedido.
+- `expire_supplier_offers` y su línea de cron; `ops_status` avisa de pedidos pagados con
+  abastecimiento por confirmar o fallido; resumen de solo lectura «Pendiente de liquidar al
+  proveedor».
+
+**Changed**
+- Un pedido con productos bajo pedido no recibidos no pasa a listo, enviado ni entregado.
+
+**Fixed (segunda revisión de DC2)**
+- Compradores de seminuevos distintos de una variante pequeña ya no se bloquean entre sí
+  (reparto sólo desde 4 equipos + techo por empresa); el pedido pagado de un carrito gana su
+  equipo frente a un checkout posterior sin pagar; un solo orden de bloqueos al apartar;
+  equipos sin costo entran al costo con que salieron.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: revisión independiente
 
 Migración `0133` (`StockUnit.hold_origin`, `hold_started_at`; aditiva, reversible).

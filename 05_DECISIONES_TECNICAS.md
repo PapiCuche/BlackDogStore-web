@@ -1860,3 +1860,102 @@ Migración `0133` (`StockUnit.hold_origin` con `db_default` '', `hold_started_at
   costo que ENTRAN con un costo declarado (el de su salida) llegan a ese costo y con ese
   origen («las transferencias llegan al costo con que salieron»). Hoy no hay transferencia
   de equipos (`set_transfer_item` la rechaza); la regla queda para cuando exista.
+
+### DEC-DEVICE-COMMERCE-01 · DC3 — proveedores y venta bajo pedido
+
+Migración `0134` (aditiva: tablas nuevas vacías, columnas nulas o con `db_default`;
+reversible y segura mientras corre la versión anterior).
+
+**Reglas del propietario.** Stock 0 no es vendible. Sin stock propio sólo se vende con el
+modo «Bajo pedido» del producto **y** una oferta válida de proveedor, en la web y en caja.
+Stock propio → salida y Kardex normales; proveedor → nunca se descuenta stock que no existe.
+Decisión del 2026-10-14: si el pago llega con la oferta vencida o agotada, **el pago se
+registra** y la línea queda «abastecimiento por confirmar»; nunca stock negativo.
+
+**Cómo queda.**
+- *Modelo.* `Supplier` (por empresa; documento opcional validado como el de un cliente;
+  nombre único sin mayúsculas por empresa; se desactiva, no se borra) y `SupplierOffer`
+  (proveedor, **variante** = `Product`, `agreed_cost` (nulo = no declarado; sólo
+  `costs.view`), `commercial_price`, `confirmed_quantity` (nula = sin confirmar → no
+  vende), `committed_quantity` (CHECK: nunca más que lo confirmado), `valid_from`–
+  `valid_until` (días de la tienda, ambos incluidos), `lead_time_days`, `is_active`).
+  Historial en `AdminAuditLog` (`supplier_offer_created/updated/deactivated/expired`, sin
+  el costo: sólo `has_cost`). Una oferta que un pedido nombra no se borra (PROTECT).
+- *Modo de venta.* `Product.sale_mode`: `stock` (por omisión, lo de siempre) o
+  `stock_or_order`. Un seminuevo nunca se vende bajo pedido (es un equipo concreto).
+- *Disponibilidad* (`supply_services.availability`, la única respuesta para catálogo,
+  carrito, checkout y caja): stock propio de la sucursal que despacha ≥ cantidad → propio;
+  si no, con el modo y una oferta **válida** (activa, proveedor activo, confirmada, hoy
+  dentro de la vigencia, saldo ≥ cantidad) → bajo pedido; si no, no se vende. El vencimiento
+  se lee de las fechas: una oferta vencida no vende aunque el comando no haya corrido.
+- *Qué oferta.* Precio comercial más bajo, luego costo pactado más bajo (nulo al final),
+  luego la que vence antes, luego el id. Determinista en todas las superficies.
+- *Qué paga el comprador.* El `commercial_price` de la oferta, congelado en la línea al
+  hacer el pedido (web) o la venta (caja). Puede diferir de `Product.price`: la lista del
+  proveedor cambia cada semana; el pedido no.
+- *Nunca mezclar.* Una línea es toda de stock o toda bajo pedido. El carrito guarda el
+  origen (`CartItem.supply_origin`) y el comprador lo pide a propósito (`on_order`); sin
+  él, una línea sin stock responde `on_order_available` con plazo y precio, y el modo
+  contrario sobre la misma línea es `mixed_supply`. **Stock parcial: la línea entera va
+  bajo pedido** (no se parte: el modelo de línea es uno por producto y la clave de salida
+  (pedido, producto) no admite dos orígenes); el comprador puede elegir menos cantidad del
+  estante. En caja, dos líneas del mismo producto con distinto origen se rechazan.
+- *Instantánea de la línea* (`OrderItem`): `supply_origin`, `supplier_offer`,
+  `lead_time_days` y, con costo declarado, `unit_cost` = costo pactado con
+  `cost_source='supplier_offer'`. No siguen a la oferta después.
+- *Checkout* valida (no compromete: sin denegación de servicio por carritos). *Pago*
+  (`_confirm` → `record_sale_stock_movements` → `supply_services.commit_order_lines`):
+  bajo el bloqueo de la fila de la oferta, `committed + qty ≤ confirmed` → línea `pending`
+  y oferta comprometida; si no (vencida, agotada, inactiva) → `to_confirm`, nota en el
+  pedido, auditoría `order_supply_to_confirm`, y el dinero queda registrado. Ninguna
+  línea bajo pedido escribe movimiento al pagar. Orden de bloqueos: pedido → ofertas →
+  estantes. En caja (estricto) una oferta que no cubre rechaza la venta entera.
+- *Seguimiento.* «Confirmar con proveedor» (`to_confirm` → `pending` contra una oferta
+  vigente, que pasa a ser su oferta, plazo y costo; el precio cobrado no cambia),
+  «Recibir del proveedor» (entrada `purchase_entry` al costo congelado + salida de venta
+  de esa línea en la misma transacción: estante neto cero y Kardex completo; un serializado
+  entra con sus series/IMEI reales y se venden **esos** equipos, con su `OrderUnit`),
+  «No se pudo abastecer» (motivo obligatorio; devuelve lo comprometido a la oferta, marca
+  `failed` y deja la nota de cancelar o reembolsar por el flujo existente — ORDER-CANCEL-01
+  no está en esta rama: el paso es manual). `sales.orders.manage`; recibir además
+  `inventory.adjust`.
+- *Lo que aún no llegó no sale.* Un pedido con una línea bajo pedido no recibida no pasa a
+  listo, enviado ni entregado (`FulfillmentBlocked`, `supply_pending`); una venta de caja
+  con una línea así queda pendiente de despacho, no entregada. El faltante derivado (INV-04)
+  y la identificación de equipos ignoran esas líneas hasta que se reciben, y reprocesar la
+  salida nunca las vende del estante.
+- *Margen.* La línea cuenta con su costo pactado congelado (DC1: costo conocido).
+- *Avisos.* Panel de pedidos: estado de abastecimiento por pedido y filtro `?supply=`;
+  `ops_status` dice «ATENCIÓN abastecimiento» si hay pedidos pagados por confirmar o fallidos.
+- *Vencimiento.* `expire_supplier_offers` (idempotente, auditado, nunca toca lo
+  comprometido) y su línea de cron (cada hora).
+- *Excel.* Plantilla de una hoja «Ofertas de proveedor». Clave (proveedor, variante,
+  vigente desde, vigente hasta): si existe se actualiza (o «sin cambios»); una vigencia
+  nueva crea otra oferta; las demás vigencias quedan. Errores por fila antes de escribir,
+  todo o nada al aplicar, el mismo trabajo dos veces no hace nada, «Costo pactado» ignorado
+  sin `costs.view`. Exportación de las ofertas vigentes que vuelve a cargar sin cambios.
+- *Panel y caja.* Proveedores, ofertas (filtros, historial, desactivar), modo de venta del
+  producto, abastecimiento en el pedido; la caja ofrece «Bajo pedido (N días)» con el
+  precio de la oferta. Tienda: «Bajo pedido — entrega en N días».
+- *PAYABLES-01 (sólo el gancho).* `GET /api/admin/suppliers/settlement/` (`costs.view`):
+  por proveedor, lo recibido bajo pedido al costo congelado. No hay modelo de deuda ni
+  registros: es una suma de lecturas.
+
+**Por confirmar con el propietario.**
+- Precio pagado = precio comercial de la oferta (no `Product.price`).
+- Elección de oferta por precio comercial más bajo (y no por costo más bajo).
+- Stock parcial: la línea entera va bajo pedido si el comprador la pide así.
+- El proveedor de la carga Excel debe existir (no se crea desde el archivo).
+- `to_confirm`/`failed` como «ATENCIÓN» en `ops_status` (avisa por correo vía cron).
+
+**PENDIENTE — seminuevos de proveedor externo (punto 6 del encargo).** No se implementó
+en DC3 para no tocar la tubería de apartados de DC2 a la vez que el proveedor. Diseño:
+`ExternalUnitOffer` (empresa, proveedor, variante seminueva, IMEI/serie guardados y nunca
+públicos, batería, estado estético, fotos por la tubería de `UnitPhoto`, notas públicas,
+costo pactado, precio de venta, `valid_until`, estado ofrecido/apartado/vendido/retirado,
+`public_id` UUID). La tienda la muestra igual que un seminuevo propio (lista blanca de
+`device_catalog.public_unit`, IMEI enmascarado) y el carrito la aparta con el mismo
+`hold_key`/plazo/topes (sin movimiento de Kardex: no hay estante); al pagar pasa a
+«apartado para el pedido» (sin movimiento); «Recibir» crea el `StockUnit` con ese IMEI/serie
+(comprobando que coincide) y lo vende a la línea por `_sell_chosen_units`; vencida o
+retirada antes del pago → la línea queda `to_confirm` como en DC3.
