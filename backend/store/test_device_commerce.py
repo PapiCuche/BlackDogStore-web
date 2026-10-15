@@ -1258,3 +1258,33 @@ class ReviewEdgesTest(DeviceShop, TestCase):
                             units=[{'serial_number': 'SEROTRA1', 'imei': IMEIS[39]}])
         body = _client(self.staff).get(f'/api/admin/catalog/models/{self.model.pk}/').json()
         self.assertEqual(body['used_unit_count'], 2)
+
+
+# ---------------------------------------------------------------------------
+# DC2 second review
+# ---------------------------------------------------------------------------
+
+class HoldLockOrderTest(DeviceShop, TestCase):
+    """P3 — one lock order in `hold()`: the cart/origin advisory locks, then any shelf."""
+
+    def setUp(self):
+        self.build()
+        self.receive(self.new128, 2)
+
+    def test_the_advisory_locks_are_taken_before_expired_holds_are_swept(self):
+        from unittest import mock
+        calls = []
+        real_lock, real_sweep = holds._lock_holders, holds.release_expired
+
+        def lock(*args, **kwargs):
+            calls.append('advisory')
+            return real_lock(*args, **kwargs)
+
+        def sweep(*args, **kwargs):
+            calls.append('sweep')
+            return real_sweep(*args, **kwargs)
+
+        with mock.patch.object(holds, '_lock_holders', side_effect=lock), \
+                mock.patch.object(holds, 'release_expired', side_effect=sweep):
+            holds.hold(product=self.new128, branch=self.branch, session_key='c', origin='o')
+        self.assertEqual(calls, ['advisory', 'sweep'])

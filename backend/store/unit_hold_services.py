@@ -188,12 +188,14 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     if product.condition_line == Product.CONDITION_USED and not unit_public_id:
         raise HoldError('unit_required', 'Elige el equipo que quieres comprar.')
 
-    release_expired(company=product.company, product=product)
     key = key_of(session_key)
     # The counts below are decided under a lock of this cart and this origin,
     # taken BEFORE the shelf: two adds of one cart for two products lock two
     # different shelves, and would otherwise both count the same «2 of 3».
+    # ONE LOCK ORDER (DC2 second review, P3): these advisory locks, THEN any
+    # shelf — the sweep below takes the shelf row, so it comes after them.
     _lock_holders(product.company_id, key, origin)
+    release_expired(company=product.company, product=product)
     now = timezone.now()
     holding = _live_web_holds(product.company, now).filter(hold_key=key).count()
     if holding >= max_holds_per_cart():
