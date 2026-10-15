@@ -700,10 +700,10 @@ def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
     quantity goes back to the offer, the order says it has to be refunded or
     cancelled through the existing flow, and nothing touches stock.
 
-    Also the way to RELEASE an order that was refunded or cancelled (by hand —
-    ORDER-CANCEL-01 is not in this branch): the offer gets back what the line
-    committed, never more than the offer holds (never below zero), audited
-    with the quantity released.
+    Also the way to RELEASE an order that was refunded or cancelled by another
+    road: the offer gets back what the line committed, never more than the
+    offer holds (never below zero), audited with the quantity released.
+    ORDER-CANCEL-01 releases its lines itself (`order_cancellation._release_supply`).
     """
     reason = ' '.join(str(reason or '').split())[:250]
     if not reason:

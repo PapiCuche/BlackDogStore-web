@@ -188,6 +188,8 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
             raise OrderCancelError('already_cancelled', 'Este pedido ya está cancelado.')
 
         previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
+        # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
+        supply_released = _release_supply(locked, actor, reason, request)
         movements, units_returned, already_returned = _restore_stock(locked, actor, reason, request)
         note_voided = _void_sales_note(locked, actor, reason)
         document = live_fiscal_document(locked)
@@ -220,12 +222,58 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
                 'fiscal_pending': document is not None,
                 'fiscal_document': label,
                 'sales_note_voided': note_voided,
+                # DC3: on-order lines that stopped waiting for their supplier.
+                'supply_released': supply_released,
                 # Said, so nobody reads a cancellation as a refund.
                 'paid_kept': True,
             },
             request=request, company=locked.company,
         )
     return cancellation
+
+
+def _release_supply(order, actor, reason, request) -> list[dict]:
+    """
+    DEVICE-COMMERCE-01 · DC3. Every on-order line still waiting for its
+    supplier stops waiting: «No se pudo abastecer», with the cancellation's
+    reason. A line committed against an offer gives the offer back what it
+    committed — never more than the offer holds — exactly as the staff's
+    `supply_services.fail_line` does, audited the same way. A line «por
+    confirmar» committed nothing. A RECEIVED line is goods on the shelf: its
+    sale exit comes back in `_restore_stock`. A line not yet paid ('')
+    committed nothing either.
+
+    Called with the order locked; offers are locked next (order, offers, shelf).
+    """
+    from django.db.models import F
+
+    from .models import OrderItem, SupplierOffer
+    from .supply_services import _audit
+
+    released = []
+    lines = (
+        OrderItem.objects.select_for_update()
+        .filter(order=order, supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                supply_status__in=(OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_TO_CONFIRM))
+        .order_by('supplier_offer_id', 'pk')
+    )
+    for line in lines:
+        quantity = 0
+        if line.supply_status == OrderItem.SUPPLY_PENDING and line.supplier_offer_id:
+            offer = SupplierOffer.objects.select_for_update().filter(pk=line.supplier_offer_id).first()
+            if offer is not None:
+                quantity = min(offer.committed_quantity, line.quantity)
+                if quantity:
+                    SupplierOffer.objects.filter(pk=offer.pk).update(
+                        committed_quantity=F('committed_quantity') - quantity, updated_at=timezone.now())
+        OrderItem.objects.filter(pk=line.pk).update(
+            supply_status=OrderItem.SUPPLY_FAILED, supply_note=f'Pedido cancelado: {reason}'[:300])
+        _audit('order_supply_failed', company=order.company, actor=actor, target_type='order',
+               target_id=order.pk, request=request, line_id=line.pk, reason=reason, released=quantity,
+               order_status=Order.Status.CANCELLED, source='order_cancellation')
+        released.append({'line_id': line.pk, 'offer_id': line.supplier_offer_id, 'quantity': quantity,
+                         'previous_status': line.supply_status})
+    return released
 
 
 def _restore_stock(order, actor, reason, request):
