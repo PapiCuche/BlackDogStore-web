@@ -746,7 +746,8 @@ de `migrate`, añade al `crontab` la línea `release_expired_unit_holds` de
    equipo de un mismo producto, en vez de perder una.
 
 **DEVICE-COMMERCE-01 · DC3 (`0134`): proveedores y venta bajo pedido.** Aditiva: dos
-tablas nuevas vacías (`store_supplier`, `store_supplieroffer`) y columnas con `db_default`
+tablas nuevas vacías (`store_supplier`, `store_supplieroffer` — con una oferta por proveedor,
+variante y vigencia y un CHECK que exige cantidad confirmada para comprometer) y columnas con `db_default`
 o nulas en `store_product` (`sale_mode` 'stock'), `store_orderitem` (origen, oferta, plazo,
 estado de abastecimiento) y `store_cartitem` (`supply_origin` 'own'). No reescribe datos y
 la versión anterior sigue escribiendo mientras corre. Ningún producto se vende bajo pedido
@@ -764,6 +765,10 @@ corra).
    $C exec -T backend python manage.py cancel_pending_on_order_orders           # lista
    $C exec -T backend python manage.py cancel_pending_on_order_orders --apply   # cancela
    ```
+   El mismo comando **también vacía las líneas de carrito tomadas bajo pedido** (la versión
+   anterior las leería como de estante y las vendería sin stock): la simulación dice cuántas
+   hay («Líneas de carrito bajo pedido: N») y `--apply` las borra («Quitadas: N»), con una
+   fila de auditoría por empresa (`on_order_cart_lines_removed_before_rollback`).
 3. Pedidos ya PAGADOS con líneas bajo pedido sin recibir (filtro «Abastecimiento» del panel
    de pedidos): la versión anterior los verá como faltante de stock. Recíbelos antes de
    volver atrás, o anótalos para resolverlos a mano (recepción de compra + salida, o

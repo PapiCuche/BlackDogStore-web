@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — DEVICE-COMMERCE-01 · DC3: correcciones de la revisión independiente
+
+Migración `0134` editada antes de publicar (índice único de ofertas y CHECK más estricto).
+
+**Fixed**
+- La carga Excel de ofertas ya no crea dos veces la misma oferta (dos vistas previas del mismo
+  archivo, o dos personas a la vez): índice único por proveedor, variante y vigencia, y el
+  segundo intento se rechaza con «El archivo cambió: vuelve a previsualizarlo».
+- El costo pactado sólo lo escribe quien aplica con `costs.view`; una celda de costo vacía no
+  borra el costo; una oferta desactivada a mano no se reactiva (columna opcional «Activa»).
+- Un pedido reembolsado o cancelado devuelve a la oferta lo comprometido («No se pudo
+  abastecer»); el pago deja «por confirmar» una línea cuyo producto salió de «Bajo pedido»;
+  un pedido sin sucursal compromete igual sus líneas bajo pedido.
+- «Bajo pedido» se rechaza (409 `stock_available`) en la web y en caja mientras el stock
+  propio cubre la línea (por confirmar con el propietario).
+- La carga bloquea sus ofertas en orden de id; el CHECK exige cantidad confirmada para
+  comprometer; la vuelta atrás también vacía las líneas de carrito bajo pedido.
+- «Mis pedidos» (`GET /api/orders/`) vuelve a la forma fijada de la línea; una línea bajo
+  pedido añade sólo su plazo y ya no se publica el estado interno del abastecimiento.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC3: proveedores y venta bajo pedido
 
 Migración `0134` (proveedores, ofertas, modo de venta, origen de la línea; aditiva, reversible).

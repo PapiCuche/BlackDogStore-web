@@ -1959,3 +1959,57 @@ costo pactado, precio de venta, `valid_until`, estado ofrecido/apartado/vendido/
 «apartado para el pedido» (sin movimiento); «Recibir» crea el `StockUnit` con ese IMEI/serie
 (comprobando que coincide) y lo vende a la línea por `_sell_chosen_units`; vencida o
 retirada antes del pago → la línea queda `to_confirm` como en DC3.
+
+#### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
+
+Migración `0134` editada (sin publicar; sigue aditiva y segura con la versión anterior, que
+no escribe en `store_supplieroffer`):
+
+- **Una oferta por clave** — `UNIQUE(company, supplier, product, valid_from, valid_until)`
+  (`unique_supplier_offer_window`). Antes, previsualizar dos veces el mismo Excel y aplicar
+  los dos trabajos (o dos personas a la vez) creaba dos ofertas idénticas y duplicaba lo
+  vendible bajo pedido (8 → 16). Al aplicar se vuelve a mirar cada clave que la vista previa
+  marcó «crear»; si ya existe, **se rechaza el trabajo entero**: «El archivo cambió: vuelve a
+  previsualizarlo». Dos aplicaciones a la vez se encuentran en el índice (la segunda inserción
+  espera a la primera y falla) y responden lo mismo. La pantalla responde «Ya hay una oferta…
+  con esa misma vigencia» (`duplicate`).
+- **CHECK más estricto** — comprometido > 0 exige confirmado NO nulo (`NULL >= n` pasaba).
+- **El costo lo decide quien aplica** — se escribe sólo si la vista previa lo leyó **y** quien
+  aplica tiene `costs.view`.
+- **Celda de costo vacía = sin cambio**, como en las demás cargas (antes borraba el costo).
+- **Una oferta desactivada a mano no se reactiva** al volver a subir el archivo. Columna
+  opcional «Activa (Sí/No)» (sólo en la plantilla; la exportación no la escribe para que un
+  archivo viejo no reactive nada): «Sí» reactiva, «No» desactiva, vacío no cambia. La vista
+  previa avisa «Oferta desactivada a mano: no se reactiva».
+- **Orden de bloqueos de la carga** — el trabajo, luego todas sus ofertas existentes en una
+  sola consulta por id (el orden del pago), antes de escribir; nunca en el orden de las filas.
+- **Reembolso o cancelación liberan la oferta** — en esta rama nada pone un pedido en
+  `refunded`/`cancelled` (ORDER-CANCEL-01 no está; el paso es manual), así que «No se pudo
+  abastecer» (`fail_line`) acepta pedidos pagados, reembolsados o cancelados, devuelve
+  `min(comprometido, línea)` (nunca bajo cero) y audita `released`. Confirmar y recibir
+  siguen exigiendo pedido pagado.
+- **El pago vuelve a mirar el modo** — si el producto dejó «Bajo pedido» entre el checkout y
+  el pago, la línea queda `to_confirm` (no compromete).
+- **Pedido sin sucursal** — el compromiso de las líneas bajo pedido ocurre antes de la salida
+  temprana «sin sucursal de despacho».
+- **Vuelta atrás** — `cancel_pending_on_order_orders --apply` también borra las líneas de
+  carrito bajo pedido (la versión anterior las leería como de estante), con el conteo en la
+  simulación y una auditoría por empresa.
+
+- **La línea pública del pedido conserva su forma** (`id`, `product`, `quantity`, `price`,
+  fijada por INVENTORY-UNIFIED-01; DC3 la había ampliado y rompía `PublicExposureMatrixTest`).
+  Una línea bajo pedido de un producto aún en la web añade **sólo** `lead_time_days`; la de un
+  producto cerrado sigue siendo el payload cerrado; `supply_status` y `supply_origin` no son
+  públicos. «Mis pedidos» dice «Bajo pedido — N días» y ya no muestra el estado del
+  abastecimiento (antes: «Pedido al proveedor», «Recibido», «No se pudo abastecer»).
+
+Pasada de mutación de la revisión: 25 mutantes, 24 muertos, 1 equivalente (quitar sólo el
+re-chequeo de claves al aplicar: el índice único devuelve el mismo rechazo).
+
+**Decisión mía, por confirmar con el propietario — «sin stock únicamente con Bajo
+pedido».** Mientras el stock propio de la sucursal que despacha cubre la cantidad de la línea,
+«Bajo pedido» se rechaza (409 `stock_available`, con mensaje) en la web (agregar y cambiar
+cantidad de una línea bajo pedido) y en caja (venta y vista previa, las dos API de caja).
+Como una línea nunca se mezcla, bajo pedido queda sólo para stock propio < cantidad pedida
+(el caso «stock parcial» de arriba). El checkout no lo vuelve a exigir: si llega stock entre
+el carrito y el pago, la línea sigue bajo pedido como la pidió el comprador.
