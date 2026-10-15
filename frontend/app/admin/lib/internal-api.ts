@@ -2019,3 +2019,219 @@ export async function deleteStorefrontListRow(
   if (res.status === 204) return;
   await handle<unknown>(res, "el escaparate");
 }
+
+// ---------------------------------------------------------------------------
+// DEVICE-COMMERCE-01 · DC2 — models, attributes, grades and line labels
+// ---------------------------------------------------------------------------
+//
+// The company is a SELECTION, as everywhere in this file: `fetchWithAuth` adds
+// the one chosen in the switcher, and the server re-validates it. Who may
+// change what (`products.manage`) is decided by the server on every write.
+
+export type CatalogLine = "new" | "used";
+
+export type AdminCatalogModel = {
+  id: number;
+  name: string;
+  slug: string;
+  category_id: number | null;
+  category_name: string | null;
+  image_url: string;
+  description: string;
+  is_published_online: boolean;
+  sort_order: number;
+  variant_count: number;
+  used_unit_count: number;
+};
+
+export type AdminVariantOption = {
+  attribute_id: number;
+  attribute_name: string;
+  option_id: number;
+  label: string;
+  swatch_hex: string;
+};
+
+export type AdminModelVariant = {
+  product_id: number;
+  name: string;
+  /** Shown when the server sends one; not part of the guaranteed contract. */
+  sku?: string;
+  code?: string;
+  condition_line: CatalogLine;
+  price: string;
+  options: AdminVariantOption[];
+  stock: number;
+};
+
+export type AdminCatalogModelDetail = AdminCatalogModel & { variants: AdminModelVariant[] };
+
+export type AdminCatalogModelWrite = Partial<{
+  name: string;
+  category_id: number | null;
+  slug: string;
+  description: string;
+  image_url: string;
+  is_published_online: boolean;
+  sort_order: number;
+}>;
+
+export type AdminAttributeOption = { id: number; label: string; swatch_hex: string; sort_order: number };
+
+export type AdminCatalogAttribute = {
+  id: number;
+  name: string;
+  kind: "text" | "color";
+  sort_order: number;
+  options: AdminAttributeOption[];
+};
+
+export type CosmeticGradeRow = {
+  id: number;
+  code: string;
+  label: string;
+  description: string;
+  sort_order: number;
+  is_active: boolean;
+};
+
+export type CatalogSettings = { new_line_label: string; used_line_label: string };
+
+/** The labels a line takes when the company leaves its own blank. */
+export const DEFAULT_LINE_LABELS: Record<CatalogLine, string> = { new: "Nuevos", used: "Seminuevos" };
+
+/** `#RRGGBB`, the only colour form the server stores for a swatch. */
+export const SWATCH_HEX = /^#[0-9A-Fa-f]{6}$/;
+
+export function isValidSwatchHex(value: string): boolean {
+  return SWATCH_HEX.test(value);
+}
+
+/**
+ * A refusal from the catalogue endpoints. `field` (or `fields`, for a 400 with
+ * a message per input) says where the form should show it; `code` is the
+ * server's machine-readable reason.
+ */
+export class CatalogApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null = null,
+    readonly field: string | null = null,
+    readonly fields: Record<string, string> = {},
+  ) {
+    super(message);
+    this.name = "CatalogApiError";
+  }
+}
+
+async function catalogCall<T>(path: string, init: RequestInit, fallback: string): Promise<T> {
+  const res = await fetchWithAuth(`${API_BASE}${path}`, init);
+  if (res.status === 204) return undefined as T;
+  const body = await res.json().catch(() => null);
+  if (res.ok) return body as T;
+  const detail = body && typeof body.detail === "string" ? body.detail : "";
+  const code = body && typeof body.code === "string" ? body.code : null;
+  const field = body && typeof body.field === "string" ? body.field : null;
+  const fields: Record<string, string> = {};
+  if (res.status === 400 && body && typeof body === "object" && !detail) {
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+      fields[key] = Array.isArray(value) ? String(value[0]) : String(value);
+    }
+  }
+  const message =
+    detail ||
+    (Object.keys(fields).length ? "Revisa los campos marcados." : "") ||
+    (res.status === 403 ? "No tienes permisos para esta operación." : fallback);
+  throw new CatalogApiError(message, res.status, code, field, fields);
+}
+
+const jsonInit = (method: string, body?: unknown): RequestInit =>
+  body === undefined ? { method } : { method, body: JSON.stringify(body) };
+
+export function fetchAdminCatalogModels(companyId?: number | null): Promise<AdminCatalogModel[]> {
+  return catalogCall<AdminCatalogModel[] | { results: AdminCatalogModel[] }>(
+    `/admin/catalog/models/${companyQuery(companyId)}`, {}, "No se pudieron cargar los modelos.",
+  ).then((data) => (Array.isArray(data) ? data : data?.results ?? []));
+}
+
+export function createAdminCatalogModel(body: AdminCatalogModelWrite, companyId?: number | null): Promise<AdminCatalogModel> {
+  return catalogCall(`/admin/catalog/models/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el modelo.");
+}
+
+export function fetchAdminCatalogModel(id: number, companyId?: number | null): Promise<AdminCatalogModelDetail> {
+  return catalogCall(`/admin/catalog/models/${id}/${companyQuery(companyId)}`, {}, "No se pudo cargar el modelo.");
+}
+
+export function updateAdminCatalogModel(
+  id: number, body: AdminCatalogModelWrite, companyId?: number | null,
+): Promise<AdminCatalogModelDetail> {
+  return catalogCall(`/admin/catalog/models/${id}/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudo guardar el modelo.");
+}
+
+export function fetchCatalogAttributes(companyId?: number | null): Promise<AdminCatalogAttribute[]> {
+  return catalogCall<AdminCatalogAttribute[] | { results: AdminCatalogAttribute[] }>(
+    `/admin/catalog/attributes/${companyQuery(companyId)}`, {}, "No se pudieron cargar los atributos.",
+  ).then((data) => (Array.isArray(data) ? data : data?.results ?? []));
+}
+
+export function createCatalogAttribute(
+  body: { name: string; kind: "text" | "color" }, companyId?: number | null,
+): Promise<AdminCatalogAttribute> {
+  return catalogCall(`/admin/catalog/attributes/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el atributo.");
+}
+
+export function createAttributeOption(
+  attributeId: number, body: { label: string; swatch_hex?: string }, companyId?: number | null,
+): Promise<AdminAttributeOption> {
+  return catalogCall(
+    `/admin/catalog/attributes/${attributeId}/options/${companyQuery(companyId)}`,
+    jsonInit("POST", body), "No se pudo crear la opción.",
+  );
+}
+
+export function updateAttributeOption(
+  optionId: number, body: Partial<{ label: string; swatch_hex: string; sort_order: number }>, companyId?: number | null,
+): Promise<AdminAttributeOption> {
+  return catalogCall(
+    `/admin/catalog/options/${optionId}/${companyQuery(companyId)}`,
+    jsonInit("PATCH", body), "No se pudo guardar la opción.",
+  );
+}
+
+/** Make a product a variant of a model (or take it out with `model_id: null`). */
+export function setProductVariant(
+  productId: number,
+  body: { model_id: number | null; condition_line: CatalogLine; option_ids: number[] },
+  companyId?: number | null,
+): Promise<unknown> {
+  return catalogCall(
+    `/admin/products/${productId}/variant/${companyQuery(companyId)}`,
+    jsonInit("PUT", body), "No se pudo guardar la variante.",
+  );
+}
+
+export function fetchCosmeticGrades(companyId?: number | null): Promise<CosmeticGradeRow[]> {
+  return catalogCall<CosmeticGradeRow[] | { results: CosmeticGradeRow[] }>(
+    `/admin/catalog/grades/${companyQuery(companyId)}`, {}, "No se pudo cargar la escala de estado.",
+  ).then((data) => (Array.isArray(data) ? data : data?.results ?? []));
+}
+
+export function createCosmeticGrade(
+  body: { code: string; label: string; description?: string; sort_order?: number }, companyId?: number | null,
+): Promise<CosmeticGradeRow> {
+  return catalogCall(`/admin/catalog/grades/${companyQuery(companyId)}`, jsonInit("POST", body), "No se pudo crear el grado.");
+}
+
+/** The suggested scale. Idempotent: pressing it twice creates nothing new. */
+export function seedCosmeticGrades(companyId?: number | null): Promise<unknown> {
+  return catalogCall(`/admin/catalog/grades/seed/${companyQuery(companyId)}`, jsonInit("POST", {}), "No se pudo crear la escala sugerida.");
+}
+
+export function fetchCatalogSettings(companyId?: number | null): Promise<CatalogSettings> {
+  return catalogCall(`/admin/catalog/settings/${companyQuery(companyId)}`, {}, "No se pudieron cargar los nombres de las líneas.");
+}
+
+export function updateCatalogSettings(body: Partial<CatalogSettings>, companyId?: number | null): Promise<CatalogSettings> {
+  return catalogCall(`/admin/catalog/settings/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudieron guardar los nombres de las líneas.");
+}

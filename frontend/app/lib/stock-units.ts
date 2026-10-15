@@ -28,7 +28,29 @@ export type StockUnit = {
   sold_at: string | null;
   order_id: number | null;
   notes: string;
+  // DC2 — what the shop publishes about a device it sells one by one.
+  public_id?: string;
+  /** Battery health in %, or null when nobody measured it (never shown as a number then). */
+  battery_health?: number | null;
+  /** Id of the company's cosmetic grade, or null. */
+  cosmetic_grade?: number | null;
+  cosmetic_grade_label?: string;
+  public_notes?: string;
+  /** This device's own price; null = the product's price. */
+  sale_price?: string | null;
+  condition_line?: "new" | "used";
+  photos?: UnitPhoto[];
 };
+
+export type UnitPhoto = { id: number; url: string; alt_text: string };
+
+/** What staff may change about a device's public listing. Cost is not here: it stays as it was. */
+export type UnitListingWrite = Partial<{
+  battery_health: number | null;
+  cosmetic_grade: number | null;
+  public_notes: string;
+  sale_price: string | null;
+}>;
 
 export type Option = { value: string; label: string };
 
@@ -108,11 +130,13 @@ export function fetchStockUnits(params: {
   status?: string;
   condition?: string;
   search?: string;
+  /** DC2: `used` lists the second-hand devices. */
+  line?: "new" | "used";
   page?: number;
 }): Promise<StockUnitPage> {
   const qs = new URLSearchParams();
   if (params.branch !== undefined) qs.set("branch", String(params.branch));
-  for (const key of ["product", "status", "condition", "search"] as const) {
+  for (const key of ["product", "status", "condition", "search", "line"] as const) {
     const value = params[key];
     if (value) qs.set(key, value);
   }
@@ -137,6 +161,21 @@ export const setProductTracking = (productId: number, body: { is_serialized: boo
 export const receiveStockUnits = (body: {
   product_id: number; branch: number; reason: string; units: NewUnit[];
 }) => post<{ results: StockUnit[] }>("/", body);
+
+/** DC2: change a device's listing (battery, grade, public notes, its own price). */
+export const updateStockUnitListing = (id: number, body: UnitListingWrite) =>
+  call<StockUnit>(`/${id}/`, { method: "PATCH", body: JSON.stringify(body) });
+
+/** DC2: add a photo of THIS device. No Content-Type: the browser writes the multipart boundary. */
+export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<UnitPhoto> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("alt_text", altText);
+  return call<UnitPhoto>(`/${id}/photos/`, { method: "POST", body: form });
+}
+
+export const deleteUnitPhoto = (id: number, photoId: number) =>
+  call<unknown>(`/${id}/photos/${photoId}/`, { method: "DELETE" });
 
 export type UnitAction = "reserve" | "release" | "write-off" | "return";
 
