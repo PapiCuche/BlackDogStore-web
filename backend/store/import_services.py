@@ -427,6 +427,29 @@ def _row_values(values, mapping, headers):
     return out, formulas
 
 
+def _drop_foreign_variant_columns(company, headers, mapping) -> str:
+    """
+    DC2 review — the variant columns are read only when the file looks like
+    the DC2 template (it has «Línea» or «Capacidad») AND the company has at
+    least one device model. Otherwise they are dropped from `mapping`, and
+    the one notice for the whole file is returned ('' = nothing dropped).
+    """
+    fields = [field for field in import_formats.VARIANT_HEADERS if field in mapping]
+    if not fields:
+        return ''
+    from .models import ProductModel
+
+    marker = import_formats.find_column(
+        headers, (*import_formats.VARIANT_HEADERS['line'], *import_formats.VARIANT_HEADERS['capacity']))
+    if marker is not None and ProductModel.objects.filter(company=company).exists():
+        return ''
+    names = ', '.join(f'«{str(headers[mapping[field]]).strip()}»' for field in fields)
+    for field in fields:
+        del mapping[field]
+    return (f'Las columnas {names} no se leen como modelo y opciones de equipo: el archivo no tiene «Línea» '
+            'ni «Capacidad», o la empresa no tiene modelos de equipo. El resto del archivo se carga como siempre.')
+
+
 def preview_products(*, company, actor, upload, filename, sheet_name=None,
                      header_row=None, mapping=None, options=None, images=None):
     """
@@ -561,6 +584,10 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
             found = import_formats.find_column(headers, wanted, taken=mapping.values())
             if found is not None:
                 mapping[field] = found
+    # …but only for a file that IS the DC2 template, in a company that has
+    # device models. A product file from before DC2 often has a «Modelo»
+    # (a part number) or a «Color» column: read as variants, every row failed.
+    variant_note = _drop_foreign_variant_columns(company, headers, mapping)
 
     job = BulkImportJob.objects.create(
         company=company, import_type=BulkImportJob.PRODUCTS,
@@ -1002,7 +1029,8 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
     job.summary = {
         'reader_notes': reader_notes,
         'detected': (detected or {}).get('label', ''),
-        'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else [])],
+        'format_notes': [*(detected or {}).get('notes', []), *([destination_note] if destination_note else []),
+                         *([variant_note] if variant_note else [])],
         'unmapped': import_formats.unmapped_notes(headers, mapping),
         'sheets': list(workbook.sheetnames),
         'media': media_summary,

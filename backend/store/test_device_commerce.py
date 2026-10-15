@@ -1017,3 +1017,35 @@ class SupersededOrderTest(SaleShop, TestCase):
         self.pay(self.first)
         self.used_a.refresh_from_db()
         self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.first.pk))
+
+
+class OldProductFilesTest(DeviceShop, TestCase):
+    """A product file that predates DC2 and happens to have «Modelo» or «Color» loads as it did."""
+
+    def setUp(self):
+        self.build()
+
+    def preview(self, company, headers, rows):
+        from store import import_services
+        from store.test_cost_imports import upload
+        return import_services.preview_products(company=company, actor=self.staff, filename='viejo.xlsx',
+                                                upload=upload(headers, rows))
+
+    def test_a_model_number_column_is_not_a_device_model(self):
+        job = self.preview(self.company, ['Código', 'Nombre', 'Precio de venta', 'Modelo', 'Color'],
+                           [['ACC-9', 'Funda transparente', '30', 'A2848', 'Negro']])
+        [row] = job.rows.all()
+        self.assertEqual(row.errors, [])
+        self.assertNotIn('variant', row.normalized_data)
+        notes = job.summary['format_notes']
+        self.assertEqual(len([n for n in notes if 'Modelo' in n]), 1, notes)
+
+    def test_a_company_without_device_models_ignores_the_columns(self):
+        bare = _p3_company('dc2-sin-modelos', 'Sin modelos')
+        staff, _ = _p2d_member(bare, 'dc2_sin_modelos', ['company.view', 'products.view', 'products.manage'])
+        self.staff = staff
+        job = self.preview(bare, ['Código', 'Nombre', 'Precio de venta', 'Modelo', 'Capacidad', 'Color', 'Línea'],
+                           [['TEL-9', 'Teléfono', '900', 'Teléfono X', '128 GB', 'Negro', 'Nuevo']])
+        [row] = job.rows.all()
+        self.assertEqual(row.errors, [])
+        self.assertNotIn('variant', row.normalized_data)
