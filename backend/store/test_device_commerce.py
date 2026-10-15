@@ -762,6 +762,17 @@ class ExcelColumnsTest(DeviceShop, TestCase):
         self.assertNotIn('battery_health', rows[3].normalized_data)
         self.assertTrue(rows[4].errors)                   # a new product is not of the used line
 
+    def test_a_sale_price_in_the_file_needs_whoever_manages_products(self):
+        stocker, _ = _p2d_member(self.company, 'dc2_bodega_xls', ['company.view', 'inventory.view',
+                                                                  'inventory.adjust'])
+        self.staff = stocker
+        job, [row] = self.units_file(self.UNIT_HEADERS, [[
+            '', '', '', 'SERUSADO09', IMEIS[29], '', 'Usado', '', 'Compra', 'Teléfono X', '128 GB', 'Azul',
+            'Seminuevo', '', '', '1899.90']])
+        self.assertEqual(row.errors, [])
+        self.assertNotIn('sale_price', row.normalized_data)
+        self.assertTrue(any('Precio de venta ignorado' in w for w in row.warnings))
+
     def test_a_new_device_ignores_a_sale_price_and_keeps_its_variant_price(self):
         job, [row] = self.units_file(self.UNIT_HEADERS, [[
             '', '', '', 'SERNUEVO07', IMEIS[36], '', '', '', 'Compra', 'Teléfono X', '256 GB', 'Negro',
@@ -1167,3 +1178,61 @@ class DeviceSaleCostTest(SaleShop, TestCase):
         [line] = order.items.all()
         self.assertEqual((line.unit_cost, line.cost_source), (None, 'unknown'))
         self.assertEqual((exit_line.unit_cost, exit_line.cost_source), (None, 'unknown'))
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class ReviewEdgesTest(DeviceShop, TestCase):
+    """The smaller findings of the DC2 review."""
+
+    def setUp(self):
+        self.build()
+        self.new_a, self.new_b = self.receive(self.new128, 2)
+        self.used_a, self.used_b = self.receive(self.used128, 2)
+        units.update_unit(self.used_a, sale_price='1999.00')
+        units.update_unit(self.used_b, sale_price='1500.00')
+        self.public = _client(host=self.host)
+
+    def test_removing_a_device_that_is_being_sold_answers_and_does_not_fail(self):
+        from unittest import mock
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        with mock.patch.object(holds, '_release', side_effect=units.StockUnitError('se está vendiendo')):
+            res = self.public.post('/api/cart/release-unit/', {'session_key': 'carrito-a',
+                                                               'unit': str(self.used_a.public_id)}, format='json')
+        self.assertEqual((res.status_code, res.json()), (200, {'released': 0}))
+
+    def test_a_devices_price_is_set_by_whoever_manages_products(self):
+        stocker, _ = _p2d_member(self.company, 'dc2_bodega', ['company.view', 'inventory.view', 'inventory.adjust'])
+        url = f'/api/admin/inventory/units/{self.used_a.pk}/'
+        refused = _client(stocker).patch(url, {'sale_price': '1.00'}, format='json')
+        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(StockUnit.objects.get(pk=self.used_a.pk).sale_price, D('1999.00'))
+        # The rest of the device is still theirs to edit, and a manager may set the price.
+        self.assertEqual(_client(stocker).patch(url, {'public_notes': 'Con caja'}, format='json').status_code, 200)
+        self.assertEqual(_client(self.staff).patch(url, {'sale_price': '1899.00'}, format='json').status_code, 200)
+
+    def test_a_model_off_the_web_cannot_be_held(self):
+        device_catalog.update_model(self.model, is_published_online=False)
+        for kwargs in ({'product': self.new128}, {'product': self.used128, 'unit_public_id': str(self.used_a.public_id)}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(holds.HoldError) as caught:
+                holds.hold(branch=self.branch, session_key='carrito-a', **kwargs)
+            self.assertEqual(caught.exception.code, 'not_found')
+        self.assertFalse(StockUnit.objects.filter(status='reserved').exists())
+
+    def test_the_app_catalogue_does_not_list_used_variants(self):
+        res = _client().get(f'/api/v1/storefront/{self.company.slug}/products/')
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        slugs = {p['slug'] for p in (body['results'] if isinstance(body, dict) else body)}
+        self.assertIn(self.new128.slug, slugs)
+        self.assertNotIn(self.used128.slug, slugs)
+        self.assertEqual(_client().get(f'/api/v1/storefront/{self.company.slug}/products/{self.used128.slug}/')
+                         .status_code, 404)
+
+    def test_the_admin_count_of_used_devices_is_the_storefront_branchs(self):
+        from store.models import Branch
+        elsewhere = Branch.objects.create(company=self.company, name='Otra sede')
+        units.receive_units(branch=elsewhere, product=self.used128, actor=self.staff, reason='Compra',
+                            units=[{'serial_number': 'SEROTRA1', 'imei': IMEIS[39]}])
+        body = _client(self.staff).get(f'/api/admin/catalog/models/{self.model.pk}/').json()
+        self.assertEqual(body['used_unit_count'], 2)

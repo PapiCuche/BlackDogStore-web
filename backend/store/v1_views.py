@@ -32,6 +32,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .models import Product
 from .settings_views import build_storefront_config_payload
 from .tenancy import (
     company_storefront_categories,
@@ -110,6 +111,10 @@ class V1StorefrontProductViewSet(V1PublicStorefrontMixin, viewsets.ReadOnlyModel
         # the same result until the day one filter is forgotten.
         queryset = (
             company_storefront_products(self.get_storefront_company())
+            # DC2 review — a USED variant has no price of its own (each device
+            # has one) and the app cannot buy by device yet: not listed, not
+            # served, rather than shown at a placeholder price.
+            .exclude(product_model__isnull=False, condition_line=Product.CONDITION_USED)
             .select_related('category')
             .prefetch_related('reviews', 'images')
         )

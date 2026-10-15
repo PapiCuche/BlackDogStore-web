@@ -38,7 +38,7 @@ from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
 from . import inventory_services
-from .models import CartItem, Order, Product, StockMovement, StockUnit
+from .models import CartItem, Order, Product, ProductModel, StockMovement, StockUnit
 from .stock_unit_services import StockUnitError, _move
 
 HOLD_REASON = 'Apartado web: carrito'
@@ -182,6 +182,9 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
         raise HoldError('sold_out', 'La tienda no tiene una sucursal de despacho configurada.')
     if not product.sells_by_unit or not product.is_sold_online:
         raise HoldError('not_found', 'Producto no encontrado o no disponible.')
+    if not ProductModel.objects.filter(pk=product.product_model_id, is_published_online=True).exists():
+        # A model taken off the web: its page is gone, and so are its devices.
+        raise HoldError('not_found', 'Producto no encontrado o no disponible.')
     if product.condition_line == Product.CONDITION_USED and not unit_public_id:
         raise HoldError('unit_required', 'Elige el equipo que quieres comprar.')
 
@@ -280,7 +283,11 @@ def release(*, company, session_key, unit_public_id=None, product=None) -> int:
     for unit in qs.select_related('product'):
         if unit.hold_order_id and _order_is_live(unit.hold_order_id):
             continue
-        _release(unit)
+        try:
+            with transaction.atomic():
+                _release(unit)
+        except StockUnitError:
+            continue      # it moved meanwhile (a payment is selling it): not this cart's to drop
         touched.add(unit.product)
         released += 1
     for item in touched:

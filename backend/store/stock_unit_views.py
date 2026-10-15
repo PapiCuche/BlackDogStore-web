@@ -28,6 +28,8 @@ from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
 from .inventory_services import InventoryError
+from .admin_views import CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES
+from .admin_views import _company_context as _catalog_context
 from .inventory_views import (
     CAP_INVENTORY_ADJUST, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_ADJUST_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
@@ -320,6 +322,12 @@ class _UnitMixin:
         return Response(unit_payload(fresh, include_cost=may_view_costs(request)))
 
 
+def may_manage_products(request) -> bool:
+    """Whether this caller may manage the catalogue (prices included) in the company it acts on."""
+    _company, error = _catalog_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
+    return error is None
+
+
 class StockUnitDetailView(_UnitMixin, APIView):
     """PATCH — condition, cost, notes. Never the identifiers or the status."""
 
@@ -334,6 +342,13 @@ class StockUnitDetailView(_UnitMixin, APIView):
         if 'cost' in fields and not may_view_costs(request):
             return Response(
                 {'detail': 'No tienes permiso para ver ni corregir costos.', 'field': 'cost'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if 'sale_price' in fields and not may_manage_products(request):
+            # DC2 review — what a device sells for is the catalogue's decision,
+            # not the stockroom's: the same authority as a product's price.
+            return Response(
+                {'detail': 'No tienes permiso para cambiar precios de venta.', 'field': 'sale_price'},
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:

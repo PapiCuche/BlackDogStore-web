@@ -386,6 +386,24 @@ def variant_options_of(product) -> list[VariantOption]:
 # Cosmetic grades
 # ---------------------------------------------------------------------------
 
+def user_may_manage_products(user, company) -> bool:
+    """
+    DC2 review — whether `user` may set what things sell for in `company`
+    (`products.manage`; the legacy bridge like the catalogue screens). The
+    service-side twin of the catalogue views' check, for code that holds a
+    user and a company (the device load).
+    """
+    from .models import UserProfile
+    from .permissions import get_user_role
+    from .tenancy import has_capability, uses_legacy_bridge
+
+    if company is None or user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if uses_legacy_bridge(user, company):
+        return get_user_role(user) in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN)
+    return has_capability(user, company, 'products.manage')
+
+
 def seed_cosmetic_grades(company) -> int:
     """
     The default scale, for ONE company that asks for it. Idempotent: a code

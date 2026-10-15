@@ -156,9 +156,10 @@ def _model_payload(model, *, variants=False):
         'description': model.description, 'image_url': model.image_url,
         'is_published_online': model.is_published_online, 'sort_order': model.sort_order,
         'variant_count': model.variants.count(),
+        # The storefront's branch, like the availability the shop shows.
         'used_unit_count': StockUnit.objects.filter(
             product__product_model=model, product__condition_line=Product.CONDITION_USED,
-            status=StockUnit.Status.AVAILABLE,
+            status=StockUnit.Status.AVAILABLE, branch=company_fulfillment_branch(model.company),
         ).count(),
     }
     if variants:

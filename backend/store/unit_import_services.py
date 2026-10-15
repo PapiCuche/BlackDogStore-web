@@ -257,6 +257,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             raise UnitImportError('La sucursal indicada no pertenece a esta empresa.')
     default_reason = ' '.join(str(default_reason or '').split())
 
+    # DC2 review — a device's sale price is the catalogue's decision.
+    prices_allowed = device_catalog.user_may_manage_products(actor, company)
     index = CatalogueIndex(company)
     products = {product.pk: product for product in Product.objects.filter(company=company)}
     conditions = _conditions()
@@ -396,6 +398,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         sale_price = fields['sale_price']
         if sale_price and product is not None and product.condition_line != 'used':
             warnings.append('Precio de venta ignorado: un equipo nuevo se vende al precio de su variante.')
+            sale_price = ''
+        elif sale_price and not prices_allowed:
+            warnings.append('Precio de venta ignorado: sólo quien administra productos fija precios.')
             sale_price = ''
 
         cleaned = None
