@@ -418,6 +418,11 @@ class WebOnOrderOverStockTest(SupplyShop, TestCase):
         patched = self.public.patch(f'/api/cart/{item.pk}/?session_key=carrito-a', {'quantity': 1}, format='json')
         self.assertEqual((patched.status_code, patched.json()['code']), (409, 'stock_available'))
 
+    def test_a_line_the_shelf_covers_exactly_is_flagged(self):
+        self.allow()
+        self.assertEqual(self.add(quantity=3).status_code, 200)
+        self.assertTrue(self.checkout().items.get().supply_chosen_over_stock)
+
     def test_a_line_the_shelf_cannot_cover_is_not_flagged(self):
         res = self.add(quantity=4)
         self.assertEqual(res.status_code, 200, res.content)
@@ -514,3 +519,43 @@ class MarginEstimatedRealisedTest(MarginFixture):
         self.assertIsNone(body['estimated']['margin_percent'])
         self.assertIsNone(body['realised']['margin_percent'])
         self.assertEqual(body['unknown_cost']['net_sales'], '800.00')
+
+
+class SweepAgainstCheckoutRaceTest(TransactionTestCase):
+    """
+    A checkout extends a hold (row locked, not yet committed) while the sweep
+    finds it expired: the sweep waits for the device's row and reads it again
+    — it does not release the hold the checkout just bound.
+    """
+
+    def test_the_sweep_waits_for_the_checkout_and_leaves_the_hold(self):
+        import threading
+        import time
+
+        from django.db import transaction as tx
+
+        shop = DeviceShop()
+        shop.build('dec-carrera-checkout')
+        shop.receive(shop.new128, 2)
+        unit = holds.hold(product=shop.new128, branch=shop.branch, session_key='carrito-a')
+        StockUnit.objects.filter(pk=unit.pk).update(hold_until=timezone.now() - timedelta(minutes=1))
+        locked = threading.Event()
+
+        def checkout():
+            try:
+                with tx.atomic():
+                    StockUnit.objects.filter(pk=unit.pk).update(hold_until=timezone.now() + timedelta(minutes=45))
+                    locked.set()
+                    time.sleep(1.5)
+            finally:
+                connection.close()
+
+        thread = Thread(target=checkout)
+        thread.start()
+        self.assertTrue(locked.wait(timeout=10))
+        released = holds.release_one_expired(unit.pk)
+        thread.join(timeout=20)
+        self.assertFalse(released)
+        unit.refresh_from_db()
+        self.assertEqual(unit.status, 'reserved')
+        self.assertEqual(_release_lines(shop.new128), 0)
