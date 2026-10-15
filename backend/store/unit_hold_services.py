@@ -154,6 +154,9 @@ def held_units(session_key, company, *, product=None, now=None):
 
 def _sync_cart_line(session_key, product) -> None:
     """The cart line of a by-unit product says how many devices the cart holds."""
+    if CartItem.objects.filter(session_key=session_key, product=product,
+                               supply_origin=CartItem.SUPPLY_SUPPLIER).exists():
+        return        # DC3 — taken on order: it holds no device and says its own quantity.
     count = held_units(session_key, product.company, product=product).count()
     if count:
         CartItem.objects.update_or_create(

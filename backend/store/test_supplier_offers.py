@@ -463,3 +463,151 @@ class LastUnitRaceTest(TransactionTestCase):
         self.assertEqual(shop.offer.committed_quantity, 1)
         self.assertEqual(Order.objects.filter(pk__in=[o.pk for o in orders], paid=True).count(), 2)
         self.assertFalse(StockMovement.objects.filter(product=shop.case).exists())
+
+
+# ---------------------------------------------------------------------------
+# The storefront: catalogue, cart
+# ---------------------------------------------------------------------------
+
+from django.test import override_settings  # noqa: E402
+from rest_framework.test import APIClient  # noqa: E402
+
+from store.test_device_commerce import DeviceShop  # noqa: E402
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class StorefrontOnOrderTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+        self.public = APIClient(HTTP_HOST=self.host)
+
+    def add(self, quantity=1, on_order=None, session='carrito-a', product=None):
+        body = {'session_key': session, 'product': (product or self.case).pk, 'quantity': quantity}
+        if on_order is not None:
+            body['on_order'] = on_order
+        return self.public.post('/api/cart/add/', body, format='json')
+
+    def test_the_catalogue_says_on_order_with_its_lead_time_and_price_never_cost_or_supplier(self):
+        res = self.public.get(f'/api/products/?slug={self.case.slug}')
+        body = res.json()
+        row = (body['results'] if isinstance(body, dict) else body)[0]
+        self.assertEqual(row['inventory'], 0)
+        self.assertEqual(row['on_order'], {'lead_time_days': 4, 'price': '110.00'})
+        text = res.content.decode()
+        for secret in ('70.00', 'Mayorista', 'agreed_cost', 'supplier'):
+            self.assertNotIn(secret, text)
+        SupplierOffer.objects.all().update(is_active=False)
+        res = self.public.get(f'/api/products/?slug={self.case.slug}').json()
+        self.assertIsNone((res['results'] if isinstance(res, dict) else res)[0]['on_order'])
+
+    def test_stock_zero_is_not_added_unless_the_buyer_takes_it_on_order(self):
+        refused = self.add(2)
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(refused.json()['code'], 'on_order_available')
+        self.assertEqual(refused.json()['on_order']['lead_time_days'], 4)
+        self.assertFalse(CartItem.objects.exists())
+        res = self.add(2, on_order=True)
+        self.assertEqual(res.status_code, 200, res.content)
+        line = res.json()
+        self.assertEqual((line['supply']['origin'], line['supply']['lead_time_days'], line['line_total']),
+                         ('supplier', 4, '220.00'))
+        self.assertEqual(CartItem.objects.get().supply_origin, 'supplier')
+        self.assertEqual(self.add(4, on_order=True).json()['code'], 'not_on_order')      # 6 > 5 confirmed
+        patched = self.public.patch(f'/api/cart/{CartItem.objects.get().pk}/?session_key=carrito-a',
+                                    {'quantity': 5}, format='json')
+        self.assertEqual(patched.status_code, 200, patched.content)
+        too_many = self.public.patch(f'/api/cart/{CartItem.objects.get().pk}/?session_key=carrito-a',
+                                     {'quantity': 6}, format='json')
+        self.assertEqual(too_many.status_code, 400)
+
+    def test_without_the_mode_or_an_offer_on_order_is_refused(self):
+        Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)
+        res = self.add(1, on_order=True)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'not_on_order'))
+        self.assertEqual(self.add(1).json().get('code'), None)       # plain «stock insuficiente»
+
+    def test_a_line_is_never_half_shelf_half_order(self):
+        self.stock(self.case, 1)
+        self.assertEqual(self.add(1).status_code, 200)
+        mixed = self.add(1, on_order=True)
+        self.assertEqual((mixed.status_code, mixed.json()['code']), (409, 'mixed_supply'))
+        CartItem.objects.all().delete()
+        self.assertEqual(self.add(3, on_order=True).status_code, 200)
+        self.assertEqual(self.add(1).json()['code'], 'mixed_supply')
+
+    def test_web_checkout_and_payment_of_an_on_order_line(self):
+        self.add(2, on_order=True)
+        order = self.checkout()
+        self.assertEqual(order.items.get().supply_origin, 'supplier')
+        self.pay(order)
+        self.assertEqual(order.items.get().supply_status, 'pending')
+
+    def test_the_buyers_order_shows_the_lead_time_and_not_the_cost(self):
+        from django.contrib.auth.models import User
+        buyer = User.objects.create_user(username='dc3_comprador', password='x')
+        self.add(1, on_order=True)
+        order = self.checkout()
+        Order.objects.filter(pk=order.pk).update(user=buyer)
+        self.pay(order)
+        client = APIClient(HTTP_HOST=self.host)
+        client.force_authenticate(user=buyer)
+        res = client.get('/api/orders/')
+        body = res.json()
+        row = (body['results'] if isinstance(body, dict) else body)[0]
+        item = row['items'][0]
+        self.assertEqual((item['supply_origin'], item['lead_time_days']), ('supplier', 4))
+        for secret in ('unit_cost', 'supplier_offer', '70.00', 'Mayorista'):
+            self.assertNotIn(secret, res.content.decode())
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class DeviceOnOrderTest(DeviceShop, TestCase):
+    """A new variant sold by unit, with no device on the shelf, sold on order."""
+
+    def setUp(self):
+        self.build('dc3-equipos')
+        self.public = APIClient(HTTP_HOST=self.host)
+        Product.objects.filter(pk=self.new256.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+        self.new256.refresh_from_db()
+        self.supplier = supply.create_supplier(company=self.company, name='Importadora')
+        self.offer = supply.create_offer(
+            company=self.company, supplier_id=self.supplier.pk, product_id=self.new256.pk, agreed_cost='2800.00',
+            commercial_price='3400.00', confirmed_quantity=2, valid_from=today(),
+            valid_until=today() + timedelta(days=7), lead_time_days=10, may_view_costs=True)
+
+    def test_the_model_page_offers_the_variant_on_order(self):
+        detail = self.public.get(f'/api/catalog/models/{self.model.slug}/').json()
+        row = next(v for v in detail['variants'] if v['product_id'] == self.new256.pk)
+        self.assertEqual((row['available'], row['availability']), (True, 'supplier'))
+        self.assertEqual(row['on_order'], {'lead_time_days': 10, 'price': '3400.00'})
+        self.assertNotIn('2800', str(detail))
+        own = next(v for v in detail['variants'] if v['product_id'] == self.new128.pk)
+        self.assertEqual((own['available'], own['availability']), (False, 'none'))
+
+    def test_a_device_on_order_holds_nothing_then_is_received_with_its_real_imei_and_sold(self):
+        from store.test_device_commerce import IMEIS
+        res = self.public.post('/api/cart/add/', {'session_key': 'c', 'product': self.new256.pk, 'on_order': True},
+                               format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertFalse(StockUnit.objects.filter(status='reserved').exists())
+        listed = self.public.get('/api/cart/?session_key=c').json()
+        listed = listed['results'] if isinstance(listed, dict) else listed
+        self.assertEqual(len(listed), 1, 'reading the cart keeps an on-order device line')
+        # A device on the shelf cannot be held into the same line.
+        self.receive(self.new256, 1)
+        mixed = self.public.post('/api/cart/add/', {'session_key': 'c', 'product': self.new256.pk}, format='json')
+        self.assertEqual(mixed.json()['code'], 'mixed_supply')
+        shop = SupplyShop()
+        shop.company, shop.branch = self.company, self.branch
+        order = shop.checkout('c')
+        shop.pay(order)
+        line = order.items.get()
+        self.assertEqual((line.supply_status, line.stock_unit_id), ('pending', None))
+        with self.assertRaises(supply.SupplyError):
+            supply.receive_line(line, actor=self.staff, units=[])
+        supply.receive_line(line, actor=self.staff, units=[{'serial_number': 'SERDC3001', 'imei': IMEIS[30]}])
+        unit = StockUnit.objects.get(serial_number='SERDC3001')
+        self.assertEqual((unit.status, unit.order_id, unit.cost), ('sold', order.pk, D('2800.00')))
+        self.assertEqual(self.shelf(self.new256), 1, 'the device of the shelf is untouched')
+        from store import unit_identification
+        self.assertEqual(unit_identification.pending_units(order), {})

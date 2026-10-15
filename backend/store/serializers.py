@@ -133,14 +133,22 @@ class ProductSerializer(serializers.ModelSerializer):
     product_model = serializers.SerializerMethodField()
     condition_line = serializers.CharField(read_only=True)
     sells_by_unit = serializers.BooleanField(read_only=True)
+    # DC3 — added: «Bajo pedido — entrega en N días» at this price, or null.
+    # Only what the buyer may know: never the cost, the supplier or its quantity.
+    on_order = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price',
             'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
-            'product_model', 'condition_line', 'sells_by_unit',
+            'product_model', 'condition_line', 'sells_by_unit', 'on_order',
         ]
+
+    def get_on_order(self, obj):
+        from .supply_services import on_order_payload
+
+        return on_order_payload(obj)
 
     def get_product_model(self, obj):
         model = obj.product_model if obj.product_model_id else None
@@ -225,7 +233,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ['id', 'product', 'quantity', 'price']
+        # DC3 — added: whether the line comes from a supplier, its lead time
+        # and how its supply goes. Never its cost, never its supplier.
+        fields = ['id', 'product', 'quantity', 'price', 'supply_origin', 'lead_time_days', 'supply_status']
 
     def to_representation(self, instance):
         if instance.product.is_sold_online:
@@ -240,6 +250,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
             'product': closed_product_payload(instance.product),
             'quantity': fields['quantity'].to_representation(instance.quantity),
             'price': fields['price'].to_representation(instance.price),
+            'supply_origin': instance.supply_origin,
+            'lead_time_days': instance.lead_time_days,
+            'supply_status': instance.supply_status,
         }
 
 
@@ -304,6 +317,19 @@ class CartItemSerializer(serializers.ModelSerializer):
             data = super().to_representation(instance)
             data['available'] = True
             data['sells_by_unit'] = product.sells_by_unit
+            if instance.supply_origin == CartItem.SUPPLY_SUPPLIER:
+                # DC3 — taken on order: the offer that covers it now, at its price.
+                from .supply_services import offer_for_line
+
+                offer = offer_for_line(product, instance.quantity)
+                data['supply'] = {
+                    'origin': 'supplier', 'available': offer is not None,
+                    'lead_time_days': offer.lead_time_days if offer else None,
+                    'price': str(offer.commercial_price) if offer else None,
+                }
+                data['line_total'] = str(offer.commercial_price * instance.quantity) if offer else None
+                return data
+            data['supply'] = {'origin': 'own'}
             if product.sells_by_unit:
                 # DC2 — the devices this cart holds, each at ITS frozen price.
                 # Never the IMEI: its last four digits at most.

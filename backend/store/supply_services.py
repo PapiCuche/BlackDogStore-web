@@ -433,15 +433,17 @@ def availability(product, branch, quantity: int = 1, *, on=None) -> Availability
     return Availability(None, shelf)
 
 
-def on_order_payload(product, branch) -> dict | None:
-    """What the shop may say publicly about selling `product` on order. Never a cost or a supplier."""
+def on_order_payload(product) -> dict | None:
+    """
+    What the shop may say publicly about selling `product` on order: the lead
+    time and the price. Never a cost, a supplier or how many it confirmed.
+    """
     if not sells_on_order(product):
         return None
     offer = best_offer(product, 1)
     if offer is None:
         return None
-    return {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price),
-            'max_quantity': offer.remaining}
+    return {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price)}
 
 
 # ---------------------------------------------------------------------------

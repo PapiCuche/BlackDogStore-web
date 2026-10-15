@@ -491,10 +491,11 @@ def public_model(model, branch) -> dict:
     images and availability, and its USED units one by one.
 
     `available` is own stock in the storefront's fulfilment branch (as every
-    other public product). DC3 adds supplier availability: `availability` is
-    where it goes, and today it only ever says 'own_stock' or 'none'.
+    other public product) or, DC3, a sale on order: `availability` says which
+    ('own_stock', 'supplier' or 'none') and `on_order` its lead time and price.
     """
     from .product_media import public_payload
+    from .supply_services import on_order_payload
 
     variants = list(
         model.variants.filter(is_active=True, is_published_online=True)
@@ -532,6 +533,10 @@ def public_model(model, branch) -> dict:
             }))
             continue
         quantity = stock.get(product.pk, 0) if branch is not None else 0
+        # DC3 — no device of its own on the shelf: on order, when the variant
+        # may be sold so and an offer covers it (lead time and price only).
+        on_order = on_order_payload(product)
+        availability = 'own_stock' if quantity > 0 else ('supplier' if on_order else 'none')
         variant_rows.append({
             'product_id': product.pk,
             'slug': product.slug,
@@ -540,8 +545,9 @@ def public_model(model, branch) -> dict:
             'price': str(product.price),
             'image_url': product.image_url,
             'images': [public_payload(image) for image in product.images.all()],
-            'available': quantity > 0,
-            'availability': 'own_stock' if quantity > 0 else 'none',
+            'available': availability != 'none',
+            'availability': availability,
+            'on_order': on_order,
             # Bought by unit: the cart holds one concrete device of this variant.
             'sells_by_unit': product.sells_by_unit,
         })

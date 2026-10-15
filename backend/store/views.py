@@ -1058,7 +1058,7 @@ class CartViewSet(
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if item.product.sells_by_unit:
+        if item.product.sells_by_unit and item.supply_origin != CartItem.SUPPLY_SUPPLIER:
             # DC2 — its quantity is the devices the cart holds: add or remove a device.
             return Response(
                 {'code': 'by_unit', 'detail': 'Agrega o quita equipos uno por uno.'},
@@ -1078,6 +1078,20 @@ class CartViewSet(
                 {'detail': 'La cantidad debe ser mayor a 0.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if item.supply_origin == CartItem.SUPPLY_SUPPLIER:
+            # DC3 — on order: an offer has to cover the new quantity; the shelf is not asked.
+            from .supply_services import offer_for_line
+
+            if offer_for_line(item.product, quantity) is None:
+                return Response(
+                    {'code': 'not_on_order',
+                     'detail': f'{item.product.name} no está disponible bajo pedido en esa cantidad.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            item.quantity = quantity
+            item.save(update_fields=['quantity'])
+            return Response(CartItemSerializer(item, context=self._cart_context()).data)
 
         # Phase 2D: against the FULFILLMENT branch, the same number checkout
         # will use. Validating against the company aggregate here would let a
@@ -1162,6 +1176,21 @@ class CartViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # DC3 — «Bajo pedido» is asked for, never slid into: the buyer (the
+        # shop's page) says `on_order`, and a line is all shelf or all order.
+        on_order = request.data.get('on_order') in (True, 'true', '1', 1)
+        existing = CartItem.objects.filter(session_key=session_key, product=product).first()
+        if existing is not None and (existing.supply_origin == CartItem.SUPPLY_SUPPLIER) != on_order:
+            return Response(
+                {'code': 'mixed_supply',
+                 'detail': (f'{product.name} ya está en tu carrito '
+                            f'{"bajo pedido" if not on_order else "con stock de la tienda"}. '
+                            'Una línea es de stock o bajo pedido, no las dos: quítala para cambiarla.')},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if on_order:
+            return self._add_on_order(request, session_key, product, quantity)
+
         if product.sells_by_unit:
             # DC2 — ONE concrete device per call, held for this cart. The one
             # the buyer picked (a used device), or the oldest of the variant.
@@ -1219,19 +1248,54 @@ class CartViewSet(
                 # The placeholder row was ours and holds nothing. Leaving it
                 # would put an empty line in a basket the shopper never filled.
                 item.delete()
-            return Response(
-                {
-                    'detail': (
-                        f'Stock insuficiente para {product.name}. '
-                        f'Disponible: {available}, en carrito: {current_qty}.'
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            body = {
+                'detail': (
+                    f'Stock insuficiente para {product.name}. '
+                    f'Disponible: {available}, en carrito: {current_qty}.'
+                )
+            }
+            # DC3 — the shelf does not cover it, an offer would: the page may
+            # offer «Bajo pedido» (the buyer has to take it on purpose).
+            from .supply_services import offer_for_line
+
+            offer = offer_for_line(product, new_qty)
+            if offer is not None:
+                body['code'] = 'on_order_available'
+                body['on_order'] = {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price)}
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
 
         # ADD, not SET. The endpoint's contract is "put n more in the basket",
         # and only the database can add to a number it is holding without first
         # telling us what it is.
         CartItem.objects.filter(pk=item.pk).update(quantity=F('quantity') + quantity)
         item.refresh_from_db(fields=['quantity'])
+        return Response(CartItemSerializer(item, context=self._cart_context()).data)
+
+    def _add_on_order(self, request, session_key, product, quantity):
+        """
+        DC3 — put `quantity` more of `product` in the cart ON ORDER. Nothing is
+        held or committed: an offer must cover the line's new total now, and is
+        checked again at checkout and committed at payment.
+        """
+        from .supply_services import offer_for_line
+
+        with transaction.atomic():
+            item, created = CartItem.objects.select_for_update().get_or_create(
+                session_key=session_key, product=product,
+                defaults={'quantity': 0, 'supply_origin': CartItem.SUPPLY_SUPPLIER},
+            )
+            if item.supply_origin != CartItem.SUPPLY_SUPPLIER:
+                return Response({'code': 'mixed_supply', 'detail': 'Una línea es de stock o bajo pedido.'},
+                                status=status.HTTP_409_CONFLICT)
+            new_qty = item.quantity + quantity
+            if offer_for_line(product, new_qty) is None:
+                if created:
+                    item.delete()
+                return Response(
+                    {'code': 'not_on_order',
+                     'detail': f'{product.name} no está disponible bajo pedido en esa cantidad.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            CartItem.objects.filter(pk=item.pk).update(quantity=new_qty)
+            item.refresh_from_db(fields=['quantity'])
         return Response(CartItemSerializer(item, context=self._cart_context()).data)
