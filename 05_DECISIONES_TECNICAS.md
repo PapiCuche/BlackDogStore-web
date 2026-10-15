@@ -1791,3 +1791,48 @@ lo que se vende por unidad, la regla de SERIAL-PICK-01 («el pago aparta el más
   viejos) sigue siendo el nombre y sólo se prueba como modelo si ningún producto se llama
   así. Productos: «Modelo», «Capacidad», «Color», «Línea» (el modelo y las opciones deben
   existir). Un archivo sin esas columnas se carga igual que antes.
+
+
+**Revisión independiente de DC2 (2026-10-14): un P1, cuatro P2 y los P3, corregidos.**
+Migración `0133` (`StockUnit.hold_origin` con `db_default` '', `hold_started_at` nula).
+- *Acaparar equipos (P1).* Tres topes en `unit_hold_services.hold`, contados bajo bloqueos
+  consultivos de la transacción («este carrito», «este origen»; en orden y antes del
+  estante): por carrito (`DEVICE_HOLD_MAX_PER_CART`, 3), **por origen a través de todos
+  los carritos** (`DEVICE_HOLD_MAX_PER_ORIGIN`, 3; el origen es `order_risk.origin_hash`,
+  HMAC de la IP —su /64 en IPv6— con la clave derivada de `order_risk`, nunca la
+  dirección) y **reparto del estante** — **decisión del coordinador, por confirmar con el
+  propietario**: los apartados web de un producto en una sucursal no pasan de
+  `max(1, ⌊(disponibles + apartados web) × DEVICE_WEB_HOLD_MAX_SHARE_PERCENT / 100⌋)`
+  (50 %: con 1 equipo se puede apartar ese; con 2, uno; con 6, tres). Rige también para
+  seminuevos de una misma variante (dos compradores de dos seminuevos de una variante de
+  2 equipos: el segundo espera). Ajuste global por `settings`, no por empresa (`held_by_others`,
+  409). Throttle propio `device_hold` (10/min por dirección, con o sin sesión) para
+  agregar productos por unidad, además del de carrito (60/min).
+- *Apartado eterno (P1).* El pedido amplía el apartado a lo sumo hasta
+  `hold_started_at + 15 + 45` minutos: otro checkout no lo empuja más allá.
+- *La caja.* Liberar un apartado (`inventory.adjust`) ya era posible y auditado; ahora la
+  línea de Kardex dice que era web y de qué pedido, y se niega mientras un pedido que aún
+  puede pagarse lo lleva dentro de su plazo.
+- *`bind_to_order` (P2)* sólo ata apartados RESERVED de este carrito y vigentes; si falta
+  uno, `cart_changed` y no se crea el pedido.
+- *Dos checkouts de un carrito (P2)* — se eligió «el pedido posterior gana» sobre
+  «reutilizar el pendiente»: el checkout web crea pedido e intento juntos y sus datos
+  (cupón, entrega, comprador) pueden cambiar; reutilizar mezclaría intentos de dos
+  formularios. La regla se deriva de las líneas (sobrevive al vencimiento del apartado):
+  un pedido anterior del mismo carrito cuyo equipo nombra un pedido posterior pendiente
+  o pagado no abre intento de pago (`order_superseded`, 409) y, si un formulario ya
+  abierto se paga igual, no vende el equipo (faltante que nombra el pedido posterior;
+  el dinero lo resuelve una persona). Un pedido posterior fallido o cancelado no le quita
+  nada al anterior.
+- *Excel viejo (P2).* «Modelo», «Capacidad», «Color», «Línea» de productos sólo se leen si
+  el archivo tiene «Línea» o «Capacidad» y la empresa tiene algún modelo; si no, se
+  ignoran con un aviso de archivo.
+- *Volver atrás (P2).* `release_expired_unit_holds --all-web`, `cancel_pending_unit_orders`
+  (simulación por defecto, `--apply`), línea de cron y pasos en
+  `docs/despliegue-produccion.md` §7.
+- P3: quitar del carrito un equipo que se está vendiendo responde 200 (sin 500); no se
+  aparta un equipo de un modelo retirado de la web; el precio de un equipo exige
+  `products.manage` (pantalla 403, carga: columna ignorada); la app (v1) no lista ni sirve
+  variantes seminuevas; `used_unit_count` cuenta la sucursal de la tienda. La salida de
+  venta ya llevaba el costo propio del equipo (no el promedio); ahora un equipo sin costo
+  sale —en el Kardex y en su línea— al costo de referencia marcado `reference`.

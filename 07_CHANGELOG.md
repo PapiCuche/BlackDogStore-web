@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: revisión independiente
+
+Migración `0133` (`StockUnit.hold_origin`, `hold_started_at`; aditiva, reversible).
+
+**Security**
+- Un mismo origen aparta a lo sumo 3 equipos entre todos sus carritos; los apartados web no
+  pasan de la mitad de los equipos de un producto en la sucursal (mínimo uno); throttle
+  `device_hold` 10/min por dirección; un apartado no se amplía más allá de 60 minutos desde
+  que se tomó.
+- El precio de venta de un equipo exige `products.manage`.
+
+**Fixed**
+- `bind_to_order` ya no ata el apartado de otro carrito.
+- Dos checkouts de un carrito: el pedido anterior no abre pago ni vende el equipo.
+- Archivos de productos anteriores a DC2 con «Modelo» o «Color» cargan como antes.
+- Quitar un equipo que se está vendiendo ya no da 500; no se aparta un equipo de un modelo
+  retirado de la web; la app no lista seminuevos; el recuento de seminuevos del panel es el
+  de la sucursal de la tienda; un equipo sin costo sale al costo de referencia.
+
+**Added**
+- `release_expired_unit_holds --all-web`, `cancel_pending_unit_orders`, la línea de cron y
+  los pasos para volver atrás.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: variantes, nuevos y seminuevos
 
 En la rama `feat/device-commerce` (sin push). Migraciones `0130`–`0132` (aditivas, nulas o
