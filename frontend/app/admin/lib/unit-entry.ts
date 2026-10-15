@@ -18,6 +18,9 @@ export type PickedUnit = {
   imei: string;
 };
 
+/** DC3 — lo que cuesta y tarda un producto bajo pedido. `null`: ninguna oferta lo cubre. */
+export type OnOrderTerms = { lead_time_days: number; price: string };
+
 export type PosLine = {
   product: number;
   name: string;
@@ -28,7 +31,20 @@ export type PosLine = {
   isSerialized: boolean;
   requiresImei: boolean;
   units: PickedUnit[];
+  /**
+   * DC3: la línea entera es bajo pedido — al precio de la oferta, sin equipos
+   * (no hay ninguno todavía). Una línea es TODA estante o TODA bajo pedido.
+   */
+  onOrder?: boolean;
+  /** DC3: plazo de entrega de la oferta, para decirlo en la línea. */
+  leadTimeDays?: number | null;
+  /** DC3: la oferta del producto, si la hay: permite pasar la línea a bajo pedido. */
+  offer?: OnOrderTerms | null;
 };
+
+/** DC3: el servidor rechaza mezclar estante y bajo pedido de un mismo producto; esto lo dice antes. */
+export const MIXED_SUPPLY_MESSAGE =
+  "Ese producto ya está en la venta desde otro origen: una línea es toda del estante o toda bajo pedido.";
 
 /** Un lector escribe cada carácter en pocos milisegundos; una persona, no. */
 const SCANNER_MAX_GAP_MS = 60;
@@ -117,14 +133,28 @@ export function imeiProblem(value: string): string | null {
 
 /** Una línea con serie está lista cuando tiene un equipo por cada unidad. */
 export function lineIsReady(line: PosLine): boolean {
-  return !line.isSerialized || line.units.length === line.quantity;
+  return line.onOrder === true || !line.isSerialized || line.units.length === line.quantity;
 }
 
-/** Lo que viaja al servidor: de cada equipo, cuál es y cómo se identificó. */
+/**
+ * Lo que viaja al servidor: de cada equipo, cuál es y cómo se identificó. Una
+ * línea bajo pedido viaja con `on_order` y sin equipos, aunque el producto tenga serie.
+ */
 export function saleItems(lines: PosLine[]) {
   return lines.map((line) =>
-    line.isSerialized
-      ? { product: line.product, quantity: line.quantity, units: line.units.map(({ id, method }) => ({ id, method })) }
+    line.onOrder
+      ? { product: line.product, quantity: line.quantity, on_order: true as const }
+      : line.isSerialized
+        ? { product: line.product, quantity: line.quantity, units: line.units.map(({ id, method }) => ({ id, method })) }
+        : { product: line.product, quantity: line.quantity },
+  );
+}
+
+/** Lo que se pide para calcular el total: cantidades y, si es el caso, `on_order`. */
+export function previewItems(lines: PosLine[]) {
+  return lines.map((line) =>
+    line.onOrder
+      ? { product: line.product, quantity: line.quantity, on_order: true as const }
       : { product: line.product, quantity: line.quantity },
   );
 }
@@ -143,6 +173,8 @@ export type LineProduct = {
   available: number;
   is_serialized?: boolean;
   requires_imei?: boolean;
+  /** DC3: la oferta vigente que lo cubre bajo pedido, o null. */
+  on_order?: OnOrderTerms | null;
 };
 
 /** El equipo que el servidor describió, tal como llega de una consulta. */
@@ -153,7 +185,52 @@ function newLine(product: LineProduct): PosLine {
     product: product.id, name: product.name, price: product.price, quantity: 1,
     available: product.available, isSerialized: Boolean(product.is_serialized),
     requiresImei: Boolean(product.requires_imei), units: [],
+    onOrder: false, leadTimeDays: null, offer: product.on_order ?? null,
   };
+}
+
+/** Si añadir ese producto desde ese origen mezclaría orígenes en la cesta: el motivo, o null. */
+export function mixedSupplyProblem(lines: PosLine[], productId: number, onOrder: boolean): string | null {
+  const existing = lines.find((line) => line.product === productId);
+  if (!existing) return null;
+  return Boolean(existing.onOrder) === onOrder ? null : MIXED_SUPPLY_MESSAGE;
+}
+
+/**
+ * DC3 — la cesta con una unidad más de ese producto BAJO PEDIDO, al precio de
+ * su oferta y sin equipos. Lanza si el producto no tiene oferta o si ya está
+ * en la venta desde el estante.
+ */
+export function withOnOrderProduct(lines: PosLine[], product: LineProduct): PosLine[] {
+  const offer = product.on_order;
+  if (!offer) throw new Error(`${product.name} no se puede vender bajo pedido.`);
+  const problem = mixedSupplyProblem(lines, product.id, true);
+  if (problem) throw new Error(problem);
+  const existing = lines.find((line) => line.product === product.id);
+  if (existing) {
+    return lines.map((line) => (line.product === product.id
+      ? { ...line, quantity: line.quantity + 1, price: offer.price, leadTimeDays: offer.lead_time_days, offer }
+      : line));
+  }
+  return [...lines, {
+    ...newLine(product),
+    price: offer.price, isSerialized: false, requiresImei: false,
+    onOrder: true, leadTimeDays: offer.lead_time_days, offer,
+  }];
+}
+
+/**
+ * DC3 — la línea del estante pasa ENTERA a bajo pedido (el estante no cubre la
+ * cantidad). Pierde sus equipos: bajo pedido no hay ninguno todavía.
+ */
+export function lineToOnOrder(lines: PosLine[], productId: number): PosLine[] {
+  return lines.map((line) => {
+    if (line.product !== productId || line.onOrder || !line.offer) return line;
+    return {
+      ...line, price: line.offer.price, isSerialized: false, requiresImei: false, units: [],
+      onOrder: true, leadTimeDays: line.offer.lead_time_days,
+    };
+  });
 }
 
 /**
@@ -165,12 +242,14 @@ function newLine(product: LineProduct): PosLine {
 export function withProduct(lines: PosLine[], product: LineProduct): PosLine[] {
   const existing = lines.find((line) => line.product === product.id);
   if (!existing) return [...lines, newLine(product)];
+  // DC3: del estante no se suma a una línea bajo pedido.
+  if (existing.onOrder) throw new Error(MIXED_SUPPLY_MESSAGE);
   return lines.map((line) => {
     if (line.product !== product.id) return line;
     const quantity = line.isSerialized
       ? Math.max(line.quantity, line.units.length + 1)
       : line.quantity + 1;
-    return { ...line, quantity, available: product.available };
+    return { ...line, quantity, available: product.available, offer: product.on_order ?? line.offer ?? null };
   });
 }
 
@@ -178,6 +257,10 @@ export function withProduct(lines: PosLine[], product: LineProduct): PosLine[] {
 export function withUnit(lines: PosLine[], unit: FoundUnit, product: LineProduct, method: EntryMethod): PosLine[] {
   if (lines.some((line) => line.units.some((picked) => picked.id === unit.unit_id))) {
     throw new Error("Ese equipo ya está en esta venta.");
+  }
+  // DC3: un equipo del estante no entra en una línea bajo pedido.
+  if (lines.some((line) => line.product === product.id && line.onOrder)) {
+    throw new Error(MIXED_SUPPLY_MESSAGE);
   }
   const picked: PickedUnit = { id: unit.unit_id, method, serial_number: unit.serial_number, imei: unit.imei };
   if (!lines.some((line) => line.product === product.id)) {
@@ -224,6 +307,6 @@ export function withQuantity(lines: PosLine[], productId: number, quantity: numb
 /** Cuántos equipos faltan por identificar en toda la cesta. */
 export function pendingUnits(lines: PosLine[]): number {
   return lines.reduce(
-    (total, line) => total + (line.isSerialized ? Math.max(0, line.quantity - line.units.length) : 0), 0,
+    (total, line) => total + (line.isSerialized && !line.onOrder ? Math.max(0, line.quantity - line.units.length) : 0), 0,
   );
 }
