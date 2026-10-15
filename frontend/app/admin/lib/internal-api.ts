@@ -359,6 +359,14 @@ export type CompanySettingsPayload = {
   hold_orders_pending_review: boolean;
   /** INVENTORY-UNIFIED-01: whether publishing in bulk asks for a picture. Off as created. */
   publication_requires_image?: boolean;
+  /** DEVICE-COMMERCE: minutes a device stays set aside in a cart (5–60). */
+  device_cart_hold_minutes?: number;
+  /** DEVICE-COMMERCE: minutes it stays set aside at checkout/payment (30–120). */
+  device_checkout_hold_minutes?: number;
+  /** DEVICE-COMMERCE: total ceiling for one hold (35–240, ≥ cart + 30). */
+  device_hold_ceiling_minutes?: number;
+  /** DEVICE-COMMERCE: whether a web buyer may order from the supplier although there is stock. Off as created. */
+  web_on_order_over_stock?: boolean;
   updated_at: string;
 };
 
@@ -417,7 +425,7 @@ export async function fetchCompanyConfiguration(
  */
 export async function updateCompanyConfiguration(
   companyId: number | null | undefined,
-  data: Record<string, string | boolean | null>,
+  data: Record<string, string | number | boolean | null>,
 ): Promise<CompanyConfiguration> {
   const qs = companyId ? `?company=${encodeURIComponent(String(companyId))}` : "";
   const res = await fetchWithAuth(`${API_BASE}/admin/company-settings/${qs}`, {
@@ -799,6 +807,11 @@ export type PosContext = {
   can_assign_seller: boolean;
   can_apply_discount: boolean;
   can_view_commissions: boolean;
+  /**
+   * `sales.orders.manage`: may sell «bajo pedido» although the branch shelf
+   * covers the line, giving a `supply_reason`. Absent on older servers: false.
+   */
+  can_order_over_stock?: boolean;
   seller: { id: number; username: string; name: string };
   /** Empty unless the caller may reassign — staffing is not public. */
   sellers: PosSeller[];
@@ -825,6 +838,8 @@ export type PosSaleLine = {
   units?: { id: number; method: "scanner" | "manual" }[];
   /** DC3: la línea entera es bajo pedido; no lleva `units`, aunque el producto tenga serie. */
   on_order?: boolean;
+  /** Bajo pedido aunque el estante la cubre: por qué (≤200). Sólo con `can_order_over_stock`. */
+  supply_reason?: string;
 };
 
 /** Un equipo que la caja puede vender, descrito para confirmar que es ese. */
@@ -1120,6 +1135,15 @@ export type SalesMarginRow = {
   net_estimated?: boolean;
 };
 
+/** Un margen sobre un conjunto de líneas. `margin_percent`: 2 decimales, o null (sin ventas). */
+export type SalesMarginTotals = {
+  lines: number;
+  net_sales: string;
+  cost: string;
+  margin: string;
+  margin_percent: string | null;
+};
+
 /** Margen COMERCIAL estimado: ventas netas con costo conocido − su costo. No es utilidad. */
 export type SalesMargin = {
   window_days: number;
@@ -1130,7 +1154,18 @@ export type SalesMargin = {
   margin: string;
   margin_percent: string | null;
   pending_cost: { lines: number; orders: number; amount: string };
-  refunds: { orders: number; amount: string };
+  /** `amount` con IGV; `net` sin IGV. */
+  refunds: { orders: number; amount: string; net: string };
+  /** Todas las líneas con costo conocido (promedio, unidad, referencia u oferta del proveedor). */
+  estimated: SalesMarginTotals;
+  /** Sólo las líneas con costo confirmado: stock propio vendido o bajo pedido ya recibido. */
+  realised: SalesMarginTotals;
+  /** Lo que entra en el estimado pero aún no en el realizado. */
+  estimated_only: {
+    lines: number; net_sales: string; reference_cost_lines: number; on_order_not_received_lines: number;
+  };
+  /** Líneas sin costo: fuera de ambos márgenes. */
+  unknown_cost: { lines: number; orders: number; net_sales: string };
   by_product: SalesMarginRow[];
   by_branch: SalesMarginRow[];
   by_channel: SalesMarginRow[];

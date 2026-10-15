@@ -41,7 +41,7 @@ import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
 import { PosServiceIntake } from "./PosServiceIntake";
-import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
+import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
@@ -72,8 +72,9 @@ import {
 } from "../../lib/internal-api";
 import { UnitConfirmation, UnitEntry } from "../../components/UnitEntry";
 import {
-  lineToOnOrder, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, saleItems,
-  unitLabel, unitOfLine, withOnOrderProduct, withProduct, withQuantity, withUnit, withoutUnit,
+  lineToOnOrder, missingSupplyReasons, newRhythm, pendingUnits, previewItems, resetRhythm, rhythmChanged, rhythmKey,
+  rhythmMethod, saleItems, unitLabel, unitOfLine, withOnOrderProduct, withProduct, withQuantity, withSupplyReason, withUnit,
+  withoutUnit,
   type EntryMethod, type PosLine,
 } from "../../lib/unit-entry";
 import {
@@ -448,6 +449,10 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
   const change = isCash && received ? Number(received) - total : null;
 
   const unitsMissing = pendingUnits(lines);
+  // Bajo pedido con estante: sólo quien puede pedirlo así escribe el motivo. Sin
+  // ese permiso nada cambia aquí: la negativa del servidor es lo que se muestra.
+  const canOrderOverStock = Boolean(context?.can_order_over_stock);
+  const reasonsMissing = canOrderOverStock ? missingSupplyReasons(lines) : 0;
 
   function setQuantity(productId: number, quantity: number) {
     setLines((prev) => withQuantity(prev, productId, quantity));
@@ -469,6 +474,13 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       setFeedback({
         kind: "error",
         text: `Falta identificar ${unitsMissing} equipo${unitsMissing === 1 ? "" : "s"}: escanea su IMEI o su serie.`,
+      });
+      return;
+    }
+    if (reasonsMissing > 0) {
+      setFeedback({
+        kind: "error",
+        text: "Indica el motivo para pedir al proveedor lo que hay en esta sucursal.",
       });
       return;
     }
@@ -1105,6 +1117,12 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                         ) : null}
                       </div>
                     ) : null}
+                    {canOrderOverStock ? (
+                      <PosSupplyReason
+                        line={l}
+                        onChange={(reason) => setLines((prev) => withSupplyReason(prev, l.product, reason))}
+                      />
+                    ) : null}
                     {!l.onOrder && l.quantity > l.available ? (
                       <div className="mt-1.5 space-y-1">
                         <p className="text-[11px] text-warning">
@@ -1491,6 +1509,7 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 branch === null ||
                 !terms ||
                 unitsMissing > 0 ||
+                reasonsMissing > 0 ||
                 previewError !== null ||
                 (isCash && (received === "" || Number(received) < total))
               }

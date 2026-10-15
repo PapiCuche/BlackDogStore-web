@@ -40,7 +40,15 @@ export type PosLine = {
   leadTimeDays?: number | null;
   /** DC3: la oferta del producto, si la hay: permite pasar la línea a bajo pedido. */
   offer?: OnOrderTerms | null;
+  /**
+   * Bajo pedido aunque el estante la cubra: por qué (obligatorio para eso, y
+   * sólo quien tiene `sales.orders.manage` puede). Viaja recortado como `supply_reason`.
+   */
+  supplyReason?: string;
 };
+
+/** El servidor no guarda más que esto del motivo. */
+export const SUPPLY_REASON_MAX = 200;
 
 /** DC3: el servidor rechaza mezclar estante y bajo pedido de un mismo producto; esto lo dice antes. */
 export const MIXED_SUPPLY_MESSAGE =
@@ -136,6 +144,40 @@ export function lineIsReady(line: PosLine): boolean {
   return line.onOrder === true || !line.isSerialized || line.units.length === line.quantity;
 }
 
+/** El motivo tal como viaja: recortado y sin pasar del máximo. Vacío: no hay motivo. */
+function cleanReason(reason: string | undefined): string {
+  return (reason ?? "").trim().slice(0, SUPPLY_REASON_MAX);
+}
+
+/** Una línea bajo pedido, con su motivo si lo tiene (igual en la vista previa y en la venta). */
+function onOrderItem(line: PosLine) {
+  const reason = cleanReason(line.supplyReason);
+  return {
+    product: line.product, quantity: line.quantity, on_order: true as const,
+    ...(reason ? { supply_reason: reason } : {}),
+  };
+}
+
+/**
+ * La línea es bajo pedido aunque el estante de la sucursal cubre su cantidad:
+ * el servidor la acepta sólo con un motivo (y a quien puede pedirlo así).
+ */
+export function needsSupplyReason(line: PosLine): boolean {
+  return line.onOrder === true && line.available > 0 && line.available >= line.quantity;
+}
+
+/** Cuántas líneas bajo pedido con estante esperan todavía su motivo. */
+export function missingSupplyReasons(lines: PosLine[]): number {
+  return lines.filter((line) => needsSupplyReason(line) && !cleanReason(line.supplyReason)).length;
+}
+
+/** La cesta con el motivo de esa línea (sin pasar del máximo). */
+export function withSupplyReason(lines: PosLine[], productId: number, reason: string): PosLine[] {
+  return lines.map((line) =>
+    line.product === productId ? { ...line, supplyReason: reason.slice(0, SUPPLY_REASON_MAX) } : line,
+  );
+}
+
 /**
  * Lo que viaja al servidor: de cada equipo, cuál es y cómo se identificó. Una
  * línea bajo pedido viaja con `on_order` y sin equipos, aunque el producto tenga serie.
@@ -143,7 +185,7 @@ export function lineIsReady(line: PosLine): boolean {
 export function saleItems(lines: PosLine[]) {
   return lines.map((line) =>
     line.onOrder
-      ? { product: line.product, quantity: line.quantity, on_order: true as const }
+      ? onOrderItem(line)
       : line.isSerialized
         ? { product: line.product, quantity: line.quantity, units: line.units.map(({ id, method }) => ({ id, method })) }
         : { product: line.product, quantity: line.quantity },
@@ -154,7 +196,7 @@ export function saleItems(lines: PosLine[]) {
 export function previewItems(lines: PosLine[]) {
   return lines.map((line) =>
     line.onOrder
-      ? { product: line.product, quantity: line.quantity, on_order: true as const }
+      ? onOrderItem(line)
       : { product: line.product, quantity: line.quantity },
   );
 }

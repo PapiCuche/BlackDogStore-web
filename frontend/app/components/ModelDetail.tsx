@@ -23,13 +23,14 @@ import { emitCartChange } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
-import { OnOrderOfferPrompt } from "./OnOrderOffer";
+import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import {
   CartError,
   addDeviceToCart,
   availabilityLabel,
   fetchCatalogModel,
   isOnOrderVariant,
+  overStockOffer,
   type OnOrder,
   initialSelection,
   matchVariant,
@@ -141,6 +142,8 @@ function NewLine({
   const available = Boolean(variant?.available);
   // DC3: no own device, but an offer covers it — another price and a wait, said as such.
   const onOrder = variant && isOnOrderVariant(variant) ? variant.on_order ?? null : null;
+  // Owner's decision: an own device is there, and the company lets the buyer ask the supplier anyway — an extra choice.
+  const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return (
     <div className="grid gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
@@ -219,7 +222,11 @@ function NewLine({
           >
             {busy ? "Agregando…" : onOrder ? "Pedir bajo pedido" : "Agregar al carrito"}
           </button>
-          {offer ? <OnOrderOfferPrompt offer={offer} busy={busy} onAccept={() => void add(true)} /> : null}
+          {offer ? (
+            <OnOrderOfferPrompt offer={offer} busy={busy} onAccept={() => void add(true)} />
+          ) : overStock ? (
+            <OverStockOnOrderOption offer={overStock} busy={busy} onChoose={() => void add(true)} />
+          ) : null}
           <StatusBox status={status} />
         </div>
       </div>

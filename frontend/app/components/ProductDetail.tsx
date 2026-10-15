@@ -8,9 +8,9 @@ import Link from "next/link";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
 import { emitCartChange } from "../lib/cart";
-import { CartError, addProductToCart, onOrderLabel, type OnOrder } from "../lib/catalog-models";
+import { CartError, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
-import { OnOrderOfferPrompt } from "./OnOrderOffer";
+import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
 
 /** DC3: how many may be asked «bajo pedido» from this page; the server decides what an offer covers. */
@@ -211,6 +211,8 @@ export default function ProductDetail({ product }: { product: Product }) {
   const lowStock = product.inventory > 0 && product.inventory <= 3;
   // DC3: no shelf, but an offer covers it — sold «bajo pedido», at the offer's price.
   const onOrder = !inStock && product.on_order ? product.on_order : null;
+  // Owner's decision: with stock, the company may let the buyer ask the supplier anyway — an extra choice, never the default.
+  const overStock = inStock ? overStockOffer(product.on_order) : null;
   const purchasable = inStock || onOrder !== null;
   const maxQuantity = inStock ? product.inventory : onOrder ? ON_ORDER_MAX_QUANTITY : 1;
 
@@ -382,6 +384,8 @@ export default function ProductDetail({ product }: { product: Product }) {
 
               {offer ? (
                 <OnOrderOfferPrompt offer={offer} busy={loading} onAccept={() => void handleAddToCart(true)} />
+              ) : overStock ? (
+                <OverStockOnOrderOption offer={overStock} busy={loading} onChoose={() => void handleAddToCart(true)} />
               ) : null}
 
               <Link

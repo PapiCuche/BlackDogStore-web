@@ -10,6 +10,7 @@
  */
 
 import type { PosProduct } from "../../lib/internal-api";
+import { SUPPLY_REASON_MAX, needsSupplyReason, type PosLine } from "../../lib/unit-entry";
 
 function money(value: string | number) {
   const n = typeof value === "number" ? value : Number(value);
@@ -97,5 +98,42 @@ export function PosOnOrderBadge({ days }: { days: number | null | undefined }) {
     <span className="mt-1 inline-flex rounded border border-warning-border bg-warning-surface px-2 py-0.5 text-[11px] font-semibold text-warning" data-testid="pos-line-on-order">
       {onOrderLineLabel(days)}
     </span>
+  );
+}
+
+/**
+ * Bajo pedido aunque el estante de la sucursal la cubre: el motivo, en la
+ * misma línea. Obligatorio; sólo se muestra a quien puede pedirlo así.
+ */
+export function PosSupplyReason({
+  line, onChange,
+}: {
+  line: PosLine;
+  onChange: (reason: string) => void;
+}) {
+  if (!needsSupplyReason(line)) return null;
+  const id = `pos-supply-reason-${line.product}`;
+  const missing = !(line.supplyReason ?? "").trim();
+  return (
+    <div className="mt-2 border-t border-bd-border pt-2">
+      <label htmlFor={id} className="mb-1 block text-[11px] font-semibold text-foreground">
+        Motivo para pedirlo al proveedor
+      </label>
+      <input
+        id={id}
+        type="text"
+        required
+        maxLength={SUPPLY_REASON_MAX}
+        value={line.supplyReason ?? ""}
+        aria-invalid={missing}
+        aria-describedby={`${id}-hint`}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Ej.: el cliente lo quiere sellado del proveedor"
+        className="w-full rounded border border-bd-border bg-background px-2 py-1 text-xs text-foreground outline-none"
+      />
+      <p id={`${id}-hint`} className={`mt-1 text-[11px] ${missing ? "text-warning" : "text-muted"}`}>
+        Hay {line.available} en esta sucursal: indica por qué se pide al proveedor (obligatorio).
+      </p>
+    </div>
   );
 }

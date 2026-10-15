@@ -129,6 +129,104 @@ describe('página de un modelo', () => {
   });
 });
 
+/**
+ * Owner's decision — with the company's switch on, a web buyer may ask the
+ * supplier although the shelf has it. The server says so with
+ * `on_order.over_stock: true`. Own stock stays the default: the main button
+ * never changes; the supplier is an extra, explicit, secondary choice.
+ */
+describe('pedir al proveedor aunque haya stock', () => {
+  const OVER = { lead_time_days: 6, price: '104.50', over_stock: true };
+
+  async function renderProduct(extra: Record<string, unknown>) {
+    await act(async () => { render(<ProductDetail product={{ ...PRODUCT, inventory: 4, ...extra }} />); });
+  }
+
+  it('sin `over_stock` no hay opción del proveedor', async () => {
+    await renderProduct({ on_order: { lead_time_days: 6, price: '104.50' } });
+    expect(screen.queryByTestId('over-stock-offer')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Pedir al proveedor/ })).toBeNull();
+  });
+
+  it('con `over_stock` y con stock: el botón principal sigue siendo del stock, sin `on_order`', async () => {
+    await renderProduct({ on_order: OVER });
+    expect(screen.getByTestId('product-availability')).toHaveTextContent('En stock');
+    expect(screen.getByTestId('product-price')).toHaveTextContent('S/ 99.00');
+    const option = screen.getByTestId('over-stock-offer');
+    expect(option).toHaveTextContent('¿Prefieres pedirlo al proveedor?');
+    expect(option).toHaveTextContent('Se despacha desde el proveedor: entrega en 6 días · S/ 104.50 c/u');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Agregar al carrito' })); });
+    expect(bodyOf(0)).not.toHaveProperty('on_order');
+  });
+
+  it('pulsar la opción del proveedor envía `on_order: true`', async () => {
+    await renderProduct({ on_order: OVER });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Pedir al proveedor — entrega en 6 días' }));
+    });
+    expect(bodyOf(0)).toMatchObject({ product: 3, quantity: 1, on_order: true });
+    expect(await screen.findByRole('status')).toHaveTextContent('Agregado al carrito bajo pedido.');
+  });
+
+  it('sin stock, `over_stock` no añade una segunda opción', async () => {
+    await renderProduct({ inventory: 0, on_order: OVER });
+    expect(screen.getByRole('button', { name: 'Pedir bajo pedido' })).toBeEnabled();
+    expect(screen.queryByTestId('over-stock-offer')).toBeNull();
+  });
+
+  it('si la empresa lo apagó entretanto, se dice la negativa del servidor', async () => {
+    send.mockResolvedValueOnce(reply({
+      code: 'stock_available', detail: 'Hay stock propio: agrégalo desde el stock.',
+    }, 409));
+    await renderProduct({ on_order: OVER });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Pedir al proveedor — entrega en 6 días' }));
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hay stock propio: agrégalo desde el stock.');
+  });
+
+  describe('página de un modelo', () => {
+    async function renderModel(over: boolean) {
+      const model = modelFixture();
+      Object.assign(model.variants[0], {
+        on_order: { lead_time_days: 8, price: '4100.00', ...(over ? { over_stock: true } : {}) },
+      });
+      reads.mockImplementation((input: RequestInfo | URL) =>
+        Promise.resolve(String(input).includes('/catalog/models/equipo-x') ? reply(model) : reply({}, 404)));
+      render(<ModelDetail slug="equipo-x" />);
+      await screen.findByRole('heading', { level: 1, name: 'Equipo X' });
+    }
+
+    it('sin `over_stock` no hay opción del proveedor', async () => {
+      await renderModel(false);
+      expect(screen.queryByTestId('over-stock-offer')).toBeNull();
+    });
+
+    it('con `over_stock`: el principal sin `on_order`, la opción con `on_order: true` y sin equipo', async () => {
+      await renderModel(true);
+      expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 3999.00');
+      expect(screen.getByTestId('over-stock-offer'))
+        .toHaveTextContent('Se despacha desde el proveedor: entrega en 8 días · S/ 4100.00 c/u');
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Agregar al carrito' })); });
+      expect(bodyOf(0)).not.toHaveProperty('on_order');
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Pedir al proveedor — entrega en 8 días' }));
+      });
+      expect(bodyOf(1)).toMatchObject({ product: 41, quantity: 1, on_order: true });
+      expect(bodyOf(1)).not.toHaveProperty('unit');
+    });
+
+    it('un 409 `stock_available` dice el motivo del servidor', async () => {
+      send.mockResolvedValueOnce(reply({ code: 'stock_available', detail: 'Ya no se ofrece pedirlo al proveedor.' }, 409));
+      await renderModel(true);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Pedir al proveedor — entrega en 8 días' }));
+      });
+      expect(await screen.findByRole('alert')).toHaveTextContent('Ya no se ofrece pedirlo al proveedor.');
+    });
+  });
+});
+
 type Line = Parameters<typeof CartItemCard>[0];
 
 const SUPPLIER_LINE: Line = {

@@ -28,7 +28,11 @@ const REPORT: api.SalesMargin = {
   margin: '100.00',
   margin_percent: '40.00',
   pending_cost: { lines: 1, orders: 1, amount: '50.00' },
-  refunds: { orders: 1, amount: '118.00' },
+  refunds: { orders: 1, amount: '118.00', net: '100.00' },
+  estimated: { lines: 4, net_sales: '250.00', cost: '150.00', margin: '100.00', margin_percent: '40.00' },
+  realised: { lines: 2, net_sales: '120.00', cost: '90.00', margin: '30.00', margin_percent: '25.00' },
+  estimated_only: { lines: 2, net_sales: '130.00', reference_cost_lines: 1, on_order_not_received_lines: 1 },
+  unknown_cost: { lines: 1, orders: 1, net_sales: '50.00' },
   by_product: [
     { key: 4, name: 'Funda', units: 5, net_sales: '250.00', cost: '150.00', margin: '100.00', margin_percent: '40.00', pending_lines: 0 },
     { key: 9, name: 'Cargador', units: 1, net_sales: '200.00', cost: '0.00', margin: '0.00', margin_percent: null, pending_lines: 1, net_estimated: true },
@@ -82,10 +86,16 @@ describe('Margen comercial', () => {
   });
 
   it('un margen sin ventas con costo se muestra como «—», no como 0 %', async () => {
-    mocked.fetchSalesMargin.mockResolvedValue({ ...REPORT, margin_percent: null });
+    mocked.fetchSalesMargin.mockResolvedValue({
+      ...REPORT,
+      margin_percent: null,
+      estimated: { ...REPORT.estimated, margin_percent: null },
+      realised: { lines: 0, net_sales: '0.00', cost: '0.00', margin: '0.00', margin_percent: null },
+    });
     await show();
     expect(screen.queryByText('0.00 %')).toBeNull();
     expect(screen.getByTestId('margin-percent')).toHaveTextContent('—');
+    expect(screen.getByTestId('realised-percent')).toHaveTextContent('—');
   });
 
   it('si el servidor lo niega, la sección se oculta sin romper la página', async () => {
@@ -100,5 +110,57 @@ describe('Margen comercial', () => {
     expect(within(row).getByText(/estimado/i)).toBeInTheDocument();
     const funda = screen.getAllByText('Funda')[0].closest('tr') as HTMLElement;
     expect(within(funda).queryByText(/estimado/i)).toBeNull();
+  });
+
+  it('separa el margen estimado del realizado, con importe y %', async () => {
+    await show();
+    const estimated = screen.getByTestId('margin-estimated');
+    expect(estimated).toHaveTextContent('Margen comercial estimado');
+    expect(estimated.textContent).toMatch(/100\.00/);
+    expect(screen.getByTestId('margin-percent')).toHaveTextContent('40.00 %');
+    const realised = screen.getByTestId('margin-realised');
+    expect(realised).toHaveTextContent('Margen comercial realizado');
+    expect(realised.textContent).toMatch(/30\.00/);
+    expect(screen.getByTestId('realised-percent')).toHaveTextContent('25.00 %');
+  });
+
+  it('dice qué es sólo estimado: costo de referencia y bajo pedido sin recibir', async () => {
+    await show();
+    const only = screen.getByTestId('margin-estimated-only');
+    expect(only.textContent).toMatch(/130\.00/);
+    expect(only).toHaveTextContent('1 con costo de referencia');
+    expect(only).toHaveTextContent('1 bajo pedido sin recibir');
+  });
+
+  it('el costo desconocido se cuenta aparte y queda fuera de ambos márgenes', async () => {
+    await show();
+    const unknown = screen.getByTestId('margin-unknown-cost');
+    expect(unknown).toHaveTextContent('Costo desconocido');
+    expect(unknown.textContent).toMatch(/50\.00/);
+    expect(unknown).toHaveTextContent('1 línea');
+    expect(unknown).toHaveTextContent(/fuera de ambos márgenes/);
+  });
+
+  it('los reembolsos dicen pedidos, importe con IGV y neto sin IGV', async () => {
+    await show();
+    const refunds = screen.getByTestId('margin-refunds');
+    expect(refunds).toHaveTextContent('Reembolsos');
+    expect(refunds.textContent).toMatch(/118\.00/);
+    expect(refunds.textContent).toMatch(/100\.00 sin IGV/);
+    expect(refunds).toHaveTextContent('1 pedido');
+  });
+
+  it('dice la fórmula en una línea', async () => {
+    await show();
+    expect(screen.getByText(
+      'Margen = (venta neta sin IGV − costo neto comparable) ÷ venta neta × 100, sólo sobre líneas con costo conocido.',
+    )).toBeInTheDocument();
+  });
+
+  it('nunca dice «utilidad», en ningún texto de la sección', async () => {
+    await show();
+    const region = screen.getByRole('region', { name: 'Margen comercial' });
+    expect(region.textContent?.toLowerCase()).not.toContain('utilidad');
+    expect(document.body.textContent?.toLowerCase()).not.toContain('utilidad');
   });
 });

@@ -56,7 +56,15 @@ export type VariantImage = { url: string; alt_text: string; is_primary: boolean;
  * pedido». `null` = there is no offer that covers it. Who supplies it and at
  * what cost is never part of the public contract.
  */
-export type OnOrder = { lead_time_days: number; price: string };
+export type OnOrder = {
+  lead_time_days: number;
+  price: string;
+  /**
+   * Owner's decision: present (true) only when the company lets a web buyer ask
+   * the supplier although there is own stock. Absent otherwise.
+   */
+  over_stock?: boolean;
+};
 
 export type Variant = {
   product_id: number;
@@ -138,6 +146,8 @@ export type CartErrorCode =
   | "unit_required" | "unit_taken" | "sold_out" | "too_many" | "held_by_others" | "not_found"
   // DC3 — «bajo pedido».
   | "on_order_available" | "not_on_order" | "mixed_supply"
+  // The company turned «proveedor aunque haya stock» off meanwhile.
+  | "stock_available"
   | "";
 
 /** A refusal from the cart, in the server's words. `code` lets the page react (e.g. reload on unit_taken). */
@@ -242,6 +252,15 @@ export function availabilityLabel(variant: Pick<Variant, "available" | "availabi
 /** DC3: the variant is sold «bajo pedido» (no own stock, an offer covers it). */
 export function isOnOrderVariant(variant: Pick<Variant, "availability"> & { on_order?: OnOrder | null }): boolean {
   return variant.availability === "supplier" && Boolean(variant.on_order);
+}
+
+/**
+ * The supplier offer a buyer may choose INSTEAD of own stock — only when the
+ * company allows it (`over_stock: true`). Never the default: the page shows it
+ * as an extra, explicit option next to «Agregar al carrito».
+ */
+export function overStockOffer(onOrder: OnOrder | null | undefined): OnOrder | null {
+  return onOrder && onOrder.over_stock === true ? onOrder : null;
 }
 
 /** Never a made-up number: no reading is said as such. */

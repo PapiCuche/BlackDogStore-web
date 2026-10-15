@@ -15,7 +15,9 @@
 
 import { useEffect, useState } from "react";
 
-import { fetchSalesMargin, type SalesMargin, type SalesMarginRow } from "../lib/internal-api";
+import {
+  fetchSalesMargin, type SalesMargin, type SalesMarginRow, type SalesMarginTotals,
+} from "../lib/internal-api";
 import { DashboardSection } from "./dashboard-ui";
 
 function money(value: string | number) {
@@ -29,12 +31,34 @@ function percent(value: string | null) {
   return value === null ? "—" : `${value} %`;
 }
 
-function Figure({ label, value, hint, testId }: { label: string; value: string; hint?: string; testId?: string }) {
+function plural(count: number, one: string, many: string) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+function Figure({ label, value, hint, testId, boxTestId }: {
+  label: string; value: string; hint?: string; testId?: string; boxTestId?: string;
+}) {
   return (
-    <div className="rounded-xl border border-bd-border bg-surface p-4">
+    <div className="rounded-xl border border-bd-border bg-surface p-4" data-testid={boxTestId}>
       <p className="text-[11px] uppercase tracking-widest text-muted">{label}</p>
       <p className="mt-1 font-display text-xl text-foreground" data-testid={testId}>{value}</p>
       {hint ? <p className="mt-0.5 text-[11px] text-muted">{hint}</p> : null}
+    </div>
+  );
+}
+
+/** Un margen con su importe y su %: «—» cuando no hay ventas, nunca 0 %. */
+function MarginFigure({ label, totals, hint, percentTestId, boxTestId }: {
+  label: string; totals: SalesMarginTotals; hint: string; percentTestId: string; boxTestId: string;
+}) {
+  return (
+    <div className="rounded-xl border border-bd-border bg-surface p-4" data-testid={boxTestId}>
+      <p className="text-[11px] uppercase tracking-widest text-muted">{label}</p>
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-2 font-display text-xl text-foreground">
+        <span>{money(totals.margin)}</span>
+        <span className="text-base text-muted" data-testid={percentTestId}>{percent(totals.margin_percent)}</span>
+      </p>
+      <p className="mt-0.5 text-[11px] text-muted">{hint}</p>
     </div>
   );
 }
@@ -96,6 +120,7 @@ export function SalesMarginSection({
   if (!canSeeCosts || report === null) return null;
 
   const pending = report.pending_cost;
+  const { estimated, realised, estimated_only: estimatedOnly, unknown_cost: unknown, refunds } = report;
   return (
     <section role="region" aria-label="Margen comercial">
       <DashboardSection
@@ -113,10 +138,42 @@ export function SalesMarginSection({
           <Figure label="Ventas netas (sin IGV)" value={money(report.sales.net)} hint={`${money(report.sales.gross)} con IGV · ${report.sales.orders} ventas`} />
           <Figure label="Cobros confirmados" value={money(report.collected.amount)} hint={`${report.collected.orders} pedidos pagados`} />
           <Figure label="Costo de lo vendido" value={money(report.cost_of_goods_sold)} hint={`sobre ${money(report.net_sales_with_cost)} vendidos con costo conocido`} />
-          <Figure label="Margen comercial estimado" value={money(report.margin)} />
-          <Figure label="Margen %" value={percent(report.margin_percent)} testId="margin-percent" />
-          <Figure label="Reembolsos" value={money(report.refunds.amount)} hint={`${report.refunds.orders} pedidos, fuera de las ventas`} />
+          <MarginFigure
+            label="Margen comercial estimado"
+            totals={estimated}
+            hint={`${plural(estimated.lines, "línea", "líneas")} con costo conocido, sobre ${money(estimated.net_sales)}`}
+            percentTestId="margin-percent"
+            boxTestId="margin-estimated"
+          />
+          <MarginFigure
+            label="Margen comercial realizado"
+            totals={realised}
+            hint={`${plural(realised.lines, "línea", "líneas")} con costo confirmado (stock propio vendido o bajo pedido recibido), sobre ${money(realised.net_sales)}`}
+            percentTestId="realised-percent"
+            boxTestId="margin-realised"
+          />
+          <Figure
+            label="Sólo estimado"
+            value={money(estimatedOnly.net_sales)}
+            hint={`${plural(estimatedOnly.lines, "línea", "líneas")}: ${estimatedOnly.reference_cost_lines} con costo de referencia · ${estimatedOnly.on_order_not_received_lines} bajo pedido sin recibir`}
+            boxTestId="margin-estimated-only"
+          />
+          <Figure
+            label="Costo desconocido"
+            value={money(unknown.net_sales)}
+            hint={`${plural(unknown.lines, "línea", "líneas")} de ${plural(unknown.orders, "venta", "ventas")}, sin IGV · fuera de ambos márgenes`}
+            boxTestId="margin-unknown-cost"
+          />
+          <Figure
+            label="Reembolsos"
+            value={money(refunds.amount)}
+            hint={`${plural(refunds.orders, "pedido", "pedidos")} · ${money(refunds.net)} sin IGV · fuera de las ventas`}
+            boxTestId="margin-refunds"
+          />
         </div>
+        <p className="text-[11px] text-muted">
+          Margen = (venta neta sin IGV − costo neto comparable) ÷ venta neta × 100, sólo sobre líneas con costo conocido.
+        </p>
         <Breakdown title="Por producto" rows={report.by_product} />
         <Breakdown title="Por sucursal" rows={report.by_branch} />
         <Breakdown title="Por canal" rows={report.by_channel} />
