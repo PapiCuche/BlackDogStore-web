@@ -3,7 +3,34 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-15 — DEVICE-COMMERCE-01 en `master` por el PR #123 — IMPLEMENTADO, NO DESPLEGADO
+## 2026-10-15 — #123 (DEVICE-COMMERCE-01) desplegado en producción
+
+**Producción en `04640cf`** desde el 2026-10-15, 14:52 (Lima), desde `041d0fd`. Sólo #123:
+#119–#122 siguen abiertos y sin desplegar.
+- Antes: copia `20261015-144747` (base y evidencias), restaurada en un PostgreSQL desechable
+  (103 tablas, 6 usuarios, 1 empresa, 1 producto, 6 pedidos). Imágenes en uso etiquetadas
+  `blackdog-{backend,frontend}:rollback-041d0fd`. Caddyfile local respaldado y sin cambios.
+- Ensayo sobre una copia con la imagen nueva, con `lock_timeout=5s` y `statement_timeout=300s`:
+  `0126`–`0135` de ida en 13 s, vuelta a `0123` con esquema idéntico, reaplicación idéntica.
+- En producción: `migrate` con los mismos límites aplicó `0126`–`0135` en 21 s; `up -d`
+  cambió `backend` y `frontend` (sanos). `deploy/healthcheck.sh`: 17 OK. Recuentos de
+  productos, imágenes, movimientos, pedidos por estado, total pagado e intentos: iguales.
+- `costs.view`: sólo el rol `administrador` (por `0126`); `costs_view_report` sin roles
+  personalizados pendientes. Ningún otro rol recibió permisos financieros.
+- Cron nuevo con `flock`: `release_expired_unit_holds` cada 5 min y `expire_supplier_offers`
+  cada hora; ejecutados dos veces a mano sin cambios (idempotentes). Crontab anterior en
+  `backups/crontab.before-123`.
+- Smoke sin sesión: tienda, carrito, checkout, `/auth`, `/orders`, panel e inventario en 200;
+  catálogo y `/api/catalog/models/` sin ningún campo de costo, proveedor, IMEI ni serie;
+  margen, proveedores y unidades del panel piden sesión (401); notificación de pago 405 a
+  un GET. `ops_status`: abastecimiento y apartados web en OK.
+- **Pendiente del propietario (con sesión):** ver la lista en `docs/NEXT_ACTION.md`.
+- **Vuelta atrás:** §7 de la guía (pausar pagos, `cancel_pending_unit_orders --apply`,
+  `cancel_pending_on_order_orders --apply`, `release_expired_unit_holds --all-web`, quitar
+  las dos líneas de cron, `rollback-041d0fd`, dejar las migraciones aplicadas y luego
+  `uncosted_after_rollback`).
+
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` por el PR #123 — IMPLEMENTADO (desplegado: ver arriba)
 
 El propietario autorizó el merge de #123 (no el despliegue). Producción sigue en `041d0fd`
 (migraciones hasta `0123`); nada de esta fase corre allí.
