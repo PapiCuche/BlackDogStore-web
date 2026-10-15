@@ -118,7 +118,7 @@ class MarginFiguresTest(MarginFixture):
         self.assertEqual(body['margin_percent'], '36.67')
         self.assertEqual(body['pending_cost'], {'lines': 1, 'orders': 1, 'amount': '50.00'})
         self.assertEqual(body['reference_cost_lines'], 0)
-        self.assertEqual(body['refunds'], {'orders': 1, 'amount': '118.00'})
+        self.assertEqual(body['refunds'], {'orders': 1, 'amount': '118.00', 'net': '100.00'})
         self.assertNotIn('utilidad', res.content.decode().lower())
 
     def test_breakdowns_by_product_branch_and_channel(self):
@@ -144,8 +144,8 @@ class MarginFiguresTest(MarginFixture):
         self.assertEqual(body['margin'], '30.00')
         self.assertEqual(body['pending_cost']['lines'], 0)
         # The refund was of the other branch (DC1 review: the filter is pinned).
-        self.assertEqual(body['refunds'], {'orders': 0, 'amount': '0.00'})
-        self.assertEqual(self.get(branch=self.centro.pk).json()['refunds'], {'orders': 1, 'amount': '118.00'})
+        self.assertEqual(body['refunds'], {'orders': 0, 'amount': '0.00', 'net': '0.00'})
+        self.assertEqual(self.get(branch=self.centro.pk).json()['refunds'], {'orders': 1, 'amount': '118.00', 'net': '100.00'})
 
     def test_a_line_from_before_dc1_counts_its_net_and_is_pending(self):
         """DC1 review — a line with no snapshot is not «0.00 net»: its net comes from the order, flagged pending."""

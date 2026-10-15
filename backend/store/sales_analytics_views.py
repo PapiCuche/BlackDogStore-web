@@ -411,6 +411,14 @@ class AdminSalesMarginView(APIView):
 
     Every figure comes from the line snapshots (`OrderItem.net_amount`,
     `unit_cost`) and the order's frozen breakdown — never from the catalogue.
+
+    OWNER'S DECISION OF 2026-10-15. margin % = (net sales without IGV −
+    comparable net cost) / net sales × 100, «comparable» = the lines with a
+    known cost; amount and %; ESTIMATED (every known cost: average, device,
+    reference, agreed with the supplier) vs REALISED (`REALISED`: confirmed
+    costs only); unknown costs (`unknown_cost`) and refunds (`refunds`, with
+    and without IGV) apart. There is no cost adjustment of goods sold to show:
+    the history is never recomputed (DC1). Never «utilidad neta».
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -462,17 +470,26 @@ class AdminSalesMarginView(APIView):
         pending = lines.filter(unit_cost__isnull=True)
         estimated = self._estimated_nets(lines)
 
-        refunds = Order.objects.filter(
+        refunded = Order.objects.filter(
             company=company, status=Order.Status.REFUNDED,
             fulfillment_branch__in=[b.pk for b in branches],
             paid_at__gte=_day_bounds(since, tz)[0], paid_at__lt=_day_bounds(today, tz)[1],
-        ).aggregate(
+        )
+        refunds = refunded.aggregate(
             orders=Count('pk'),
             amount=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+        )
+        refunds_net = sum(
+            (breakdown_for_order(order).taxable_amount for order in refunded.only(
+                'pk', 'total', 'taxable_amount', 'tax_rate', 'subtotal_amount', 'discount_amount',
+                'tax_amount', 'currency', 'tax_treatment', 'company')),
+            Decimal('0.00'),
         )
 
         known_net = _cents(totals['net'])
         cost = _cents(totals['cost'])
+        realised = self._figures(known.filter(self.REALISED))
+        estimated_only = known.exclude(self.REALISED)
         return Response({
             'window_days': days,
             'label': 'Margen comercial estimado',
@@ -490,12 +507,54 @@ class AdminSalesMarginView(APIView):
                 'amount': str(_cents(net) - known_net),
             },
             'reference_cost_lines': known.filter(cost_source=OrderItem.COST_REFERENCE).count(),
-            'refunds': {'orders': refunds['orders'], 'amount': str(_cents(refunds['amount']))},
+            # OWNER'S DECISION OF 2026-10-15 — estimated vs realised, unknown
+            # costs and refunds apart. Both margins are (net sales without IGV
+            # − comparable net cost) / net sales × 100 over the lines whose
+            # cost is known; «estimated» counts every known cost, «realised»
+            # only a confirmed one (own stock sold, or on order and received).
+            'estimated': {'lines': known.count(), 'net_sales': str(known_net), 'cost': str(cost),
+                          'margin': str(known_net - cost), 'margin_percent': _percent(known_net - cost, known_net)},
+            'realised': realised,
+            'estimated_only': {
+                'lines': estimated_only.count(),
+                'net_sales': str(known_net - Decimal(realised['net_sales'])),
+                'reference_cost_lines': estimated_only.filter(cost_source=OrderItem.COST_REFERENCE).count(),
+                'on_order_not_received_lines': estimated_only.filter(
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER).count(),
+            },
+            'unknown_cost': {
+                'lines': pending.count(),
+                'orders': pending.values('order_id').distinct().count(),
+                'net_sales': str(_cents(net) - known_net),
+            },
+            'refunds': {'orders': refunds['orders'], 'amount': str(_cents(refunds['amount'])),
+                        'net': str(_cents(refunds_net))},
             'by_product': self._grouped(lines, 'product_id', 'product__name', estimated),
             'by_branch': self._grouped(lines, 'order__fulfillment_branch_id', 'order__fulfillment_branch__name',
                                        estimated),
             'by_channel': self._grouped(lines, 'order__sales_channel', None, estimated),
         })
+
+    #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its
+    #: average or its device's own cost, or an on-order line whose goods were
+    #: received (its entry was written at the agreed cost). A reference cost,
+    #: or an agreed cost of goods not received yet, is only an estimate.
+    REALISED = (
+        Q(supply_origin=OrderItem.SUPPLY_OWN, cost_source__in=(OrderItem.COST_AVERAGE, OrderItem.COST_UNIT))
+        | Q(supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED)
+    )
+
+    @staticmethod
+    def _figures(lines) -> dict:
+        """Lines, net sales, cost, margin and margin % of lines that all have a cost."""
+        totals = lines.aggregate(
+            net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+            cost=Coalesce(Sum(F('unit_cost') * F('quantity'), output_field=_COST), Decimal('0'),
+                          output_field=_COST),
+        )
+        net, cost = _cents(totals['net']), _cents(totals['cost'])
+        return {'lines': lines.count(), 'net_sales': str(net), 'cost': str(cost),
+                'margin': str(net - cost), 'margin_percent': _percent(net - cost, net)}
 
     @staticmethod
     def _estimated_nets(lines) -> list[dict]:

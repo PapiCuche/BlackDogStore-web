@@ -423,3 +423,94 @@ class WebOnOrderOverStockTest(SupplyShop, TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertFalse(self.checkout().items.get().supply_chosen_over_stock)
 
+
+# ---------------------------------------------------------------------------
+# 3 · Margin: estimated vs realised, unknown costs and refunds apart
+# ---------------------------------------------------------------------------
+
+from store.models import Product  # noqa: E402
+from store.tax_services import breakdown_from_total  # noqa: E402
+from store.test_margin_analytics import MarginFixture  # noqa: E402
+from store.tests import _prod  # noqa: E402
+
+
+class MarginEstimatedRealisedTest(MarginFixture):
+    """
+    The DC1 fixture (A, B, C, D refunded …) plus, all paid, prices with IGV:
+
+        G  web  Centro  1 Cargador 59,00  neto  50  costo  30 de REFERENCIA
+        H  web  Centro  1 Parlante 236,00 neto 200  costo 150 pactado, RECIBIDO
+        I  web  Centro  1 Parlante 236,00 neto 200  costo 150 pactado, sin recibir
+
+    Estimado (costo conocido): A 200/120 · B 100/70 · G 50/30 · H 200/150 · I 200/150
+        neto 750 · costo 520 · margen 230 · 230/750 = 30,67 %
+    Realizado (costo confirmado: stock propio vendido o bajo pedido recibido): A · B · H
+        neto 500 · costo 340 · margen 160 · 160/500 = 32,00 %
+    Sólo estimado: G (referencia) e I (sin recibir): 2 líneas, neto 250
+    Costo desconocido: C · 1 línea · neto 50 (fuera de los dos márgenes)
+    Reembolsos: D · 1 pedido · 118,00 con IGV · 100,00 neto
+    Ventas: 6 pedidos · brutas 944 · netas 800 (= 750 + 50)
+    """
+
+    def setUp(self):
+        super().setUp()
+        charger = _prod(self.company, 'Cargador', 'cargador-margen', price='59.00', inventory=0)
+        Product.objects.filter(pk=charger.pk).update(reference_cost=D('30.00'))
+        charger.refresh_from_db()
+        self.entry(self.centro, charger, 5, None)
+        self.web(self.centro, [(charger, 1)])                               # G
+        speaker = _prod(self.company, 'Parlante', 'parlante-margen', price='236.00', inventory=0)
+        self.on_order(speaker, 'received')                                  # H
+        self.on_order(speaker, 'pending')                                   # I
+
+    def on_order(self, product, supply_status):
+        """A paid on-order line, its snapshots as the payment and the checkout froze them."""
+        tax = breakdown_from_total(total=product.price, subtotal=product.price)
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.centro, customer_email='x@example.com',
+            total=product.price, subtotal_amount=tax.subtotal, taxable_amount=tax.taxable_amount,
+            tax_amount=tax.tax_amount, tax_rate=tax.tax_rate, status=Order.Status.PAID, paid=True,
+            paid_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order, product=product, quantity=1, price=product.price,
+            unit_price_net=tax.taxable_amount, discount_net=D('0.00'), net_amount=tax.taxable_amount,
+            unit_cost=D('150.0000'), cost_source=OrderItem.COST_SUPPLIER_OFFER,
+            supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=supply_status, lead_time_days=4,
+        )
+        return order
+
+    def test_the_hand_computed_figures(self):
+        res = self.get(branch='all')
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual(body['sales'], {'orders': 6, 'gross': '944.00', 'net': '800.00'})
+        self.assertEqual(body['estimated'], {'lines': 5, 'net_sales': '750.00', 'cost': '520.00',
+                                             'margin': '230.00', 'margin_percent': '30.67'})
+        self.assertEqual(body['realised'], {'lines': 3, 'net_sales': '500.00', 'cost': '340.00',
+                                            'margin': '160.00', 'margin_percent': '32.00'})
+        self.assertEqual(body['estimated_only'], {'lines': 2, 'net_sales': '250.00', 'reference_cost_lines': 1,
+                                                  'on_order_not_received_lines': 1})
+        self.assertEqual(body['unknown_cost'], {'lines': 1, 'orders': 1, 'net_sales': '50.00'})
+        self.assertEqual(body['refunds'], {'orders': 1, 'amount': '118.00', 'net': '100.00'})
+        # The top-level figures are the estimated margin, as before.
+        self.assertEqual((body['net_sales_with_cost'], body['cost_of_goods_sold'], body['margin'],
+                          body['margin_percent']), ('750.00', '520.00', '230.00', '30.67'))
+        self.assertEqual(body['pending_cost'], {'lines': 1, 'orders': 1, 'amount': '50.00'})
+        # Estimated net + unknown net = net sales: nothing counted twice or lost.
+        self.assertEqual(D(body['estimated']['net_sales']) + D(body['unknown_cost']['net_sales']),
+                         D(body['sales']['net']))
+        self.assertNotIn('utilidad', res.content.decode().lower())
+
+    def test_a_failed_supply_is_not_realised(self):
+        OrderItem.objects.filter(supply_status='received').update(supply_status='failed')
+        body = self.get(branch='all').json()
+        self.assertEqual((body['realised']['lines'], body['realised']['net_sales']), (2, '300.00'))
+        self.assertEqual(body['estimated_only']['on_order_not_received_lines'], 2)
+
+    def test_no_known_cost_means_no_percentage_not_zero(self):
+        OrderItem.objects.update(unit_cost=None, cost_source='unknown')
+        body = self.get(branch='all').json()
+        self.assertIsNone(body['estimated']['margin_percent'])
+        self.assertIsNone(body['realised']['margin_percent'])
+        self.assertEqual(body['unknown_cost']['net_sales'], '800.00')
