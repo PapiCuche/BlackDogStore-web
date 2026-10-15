@@ -1176,11 +1176,26 @@ def _order_detail_payload(request, order, company):
         transitions = []
     cancel_blockers = cancelling.blockers(order)
     may_cancel = cancelling.may_cancel(request.user, company)
+    from . import order_refunds
+
+    refunds_block = None
+    if cancelling.is_cancelled(order):
+        # COMMERCE-ADMIN-UX-01: what was collected, what is owed back and what
+        # went back, and what THIS caller may do about it.
+        refunds_block = {
+            **order_refunds.payload(order),
+            'can_record': may_cancel,
+            'can_confirm': order_refunds.may_confirm(request.user, company),
+        }
     return {
         **data,
         # ORDER-CANCEL-01: whether THIS caller may cancel it now, why not, and
         # what the cancellation did once it happened. Server-decided.
         'can_cancel': not cancel_blockers and may_cancel,
+        # COMMERCE-ADMIN-UX-01: which cancellation it is open to — 'unpaid',
+        # 'paid' or 'pos' (a till sale: the cashier confirms the goods are back).
+        'cancel_mode': cancelling.mode_of(order) if not cancel_blockers else None,
+        'refunds': refunds_block,
         # Why not is said to whoever could cancel it; to a reader it is noise.
         'cancel_blockers': cancel_blockers if may_cancel else [],
         'cancellation': cancelling.payload(order),
@@ -1209,8 +1224,11 @@ def _order_detail_payload(request, order, company):
         # DC3: the order's supply, derived from its on-order lines ('' when
         # none), and whether THIS caller may confirm, receive or fail them.
         'supply_status': supply_status,
-        'can_manage_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE),
-        'can_receive_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE)
+        # A cancelled order's lines were released with it: nothing to supply.
+        'can_manage_supply': bool(supply_status) and not cancelling.is_cancelled(order)
+        and has_capability(request.user, company, CAP_ORDERS_MANAGE),
+        'can_receive_supply': bool(supply_status) and not cancelling.is_cancelled(order)
+        and has_capability(request.user, company, CAP_ORDERS_MANAGE)
         and has_capability(request.user, company, CAP_INVENTORY_ADJUST),
     }
 
@@ -1300,6 +1318,12 @@ class AdminOrderListView(APIView):
             orders = orders.filter(
                 items__supply_origin=OrderItem.SUPPLY_SUPPLIER, items__supply_status=supply_filter,
             ).distinct()
+
+        # COMMERCE-ADMIN-UX-01: `?refund=pending|confirmed` — cancelled orders
+        # with a refund in that state (the cancellations history's follow-up).
+        refund_filter = request.query_params.get('refund', '').strip()
+        if refund_filter in ('pending', 'confirmed'):
+            orders = orders.filter(refunds__status=refund_filter).distinct()
 
         page_qs, meta = _paginate(orders, request)
         rows = AdminOrderListSerializer(page_qs, many=True).data
@@ -1607,12 +1631,88 @@ class AdminOrderCancelView(APIView):
         if order is None:
             return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
-        reason = request.data.get('reason') if isinstance(request.data, dict) else None
+        from . import order_refunds
+
+        body = request.data if isinstance(request.data, dict) else {}
         try:
-            cancelling.cancel_paid_order(order, request.user, reason, request=request)
-        except cancelling.OrderCancelError as exc:
+            cancelling.cancel_order(
+                order, request.user, body.get('reason'),
+                # Only a literal true: the cashier's word, not something truthy.
+                goods_returned=body.get('goods_returned') is True,
+                refund_method=body.get('refund_method') or None,
+                request=request,
+            )
+        except (cancelling.OrderCancelError, order_refunds.RefundError) as exc:
             return Response(exc.body(), status=exc.http_status)
 
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderRefundListView(APIView):
+    """
+    POST /api/admin/orders/{pk}/refunds/ — COMMERCE-ADMIN-UX-01, body
+    `{amount?, method, note?}`: record a PENDING refund of a cancelled order
+    (no amount = everything still refundable). A record, not a payment: no
+    gateway is called and no payment row changes. `sales.orders.manage`,
+    scoped like every order view (404 out of scope). 201 with the order.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+        from . import order_refunds
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            order_refunds.record_pending(
+                order, request.user, amount=body.get('amount'), method=body.get('method') or '',
+                note=body.get('note') or '', request=request)
+        except order_refunds.RefundError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company), status=status.HTTP_201_CREATED)
+
+
+class AdminOrderRefundConfirmView(APIView):
+    """
+    POST /api/admin/orders/{pk}/refunds/{refund_pk}/confirm/ — body
+    `{reference, note?}`: the money went back. `sales.orders.manage` AND
+    `company.manage` (legacy bridge: admin, superadmin); a reference is
+    required. Once: a confirmed refund answers 409.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk, refund_pk):
+        from . import order_cancellation as cancelling
+        from . import order_refunds
+        from .models import OrderRefund
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        refund = OrderRefund.objects.filter(pk=refund_pk, order_id=order.pk).first() if order else None
+        if refund is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if not order_refunds.may_confirm(request.user, company):
+            return Response(
+                {'detail': 'Confirmar un reembolso corresponde al administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN)
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            order_refunds.confirm(refund, request.user, reference=body.get('reference') or '',
+                                  note=body.get('note') or '', request=request)
+        except order_refunds.RefundError as exc:
+            return Response(exc.body(), status=exc.http_status)
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
 

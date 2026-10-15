@@ -1,5 +1,22 @@
 """
 ORDER-CANCEL-01 — cancelling a PAID web order from the admin panel.
+COMMERCE-ADMIN-UX-01 (owner, 2026-10-15) — also an UNPAID web order and a TILL
+sale. Three modes (`mode_of`), one service (`cancel_order`), one lock:
+
+  unpaid  an online order still waiting for its payment. Nothing was sold:
+          no stock comes back, no income is counted. The devices its buyer
+          held (DC2) go back to the shelf now. A payment that arrives later
+          is filed as money to give back (`views._confirm`), never a sale.
+  paid    the rules below (D1–D4), unchanged.
+  pos     a till sale, born paid and handed over. Annulled only when the
+          cashier confirms the goods are back in the shop (`goods_returned`);
+          then exactly like a paid order: stock back once at the sale's cost,
+          the internal note voided, a live boleta/factura kept and flagged.
+          No time limit: the owner set none, and none is invented here.
+
+  In the paid modes the seller's accrued commission is voided (the model's
+  own rule: «it may be voided when the goods come back»), and a refund owed
+  may be RECORDED as pending in the same transaction (`order_refunds`).
 
 THE OWNER'S RULES (2026-10-14)
 
@@ -33,7 +50,7 @@ from django.utils import timezone
 
 from .models import (
     AdminAuditLog, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, Order, OrderCancellation,
-    SalesChannel, SalesNote, StockMovement, StockUnit, UserProfile,
+    SalesChannel, SalesCommission, SalesNote, StockMovement, StockUnit, UserProfile,
 )
 
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
@@ -62,7 +79,7 @@ class OrderCancelError(Exception):
 
     #: A request that is wrong in itself (400); everything else is the order's
     #: state (409).
-    _BAD_REQUEST = frozenset(['reason_required', 'reason_too_long'])
+    _BAD_REQUEST = frozenset(['reason_required', 'reason_too_long', 'goods_return_required'])
 
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -88,25 +105,39 @@ def clean_reason(reason) -> str:
     return text
 
 
+MODE_UNPAID, MODE_PAID, MODE_POS = 'unpaid', 'paid', 'pos'
+
+
+def mode_of(order) -> str | None:
+    """Which cancellation `order` is open to, by its channel and payment; None when none is."""
+    if order.sales_channel == SalesChannel.POS:
+        return MODE_POS if order.paid and order.status == Order.Status.PAID else None
+    if order.status == Order.Status.PENDING_PAYMENT and not order.paid:
+        return MODE_UNPAID
+    if order.status == Order.Status.PAID and order.paid:
+        return MODE_PAID
+    return None
+
+
 def blockers(order) -> list[dict]:
     """
     Why `order` cannot be cancelled, in the order a person needs to read it.
     Empty when it can. The same answer the service gives on the locked row.
+    A till sale's «goods are back» is asked when it is cancelled, not here.
     """
     if order.status == Order.Status.CANCELLED:
         return [_blocker('already_cancelled', 'Este pedido ya está cancelado.')]
-    found = []
-    if not order.paid or order.status != Order.Status.PAID:
-        found.append(_blocker(
-            'not_paid', 'Sólo se cancela desde aquí un pedido pagado. Este pedido no figura como pagado.'))
-    if order.sales_channel == SalesChannel.POS:
-        found.append(_blocker(
-            'pos_sale', 'Es una venta de mostrador (POS): no se cancela desde el pedido.'))
-    if order.fulfillment_status not in GOODS_IN_THE_SHOP or ever_left(order):
-        found.append(_blocker(
+    mode = mode_of(order)
+    if mode is None:
+        return [_blocker(
+            'not_paid',
+            'Sólo se cancela un pedido pendiente de pago o pagado. '
+            f'Este pedido figura como «{order.get_status_display().lower()}».')]
+    if mode == MODE_PAID and (order.fulfillment_status not in GOODS_IN_THE_SHOP or ever_left(order)):
+        return [_blocker(
             'goods_left',
-            'El pedido ya salió de la tienda (fue enviado o entregado): requiere devolución, no cancelación.'))
-    return found
+            'El pedido ya salió de la tienda (fue enviado o entregado): requiere devolución, no cancelación.')]
+    return []
 
 
 #: The fulfilment states in which the goods leave the shop.
@@ -170,11 +201,16 @@ def fiscal_label(document) -> str:
     return f'{document.get_document_type_display()} {document.series}-{document.number}'[:80]
 
 
-def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation:
+def cancel_order(order, user, reason, *, goods_returned=False, refund_method=None, request=None) -> OrderCancellation:
     """
     Cancel `order` — already resolved through the caller's scoped queryset —
-    and return its cancellation. Raises `OrderCancelError` when a rule says no;
+    and return its cancellation. Raises `OrderCancelError` (or, for the
+    refund asked with it, `order_refunds.RefundError`) when a rule says no;
     nothing is written then.
+
+    `goods_returned`: the cashier's word that a till sale's goods are back.
+    `refund_method`: record, with the cancellation, a PENDING refund of
+    everything collected, to be given back that way. Paid modes only.
     """
     reason = clean_reason(reason)
     actor = user if getattr(user, 'is_authenticated', False) else None
@@ -186,12 +222,21 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
             raise OrderCancelError(**refused[0])
         if OrderCancellation.objects.filter(order=locked).exists():  # pragma: no cover — status says it first
             raise OrderCancelError('already_cancelled', 'Este pedido ya está cancelado.')
+        mode = mode_of(locked)
+        if mode == MODE_POS and goods_returned is not True:
+            raise OrderCancelError(
+                'goods_return_required',
+                'Confirma que la mercadería volvió al local antes de anular la venta.')
 
         previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
         # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
         supply_released = _release_supply(locked, actor, reason, request)
+        holds_released = _release_holds(locked) if mode == MODE_UNPAID else 0
         movements, units_returned, already_returned = _restore_stock(locked, actor, reason, request)
         note_voided = _void_sales_note(locked, actor, reason)
+        commission_voided = bool(SalesCommission.objects.filter(
+            order=locked, status=SalesCommission.STATUS_ACCRUED,
+        ).update(status=SalesCommission.STATUS_VOIDED, updated_at=timezone.now()))
         document = live_fiscal_document(locked)
         label = fiscal_label(document)
 
@@ -204,12 +249,21 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
             previous_status=previous_status, previous_fulfillment_status=previous_fulfillment,
             stock_restored=bool(movements), fiscal_pending=document is not None,
             fiscal_document=label, sales_note_voided=note_voided,
+            was_paid=locked.paid, goods_returned=mode == MODE_POS, holds_released=holds_released,
         )
+        refund = None
+        if refund_method:
+            from . import order_refunds
+
+            if order_refunds.summary(locked)['refundable'] > 0:
+                refund = order_refunds.record_pending(locked, actor, method=refund_method, request=request)
         AdminAuditLog.log(
             actor=actor, action='order_cancelled', target_type='order', target_id=locked.pk,
             metadata={
                 'order_id': locked.pk,
                 'branch_id': locked.fulfillment_branch_id,
+                'mode': mode,
+                'channel': locked.sales_channel,
                 'reason': reason,
                 'previous_status': previous_status,
                 'new_status': locked.status,
@@ -219,17 +273,61 @@ def cancel_paid_order(order, user, reason, *, request=None) -> OrderCancellation
                 'units_returned': units_returned,
                 # Devices of this sale given back before (a return): not restored twice.
                 'units_already_returned': already_returned,
+                'holds_released': holds_released,
+                'goods_returned': mode == MODE_POS,
                 'fiscal_pending': document is not None,
                 'fiscal_document': label,
                 'sales_note_voided': note_voided,
+                'commission_voided': commission_voided,
                 # DC3: on-order lines that stopped waiting for their supplier.
                 'supply_released': supply_released,
-                # Said, so nobody reads a cancellation as a refund.
-                'paid_kept': True,
+                # Said, so nobody reads a cancellation as a refund: the money
+                # taken stays recorded as taken.
+                'paid_kept': locked.paid,
+                'refund_id': refund.pk if refund else None,
             },
             request=request, company=locked.company,
         )
     return cancellation
+
+
+#: ORDER-CANCEL-01's name for it. Every mode goes through the same rules now.
+cancel_paid_order = cancel_order
+
+HOLD_RELEASE_REASON = 'Apartado web liberado: pedido cancelado'
+
+
+def _release_holds(order) -> int:
+    """
+    DC2. The devices a buyer's unpaid order held go back to the shelf now,
+    each with its Kardex line — not when their clock runs out. Locked like
+    every release: the shelf, then the device; a device that moved meanwhile
+    (sold, released by a sweep) is left to whoever moved it.
+    """
+    from . import inventory_services as inventory
+    from . import unit_hold_services as holds
+    from .stock_unit_services import StockUnitError
+
+    released = 0
+    held = (
+        StockUnit.objects.filter(hold_order=order, status=StockUnit.Status.RESERVED)
+        .exclude(hold_key='').select_related('branch', 'product').order_by('pk')
+    )
+    for unit in held:
+        if unit.branch_id is None:
+            continue
+        inventory._locked_branch_stocks(unit.branch, [unit.product])
+        current = StockUnit.objects.select_for_update().filter(pk=unit.pk).first()
+        if (current is None or current.status != StockUnit.Status.RESERVED or not current.hold_key
+                or current.hold_order_id != order.pk):
+            continue
+        try:
+            with transaction.atomic():
+                holds._release(current, reason=HOLD_RELEASE_REASON)
+        except StockUnitError:
+            continue
+        released += 1
+    return released
 
 
 def _release_supply(order, actor, reason, request) -> list[dict]:
@@ -384,6 +482,9 @@ def payload(order) -> dict | None:
         'fiscal_pending': cancellation.fiscal_pending,
         'fiscal_document': cancellation.fiscal_document,
         'sales_note_voided': cancellation.sales_note_voided,
+        'was_paid': cancellation.was_paid,
+        'goods_returned': cancellation.goods_returned,
+        'holds_released': cancellation.holds_released,
     }
 
 
@@ -392,6 +493,6 @@ def is_cancelled(order) -> bool:
 
 
 __all__ = [
-    'OrderCancelError', 'blockers', 'cancel_paid_order', 'clean_reason', 'fiscal_label', 'is_cancelled',
-    'live_fiscal_document', 'may_cancel', 'payload',
+    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'fiscal_label',
+    'is_cancelled', 'live_fiscal_document', 'may_cancel', 'mode_of', 'payload',
 ]

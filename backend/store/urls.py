@@ -44,6 +44,7 @@ from .admin_views import (
     AdminCategoryDetailView,
     AdminCategoryListView,
     AdminOrderListView, AdminOrderDetailView, AdminOrderFulfillmentView, AdminOrderCancelView,
+    AdminOrderRefundListView, AdminOrderRefundConfirmView,
     AdminOrderUnitsView, AdminOrderUnitLookupView, AdminOrderUnitDetailView,
     AdminOrderReceiptPdfView, AdminOrderResendEmailView,
     AdminOrderReprocessStockExitView, AdminOrderRiskReviewView,
@@ -277,6 +278,9 @@ urlpatterns = [
     path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
     path('admin/orders/<int:pk>/fulfillment-status/', AdminOrderFulfillmentView.as_view(), name='admin-order-fulfillment'),
     path('admin/orders/<int:pk>/cancel/', AdminOrderCancelView.as_view(), name='admin-order-cancel'),
+    path('admin/orders/<int:pk>/refunds/', AdminOrderRefundListView.as_view(), name='admin-order-refunds'),
+    path('admin/orders/<int:pk>/refunds/<int:refund_pk>/confirm/', AdminOrderRefundConfirmView.as_view(),
+         name='admin-order-refund-confirm'),
     # SERIAL-PICK-01: the devices of a web order, identified when it is handed over.
     path('admin/orders/<int:pk>/units/', AdminOrderUnitsView.as_view(), name='admin-order-units'),
     path('admin/orders/<int:pk>/units/lookup/', AdminOrderUnitLookupView.as_view(), name='admin-order-unit-lookup'),

@@ -111,7 +111,8 @@ class MarginFiguresTest(MarginFixture):
         body = res.json()
         self.assertEqual(body['window_days'], 30)
         self.assertEqual(body['sales'], {'orders': 3, 'gross': '413.00', 'net': '350.00'})
-        self.assertEqual(body['collected'], {'orders': 3, 'amount': '413.00'})
+        self.assertEqual((body['collected']['orders'], body['collected']['amount']), (3, '413.00'))
+        self.assertEqual(body['collected']['net'], '413.00')        # nothing cancelled, nothing refunded
         self.assertEqual(body['net_sales_with_cost'], '300.00')
         self.assertEqual(body['cost_of_goods_sold'], '190.00')
         self.assertEqual(body['margin'], '110.00')

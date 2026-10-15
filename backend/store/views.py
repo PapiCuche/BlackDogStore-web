@@ -652,6 +652,14 @@ class _SignedNotificationMixin:
                             'gateway_transaction': result.unique_id[:64]}
                 if cancelled:
                     metadata['order_status'] = Order.Status.CANCELLED
+                    # COMMERCE-ADMIN-UX-01: said ON the order too, where the
+                    # person who cancelled it looks — it stays cancelled, and
+                    # the money is now refundable (`order_refunds.collected`).
+                    note = (f'Cobro recibido con el pedido cancelado (intento {attempt.pk}): '
+                            'hay que devolverlo y registrar el reembolso.')
+                    if note not in (order.payment_error or ''):
+                        order.payment_error = f'{order.payment_error}\n{note}' if order.payment_error else note
+                        order.save(update_fields=['payment_error'])
                 AdminAuditLog.log(
                     actor=None, action='payment_duplicate', target_type='order', target_id=order.pk,
                     metadata=metadata, company=order.company,

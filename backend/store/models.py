@@ -1877,6 +1877,14 @@ class OrderCancellation(models.Model):
     #: The affected document as people read it («Boleta B001-12»), or empty.
     fiscal_document = models.CharField(max_length=80, blank=True)
     sales_note_voided = models.BooleanField(default=False)
+    # COMMERCE-ADMIN-UX-01. Whether money had been taken when it was cancelled
+    # (every cancellation before this column was of a paid order), whether a
+    # cashier confirmed the goods of a till sale are back in the shop, and how
+    # many devices a buyer's unpaid order held went back to the shelf.
+    # `db_default`: the previous release keeps inserting rows while this migrates.
+    was_paid = models.BooleanField(default=True, db_default=True)
+    goods_returned = models.BooleanField(default=False, db_default=False)
+    holds_released = models.PositiveIntegerField(default=0, db_default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -1884,6 +1892,79 @@ class OrderCancellation(models.Model):
 
     def __str__(self):
         return f"OrderCancellation(order={self.order_id})"
+
+
+class OrderRefund(models.Model):
+    """
+    COMMERCE-ADMIN-UX-01 — money given back for a CANCELLED order, as staff record it.
+
+    A RECORD, NOT A PAYMENT OPERATION. Nothing here calls a gateway, and no
+    `PaymentTransaction` row is touched: a confirmed payment stays confirmed,
+    and the gateway's own refund is made in the gateway's panel. This row says
+    that a refund is owed (`pending`) or that somebody gave the money back and
+    with which reference (`confirmed`).
+
+    THE CEILING. What was collected for the order (its total if it was paid,
+    plus any charge filed as a duplicate — a late payment of a cancelled
+    order) minus what is already pending or confirmed. Checked by the service
+    with the order locked; the CHECKs below guard what a row can say on its own.
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Reembolso pendiente'),
+        (STATUS_CONFIRMED, 'Reembolso confirmado'),
+    ]
+
+    METHOD_GATEWAY = 'gateway'
+    METHOD_CASH = 'cash'
+    METHOD_TRANSFER = 'transfer'
+    METHOD_OTHER = 'other'
+    METHOD_CHOICES = [
+        (METHOD_GATEWAY, 'Pasarela de pago'),
+        (METHOD_CASH, 'Efectivo'),
+        (METHOD_TRANSFER, 'Transferencia'),
+        (METHOD_OTHER, 'Otro'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='order_refunds')
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='refunds')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.CharField(max_length=12, choices=METHOD_CHOICES)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    #: The operation number, voucher or gateway reference. Required to confirm.
+    reference = models.CharField(max_length=120, blank=True, default='')
+    #: What a person wrote as evidence: who received it, how, where the voucher is.
+    note = models.CharField(max_length=500, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_refunds_created',
+    )
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_refunds_confirmed',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+        indexes = [models.Index(fields=['company', 'status', 'created_at'])]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=Decimal('0.00')),
+                                   name='order_refund_amount_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='pending', confirmed_at__isnull=True)
+                    | (models.Q(status='confirmed', confirmed_at__isnull=False) & ~models.Q(reference=''))
+                ),
+                name='order_refund_confirmed_has_date_and_reference',
+            ),
+        ]
+
+    def __str__(self):
+        return f'OrderRefund(order={self.order_id}, {self.amount}, {self.status})'
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,8 @@
   "store.test_device_decisions.SweepAgainstCheckoutRaceTest",
   "store.test_image_import.TwoAppliesAtOnceTest",
   "store.test_order_cancel.CancelAtTheSameInstantTest",
+  "store.test_order_cancel_ux.RefundRaceTest",
+  "store.test_order_cancel_ux.UnpaidCancelAgainstPaymentRaceTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",

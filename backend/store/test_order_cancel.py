@@ -127,8 +127,10 @@ class WhichOrdersTest(_Base):
                 self.assertEqual((order.status, order.fulfillment_status), ('paid', state))
                 self.assertFalse(self.returns(order).exists())
 
-    def test_an_unpaid_order_is_not_this_flow(self):
-        for status in ('pending_payment', 'failed'):
+    def test_a_failed_order_is_not_cancelled(self):
+        # COMMERCE-ADMIN-UX-01: an order still pending payment IS cancelled now
+        # (`test_order_cancel_ux.UnpaidOrderTest`); a failed one is already over.
+        for status in ('failed',):
             with self.subTest(status):
                 order = Order.objects.create(
                     company=self.company, fulfillment_branch=self.branch_a, customer_email='x@example.com',
@@ -138,12 +140,14 @@ class WhichOrdersTest(_Base):
                 order.refresh_from_db()
                 self.assertEqual(order.status, status)
 
-    def test_a_till_sale_is_not_cancelled_here(self):
+    def test_a_till_sale_is_not_annulled_without_the_cashiers_word_that_the_goods_are_back(self):
+        # COMMERCE-ADMIN-UX-01: a till sale is annulled now, once the goods are
+        # back in the shop (`test_order_cancel_ux.TillSaleTest`).
         order = self.web_order(sales_channel='pos')
 
         response = self.post_cancel(order)
 
-        self.assertEqual((response.status_code, response.json()['code']), (409, 'pos_sale'))
+        self.assertEqual((response.status_code, response.json()['code']), (400, 'goods_return_required'))
         self.assertEqual(Order.objects.get(pk=order.pk).status, 'paid')
 
     def test_another_company_or_a_branch_out_of_reach_answers_like_nothing(self):
