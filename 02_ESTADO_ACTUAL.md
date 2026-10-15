@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-15 — DEVICE-COMMERCE-01 · decisiones del propietario implementadas en rama local
+
+- Rama `feat/device-commerce`, commits locales sin push; **no desplegado**. Tres decisiones del
+  propietario aprobadas el 2026-10-15 (DEC-DEVICE-COMMERCE-01 · Decisiones del propietario):
+  1. Apartados de equipos con duración por empresa y canal (carrito 15, checkout 45, tope 60
+     al crear; con límites) y un apartado cuyo pedido tiene un pago que la pasarela aún puede
+     confirmar no se libera por vencimiento hasta que la conciliación decida (2 h, o mientras
+     la respuesta sea indecidible); liberación idempotente bajo bloqueo.
+  2. «Bajo pedido» con stock propio sólo por elección explícita: en caja con
+     `sales.orders.manage` y motivo; en la web sólo si la empresa lo permite (apagado al
+     crear). La línea guarda fuente, costo, plazo, la marca y el motivo; queda auditado.
+  3. Margen estimado y realizado, costo desconocido y reembolsos aparte, con importe y %.
+- Migración `0135` (aditiva). Sin cron nuevo.
+- Sigue pendiente (deuda): seminuevos de proveedor externo, reembolsos a mano, bajo pedido
+  en la app nativa, fricciones del carrito.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC3 en rama local (y segunda revisión de DC2)
 
 - Rama `feat/device-commerce`, commits locales sin push. DC3 (DEC-DEVICE-COMMERCE-01 · DC3):

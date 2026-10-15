@@ -2007,9 +2007,112 @@ Pasada de mutación de la revisión: 25 mutantes, 24 muertos, 1 equivalente (qui
 re-chequeo de claves al aplicar: el índice único devuelve el mismo rechazo).
 
 **Decisión mía, por confirmar con el propietario — «sin stock únicamente con Bajo
-pedido».** Mientras el stock propio de la sucursal que despacha cubre la cantidad de la línea,
+pedido».** *Reemplazada el 2026-10-15 por la decisión 2 del propietario (abajo): la regla
+sigue siendo la de por omisión, pero ya no es absoluta.* Mientras el stock propio de la sucursal que despacha cubre la cantidad de la línea,
 «Bajo pedido» se rechaza (409 `stock_available`, con mensaje) en la web (agregar y cambiar
 cantidad de una línea bajo pedido) y en caja (venta y vista previa, las dos API de caja).
 Como una línea nunca se mezcla, bajo pedido queda sólo para stock propio < cantidad pedida
 (el caso «stock parcial» de arriba). El checkout no lo vuelve a exigir: si llega stock entre
 el carrito y el pago, la línea sigue bajo pedido como la pidió el comprador.
+
+### DEC-DEVICE-COMMERCE-01 · Decisiones del propietario (2026-10-15) — APROBADAS
+
+Tres decisiones del propietario que reemplazan las que estaban «por confirmar» sobre el
+plazo de los apartados, «bajo pedido con stock» y el margen. Migración `0135` (aditiva,
+`db_default` igual al comportamiento de antes, reversible). Implementado en la rama
+`feat/device-commerce`, **sin desplegar**.
+
+**1. Apartados: duración por empresa y canal; la pasarela decide antes que el reloj.**
+«Duración configurable por empresa y canal. Referencia inicial 15 minutos para checkout,
+pero ajustar al ciclo efectivo de Izipay, pagos pendientes y expiración. Nunca liberar una
+reserva asociada a una confirmación válida sin conciliación. Liberación idempotente y
+segura ante concurrencia.»
+- *Por empresa y canal.* `CompanySettings.device_cart_hold_minutes` (carrito web, 15),
+  `device_checkout_hold_minutes` (checkout web, 45) y `device_hold_ceiling_minutes` (tope
+  desde que el carrito lo tomó, 60). Los valores al crear son los de siempre. Límites
+  (modelo y API): carrito 5–60; checkout 30–120; tope 35–240 y ≥ carrito + 30. Cambiarlos
+  exige `company.manage` **y** `settings.manage` (como la revisión de pedidos). Sin fila
+  de configuración rigen los de la plataforma (`settings.DEVICE_*`). La caja no tiene
+  plazo: sus apartados del personal no vencen (sin cambio).
+- *El ciclo efectivo de la pasarela en este código* («Mi Cuenta Web»,
+  `payments/micuentaweb.py` y `payments/reconcile.py`): el formToken vive 15 min y la
+  sesión de pago 10; `FORM_LIFETIME` = **30 min** (hasta entonces una tarjeta rechazada
+  puede reintentarse con la misma referencia, el intento sigue `pending`);
+  `reconcile_payments` corre **cada 5 min**, pregunta desde los **3 min** (`MIN_AGE`) y
+  durante **2 h** (`WINDOW`), y cierra como `abandoned` en los últimos **10 min**
+  (`CLOSING`, es decir entre 110 y 120 min) el intento del que la pasarela no tiene nada.
+  El otro producto (SDK web / Checkout) no se concilia: sólo su notificación.
+- *Números elegidos.* El checkout nunca dura menos de 30 min (el formulario aún puede
+  cobrar), por eso su mínimo es 30 y el tope ≥ carrito + 30; el 45 de siempre deja 15 min
+  de margen. Y el reloj ya no es la última palabra: un apartado atado a un pedido que aún
+  puede pagarse, con un intento `pending` **abierto mientras el apartado vivía**, no se
+  libera por vencimiento mientras ese intento tenga menos de **2 h** (la ventana de la
+  conciliación: dentro de ella la notificación o `Order/Get` deciden — autorizado → el
+  pago vende el equipo; rechazado o abandonado → vuelve al estante en el siguiente
+  barrido), ni mientras la respuesta de la pasarela esté marcada `undecided:` /
+  `unreadable:` (puede haber dinero de por medio; `ops_status` ya lo avisa). Pasadas las
+  2 h sin respuesta nada vuelve a preguntar, así que decide el reloj. Un intento abierto
+  después de que el apartado venció no lo revive (si no, reintentar el pago cada 2 h
+  apartaría un equipo para siempre). Con el tope de 60 min, un equipo queda apartado como
+  mucho ~3 h (60 min + 2 h del intento) salvo respuesta indecidible.
+- *A mano en caja* (`inventory.adjust`): tampoco se libera dentro de esas 2 h; un apartado
+  retenido por una respuesta indecidible sí puede liberarlo una persona: quien mira el
+  panel de la pasarela es la conciliación.
+- *Idempotente y concurrente.* `unit_hold_services.release_one_expired`: cada apartado se
+  decide bajo el bloqueo del estante y luego el de la fila del equipo (el orden único del
+  módulo), releyendo estado, titular, vencimiento y pago. El barrido, la lectura del
+  carrito y el cron a la vez escriben **una** línea de Kardex; un checkout que amplió el
+  apartado después de que el barrido lo listó gana. Prueba: `ConcurrentReleaseTest`
+  (`TransactionTestCase`, en `flushing`).
+
+**2. Bajo pedido con stock propio: sólo por elección explícita.** «Preferir stock propio
+disponible, pero permitir seleccionar explícitamente proveedor externo aunque exista
+stock, cuando el flujo y permisos lo justifiquen. Registrar la fuente elegida, costo y
+plazo. No cambiar silenciosamente stock propio por externo.»
+- *Por omisión, sin cambio:* stock propio primero; pedir «bajo pedido» una línea que el
+  estante cubre responde 409 `stock_available` en la web y en caja. Agregar sin `on_order`
+  nunca va al proveedor.
+- *Caja:* la línea lleva `supply_reason` (obligatorio, ≤ 200, espacios normalizados) y quien
+  vende necesita **`sales.orders.manage`**. Se reutiliza esa capacidad y no la de
+  descuentos: elegir proveedor es una decisión de abastecimiento (compromete una oferta,
+  cambia el plazo de entrega) y `sales.orders.manage` es la que ya sigue la línea con el
+  proveedor (confirmar, recibir, «no se pudo abastecer»); `sales.discounts.apply` decide
+  precios. Sin motivo → 409 como antes (con el permiso, el mensaje pide el motivo); con
+  motivo y sin permiso → 403. El motivo entra en la huella de idempotencia (otra clave con
+  otro motivo es otra venta). El contexto de caja dice `can_order_over_stock` (web y v1).
+- *Web:* sólo si la empresa enciende `CompanySettings.web_on_order_over_stock` (apagado al
+  crear; `settings.manage`). Entonces la oferta pública lleva `over_stock: true` (sin esa
+  clave en otro caso: la forma fijada no cambia) y la tienda ofrece, aparte del botón
+  normal, «Pedir al proveedor — entrega en N días» al precio de la oferta. Si la empresa
+  lo apaga, cambiar la cantidad de esa línea vuelve a responder `stock_available`.
+- *Registro:* la línea guarda la fuente (`supply_origin`, `supplier_offer`), el costo
+  pactado (`unit_cost`, `cost_source='supplier_offer'`, sólo `costs.view`), el plazo
+  (`lead_time_days`) y ahora `supply_chosen_over_stock` + `supply_choice_reason` (en la web:
+  «Elegido por el comprador en la web»; la marca se pone si el estante cubría la línea al
+  escribir el pedido). Auditoría `pos_on_order_over_stock` / `web_on_order_over_stock`:
+  producto, cantidad, stock propio, oferta, proveedor, plazo, `has_cost` y motivo — nunca
+  el costo (la auditoría la leen personas sin `costs.view`; el costo está en la línea).
+
+**3. Margen: estimado y realizado, desconocidos y reembolsos aparte.** «(venta neta sin
+IGV recuperable − costo neto comparable) / venta neta × 100. Mostrar importe y porcentaje,
+margen estimado vs. realizado, costos desconocidos y ajustes/reembolsos. No llamarlo
+utilidad neta ni inventar costos.»
+- La fórmula ya era ésa (DC1): venta neta = parte de la base imponible de la línea
+  (`net_amount`, sin IGV); **comparable** = sólo las líneas con costo conocido, en los dos
+  términos. Importe y porcentaje (`null`, nunca 0 %, sin costo conocido).
+- *Estimado* = todas las líneas con costo conocido al vender: promedio de la sucursal,
+  costo del equipo, costo de referencia del catálogo o costo pactado con el proveedor.
+  Son las cifras de siempre (`margin`, `margin_percent`) y ahora también `estimated`.
+- *Realizado* (`realised`) = sólo costo confirmado: stock propio vendido a su promedio o a
+  su costo de equipo, o línea bajo pedido **recibida** (su entrada se escribió al costo
+  pactado). Una línea de costo de referencia o bajo pedido aún no recibida (pendiente,
+  por confirmar o no abastecida) es sólo estimada (`estimated_only`, con su conteo).
+- *Costo desconocido* (`unknown_cost`): líneas, pedidos y venta neta, fuera de los dos
+  márgenes (estimado + desconocido = venta neta). *Reembolsos* (`refunds`): pedidos,
+  importe con IGV y neto sin IGV, aparte. No hay ajustes de costo de lo vendido que mostrar:
+  la historia no se recalcula (DC1) y no se inventa ninguno.
+- Nunca «utilidad» ni «utilidad neta»: «margen comercial».
+
+Pasada de mutación de las tres decisiones: 31 mutantes, 29 muertos a la primera; los 2 que
+sobrevivieron (quitar el bloqueo de fila del barrido; `>=` → `>` en la marca de la web)
+tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto justo) y mueren.

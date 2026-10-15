@@ -3,6 +3,31 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — DEVICE-COMMERCE-01 · decisiones del propietario (implementado en rama, NO desplegado)
+
+Migración `0135` (aditiva, `db_default` con el comportamiento anterior, reversible).
+
+**Added**
+- Configuración por empresa de los apartados web de equipos: minutos de carrito, de checkout
+  y tope (15/45/60 al crear; checkout nunca menos de 30, lo que vive el formulario de pago).
+  Cambiarlos exige `settings.manage`.
+- «Bajo pedido» aunque haya stock propio, sólo explícito: en caja con `sales.orders.manage` y
+  un motivo; en la web sólo si la empresa enciende «Permitir que el comprador web elija
+  proveedor aunque haya stock», y la tienda dice que sale del proveedor con su plazo. La
+  línea guarda `supply_chosen_over_stock` y `supply_choice_reason`; auditoría
+  `pos_on_order_over_stock` / `web_on_order_over_stock`.
+- Margen comercial estimado y realizado (costo confirmado: stock propio vendido o bajo
+  pedido recibido), «costo desconocido» y reembolsos con y sin IGV, aparte.
+
+**Changed**
+- Un apartado web cuyo pedido tiene un pago pendiente que la pasarela aún puede confirmar
+  ya no vuelve al estante por vencimiento: decide la conciliación (2 h; sin límite si la
+  respuesta fue indecidible). La caja tampoco lo libera dentro de ese plazo.
+- La liberación de apartados vencidos se decide bajo el bloqueo del estante y del equipo:
+  barridos simultáneos escriben una sola línea de Kardex.
+- «Bajo pedido» con stock: el 409 `stock_available` sigue siendo la respuesta por omisión
+  (antes «por confirmar»; ahora aprobado por el propietario con las dos excepciones).
+
 ## 2026-10-15 — DEVICE-COMMERCE-01 · DC3: correcciones de la revisión independiente
 
 Migración `0134` editada antes de publicar (índice único de ofertas y CHECK más estricto).
