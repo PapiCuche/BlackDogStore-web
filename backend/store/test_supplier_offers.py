@@ -1346,5 +1346,53 @@ class ReviewSupplyTest(SupplyShop, TestCase):
 
 
 
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class ReviewShelfFirstWebTest(SupplyShop, TestCase):
+    """P3.6 — «Bajo pedido» only when the shelf cannot cover the line (web)."""
+
+    def setUp(self):
+        self.build()
+        self.public = APIClient(HTTP_HOST=self.host)
+
+    def add(self, quantity, session='carrito-a'):
+        return self.public.post('/api/cart/add/', {'session_key': session, 'product': self.case.pk,
+                                                   'quantity': quantity, 'on_order': True}, format='json')
+
+    def test_on_order_is_refused_while_the_shelf_covers_the_line(self):
+        self.stock(self.case, 3)
+        refused = self.add(2)
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'stock_available'), refused.content)
+        self.assertIn('stock', refused.json()['detail'].lower())
+        self.assertFalse(CartItem.objects.exists())
+        self.assertEqual(self.add(3).json().get('code'), 'stock_available')
+        taken = self.add(4)
+        self.assertEqual(taken.status_code, 200, taken.content)
+        # Lowering an on-order line to what the shelf covers is refused the same way.
+        patched = self.public.patch(f'/api/cart/{CartItem.objects.get().pk}/?session_key=carrito-a',
+                                    {'quantity': 3}, format='json')
+        self.assertEqual((patched.status_code, patched.json()['code']), (409, 'stock_available'))
 
 
+class ReviewShelfFirstPosTest(SupplyShop, TestCase):
+    """P3.6 — the same rule at the till."""
+
+    def setUp(self):
+        self.build()
+        self.cashier, _ = _p2d_member(self.company, 'dc3_cajero_r', ['company.view', 'sales.pos.use'])
+
+    def test_the_till_refuses_on_order_while_the_shelf_covers_it(self):
+        from store import pos_services
+        from store.tests import _c1_sale
+        self.stock(self.case, 3)
+        with self.assertRaises(pos_services.PosStockAvailableError):
+            _c1_sale(actor=self.cashier, company=self.company, branch=self.branch,
+                     items=[{'product': self.case.pk, 'quantity': 2, 'on_order': True}])
+        client = APIClient()
+        client.force_authenticate(user=self.cashier)
+        res = client.post('/api/admin/pos/preview/', {
+            'branch': self.branch.pk, 'payment_method': 'cash',
+            'items': [{'product': self.case.pk, 'quantity': 3, 'on_order': True}]}, format='json')
+        self.assertEqual((res.status_code, res.json().get('code')), (409, 'stock_available'), res.content)
+        order, _ = _c1_sale(actor=self.cashier, company=self.company, branch=self.branch,
+                            items=[{'product': self.case.pk, 'quantity': 4, 'on_order': True}])
+        self.assertEqual(order.items.get().supply_origin, 'supplier')

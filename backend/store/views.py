@@ -953,6 +953,24 @@ class PaymentStatusView(APIView):
         return Response(payload)
 
 
+def _shelf_covers_on_order(request, product, quantity):
+    """
+    DC3 — the owner's rule: a sale WITHOUT stock is the only sale «Bajo
+    pedido». While the fulfilment shelf covers the whole line, on order is
+    refused (409 `stock_available`): the buyer takes it from the shelf. Lines
+    are never mixed, so on order is for a line the shelf cannot cover.
+    """
+    available = storefront_available_stock(request, product)
+    if available >= quantity:
+        return Response(
+            {'code': 'stock_available',
+             'detail': (f'{product.name} tiene stock en la tienda ({available}): agrégalo con stock, '
+                        'no bajo pedido.')},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None
+
+
 class CartViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -1080,9 +1098,13 @@ class CartViewSet(
             )
 
         if item.supply_origin == CartItem.SUPPLY_SUPPLIER:
-            # DC3 — on order: an offer has to cover the new quantity; the shelf is not asked.
+            # DC3 — on order: an offer has to cover the new quantity, and the
+            # shelf must NOT (sin stock únicamente con «Bajo pedido»).
             from .supply_services import offer_for_line
 
+            refused = _shelf_covers_on_order(request, item.product, quantity)
+            if refused is not None:
+                return refused
             if offer_for_line(item.product, quantity) is None:
                 return Response(
                     {'code': 'not_on_order',
@@ -1288,6 +1310,11 @@ class CartViewSet(
                 return Response({'code': 'mixed_supply', 'detail': 'Una línea es de stock o bajo pedido.'},
                                 status=status.HTTP_409_CONFLICT)
             new_qty = item.quantity + quantity
+            refused = _shelf_covers_on_order(request, product, new_qty)
+            if refused is not None:
+                if created:
+                    item.delete()
+                return refused
             if offer_for_line(product, new_qty) is None:
                 if created:
                     item.delete()

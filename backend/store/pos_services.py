@@ -59,6 +59,15 @@ class PosValidationError(PosError):
     """The request is malformed or asks for something that does not exist here."""
 
 
+class PosStockAvailableError(PosValidationError):
+    """
+    DC3 — «Bajo pedido» asked for a line this shelf covers. Answered 409
+    `stock_available`: sin stock únicamente con «Bajo pedido».
+    """
+
+    code = 'stock_available'
+
+
 class PosPermissionError(PosError):
     """
     The request is well-formed; this caller is not allowed to make it.
@@ -964,6 +973,10 @@ def build_pos_sale(
         if not entry.get('on_order'):
             continue
         product = products[entry['product']]
+        shelf = supply_services.own_stock(product, branch)
+        if shelf >= entry['quantity']:
+            raise PosStockAvailableError(
+                f'«{product.name}» tiene stock en esta sucursal ({shelf}): véndelo con stock, no bajo pedido.')
         offer = supply_services.offer_for_line(product, entry['quantity'])
         if offer is None:
             raise PosValidationError(

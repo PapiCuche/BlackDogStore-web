@@ -295,6 +295,8 @@ class V1PosPreviewView(V1PosSurfaceMixin, APIView):
             )
         except pos_services.PosPermissionError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except pos_services.PosStockAvailableError as exc:
+            return Response({'detail': str(exc), 'code': exc.code}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -381,6 +383,8 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
             # 403, not 400: the request is fine, the caller is not allowed to
             # make it. A 400 would send an operator hunting for a typo.
             return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except pos_services.PosStockAvailableError as exc:
+            return Response({'detail': str(exc), 'code': exc.code}, status=status.HTTP_409_CONFLICT)
         except pos_services.PosValidationError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except inventory_services.InsufficientStockError as exc:
