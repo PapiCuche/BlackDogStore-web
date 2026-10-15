@@ -3,7 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-15 — DEVICE-COMMERCE-01 en `master` (#123) — NO desplegado
+## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
+
+**Deployed**
+- `master` `04640cf` en producción desde el 2026-10-15, 14:52 (Lima), desde `041d0fd`, con
+  copia previa `20261015-144747` y las migraciones `0126`–`0135` (con `lock_timeout`).
+- Cron nuevo, con `flock`: `release_expired_unit_holds` y `expire_supplier_offers`.
+
+**Verified**
+- Copia restaurada; migraciones ensayadas ida, vuelta e ida sobre ella; datos iguales antes y
+  después; chequeo de salud en verde; ningún dato financiero en la tienda pública.
+
+**Not changed**
+- #119–#122 sin desplegar; pasarela en TEST; Caddyfile y variables de entorno.
+
+## 2026-10-15 — DEVICE-COMMERCE-01 en `master` (#123) — desplegado el mismo día (ver arriba)
 
 **Changed**
 - DEVICE-COMMERCE-01 (costos y margen, nuevos y seminuevos por unidad, proveedores y bajo

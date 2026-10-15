@@ -1,9 +1,22 @@
 # NEXT ACTION
 
-## En `master` sin desplegar: DEVICE-COMMERCE-01 (#123)
+## Desplegado: DEVICE-COMMERCE-01 (#123, `04640cf`) el 2026-10-15
 
-Despliegue pendiente de autorización; preflight en `02_ESTADO_ACTUAL.md` (entrada del
-2026-10-15). PR abiertos sin fusionar: #119, #120, #121 (sobre #119), #122.
+Pruebas que el propietario debe hacer con su sesión (no hechas por el agente):
+1. Panel › Costos: ver «Margen comercial» y «Valor al costo» con una cuenta con `costs.view`
+   y confirmar que una cuenta de ventas/almacén NO los ve.
+2. Crear un modelo con capacidad y color y un producto de prueba; publicar; ver la página
+   del modelo en la tienda (variantes, imágenes, precio por variante).
+3. Registrar un seminuevo de prueba (batería, estado, foto) y comprobar en la tienda que
+   el IMEI sale enmascarado.
+4. Reservar ese equipo en el carrito, pagar con tarjeta de prueba de Izipay TEST y ver la
+   venta de esa unidad exacta; dejar otra reserva sin pagar y ver que vence.
+5. Caja: venta con stock y venta «Bajo pedido» con una oferta de proveedor válida; una
+   oferta vencida al pagar debe quedar «abastecimiento por confirmar».
+6. Cargar ofertas por Excel (vista previa y aplicar) y «Recibir del proveedor» un pedido.
+7. Borrar o desactivar después los datos de prueba.
+
+PR abiertos sin fusionar: #119, #120, #121 (sobre #119), #122.
 
 ## Hecho: INVENTORY-UNIFIED-01 en `master` (#117, `041d0fd`) y desplegado el 2026-10-14
 
