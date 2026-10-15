@@ -561,6 +561,17 @@ def record_sale_stock_movements(
 
     margin_services.snapshot_nets(order)
 
+    # DC3 — lines sold ON ORDER take nothing from any shelf: their payment
+    # commits the supplier's offer (offer rows before shelf rows: the module's
+    # lock order), and their goods enter and leave when received
+    # (`supply_services.receive_line`). Never a movement here. Committed FIRST,
+    # before the branch is even looked at: an order with no branch anywhere
+    # still owes its supplier lines (DC3 review P3.7).
+    from . import supply_services
+
+    with transaction.atomic():
+        supply_services.commit_order_lines(order, strict=strict)
+
     branch = order.fulfillment_branch
     if branch is None:
         # AN ORDER WITH NO BRANCH — and why this repairs rather than refuses.
@@ -589,14 +600,6 @@ def record_sale_stock_movements(
         Order.objects.filter(pk=order.pk).update(fulfillment_branch=branch)
 
     with transaction.atomic():
-        # DC3 — lines sold ON ORDER take nothing from this shelf: their payment
-        # commits the supplier's offer (offer rows before shelf rows: the
-        # module's lock order), and their goods enter and leave when received
-        # (`supply_services.receive_line`). Never a movement here.
-        from . import supply_services
-
-        supply_services.commit_order_lines(order, strict=strict)
-
         already_recorded = set(
             StockMovement.objects
             .filter(order=order, movement_type=StockMovement.SALE_EXIT)

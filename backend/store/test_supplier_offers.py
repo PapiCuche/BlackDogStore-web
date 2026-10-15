@@ -1277,8 +1277,65 @@ class ReviewSupplyTest(SupplyShop, TestCase):
     def setUp(self):
         self.build()
 
+    def test_a_refunded_or_cancelled_order_releases_what_it_committed(self):
+        """P3.4 — the offer gets back the quantity, never below zero, audited."""
+        for status_ in (Order.Status.REFUNDED, Order.Status.CANCELLED):
+            with self.subTest(status_):
+                SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=0)
+                CartItem.objects.all().delete()
+                self.add_on_order(quantity=2)
+                order = self.checkout()
+                self.pay(order)
+                self.offer.refresh_from_db()
+                self.assertEqual(self.offer.committed_quantity, 2)
+                Order.objects.filter(pk=order.pk).update(status=status_)
+                supply.fail_line(order.items.get(), actor=self.staff, reason='Reembolsado al cliente')
+                self.offer.refresh_from_db()
+                self.assertEqual(self.offer.committed_quantity, 0)
+                self.assertEqual(order.items.get().supply_status, 'failed')
+                log = AdminAuditLog.objects.filter(action='order_supply_failed', target_id=str(order.pk)).get()
+                self.assertEqual(log.metadata['released'], 2)
+        # Never below zero: what the offer no longer holds is not taken twice.
+        CartItem.objects.all().delete()
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.pay(order)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=1)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.REFUNDED)
+        supply.fail_line(order.items.get(), actor=self.staff, reason='Reembolsado')
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 0)
+        # Confirming or receiving still needs a paid order.
+        CartItem.objects.all().delete()
+        self.add_on_order(quantity=1)
+        order = self.checkout()
+        self.pay(order)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.REFUNDED)
+        with self.assertRaises(supply.SupplyError):
+            supply.receive_line(order.items.get(), actor=self.staff)
 
+    def test_payment_asks_to_confirm_when_the_product_left_the_on_order_mode(self):
+        """P3.5 — switched to «sólo stock» between checkout and payment: nothing is committed."""
+        self.add_on_order(quantity=1)
+        order = self.checkout()
+        Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)
+        self.assertEqual(self.pay(order), 'paid')
+        self.assertEqual(order.items.get().supply_status, 'to_confirm')
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 0)
 
+    def test_an_order_without_any_branch_still_commits_its_on_order_lines(self):
+        """P3.7 — no branch on the order nor in the company: the offer is committed anyway."""
+        from unittest import mock
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        Order.objects.filter(pk=order.pk).update(fulfillment_branch=None)
+        order.refresh_from_db()
+        with mock.patch('store.tenancy.company_fulfillment_branch', return_value=None):
+            inventory.record_sale_stock_movements(order)
+        self.assertEqual(order.items.get().supply_status, 'pending')
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 2)
 
     def test_committed_requires_a_confirmed_quantity_in_the_database(self):
         """P3.10 — NULL confirmed never holds a commitment."""

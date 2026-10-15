@@ -519,7 +519,9 @@ def commit_order_lines(order, *, strict: bool = False) -> None:
         if line.supplier_offer_id:
             offer = (SupplierOffer.objects.select_for_update().select_related('supplier')
                      .filter(pk=line.supplier_offer_id, company_id=order.company_id).first())
-        if offer is not None and _offer_is_valid(offer, line.quantity):
+        # The product must still be sold «Bajo pedido» when the money arrives: a
+        # mode switched off since checkout is a line for a person, not a commitment.
+        if offer is not None and sells_on_order(line.product) and _offer_is_valid(offer, line.quantity):
             SupplierOffer.objects.filter(pk=offer.pk).update(
                 committed_quantity=F('committed_quantity') + line.quantity, updated_at=timezone.now())
             OrderItem.objects.filter(pk=line.pk).update(supply_status=OrderItem.SUPPLY_PENDING)
@@ -536,14 +538,19 @@ def commit_order_lines(order, *, strict: bool = False) -> None:
                target_id=order.pk, line_id=line.pk, offer_id=line.supplier_offer_id, quantity=line.quantity)
 
 
-def _locked_line(line, *, company=None):
+#: An order that was paid and then refunded or cancelled still holds what it
+#: committed until somebody fails its lines: «No se pudo abastecer» works on them.
+_RELEASABLE = (Order.Status.PAID, Order.Status.REFUNDED, Order.Status.CANCELLED)
+
+
+def _locked_line(line, *, company=None, statuses=(Order.Status.PAID,)):
     order = Order.objects.select_for_update().get(pk=line.order_id)
     if company is not None and order.company_id != company.pk:
         raise SupplyError('Pedido no encontrado.', code='not_found')
     locked = OrderItem.objects.select_for_update().select_related('product').get(pk=line.pk)
     if locked.supply_origin != OrderItem.SUPPLY_SUPPLIER:
         raise SupplyError('Esta línea no es bajo pedido.', code='not_on_order')
-    if order.status != Order.Status.PAID:
+    if order.status not in statuses:
         raise SupplyError('Sólo un pedido pagado sigue su abastecimiento.', code='not_paid')
     return order, locked
 
@@ -653,23 +660,36 @@ def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
     «No se pudo abastecer»: the line will not be supplied. Its committed
     quantity goes back to the offer, the order says it has to be refunded or
     cancelled through the existing flow, and nothing touches stock.
+
+    Also the way to RELEASE an order that was refunded or cancelled (by hand —
+    ORDER-CANCEL-01 is not in this branch): the offer gets back what the line
+    committed, never more than the offer holds (never below zero), audited
+    with the quantity released.
     """
     reason = ' '.join(str(reason or '').split())[:250]
     if not reason:
         raise SupplyError('Indica el motivo.', field='reason')
-    order, locked = _locked_line(line, company=company)
+    order, locked = _locked_line(line, company=company, statuses=_RELEASABLE)
     if locked.supply_status not in (OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_TO_CONFIRM):
         raise SupplyError('Esta línea ya no está esperando al proveedor.', code='wrong_state')
+    released = 0
     if locked.supply_status == OrderItem.SUPPLY_PENDING and locked.supplier_offer_id:
-        SupplierOffer.objects.select_for_update().filter(pk=locked.supplier_offer_id).first()
-        SupplierOffer.objects.filter(pk=locked.supplier_offer_id, committed_quantity__gte=locked.quantity).update(
-            committed_quantity=F('committed_quantity') - locked.quantity, updated_at=timezone.now())
+        offer = SupplierOffer.objects.select_for_update().filter(pk=locked.supplier_offer_id).first()
+        if offer is not None:
+            released = min(offer.committed_quantity, locked.quantity)
+            if released:
+                SupplierOffer.objects.filter(pk=offer.pk).update(
+                    committed_quantity=F('committed_quantity') - released, updated_at=timezone.now())
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_FAILED, supply_note=reason)
-    _note(order, f'No se pudo abastecer «{locked.product.name}»: {reason}. '
-                 'Cancelar o reembolsar por el flujo existente.')
+    if order.status == Order.Status.PAID:
+        _note(order, f'No se pudo abastecer «{locked.product.name}»: {reason}. '
+                     'Cancelar o reembolsar por el flujo existente.')
+    else:
+        _note(order, f'Abastecimiento liberado de «{locked.product.name}» (pedido {order.get_status_display().lower()}): '
+                     f'{reason}.')
     Order.objects.filter(pk=order.pk).update(payment_error=order.payment_error)
     _audit('order_supply_failed', company=order.company, actor=actor, target_type='order', target_id=order.pk,
-           request=request, line_id=locked.pk, reason=reason)
+           request=request, line_id=locked.pk, reason=reason, released=released, order_status=order.status)
     locked.refresh_from_db()
     return locked
 
