@@ -129,6 +129,19 @@ class CartThrottle(AnonRateThrottle):
     scope = 'cart'
 
 
+class DeviceHoldThrottle(SimpleRateThrottle):
+    """
+    DC2 review — adding a product sold BY UNIT takes a device off the shelf,
+    so it has its own, stricter budget: per address, signed in or not. The
+    general `cart` budget (60/min) still applies on top.
+    """
+
+    scope = 'device_hold'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
+
+
 class PaymentStatusThrottle(AnonRateThrottle):
     scope = 'payment_status'
 

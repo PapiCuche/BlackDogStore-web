@@ -1166,7 +1166,11 @@ class CartViewSet(
             # DC2 — ONE concrete device per call, held for this cart. The one
             # the buyer picked (a used device), or the oldest of the variant.
             from . import order_risk, unit_hold_services
+            from .throttles import DeviceHoldThrottle
 
+            throttle = DeviceHoldThrottle()
+            if not throttle.allow_request(request, self):
+                self.throttled(request, throttle.wait())
             try:
                 unit_hold_services.hold(
                     product=product, branch=storefront_fulfillment_branch(request),

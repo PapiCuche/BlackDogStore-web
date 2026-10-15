@@ -959,3 +959,25 @@ class CartLimitRaceTest(TransactionTestCase):
             {'product': new256, 'session_key': 'f', 'origin': 'p'},
             {'product': new128, 'session_key': 'g', 'origin': 'p'},
         ]), ['held', 'held', 'held', 'too_many'])
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'], DEVICE_HOLD_MAX_PER_ORIGIN=100,
+                   DEVICE_HOLD_MAX_PER_CART=100, DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
+class DeviceHoldThrottleTest(DeviceShop, TestCase):
+    """Adding a by-unit product has its own, stricter budget per address."""
+
+    def setUp(self):
+        self.build()
+        self.receive(self.new128, 12)
+        self.accessory = _prod(self.company, 'Funda', 'funda-dc2', price='50.00', inventory=50)
+        self.public = _client(host=self.host)
+
+    def test_ten_device_adds_a_minute_per_address(self):
+        codes = [self.public.post('/api/cart/add/', {'session_key': f's{n}', 'product': self.new128.pk},
+                                  format='json', REMOTE_ADDR='203.0.113.9').status_code for n in range(11)]
+        self.assertEqual(codes, [200] * 10 + [429])
+        # Another address, and products that are not held, are not counted by it.
+        self.assertEqual(self.public.post('/api/cart/add/', {'session_key': 'x', 'product': self.new128.pk},
+                                          format='json', REMOTE_ADDR='198.51.100.9').status_code, 200)
+        self.assertEqual(self.public.post('/api/cart/add/', {'session_key': 's1', 'product': self.accessory.pk},
+                                          format='json', REMOTE_ADDR='203.0.113.9').status_code, 200)

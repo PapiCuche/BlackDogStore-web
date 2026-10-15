@@ -124,6 +124,8 @@ REST_FRAMEWORK = {
         'staff_invite': '30/min',
         'staff_accept': '20/min',
         'cart': '60/min',
+        # DC2: adding a by-unit product holds a device; per address.
+        'device_hold': '10/min',
         # El agente de impresión de cada local pregunta cada pocos segundos.
         'print_agent': '240/min',
         'payment_status': '30/min',
