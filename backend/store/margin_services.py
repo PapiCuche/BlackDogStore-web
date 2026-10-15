@@ -161,6 +161,18 @@ def snapshot_nets(order) -> None:
         )
 
 
+def snapshot_unit_cost(item, unit) -> None:
+    """DC2 — a line of ONE chosen device is valued at that device's own cost. Once."""
+    from .models import OrderItem
+
+    OrderItem.objects.filter(
+        pk=item.pk, unit_cost__isnull=True, cost_source=OrderItem.COST_UNKNOWN,
+    ).update(
+        unit_cost=unit.cost,
+        cost_source=OrderItem.COST_UNIT if unit.cost is not None else OrderItem.COST_UNKNOWN,
+    )
+
+
 def snapshot_cost(item, movement) -> None:
     """Freeze the cost this line left the shelf at, from its Kardex line. Once."""
     from .models import OrderItem

@@ -100,6 +100,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         ordering = self.request.query_params.get('ordering')
         if slug:
             queryset = queryset.filter(slug=slug)
+        elif self.action == 'list':
+            # DC2 — a USED variant has no price of its own (each device has
+            # one): it is offered on its model's page, device by device, not
+            # as a card with a price that means nothing.
+            queryset = queryset.exclude(
+                product_model__isnull=False, condition_line=Product.CONDITION_USED,
+            )
         if category:
             queryset = queryset.filter(category__slug=category)
         if search:
@@ -252,10 +259,8 @@ class CreateCheckoutSessionView(APIView):
             if not cart_items:
                 raise checkout.CheckoutError('El carrito está vacío.')
 
-            lines = [
-                checkout.CheckoutLine(product=item.product, quantity=item.quantity)
-                for item in cart_items
-            ]
+            # DC2: a product sold by unit becomes one line per device held.
+            lines = checkout.lines_from_cart(storefront_company, branch, session_key, cart_items)
             subtotal = checkout.validate_lines_and_subtotal(branch, lines)
             pricing = checkout.price_checkout(
                 storefront_company, subtotal, validated.get('coupon_code', ''),
@@ -990,6 +995,41 @@ class CartViewSet(
             'storefront_branch': storefront_fulfillment_branch(self.request),
         }
 
+    def list(self, request, *args, **kwargs):
+        # DC2 — holds that ran out go back to the shelf, and every by-unit line
+        # says what the cart still holds, before the cart is shown.
+        from . import unit_hold_services
+
+        unit_hold_services.sync_cart(
+            request.query_params.get('session_key', ''), resolve_storefront_company(request),
+        )
+        return super().list(request, *args, **kwargs)
+
+    def perform_destroy(self, instance):
+        # DC2 — removing a by-unit line gives its devices back to the shelf.
+        if instance.product.sells_by_unit:
+            from . import unit_hold_services
+
+            unit_hold_services.release(
+                company=instance.product.company, session_key=instance.session_key, product=instance.product,
+            )
+            CartItem.objects.filter(pk=instance.pk).delete()
+            return
+        instance.delete()
+
+    @action(detail=False, methods=['post'], url_path='release-unit')
+    def release_unit(self, request):
+        """POST /api/cart/release-unit/ {session_key, unit} — take one held device out of the cart."""
+        from . import unit_hold_services
+
+        session_key = str(request.data.get('session_key') or '').strip()
+        unit = str(request.data.get('unit') or '').strip()
+        company = resolve_storefront_company(request)
+        if not session_key or not unit or company is None:
+            return Response({'detail': 'session_key y unit son requeridos.'}, status=status.HTTP_400_BAD_REQUEST)
+        released = unit_hold_services.release(company=company, session_key=session_key, unit_public_id=unit)
+        return Response({'released': released})
+
     def partial_update(self, request, *args, **kwargs):
         """PATCH /api/cart/{id}/?session_key=... — only quantity allowed; validates stock."""
         session_key = request.query_params.get('session_key', '').strip()
@@ -1016,6 +1056,12 @@ class CartViewSet(
                     'code': 'unavailable',
                     'detail': f'{item.product.name} ya no está disponible. Quítalo del carrito.',
                 },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if item.product.sells_by_unit:
+            # DC2 — its quantity is the devices the cart holds: add or remove a device.
+            return Response(
+                {'code': 'by_unit', 'detail': 'Agrega o quita equipos uno por uno.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1115,6 +1161,21 @@ class CartViewSet(
                 {'detail': 'Producto no encontrado o no disponible.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        if product.sells_by_unit:
+            # DC2 — ONE concrete device per call, held for this cart. The one
+            # the buyer picked (a used device), or the oldest of the variant.
+            from . import unit_hold_services
+
+            try:
+                unit_hold_services.hold(
+                    product=product, branch=storefront_fulfillment_branch(request),
+                    session_key=session_key, unit_public_id=str(request.data.get('unit') or '').strip() or None,
+                )
+            except unit_hold_services.HoldError as exc:
+                return Response(exc.body(), status=exc.http_status)
+            item = CartItem.objects.get(session_key=session_key, product=product)
+            return Response(CartItemSerializer(item, context=self._cart_context()).data)
 
         # CONCURRENCY — Phase 0.3 / P0-E.
         #

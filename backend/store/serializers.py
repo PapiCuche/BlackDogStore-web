@@ -128,12 +128,23 @@ class ProductSerializer(serializers.ModelSerializer):
     review_count = serializers.SerializerMethodField()
     inventory = serializers.SerializerMethodField()
 
+    # DC2 — added fields: which model it is a variant of (its slug), its line,
+    # and whether the web sells it device by device.
+    product_model = serializers.SerializerMethodField()
+    condition_line = serializers.CharField(read_only=True)
+    sells_by_unit = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'description', 'price',
             'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
+            'product_model', 'condition_line', 'sells_by_unit',
         ]
+
+    def get_product_model(self, obj):
+        model = obj.product_model if obj.product_model_id else None
+        return model.slug if model is not None and model.is_published_online else None
 
     def get_images(self, obj):
         # `image_url` sigue siendo la principal; esto es la galería completa.
@@ -292,6 +303,30 @@ class CartItemSerializer(serializers.ModelSerializer):
         if product.is_sold_online:
             data = super().to_representation(instance)
             data['available'] = True
+            data['sells_by_unit'] = product.sells_by_unit
+            if product.sells_by_unit:
+                # DC2 — the devices this cart holds, each at ITS frozen price.
+                # Never the IMEI: its last four digits at most.
+                from . import device_catalog, unit_hold_services
+
+                held = list(
+                    unit_hold_services.held_units(instance.session_key, product.company, product=product)
+                    .select_related('cosmetic_grade')
+                )
+                options = {o.attribute.name: o.label for o in device_catalog.variant_options_of(product)}
+                data['units'] = [{
+                    'id': str(unit.public_id),
+                    'price': str(unit.hold_price),
+                    'options': options,
+                    'battery_health': unit.battery_health,
+                    'cosmetic_grade': unit.cosmetic_grade.label if unit.cosmetic_grade_id else '',
+                    'imei_hint': device_catalog.mask_imei(unit.imei),
+                    'held_until': unit.hold_until.isoformat() if unit.hold_until else None,
+                } for unit in held]
+                data['quantity'] = len(held)
+                data['line_total'] = str(sum((unit.hold_price for unit in held), Decimal('0.00')))
+            else:
+                data['line_total'] = str(product.price * instance.quantity)
             return data
         return {
             'id': instance.pk,

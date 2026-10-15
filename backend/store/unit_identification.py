@@ -447,6 +447,10 @@ def forget(*, order, order_unit_id, actor, request=None) -> None:
         raise UnitIdentificationError('not_found', 'Ese equipo no está identificado en este pedido.')
     if row.left_at is not None or left_the_shop(order):
         raise UnitIdentificationError('already_left', 'El pedido ya salió de la tienda: el equipo que se entregó no se cambia aquí.')
+    if row.method == OrderUnit.Method.BUYER:
+        # DC2: the buyer chose and paid for THIS device. Handing over another
+        # one is a change the buyer agrees to, not a correction of the panel.
+        raise UnitIdentificationError('chosen_by_buyer', 'El comprador eligió este equipo: no se cambia desde aquí.')
     metadata = {'order_id': order.pk, 'unit_id': row.unit_id, 'product_id': row.product_id, 'method': row.method}
     row.delete()
     AdminAuditLog.log(

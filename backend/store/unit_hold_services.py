@@ -1,0 +1,294 @@
+"""
+DEVICE-COMMERCE-01 · DC2 — a buyer's cart holds a CONCRETE device.
+
+    AVAILABLE ──(cart)──▶ RESERVED ──(payment)──▶ SOLD
+        ▲                    │
+        └──(expiry, removal)─┘
+
+The owner's decision of 2026-10-14: what the web sells by unit — every
+serialized variant of a model, new or used — is bought device by device. The
+cart takes one device off the shelf and holds it for a while; the device the
+buyer paid for is the one that leaves, at the price the buyer was shown.
+
+A HOLD IS STOCK. It is written like a staff «apartado»: through
+`stock_unit_services._move`, so the Kardex says the device left the shelf and
+came back, and `BranchStock.quantity == AVAILABLE units` stays true at every
+commit. A till cannot sell a device a buyer holds, and two buyers cannot hold
+the same one: both queue on the shelf row and the second finds it RESERVED.
+
+WHO HOLDS IT. The SHA-256 of the cart's key (`hold_key`), never the key. A
+staff reservation has an empty `hold_key`: it never expires and no cart can
+touch it.
+
+EXPIRY. `hold_until`; extended once an order carries it (`hold_order`), so
+the payment form has time. An expired hold goes back to the shelf when
+anybody next reads that shelf (`release_expired`) and every few minutes
+(`release_expired_unit_holds`). A hold whose order was paid never expires:
+the payment sold the device in the same transaction.
+"""
+from __future__ import annotations
+
+import hashlib
+from datetime import timedelta
+
+from django.conf import settings
+from django.db import transaction
+from django.db.models import Count
+from django.utils import timezone
+
+from . import inventory_services
+from .models import CartItem, Order, Product, StockMovement, StockUnit
+from .stock_unit_services import StockUnitError, _move
+
+HOLD_REASON = 'Apartado web: carrito'
+RELEASE_REASON = 'Apartado web liberado'
+SALE_RELEASE_REASON = 'Apartado web: pasa a la venta'
+
+
+class HoldError(Exception):
+    """The buyer cannot have that device. `code` is stable for the shop's page."""
+
+    STATUS = {'not_found': 404, 'unit_taken': 409, 'sold_out': 409, 'too_many': 409}
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+    @property
+    def http_status(self) -> int:
+        return self.STATUS.get(self.code, 400)
+
+    def body(self) -> dict:
+        return {'detail': self.detail, 'code': self.code}
+
+
+def hold_minutes() -> int:
+    return int(getattr(settings, 'DEVICE_HOLD_MINUTES', 15))
+
+
+def order_hold_minutes() -> int:
+    return int(getattr(settings, 'DEVICE_ORDER_HOLD_MINUTES', 45))
+
+
+def max_holds_per_cart() -> int:
+    return int(getattr(settings, 'DEVICE_HOLD_MAX_PER_CART', 3))
+
+
+def key_of(session_key: str) -> str:
+    return hashlib.sha256(str(session_key or '').encode('utf-8')).hexdigest()
+
+
+def price_for(unit, product) -> object:
+    """The web price of one device: its own when used, its variant's when new. None = not for sale."""
+    if product.condition_line == Product.CONDITION_USED:
+        return unit.sale_price
+    return product.price
+
+
+def held_units(session_key, company, *, product=None, now=None):
+    """The devices THIS cart holds in this company, unexpired, oldest hold first."""
+    now = now or timezone.now()
+    qs = StockUnit.objects.filter(
+        company=company, status=StockUnit.Status.RESERVED, hold_key=key_of(session_key),
+        hold_until__gt=now,
+    )
+    if product is not None:
+        qs = qs.filter(product=product)
+    return qs.order_by('updated_at', 'pk')
+
+
+def _sync_cart_line(session_key, product) -> None:
+    """The cart line of a by-unit product says how many devices the cart holds."""
+    count = held_units(session_key, product.company, product=product).count()
+    if count:
+        CartItem.objects.update_or_create(
+            session_key=session_key, product=product, defaults={'quantity': count},
+        )
+    else:
+        CartItem.objects.filter(session_key=session_key, product=product).delete()
+
+
+def _clear_hold_fields():
+    return {'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None}
+
+
+@transaction.atomic
+def hold(*, product, branch, session_key, unit_public_id=None) -> StockUnit:
+    """
+    Put one device of `product` in this cart.
+
+    `unit_public_id`: the device the buyer picked (a used one). Without it —
+    a new device — the oldest available of the variant, decided under the
+    shelf lock so two buyers never pick the same one.
+    """
+    if not session_key:
+        raise HoldError('invalid', 'session_key es requerido.')
+    if branch is None:
+        raise HoldError('sold_out', 'La tienda no tiene una sucursal de despacho configurada.')
+    if not product.sells_by_unit or not product.is_sold_online:
+        raise HoldError('not_found', 'Producto no encontrado o no disponible.')
+    if product.condition_line == Product.CONDITION_USED and not unit_public_id:
+        raise HoldError('unit_required', 'Elige el equipo que quieres comprar.')
+
+    release_expired(company=product.company, product=product)
+    key = key_of(session_key)
+    holding = StockUnit.objects.filter(
+        company=product.company, status=StockUnit.Status.RESERVED, hold_key=key,
+        hold_until__gt=timezone.now(),
+    ).count()
+    if holding >= max_holds_per_cart():
+        raise HoldError('too_many', f'Puedes apartar hasta {max_holds_per_cart()} equipos a la vez.')
+
+    # THE SHELF FIRST — the module's one lock order — then the device.
+    inventory_services._locked_branch_stocks(branch, [product])
+    base = StockUnit.objects.select_for_update().filter(
+        company_id=branch.company_id, branch=branch, product=product,
+    )
+    if unit_public_id:
+        try:
+            unit = base.filter(public_id=unit_public_id).first()
+        except Exception:  # noqa: BLE001 - not a UUID: no such device
+            unit = None
+        if unit is None:
+            raise HoldError('not_found', 'Ese equipo no existe o ya no está a la venta.')
+        if unit.status != StockUnit.Status.AVAILABLE:
+            raise HoldError('unit_taken', 'Otra persona acaba de apartar ese equipo.')
+    else:
+        unit = base.filter(status=StockUnit.Status.AVAILABLE).order_by('received_at', 'pk').first()
+        if unit is None:
+            raise HoldError('sold_out', f'«{product.name}» está agotado.')
+
+    price = price_for(unit, product)
+    if price is None:
+        raise HoldError('not_found', 'Ese equipo no existe o ya no está a la venta.')
+
+    try:
+        _move(
+            unit, expected=StockUnit.Status.AVAILABLE, to_status=StockUnit.Status.RESERVED,
+            movement_type=StockMovement.MANUAL_EXIT, reason=HOLD_REASON, actor=None,
+            action='stock_unit_web_hold', metadata={'web_hold': True},
+            extra_fields={
+                'hold_key': key, 'hold_until': timezone.now() + timedelta(minutes=hold_minutes()),
+                'hold_price': price, 'hold_order': None,
+            },
+        )
+    except StockUnitError:
+        raise HoldError('unit_taken', 'Otra persona acaba de apartar ese equipo.') from None
+    _sync_cart_line(session_key, product)
+    return StockUnit.objects.get(pk=unit.pk)
+
+
+def _release(unit, *, reason=RELEASE_REASON) -> None:
+    _move(
+        unit, expected=StockUnit.Status.RESERVED, to_status=StockUnit.Status.AVAILABLE,
+        movement_type=StockMovement.MANUAL_ENTRY, reason=reason, actor=None,
+        action='stock_unit_web_hold_released', metadata={'web_hold': True},
+        extra_fields=_clear_hold_fields(),
+    )
+
+
+@transaction.atomic
+def release(*, company, session_key, unit_public_id=None, product=None) -> int:
+    """
+    The buyer takes devices out of the cart: one (`unit_public_id`) or every
+    one of `product`. Only THIS cart's holds; a pending order's holds are
+    left alone — that order may still be paid.
+    """
+    qs = StockUnit.objects.filter(
+        company=company, status=StockUnit.Status.RESERVED, hold_key=key_of(session_key),
+    )
+    if unit_public_id:
+        try:
+            qs = qs.filter(public_id=unit_public_id)
+            list(qs[:1])
+        except Exception:  # noqa: BLE001 - not a UUID
+            return 0
+    if product is not None:
+        qs = qs.filter(product=product)
+    released, touched = 0, set()
+    for unit in qs.select_related('product'):
+        if unit.hold_order_id and _order_is_live(unit.hold_order_id):
+            continue
+        _release(unit)
+        touched.add(unit.product)
+        released += 1
+    for item in touched:
+        _sync_cart_line(session_key, item)
+    return released
+
+
+def _order_is_live(order_id) -> bool:
+    """An order that may still be paid keeps its devices until its hold runs out."""
+    return Order.objects.filter(
+        pk=order_id, status=Order.Status.PENDING_PAYMENT, paid=False,
+    ).exists()
+
+
+def release_expired(*, company=None, product=None, now=None) -> int:
+    """
+    Every web hold whose time ran out goes back to the shelf, with its Kardex
+    line. Never a staff reservation, never a device of a paid order.
+    """
+    now = now or timezone.now()
+    qs = StockUnit.objects.filter(
+        status=StockUnit.Status.RESERVED, hold_until__lte=now,
+    ).exclude(hold_key='')
+    if company is not None:
+        qs = qs.filter(company=company)
+    if product is not None:
+        qs = qs.filter(product=product)
+    released = 0
+    for pk in list(qs.values_list('pk', flat=True)):
+        with transaction.atomic():
+            unit = StockUnit.objects.select_related('product').get(pk=pk)
+            # Read again: the payment may have sold it, or a buyer extended it.
+            if (unit.status != StockUnit.Status.RESERVED or not unit.hold_key
+                    or unit.hold_until is None or unit.hold_until > now):
+                continue
+            try:
+                _release(unit)
+            except StockUnitError:
+                continue      # it moved meanwhile: whoever moved it decided
+            released += 1
+    return released
+
+
+def sync_cart(session_key, company) -> None:
+    """Expired holds back to the shelf, and every by-unit line says what the cart still holds."""
+    if not session_key or company is None:
+        return
+    release_expired(company=company)
+    items = CartItem.objects.filter(session_key=session_key, product__company=company).select_related('product')
+    for item in items:
+        if item.product.sells_by_unit:
+            _sync_cart_line(session_key, item.product)
+
+
+def bind_to_order(units, order) -> None:
+    """Checkout: these holds belong to `order` now, and live long enough to pay."""
+    StockUnit.objects.filter(pk__in=[unit.pk for unit in units]).update(
+        hold_order=order, hold_until=timezone.now() + timedelta(minutes=order_hold_minutes()),
+        updated_at=timezone.now(),
+    )
+
+
+def holds_by_product(session_key, company) -> dict:
+    """product id -> how many devices this cart holds (for a cart line)."""
+    return dict(
+        held_units(session_key, company).values('product_id').annotate(n=Count('pk')).values_list('product_id', 'n')
+    )
+
+
+def release_for_sale(unit, order) -> None:
+    """
+    The payment confirmed: the hold steps aside so the SALE exit can name the
+    device. Inside the payment's transaction, under the shelf lock the sale
+    takes next — nobody can take the device in between.
+    """
+    _move(
+        unit, expected=StockUnit.Status.RESERVED, to_status=StockUnit.Status.AVAILABLE,
+        movement_type=StockMovement.MANUAL_ENTRY, reason=SALE_RELEASE_REASON, actor=None,
+        action='stock_unit_web_hold_sold', metadata={'web_hold': True, 'order_id': order.pk},
+        extra_fields=_clear_hold_fields(),
+    )

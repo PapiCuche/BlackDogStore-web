@@ -632,9 +632,26 @@ def record_sale_stock_movements(
                             f'salida solicitada: {needed}.'
                         )
 
+        # DC2 — lines that name their device (the web sold it by unit). All
+        # the devices of one product leave in ONE exit, so the idempotency key
+        # (order, product) still means what it meant.
+        chosen: dict[int, list] = {}
+        for item in items:
+            if item.stock_unit_id:
+                chosen.setdefault(item.product_id, []).append(item)
+
         for item in items:
             if item.product_id in already_recorded:
                 continue  # idempotency guard
+
+            if item.product_id in chosen:
+                if strict:
+                    raise InvalidMovementError('Una venta de caja no lleva equipos elegidos en la web.')
+                movement = _sell_chosen_units(order, branch, chosen[item.product_id], actor=actor)
+                already_recorded.add(item.product_id)
+                if movement is not None:
+                    movements.append(movement)
+                continue
 
             try:
                 movement = create_stock_movement(
@@ -680,6 +697,67 @@ def record_sale_stock_movements(
                 margin_services.snapshot_cost(item, movement)
 
     return movements
+
+
+def _sell_chosen_units(order: Order, branch, items, *, actor=None):
+    """
+    DC2 — the payment of a web order sells THE devices its lines name.
+
+    Each device is, by now, either still held for this buyer (its hold steps
+    aside, inside this transaction, under the shelf lock) or back on the
+    shelf because the hold ran out before the gateway answered — then it is
+    sold if nobody took it. A device sold or held by somebody else cannot be
+    this order's: that line is flagged like any shortfall (the money is
+    captured; a person decides), and the others still leave.
+
+    Each line's cost is THAT device's cost, and the device is recorded as the
+    one the buyer chose (`OrderUnit`, method 'buyer'): there is nothing left
+    to identify when it is handed over.
+    """
+    from . import margin_services, unit_hold_services, unit_identification
+    from .models import OrderUnit, StockUnit
+
+    product = items[0].product
+    _locked_branch_stocks(branch, [product])
+    buyer_key = unit_hold_services.key_of(order.cart_session_key) if order.cart_session_key else None
+    sellable = []
+    for item in items:
+        unit = (
+            StockUnit.objects.select_for_update()
+            .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
+            .first()
+        )
+        held_for_us = (
+            unit is not None and unit.status == StockUnit.Status.RESERVED and unit.hold_key
+            and (unit.hold_order_id == order.pk or (buyer_key and unit.hold_key == buyer_key))
+        )
+        if held_for_us:
+            unit_hold_services.release_for_sale(unit, order)
+        elif unit is None or unit.status != StockUnit.Status.AVAILABLE:
+            _flag_stock_shortfall(
+                order, item,
+                f'El equipo elegido de "{product.name}" ya no estaba disponible en {branch.name}.',
+            )
+            continue
+        sellable.append((item, unit))
+
+    if not sellable:
+        return None
+    movement = create_stock_movement(
+        branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
+        quantity=len(sellable), reason=f'Venta confirmada — orden #{order.pk}', actor=actor,
+        order=order, reference_type='order', reference_id=order.pk,
+        metadata={'order_id': order.pk, 'branch_id': branch.pk, 'chosen_by_buyer': True,
+                  'unit_prices': [str(item.price) for item, _unit in sellable]},
+        units=[unit for _item, unit in sellable], expected_unit_status='available', sell_units=True,
+    )
+    for item, unit in sellable:
+        margin_services.snapshot_unit_cost(item, unit)
+        if not OrderUnit.objects.filter(order=order, unit=unit).exists():
+            unit_identification.record(
+                order=order, unit=unit, method=OrderUnit.Method.BUYER.value, actor=actor,
+            )
+    return movement
 
 
 def _flag_stock_shortfall(order: Order, item, message: str) -> None:
