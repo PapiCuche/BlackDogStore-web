@@ -29,7 +29,7 @@ from .admin_views import (
 )
 from .cost_services import user_may_view_costs
 from .models import AdminAuditLog, OrderItem, Product, Supplier, SupplierOffer
-from .tenancy import has_capability
+from .tenancy import has_capability, visible_branch_ids
 
 _NOT_FOUND = {'detail': 'No encontrado.'}
 
@@ -158,7 +158,10 @@ class AdminSupplierSettlementView(APIView):
             return error
         if not user_may_view_costs(request.user, company):
             return Response({'detail': 'Se requiere permiso para ver costos.'}, status=status.HTTP_403_FORBIDDEN)
-        return Response({'results': supply_services.pending_settlement(company)})
+        # Branch-scoped by the order's fulfilment branch, like every sales figure: a
+        # caller limited to some branches sees what those branches received.
+        return Response({'results': supply_services.pending_settlement(
+            company, branch_ids=visible_branch_ids(request.user, company))})
 
 
 _OFFER_FIELDS = ('supplier_id', 'product_id', 'agreed_cost', 'commercial_price', 'confirmed_quantity',

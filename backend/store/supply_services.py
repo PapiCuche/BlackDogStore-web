@@ -744,18 +744,23 @@ def order_supply_status(order) -> str:
     return OrderItem.SUPPLY_RECEIVED
 
 
-def pending_settlement(company) -> list[dict]:
+def pending_settlement(company, branch_ids=None) -> list[dict]:
     """
     PAYABLES-01 hook, READ ONLY: per supplier, what was received on order and
     is still to be settled, at the frozen cost. No debt is written anywhere;
     this is a sum over received lines of paid orders. Lines of unknown cost
     are counted apart, never valued at zero.
+
+    `branch_ids`: only orders fulfilled by those branches — the caller's
+    visible ones (integration review of PR #123, P3). None = the company.
     """
     lines = OrderItem.objects.filter(
         order__company=company, order__status=Order.Status.PAID,
         supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED,
         supplier_offer__isnull=False,
     )
+    if branch_ids is not None:
+        lines = lines.filter(order__fulfillment_branch_id__in=list(branch_ids))
     rows = (
         lines.values('supplier_offer__supplier_id', 'supplier_offer__supplier__name')
         .annotate(

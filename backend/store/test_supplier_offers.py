@@ -742,6 +742,22 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
                                                   'units': 2, 'amount': '140.00', 'units_without_cost': 0}])
         self.assertEqual(self.as_(self.seller).get('/api/admin/suppliers/settlement/').status_code, 403)
 
+    def test_the_settlement_of_a_branch_limited_caller_is_of_their_branches(self):
+        """Integration review of PR #123, P3: by the order's fulfilment branch, like every sales figure."""
+        from store.tests import _p2d_branch
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.pay(order)
+        supply.receive_line(order.items.get(), actor=self.staff)
+        norte = _p2d_branch(self.company, 'Norte DC3')
+        caps = ['company.view', 'products.view', 'costs.view']
+        elsewhere, _ = _p2d_member(self.company, 'dc3_liq_norte', caps, branches=[norte])
+        here, _ = _p2d_member(self.company, 'dc3_liq_centro', caps, branches=[self.branch])
+        res = self.as_(elsewhere).get('/api/admin/suppliers/settlement/')
+        self.assertEqual((res.status_code, res.json()['results']), (200, []))
+        res = self.as_(here).get('/api/admin/suppliers/settlement/')
+        self.assertEqual([(row['units'], row['amount']) for row in res.json()['results']], [(2, '140.00')])
+
 
 class AdminOrderSupplyApiTest(SupplyShop, TestCase):
     def setUp(self):
