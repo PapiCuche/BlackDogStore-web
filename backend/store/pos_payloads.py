@@ -63,6 +63,7 @@ def context_payload(
     company, branches, *, default_branch, actor,
     can_manage_customers: bool, can_assign_seller: bool,
     can_apply_discount: bool, can_view_commissions: bool, sellers, receipt_options=None,
+    can_order_over_stock: bool = False,
 ) -> dict:
     """
     What this till may do, before it opens.
@@ -92,6 +93,8 @@ def context_payload(
         'can_assign_seller': can_assign_seller,
         'can_apply_discount': can_apply_discount,
         'can_view_commissions': can_view_commissions,
+        # Owner, 2026-10-15: may sell on order a line the shelf covers, with a reason.
+        'can_order_over_stock': can_order_over_stock,
         'seller': {
             'id': actor.pk,
             'username': actor.get_username(),

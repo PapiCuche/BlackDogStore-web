@@ -47,6 +47,8 @@ from .v1_internal_views import V1InternalSurfaceMixin
 CAP_POS = 'sales.pos.use'
 CAP_ASSIGN_SELLER = 'sales.pos.assign_seller'
 CAP_DISCOUNTS = 'sales.discounts.apply'
+#: Owner, 2026-10-15 — who may sell on order a line the shelf covers (with a reason).
+CAP_ORDERS_MANAGE = 'sales.orders.manage'
 CAP_COMMISSIONS_VIEW = 'sales.commissions.view'
 CAP_INVENTORY_VIEW = 'inventory.view'
 CAP_CUSTOMERS_MANAGE = 'service.customers.manage'
@@ -121,6 +123,7 @@ class V1PosContextView(V1PosSurfaceMixin, APIView):
             ),
             can_assign_seller=may_assign,
             can_apply_discount=has_capability(request.user, company, CAP_DISCOUNTS),
+            can_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
             can_view_commissions=has_capability(
                 request.user, company, CAP_COMMISSIONS_VIEW,
             ),
@@ -292,6 +295,8 @@ class V1PosPreviewView(V1PosSurfaceMixin, APIView):
                 may_apply_manual_discount=has_capability(
                     request.user, company, CAP_DISCOUNTS,
                 ),
+                # Owner, 2026-10-15: on order although the shelf has it.
+                may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
             )
         except pos_services.PosPermissionError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
@@ -368,6 +373,8 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 may_apply_manual_discount=has_capability(
                     request.user, company, CAP_DISCOUNTS,
                 ),
+                # Owner, 2026-10-15: on order although the shelf has it.
+                may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 request=request,
             )
         except pos_services.PosIdempotencyConflict as exc:

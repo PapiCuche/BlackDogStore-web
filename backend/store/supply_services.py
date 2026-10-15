@@ -458,13 +458,49 @@ def on_order_payload(product) -> dict | None:
     """
     What the shop may say publicly about selling `product` on order: the lead
     time and the price. Never a cost, a supplier or how many it confirmed.
+
+    `over_stock: true` — only where the company lets the web buyer choose the
+    supplier although the shelf has it (owner, 2026-10-15): the page may then
+    offer it, saying it ships from the supplier in N days. Absent otherwise,
+    so the payload keeps the shape it had.
     """
     if not sells_on_order(product):
         return None
     offer = best_offer(product, 1)
     if offer is None:
         return None
-    return {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price)}
+    payload = {'lead_time_days': offer.lead_time_days, 'price': str(offer.commercial_price)}
+    if web_allows_on_order_over_stock(product.company_id):
+        payload['over_stock'] = True
+    return payload
+
+
+#: What an on-order line chosen by a web buyer while the shelf had it says as its reason.
+WEB_OVER_STOCK_REASON = 'Elegido por el comprador en la web'
+
+
+def web_allows_on_order_over_stock(company_id) -> bool:
+    """
+    Owner's decision of 2026-10-15 — own stock first. The web lets a buyer
+    choose the supplier while the shelf covers the line only where the company
+    turned `CompanySettings.web_on_order_over_stock` on (off as created).
+    """
+    from .models import CompanySettings
+
+    return CompanySettings.objects.filter(company_id=company_id, web_on_order_over_stock=True).exists()
+
+
+def over_stock_audit(*, action, order, line, own, actor=None, request=None, reason='') -> None:
+    """
+    The audit row of an on-order line chosen while the shelf covered it: what,
+    how many, the shelf, the offer and its lead time, whether it carries a
+    cost (never the cost: that is on the line, behind `costs.view`), and why.
+    """
+    _audit(action, company=order.company, actor=actor, target_type='order', target_id=order.pk, request=request,
+           order_id=order.pk, product_id=line.product_id, quantity=line.quantity, own_stock=own,
+           offer_id=line.supplier_offer_id,
+           supplier_id=line.supplier_offer.supplier_id if line.supplier_offer_id else None,
+           lead_time_days=line.lead_time_days, has_cost=line.unit_cost is not None, reason=reason)
 
 
 # ---------------------------------------------------------------------------

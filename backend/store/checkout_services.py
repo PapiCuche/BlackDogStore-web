@@ -572,7 +572,12 @@ def create_pending_order(
         from . import supply_services
 
         for line in lines:
-            OrderItem.objects.create(
+            # Owner, 2026-10-15 — an on-order line the shelf covered when the
+            # order was written was the buyer's explicit choice: said on the
+            # line and in the audit, never a silent switch.
+            own = supply_services.own_stock(line.product, branch) if line.offer is not None else 0
+            chosen = line.offer is not None and own >= line.quantity
+            item = OrderItem.objects.create(
                 order=order,
                 product=line.product,
                 quantity=line.quantity,
@@ -580,7 +585,12 @@ def create_pending_order(
                 stock_unit=line.unit,
                 # DC3 — origin, offer, lead time and agreed cost, frozen now.
                 **(supply_services.line_snapshot(line.offer) if line.offer is not None else {}),
+                **({'supply_chosen_over_stock': True,
+                    'supply_choice_reason': supply_services.WEB_OVER_STOCK_REASON} if chosen else {}),
             )
+            if chosen:
+                supply_services.over_stock_audit(action='web_on_order_over_stock', order=order, line=item,
+                                                 own=own, reason=supply_services.WEB_OVER_STOCK_REASON)
         held = [line.unit for line in lines if line.unit is not None]
         if held:
             # DC2 — the devices are this order's now, and stay held while it can be paid.

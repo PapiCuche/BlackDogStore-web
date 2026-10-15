@@ -959,9 +959,17 @@ def _shelf_covers_on_order(request, product, quantity):
     pedido». While the fulfilment shelf covers the whole line, on order is
     refused (409 `stock_available`): the buyer takes it from the shelf. Lines
     are never mixed, so on order is for a line the shelf cannot cover.
+
+    Owner's decision of 2026-10-15: unless the company lets the web buyer
+    choose the supplier anyway (`CompanySettings.web_on_order_over_stock`, off
+    as created). Then the buyer's explicit `on_order` is honoured — the page
+    told them it ships from the supplier in N days — and the order line says
+    it was chosen over stock. Without `on_order` the shelf is always used.
     """
+    from .supply_services import web_allows_on_order_over_stock
+
     available = storefront_available_stock(request, product)
-    if available >= quantity:
+    if available >= quantity and not web_allows_on_order_over_stock(product.company_id):
         return Response(
             {'code': 'stock_available',
              'detail': (f'{product.name} tiene stock en la tienda ({available}): agrégalo con stock, '

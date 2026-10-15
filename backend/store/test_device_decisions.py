@@ -268,3 +268,158 @@ class ConcurrentReleaseTest(TransactionTestCase):
         self.assertEqual((unit.status, unit.hold_key), ('available', ''))
         self.assertEqual(shop.shelf(shop.new128), shop.available(shop.new128))
         self.assertEqual(AdminAuditLog.objects.filter(action='stock_unit_web_hold_released').count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# 2 · On order while the shelf has it
+# ---------------------------------------------------------------------------
+
+from django.test import override_settings  # noqa: E402
+
+from store import pos_services  # noqa: E402
+from store.models import CartItem, OrderItem  # noqa: E402
+from store.test_supplier_offers import SupplyShop  # noqa: E402
+
+
+class TillOnOrderOverStockTest(SupplyShop, TestCase):
+    """At the till: own stock first; the supplier anyway only with `sales.orders.manage` and a reason."""
+
+    def setUp(self):
+        self.build('dec-caja')
+        self.stock(self.case, 3)
+        self.cashier, _ = _p2d_member(self.company, 'dec_cajero', ['company.view', 'sales.pos.use'])
+        self.manager, _ = _p2d_member(self.company, 'dec_encargado',
+                                      ['company.view', 'sales.pos.use', 'sales.orders.manage'])
+
+    def sell(self, user, reason=None, quantity=2, preview=False, key=None):
+        line = {'product': self.case.pk, 'quantity': quantity, 'on_order': True}
+        if reason is not None:
+            line['supply_reason'] = reason
+        body = {'branch': self.branch.pk, 'payment_method': 'cash', 'items': [line]}
+        if preview:
+            return _client(user).post('/api/admin/pos/preview/', body, format='json')
+        body.update(terms_confirmed=True, idempotency_key=key or uuid4().hex, amount_received='1000.00')
+        return _client(user).post('/api/admin/pos/sales/', body, format='json')
+
+    def test_without_a_reason_the_refusal_is_unchanged_whoever_asks(self):
+        for user in (self.cashier, self.manager):
+            with self.subTest(user.username):
+                res = self.sell(user)
+                self.assertEqual((res.status_code, res.json().get('code')), (409, 'stock_available'), res.content)
+                res = self.sell(user, reason='   ')
+                self.assertEqual((res.status_code, res.json().get('code')), (409, 'stock_available'), res.content)
+        self.assertFalse(OrderItem.objects.exists())
+
+    def test_without_the_permission_a_reason_is_not_enough(self):
+        for preview in (True, False):
+            res = self.sell(self.cashier, reason='El cliente quiere caja sellada', preview=preview)
+            self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(OrderItem.objects.exists())
+        self.assertEqual(self.shelf(self.case), 3)
+
+    def test_with_the_permission_and_a_reason_it_is_sold_on_order_and_recorded(self):
+        preview = self.sell(self.manager, reason='Caja sellada de fábrica', preview=True)
+        self.assertEqual(preview.status_code, 200, preview.content)
+        res = self.sell(self.manager, reason='  Caja sellada   de fábrica ')
+        self.assertEqual(res.status_code, 201, res.content)
+        line = OrderItem.objects.get()
+        self.assertEqual(
+            (line.supply_origin, line.supplier_offer_id, line.lead_time_days, line.unit_cost, line.cost_source,
+             line.supply_chosen_over_stock, line.supply_choice_reason, line.price),
+            ('supplier', self.offer.pk, 4, D('70.0000'), 'supplier_offer', True, 'Caja sellada de fábrica',
+             D('110.00')))
+        self.assertEqual(self.shelf(self.case), 3)              # nothing left the shelf
+        log = AdminAuditLog.objects.get(action='pos_on_order_over_stock')
+        self.assertEqual(log.actor_id, self.manager.pk)
+        self.assertEqual(
+            {k: log.metadata[k] for k in ('product_id', 'quantity', 'own_stock', 'offer_id', 'lead_time_days',
+                                          'has_cost', 'reason')},
+            {'product_id': self.case.pk, 'quantity': 2, 'own_stock': 3, 'offer_id': self.offer.pk,
+             'lead_time_days': 4, 'has_cost': True, 'reason': 'Caja sellada de fábrica'})
+        self.assertNotIn('70', str(log.metadata))               # the cost is on the line, behind costs.view
+
+    def test_a_line_the_shelf_cannot_cover_needs_no_reason_and_is_not_flagged(self):
+        res = self.sell(self.cashier, quantity=4)
+        self.assertEqual(res.status_code, 201, res.content)
+        line = OrderItem.objects.get()
+        self.assertEqual((line.supply_origin, line.supply_chosen_over_stock, line.supply_choice_reason),
+                         ('supplier', False, ''))
+
+    def test_the_reason_is_short(self):
+        res = self.sell(self.manager, reason='x' * 201)
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_retry_with_another_reason_is_another_sale(self):
+        first = self.sell(self.manager, reason='Motivo A', key='clave-0001')
+        self.assertEqual(first.status_code, 201, first.content)
+        again = self.sell(self.manager, reason='Motivo A', key='clave-0001')
+        self.assertEqual(again.status_code, 200, again.content)
+        other = self.sell(self.manager, reason='Motivo B', key='clave-0001')
+        self.assertEqual(other.status_code, 409, other.content)
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class WebOnOrderOverStockTest(SupplyShop, TestCase):
+    """On the web: only where the company allows it, and the buyer is told supplier and lead time."""
+
+    def setUp(self):
+        self.build('dec-web')
+        self.stock(self.case, 3)
+        self.public = _client(host=self.host)
+
+    def allow(self, value=True):
+        CompanySettings.objects.filter(company=self.company).update(web_on_order_over_stock=value)
+
+    def add(self, quantity=2, on_order=True):
+        body = {'session_key': 'carrito-a', 'product': self.case.pk, 'quantity': quantity}
+        if on_order:
+            body['on_order'] = True
+        return self.public.post('/api/cart/add/', body, format='json')
+
+    def product(self):
+        body = self.public.get(f'/api/products/?slug={self.case.slug}').json()
+        return (body['results'] if isinstance(body, dict) else body)[0]
+
+    def test_off_by_default_the_refusal_is_unchanged(self):
+        res = self.add()
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'stock_available'))
+        # The public offer keeps its shape: lead time and price, nothing more.
+        self.assertEqual(self.product()['on_order'], {'lead_time_days': 4, 'price': '110.00'})
+
+    def test_on_the_buyer_may_choose_the_supplier_and_is_told_so(self):
+        self.allow()
+        offer = self.product()['on_order']
+        self.assertEqual(offer, {'lead_time_days': 4, 'price': '110.00', 'over_stock': True})
+        res = self.add()
+        self.assertEqual(res.status_code, 200, res.content)
+        item = CartItem.objects.get()
+        self.assertEqual((item.supply_origin, item.quantity), ('supplier', 2))
+        # Without asking for it, the same buyer gets the shelf: never switched silently.
+        res = self.public.post('/api/cart/add/', {'session_key': 'carrito-b', 'product': self.case.pk,
+                                                  'quantity': 1}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(CartItem.objects.get(session_key='carrito-b').supply_origin, 'own')
+        order = self.checkout()
+        line = order.items.get()
+        self.assertEqual(
+            (line.supply_origin, line.supply_chosen_over_stock, line.lead_time_days, line.unit_cost,
+             line.cost_source),
+            ('supplier', True, 4, D('70.0000'), 'supplier_offer'))
+        self.assertTrue(line.supply_choice_reason)
+        log = AdminAuditLog.objects.get(action='web_on_order_over_stock')
+        self.assertEqual((log.metadata['order_id'], log.metadata['product_id'], log.metadata['own_stock']),
+                         (order.pk, self.case.pk, 3))
+
+    def test_switched_off_again_the_web_refuses_it(self):
+        self.allow()
+        self.assertEqual(self.add().status_code, 200)
+        self.allow(False)
+        item = CartItem.objects.get()
+        patched = self.public.patch(f'/api/cart/{item.pk}/?session_key=carrito-a', {'quantity': 1}, format='json')
+        self.assertEqual((patched.status_code, patched.json()['code']), (409, 'stock_available'))
+
+    def test_a_line_the_shelf_cannot_cover_is_not_flagged(self):
+        res = self.add(quantity=4)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertFalse(self.checkout().items.get().supply_chosen_over_stock)
+

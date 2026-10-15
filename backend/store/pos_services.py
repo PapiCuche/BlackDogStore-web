@@ -91,6 +91,8 @@ class PosIdempotencyConflict(PosError):
 
 
 MAX_LINES = 100
+#: The short reason a till gives for selling on order a line its shelf covers.
+MAX_SUPPLY_REASON = 200
 MAX_QUANTITY_PER_LINE = 1000
 MAX_IDEMPOTENCY_KEY = 64
 
@@ -271,6 +273,9 @@ def normalize_items(raw_items) -> list[dict]:
     # DC3 — the products sold «bajo pedido». A product is all shelf or all
     # order in one sale: two lines that disagree are refused, not merged.
     on_order: dict[int, bool] = {}
+    # Owner, 2026-10-15 — why a line goes to the supplier although the shelf
+    # has it. Kept per product; whether it is needed is decided when priced.
+    reasons: dict[int, str] = {}
     for entry in raw_items:
         if not isinstance(entry, dict):
             raise PosValidationError('Formato de línea inválido.')
@@ -283,6 +288,11 @@ def normalize_items(raw_items) -> list[dict]:
         if on_order.setdefault(product_id, asked) != asked:
             raise PosValidationError(
                 'Un producto se vende del stock o bajo pedido, no las dos cosas en la misma venta.')
+        reason = ' '.join(str(entry.get('supply_reason') or '').split())
+        if len(reason) > MAX_SUPPLY_REASON:
+            raise PosValidationError(f'El motivo del pedido al proveedor admite {MAX_SUPPLY_REASON} caracteres.')
+        if reason and asked:
+            reasons.setdefault(product_id, reason)
         for unit in _line_units(entry.get('units')):
             if unit['id'] in devices.setdefault(product_id, {}):
                 raise PosValidationError('El mismo equipo está dos veces en la venta.')
@@ -306,7 +316,8 @@ def normalize_items(raw_items) -> list[dict]:
             {'id': unit_id, 'method': method} for unit_id, method in sorted(devices.get(pid, {}).items())
         ],
          # Only when asked: a basket without it hashes exactly as before DC3.
-         **({'on_order': True} if on_order.get(pid) else {})}
+         **({'on_order': True} if on_order.get(pid) else {}),
+         **({'supply_reason': reasons[pid]} if pid in reasons else {})}
         for pid, qty in sorted(merged.items())
     ]
 
@@ -419,7 +430,9 @@ def request_fingerprint(
             # sale, not a retry. Absent for an ordinary line, so what a basket
             # without devices hashed to before SERIAL-PICK-01 is unchanged.
             {'p': int(i['product']), 'q': int(i['quantity']),
-             **({'u': [[u['id'], u['method']] for u in i['units']]} if i.get('units') else {})}
+             **({'u': [[u['id'], u['method']] for u in i['units']]} if i.get('units') else {}),
+             # Owner, 2026-10-15: the same key with another reason is another sale.
+             **({'r': i['supply_reason']} if i.get('supply_reason') else {})}
             for i in items
         ],
         # The code AS TYPED, normalised for case and spacing only. Whether it
@@ -904,6 +917,7 @@ def build_pos_sale(
     amount_received=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
+    may_order_over_stock: bool = False,
     validate_cash: bool = True,
     require_units: bool = True,
 ):
@@ -969,14 +983,27 @@ def build_pos_sale(
     from . import supply_services
 
     offers = {}
+    over_stock = {}
     for entry in items:
         if not entry.get('on_order'):
             continue
         product = products[entry['product']]
         shelf = supply_services.own_stock(product, branch)
         if shelf >= entry['quantity']:
-            raise PosStockAvailableError(
-                f'«{product.name}» tiene stock en esta sucursal ({shelf}): véndelo con stock, no bajo pedido.')
+            # OWNER'S DECISION OF 2026-10-15 — own stock first, never switched
+            # silently. The supplier anyway only by an explicit choice: a
+            # reason, from somebody who manages orders (`sales.orders.manage`,
+            # the capability that follows an on-order line to its supplier).
+            reason = entry.get('supply_reason') or ''
+            if not reason:
+                raise PosStockAvailableError(
+                    f'«{product.name}» tiene stock en esta sucursal ({shelf}): véndelo con stock, no bajo pedido.'
+                    + (' Para pedirlo al proveedor igualmente, indica el motivo.' if may_order_over_stock else ''))
+            if not may_order_over_stock:
+                raise PosPermissionError(
+                    f'«{product.name}» tiene stock en esta sucursal: venderlo bajo pedido requiere permiso para '
+                    'gestionar pedidos.')
+            over_stock[product.pk] = {'reason': reason, 'own_stock': shelf}
         offer = supply_services.offer_for_line(product, entry['quantity'])
         if offer is None:
             raise PosValidationError(
@@ -1054,6 +1081,7 @@ def build_pos_sale(
         'change_amount': change,
         'payment_method': payment_method,
         'offers': offers,
+        'over_stock': over_stock,
         **totals,
     }
 
@@ -1081,6 +1109,7 @@ def create_pos_sale(
     receipt_type=None,
     may_assign_seller: bool = False,
     may_apply_manual_discount: bool = False,
+    may_order_over_stock: bool = False,
     request=None,
 ):
     """
@@ -1172,6 +1201,7 @@ def create_pos_sale(
         amount_received=amount_received,
         may_assign_seller=may_assign_seller,
         may_apply_manual_discount=may_apply_manual_discount,
+        may_order_over_stock=may_order_over_stock,
     )
 
     if receipt_type is not None:
@@ -1255,13 +1285,23 @@ def create_pos_sale(
 
     from . import supply_services
 
-    OrderItem.objects.bulk_create([
+    over_stock = priced['over_stock']
+    written = OrderItem.objects.bulk_create([
         OrderItem(order=order, product=product, quantity=quantity, price=unit_price,
                   # DC3 — origin, offer, lead time and agreed cost, frozen with the sale.
                   **(supply_services.line_snapshot(priced['offers'][product.pk])
-                     if product.pk in priced['offers'] else {}))
+                     if product.pk in priced['offers'] else {}),
+                  # Owner, 2026-10-15 — the supplier chosen over the shelf, and why.
+                  **({'supply_chosen_over_stock': True,
+                      'supply_choice_reason': over_stock[product.pk]['reason']}
+                     if product.pk in over_stock else {}))
         for product, quantity, unit_price in priced['lines']
     ])
+    for item in written:
+        if item.product_id in over_stock:
+            supply_services.over_stock_audit(
+                action='pos_on_order_over_stock', order=order, line=item, actor=actor, request=request,
+                own=over_stock[item.product_id]['own_stock'], reason=over_stock[item.product_id]['reason'])
 
     # THE PROMOTION SNAPSHOT, before any document that has to read it.
     #
