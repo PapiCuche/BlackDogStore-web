@@ -280,6 +280,57 @@ class PaymentKeptHoldsCountTowardTheCapsTest(SaleShop, TestCase):
         self.assertEqual(holds._live_web_holds(self.company, timezone.now()).count(), 0)
 
 
+class PaymentKeptHoldsInOpsStatusTest(SaleShop, TestCase):
+    """
+    A device a payment keeps past its clock is said by `ops_status`, whatever its
+    age: past the reconciliation window only a person releases it (integration
+    review of PR #123, P2-1). Counts, never a device or an order.
+    """
+
+    def keep(self, unit, product, session, *, hours_ago, reason=''):
+        holds.hold(product=product, branch=self.branch, session_key=session,
+                   unit_public_id=str(unit.public_id) if product.condition_line == 'used' else None)
+        order = self.checkout(session)
+        _attempt(order, minutes_ago=hours_ago * 60 + 10, reason=reason)
+        StockUnit.objects.filter(hold_order=order).update(hold_until=timezone.now() - timedelta(hours=hours_ago))
+        return order
+
+    def lines(self):
+        from store.test_ops_status import run
+        code, out = run()
+        return code, [line for line in out.splitlines() if 'apartados web' in line]
+
+    def test_nothing_kept_is_all_right(self):
+        holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a')     # alive by its clock
+        _, lines = self.lines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith('OK'), lines)
+
+    def test_kept_inside_the_window_is_a_note_with_the_count(self):
+        self.keep(self.used_a, self.used128, 'carrito-a', hours_ago=0)
+        _, lines = self.lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith('NOTA'), lines)
+        self.assertIn('1 equipo', lines[0])
+
+    def test_kept_past_the_window_needs_a_person_however_old(self):
+        self.keep(self.used_a, self.used128, 'carrito-a', hours_ago=0)
+        order = self.keep(self.used_b, self.used128, 'carrito-b', hours_ago=72, reason='undecided: dos cobros')
+        _, lines = self.lines()
+        [line] = [line for line in lines if line.startswith('ATENCIÓN')]
+        self.assertIn('2 equipos', line)
+        self.assertIn('1 desde hace más de 2 h', line)
+        reference = PaymentTransaction.objects.get(order=order).transaction_id
+        for private in (reference, str(self.used_b.public_id), self.used_b.imei, 'Ana', '987654321'):
+            self.assertNotIn(str(private), '\n'.join(lines))
+
+    def test_an_expired_hold_nothing_keeps_is_not_reported(self):
+        unit = holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a')
+        StockUnit.objects.filter(pk=unit.pk).update(hold_until=timezone.now() - timedelta(hours=5))
+        _, lines = self.lines()
+        self.assertTrue(lines[0].startswith('OK'), lines)
+
+
 class ReleaseOnceTest(SaleShop, TestCase):
     """Releasing is idempotent: one Kardex line however many times it is asked."""
 

@@ -125,7 +125,9 @@ def hold_ceiling_minutes(company=None) -> int:
 #: gateway holds nothing) → back to the shelf. Past it nothing asks the
 #: gateway any more, so the clock decides again — except for an answer nobody
 #: could settle (marked `undecided: ` / `unreadable: `): money may have moved,
-#: and the hold waits for a person (`ops_status` names them).
+#: and the hold waits for a person. `ops_status` («apartados web») counts the
+#: devices payments keep — a note inside the window, ATENCIÓN past it, at any
+#: age; it names no device: the audit log's `payment_undecided` says which.
 def payment_horizon() -> timedelta:
     from .payments import reconcile
 

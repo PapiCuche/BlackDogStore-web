@@ -282,6 +282,38 @@ class Command(BaseCommand):
                               'Se ven en Pedidos › Abastecimiento.')
         report('abastecimiento', supply, 'sin pedidos bajo pedido esperando a una persona')
 
+        # DEVICE-COMMERCE-01 (integration review of PR #123, P2-1). A web hold
+        # past its clock that a payment keeps (`payment_keeps_hold`): inside the
+        # reconciliation window the gateway's answer settles it — said, not an
+        # alarm. Past it only an answer nobody could settle keeps it, and it
+        # stays reserved until a person releases it: whatever its age. Counts.
+        from store import unit_hold_services as unit_holds
+        from store.models import StockUnit
+
+        overdue_holds = StockUnit.objects.filter(
+            status=StockUnit.Status.RESERVED, hold_until__lt=now,
+            hold_order__status=Order.Status.PENDING_PAYMENT, hold_order__paid=False,
+        ).exclude(hold_key='')
+        kept = [unit for unit in overdue_holds if unit_holds.payment_keeps_hold(unit, now)]
+        window = unit_holds.payment_horizon()
+        past_window = sum(1 for unit in kept if unit.hold_until < now - window)
+        window_hours = int(window.total_seconds() // 3600)
+        holds_findings, holds_notes = [], []
+        if past_window:
+            holds_findings.append(
+                f'{_plural(len(kept), "equipo apartado en la web sigue reservado", "equipos apartados en la web siguen reservados")} '
+                f'por un pago que la pasarela aún podría confirmar; {past_window} desde hace más de {window_hours} h, '
+                'con una respuesta que nadie pudo decidir. Revisa el pago en el panel de la pasarela y, si no se '
+                'cobró, libera el equipo desde Inventario › Equipos (el registro de auditoría dice cuál: '
+                '`payment_undecided`).'
+            )
+        elif kept:
+            holds_notes.append(
+                f'{_plural(len(kept), "equipo apartado en la web sigue reservado", "equipos apartados en la web siguen reservados")} '
+                f'por un pago que la pasarela aún podría confirmar; la conciliación lo decide en menos de {window_hours} h.'
+            )
+        report('apartados web', holds_findings, 'ningún equipo retenido por un pago sin decidir', holds_notes)
+
         # What a master configured in Configuración › Integraciones, and the two
         # integrations a shop cannot work without. Labels and states, never values.
         findings, summary = integration_health.report()
