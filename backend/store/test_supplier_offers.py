@@ -730,7 +730,9 @@ class AdminOrderSupplyApiTest(SupplyShop, TestCase):
         self.assertEqual((item['supply_origin'], item['supply_status'], item['lead_time_days'], item['supplier_name']),
                          ('supplier', 'to_confirm', 4, 'Mayorista Lima'))
         self.assertNotIn('unit_cost', item)
+        self.assertIs(item['product_is_serialized'], False)       # the receive form asks for devices when true
         self.assertTrue(detail['can_manage_supply'])
+        self.assertTrue(detail['can_receive_supply'])
         rows = self.client_.get('/api/admin/orders/?supply=to_confirm').json()['results']
         self.assertEqual([row['id'] for row in rows], [self.order.pk])
         self.assertEqual(rows[0]['supply_status'], 'to_confirm')

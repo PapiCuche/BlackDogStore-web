@@ -688,12 +688,13 @@ class AdminOrderItemSerializer(serializers.ModelSerializer):
     # DC3 — where the line's goods come from and how their supply goes. The
     # supplier's name is the panel's to see; its cost is not here (costs.view).
     supplier_name = serializers.SerializerMethodField()
+    product_is_serialized = serializers.BooleanField(source='product.is_serialized', read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal',
                   'supply_origin', 'supply_status', 'supply_note', 'lead_time_days', 'supplier_offer_id',
-                  'supplier_name']
+                  'supplier_name', 'product_is_serialized']
 
     def get_supplier_name(self, obj):
         offer = obj.supplier_offer if obj.supplier_offer_id else None
