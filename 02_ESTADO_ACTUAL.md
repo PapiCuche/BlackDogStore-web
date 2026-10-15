@@ -3,6 +3,25 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2 en rama local (y revisión de DC1)
+
+- Rama `feat/device-commerce`, commits locales sin push. DC2 (DEC-DEVICE-COMMERCE-01 · DC2):
+  modelos con variantes (capacidad, color… configurables por empresa), pestañas
+  «Nuevos» / «Seminuevos» con rótulos de la empresa, página de modelo, seminuevos uno por
+  uno (batería o «no informado», estado estético, fotos reales, precio propio, IMEI sólo
+  en sus 4 últimos dígitos) y **compra de unidad concreta** para nuevos y seminuevos: el
+  carrito aparta el equipo y el pago vende ese equipo. Excel con las columnas nuevas.
+- Revisión independiente de DC1: cinco P2 y los P3 corregidos (ver la DEC). Tras `migrate`,
+  correr `costs_view_report`.
+- Migraciones: `0129` (DC1 revisión, `uncosted_quantity` + marca del stock sin costo),
+  `0130`–`0132` (DC2). Dependen de `0128` → `0123`; hay PR abiertos con `0124`/`0125`:
+  se renumeran al fusionar.
+- Nuevo cron: `release_expired_unit_holds` cada pocos minutos (también se libera al leer).
+- Pendiente del propietario: confirmar las decisiones marcadas «por confirmar» (precio por
+  equipo en líneas separadas, productos serializados sin modelo con SERIAL-PICK, salida
+  primero de lo que no tiene costo), y crear modelos/opciones/escala en su empresa.
+- Siguiente: DC3 (disponibilidad de proveedor sobre `availability`).
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC1 en rama local
 
 - Rama `feat/device-commerce` desde `master` `abfc6bd`, commits locales sin push.

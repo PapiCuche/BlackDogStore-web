@@ -3,6 +3,43 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC2: variantes, nuevos y seminuevos
+
+En la rama `feat/device-commerce` (sin push). Migraciones `0130`–`0132` (aditivas, nulas o
+con `db_default`, reversibles; `0132` sólo se deshace mientras ningún pedido tenga dos
+equipos de un mismo producto). DEC-DEVICE-COMMERCE-01 · DC2.
+
+**Added**
+- Modelos (`ProductModel`), atributos y opciones con muestra de color, variantes
+  (`Product.product_model`, `condition_line`), escala de estado estético por empresa.
+- `GET /api/catalog/models/` y `/api/catalog/models/<slug>/`; página de modelo con
+  capacidad, colores y combinaciones no disponibles deshabilitadas; seminuevos uno por uno.
+- Apartado web de un equipo concreto en el carrito (`POST /api/cart/add/` con `unit`,
+  `POST /api/cart/release-unit/`), con vencimiento y `release_expired_unit_holds`.
+- Batería, estado estético, notas públicas, precio de venta y fotos públicas por equipo;
+  lista «Seminuevos» en el panel; administración de modelos, opciones y escala.
+- Columnas «Modelo», «Capacidad», «Color», «Línea» (productos y equipos) y «Estado
+  estético», «Batería %», «Precio de venta» (equipos).
+
+**Changed**
+- Lo que se vende por unidad (variante serializada de un modelo): el pago vende el equipo
+  apartado, no el más antiguo; cada equipo es su línea de pedido con su precio y su costo.
+- La lista pública de productos no lista variantes seminuevas.
+- La app nativa rechaza en el checkout los productos que se compran eligiendo el equipo.
+
+## 2026-10-14 — DEVICE-COMMERCE-01 · DC1: revisión independiente
+
+**Security**
+- Sin `costs.view`, la columna «Costo de referencia» de la carga de productos se ignora (no
+  se compara ni se escribe).
+
+**Fixed**
+- El stock que entra sin costo queda «costo pendiente» (`0129`, `uncosted_quantity`) en vez
+  de valorarse a un promedio viejo; sale primero.
+- La rebaja de una promoción va a sus líneas, como en el comprobante F6.
+- Instantáneas y promedios de sólo lectura en el admin de Django; `costs_view_report`.
+- Desgloses del margen con el neto estimado de las líneas anteriores a DC1.
+
 ## 2026-10-14 — DEVICE-COMMERCE-01 · DC1: costos y margen comercial
 
 En la rama `feat/device-commerce` (sin push). Migraciones `0126` (datos), `0127` y `0128`

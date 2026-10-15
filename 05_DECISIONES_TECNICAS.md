@@ -1717,3 +1717,77 @@ Fase DEVICE-COMMERCE-01, subfase DC1 (rama `feat/device-commerce`, migraciones `
   DC1 aparecen en los desgloses con su neto calculado desde el pedido (`net_estimated`,
   costo pendiente) en vez de 0,00; el texto del tablero que decía que no había modelo de
   costos, corregido.
+
+### DEC-DEVICE-COMMERCE-01 · DC2 — variantes y tienda de nuevos y seminuevos
+
+Migraciones `0130`–`0132` (aditivas, nulas o con `db_default`, reversibles).
+
+**Decisión del propietario (2026-10-14).** La compra de unidad concreta vale para equipos
+NUEVOS y SEMINUEVOS: el equipo que el comprador apartó es el que se vende. Reemplaza, para
+lo que se vende por unidad, la regla de SERIAL-PICK-01 («el pago aparta el más antiguo»).
+
+**Cómo queda.**
+- *Una variante sigue siendo un `Product`.* `ProductModel` (por empresa) agrupa variantes;
+  `Product.product_model`, `condition_line` (`new`/`used`) y `variant_key` (ids de opción
+  ordenados). Opciones configurables por empresa: `VariantAttribute` (texto o color) y
+  `VariantOption` (`swatch_hex` `#RRGGBB`). `ProductVariantOption`: una opción por atributo
+  (único `product, attribute`); dos variantes de un modelo con las mismas opciones y línea,
+  imposibles (único parcial `product_model, condition_line, variant_key`). Stock, Kardex,
+  carrito, caja y líneas fiscales siguen leyendo el producto. Un producto sin modelo
+  (accesorio) no cambia.
+- *Se vende por unidad* (`Product.sells_by_unit`) todo producto serializado que es variante
+  de un modelo, nuevo o seminuevo. **Por confirmar con el propietario:** un producto
+  serializado SIN modelo conserva SERIAL-PICK-01 (el pago aparta el más antiguo y se
+  identifica al entregar) hasta que se le asigne modelo.
+- *Navegación.* No se tocan las categorías: `GET /api/catalog/models/?category=&line=`
+  cuenta las dos líneas, y la tienda muestra las pestañas sólo cuando hay de ambas. Los
+  rótulos son de la empresa (`StorefrontPageSettings.new_line_label/used_line_label`;
+  vacío = «Nuevos» / «Seminuevos»). Nada nombra una marca.
+- *API pública.* `GET /api/catalog/models/<slug>/`: atributos y opciones, variantes nuevas
+  con precio, imágenes y disponibilidad (stock propio de la sucursal que despacha; el campo
+  `availability` es el gancho de DC3 para proveedor), y los seminuevos uno por uno. Lista
+  blanca escrita a mano: `id` público (UUID `StockUnit.public_id`, no la pk: la pk dice
+  cuántos equipos recibió la tienda), opciones, batería (`null` = «no informado», nunca un
+  número inventado), estado estético, precio, fotos, notas públicas e `imei_hint` (los 4
+  últimos dígitos). Nunca IMEI completo, serie, costo ni proveedor. La lista general de
+  productos deja de listar variantes SEMINUEVAS (su precio no significa nada) y gana
+  `product_model`, `condition_line`, `sells_by_unit`.
+- *Equipo.* `StockUnit.battery_health` (0–100, nula), `cosmetic_grade` (escala por empresa,
+  `CosmeticGrade`; la sugerida se crea al aprovisionar una empresa nueva, con
+  `seed_cosmetic_grades --company` o desde el panel; nunca por migración), `public_notes`,
+  `sale_price` (seminuevo: sin precio no se ofrece en línea; el precio de un equipo vendido
+  no cambia), `UnitPhoto` (misma tubería pública que las galerías de producto, nunca el
+  almacén de evidencias).
+- *Apartado web.* Agregar al carrito aparta UN equipo (el elegido, o el más antiguo de la
+  variante) con `stock_unit_services._move`: AVAILABLE→RESERVED con línea de Kardex
+  (`manual_exit`, «Apartado web: carrito»), así que la invariante cantidad == disponibles se
+  mantiene, la caja no puede vender un equipo apartado y dos compradores hacen cola en la
+  fila del estante (el segundo recibe `unit_taken`). Titular = SHA-256 de la clave del
+  carrito; plazo `DEVICE_HOLD_MINUTES` (15), se amplía a `DEVICE_ORDER_HOLD_MINUTES` (45) al
+  crear el pedido; tope `DEVICE_HOLD_MAX_PER_CART` (3). Vencido, vuelve al estante al leer
+  (carrito, página del modelo, checkout) y con `release_expired_unit_holds` (cron). Un
+  apartado del personal (sin titular web) no vence.
+- *Precio por unidad en el pedido* — **por confirmar.** Una línea de pedido NO puede llevar
+  dos precios: dos seminuevos de una variante a 1999,00 y 1500,00 en una línea de cantidad 2
+  exigirían un precio unitario de 1749,50 — y con 3 equipos un precio que no existe en
+  céntimos. Por eso cada equipo vendido por unidad es SU línea (`OrderItem.stock_unit`,
+  cantidad 1, su precio congelado al apartar). La regla «una línea por producto» sigue para
+  toda línea sin equipo (índice único parcial) y la salida de Kardex sigue siendo UNA por
+  (pedido, producto), nombrando todos sus equipos: la idempotencia del pago no cambia. El
+  comprobante y los papeles imprimen cada equipo en su línea con su precio; la instantánea
+  DC1 de cada línea es el costo de ESE equipo (`unit`).
+- *Pago.* `_confirm` → `record_sale_stock_movements` → `_sell_chosen_units`: el apartado de
+  este pedido se libera dentro de la misma transacción y bajo el bloqueo del estante, y la
+  salida de venta nombra ese equipo. Si el apartado venció y el equipo sigue libre, se vende
+  igual; si otro lo tomó, la línea queda como faltante (el dinero ya se cobró; decide una
+  persona), nunca se vende otro equipo. Se registra `OrderUnit` con método `buyer`: no hay
+  nada que identificar al entregar, y «olvidar» esa identificación se rechaza.
+- *Checkout.* Antes de crear el pedido se revisa cada apartado: sigue siendo de este
+  carrito, no venció, está en la sucursal que despacha y su precio no cambió; si cambió, el
+  apartado toma el precio nuevo y se avisa (`cart_changed`) sin crear nada. La app nativa
+  no tiene carrito con apartados todavía: rechaza esos productos (`unit_required`).
+- *Excel.* Equipos: «Modelo», «Capacidad», «Color», «Línea», «Estado estético», «Batería %»,
+  «Precio de venta» (opcionales, al final). «Modelo» como única columna de nombre (archivos
+  viejos) sigue siendo el nombre y sólo se prueba como modelo si ningún producto se llama
+  así. Productos: «Modelo», «Capacidad», «Color», «Línea» (el modelo y las opciones deben
+  existir). Un archivo sin esas columnas se carga igual que antes.
