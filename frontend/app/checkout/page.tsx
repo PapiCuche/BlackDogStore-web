@@ -20,6 +20,9 @@ type CheckoutItem = {
   /** INVENTORY-UNIFIED-01. `false`: ya no se vende en la web; llega sin precio. */
   available?: boolean;
   product: { id: number; name: string; price?: number | string; slug?: string };
+  /** DC2: what the line costs, from the server (devices sold one by one can each cost differently). */
+  line_total?: string;
+  sells_by_unit?: boolean;
 };
 import { API_BASE } from "../lib/api";
 import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/analytics/items";
@@ -34,6 +37,7 @@ import {
 import { useStorefront } from "../components/StorefrontProvider";
 import KryptonPaymentForm from "../components/KryptonPaymentForm";
 import { SavedAddressSelect } from "../components/SavedAddressSelect";
+import { cartLineAmount } from "../components/CartItemCard";
 import {
   isPaymentSession,
   openPaymentForm,
@@ -193,7 +197,7 @@ export default function CheckoutPage() {
   // Lo que ya no se vende no tiene precio: no se suma. El servidor rechaza el
   // pago mientras siga en el carrito, y el resumen lo dice.
   const subtotal = (items ?? []).reduce(
-    (sum, item) => sum + (item.available === false ? 0 : Number(item.product.price ?? 0) * item.quantity), 0,
+    (sum, item) => sum + (item.available === false ? 0 : cartLineAmount(item)), 0,
   );
   // Con una línea así el servidor rechaza el carrito entero: no se ofrece enviar.
   const hasUnavailable = (items ?? []).some((item) => item.available === false);
@@ -914,14 +918,16 @@ export default function CheckoutPage() {
                           </span>
                         ) : (
                           <span className="mt-0.5 block text-xs text-muted">
-                            {item.quantity} × S/ {Number(item.product.price ?? 0).toFixed(2)}
+                            {item.sells_by_unit
+                              ? (item.quantity === 1 ? "1 equipo" : `${item.quantity} equipos`)
+                              : <>{item.quantity} × S/ {Number(item.product.price ?? 0).toFixed(2)}</>}
                           </span>
                         )}
                       </span>
                       {/* `tabular-nums` para que los importes alineen en columna. */}
                       {item.available === false ? null : (
                         <span className="shrink-0 text-sm tabular-nums text-foreground">
-                          S/ {(Number(item.product.price ?? 0) * item.quantity).toFixed(2)}
+                          S/ {cartLineAmount(item).toFixed(2)}
                         </span>
                       )}
                     </li>

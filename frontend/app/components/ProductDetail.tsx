@@ -26,6 +26,10 @@ type Product = {
   average_rating?: number | null;
   review_count?: number;
   category?: Category;
+  /** DC2: the model this product is one option of (slug), or null. */
+  product_model?: string | null;
+  condition_line?: "new" | "used";
+  sells_by_unit?: boolean;
 };
 
 type Review = {
@@ -284,6 +288,16 @@ export default function ProductDetail({ product }: { product: Product }) {
               {product.description || "Consulta el detalle, precio y disponibilidad de este producto."}
             </p>
 
+            {product.product_model ? (
+              <Link
+                href={`/modelo/${product.product_model}${product.condition_line === "used" ? "?line=used" : ""}`}
+                className="mt-4 inline-flex w-fit items-center gap-1 text-sm font-bold text-foreground underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                Ver todas las opciones
+                <span aria-hidden="true">→</span>
+              </Link>
+            ) : null}
+
             <div className="mt-6 flex items-center gap-2 text-sm">
               <span
                 className={`h-2 w-2 rounded-full ${inStock ? "bg-emerald-400" : "bg-muted/40"}`}
@@ -304,6 +318,8 @@ export default function ProductDetail({ product }: { product: Product }) {
                 S/ {formatMoney(product.price)}
               </p>
 
+              {/* DC2: a product sold device by device adds ONE device per press; there is no quantity to choose. */}
+              {product.sells_by_unit ? null : (
               <div className="mt-6 flex items-center justify-between gap-4 border-t border-bd-border pt-5">
                 <span id="qty-label" className="text-sm font-semibold text-muted">Cantidad</span>
                 <div className="flex overflow-hidden rounded-xl border border-bd-border bg-background" role="group" aria-labelledby="qty-label">
@@ -330,6 +346,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                   </button>
                 </div>
               </div>
+              )}
 
               <button
                 type="button"
