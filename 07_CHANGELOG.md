@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» (en rama, NO desplegado)
+
+- **Added** — «Ventas › Consultar disponibilidad» (`GET /api/admin/availability/`, `sales.pos.use`,
+  sólo lectura, sin migración): stock propio por sucursal y por estado del equipo, ofertas de
+  proveedores aparte («no es stock propio»), equipos con IMEI enmascarado; nunca costos.
+  «Inventario › Equipos» filtra por línea, modelo y opciones y muestra el detalle de cada equipo
+  (DEC-COMMERCE-ADMIN-UX-01).
+
 ## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
 
 **Deployed**
