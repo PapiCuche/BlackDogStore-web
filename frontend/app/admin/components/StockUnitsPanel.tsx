@@ -8,10 +8,22 @@
  * writes to the Kardex. Nothing is counted here and no identifier is judged
  * here: the table shows what the server lists, the filters are answered by the
  * server, and a refusal is shown in the server's words.
+ *
+ * COMMERCE-ADMIN-UX-01: filters by line, model and the catalogue's options
+ * (capacity, colour…), read from the existing catalogue endpoints — hidden when
+ * the caller may not read the catalogue — and a detail drawer per device built
+ * from the row the list already carries. The cost appears there only for
+ * `costs.view`, and only because the server sent it.
  */
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+
+import {
+  fetchAdminCatalogModels, fetchCatalogAttributes,
+  type AdminCatalogAttribute, type AdminCatalogModel,
+} from "@/app/admin/lib/internal-api";
+import { notifyStockChanged } from "@/app/lib/stock-events";
 
 import {
   actOnStockUnit, fetchSerializedProducts, fetchStockUnits,
@@ -24,8 +36,13 @@ import {
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import { StockUnitForm } from "./StockUnitForm";
 
-type Filters = { product: string; status: string; condition: string; search: string };
-const NO_FILTERS: Filters = { product: "", status: "", condition: "", search: "" };
+type Filters = {
+  product: string; status: string; condition: string; search: string;
+  line: "" | "new" | "used"; model: string;
+  /** attribute id → option id */
+  options: Record<number, number>;
+};
+const NO_FILTERS: Filters = { product: "", status: "", condition: "", search: "", line: "", model: "", options: {} };
 
 const ACTION_LABEL: Record<UnitAction, string> = {
   reserve: "Apartar",
@@ -50,13 +67,74 @@ function actionsFor(unit: StockUnit): UnitAction[] {
 
 const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
 
+function money(value: string) {
+  const n = Number.parseFloat(value);
+  return Number.isNaN(n) ? value : `S/ ${n.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * One device, everything the list already said about it. No request of its
+ * own: what is shown is the row the server sent, cost included only when the
+ * server included it (`costs.view`) AND the screen was told the caller has it.
+ */
+function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost: boolean; onClose: () => void }) {
+  const rows: [string, React.ReactNode][] = [
+    ["Producto", unit.product_name],
+    ["Línea", unit.condition_line === "used" ? "Seminuevo" : "Nuevo"],
+    ["Sucursal", unit.branch_name],
+    ["Estado", unit.status === "reserved"
+      ? (unit.held_online
+        ? `Apartado web${unit.hold_until ? ` hasta ${formatDateTime(unit.hold_until)}` : ""}`
+        : "Apartado por personal")
+      : unit.status_label],
+    ["Serie", <span key="s" className="font-mono">{unit.serial_number}</span>],
+    ["IMEI", unit.imei ? <span key="i" className="font-mono">{unit.imei}{unit.imei2 ? ` · ${unit.imei2}` : ""}</span> : "—"],
+    ["Condición", unit.condition_label],
+    ["Ingreso", formatDateTime(unit.received_at)],
+  ];
+  if (unit.sold_at) rows.push(["Vendido", formatDateTime(unit.sold_at)]);
+  if (unit.order_id) rows.push(["Pedido", `#${unit.order_id}`]);
+  if (unit.condition_line === "used" || unit.battery_health != null || unit.cosmetic_grade_label) {
+    rows.push(["Batería", unit.battery_health == null ? "No informada" : `${unit.battery_health}%`]);
+    rows.push(["Estado estético", unit.cosmetic_grade_label || "—"]);
+  }
+  rows.push(["Precio propio", unit.sale_price ? money(unit.sale_price) : "El del producto"]);
+  if (unit.public_notes) rows.push(["Nota pública", unit.public_notes]);
+  if (unit.notes) rows.push(["Nota interna", unit.notes]);
+  if (unit.photos && unit.photos.length > 0) rows.push(["Fotos", String(unit.photos.length)]);
+  if (canSeeCost && unit.cost !== undefined) rows.push(["Costo", unit.cost ? money(unit.cost) : "Sin costo registrado"]);
+
+  return (
+    <aside
+      role="dialog"
+      aria-label={`Detalle del equipo ${unit.serial_number}`}
+      className="mb-4 rounded-lg border border-bd-border bg-background p-4"
+    >
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <p className="text-sm font-semibold text-foreground">Equipo · <span className="font-mono">{unit.serial_number}</span></p>
+        <button type="button" className={internalButtonClass} onClick={onClose}>Cerrar</button>
+      </div>
+      <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-3 border-b border-bd-border/50 py-1">
+            <dt className="text-muted">{label}</dt>
+            <dd className="text-right text-foreground">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </aside>
+  );
+}
+
 export function StockUnitsPanel({
-  branch, branches, canAdjust,
+  branch, branches, canAdjust, canSeeCost = false,
 }: {
   /** The branch in view; "all" for every branch the caller reaches. */
   branch: number | "all" | undefined;
   branches: { id: number; name: string }[];
   canAdjust: boolean;
+  /** `costs.view`: the drawer shows the cost the server sent. Without it there is none to show. */
+  canSeeCost?: boolean;
 }) {
   const [page, setPage] = useState<StockUnitPage | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -67,6 +145,9 @@ export function StockUnitsPanel({
   const [notice, setNotice] = useState<string | null>(null);
 
   const [products, setProducts] = useState<SerializedProduct[]>([]);
+  const [models, setModels] = useState<AdminCatalogModel[]>([]);
+  const [attributes, setAttributes] = useState<AdminCatalogAttribute[]>([]);
+  const [detail, setDetail] = useState<StockUnit | null>(null);
   const [registering, setRegistering] = useState(false);
   const [working, setWorking] = useState(false);
 
@@ -75,8 +156,15 @@ export function StockUnitsPanel({
 
   useEffect(() => {
     let cancelled = false;
-    fetchStockUnits({ branch, ...applied, page: pageNumber }).then(
-      (loaded) => { if (!cancelled) { setPage(loaded); setError(null); } },
+    const { options, ...rest } = applied;
+    fetchStockUnits({ branch, ...rest, options: Object.values(options), page: pageNumber }).then(
+      (loaded) => {
+        if (cancelled) return;
+        setPage(loaded);
+        setError(null);
+        // The drawer follows the list: a device that changed shows its new state.
+        setDetail((open) => (open ? loaded.results.find((u) => u.id === open.id) ?? open : open));
+      },
       (err) => { if (!cancelled) setError(err instanceof Error ? err.message : "No se pudieron cargar los equipos."); },
     );
     return () => { cancelled = true; };
@@ -92,12 +180,28 @@ export function StockUnitsPanel({
     // Re-read after every change: a product may just have started being tracked by serial.
   }, [reloadKey]);
 
+  useEffect(() => {
+    let cancelled = false;
+    // The catalogue's models and options, for the filters. Somebody who may not
+    // read the catalogue keeps every other filter: these simply do not appear.
+    fetchAdminCatalogModels().then(
+      (loaded) => { if (!cancelled) setModels(loaded); },
+      () => { /* not offered */ },
+    );
+    fetchCatalogAttributes().then(
+      (loaded) => { if (!cancelled) setAttributes(loaded); },
+      () => { /* not offered */ },
+    );
+    return () => { cancelled = true; };
+  }, []);
+
   async function act(unit: StockUnit, action: UnitAction, why = "") {
     setWorking(true);
     setError(null);
     setNotice(null);
     try {
       await actOnStockUnit(unit.id, action, why.trim());
+      notifyStockChanged();
       setPending(null);
       setActionReason("");
       setReloadKey((key) => key + 1);
@@ -151,6 +255,41 @@ export function StockUnitsPanel({
           onSubmit={(e) => { e.preventDefault(); setPageNumber(1); setApplied(draft); }}
         >
           <label className="block text-xs text-muted">
+            Línea
+            <select value={draft.line} onChange={(e) => setDraft({ ...draft, line: e.target.value as Filters["line"] })} className={`mt-1.5 ${internalInputClass}`}>
+              <option value="">Nuevos y seminuevos</option>
+              <option value="new">Nuevos</option>
+              <option value="used">Seminuevos</option>
+            </select>
+          </label>
+          {models.length > 0 ? (
+            <label className="block text-xs text-muted">
+              Modelo
+              <select value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} className={`mt-1.5 ${internalInputClass}`}>
+                <option value="">Todos</option>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </label>
+          ) : null}
+          {attributes.map((attribute) => (
+            <label key={attribute.id} className="block text-xs text-muted">
+              {attribute.name}
+              <select
+                value={String(draft.options[attribute.id] ?? "")}
+                onChange={(e) => {
+                  const options = { ...draft.options };
+                  if (e.target.value) options[attribute.id] = Number(e.target.value);
+                  else delete options[attribute.id];
+                  setDraft({ ...draft, options });
+                }}
+                className={`mt-1.5 ${internalInputClass}`}
+              >
+                <option value="">Todas</option>
+                {(attribute.options ?? []).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </label>
+          ))}
+          <label className="block text-xs text-muted">
             Producto
             <select value={draft.product} onChange={(e) => setDraft({ ...draft, product: e.target.value })} className={`mt-1.5 ${internalInputClass}`}>
               <option value="">Todos</option>
@@ -175,12 +314,21 @@ export function StockUnitsPanel({
             Serie o IMEI
             <input value={draft.search} onChange={(e) => setDraft({ ...draft, search: e.target.value })} spellCheck={false} className={`mt-1.5 font-mono ${internalInputClass}`} />
           </label>
-          <div className="flex items-end">
+          <div className="flex items-end gap-2">
             <button type="submit" className={internalButtonClass}>Filtrar</button>
+            <button
+              type="button"
+              className={internalButtonClass}
+              onClick={() => { setDraft(NO_FILTERS); setApplied(NO_FILTERS); setPageNumber(1); }}
+            >
+              Limpiar
+            </button>
           </div>
         </form>
 
         {error ? <ErrorBox message={error} /> : null}
+
+        {detail ? <UnitDetail unit={detail} canSeeCost={canSeeCost} onClose={() => setDetail(null)} /> : null}
 
         {pending ? (
           <div className="mb-4 space-y-3 rounded-lg border border-bd-border bg-background p-4">
@@ -220,7 +368,7 @@ export function StockUnitsPanel({
                 <tr className="border-b border-bd-border">
                   <Th>Serie</Th><Th>IMEI</Th><Th>Producto</Th><Th>Sucursal</Th>
                   <Th>Condición</Th><Th>Estado</Th><Th>Ingreso</Th>
-                  {canAdjust ? <Th right>Acciones</Th> : null}
+                  <Th right>Acciones</Th>
                 </tr>
               </thead>
               <tbody>
@@ -236,14 +384,21 @@ export function StockUnitsPanel({
                     <Td muted>{unit.condition_label}</Td>
                     <Td>
                       <span className={`rounded-full border px-2.5 py-1 text-[11px] ${STATUS_TONE[unit.status]}`}>
-                        {unit.status_label}
+                        {unit.status === "reserved" ? (unit.held_online ? "Apartado web" : "Apartado por personal") : unit.status_label}
                       </span>
                     </Td>
                     <Td muted>{formatDateTime(unit.received_at)}</Td>
-                    {canAdjust ? (
-                      <Td right>
+                    <Td right>
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
-                          {actionsFor(unit).map((action) => (
+                          <button
+                            type="button"
+                            aria-label={`Detalle del equipo ${unit.serial_number}`}
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
+                            onClick={() => setDetail(unit)}
+                          >
+                            Detalle
+                          </button>
+                          {canAdjust ? actionsFor(unit).map((action) => (
                             <button
                               key={action}
                               type="button"
@@ -256,10 +411,9 @@ export function StockUnitsPanel({
                             >
                               {ACTION_LABEL[action]}
                             </button>
-                          ))}
+                          )) : null}
                         </span>
-                      </Td>
-                    ) : null}
+                    </Td>
                   </tr>
                 ))}
               </tbody>

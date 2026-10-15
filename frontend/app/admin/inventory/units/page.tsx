@@ -45,6 +45,7 @@ function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess
             branch={scope.branch}
             branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))}
             canAdjust={canAdjust}
+            canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
           />
         ) : null}
       </div>

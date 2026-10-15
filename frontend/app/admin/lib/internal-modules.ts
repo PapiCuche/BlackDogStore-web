@@ -167,6 +167,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
     quickAction: true,
   },
+  {
+    // COMMERCE-ADMIN-UX-01: whoever sells at the counter may ask where a product
+    // is. Same capability as the till, no legacy bridge (the endpoint asks for a
+    // Membership, like the till does).
+    id: "sales.availability",
+    group: "sales",
+    label: "Consultar disponibilidad",
+    description: "Stock propio por sucursal, equipos y ofertas de proveedores bajo pedido.",
+    href: "/admin/sales/availability",
+    requiredCapabilities: ["sales.pos.use"],
+    status: "implemented",
+  },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
   {
     id: "sales.promotions",
