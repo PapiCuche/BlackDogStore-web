@@ -485,7 +485,7 @@ class HoldTest(DeviceShop, TestCase):
 # Checkout and payment sell THE device
 # ---------------------------------------------------------------------------
 
-class ExactUnitSaleTest(DeviceShop, TestCase):
+class SaleShop(DeviceShop):
     def setUp(self):
         self.build()
         self.old, self.young = self.receive(self.new128, 2)
@@ -516,6 +516,8 @@ class ExactUnitSaleTest(DeviceShop, TestCase):
             Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
                                                      payment_error=order.payment_error)
 
+
+class ExactUnitSaleTest(SaleShop, TestCase):
     def test_payment_sells_the_held_device_not_the_oldest(self):
         # The cart got the oldest; let a buyer hold the YOUNG one by freeing the old first.
         holds.hold(product=self.new128, branch=self.branch, session_key='otro')              # takes the old
@@ -807,3 +809,36 @@ class ExcelColumnsTest(DeviceShop, TestCase):
         self.assertNotIn('variant', row.normalized_data)
         import_services.apply_products(job=old, actor=self.staff)
         self.assertIsNone(Product.objects.get(name='Cable').product_model_id)
+
+
+# ---------------------------------------------------------------------------
+# DC2 review — holds cannot be stolen, stretched or hoarded
+# ---------------------------------------------------------------------------
+
+class BindGuardTest(SaleShop, TestCase):
+    """`bind_to_order` binds THIS cart's live holds and nothing else."""
+
+    def test_a_hold_that_expired_and_was_taken_by_another_cart_is_not_bound(self):
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        items = list(CartItem.objects.filter(session_key='carrito-a').select_related('product'))
+        lines = checkout.lines_from_cart(self.company, self.branch, 'carrito-a', items)
+        # Between reading the cart and writing the order: expired, swept, held by B.
+        StockUnit.objects.filter(pk=self.used_a.pk).update(hold_until=timezone.now() - timedelta(minutes=1))
+        holds.release_expired()
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-b',
+                   unit_public_id=str(self.used_a.public_id))
+        pricing = checkout.price_checkout(self.company, D('1999.00'))
+        with self.assertRaises(checkout.CheckoutError) as caught:
+            checkout.create_pending_order(
+                company=self.company, branch=self.branch, lines=lines, pricing=pricing,
+                details=checkout.CustomerDetails(
+                    name='Ana', email='ana@example.com', phone='987654321', document_type='DNI',
+                    document_number='12345678', delivery_method='pickup', receipt_type='boleta',
+                    accepted_terms=True, accepted_warranty_policy=True),
+                cart_session_key='carrito-a',
+            )
+        self.assertEqual(caught.exception.code, 'cart_changed')
+        self.assertFalse(Order.objects.exists())
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.hold_key, self.used_a.hold_order_id), (holds.key_of('carrito-b'), None))

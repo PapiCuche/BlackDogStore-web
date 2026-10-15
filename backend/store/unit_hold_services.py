@@ -265,12 +265,30 @@ def sync_cart(session_key, company) -> None:
             _sync_cart_line(session_key, item.product)
 
 
-def bind_to_order(units, order) -> None:
-    """Checkout: these holds belong to `order` now, and live long enough to pay."""
-    StockUnit.objects.filter(pk__in=[unit.pk for unit in units]).update(
-        hold_order=order, hold_until=timezone.now() + timedelta(minutes=order_hold_minutes()),
-        updated_at=timezone.now(),
+def bind_to_order(units, order, session_key) -> None:
+    """
+    Checkout: these holds belong to `order` now, and live long enough to pay.
+
+    ONLY THIS CART'S LIVE HOLDS. Time passed since the cart was read: a hold
+    may have run out, gone back to the shelf and been taken by another cart.
+    Binding by pk alone would hand that other buyer's device to this order.
+    Anything short of every device still held here refuses the whole order —
+    the caller's transaction rolls back and the buyer is told.
+    """
+    from .checkout_services import CheckoutError
+
+    now = timezone.now()
+    bound = StockUnit.objects.filter(
+        pk__in=[unit.pk for unit in units], status=StockUnit.Status.RESERVED,
+        hold_key=key_of(session_key), hold_until__gt=now,
+    ).update(
+        hold_order=order, hold_until=now + timedelta(minutes=order_hold_minutes()), updated_at=now,
     )
+    if bound < len({unit.pk for unit in units}):
+        raise CheckoutError(
+            'Problemas con el carrito.', code='cart_changed',
+            errors=['Uno de los equipos de tu carrito ya no está apartado para ti. Revisa tu carrito.'],
+        )
 
 
 def holds_by_product(session_key, company) -> dict:

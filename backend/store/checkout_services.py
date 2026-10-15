@@ -553,7 +553,7 @@ def create_pending_order(
             # DC2 — the devices are this order's now, and stay held while it can be paid.
             from . import unit_hold_services
 
-            unit_hold_services.bind_to_order(held, order)
+            unit_hold_services.bind_to_order(held, order, cart_session_key)
 
         # CLIENT-SEC-01. Every order made online is assessed as it is made, in
         # this transaction, so the two exist together or not at all. ADVICE: it
