@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · A1 «Costos y precios» — en rama (`wip/costs-ux`)
+
+- Inventario › Costos y precios (`costs.view`): margen, inventario al costo, costo promedio por
+  sucursal y costo de cada equipo, con su origen; precio y costo de referencia editables;
+  «Corregir costo» de un equipo con motivo auditado; estados de carga, vacío y error. Sin
+  migración. Corregir el promedio de una sucursal: PENDIENTE (DEC-DEVICE-COMMERCE-01 · A1).
+
 ## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
 
 **Deployed**

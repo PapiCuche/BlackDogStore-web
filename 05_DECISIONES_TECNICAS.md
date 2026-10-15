@@ -2145,3 +2145,36 @@ tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto just
   despachan las sucursales visibles de quien consulta (como toda cifra de ventas).
 - *Pruebas por valor.* Las comprobaciones de «no se filtra el costo» comparan valores (ids
   aparte), no subcadenas de `str(payload)`: `'product_id': 685` contenía «68».
+
+### DEC-DEVICE-COMMERCE-01 · A1 — «Costos y precios» (COMMERCE-ADMIN-UX-01) — EN RAMA
+
+**Incidente del propietario:** «un Administrador no encuentra "Margen comercial" ni "Valor al
+costo"». Diagnóstico de solo lectura en producción: el backend respondía bien (200 con costos al
+rol propio `administrador` y al master; los otros dos miembros tienen
+`venta-servicio-tecnico-inventario`, sin `costs.view`, como corresponde). En el frontend,
+`buildInternalAccess` también responde bien al rol propio con `costs.view` y al master con
+empresa (prueba `costs-a1.test.tsx`). **Causa:** no había entrada en el menú (el margen era una
+sección dentro de Ventas › Resumen y el valor al costo una tarjeta dentro de Stock), y las dos
+devolvían `null` al cargar, ante un error y sin datos; quien no tenía el permiso no sabía por
+qué. El master sin empresa «pasaba» el permiso y recibía un 403 que nadie explicaba.
+
+- *Entrada.* Inventario › **Costos y precios** (`/admin/inventory/costs`), sólo con `costs.view`
+  (puente legacy: admin/superadmin, el mismo de `may_view_costs`). Enlazada desde Ventas › Resumen
+  y desde Stock. Sin el permiso: página 403 «Necesitas el permiso Ver costos y márgenes;
+  pídeselo al administrador». Master sin empresa: «Elige una empresa…», sin pedir nada.
+- *Contenido, sin cálculo nuevo.* Margen (`/api/admin/sales/margin/`), inventario al costo
+  (`summary`), costo promedio por sucursal y producto (`/api/admin/inventory/stock/` añade
+  `average_cost`, `uncosted_quantity`, `product_reference_cost`, `product_is_serialized` y
+  `cost_source` = `unit` | `average` | `reference` | `unknown`, **sólo con `costs.view`**; sin él
+  las claves no están) y el costo de cada equipo (`units`). Cada sección: «Cargando…», vacío
+  («Aún no hay ventas con costo conocido») y el mensaje del servidor.
+- *Correcciones.* Precio (`products.manage`) y costo de referencia (`products.manage` +
+  `costs.view`) por `PATCH /api/admin/products/{id}/`; auditado sin importes. «Corregir costo» de
+  un equipo: sólo si no se vendió (regla de DC1), con `cost_reason` obligatorio desde el panel y
+  auditado (el motivo, no los importes). Nunca se tocan instantáneas de venta ni movimientos.
+- **PENDIENTE — corregir el promedio de una sucursal.** No existe un camino seguro: el promedio
+  lo mantiene sólo el Kardex. Diseño: un tipo de movimiento `cost_adjustment` (cantidad 0,
+  `unit_cost` nuevo, motivo obligatorio, `costs.view` + `inventory.adjust`) que
+  `create_stock_movement` aplica bajo el bloqueo de la fila, fijando `average_cost` y dejando
+  `uncosted_quantity` como está; nunca edita movimientos pasados ni ventas. Requiere migración
+  (nuevo valor de `movement_type`), por eso no entra en A1.
