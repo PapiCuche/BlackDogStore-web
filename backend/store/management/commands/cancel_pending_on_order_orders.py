@@ -8,11 +8,18 @@ them and changes nothing. `--apply` cancels each one (status «cancelled», a
 note in `payment_error`, an audit row under its company). Paid orders are not
 touched. Pause payments in the integrations console first: a form
 that was already open can still be paid, and that payment needs a person.
+
+It also EMPTIES the cart lines taken on order (`CartItem.supply_origin`
+'supplier'): the previous release reads them as shelf lines and would sell
+them from a shelf that does not have them. The simulation counts them; `--apply`
+deletes them and writes one audit row per company with the count.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from store.models import AdminAuditLog, Order
+from django.db.models import Count
+
+from store.models import AdminAuditLog, CartItem, Company, Order
 
 NOTE = 'Cancelado antes de volver a la versión anterior: el pedido lleva productos bajo pedido.'
 
@@ -50,3 +57,20 @@ class Command(BaseCommand):
                 )
                 cancelled += 1
         self.stdout.write(f'Pedidos bajo pedido pendientes de pago: {len(ids)}. Cancelados: {cancelled}.')
+
+        lines = CartItem.objects.filter(supply_origin=CartItem.SUPPLY_SUPPLIER)
+        total = lines.count()
+        if not apply:
+            self.stdout.write(f'Líneas de carrito bajo pedido: {total}.')
+            return
+        with transaction.atomic():
+            per_company = list(lines.values('product__company_id').annotate(n=Count('pk')).order_by('product__company_id'))
+            _, by_model = lines.delete()
+            removed = by_model.get(CartItem._meta.label, 0)
+            for row in per_company:
+                AdminAuditLog.log(
+                    actor=None, action='on_order_cart_lines_removed_before_rollback', target_type='cart',
+                    target_id='', metadata={'count': row['n']},
+                    company=Company.objects.filter(pk=row['product__company_id']).first(),
+                )
+        self.stdout.write(f'Líneas de carrito bajo pedido: {total}. Quitadas: {removed}.')

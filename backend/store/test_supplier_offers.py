@@ -1344,6 +1344,24 @@ class ReviewSupplyTest(SupplyShop, TestCase):
             SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=1)
         SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=0)
 
+    def test_the_rollback_command_also_empties_on_order_cart_lines(self):
+        """P3.9 — counted, audited; a simulation removes nothing."""
+        import io
+        from django.core.management import call_command
+        self.add_on_order(quantity=1, session='carrito-x')
+        self.add_on_order(quantity=2, session='carrito-y')
+        shelf = _prod(self.company, 'Funda', 'dc3-funda', price='20.00', inventory=0)
+        CartItem.objects.create(session_key='carrito-x', product=shelf, quantity=1)
+        out = io.StringIO()
+        call_command('cancel_pending_on_order_orders', stdout=out)
+        self.assertIn('Líneas de carrito bajo pedido: 2', out.getvalue())
+        self.assertEqual(CartItem.objects.count(), 3)
+        out = io.StringIO()
+        call_command('cancel_pending_on_order_orders', '--apply', stdout=out)
+        self.assertIn('Líneas de carrito bajo pedido: 2. Quitadas: 2', out.getvalue())
+        self.assertEqual(list(CartItem.objects.values_list('product_id', flat=True)), [shelf.pk])
+        log = AdminAuditLog.objects.get(action='on_order_cart_lines_removed_before_rollback')
+        self.assertEqual(log.metadata['count'], 2)
 
 
 @override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
