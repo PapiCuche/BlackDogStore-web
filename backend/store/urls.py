@@ -143,7 +143,13 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .device_catalog_views import (
+    AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
+    AdminGradeSeedView, AdminModelDetailView, AdminModelListView, AdminOptionDetailView,
+    AdminProductVariantView, PublicModelDetailView, PublicModelListView,
+)
 from .stock_unit_views import (
+    StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitListView,
 )
@@ -220,6 +226,19 @@ urlpatterns = [
     path('admin/products/bulk-visibility/', AdminProductBulkVisibilityView.as_view(), name='admin-product-bulk-visibility'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
+    # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
+    path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
+    path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
+    path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
+    path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),
+    path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),
+         name='admin-catalog-attribute-options'),
+    path('admin/catalog/options/<int:pk>/', AdminOptionDetailView.as_view(), name='admin-catalog-option'),
+    path('admin/catalog/grades/', AdminGradeListView.as_view(), name='admin-catalog-grades'),
+    path('admin/catalog/grades/seed/', AdminGradeSeedView.as_view(), name='admin-catalog-grades-seed'),
+    path('admin/catalog/settings/', AdminCatalogSettingsView.as_view(), name='admin-catalog-settings'),
+    path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
+    path('catalog/models/<slug:slug>/', PublicModelDetailView.as_view(), name='catalog-model'),
     path('admin/products/<int:pk>/images/order/', AdminProductImageOrderView.as_view(), name='admin-product-images-order'),
     path('admin/products/<int:pk>/images/<int:image_id>/', AdminProductImageDetailView.as_view(), name='admin-product-image'),
     path('admin/products/<int:pk>/inventory-adjust/', AdminProductInventoryAdjustView.as_view(), name='admin-product-inventory-adjust'),
@@ -424,6 +443,9 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
     path('admin/inventory/units/<int:pk>/release/', StockUnitActionView.as_view(action='release'), name='admin-inventory-unit-release'),
     path('admin/inventory/units/<int:pk>/return/', StockUnitActionView.as_view(action='return'), name='admin-inventory-unit-return'),
+    path('admin/inventory/units/<int:pk>/photos/', StockUnitPhotoListView.as_view(), name='admin-inventory-unit-photos'),
+    path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
+         name='admin-inventory-unit-photo'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),
     path('admin/inventory/import/<int:pk>/apply/', AdminStockImportApplyView.as_view(), name='admin-stock-import-apply'),
     path('admin/inventory/export/', AdminInventoryExportView.as_view(), name='admin-inventory-export'),

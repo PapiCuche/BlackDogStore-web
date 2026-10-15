@@ -25,13 +25,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import stock_unit_services as units
+from . import storefront_media, unit_media
+from .product_media import ProductMediaError
 from .inventory_services import InventoryError
 from .inventory_views import (
     CAP_INVENTORY_ADJUST, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_ADJUST_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
     _scoped_product, may_view_costs,
 )
-from .models import BranchStock, Product, StockUnit
+from .models import BranchStock, Product, StockUnit, UnitPhoto
 from .tenancy import (
     BranchAccessError, NoBranchError, resolve_branch_for_user, visible_branches,
 )
@@ -59,6 +61,17 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
         'sold_at': unit.sold_at,
         'order_id': unit.order_id,
         'notes': unit.notes,
+        # DC2 — what the shop tells buyers about this device.
+        'public_id': str(unit.public_id),
+        'condition_line': unit.product.condition_line,
+        'battery_health': unit.battery_health,
+        'cosmetic_grade': unit.cosmetic_grade_id,
+        'cosmetic_grade_label': unit.cosmetic_grade.label if unit.cosmetic_grade_id else '',
+        'public_notes': unit.public_notes,
+        'sale_price': None if unit.sale_price is None else str(unit.sale_price),
+        'held_online': bool(unit.hold_key),
+        'hold_until': unit.hold_until if unit.hold_key else None,
+        'photos': [unit_media.payload(photo) for photo in unit.photos.all()],
     }
     if not include_cost:
         del payload['cost']
@@ -105,6 +118,13 @@ class StockUnitListView(APIView):
                     )
                 rows = rows.filter(**{name: value})
 
+        line = (params.get('line') or '').strip()
+        if line:
+            # DC2 — «Seminuevos»: the devices of used variants.
+            if line not in ('new', 'used'):
+                return Response({'detail': 'Parámetro "line" inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+            rows = rows.filter(product__condition_line=line)
+
         product_id = params.get('product')
         if product_id:
             try:
@@ -123,7 +143,10 @@ class StockUnitListView(APIView):
                 | Q(imei2__endswith=search) | Q(imei=search) | Q(imei2=search)
             )
 
-        rows = rows.select_related('product', 'branch').order_by('-received_at', '-pk')
+        rows = (
+            rows.select_related('product', 'branch', 'cosmetic_grade').prefetch_related('photos')
+            .order_by('-received_at', '-pk')
+        )
         page, meta = _paginate(rows, request)
         include_cost = may_view_costs(request)
         return Response({
@@ -293,7 +316,7 @@ class _UnitMixin:
         return unit, None
 
     def answer(self, request, unit) -> Response:
-        fresh = StockUnit.objects.select_related('product', 'branch').get(pk=unit.pk)
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
         return Response(unit_payload(fresh, include_cost=may_view_costs(request)))
 
 
@@ -305,7 +328,9 @@ class StockUnitDetailView(_UnitMixin, APIView):
         if error:
             return error
         data = request.data if isinstance(request.data, dict) else {}
-        fields = {k: data[k] for k in ('condition', 'cost', 'notes') if k in data}
+        fields = {k: data[k] for k in (
+            'condition', 'cost', 'notes', 'battery_health', 'cosmetic_grade', 'public_notes', 'sale_price',
+        ) if k in data}
         if 'cost' in fields and not may_view_costs(request):
             return Response(
                 {'detail': 'No tienes permiso para ver ni corregir costos.', 'field': 'cost'},
@@ -339,4 +364,36 @@ class StockUnitActionView(_UnitMixin, APIView):
                 units.return_unit(unit, reason=reason, actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
+        return self.answer(request, unit)
+
+
+class StockUnitPhotoListView(_UnitMixin, APIView):
+    """POST …/units/<id>/photos/ — multipart `file` (+ `alt_text`). DC2."""
+
+    def post(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        uploaded = request.FILES.get('file')
+        if uploaded is None:
+            return Response({'detail': 'Adjunta una imagen.', 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            unit_media.add_photo(unit=unit, actor=request.user, uploaded=uploaded,
+                                 alt_text=request.data.get('alt_text') or '', request=request)
+        except (unit_media.UnitMediaError, storefront_media.StorefrontImageError, ProductMediaError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return self.answer(request, unit)
+
+
+class StockUnitPhotoDetailView(_UnitMixin, APIView):
+    """DELETE …/units/<id>/photos/<photo_id>/"""
+
+    def delete(self, request, pk, photo_id):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        photo = UnitPhoto.objects.filter(unit=unit, company_id=unit.company_id, pk=photo_id).first()
+        if photo is None:
+            return Response({'detail': NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        unit_media.remove_photo(photo=photo, actor=request.user, request=request)
         return self.answer(request, unit)

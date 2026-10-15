@@ -496,8 +496,16 @@ def provision_company_access_defaults(company, *, actor=None) -> dict:
         if created:
             roles_created.append(slug)
 
+    # DC2 — the default scale of how a used device looks. Only here, where a
+    # company is provisioned on purpose; an existing company gets it from its
+    # own panel or `seed_cosmetic_grades`, never from a migration.
+    from .device_catalog import seed_cosmetic_grades
+
+    cosmetic_grades_created = seed_cosmetic_grades(company)
+
     return {
         'company_id': company.pk,
+        'cosmetic_grades_created': cosmetic_grades_created,
         'settings_created': settings_created,
         'sequence_created': sequence_created,
         'repair_sequence_created': repair_sequence_created,
