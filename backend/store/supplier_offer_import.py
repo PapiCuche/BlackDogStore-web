@@ -18,14 +18,32 @@ changes nothing; next week's file is just another upload.
 
 THE COST COLUMN («Costo pactado») is read only for `costs.view` (DC1): for
 anybody else it is ignored — never compared, never written — and the preview
-says so once.
+says so once. It is asked again of whoever APPLIES the file: a preview made by
+somebody with `costs.view` does not let somebody without it write a cost. An
+EMPTY cost cell means «no change», like the other imports: it never clears a
+cost already agreed.
+
+AN OFFER SWITCHED OFF BY HAND STAYS OFF. A row reactivates an offer only when
+its optional «Activa (Sí/No)» column says «Sí» (and «No» switches one off);
+without it the preview warns and the rest of the row still applies.
+
+ONE OFFER PER KEY, ALSO WHEN THE FILE IS PREVIEWED TWICE. The database keeps
+one offer per (company, supplier, variant, window) (`unique_supplier_offer_window`).
+Applying re-checks every key the preview staged as new; a key that exists by
+then — another job, another person — refuses the WHOLE job: «El archivo
+cambió: vuelve a previsualizarlo». Two applies at the same instant meet on the
+index itself (the second insert waits for the first and then fails), and the
+answer is the same refusal.
+
+LOCK ORDER: the job row, then the job's existing offers in id order — the
+order every payment takes them in — never the file's row order.
 """
 from __future__ import annotations
 
 import io
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from . import device_catalog, supply_services, xlsx_reader
@@ -41,6 +59,12 @@ MAX_ROWS = 2000
 
 HEADERS = ['Proveedor', 'Código/SKU del producto', 'Modelo', 'Capacidad', 'Color', 'Línea', 'Costo pactado',
            'Precio comercial', 'Cantidad confirmada', 'Vigente desde', 'Vigente hasta', 'Plazo (días)']
+#: Optional, only in the template: an export never writes it (re-loading an old
+#: export must not switch back on an offer somebody switched off since).
+ACTIVE_HEADER = 'Activa (Sí/No)'
+STALE = 'El archivo cambió: vuelve a previsualizarlo.'
+_YES = {'si', 's', 'yes', 'y', '1', 'true', 'verdadero', 'x'}
+_NO = {'no', 'n', '0', 'false', 'falso'}
 
 _ALIASES = {
     'supplier': ('proveedor', 'nombre del proveedor'),
@@ -56,11 +80,16 @@ _ALIASES = {
     'valid_from': ('vigente desde', 'desde', 'inicio de vigencia'),
     'valid_until': ('vigente hasta', 'hasta', 'fin de vigencia'),
     'lead_time_days': ('plazo dias', 'plazo', 'plazo de entrega dias', 'dias de entrega'),
+    'active': ('activa si no', 'activa', 'activo', 'activa sino'),
 }
 
 
 class OfferImportError(Exception):
     """The file, or the job, cannot be used. The message is for the operator."""
+
+    def __init__(self, message: str, *, code: str = 'invalid'):
+        super().__init__(message)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +114,8 @@ def _notes() -> dict:
         'Vigente desde': 'Primer día de la oferta (AAAA-MM-DD o DD/MM/AAAA).',
         'Vigente hasta': 'Último día de la oferta, incluido.',
         'Plazo (días)': 'Días hasta la entrega al cliente.',
+        ACTIVE_HEADER: ('Opcional. Vacío = no cambia. «Sí» reactiva una oferta desactivada; «No» la desactiva. '
+                        'Sin «Sí», una oferta desactivada a mano sigue desactivada.'),
     }
 
 
@@ -98,9 +129,9 @@ def _sheet(headers):
 
 
 def template_bytes() -> bytes:
-    workbook, sheet = _sheet(HEADERS)
+    workbook, sheet = _sheet(HEADERS + [ACTIVE_HEADER])
     header_notes(sheet, _notes())
-    _autosize(sheet, [28, 28, 22, 14, 14, 12, 16, 18, 20, 16, 16, 14])
+    _autosize(sheet, [28, 28, 22, 14, 14, 12, 16, 18, 20, 16, 16, 14, 16])
     text_columns(sheet, ('B',))
     number_columns(sheet, ('G', 'H', 'I', 'L'))
     out = io.BytesIO()
@@ -161,6 +192,13 @@ def _columns(headers) -> dict[str, int]:
     if 'code' not in columns and 'name' not in columns and 'model' not in columns:
         raise OfferImportError('No se encontró la columna «Código/SKU del producto» ni «Modelo».')
     return columns
+
+
+def _pk(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _pick_sheet(workbook) -> str:
@@ -282,6 +320,13 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
                 clean[field] = cleaner(fields.get(field))
             except supply_services.SupplyError as exc:
                 errors.append(exc.detail)
+        if 'agreed_cost' in clean and clean['agreed_cost'] is None:
+            # An empty cost cell is «no change», never «clear the cost».
+            del clean['agreed_cost']
+        active = _clean_active(fields.get('active'))
+        if active == 'invalid':
+            errors.append('La columna «Activa» lleva «Sí», «No» o nada.')
+            active = None
         if clean.get('valid_from') and clean.get('valid_until') and clean['valid_until'] < clean['valid_from']:
             errors.append('La vigencia termina antes de empezar.')
         if cost_ignored:
@@ -312,7 +357,9 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
             'lead_time_days': clean['lead_time_days'],
         }
         if 'agreed_cost' in clean:
-            payload['agreed_cost'] = str(clean['agreed_cost']) if clean['agreed_cost'] is not None else None
+            payload['agreed_cost'] = str(clean['agreed_cost'])
+        if active is not None:
+            payload['is_active'] = active
         if existing is None:
             stage(row_number, BulkImportRow.CREATE, key=f'{supplier.pk}:{product.pk}', data=payload,
                   warnings=warnings)
@@ -324,10 +371,12 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
                 f'Ya se vendieron {existing.committed_quantity} contra esta oferta: la cantidad confirmada '
                 'no puede ser menor.'])
             continue
+        if active is None and not existing.is_active:
+            warnings.append('Oferta desactivada a mano: no se reactiva. Escribe «Sí» en «Activa» para reactivarla.')
         same = (existing.commercial_price == clean['commercial_price']
                 and existing.confirmed_quantity == confirmed
                 and existing.lead_time_days == clean['lead_time_days']
-                and existing.is_active
+                and (active is None or existing.is_active == active)
                 and ('agreed_cost' not in clean or existing.agreed_cost == clean['agreed_cost']))
         stage(row_number, BulkImportRow.NO_CHANGE if same else BulkImportRow.UPDATE,
               key=f'{supplier.pk}:{product.pk}', data=payload, warnings=warnings)
@@ -339,6 +388,18 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
     job.save(update_fields=['rows_total', 'rows_create', 'rows_update', 'rows_no_change', 'rows_skip',
                             'rows_error'])
     return job
+
+
+def _clean_active(value):
+    """«Sí» → True, «No» → False, empty → None (no change); anything else → 'invalid'."""
+    text = normalize_header(value or '')
+    if not text:
+        return None
+    if text in _YES:
+        return True
+    if text in _NO:
+        return False
+    return 'invalid'
 
 
 def job_payload(job, *, include_cost: bool) -> dict:
@@ -375,32 +436,51 @@ def apply(*, job, actor, request=None) -> dict:
         return {'status': 'applied', **(job.summary or {}).get('applied', {})}
     if job.rows_error:
         raise OfferImportError(f'Hay {job.rows_error} fila(s) con error. Corrige el archivo y vuelve a subirlo.')
-    with_cost = bool((job.options_snapshot or {}).get('with_cost'))
+    from .cost_services import user_may_view_costs
+
+    # The cost is written only if the preview read it AND whoever applies may see costs.
+    with_cost = bool((job.options_snapshot or {}).get('with_cost')) and user_may_view_costs(actor, job.company)
+    rows = list(job.rows.order_by('row_number', 'pk'))
+    # Every offer the job will touch, locked in ONE statement in id order — the
+    # order a payment of several lines takes them in — before any is written.
+    wanted = sorted({_pk(r.normalized_data.get('offer_id')) for r in rows if r.action == BulkImportRow.UPDATE} - {None})
+    offers = {o.pk: o for o in SupplierOffer.objects.select_for_update().filter(company=job.company, pk__in=wanted)
+              .order_by('pk')}
     created = updated = unchanged = 0
-    for row in job.rows.order_by('row_number', 'pk'):
+    for row in rows:
         data = row.normalized_data or {}
         fields = {key: data.get(key) for key in ('commercial_price', 'confirmed_quantity', 'valid_from',
                                                  'valid_until', 'lead_time_days')}
         if with_cost and 'agreed_cost' in data:
             fields['agreed_cost'] = data['agreed_cost']
+        if 'is_active' in data:
+            fields['is_active'] = data['is_active']
         try:
             if row.action == BulkImportRow.CREATE:
+                if SupplierOffer.objects.filter(
+                        company=job.company, supplier_id=data.get('supplier_id'), product_id=data.get('product_id'),
+                        valid_from=data.get('valid_from'), valid_until=data.get('valid_until')).exists():
+                    raise OfferImportError(STALE, code='stale')
                 supply_services.create_offer(company=job.company, actor=actor, request=request,
                                              may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
                                              product_id=data.get('product_id'), **fields)
                 created += 1
             elif row.action == BulkImportRow.UPDATE:
-                offer = SupplierOffer.objects.filter(company=job.company, pk=data.get('offer_id')).first()
+                offer = offers.get(_pk(data.get('offer_id')))
                 if offer is None:
                     raise OfferImportError(f'La oferta de la fila {row.row_number} ya no existe. Vuelve a subir el '
                                            'archivo.')
-                supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost,
-                                             is_active=True, **fields)
+                supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
                 updated += 1
             elif row.action == BulkImportRow.NO_CHANGE:
                 unchanged += 1
         except supply_services.SupplyError as exc:
+            if exc.code == 'duplicate':
+                raise OfferImportError(STALE, code='stale') from None
             raise OfferImportError(f'Fila {row.row_number}: {exc.detail}') from None
+        except IntegrityError:
+            # Another apply inserted the same key between our check and our insert.
+            raise OfferImportError(STALE, code='stale') from None
     result = {'created': created, 'updated': updated, 'unchanged': unchanged}
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor

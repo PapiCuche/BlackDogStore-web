@@ -898,7 +898,8 @@ class OfferExcelTest(SupplyShop, TestCase):
         self.assertEqual(res.status_code, 200)
         book = openpyxl.load_workbook(io.BytesIO(res.content))
         self.assertEqual(book.sheetnames, ['Ofertas de proveedor'])
-        self.assertEqual([c.value for c in book.active[1]], OFFER_HEADERS)
+        # «Activa (Sí/No)» is optional (DC3 review P3.3): the template offers it, files without it still load.
+        self.assertEqual([c.value for c in book.active[1]], OFFER_HEADERS + ['Activa (Sí/No)'])
 
     def test_preview_marks_errors_per_row_and_writes_nothing(self):
         res = self.preview([
@@ -1127,6 +1128,17 @@ class ReviewExcelTest(OfferFile, TestCase):
     def setUp(self):
         self.build_excel()
 
+    def test_the_same_file_previewed_twice_creates_one_offer_and_the_second_apply_is_refused(self):
+        first = self.preview([self.row()]).json()
+        second = self.preview([self.row()]).json()
+        self.assertEqual((first['rows_create'], second['rows_create']), (1, 1))
+        self.assertEqual(self.apply(first['id']).status_code, 200)
+        refused = self.apply(second['id'])
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn(STALE, refused.json()['detail'])
+        self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
+        # The sellable quantity on order is the offer's 8, not 16.
+        self.assertEqual(sum(o.remaining for o in supply.valid_offers(self.case).filter(valid_from=self.start)), 8)
 
     def test_the_database_refuses_a_second_offer_with_the_same_key(self):
         from django.db import IntegrityError
@@ -1138,12 +1150,127 @@ class ReviewExcelTest(OfferFile, TestCase):
                 company=self.company, supplier=self.supplier, product=self.case, commercial_price=D('1'),
                 valid_from=self.offer.valid_from, valid_until=self.offer.valid_until, lead_time_days=1)
 
+    def test_an_integrity_error_at_apply_is_the_same_refusal(self):
+        from unittest import mock
+        from django.db import IntegrityError
+        body = self.preview([self.row()]).json()
+        with mock.patch.object(SupplierOffer.objects, 'create', side_effect=IntegrityError('duplicate key')):
+            refused = self.apply(body['id'])
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn(STALE, refused.json()['detail'])
+
+    def test_the_cost_is_written_only_if_who_applies_may_see_costs(self):
+        """P3.1 — previewed by `costs.view`, applied by somebody without it: no cost is written."""
+        manager, _ = _p2d_member(self.company, 'dc3_aplica_sin_costo',
+                                 ['company.view', 'products.view', 'products.manage'])
+        other = APIClient()
+        other.force_authenticate(user=manager)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(agreed_cost=D('70.00'))
+        body = self.preview([
+            self.row(),
+            self.row(**{'Vigente desde': self.offer.valid_from.isoformat(),
+                        'Vigente hasta': self.offer.valid_until.isoformat(), 'Costo pactado': '50',
+                        'Precio comercial': '111'}),
+        ]).json()
+        self.assertEqual((body['rows_create'], body['rows_update']), (1, 1), body['rows'])
+        self.assertEqual(self.apply(body['id'], client=other).status_code, 200)
+        made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
+        self.assertIsNone(made.agreed_cost)
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('111.00')))
+
+    def test_an_empty_cost_cell_changes_nothing(self):
+        """P3.2 — empty means «no change», like the other imports."""
+        key = {'Vigente desde': self.offer.valid_from.isoformat(), 'Vigente hasta': self.offer.valid_until.isoformat(),
+               'Precio comercial': '110', 'Cantidad confirmada': 5, 'Plazo (días)': 4}
+        body = self.preview([self.row(**key, **{'Costo pactado': ''})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'no_change', body['rows'])
+        body = self.preview([self.row(**{**key, 'Precio comercial': '112'}, **{'Costo pactado': ''})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'update')
+        self.apply(body['id'])
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('112.00')))
+
+    def test_a_manually_deactivated_offer_is_not_reactivated_by_a_reupload(self):
+        """P3.3 — off stays off unless the row says «Activa: Sí»; the preview says so."""
+        supply.deactivate_offer(self.offer, actor=self.staff, reason='Proveedor sin stock')
+        key = {'Vigente desde': self.offer.valid_from.isoformat(), 'Vigente hasta': self.offer.valid_until.isoformat(),
+               'Precio comercial': '110', 'Cantidad confirmada': 5, 'Plazo (días)': 4, 'Costo pactado': '70'}
+        body = self.preview([self.row(**key)]).json()
+        self.assertEqual(body['rows'][0]['action'], 'no_change', body['rows'])
+        self.assertTrue(any('desactivada a mano: no se reactiva' in w for w in body['rows'][0]['warnings']))
+        body = self.preview([self.row(**{**key, 'Precio comercial': '115'})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'update')
+        self.apply(body['id'])
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.is_active, self.offer.commercial_price), (False, D('115.00')))
+        # Asked for explicitly, it is reactivated.
+        headers = OFFER_HEADERS + ['Activa (Sí/No)']
+        body = self.preview([self.row(**key) + ['Sí']], headers=headers).json()
+        self.assertEqual(body['rows'][0]['action'], 'update', body['rows'])
+        self.apply(body['id'])
+        self.offer.refresh_from_db()
+        self.assertTrue(self.offer.is_active)
+        bad = self.preview([self.row(**key) + ['quizás']], headers=headers).json()
+        self.assertEqual(bad['rows'][0]['action'], 'error')
+
+    def test_apply_locks_the_jobs_offers_in_id_order_before_writing(self):
+        """P3.8 — the file's row order is not the lock order: one statement, by id, first."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        later = self.make_offer(valid_from=self.start + timedelta(days=10), valid_until=self.end + timedelta(days=10))
+        rows = [self.row(**{'Vigente desde': o.valid_from.isoformat(), 'Vigente hasta': o.valid_until.isoformat(),
+                            'Precio comercial': '99'}) for o in (later, self.offer)]
+        body = self.preview(rows).json()
+        self.assertEqual(body['rows_update'], 2, body['rows'])
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.apply(body['id']).status_code, 200)
+        sql = [q['sql'] for q in queries.captured_queries]
+        locks = [i for i, s in enumerate(sql) if 'FOR UPDATE' in s and '"store_supplieroffer"' in s.split('FROM')[1][:40]]
+        writes = [i for i, s in enumerate(sql) if s.startswith('UPDATE "store_supplieroffer"')]
+        self.assertTrue(locks and writes)
+        first = sql[locks[0]]
+        self.assertLess(locks[0], writes[0])
+        self.assertIn(str(later.pk), first)
+        self.assertIn(str(self.offer.pk), first)
+        self.assertIn('ORDER BY "store_supplieroffer"."id" ASC', first)
 
 
+class ReviewOfferApplyRaceTest(TransactionTestCase):
+    """P2 — two people apply the same file at the same instant: one offer, one refusal."""
 
+    def test_one_applies_and_the_other_is_refused(self):
+        from threading import Barrier, Thread
 
+        from django.db import connection
+        from store import supplier_offer_import as offer_import
+        from store.models import BulkImportJob
 
+        shop = OfferFile()
+        shop.build_excel('dc3-dos-cargas')
+        jobs = [shop.preview([shop.row()]).json()['id'] for _ in range(2)]
+        barrier, outcomes = Barrier(2), []
 
+        def run(job_id):
+            try:
+                barrier.wait(timeout=5)
+                try:
+                    offer_import.apply(job=BulkImportJob.objects.get(pk=job_id), actor=shop.staff)
+                    outcomes.append('applied')
+                except offer_import.OfferImportError as exc:
+                    outcomes.append(str(exc))
+            finally:
+                connection.close()
+
+        threads = [Thread(target=run, args=(job,)) for job in jobs]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertEqual(len(outcomes), 2, outcomes)
+        self.assertIn('applied', outcomes)
+        self.assertTrue(any(STALE in o for o in outcomes), outcomes)
+        self.assertEqual(SupplierOffer.objects.filter(valid_from=shop.start, valid_until=shop.end).count(), 1)
 
 
 class ReviewSupplyTest(SupplyShop, TestCase):
