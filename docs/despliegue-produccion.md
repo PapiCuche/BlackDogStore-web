@@ -448,9 +448,9 @@ completa. Si una parte falla, el guion termina con error y no toca
 
 ### 6.1.0 Las tareas programadas, de una vez
 
-`deploy/crontab.example` trae las seis líneas de esta sección —copia, sesiones,
-imágenes sin uso, avisos de WhatsApp, conversiones de compra y comprobación de
-estado—. Para instalarlas
+`deploy/crontab.example` trae las líneas de esta sección —copia, sesiones,
+imágenes sin uso, avisos de WhatsApp, conversiones de compra, pagos sin
+notificación, apartados web vencidos (DC2) y comprobación de estado—. Para instalarlas
 en el `crontab` del usuario que administra el servidor:
 
 ```sh
@@ -709,6 +709,40 @@ nombra empresas ni cambia nada). Si alguna cifra no es 0, otórgalo a mano donde
 corresponda (Accesos › Roles de la empresa) tras confirmarlo con el propietario. `0129`
 marca como «costo pendiente» el stock que ya había sin promedio
 (`BranchStock.uncosted_quantity = quantity`): es el único dato que escribe.
+
+**DEVICE-COMMERCE-01 · DC2 (`0130`–`0133`): equipos por unidad y apartados web.** Las
+cuatro son aditivas (columnas nulas o con `db_default`, tablas nuevas vacías) y la versión
+anterior sigue escribiendo mientras `migrate` corre. **Antes de publicar, mide cuánto
+tardan contra el tamaño real de producción**: `0131` da a cada fila de `store_stockunit` su
+`public_id` (`gen_random_uuid()`, volátil: PostgreSQL reescribe la tabla) y `0132` cambia
+índices de `store_orderitem`; cuenta las filas (`SELECT count(*) FROM store_stockunit;` y
+`… store_orderitem;`) y ensaya `migrate` sobre una copia restaurada si son muchas. Después
+de `migrate`, añade al `crontab` la línea `release_expired_unit_holds` de
+`deploy/crontab.example` (cada cinco minutos).
+
+*Volver atrás desde DC2* — en este orden, **antes** de cambiar los contenedores:
+
+1. Pausa los pagos en la consola de integraciones (sólo MASTER, «Pausar pagos nuevos»;
+   ver PAY-PAUSE-ENV si se cobra sólo con variables del servidor): no se abre ningún
+   formulario nuevo.
+2. Pedidos web pendientes de pago con equipos elegidos: la versión anterior no sabe
+   venderlos. Lístalos (simulación, no cambia nada) y luego cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_pending_unit_orders           # lista
+   $C exec -T backend python manage.py cancel_pending_unit_orders --apply   # cancela
+   ```
+   Un formulario que ya estaba abierto todavía puede cobrarse: ese pago lo revisa una
+   persona (devolución o venta a mano).
+3. Todos los apartados web de vuelta al estante (la versión anterior no los vence: se
+   quedarían apartados para siempre). Cada uno deja su línea de Kardex y su registro:
+   ```sh
+   $C exec -T backend python manage.py release_expired_unit_holds --all-web
+   ```
+4. **Quita del `crontab` la línea `release_expired_unit_holds`**: la versión anterior no
+   tiene ese comando.
+5. `git checkout <commit anterior>`, `$C build`, `$C up -d`. Las migraciones `0130`–`0133`
+   **se dejan aplicadas**. Deshacer `0132` se niega si algún pedido tiene dos líneas de
+   equipo de un mismo producto, en vez de perder una.
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

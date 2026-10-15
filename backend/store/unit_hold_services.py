@@ -295,6 +295,34 @@ def _order_is_live(order_id) -> bool:
     ).exists()
 
 
+ROLLBACK_RELEASE_REASON = 'Apartado web liberado: vuelta a la versión anterior'
+
+
+def release_all_web(*, company=None) -> int:
+    """
+    EVERY web hold back to the shelf, expired or not, whatever order carries it
+    — before going back to a release that does not know web holds (its staff
+    reservations never expire, so a web hold left behind would stay reserved
+    for ever). Each one with its Kardex line and its audit row. Never a staff
+    reservation.
+    """
+    qs = StockUnit.objects.filter(status=StockUnit.Status.RESERVED).exclude(hold_key='')
+    if company is not None:
+        qs = qs.filter(company=company)
+    released = 0
+    for pk in list(qs.values_list('pk', flat=True)):
+        with transaction.atomic():
+            unit = StockUnit.objects.select_related('product').get(pk=pk)
+            if unit.status != StockUnit.Status.RESERVED or not unit.hold_key:
+                continue
+            try:
+                _release(unit, reason=ROLLBACK_RELEASE_REASON)
+            except StockUnitError:
+                continue
+            released += 1
+    return released
+
+
 def release_expired(*, company=None, product=None, now=None) -> int:
     """
     Every web hold whose time ran out goes back to the shelf, with its Kardex

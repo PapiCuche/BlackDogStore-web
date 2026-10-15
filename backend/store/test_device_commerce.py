@@ -1049,3 +1049,53 @@ class OldProductFilesTest(DeviceShop, TestCase):
         [row] = job.rows.all()
         self.assertEqual(row.errors, [])
         self.assertNotIn('variant', row.normalized_data)
+
+
+class RollbackCommandsTest(SaleShop, TestCase):
+    """Before going back to the release before DC2: no web hold and no payable device order is left."""
+
+    def setUp(self):
+        super().setUp()
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        self.order = self.checkout()
+        holds.hold(product=self.new128, branch=self.branch, session_key='carrito-b')
+        units.reserve(self.used_b, reason='Cliente en tienda', actor=self.staff)
+        self.plain = Order.objects.create(company=self.company, fulfillment_branch=self.branch,
+                                          customer_email='x@e.com', total=D('10.00'),
+                                          status=Order.Status.PENDING_PAYMENT)
+
+    def call(self, *args):
+        import io
+        from django.core.management import call_command
+        out = io.StringIO()
+        call_command(*args, stdout=out)
+        return out.getvalue()
+
+    def test_every_web_hold_goes_back_audited_and_staff_reservations_stay(self):
+        from store.models import AdminAuditLog
+        self.assertIn('devueltos al estante: 0', self.call('release_expired_unit_holds'))
+        self.assertIn('devueltos al estante: 2', self.call('release_expired_unit_holds', '--all-web'))
+        self.assertEqual(list(StockUnit.objects.filter(status='reserved').values_list('pk', flat=True)),
+                         [self.used_b.pk])
+        self.assertEqual(AdminAuditLog.objects.filter(action='stock_unit_web_hold_released').count(), 2)
+        for product in (self.new128, self.used128):
+            self.assertEqual(self.shelf(product), self.available(product))
+
+    def test_pending_orders_with_device_lines_are_listed_then_cancelled(self):
+        from store.models import AdminAuditLog
+        listed = self.call('cancel_pending_unit_orders')
+        self.assertIn(f'#{self.order.pk}', listed)
+        self.assertNotIn(f'#{self.plain.pk}', listed)
+        self.assertIn('Simulación', listed)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, Order.Status.PENDING_PAYMENT)       # dry run by default
+        self.call('cancel_pending_unit_orders', '--apply')
+        self.order.refresh_from_db()
+        self.plain.refresh_from_db()
+        self.assertEqual((self.order.status, self.plain.status),
+                         (Order.Status.CANCELLED, Order.Status.PENDING_PAYMENT))
+        self.assertTrue(AdminAuditLog.objects.filter(action='order_cancelled_before_rollback',
+                                                     target_id=str(self.order.pk)).exists())
+        # Its device is no longer kept for it: the buyer's cart may drop it.
+        self.assertEqual(holds.release(company=self.company, session_key='carrito-a'), 1)
