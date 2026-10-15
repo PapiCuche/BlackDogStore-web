@@ -743,17 +743,21 @@ def start_payment_attempt(order: Order, *, credentials) -> PaymentSession:
     WHICH GATEWAY is decided by the credentials that were loaded, and those by
     the active payment provider: one product per installation, never a mix.
     """
-    # DC2 review — an order whose devices a later checkout of the same cart
-    # took is not charged: its devices are not its own any more.
+    # DC2 review — an order whose devices another checkout of the same cart
+    # took (a later one that may still be paid, or any paid one) is not
+    # charged: its devices are not its own any more.
     from . import unit_hold_services
 
     later = unit_hold_services.superseded_lines(order)
     if later:
-        newest = max(later.values(), key=lambda row: row.pk)
-        raise CheckoutError(
-            f'Este pedido fue reemplazado por el pedido #{newest.pk} del mismo carrito. Paga ese pedido.',
-            status_code=409, code='order_superseded',
-        )
+        paid = [row for row in later.values() if row.status == Order.Status.PAID]
+        if paid:
+            winner = min(paid, key=lambda row: row.pk)
+            detail = f'Los equipos de este pedido ya se pagaron en el pedido #{winner.pk} del mismo carrito.'
+        else:
+            winner = max(later.values(), key=lambda row: row.pk)
+            detail = f'Este pedido fue reemplazado por el pedido #{winner.pk} del mismo carrito. Paga ese pedido.'
+        raise CheckoutError(detail, status_code=409, code='order_superseded')
     return payment_adapters.adapter_for(credentials).start_attempt(order, credentials)
 
 

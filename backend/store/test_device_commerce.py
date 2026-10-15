@@ -1042,7 +1042,7 @@ class SupersededOrderTest(SaleShop, TestCase):
         with self.assertRaises(checkout.CheckoutError) as caught:
             checkout.start_payment_attempt(self.second, credentials=None)
         self.assertEqual(caught.exception.code, 'order_superseded')
-        self.assertIn(f'#{self.first.pk}', caught.exception.detail)
+        self.assertIn(f'ya se pagaron en el pedido #{self.first.pk}', caught.exception.detail)
         # …and a form of it that was already open, paid anyway, does not sell the device again.
         self.pay(self.second)
         self.second.refresh_from_db()
