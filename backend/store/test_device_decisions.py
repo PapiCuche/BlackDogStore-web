@@ -395,6 +395,7 @@ class ConcurrentReleaseTest(TransactionTestCase):
 from django.test import override_settings  # noqa: E402
 
 from store import pos_services  # noqa: E402
+from store import supply_services as supply  # noqa: E402
 from store.models import CartItem, OrderItem  # noqa: E402
 from store.test_supplier_offers import SupplyShop  # noqa: E402
 
@@ -547,6 +548,25 @@ class WebOnOrderOverStockTest(SupplyShop, TestCase):
         res = self.add(quantity=4)
         self.assertEqual(res.status_code, 200, res.content)
         self.assertFalse(self.checkout().items.get().supply_chosen_over_stock)
+
+    def test_switch_off_taken_while_empty_and_stock_arrived_is_not_the_buyers_choice(self):
+        """Integration review of PR #123, P3: nobody chose the supplier over stock — there was none."""
+        self.assertEqual(self.add(quantity=4).status_code, 200)       # 3 on the shelf: on order it is
+        self.stock(self.case, 2)                                        # stock arrives before checkout
+        line = self.checkout().items.get()
+        self.assertEqual((line.supply_origin, line.supply_chosen_over_stock), ('supplier', False))
+        self.assertEqual(line.supply_choice_reason, supply.WEB_TAKEN_WHILE_EMPTY_REASON)
+        self.assertNotEqual(line.supply_choice_reason, supply.WEB_OVER_STOCK_REASON)
+        self.assertFalse(AdminAuditLog.objects.filter(action='web_on_order_over_stock').exists())
+
+    def test_switch_on_kept_on_order_while_the_shelf_covers_it_is_the_buyers_choice(self):
+        self.allow()
+        self.assertEqual(self.add(quantity=4).status_code, 200)
+        self.stock(self.case, 2)
+        line = self.checkout().items.get()
+        self.assertEqual((line.supply_chosen_over_stock, line.supply_choice_reason),
+                         (True, supply.WEB_OVER_STOCK_REASON))
+        self.assertTrue(AdminAuditLog.objects.filter(action='web_on_order_over_stock').exists())
 
 
 # ---------------------------------------------------------------------------

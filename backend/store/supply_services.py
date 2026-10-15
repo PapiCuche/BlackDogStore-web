@@ -477,6 +477,9 @@ def on_order_payload(product) -> dict | None:
 
 #: What an on-order line chosen by a web buyer while the shelf had it says as its reason.
 WEB_OVER_STOCK_REASON = 'Elegido por el comprador en la web'
+#: What a web on-order line says when the shelf covers it at checkout but the company does not let
+#: the web choose the supplier over stock: it was taken while the shelf could not cover it.
+WEB_TAKEN_WHILE_EMPTY_REASON = 'Tomado bajo pedido cuando la tienda no tenía stock suficiente'
 
 
 def web_allows_on_order_over_stock(company_id) -> bool:
