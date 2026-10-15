@@ -28,7 +28,7 @@ from store import unit_hold_services as holds
 from store.models import (
     AdminAuditLog, CompanySettings, Order, PaymentTransaction, StockMovement, StockUnit,
 )
-from store.test_device_commerce import DeviceShop, SaleShop, _client
+from store.test_device_commerce import DeviceShop, SaleShop, _client, assert_no_amount
 from store.tests import _p2d_member
 
 D = Decimal
@@ -403,7 +403,9 @@ class TillOnOrderOverStockTest(SupplyShop, TestCase):
                                           'has_cost', 'reason')},
             {'product_id': self.case.pk, 'quantity': 2, 'own_stock': 3, 'offer_id': self.offer.pk,
              'lead_time_days': 4, 'has_cost': True, 'reason': 'Caja sellada de fábrica'})
-        self.assertNotIn('70', str(log.metadata))               # the cost is on the line, behind costs.view
+        # The cost is on the line, behind costs.view: neither its key nor its value is in the log.
+        self.assertFalse({'cost', 'unit_cost', 'agreed_cost'} & set(log.metadata))
+        assert_no_amount(self, log.metadata, '70')
 
     def test_a_line_the_shelf_cannot_cover_needs_no_reason_and_is_not_flagged(self):
         res = self.sell(self.cashier, quantity=4)

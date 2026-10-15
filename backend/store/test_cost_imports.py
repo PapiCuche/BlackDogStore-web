@@ -29,6 +29,7 @@ from store import stock_unit_services as units
 from store.models import (
     BranchStock, BulkImportJob, Order, OrderItem, Product, ProductBarcode, StockMovement,
 )
+from store.test_device_commerce import _values, assert_no_amount
 from store.test_stock_units import IMEI_A, IMEI_B
 from store.tests import _p2d_member, _p3_company, _prod
 
@@ -143,7 +144,7 @@ class ProductReferenceCostTest(_Shop):
         self.assertEqual(res.status_code, 201, res.content)
         [row] = res.json()['rows']
         self.assertNotIn('reference_cost_before', row['data'])
-        self.assertNotIn('20.00', res.content.decode())
+        assert_no_amount(self, res.json(), '20')
         # DC1 review: the column is not read at all for this caller.
         self.assertNotIn('reference_cost', row['data'])
         self.assertIn(import_services.COST_COLUMN_IGNORED, row['warnings'])
@@ -258,7 +259,8 @@ class StockUnitCostTest(_Shop):
         self.assertEqual(res.status_code, 201, res.content)
         text = res.content.decode()
         self.assertNotIn('cost_average_before', text)
-        self.assertNotIn('10.0000', text)
+        # The average as the preview would print it; the row's own quantity 10 is not a cost.
+        self.assertNotIn('10.0000', [value for _, value in _values(res.json())])
 
 
 class DeviceCostTest(_Shop):

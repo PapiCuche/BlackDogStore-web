@@ -495,7 +495,7 @@ class LastUnitRaceTest(TransactionTestCase):
 from django.test import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from store.test_device_commerce import DeviceShop  # noqa: E402
+from store.test_device_commerce import DeviceShop, assert_no_amount  # noqa: E402
 
 
 @override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
@@ -610,7 +610,8 @@ class DeviceOnOrderTest(DeviceShop, TestCase):
         row = next(v for v in detail['variants'] if v['product_id'] == self.new256.pk)
         self.assertEqual((row['available'], row['availability']), (True, 'supplier'))
         self.assertEqual(row['on_order'], {'lead_time_days': 10, 'price': '3400.00'})
-        self.assertNotIn('2800', str(detail))
+        self.assertNotIn('agreed_cost', row['on_order'])
+        assert_no_amount(self, detail, '2800')
         own = next(v for v in detail['variants'] if v['product_id'] == self.new128.pk)
         self.assertEqual((own['available'], own['availability']), (False, 'none'))
 
@@ -689,7 +690,7 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
         self.assertEqual(with_cost['agreed_cost'], '70.00')
         res = self.as_(self.seller).get('/api/admin/supplier-offers/')
         self.assertNotIn('agreed_cost', res.json()['results'][0])
-        self.assertNotIn('70.00', res.content.decode())
+        assert_no_amount(self, res.json(), '70')
         detail = self.as_(self.seller).get(f'/api/admin/supplier-offers/{self.offer.pk}/')
         self.assertNotIn('agreed_cost', detail.json())
         # Writing a cost without the permission is ignored, not stored.
@@ -721,7 +722,7 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
         history = self.client_.get(f'/api/admin/supplier-offers/{self.offer.pk}/history/').json()['results']
         self.assertEqual([row['action'] for row in history],
                          ['supplier_offer_deactivated', 'supplier_offer_updated', 'supplier_offer_created'])
-        self.assertNotIn('70.00', str(history))
+        assert_no_amount(self, history, '70')
 
     def test_the_sale_mode_of_a_product(self):
         url = f'/api/admin/products/{self.case.pk}/sale-mode/'
@@ -959,7 +960,8 @@ class OfferExcelTest(SupplyShop, TestCase):
         from store.models import BulkImportRow
         # Not read at all: the staged row does not keep it either.
         self.assertNotIn('agreed_cost', BulkImportRow.objects.get(job_id=body['id']).normalized_data)
-        self.assertNotIn('68', str(body['rows'][0]['data']))
+        self.assertIsNone(body['rows'][0]['data'].get('agreed_cost'))
+        assert_no_amount(self, body, '68')
         self.apply(body['id'], client=client)
         made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
         self.assertIsNone(made.agreed_cost)
@@ -1030,12 +1032,12 @@ class ExpiryCommandTest(SupplyShop, TestCase):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=today() - timedelta(days=9),
                                                               valid_until=today() - timedelta(days=1))
         current = self.make_offer()
-        self.assertIn('1', self.run_command())
+        self.assertIn('desactivadas: 1.', self.run_command())
         self.offer.refresh_from_db()
         current.refresh_from_db()
         self.assertEqual((self.offer.is_active, self.offer.committed_quantity, current.is_active), (False, 2, True))
         self.assertEqual(order.items.get().supply_status, 'pending')
-        self.assertIn('0', self.run_command())                        # idempotent
+        self.assertIn('desactivadas: 0.', self.run_command())         # idempotent
         self.assertEqual(AdminAuditLog.objects.filter(action='supplier_offer_expired').count(), 1)
 
 

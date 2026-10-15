@@ -20,7 +20,7 @@ from threading import Barrier, Thread
 
 from django.core.cache import cache
 from django.db import IntegrityError, connection, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -45,6 +45,42 @@ def _client(user=None, host=None):
     if user is not None:
         client.force_authenticate(user=user)
     return client
+
+
+def _values(payload, key=''):
+    """(key, value) of every scalar inside a decoded JSON payload — ids aside."""
+    if isinstance(payload, dict):
+        for name, value in payload.items():
+            yield from _values(value, str(name))
+    elif isinstance(payload, (list, tuple, set)):
+        for value in payload:
+            yield from _values(value, key)
+    elif not (key in ('id', 'pk') or key.endswith(('_id', '_ids'))):
+        yield key, payload
+
+
+def assert_no_amount(case, payload, *amounts):
+    """
+    None of `amounts` is a VALUE of `payload` (a decoded JSON body, a dict, a
+    list), as a number or a decimal string of any scale — '68', '68.00', 68.
+
+    Not a substring search over `str(payload)`: CI saw `'product_id': 685`
+    fail «'68' not in payload» (integration review of PR #123). Ids are not
+    amounts and are skipped; a cost's KEY is checked by the caller.
+    """
+    from decimal import InvalidOperation
+
+    targets = {D(str(amount)) for amount in amounts}
+    for key, value in _values(payload):
+        if isinstance(value, bool) or not isinstance(value, (int, float, str, D)):
+            continue
+        try:
+            number = D(str(value).strip())
+        except (InvalidOperation, ValueError):
+            continue
+        if not number.is_finite():
+            continue
+        case.assertNotIn(number, targets, f'{value!r} under {key!r} is a cost the caller may not see')
 
 
 class DeviceShop:
@@ -93,6 +129,19 @@ class DeviceShop:
 
     def available(self, product):
         return StockUnit.objects.filter(product=product, status='available').count()
+
+
+class AmountAssertionTest(SimpleTestCase):
+    """`assert_no_amount` catches a cost under any scale and never mistakes an id for one."""
+
+    def test_an_id_holding_the_digits_is_not_a_cost(self):
+        assert_no_amount(self, {'product_id': 685, 'offer_id': 700, 'rows': [{'id': 68, 'unit_ids': [70]}],
+                                'price': '168.00', 'note': 'caja 68'}, '68', '70')
+
+    def test_the_cost_is_caught_whatever_its_scale_or_depth(self):
+        for leak in ({'agreed_cost': '68.00'}, {'rows': [{'data': {'x': 68}}]}, ['68.0000'], {'y': 68.0}):
+            with self.subTest(leak), self.assertRaises(AssertionError):
+                assert_no_amount(self, leak, '68')
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +355,7 @@ class PublicModelApiTest(DeviceShop, TestCase):
         for unit in (self.used, self.unpriced, self.measured):
             self.assertNotIn(unit.imei, text)
             self.assertNotIn(unit.serial_number, text)
-        self.assertNotIn('1200', text)
-        self.assertNotIn('2500', text)
+        assert_no_amount(self, body, '1200', '2500')
         for forbidden in ('"cost"', 'supplier', 'proveedor', 'serial', '"pk"'):
             self.assertNotIn(forbidden, text)
         self.assertEqual(set(card), {'id', 'product_id', 'options', 'battery_health', 'cosmetic_grade', 'price',

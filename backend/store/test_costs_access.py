@@ -25,6 +25,7 @@ from rest_framework.test import APIClient
 from store.models import Membership, StockUnit
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_D, UnitsBase
 from store import stock_unit_services as units
+from store.test_device_commerce import assert_no_amount
 from store.tests import _assign, _role
 
 LIST = '/api/admin/inventory/units/'
@@ -54,7 +55,7 @@ class CostOnTheUnitListTest(UnitsBase):
         # Legacy `inventory` role: inventory.view + inventory.adjust, no costs.view.
         [row] = self.rows()
         self.assertNotIn('cost', row)
-        self.assertNotIn('3800', self.api.get(LIST + '?branch=all').content.decode())
+        assert_no_amount(self, self.api.get(LIST + '?branch=all').json(), '3800')
         # The identifiers stay whole for staff who operate the shelf.
         self.assertEqual(row['imei'], IMEI_A)
 
