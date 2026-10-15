@@ -904,6 +904,12 @@ class OrderItem(models.Model):
         max_length=12, choices=SUPPLY_STATUS_CHOICES, blank=True, default='', db_default='',
     )
     supply_note = models.CharField(max_length=300, blank=True, default='', db_default='')
+    # Owner's decision of 2026-10-15 — own stock first, never switched
+    # silently. True when the line went to the supplier although the shelf
+    # covered it, by an explicit choice: the till's (with `sales.orders.manage`
+    # and `supply_choice_reason`) or the buyer's on a web that allows it.
+    supply_chosen_over_stock = models.BooleanField(default=False, db_default=False)
+    supply_choice_reason = models.CharField(max_length=200, blank=True, default='', db_default='')
 
     @property
     def on_order(self) -> bool:
@@ -3098,6 +3104,39 @@ class CompanySettings(models.Model):
     # this column keeps inserting settings rows while `migrate` runs.
     publication_requires_image = models.BooleanField(default=False, db_default=False)
 
+    # DEVICE-COMMERCE-01 — owner's decision of 2026-10-15: how long the web
+    # holds a device is the company's, per channel. The values as created are
+    # the ones every shop had (15 in the cart, 45 once checked out, never past
+    # 60 from when the cart took it). Bounds:
+    #   * cart 5–60;
+    #   * checkout 30–120 — never shorter than the gateway's form lifetime
+    #     (`payments.micuentaweb.FORM_LIFETIME`, 30 min: until then a refused
+    #     card can be retried under the same reference);
+    #   * ceiling ≤ 240 and ≥ cart + 30, so a checkout made in the cart's last
+    #     minute still gets the whole form lifetime.
+    # A hold whose order has a payment the gateway may still confirm is not
+    # released by these clocks at all (`unit_hold_services.payment_keeps_hold`).
+    CART_HOLD_MIN_MINUTES, CART_HOLD_MAX_MINUTES = 5, 60
+    CHECKOUT_HOLD_MIN_MINUTES, CHECKOUT_HOLD_MAX_MINUTES = 30, 120
+    HOLD_CEILING_MAX_MINUTES = 240
+    device_cart_hold_minutes = models.PositiveSmallIntegerField(
+        default=15, db_default=15,
+        validators=[MinValueValidator(CART_HOLD_MIN_MINUTES), MaxValueValidator(CART_HOLD_MAX_MINUTES)],
+    )
+    device_checkout_hold_minutes = models.PositiveSmallIntegerField(
+        default=45, db_default=45,
+        validators=[MinValueValidator(CHECKOUT_HOLD_MIN_MINUTES), MaxValueValidator(CHECKOUT_HOLD_MAX_MINUTES)],
+    )
+    device_hold_ceiling_minutes = models.PositiveSmallIntegerField(
+        default=60, db_default=60,
+        validators=[MinValueValidator(CART_HOLD_MIN_MINUTES + CHECKOUT_HOLD_MIN_MINUTES),
+                    MaxValueValidator(HOLD_CEILING_MAX_MINUTES)],
+    )
+    # Owner's decision of 2026-10-15: the web may let the buyer choose the
+    # supplier («Bajo pedido») while the shelf covers the line ONLY where the
+    # company turns this on. Off as created: own stock first, never switched.
+    web_on_order_over_stock = models.BooleanField(default=False, db_default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3147,8 +3186,28 @@ class CompanySettings(models.Model):
                 validator(getattr(self, field))
             except ValidationError as exc:
                 errors[field] = exc.messages
+        errors.update(self.hold_minutes_errors(
+            self.device_cart_hold_minutes, self.device_checkout_hold_minutes, self.device_hold_ceiling_minutes))
         if errors:
             raise ValidationError(errors)
+
+    @classmethod
+    def hold_minutes_errors(cls, cart, checkout, ceiling) -> dict:
+        """DEVICE-COMMERCE-01 — the bounds of the three hold times, field by field."""
+        errors = {}
+        for field, value, low, high in (
+            ('device_cart_hold_minutes', cart, cls.CART_HOLD_MIN_MINUTES, cls.CART_HOLD_MAX_MINUTES),
+            ('device_checkout_hold_minutes', checkout, cls.CHECKOUT_HOLD_MIN_MINUTES, cls.CHECKOUT_HOLD_MAX_MINUTES),
+            ('device_hold_ceiling_minutes', ceiling, cls.CART_HOLD_MIN_MINUTES + cls.CHECKOUT_HOLD_MIN_MINUTES,
+             cls.HOLD_CEILING_MAX_MINUTES),
+        ):
+            if value is None or not low <= int(value) <= high:
+                errors[field] = [f'Debe estar entre {low} y {high} minutos.']
+        if not errors and int(ceiling) < int(cart) + cls.CHECKOUT_HOLD_MIN_MINUTES:
+            errors['device_hold_ceiling_minutes'] = [
+                f'Debe ser al menos el tiempo del carrito más {cls.CHECKOUT_HOLD_MIN_MINUTES} minutos '
+                '(lo que vive el formulario de pago).']
+        return errors
 
     def save(self, *args, **kwargs):
         self.clean()

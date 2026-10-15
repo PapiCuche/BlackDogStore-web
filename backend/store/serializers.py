@@ -1475,6 +1475,11 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # INVENTORY-UNIFIED-01 — whether publishing in bulk asks for a
             # picture. Off as created; `company.manage`, like the rest.
             'publication_requires_image',
+            # DEVICE-COMMERCE-01 (owner, 2026-10-15) — how long the web holds a
+            # device, per channel, and whether the web may sell on order while
+            # the shelf has it. Changing them takes `settings.manage` too.
+            'device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes',
+            'web_on_order_over_stock',
             'updated_at',
         ]
         read_only_fields = [
@@ -1484,6 +1489,17 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
     def get_whatsapp_link(self, obj):
         from .company_settings import build_whatsapp_link
         return build_whatsapp_link(obj.whatsapp_number)
+
+    def validate(self, attrs):
+        """The three hold times are checked together: the ceiling depends on the cart's."""
+        attrs = super().validate(attrs)
+        fields = ('device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes')
+        if any(field in attrs for field in fields):
+            values = [attrs.get(field, getattr(self.instance, field, None)) for field in fields]
+            errors = CompanySettings.hold_minutes_errors(*values)
+            if errors:
+                raise serializers.ValidationError(errors)
+        return attrs
 
     def validate_document_logo_url(self, value):
         """

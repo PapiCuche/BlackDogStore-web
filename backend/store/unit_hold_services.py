@@ -25,6 +25,13 @@ the payment form has time. An expired hold goes back to the shelf when
 anybody next reads that shelf (`release_expired`) and every few minutes
 (`release_expired_unit_holds`). A hold whose order was paid never expires:
 the payment sold the device in the same transaction.
+
+OWNER'S DECISION OF 2026-10-15. The times are the company's, per channel
+(`CompanySettings.device_cart_hold_minutes` / `device_checkout_hold_minutes`
+/ `device_hold_ceiling_minutes`: 15 / 45 / 60 as created). A hold whose order
+has a payment the gateway may still confirm is not released by its clock —
+reconciliation decides (`payment_keeps_hold`). Releasing is decided under the
+shelf and device locks, so it happens once (`release_one_expired`).
 """
 from __future__ import annotations
 
@@ -64,12 +71,26 @@ class HoldError(Exception):
         return {'detail': self.detail, 'code': self.code}
 
 
-def hold_minutes() -> int:
-    return int(getattr(settings, 'DEVICE_HOLD_MINUTES', 15))
+def _company_minutes(company, field):
+    """DEVICE-COMMERCE-01 (owner, 2026-10-15) — the company's own hold time, or None without a settings row."""
+    if company is None:
+        return None
+    from .models import CompanySettings
+
+    company_id = getattr(company, 'pk', company)
+    return CompanySettings.objects.filter(company_id=company_id).values_list(field, flat=True).first()
 
 
-def order_hold_minutes() -> int:
-    return int(getattr(settings, 'DEVICE_ORDER_HOLD_MINUTES', 45))
+def hold_minutes(company=None) -> int:
+    """How long a CART holds a device: the company's (`device_cart_hold_minutes`), 15 as created."""
+    value = _company_minutes(company, 'device_cart_hold_minutes')
+    return int(value if value is not None else getattr(settings, 'DEVICE_HOLD_MINUTES', 15))
+
+
+def order_hold_minutes(company=None) -> int:
+    """How long a CHECKOUT holds it: the company's (`device_checkout_hold_minutes`), 45 as created."""
+    value = _company_minutes(company, 'device_checkout_hold_minutes')
+    return int(value if value is not None else getattr(settings, 'DEVICE_ORDER_HOLD_MINUTES', 45))
 
 
 def max_holds_per_cart() -> int:
@@ -84,9 +105,64 @@ def max_share_percent() -> int:
     return int(getattr(settings, 'DEVICE_WEB_HOLD_MAX_SHARE_PERCENT', 50))
 
 
-def hold_ceiling_minutes() -> int:
-    """The longest a web hold lives from the moment a cart took it, checkouts included."""
-    return hold_minutes() + order_hold_minutes()
+def hold_ceiling_minutes(company=None) -> int:
+    """
+    The longest a web hold lives BY ITS CLOCK from the moment a cart took it,
+    checkouts included: the company's (`device_hold_ceiling_minutes`), 60 as
+    created. A pending payment may keep it longer (`payment_keeps_hold`).
+    """
+    value = _company_minutes(company, 'device_hold_ceiling_minutes')
+    return int(value) if value is not None else hold_minutes() + order_hold_minutes()
+
+
+#: OWNER'S DECISION OF 2026-10-15 — never release a hold bound to a payment the
+#: gateway may still confirm, without reconciliation. «May still confirm», by
+#: this codebase's own rules (`payments.reconcile`): an attempt still PENDING
+#: and younger than the reconciliation window (2 h). Inside it the gateway's
+#: answer — its notification, or `reconcile_payments` asking `Order/Get` every
+#: 5 minutes — settles it: authorised → the payment sells the device;
+#: rejected, or abandoned (closed in the window's last 10 minutes when the
+#: gateway holds nothing) → back to the shelf. Past it nothing asks the
+#: gateway any more, so the clock decides again — except for an answer nobody
+#: could settle (marked `undecided: ` / `unreadable: `): money may have moved,
+#: and the hold waits for a person (`ops_status` names them).
+def payment_horizon() -> timedelta:
+    from .payments import reconcile
+
+    return reconcile.WINDOW
+
+
+def payment_keeps_hold(unit, now=None, *, include_unsettled: bool = True) -> bool:
+    """
+    Whether the payment of the order that carries this web hold may still be
+    confirmed, so the hold's clock must not release it.
+
+    Only attempts opened while the hold was alive (`created_at <= hold_until`):
+    a payment opened after the hold ran out cannot revive it. Only while the
+    order may still be paid. `include_unsettled=False` is the till's question:
+    a person releasing by hand after looking at the gateway's panel IS the
+    reconciliation of an answer nobody could settle.
+    """
+    if not unit.hold_order_id or not unit.hold_key:
+        return False
+    if not _order_is_live(unit.hold_order_id):
+        return False
+    from django.db.models import Q
+
+    from .models import PaymentTransaction
+    from .payments import reconcile
+
+    now = now or timezone.now()
+    attempts = PaymentTransaction.objects.filter(
+        order_id=unit.hold_order_id, status=PaymentTransaction.Status.PENDING,
+    )
+    if unit.hold_until is not None:
+        attempts = attempts.filter(created_at__lte=unit.hold_until)
+    alive = Q(created_at__gt=now - payment_horizon())
+    if include_unsettled:
+        alive |= Q(failure_reason__startswith=reconcile.UNDECIDED_MARK) | \
+            Q(failure_reason__startswith=reconcile.UNREADABLE_MARK)
+    return attempts.filter(alive).exists()
 
 
 def share_min_units() -> int:
@@ -295,7 +371,7 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
             movement_type=StockMovement.MANUAL_EXIT, reason=HOLD_REASON, actor=None,
             action='stock_unit_web_hold', metadata={'web_hold': True},
             extra_fields={
-                'hold_key': key, 'hold_until': now + timedelta(minutes=hold_minutes()),
+                'hold_key': key, 'hold_until': now + timedelta(minutes=hold_minutes(product.company_id)),
                 'hold_price': price, 'hold_order': None, 'hold_origin': origin or '', 'hold_started_at': now,
             },
         )
@@ -398,18 +474,41 @@ def release_expired(*, company=None, product=None, now=None) -> int:
         qs = qs.filter(product=product)
     released = 0
     for pk in list(qs.values_list('pk', flat=True)):
-        with transaction.atomic():
-            unit = StockUnit.objects.select_related('product').get(pk=pk)
-            # Read again: the payment may have sold it, or a buyer extended it.
-            if (unit.status != StockUnit.Status.RESERVED or not unit.hold_key
-                    or unit.hold_until is None or unit.hold_until > now):
-                continue
-            try:
-                _release(unit)
-            except StockUnitError:
-                continue      # it moved meanwhile: whoever moved it decided
+        if release_one_expired(pk, now=now):
             released += 1
     return released
+
+
+@transaction.atomic
+def release_one_expired(pk, *, now=None) -> bool:
+    """
+    One expired web hold back to the shelf — IDEMPOTENT and safe under
+    concurrency (owner, 2026-10-15). Decided under the locks a payment and a
+    checkout take: the shelf first, then the device's row (the module's one
+    lock order). So the sweep, a cart read and the cron at the same instant
+    write ONE release line, a checkout that extended the hold after the sweep
+    listed it wins, and a hold whose order the gateway may still confirm
+    stays where it is (`payment_keeps_hold`).
+    """
+    now = now or timezone.now()
+    unit = StockUnit.objects.select_related('branch', 'product').filter(pk=pk).first()
+    if unit is None or unit.branch_id is None:
+        return False
+    inventory_services._locked_branch_stocks(unit.branch, [unit.product])
+    unit = StockUnit.objects.select_for_update().filter(pk=pk).first()
+    # Read again, locked: the payment may have sold it, a checkout extended it,
+    # another sweep released it.
+    if (unit is None or unit.status != StockUnit.Status.RESERVED or not unit.hold_key
+            or unit.hold_until is None or unit.hold_until > now):
+        return False
+    if payment_keeps_hold(unit, now):
+        return False
+    try:
+        with transaction.atomic():
+            _release(unit)
+    except StockUnitError:
+        return False      # it moved meanwhile: whoever moved it decided
+    return True
 
 
 def sync_cart(session_key, company) -> None:
@@ -438,8 +537,9 @@ def bind_to_order(units, order, session_key) -> None:
     now = timezone.now()
     # NEVER PAST THE CEILING. Every checkout binds again; without a ceiling a
     # cart that checks out every 40 minutes would hold a device for ever.
+    # The company's times (owner, 2026-10-15).
     ceiling = ExpressionWrapper(
-        Coalesce(F('hold_started_at'), Value(now)) + Value(timedelta(minutes=hold_ceiling_minutes())),
+        Coalesce(F('hold_started_at'), Value(now)) + Value(timedelta(minutes=hold_ceiling_minutes(order.company_id))),
         output_field=DateTimeField(),
     )
     bound = StockUnit.objects.filter(
@@ -447,7 +547,8 @@ def bind_to_order(units, order, session_key) -> None:
         hold_key=key_of(session_key), hold_until__gt=now,
     ).update(
         hold_order=order,
-        hold_until=Least(Value(now + timedelta(minutes=order_hold_minutes()), output_field=DateTimeField()),
+        hold_until=Least(Value(now + timedelta(minutes=order_hold_minutes(order.company_id)),
+                               output_field=DateTimeField()),
                          ceiling),
         updated_at=now,
     )

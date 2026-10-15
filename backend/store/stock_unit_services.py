@@ -384,8 +384,12 @@ def release(unit, *, actor=None, request=None) -> StockUnit:
     current = StockUnit.objects.select_for_update().get(pk=unit.pk)
     metadata = None
     if current.status == StockUnit.Status.RESERVED and current.hold_key:
-        if (current.hold_order_id and current.hold_until and current.hold_until > timezone.now()
-                and unit_hold_services._order_is_live(current.hold_order_id)):
+        # Owner, 2026-10-15: nor past its time while the gateway may still
+        # confirm that order's payment (a person who looked at the gateway's
+        # panel may still release one nobody could settle).
+        if ((current.hold_order_id and current.hold_until and current.hold_until > timezone.now()
+                and unit_hold_services._order_is_live(current.hold_order_id))
+                or unit_hold_services.payment_keeps_hold(current, include_unsettled=False)):
             raise StockUnitError(
                 'Un comprador está pagando este equipo en la web (pedido '
                 f'#{current.hold_order_id}). Podrás liberarlo cuando ese pago venza.',
