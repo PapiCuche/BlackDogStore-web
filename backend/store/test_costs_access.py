@@ -109,7 +109,8 @@ class CostOnTheUnitListTest(UnitsBase):
         self.assertNotIn('cost', reserved.json())
 
         self.grant(*INVENTORY, 'costs.view')
-        allowed = self.api.patch(url, {'cost': '3750.00'}, format='json')
+        # A1 — a correction from the panel says why (`test_costs_ux`).
+        allowed = self.api.patch(url, {'cost': '3750.00', 'cost_reason': 'Factura'}, format='json')
         self.assertEqual(allowed.status_code, 200, allowed.content)
         self.assertEqual(allowed.json()['cost'], '3750.00')
 

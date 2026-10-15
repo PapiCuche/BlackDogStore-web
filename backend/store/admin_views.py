@@ -453,6 +453,34 @@ _AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory'
                              'is_published_online')
 
 
+def _clean_reference_cost(raw):
+    """`(Decimal | None, error)` — empty clears it; never negative, two decimals."""
+    from decimal import InvalidOperation
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None, None
+    try:
+        value = Decimal(str(raw).strip().replace(',', '.'))
+    except (InvalidOperation, ValueError):
+        return None, 'El costo de referencia debe ser un número.'
+    if not value.is_finite() or value < 0:
+        return None, 'El costo de referencia no puede ser negativo.'
+    value = value.quantize(Decimal('0.01'))
+    if value >= Decimal('10000000000'):
+        return None, 'El costo de referencia es demasiado alto.'
+    return value, None
+
+
+def _product_detail_payload(request, product):
+    """The product's detail; its reference cost travels ONLY to `costs.view` (A1)."""
+    from .inventory_views import may_view_costs
+
+    data = AdminProductDetailSerializer(product).data
+    if may_view_costs(request):
+        data['reference_cost'] = None if product.reference_cost is None else str(product.reference_cost)
+    return data
+
+
 def _product_snapshot(product):
     def _fmt(field, value):
         if value is None:
@@ -690,7 +718,7 @@ class AdminProductDetailView(APIView):
         product = get_object_or_404(
             Product.objects.select_related('category').filter(company=company), pk=pk,
         )
-        return Response(AdminProductDetailSerializer(product).data)
+        return Response(_product_detail_payload(request, product))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -725,6 +753,24 @@ class AdminProductDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # COMMERCE-ADMIN-UX-01 · A1 — the catalogue's REFERENCE cost. Changing it
+        # needs `costs.view` on top of `products.manage`: correcting a cost one
+        # may not see is not editing the catalogue. Refused before any write.
+        wants_reference_cost = 'reference_cost' in request.data
+        reference_cost = None
+        if wants_reference_cost:
+            from .inventory_views import may_view_costs
+
+            if not may_view_costs(request):
+                return Response(
+                    {'detail': 'Necesitas el permiso «Ver costos y márgenes» para cambiar el costo de referencia.',
+                     'field': 'reference_cost'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            reference_cost, cost_error = _clean_reference_cost(request.data.get('reference_cost'))
+            if cost_error:
+                return Response({'reference_cost': [cost_error]}, status=status.HTTP_400_BAD_REQUEST)
+
         old = _product_snapshot(product)
 
         ser = AdminProductWriteSerializer(
@@ -741,6 +787,14 @@ class AdminProductDetailView(APIView):
             for f in _AUDITABLE_PRODUCT_FIELDS
             if old[f] != new[f]
         }
+        if wants_reference_cost and product.reference_cost != reference_cost:
+            # A snapshot already taken (Kardex line, sale line) keeps its cost:
+            # only what is valued from now on reads the new one.
+            product.reference_cost = reference_cost
+            product.save(update_fields=['reference_cost', 'updated_at'])
+            # The audit trail is read by more people than `costs.view`: that
+            # it changed, never the amounts.
+            changed['reference_cost'] = {'changed': True}
 
         if changed:
             was_active, is_now_active = old.get('is_active'), new.get('is_active')
@@ -763,7 +817,7 @@ class AdminProductDetailView(APIView):
                 company=company,
             )
 
-        return Response(AdminProductDetailSerializer(product).data)
+        return Response(_product_detail_payload(request, product))
 
 
 class AdminProductBulkVisibilityView(APIView):

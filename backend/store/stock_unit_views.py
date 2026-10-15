@@ -352,7 +352,12 @@ class StockUnitDetailView(_UnitMixin, APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         try:
-            units.update_unit(unit, actor=request.user, request=request, **fields)
+            units.update_unit(
+                unit, actor=request.user, request=request,
+                # A1 — a correction of cost from the panel says why.
+                cost_reason=data.get('cost_reason'), require_cost_reason='cost' in fields,
+                **fields,
+            )
         except InventoryError as exc:
             return _refusal(exc)
         return self.answer(request, unit)

@@ -430,10 +430,18 @@ def return_unit(unit, *, reason, actor=None, request=None) -> StockUnit:
 
 
 @transaction.atomic
-def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
-    """Details that do not move stock. Identifiers and status are not here."""
+def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cost_reason=False,
+                **fields) -> StockUnit:
+    """
+    Details that do not move stock. Identifiers and status are not here.
+
+    A1 — «Corregir costo». `require_cost_reason` (the panel's path) makes a
+    change of cost need a reason; the reason is audited, the amounts are not
+    (the audit trail is read by more people than `costs.view`).
+    """
     locked = StockUnit.objects.select_for_update().get(pk=unit.pk)
     changed = []
+    reason = ' '.join(str(cost_reason or '').split())[:300]
     if 'condition' in fields:
         locked.condition = _condition(fields['condition'])
         changed.append('condition')
@@ -447,6 +455,10 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
                 raise StockUnitError(
                     f'El equipo {locked.serial_number} ya se vendió: su costo no se puede cambiar.',
                     field='cost',
+                )
+            if require_cost_reason and not reason:
+                raise StockUnitError(
+                    'Indica el motivo de la corrección del costo.', field='cost_reason',
                 )
             locked.cost = cost
             changed.append('cost')
@@ -478,7 +490,11 @@ def update_unit(unit, *, actor=None, request=None, **fields) -> StockUnit:
         locked.save(update_fields=[*changed, 'updated_at'])
         AdminAuditLog.log(
             actor=actor, action='stock_unit_updated', target_type='stock_unit', target_id=locked.pk,
-            metadata={'changed': changed}, request=request, company=locked.company,
+            metadata={
+                'changed': changed,
+                **({'cost_reason': reason} if 'cost' in changed and reason else {}),
+            },
+            request=request, company=locked.company,
         )
     return locked
 

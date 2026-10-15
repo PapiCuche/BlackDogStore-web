@@ -275,6 +275,38 @@ def may_view_costs(request) -> bool:
     return error is None
 
 
+#: Where the cost of a shelf row comes from — A1. The order a sale would take it:
+#: a serialized product is valued device by device; otherwise the branch's
+#: weighted average; with no average yet, the catalogue's reference cost;
+#: else nobody knows yet («costo pendiente», never zero).
+ROW_COST_UNIT = 'unit'
+ROW_COST_AVERAGE = 'average'
+ROW_COST_REFERENCE = 'reference'
+ROW_COST_UNKNOWN = 'unknown'
+
+
+def branch_stock_cost_payload(stock) -> dict:
+    """The cost keys of one `BranchStock` row. ONLY for a caller with `costs.view`."""
+    product = stock.product
+    if product.is_serialized:
+        source = ROW_COST_UNIT
+    elif stock.average_cost is not None:
+        source = ROW_COST_AVERAGE
+    elif product.reference_cost is not None:
+        source = ROW_COST_REFERENCE
+    else:
+        source = ROW_COST_UNKNOWN
+    return {
+        'average_cost': None if stock.average_cost is None else str(stock.average_cost),
+        'uncosted_quantity': stock.uncosted_quantity,
+        'product_reference_cost': (
+            None if product.reference_cost is None else str(product.reference_cost)
+        ),
+        'product_is_serialized': product.is_serialized,
+        'cost_source': source,
+    }
+
+
 def _scoped_product(company, product_id):
     """A product of `company`, or None. A foreign id behaves like a missing one."""
     try:
@@ -501,9 +533,17 @@ class AdminBranchStockListView(APIView):
 
         qs = qs.order_by('product__name', 'branch__name')
         page_qs, meta = _paginate(qs, request)
+        page_rows = list(page_qs)
+        rows = BranchStockSerializer(page_rows, many=True).data
+        if may_view_costs(request):
+            # COMMERCE-ADMIN-UX-01 · A1 — «Costos y precios» reads the branch
+            # average from here. Only for `costs.view`; for anybody else the
+            # keys are ABSENT (a null would read as «no cost recorded»).
+            for row, stock in zip(rows, page_rows):
+                row.update(branch_stock_cost_payload(stock))
         return Response({
             'scope': _scope_payload(branch, branches),
-            'results': BranchStockSerializer(page_qs, many=True).data,
+            'results': rows,
             **meta,
         })
 
