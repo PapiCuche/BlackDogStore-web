@@ -942,6 +942,9 @@ class OfferExcelTest(SupplyShop, TestCase):
         body = self.preview([self.row()], client=client).json()
         self.assertTrue(body['cost_column_ignored'])
         self.assertNotIn('agreed_cost', body['rows'][0]['data'])
+        from store.models import BulkImportRow
+        # Not read at all: the staged row does not keep it either.
+        self.assertNotIn('agreed_cost', BulkImportRow.objects.get(job_id=body['id']).normalized_data)
         self.assertNotIn('68', str(body['rows'][0]['data']))
         self.apply(body['id'], client=client)
         made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
