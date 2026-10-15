@@ -213,6 +213,73 @@ class PaymentKeepsTheHoldTest(SaleShop, TestCase):
         self.assertEqual(holds.release_expired(), 1)
 
 
+class PaymentKeptHoldsCountTowardTheCapsTest(SaleShop, TestCase):
+    """
+    A hold a pending payment keeps past its clock is still a hold: it counts
+    toward the per-cart and per-origin caps, the shelf share and the company
+    ceiling (integration review of PR #123, P1). Otherwise one origin repeats
+    «add, checkout, open the payment form, close the tab» and reserves a shelf.
+    """
+
+    def abandon_at_the_payment_form(self, session, origin='', unit=None, product=None):
+        """Add, checkout, open the payment form, close the tab — and let the clock run out."""
+        held = holds.hold(product=product or self.new128, branch=self.branch, session_key=session,
+                          origin=origin, unit_public_id=str(unit.public_id) if unit else None)
+        order = self.checkout(session)
+        _attempt(order, minutes_ago=5)
+        StockUnit.objects.filter(pk=held.pk).update(hold_until=timezone.now() - timedelta(minutes=1))
+        holds.release_expired()
+        return held
+
+    def test_one_origin_cannot_reserve_a_shelf_through_abandoned_payment_forms(self):
+        self.receive(self.new128, 8)
+        accepted = 0
+        with self.assertRaises(holds.HoldError) as refused:
+            for cycle in range(8):
+                self.abandon_at_the_payment_form(f'pestana-{cycle}', origin='un-origen')
+                accepted += 1
+        self.assertEqual(refused.exception.code, 'too_many')
+        self.assertEqual(accepted, holds.max_holds_per_origin())
+        self.assertEqual(StockUnit.objects.filter(product=self.new128, status='reserved').count(), 3)
+
+    def test_one_cart_cannot_either(self):
+        self.receive(self.new128, 8)
+        for _ in range(holds.max_holds_per_cart()):
+            holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a')
+        order = self.checkout('carrito-a')
+        _attempt(order, minutes_ago=5)
+        StockUnit.objects.filter(hold_order=order).update(hold_until=timezone.now() - timedelta(minutes=1))
+        holds.release_expired()
+        self.assertEqual(StockUnit.objects.filter(product=self.new128, status='reserved').count(), 3)
+        with self.assertRaises(holds.HoldError) as refused:
+            holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a')
+        self.assertEqual(refused.exception.code, 'too_many')
+
+    def test_the_shelf_share_counts_payment_kept_holds(self):
+        self.receive(self.new128, 2)          # 4 on the shelf: the share is 2
+        self.abandon_at_the_payment_form('pestana-1')
+        self.abandon_at_the_payment_form('pestana-2')
+        with self.assertRaises(holds.HoldError) as refused:
+            holds.hold(product=self.new128, branch=self.branch, session_key='pestana-3')
+        self.assertEqual(refused.exception.code, 'held_by_others')
+
+    def test_the_company_ceiling_counts_payment_kept_holds(self):
+        # 4 web devices (2 new, 2 used): the ceiling is 3; no shelf reaches the share's 4.
+        self.abandon_at_the_payment_form('pestana-1')
+        self.abandon_at_the_payment_form('pestana-2')
+        self.abandon_at_the_payment_form('pestana-3', unit=self.used_a, product=self.used128)
+        with self.assertRaises(holds.HoldError) as refused:
+            holds.hold(product=self.used128, branch=self.branch, session_key='pestana-4',
+                       unit_public_id=str(self.used_b.public_id))
+        self.assertEqual(refused.exception.code, 'held_by_others')
+
+    def test_an_expired_hold_no_live_order_keeps_blocks_nobody(self):
+        """Not swept yet and no order that may be paid: it is going back to the shelf."""
+        held = holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a', origin='un-origen')
+        StockUnit.objects.filter(pk=held.pk).update(hold_until=timezone.now() - timedelta(minutes=1))
+        self.assertEqual(holds._live_web_holds(self.company, timezone.now()).count(), 0)
+
+
 class ReleaseOnceTest(SaleShop, TestCase):
     """Releasing is idempotent: one Kardex line however many times it is asked."""
 

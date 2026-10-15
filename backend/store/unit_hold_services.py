@@ -248,9 +248,26 @@ def _clear_hold_fields():
 
 
 def _live_web_holds(company, now):
+    """
+    The web holds that take a device from the shelf right now: unexpired, OR
+    past their clock but bound to an order that may still be paid — a pending
+    payment keeps those (`payment_keeps_hold`) up to the reconciliation window
+    and beyond, so they count toward every cap and pool like any other hold
+    (integration review of PR #123, P1: «add, checkout, open the payment form,
+    close the tab» repeated from one origin reserved a whole shelf).
+
+    An expired hold without a live order is NOT counted: nothing keeps it and
+    the next sweep returns it — `hold()` sweeps only its own product, so
+    counting it would refuse a buyer over another shelf's leftovers.
+    """
+    from django.db.models import Q
+
     return StockUnit.objects.filter(
-        company=company, status=StockUnit.Status.RESERVED, hold_until__gt=now,
-    ).exclude(hold_key='')
+        company=company, status=StockUnit.Status.RESERVED,
+    ).exclude(hold_key='').filter(
+        Q(hold_until__gt=now)
+        | Q(hold_order__status=Order.Status.PENDING_PAYMENT, hold_order__paid=False),
+    )
 
 
 def _web_available_by_unit(branch) -> int:
