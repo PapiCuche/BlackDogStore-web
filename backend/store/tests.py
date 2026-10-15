@@ -55170,6 +55170,7 @@ from .admin_views import (  # noqa: E402
     _LEGACY_VIEW_ORDERS_ROLES,
 )
 from .inventory_views import (  # noqa: E402
+    _LEGACY_COSTS_VIEW_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES,
     _LEGACY_SALES_REPORT_ROLES,
 )
@@ -55687,6 +55688,9 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'inventory/counts/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/reports/page.tsx': ('inventory.reports', _LEGACY_SALES_REPORT_ROLES),
         'inventory/replenishment/page.tsx': ('inventory.reports', _LEGACY_INVENTORY_VIEW_ROLES),
+        # COMMERCE-ADMIN-UX-01 · A1 — «Costos y precios»: `costs.view`, whose
+        # bridge is the one `may_view_costs` / `user_may_view_costs` accept.
+        'inventory/costs/page.tsx': ('costs.view', _LEGACY_COSTS_VIEW_ROLES),
         # La bitácora no tiene puente: sin Membership el backend responde 403
         # venga el rol que venga, así que la lista tiene que estar vacía.
         'audit-logs/page.tsx': ('memberships.view', frozenset()),

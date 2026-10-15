@@ -82,7 +82,7 @@ export type NewUnit = {
 };
 
 /** The inputs of a device the server can point at. */
-export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "reason";
+export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "reason" | "cost_reason";
 
 /**
  * A refusal. `line` is the 1-based device of a batch the server turned down and
@@ -165,6 +165,14 @@ export const receiveStockUnits = (body: {
 /** DC2: change a device's listing (battery, grade, public notes, its own price). */
 export const updateStockUnitListing = (id: number, body: UnitListingWrite) =>
   call<StockUnit>(`/${id}/`, { method: "PATCH", body: JSON.stringify(body) });
+
+/**
+ * A1 — «Corregir costo» of ONE device. `costs.view` + `inventory.adjust`; the
+ * reason is mandatory and audited (the amounts are not). A sold device keeps its
+ * cost: the server answers 400 and says so.
+ */
+export const correctStockUnitCost = (id: number, cost: string, reason: string) =>
+  call<StockUnit>(`/${id}/`, { method: "PATCH", body: JSON.stringify({ cost, cost_reason: reason }) });
 
 /** DC2: add a photo of THIS device. No Content-Type: the browser writes the multipart boundary. */
 export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<UnitPhoto> {

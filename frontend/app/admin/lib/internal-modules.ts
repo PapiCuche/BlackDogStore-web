@@ -315,6 +315,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // COMMERCE-ADMIN-UX-01 · A1. El margen comercial y el valor al costo
+    // existían, pero escondidos: una sección dentro de Ventas y una tarjeta
+    // dentro de Stock, sin entrada propia. Un Administrador no los encontraba.
+    // `legacyRoles`: el backend da `costs.view` en el puente a admin/superadmin.
+    id: "inventory.costs",
+    group: "inventory",
+    label: "Costos y precios",
+    description: "Margen comercial, inventario al costo, costo promedio por sucursal y costo de cada equipo.",
+    href: "/admin/inventory/costs",
+    requiredCapabilities: ["costs.view"],
+    legacyRoles: ADMIN_ROLES,
+    status: "implemented",
+  },
+  {
     id: "inventory.import",
     group: "inventory",
     label: "Carga de stock",

@@ -4,8 +4,13 @@
  * DEVICE-COMMERCE-01 · DC1 — «Margen comercial» del resumen de ventas.
  *
  * Sólo para `costs.view`, y sólo se pide al servidor si se tiene: un 403 que
- * se sabe de antemano no es una petición que valga la pena hacer. Si aun así
- * el servidor lo niega, la sección desaparece y el resto de la página sigue.
+ * se sabe de antemano no es una petición que valga la pena hacer.
+ *
+ * A1 (COMMERCE-ADMIN-UX-01) — NUNCA DESAPARECE EN SILENCIO. Antes devolvía
+ * `null` mientras cargaba, ante un error y sin datos, y un Administrador no
+ * encontraba el margen. Ahora dice «Cargando…», el mensaje del servidor, o que
+ * aún no hay ventas con costo conocido; y a quien no tiene el permiso le dice
+ * cuál le falta y a quién pedírselo.
  *
  * MARGEN COMERCIAL, NUNCA «UTILIDAD». Es lo vendido sin IGV menos lo que costó
  * esa mercadería; no descuenta gastos, comisiones, pasarela ni impuestos. Y
@@ -13,7 +18,8 @@
  * aparte como «costo pendiente», en vez de contarlas como si no costaran nada.
  */
 
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   fetchSalesMargin, type SalesMargin, type SalesMarginRow, type SalesMarginTotals,
@@ -103,22 +109,81 @@ function Breakdown({ title, rows }: { title: string; rows: SalesMarginRow[] }) {
   );
 }
 
+/** A1: the one sentence for whoever lacks the permission — same text as the 403 page. */
+export const COSTS_PERMISSION_HINT = "Necesitas el permiso Ver costos y márgenes; pídeselo al administrador.";
+
+type MarginState =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; report: SalesMargin };
+
 export function SalesMarginSection({
-  companyId, branchId, canSeeCosts,
-}: { companyId: number | null; branchId: number | null; canSeeCosts: boolean }) {
-  const [report, setReport] = useState<SalesMargin | null>(null);
+  companyId, branchId, canSeeCosts, costsHref,
+}: {
+  companyId: number | null;
+  branchId: number | null;
+  canSeeCosts: boolean;
+  /** A1: from Ventas, a link to «Costos y precios». */
+  costsHref?: string;
+}) {
+  // An answer belongs to the request that asked for it: a new branch shows
+  // «Cargando…» until its own answer arrives, never the previous one.
+  const request = useMemo(() => ({ companyId, branchId }), [companyId, branchId]);
+  const [answer, setAnswer] = useState<{ request: object; state: MarginState } | null>(null);
 
   useEffect(() => {
     if (!canSeeCosts) return;
     let cancelled = false;
-    fetchSalesMargin(companyId, branchId)
-      .then((data) => { if (!cancelled) setReport(data); })
-      .catch(() => { if (!cancelled) setReport(null); });
+    fetchSalesMargin(request.companyId, request.branchId)
+      .then((data) => { if (!cancelled) setAnswer({ request, state: { kind: "ready", report: data } }); })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setAnswer({
+            request,
+            state: {
+              kind: "error",
+              message: err instanceof Error && err.message ? err.message : "No se pudo cargar el margen comercial.",
+            },
+          });
+        }
+      });
     return () => { cancelled = true; };
-  }, [companyId, branchId, canSeeCosts]);
+  }, [request, canSeeCosts]);
 
-  if (!canSeeCosts || report === null) return null;
+  const state: MarginState = answer && answer.request === request ? answer.state : { kind: "loading" };
 
+  if (!canSeeCosts) {
+    return (
+      <p className="rounded-xl border border-dashed border-bd-border px-4 py-3 text-sm text-muted">
+        Margen comercial: {COSTS_PERMISSION_HINT}
+      </p>
+    );
+  }
+
+  const link = costsHref ? (
+    <Link href={costsHref} className="text-sm font-semibold text-foreground underline underline-offset-4">
+      Abrir Costos y precios
+    </Link>
+  ) : null;
+
+  if (state.kind !== "ready") {
+    return (
+      <section role="region" aria-label="Margen comercial">
+        <DashboardSection title="Margen comercial" description="Ventas pagadas sin IGV menos el costo de lo vendido.">
+          {state.kind === "loading" ? (
+            <p className="text-sm text-muted">Cargando…</p>
+          ) : (
+            <p role="alert" className="rounded-xl border border-danger-border bg-danger-surface px-4 py-3 text-sm text-danger">
+              {state.message}
+            </p>
+          )}
+          {link}
+        </DashboardSection>
+      </section>
+    );
+  }
+
+  const { report } = state;
   const pending = report.pending_cost;
   const { estimated, realised, estimated_only: estimatedOnly, unknown_cost: unknown, refunds } = report;
   return (
@@ -127,6 +192,12 @@ export function SalesMarginSection({
         title="Margen comercial"
         description={`Ventas pagadas de los últimos ${report.window_days} días, sin IGV, menos el costo de lo vendido. Es un margen comercial estimado: no descuenta gastos, comisiones ni impuestos.`}
       >
+        {link}
+        {estimated.lines === 0 ? (
+          <p role="note" className="rounded-xl border border-dashed border-bd-border px-4 py-3 text-sm text-muted">
+            Aún no hay ventas con costo conocido en este periodo.
+          </p>
+        ) : null}
         {pending.lines > 0 ? (
           <p role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-foreground">
             {pending.lines} {pending.lines === 1 ? "línea" : "líneas"} de {pending.orders}{" "}

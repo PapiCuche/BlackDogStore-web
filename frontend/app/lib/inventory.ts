@@ -123,6 +123,18 @@ export type BranchStockRow = {
   needs_replenishment: boolean;
   suggested_quantity: number;
   updated_at: string;
+  /**
+   * A1 — ONLY for `costs.view`; absent otherwise (absent is «you may not see
+   * it», never zero). The branch's weighted average, null while no entry with a
+   * cost has arrived.
+   */
+  average_cost?: string | null;
+  /** A1: units of this row that came in without a cost («costo pendiente»). */
+  uncosted_quantity?: number;
+  product_reference_cost?: string | null;
+  product_is_serialized?: boolean;
+  /** A1: where this row's cost comes from, in the order a sale would take it. */
+  cost_source?: "unit" | "average" | "reference" | "unknown";
 };
 
 export type ReplenishmentRow = {

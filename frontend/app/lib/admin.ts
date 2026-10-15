@@ -118,6 +118,8 @@ export type AdminProduct = {
    * (`PUBLICATION_PROBLEM_LABELS`). Vacío = listo. La ficha individual no lo exige.
    */
   publication_problems?: string[];
+  /** A1: the catalogue's reference cost. Only in the detail, and only for `costs.view`. */
+  reference_cost?: string | null;
   created_at: string;
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
@@ -389,6 +391,8 @@ export async function patchAdminProduct(
     category: number | null;
     is_active: boolean;
     is_published_online: boolean;
+    /** A1: `costs.view` + `products.manage`. Empty or null clears it. */
+    reference_cost: string | null;
   }>,
 ): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`, {
@@ -402,7 +406,12 @@ export async function patchAdminProduct(
       : 'Datos inválidos.';
     throw new Error(msg);
   }
-  if (res.status === 403) throw new Error('No tienes permisos para editar productos.');
+  if (res.status === 403) {
+    // A1: the server says WHICH permission is missing (the reference cost needs
+    // «Ver costos y márgenes»); a generic text would hide it.
+    const err = await Promise.resolve().then(() => res.json()).catch(() => null);
+    throw new Error(err?.detail ? String(err.detail) : 'No tienes permisos para editar productos.');
+  }
   if (res.status === 404) throw new Error('Producto no encontrado.');
   if (!res.ok) throw new Error('No se pudo actualizar el producto.');
   return res.json();
