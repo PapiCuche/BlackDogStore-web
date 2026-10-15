@@ -8,7 +8,9 @@ import { clearStoredCoupon, emitCartChange, getSessionKey, readStoredCoupon, wri
 import { formatMoney } from "../lib/format";
 import { DEFAULT_CURRENCY, lineTotal, markCheckoutBegun, toItem, toItems } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
-import { CartItemCard, cartLineAmount, type CartUnit } from "../components/CartItemCard";
+import {
+  CartItemCard, cartLineAmount, isCartLineSellable, isSupplyUnavailable, type CartSupply, type CartUnit,
+} from "../components/CartItemCard";
 import { releaseCartUnit } from "../lib/catalog-models";
 
 type CartItem = {
@@ -30,11 +32,13 @@ type CartItem = {
   /** DC2: sold device by device. `quantity` is then the number of `units`. */
   sells_by_unit?: boolean;
   /** What the line costs, from the server. Two devices of one variant can cost differently. */
-  line_total?: string;
+  line_total?: string | null;
   units?: CartUnit[];
+  /** DC3: shelf or «bajo pedido»; a supplier line the offer stopped covering is not payable. */
+  supply?: CartSupply | null;
 };
 
-const onSale = (lines: CartItem[]) => lines.filter((line) => line.available !== false);
+const onSale = (lines: CartItem[]) => lines.filter(isCartLineSellable);
 
 type Coupon = { code: string; discount_percent: number };
 
@@ -85,7 +89,11 @@ export default function CartPage() {
         method: "PATCH",
         body: JSON.stringify({ quantity }),
       });
-      if (!res.ok) throw new Error("No se pudo actualizar.");
+      if (!res.ok) {
+        // DC3: a «bajo pedido» line may exceed what the offer covers (`not_on_order`); the server says so.
+        const body = await res.json().catch(() => null);
+        throw new Error(body && typeof body.detail === "string" && body.detail ? body.detail : "No se pudo actualizar.");
+      }
       loadCart();
       emitCartChange();
     } catch (err: unknown) {
@@ -158,6 +166,9 @@ export default function CartPage() {
   // Sólo lo que se vende cuenta: una línea que ya no está disponible no tiene precio.
   const sellable = onSale(items);
   const hasUnavailable = sellable.length < items.length;
+  // DC3: an offer that stopped covering a line is said apart: the buyer can also lower the quantity.
+  const hasSupplyGone = items.some((line) => line.available !== false && isSupplyUnavailable(line));
+  const hasRetired = items.some((line) => line.available === false);
   const unitCount = sellable.reduce((sum, item) => sum + item.quantity, 0);
   // `line_total` when the server sends it: a line of used devices is the sum of their own prices, not price × quantity.
   const subtotal = sellable.reduce((sum, item) => sum + cartLineAmount(item), 0);
@@ -214,9 +225,14 @@ export default function CartPage() {
                 </div>
               ) : null}
 
-              {hasUnavailable ? (
+              {hasRetired ? (
                 <div className="rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger" role="alert">
                   Algún producto de tu carrito ya no está disponible. Quítalo para continuar con tu compra.
+                </div>
+              ) : null}
+              {hasSupplyGone ? (
+                <div className="rounded-xl border border-danger-border bg-danger-surface p-4 text-sm text-danger" role="alert">
+                  Algún producto bajo pedido ya no está disponible en esa cantidad. Quítalo o reduce la cantidad para continuar.
                 </div>
               ) : null}
 
@@ -308,7 +324,7 @@ export default function CartPage() {
                   href="/checkout"
                   onClick={() => {
                     track({
-                      name: "BEGIN_CHECKOUT", items: toItems(items), currency: DEFAULT_CURRENCY, value: lineTotal(items),
+                      name: "BEGIN_CHECKOUT", items: toItems(sellable), currency: DEFAULT_CURRENCY, value: lineTotal(sellable),
                       ...(coupon ? { coupon: coupon.code } : {}),
                     });
                     markCheckoutBegun();

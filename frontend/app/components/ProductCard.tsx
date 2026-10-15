@@ -13,10 +13,19 @@ type ProductCardProps = {
   category?: { id: number; name: string; slug: string };
   average_rating?: number | null;
   review_count?: number;
+  /** DC3: an empty shelf an offer still covers is «bajo pedido», not «sin stock». */
+  on_order?: { lead_time_days: number; price: string } | null;
 };
 
-function StockBadge({ inventory }: { inventory?: number }) {
+function StockBadge({ inventory, onOrder }: { inventory?: number; onOrder?: boolean }) {
   if (inventory === undefined) return null;
+  if (inventory === 0 && onOrder) {
+    return (
+      <span className="rounded-full border border-warning-border bg-warning-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning">
+        Bajo pedido
+      </span>
+    );
+  }
   if (inventory === 0) {
     return (
       <span className="rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger">
@@ -48,8 +57,10 @@ export function ProductCard({
   category,
   average_rating,
   review_count,
+  on_order,
 }: ProductCardProps) {
-  const outOfStock = inventory !== undefined && inventory === 0;
+  const onOrder = Boolean(on_order);
+  const outOfStock = inventory !== undefined && inventory === 0 && !onOrder;
 
   return (
     <Link
@@ -76,7 +87,7 @@ export function ProductCard({
 
         {/* Stock badge overlay */}
         <div className="absolute left-3 top-3">
-          <StockBadge inventory={inventory} />
+          <StockBadge inventory={inventory} onOrder={onOrder} />
         </div>
       </div>
 

@@ -8,6 +8,18 @@ import { API_BASE } from "../lib/api";
 import { getCurrentUser, fetchWithAuth } from "../lib/auth";
 import { formatMoney } from "../lib/format";
 import { OrderDeliveryInfo, type BuyerDelivery } from "../components/OrderDeliveryInfo";
+import { deliveryDaysText } from "../lib/catalog-models";
+
+/**
+ * DC3 — how the buyer is told where a «bajo pedido» line stands. Buyer words,
+ * not the panel's: who the supplier is never reaches this page.
+ */
+const BUYER_SUPPLY_STATUS: Record<string, string> = {
+  pending: "Pedido al proveedor",
+  to_confirm: "Confirmando abastecimiento",
+  received: "Recibido",
+  failed: "No se pudo abastecer — te contactaremos",
+};
 
 type OrderItem = {
   id: number;
@@ -19,6 +31,10 @@ type OrderItem = {
   product: { name: string; slug?: string; price?: number | string; image_url?: string };
   quantity: number;
   price: number | string;
+  /** DC3: from the shelf (`own`) or «bajo pedido» (`supplier`). */
+  supply_origin?: "own" | "supplier";
+  lead_time_days?: number | null;
+  supply_status?: "" | "pending" | "to_confirm" | "received" | "failed";
 };
 
 type Order = {
@@ -193,6 +209,18 @@ export default function OrdersPage() {
                                 {item.quantity} × S/ {formatMoney(item.price)}
                                 {item.product.slug ? null : " · Ya no se vende en la tienda"}
                               </p>
+                              {item.supply_origin === "supplier" ? (
+                                <p className="mt-1 text-xs" data-testid="order-item-supply">
+                                  <span className="font-semibold text-warning">
+                                    Bajo pedido — {deliveryDaysText(item.lead_time_days, { estimated: true })}
+                                  </span>
+                                  {item.supply_status && BUYER_SUPPLY_STATUS[item.supply_status] ? (
+                                    <span className={item.supply_status === "failed" ? "text-danger" : "text-muted"}>
+                                      {" · "}{BUYER_SUPPLY_STATUS[item.supply_status]}
+                                    </span>
+                                  ) : null}
+                                </p>
+                              ) : null}
                             </div>
                             <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                               S/ {formatMoney(Number(item.price) * item.quantity)}

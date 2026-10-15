@@ -23,11 +23,14 @@ import { emitCartChange } from "../lib/cart";
 import { formatMoney } from "../lib/format";
 import { DEFAULT_CURRENCY, toItem } from "../lib/analytics/items";
 import { track } from "../lib/analytics/service";
+import { OnOrderOfferPrompt } from "./OnOrderOffer";
 import {
   CartError,
   addDeviceToCart,
   availabilityLabel,
   fetchCatalogModel,
+  isOnOrderVariant,
+  type OnOrder,
   initialSelection,
   matchVariant,
   selectOption,
@@ -86,6 +89,7 @@ function NewLine({
   const [imageIndex, setImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [offer, setOffer] = useState<OnOrder | null>(null);
 
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variant?.images?.length
@@ -99,21 +103,30 @@ function NewLine({
     setState((current) => ({ ...current, selection: selectOption(variants, attributes, current.selection, index, optionId) }));
     setImageIndex(0);
     setStatus(null);
+    setOffer(null);
   }
 
-  async function add() {
+  async function add(onOrder: boolean) {
     if (!variant) return;
     setBusy(true);
     setStatus(null);
+    setOffer(null);
     try {
-      await addDeviceToCart(variant.product_id);
-      setStatus({ kind: "success", message: "Agregado al carrito." });
+      // DC3: «bajo pedido» holds no device; the line waits for the supplier.
+      await addDeviceToCart(variant.product_id, undefined, { onOrder });
+      const price = onOrder ? (variant.on_order?.price ?? offer?.price ?? variant.price) : variant.price;
+      setStatus({ kind: "success", message: onOrder ? "Agregado al carrito bajo pedido." : "Agregado al carrito." });
       emitCartChange();
       track({
-        name: "ADD_TO_CART", item: toItem({ id: variant.product_id, name: variant.name, price: variant.price }, 1),
-        currency: DEFAULT_CURRENCY, value: Number(variant.price),
+        name: "ADD_TO_CART", item: toItem({ id: variant.product_id, name: variant.name, price }, 1),
+        currency: DEFAULT_CURRENCY, value: Number(price),
       });
     } catch (error) {
+      if (error instanceof CartError && error.code === "on_order_available" && error.onOrder) {
+        // The last device went while the buyer looked; an offer still covers it. Their call.
+        setOffer(error.onOrder);
+        return;
+      }
       setStatus({ kind: "error", message: errorMessage(error) });
       if (error instanceof CartError && error.code === "unit_taken") onReload();
     } finally {
@@ -126,6 +139,8 @@ function NewLine({
   }
 
   const available = Boolean(variant?.available);
+  // DC3: no own device, but an offer covers it — another price and a wait, said as such.
+  const onOrder = variant && isOnOrderVariant(variant) ? variant.on_order ?? null : null;
 
   return (
     <div className="grid gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
@@ -175,28 +190,36 @@ function NewLine({
 
         <div className="mt-8 rounded-2xl border border-bd-border bg-surface p-5 sm:p-6">
           {variant ? <p className="text-sm font-semibold text-foreground">{variant.name}</p> : null}
-          <span className="mt-3 block text-[10px] font-bold uppercase tracking-[0.14em] text-muted">Precio</span>
+          <span className="mt-3 block text-[10px] font-bold uppercase tracking-[0.14em] text-muted">
+            {onOrder ? "Precio bajo pedido" : "Precio"}
+          </span>
           <p
             data-testid="model-price"
             aria-live="polite"
             className="mt-1 font-display text-4xl font-extrabold tabular-nums tracking-[-0.04em] text-foreground sm:text-5xl"
           >
-            {variant ? `S/ ${formatMoney(variant.price)}` : "—"}
+            {variant ? `S/ ${formatMoney(onOrder ? onOrder.price : variant.price)}` : "—"}
           </p>
           <div className="mt-4 flex items-center gap-2 text-sm">
-            <span className={`h-2 w-2 rounded-full ${available ? "bg-success" : "bg-muted/40"}`} aria-hidden="true" />
+            <span className={`h-2 w-2 rounded-full ${onOrder ? "bg-warning" : available ? "bg-success" : "bg-muted/40"}`} aria-hidden="true" />
             <span data-testid="model-availability" className={available ? "text-foreground" : "text-muted"}>
               {variant ? availabilityLabel(variant) : "Sin stock"}
             </span>
           </div>
+          {onOrder ? (
+            <p className="mt-2 text-xs leading-5 text-muted">
+              No lo tenemos en tienda ahora: lo pedimos para ti al confirmar tu compra.
+            </p>
+          ) : null}
           <button
             type="button"
-            onClick={() => void add()}
+            onClick={() => void add(onOrder !== null)}
             disabled={busy || !variant || !available}
             className="mt-5 w-full rounded-full bg-foreground px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {busy ? "Agregando…" : "Agregar al carrito"}
+            {busy ? "Agregando…" : onOrder ? "Pedir bajo pedido" : "Agregar al carrito"}
           </button>
+          {offer ? <OnOrderOfferPrompt offer={offer} busy={busy} onAccept={() => void add(true)} /> : null}
           <StatusBox status={status} />
         </div>
       </div>

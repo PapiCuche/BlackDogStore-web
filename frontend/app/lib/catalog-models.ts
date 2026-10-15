@@ -51,6 +51,13 @@ export type ModelAttribute = {
 
 export type VariantImage = { url: string; alt_text: string; is_primary: boolean; width: number; height: number };
 
+/**
+ * DC3 — what a product costs and how long it takes when it is sold «bajo
+ * pedido». `null` = there is no offer that covers it. Who supplies it and at
+ * what cost is never part of the public contract.
+ */
+export type OnOrder = { lead_time_days: number; price: string };
+
 export type Variant = {
   product_id: number;
   slug: string;
@@ -60,10 +67,13 @@ export type Variant = {
   price: string;
   image_url: string;
   images: VariantImage[];
+  /** True for own stock AND for a supplier offer. */
   available: boolean;
-  /** DC3 adds supplier availability; `availabilityLabel` is the one place that reads it. */
+  /** `own_stock` | `supplier` | `none`; `availabilityLabel` is the one place that reads it. */
   availability: string;
   sells_by_unit: boolean;
+  /** DC3: the offer when `availability` is `supplier`. */
+  on_order?: OnOrder | null;
 };
 
 export type CosmeticGrade = { code: string; label: string; description: string };
@@ -125,16 +135,32 @@ export async function fetchCatalogModel(slug: string): Promise<CatalogModel | nu
 // ---------------------------------------------------------------------------
 
 export type CartErrorCode =
-  | "unit_required" | "unit_taken" | "sold_out" | "too_many" | "held_by_others" | "not_found" | "";
+  | "unit_required" | "unit_taken" | "sold_out" | "too_many" | "held_by_others" | "not_found"
+  // DC3 — «bajo pedido».
+  | "on_order_available" | "not_on_order" | "mixed_supply"
+  | "";
 
 /** A refusal from the cart, in the server's words. `code` lets the page react (e.g. reload on unit_taken). */
 export class CartError extends Error {
   readonly code: CartErrorCode;
-  constructor(message: string, code: CartErrorCode) {
+  /**
+   * DC3: with `on_order_available`, the offer that WOULD cover the quantity —
+   * the shelf does not. The page offers it to the buyer; it never adds it alone.
+   */
+  readonly onOrder: OnOrder | null;
+  constructor(message: string, code: CartErrorCode, onOrder: OnOrder | null = null) {
     super(message);
     this.name = "CartError";
     this.code = code;
+    this.onOrder = onOrder;
   }
+}
+
+function readOnOrder(value: unknown): OnOrder | null {
+  if (!value || typeof value !== "object") return null;
+  const offer = value as { lead_time_days?: unknown; price?: unknown };
+  if (typeof offer.lead_time_days !== "number" || offer.price === undefined || offer.price === null) return null;
+  return { lead_time_days: offer.lead_time_days, price: String(offer.price) };
 }
 
 async function cartPost<T>(path: string, body: Record<string, unknown>, fallback: string): Promise<T> {
@@ -144,19 +170,33 @@ async function cartPost<T>(path: string, body: Record<string, unknown>, fallback
   if (!res.ok) {
     const detail = payload && typeof payload.detail === "string" ? payload.detail : "";
     const code = payload && typeof payload.code === "string" ? (payload.code as CartErrorCode) : "";
-    throw new CartError(detail || fallback, code);
+    throw new CartError(detail || fallback, code, readOnOrder(payload?.on_order));
   }
   return payload as T;
 }
 
 /**
  * Adds ONE device. Without `unit` the server picks a device of the variant;
- * with `unit` it is that very used device.
+ * with `unit` it is that very used device. With `onOrder` no device is held:
+ * the line is «bajo pedido», at the offer's price.
  */
-export function addDeviceToCart(product: number, unit?: string) {
+export function addDeviceToCart(product: number, unit?: string, opts: { onOrder?: boolean } = {}) {
   return cartPost<unknown>(
     "/cart/add/",
-    { session_key: getSessionKey(), product, quantity: 1, ...(unit ? { unit } : {}) },
+    {
+      session_key: getSessionKey(), product, quantity: 1,
+      ...(unit ? { unit } : {}),
+      ...(opts.onOrder ? { on_order: true } : {}),
+    },
+    "No se pudo agregar al carrito.",
+  );
+}
+
+/** DC3: adds a quantity of a product — from the shelf, or «bajo pedido» when `onOrder`. */
+export function addProductToCart(product: number, quantity: number, opts: { onOrder?: boolean } = {}) {
+  return cartPost<unknown>(
+    "/cart/add/",
+    { session_key: getSessionKey(), product, quantity, ...(opts.onOrder ? { on_order: true } : {}) },
     "No se pudo agregar al carrito.",
   );
 }
@@ -173,16 +213,35 @@ export function releaseCartUnit(unit: string) {
 // Presentation rules — one place each, so DC3 extends rather than rewrites
 // ---------------------------------------------------------------------------
 
-/** What a buyer is told about a variant's availability. DC3 adds supplier stock here. */
-export function availabilityLabel(variant: Pick<Variant, "available" | "availability">): string {
+/** «entrega en 1 día» / «entrega en 5 días» («entrega estimada en …» once ordered). */
+export function deliveryDaysText(days: number | null | undefined, opts: { estimated?: boolean } = {}): string {
+  const head = opts.estimated ? "entrega estimada" : "entrega";
+  if (days === null || days === undefined || !Number.isFinite(days)) return `${head} a confirmar`;
+  return `${head} en ${days} ${days === 1 ? "día" : "días"}`;
+}
+
+/** «Bajo pedido — entrega en N días»: the one way the shop says it. */
+export function onOrderLabel(days: number | null | undefined): string {
+  return `Bajo pedido — ${deliveryDaysText(days)}`;
+}
+
+/** What a buyer is told about a variant's availability. */
+export function availabilityLabel(variant: Pick<Variant, "available" | "availability"> & { on_order?: OnOrder | null }): string {
   switch (variant.availability) {
     case "own_stock":
       return "En stock";
+    case "supplier":
+      return onOrderLabel(variant.on_order?.lead_time_days);
     case "none":
       return "Sin stock";
     default:
       return variant.available ? "En stock" : "Sin stock";
   }
+}
+
+/** DC3: the variant is sold «bajo pedido» (no own stock, an offer covers it). */
+export function isOnOrderVariant(variant: Pick<Variant, "availability"> & { on_order?: OnOrder | null }): boolean {
+  return variant.availability === "supplier" && Boolean(variant.on_order);
 }
 
 /** Never a made-up number: no reading is said as such. */

@@ -1,7 +1,28 @@
 import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
-import { batteryText, imeiHintText, optionsText } from "../lib/catalog-models";
+import { batteryText, imeiHintText, onOrderLabel, optionsText } from "../lib/catalog-models";
+
+/**
+ * DC3 — where a cart line comes from. A line is all shelf or all «bajo
+ * pedido»; a supplier line costs the offer's price, and when the offer no
+ * longer covers it the server sends `available: false` and no price.
+ */
+export type CartSupply =
+  | { origin: "own" }
+  | { origin: "supplier"; available: boolean; lead_time_days: number | null; price: string | null };
+
+/** A line the buyer can pay now: still sold online and, if on order, still covered by an offer. */
+export function isCartLineSellable(line: { available?: boolean; supply?: CartSupply | null }): boolean {
+  if (line.available === false) return false;
+  if (line.supply?.origin === "supplier" && !line.supply.available) return false;
+  return true;
+}
+
+/** A «bajo pedido» line the offer no longer covers. */
+export function isSupplyUnavailable(line: { supply?: CartSupply | null }): boolean {
+  return line.supply?.origin === "supplier" && !line.supply.available;
+}
 
 /** DC2: one concrete device held in the cart for this buyer. */
 export type CartUnit = {
@@ -49,8 +70,10 @@ type CartItemCardProps = {
   };
   /** DC2: sold device by device — the quantity is the number of devices, each with its own price. */
   sells_by_unit?: boolean;
-  line_total?: string;
+  line_total?: string | null;
   units?: CartUnit[];
+  /** DC3: shelf or «bajo pedido». Absent on servers before DC3: the shelf. */
+  supply?: CartSupply | null;
   onQuantityChange?: (quantity: number) => void;
   onRemove?: () => void;
   onReleaseUnit?: (unitId: string) => void;
@@ -147,8 +170,9 @@ function UnitLine({ product, units, lineTotal, onRemove, onReleaseUnit }: {
 }
 
 export function CartItemCard({
-  quantity, available, product, sells_by_unit, line_total, units, onQuantityChange, onRemove, onReleaseUnit,
+  quantity, available, product, sells_by_unit, line_total, units, supply, onQuantityChange, onRemove, onReleaseUnit,
 }: CartItemCardProps) {
+  const fromSupplier = supply?.origin === "supplier" ? supply : null;
   function updateQuantity(raw: string) {
     const next = Number(raw);
     if (!Number.isFinite(next) || next < 1) return;
@@ -179,7 +203,8 @@ export function CartItemCard({
     );
   }
 
-  if (sells_by_unit) {
+  // A device on order holds no device yet: it is a quantity, like any other line.
+  if (sells_by_unit && !fromSupplier) {
     return (
       <UnitLine
         product={product}
@@ -191,7 +216,8 @@ export function CartItemCard({
     );
   }
 
-  const price = product.price ?? 0;
+  const price = fromSupplier ? fromSupplier.price : product.price ?? 0;
+  const supplyGone = fromSupplier !== null && !fromSupplier.available;
 
   return (
     <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
@@ -207,7 +233,15 @@ export function CartItemCard({
             >
               {product.name}
             </Link>
-            <p className="mt-1 text-sm text-muted">S/ {formatMoney(price)} c/u</p>
+            {supplyGone ? null : <p className="mt-1 text-sm text-muted">S/ {formatMoney(price ?? 0)} c/u</p>}
+            {fromSupplier ? (
+              <p
+                data-testid="cart-line-supply"
+                className={`mt-0.5 text-xs font-semibold ${supplyGone ? "text-danger" : "text-warning"}`}
+              >
+                {supplyGone ? "Ya no disponible bajo pedido" : onOrderLabel(fromSupplier.lead_time_days)}
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -224,8 +258,8 @@ export function CartItemCard({
               className="h-11 w-16 rounded-xl border border-bd-border bg-background px-2 text-center text-sm tabular-nums text-foreground focus:border-foreground/25 focus:outline-none"
             />
           </label>
-          <p className="min-w-24 text-right font-display font-extrabold tabular-nums text-foreground">
-            S/ {formatMoney(cartLineAmount({ quantity, line_total, product }))}
+          <p className="min-w-24 text-right font-display font-extrabold tabular-nums text-foreground" data-testid="cart-line-total">
+            {supplyGone ? "—" : `S/ ${formatMoney(cartLineAmount({ quantity, line_total, product }))}`}
           </p>
           {onRemove ? (
             <button type="button" onClick={onRemove} className={REMOVE}>

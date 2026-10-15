@@ -21,8 +21,10 @@ type CheckoutItem = {
   available?: boolean;
   product: { id: number; name: string; price?: number | string; slug?: string };
   /** DC2: what the line costs, from the server (devices sold one by one can each cost differently). */
-  line_total?: string;
+  line_total?: string | null;
   sells_by_unit?: boolean;
+  /** DC3: shelf or «bajo pedido». A supplier line the offer stopped covering is not payable. */
+  supply?: CartSupply | null;
 };
 import { API_BASE } from "../lib/api";
 import { DEFAULT_CURRENCY, lineTotal, takeCheckoutBegun, toItems } from "../lib/analytics/items";
@@ -37,7 +39,8 @@ import {
 import { useStorefront } from "../components/StorefrontProvider";
 import KryptonPaymentForm from "../components/KryptonPaymentForm";
 import { SavedAddressSelect } from "../components/SavedAddressSelect";
-import { cartLineAmount } from "../components/CartItemCard";
+import { cartLineAmount, isCartLineSellable, type CartSupply } from "../components/CartItemCard";
+import { onOrderLabel } from "../lib/catalog-models";
 import {
   isPaymentSession,
   openPaymentForm,
@@ -197,10 +200,11 @@ export default function CheckoutPage() {
   // Lo que ya no se vende no tiene precio: no se suma. El servidor rechaza el
   // pago mientras siga en el carrito, y el resumen lo dice.
   const subtotal = (items ?? []).reduce(
-    (sum, item) => sum + (item.available === false ? 0 : cartLineAmount(item)), 0,
+    (sum, item) => sum + (isCartLineSellable(item) ? cartLineAmount(item) : 0), 0,
   );
   // Con una línea así el servidor rechaza el carrito entero: no se ofrece enviar.
-  const hasUnavailable = (items ?? []).some((item) => item.available === false);
+  // DC3: también una línea bajo pedido que la oferta ya no cubre.
+  const hasUnavailable = (items ?? []).some((item) => !isCartLineSellable(item));
   const discount = coupon ? subtotal * (coupon.discount_percent / 100) : 0;
   const total = subtotal - discount;
 
@@ -916,6 +920,15 @@ export default function CheckoutPage() {
                             Ya no está disponible.{" "}
                             <Link href="/cart" className="underline underline-offset-2">Quítalo en el carrito</Link>
                           </span>
+                        ) : !isCartLineSellable(item) ? (
+                          <span className="mt-0.5 block text-xs font-semibold text-danger">
+                            Ya no disponible bajo pedido.{" "}
+                            <Link href="/cart" className="underline underline-offset-2">Revísalo en el carrito</Link>
+                          </span>
+                        ) : item.supply?.origin === "supplier" ? (
+                          <span className="mt-0.5 block text-xs text-muted">
+                            {item.quantity} × S/ {Number(item.supply.price ?? 0).toFixed(2)} · {onOrderLabel(item.supply.lead_time_days)}
+                          </span>
                         ) : (
                           <span className="mt-0.5 block text-xs text-muted">
                             {item.sells_by_unit
@@ -925,7 +938,7 @@ export default function CheckoutPage() {
                         )}
                       </span>
                       {/* `tabular-nums` para que los importes alineen en columna. */}
-                      {item.available === false ? null : (
+                      {!isCartLineSellable(item) ? null : (
                         <span className="shrink-0 text-sm tabular-nums text-foreground">
                           S/ {cartLineAmount(item).toFixed(2)}
                         </span>
