@@ -322,6 +322,17 @@ def create_stock_movement(
                 f'Stock actual: {stock_before}, salida solicitada: {quantity}.'
             )
 
+        # Stock coming BACK from an order's sale, with no cost stated, comes
+        # back at the cost its sale exit left with — whatever the entry's type
+        # is called (integration review of PR #123, P2-2). Not a purchase, an
+        # opening count or a transfer: those bring new stock, not the sale's.
+        if (is_entry and unit_cost is None and order is not None and unit_ids is None
+                and movement_type not in _NEW_STOCK_TYPES):
+            left_with = _cost_the_sale_left_with(order, product)
+            if left_with is not None:
+                unit_cost, cost_source, exit_ids = left_with
+                metadata = {**(metadata or {}), 'cost_from_movement_ids': exit_ids}
+
         cost = cost_services.resolve(
             is_entry=is_entry,
             carries_average_in=movement_type in StockMovement.RETURN_TYPES,
@@ -378,6 +389,37 @@ def create_stock_movement(
             unit_cost=cost.unit_cost,
             cost_source=cost.source,
         )
+
+
+#: Entries that bring NEW stock: never valued at an order's sale exit.
+_NEW_STOCK_TYPES = frozenset([
+    StockMovement.INITIAL_STOCK, StockMovement.PURCHASE_ENTRY, StockMovement.TRANSFER_IN,
+])
+
+
+def _cost_the_sale_left_with(order, product):
+    """
+    (unit cost, source, exit ids) the order's sale exits of `product` left
+    with — quantity-weighted when there are several — or None when there is
+    none or any of them left without a known cost. A source that is not a real
+    cost (the catalogue's reference) stays said, so those units come back
+    pending, as the transfer rule does.
+    """
+    exits = list(StockMovement.objects.filter(
+        order=order, product=product, movement_type=StockMovement.SALE_EXIT,
+    ).order_by('pk').values_list('pk', 'quantity', 'unit_cost', 'cost_source'))
+    if not exits or any(cost is None for _pk, _qty, cost, _source in exits):
+        return None
+    total = sum(qty for _pk, qty, _cost, _source in exits)
+    if total <= 0:
+        return None
+    mean = sum((Decimal(qty) * cost for _pk, qty, cost, _source in exits), Decimal('0')) / Decimal(total)
+    sources = {source for *_rest, source in exits}
+    if not sources <= cost_services.REAL_SOURCES:
+        source = cost_services.REFERENCE
+    else:
+        source = sources.pop() if len(sources) == 1 else cost_services.AVERAGE
+    return cost_services.quantize_cost(mean), source, [pk for pk, *_rest in exits]
 
 
 def _units_for_movement(*, branch, product, quantity, units, expected_status,

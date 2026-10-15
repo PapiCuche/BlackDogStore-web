@@ -28,6 +28,12 @@ THE RULES, IN ONE PLACE
   entry without one          NULL, 'unknown'; the units join the pending part.
   return / service return    carries the current average and joins the costed
                              part; with no average, it is pending.
+  back from an order's sale  any entry for an `order` with no cost stated and
+                             not new stock (purchase, opening, transfer in):
+                             the cost and source its sale exit left with
+                             (`inventory_services._cost_the_sale_left_with`),
+                             whatever the entry's type — a reference cost
+                             comes back pending. Before the average above.
   exit, transfer out         the pending units leave FIRST (they are the older
                              ones: they were there before any cost was known).
                              An exit only of costed units carries the average

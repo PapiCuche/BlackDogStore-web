@@ -257,6 +257,56 @@ class AverageCostOnTheKardexTest(_Shop):
         self.assertIsNone(self.average(self.norte))
 
 
+class StockBackFromASaleTest(_Shop):
+    """
+    Stock that comes back from an order's sale, with no cost of its own, comes
+    back at the cost its sale exit left with — whatever the entry's type is
+    called (integration review of PR #123, P2-2: #119 adds a cancellation
+    return that states no cost and is not in `RETURN_TYPES`).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.move(StockMovement.PURCHASE_ENTRY, 5, unit_cost=D('10'))
+        self.order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.centro, customer_email='x@example.com',
+            total=D('119.80'), status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+        )
+        self.sale = self.move(StockMovement.SALE_EXIT, 2, order=self.order)
+        self.move(StockMovement.PURCHASE_ENTRY, 3, unit_cost=D('30'))          # 3 × 10 + 3 × 30 → 20
+
+    def test_an_entry_of_any_type_for_the_order_takes_the_exits_cost(self):
+        self.assertEqual(self.average(), D('20.0000'))
+        for movement_type in (StockMovement.MANUAL_ENTRY, StockMovement.RETURN_ENTRY):
+            with self.subTest(movement_type):
+                back = self.move(movement_type, 1, order=self.order)
+                self.assertEqual((back.unit_cost, back.cost_source), (D('10.0000'), 'average'))
+                self.assertEqual(back.metadata.get('cost_from_movement_ids'), [self.sale.pk])
+        # (6 × 20 + 2 × 10) / 8 = 17.5 — known cost, nothing pending.
+        stock = BranchStock.objects.get(branch=self.centro, product=self.case)
+        self.assertEqual((stock.average_cost, stock.uncosted_quantity), (D('17.5000'), 0))
+
+    def test_a_stated_cost_still_wins(self):
+        back = self.move(StockMovement.MANUAL_ENTRY, 1, order=self.order, unit_cost=D('12'))
+        self.assertEqual((back.unit_cost, back.cost_source), (D('12.0000'), 'entry'))
+
+    def test_a_purchase_for_the_order_is_not_a_return(self):
+        """The on-order receipt of DC3 states its offer's cost — or none: then it is unknown, not the shelf's."""
+        bought = self.move(StockMovement.PURCHASE_ENTRY, 1, order=self.order)
+        self.assertEqual((bought.unit_cost, bought.cost_source), (None, 'unknown'))
+
+    def test_an_exit_of_unknown_cost_gives_nothing_to_take(self):
+        StockMovement.objects.filter(pk=self.sale.pk).update(unit_cost=None, cost_source='unknown')
+        back = self.move(StockMovement.MANUAL_ENTRY, 1, order=self.order)
+        self.assertEqual((back.unit_cost, back.cost_source), (None, 'unknown'))
+
+    def test_an_exit_at_the_reference_cost_comes_back_pending(self):
+        StockMovement.objects.filter(pk=self.sale.pk).update(unit_cost=D('9'), cost_source='reference')
+        back = self.move(StockMovement.MANUAL_ENTRY, 1, order=self.order)
+        self.assertEqual((back.unit_cost, back.cost_source), (D('9.0000'), 'reference'))
+        self.assertEqual(BranchStock.objects.get(branch=self.centro, product=self.case).uncosted_quantity, 1)
+
+
 class SpecificCostOfDevicesTest(_Shop):
     def setUp(self):
         super().setUp()
