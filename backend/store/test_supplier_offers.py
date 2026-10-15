@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 from django.core.cache import cache
 from django.db import transaction
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from store import checkout_services as checkout
@@ -417,3 +417,49 @@ class MarginWithSupplierCostTest(SupplyShop, TestCase):
         body = res.json()
         self.assertEqual(D(body['cost_of_goods_sold']), D('140.00'))
         self.assertEqual(body['pending_cost']['lines'], 0)
+
+
+class LastUnitRaceTest(TransactionTestCase):
+    """Two payments at the same instant for the last confirmed unit: one commits, the other asks."""
+
+    def test_one_commits_and_the_other_is_kept_to_confirm(self):
+        from threading import Barrier, Thread
+
+        from django.db import connection
+        from store.views import _SignedNotificationMixin
+
+        shop = SupplyShop()
+        shop.build('dc3-carrera')
+        SupplierOffer.objects.filter(pk=shop.offer.pk).update(confirmed_quantity=1)
+        orders = []
+        for session in ('carrito-a', 'carrito-b'):
+            shop.add_on_order(quantity=1, session=session)
+            orders.append(shop.checkout(session))
+        attempts = [
+            PaymentTransaction.objects.create(order=order, provider='izipay', transaction_id=f'R{order.pk:019d}',
+                                              amount=order.total, currency='PEN')
+            for order in orders
+        ]
+        barrier, outcomes = Barrier(2), []
+
+        def run(attempt):
+            try:
+                barrier.wait(timeout=5)
+                outcomes.append(_SignedNotificationMixin()._confirm(attempt, SimpleNamespace(
+                    signed=True, response_code='00', pay_method='CARD', authorization_code='A',
+                    reference_number='R', unique_id=f'U{attempt.pk}')))
+            finally:
+                connection.close()
+
+        threads = [Thread(target=run, args=(attempt,)) for attempt in attempts]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertEqual(outcomes, ['paid', 'paid'])
+        states = sorted(OrderItem.objects.filter(order__in=orders).values_list('supply_status', flat=True))
+        self.assertEqual(states, ['pending', 'to_confirm'])
+        shop.offer.refresh_from_db()
+        self.assertEqual(shop.offer.committed_quantity, 1)
+        self.assertEqual(Order.objects.filter(pk__in=[o.pk for o in orders], paid=True).count(), 2)
+        self.assertFalse(StockMovement.objects.filter(product=shop.case).exists())

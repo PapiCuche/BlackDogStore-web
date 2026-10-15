@@ -15,6 +15,7 @@
   "store.test_payment_hardening.SeveralRunsAtOnceTest",
   "store.test_register_race.AtTheSameInstantTest",
   "store.test_stock_units.ConcurrentSaleTest",
+  "store.test_supplier_offers.LastUnitRaceTest",
   "store.test_verification_code.ConcurrencyTest",
   "store.tests.C11IdempotencyRecoveryTest",
   "store.tests.C15InitialRaceTest",
