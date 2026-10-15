@@ -1131,3 +1131,39 @@ class TillReleaseTest(SaleShop, TestCase):
         # Once that order cannot be paid any more, the till may take it.
         Order.objects.filter(pk=order.pk).update(status=Order.Status.FAILED)
         self.assertEqual(self.release(self.used_a).status_code, 200)
+
+
+class DeviceSaleCostTest(SaleShop, TestCase):
+    """The margin of a device line and its Kardex exit say the same cost."""
+
+    def sell(self, *devices):
+        for unit in devices:
+            holds.hold(product=unit.product, branch=self.branch, session_key='carrito-a',
+                       unit_public_id=str(unit.public_id))
+        order = self.checkout()
+        self.pay(order)
+        exit_line = StockMovement.objects.get(order=order, movement_type='sale_exit')
+        return order, exit_line
+
+    def test_the_sale_exit_and_the_line_carry_the_devices_own_cost(self):
+        order, exit_line = self.sell(self.used_a)
+        [line] = order.items.all()
+        self.assertEqual((exit_line.unit_cost, exit_line.cost_source), (D('1100.0000'), 'unit'))
+        self.assertEqual((line.unit_cost, line.cost_source), (D('1100.0000'), 'unit'))
+
+    def test_a_device_without_cost_leaves_at_the_reference_cost_marked_so(self):
+        StockUnit.objects.filter(pk=self.used_a.pk).update(cost=None)
+        Product.objects.filter(pk=self.used128.pk).update(reference_cost=D('1234.00'))
+        self.used_a.refresh_from_db()
+        order, exit_line = self.sell(self.used_a)
+        [line] = order.items.all()
+        self.assertEqual((line.unit_cost, line.cost_source), (D('1234.0000'), 'reference'))
+        self.assertEqual((exit_line.unit_cost, exit_line.cost_source), (D('1234.0000'), 'reference'))
+
+    def test_without_unit_or_reference_cost_both_say_unknown(self):
+        StockUnit.objects.filter(pk=self.used_a.pk).update(cost=None)
+        self.used_a.refresh_from_db()
+        order, exit_line = self.sell(self.used_a)
+        [line] = order.items.all()
+        self.assertEqual((line.unit_cost, line.cost_source), (None, 'unknown'))
+        self.assertEqual((exit_line.unit_cost, exit_line.cost_source), (None, 'unknown'))

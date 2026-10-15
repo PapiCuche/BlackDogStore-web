@@ -162,15 +162,25 @@ def snapshot_nets(order) -> None:
 
 
 def snapshot_unit_cost(item, unit) -> None:
-    """DC2 — a line of ONE chosen device is valued at that device's own cost. Once."""
+    """
+    DC2 — a line of ONE chosen device is valued at that device's own cost. Once.
+
+    A device of unknown cost is valued at the catalogue's reference cost,
+    marked `reference` — the same cost its Kardex exit carries
+    (`cost_services.resolve`), so the margin and the Kardex agree.
+    """
+    from .cost_services import quantize_cost
     from .models import OrderItem
 
+    if unit.cost is not None:
+        cost, source = quantize_cost(unit.cost), OrderItem.COST_UNIT
+    elif item.product.reference_cost is not None:
+        cost, source = quantize_cost(item.product.reference_cost), OrderItem.COST_REFERENCE
+    else:
+        cost, source = None, OrderItem.COST_UNKNOWN
     OrderItem.objects.filter(
         pk=item.pk, unit_cost__isnull=True, cost_source=OrderItem.COST_UNKNOWN,
-    ).update(
-        unit_cost=unit.cost,
-        cost_source=OrderItem.COST_UNIT if unit.cost is not None else OrderItem.COST_UNKNOWN,
-    )
+    ).update(unit_cost=cost, cost_source=source)
 
 
 def snapshot_cost(item, movement) -> None:

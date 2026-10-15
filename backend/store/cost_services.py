@@ -134,9 +134,16 @@ def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_be
     """
     if unit_costs is not None:
         costs = list(unit_costs)
+        source = UNIT
+        if not is_entry and reference_cost is not None and any(cost is None for cost in costs):
+            # DC2 review — a device of unknown cost LEAVES at the catalogue's
+            # reference cost, said so: the rule of every other exit (`_carried`),
+            # and the cost its sale line freezes (`margin_services.snapshot_unit_cost`).
+            costs = [reference_cost if cost is None else cost for cost in costs]
+            source = REFERENCE
         if costs and all(cost is not None for cost in costs):
             mean = sum((Decimal(cost) for cost in costs), Decimal('0')) / Decimal(len(costs))
-            return MovementCost(quantize_cost(mean), UNIT, average_before, 0)
+            return MovementCost(quantize_cost(mean), source, average_before, 0)
         return MovementCost(None, UNKNOWN, average_before, 0)
 
     shelf = max(int(stock_before or 0), 0)
