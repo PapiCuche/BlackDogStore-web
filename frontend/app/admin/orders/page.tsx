@@ -26,6 +26,7 @@ type Filters = {
   paid: string;
   shortfall: string;
   review: string;
+  supply: string;
   date_from: string;
   date_to: string;
 };
@@ -39,6 +40,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     paid: "",
     shortfall: "",
     review: "",
+    supply: "",
     date_from: "",
     date_to: "",
   });
@@ -58,6 +60,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         paid: (filters.paid || undefined) as "true" | "false" | undefined,
         shortfall: (filters.shortfall || undefined) as "true" | undefined,
         review: (filters.review || undefined) as "pending" | undefined,
+        supply: (filters.supply || undefined) as "to_confirm" | "pending" | "failed" | "received" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -99,7 +102,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         />
 
         <FilterBar>
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(7,minmax(0,auto))]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(8,minmax(0,auto))]">
             <label>
               <span className="sr-only">Buscar órdenes</span>
               <input
@@ -134,6 +137,17 @@ function OrdersContent({ user }: { user: AuthUser }) {
                 <option value="">Pagado / No pagado</option>
                 <option value="true">Pagado</option>
                 <option value="false">No pagado</option>
+              </select>
+            </label>
+            {/* DC3: lo vendido bajo pedido, por cómo va su abastecimiento. */}
+            <label>
+              <span className="sr-only">Abastecimiento</span>
+              <select value={filters.supply} onChange={(e) => setFilter("supply", e.target.value)} className={internalInputClass}>
+                <option value="">Abastecimiento: todos</option>
+                <option value="to_confirm">Por confirmar con el proveedor</option>
+                <option value="pending">Pedido al proveedor</option>
+                <option value="received">Recibido del proveedor</option>
+                <option value="failed">No se pudo abastecer</option>
               </select>
             </label>
             <label>

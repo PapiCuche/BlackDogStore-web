@@ -11,6 +11,7 @@ import { ProductForm } from "../../components/ProductForm";
 import { ProductGallery } from "../../components/ProductGallery";
 import { InventoryAdjustForm } from "../../components/InventoryAdjustForm";
 import { ProductStatusBadge } from "../../components/ProductStatusBadge";
+import { ProductSaleModeControl } from "../../components/ProductSaleModeControl";
 import {
   AdminProduct,
   AdminCategory,
@@ -127,6 +128,17 @@ function ProductDetailContent({ user, access }: { user: AuthUser; access: Intern
               }
             />
           </section>
+        ) : null}
+
+        {/* DC3: sólo stock propio, o también bajo pedido contra una oferta de proveedor. */}
+        {product.sale_mode !== undefined ? (
+          <ProductSaleModeControl
+            productId={product.id}
+            saleMode={product.sale_mode}
+            canManage={canManage}
+            companyId={access.dashboard?.company?.id ?? null}
+            onSaved={(saleMode) => setProduct((prev) => prev ? { ...prev, sale_mode: saleMode } : prev)}
+          />
         ) : null}
 
         <section className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">

@@ -266,6 +266,27 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["products.view"],
     status: "implemented",
   },
+  {
+    // DEVICE-COMMERCE-01 · DC3: quién abastece lo que se vende bajo pedido.
+    // Ver con `products.view`; cambiar, `products.manage`. Lo pendiente de
+    // liquidar, sólo con `costs.view` (la pantalla lo decide).
+    id: "products.suppliers",
+    group: "products",
+    label: "Proveedores",
+    description: "Proveedores de la venta bajo pedido y lo pendiente de liquidarles.",
+    href: "/admin/products/suppliers",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
+    id: "products.supplier_offers",
+    group: "products",
+    label: "Ofertas de proveedores",
+    description: "Precio, cantidad confirmada, vigencia y plazo de entrega de cada oferta; carga semanal desde Excel.",
+    href: "/admin/products/suppliers/offers",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
 
   // ── Inventario ───────────────────────────────────────────────────────────
   // Phase 2D: `legacyRoles` is gone from every inventory module. Stock belongs

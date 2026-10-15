@@ -814,6 +814,8 @@ export type PosProduct = {
   /** SERIAL-PICK-01: se vende equipo por equipo; la venta debe decir cuáles. */
   is_serialized?: boolean;
   requires_imei?: boolean;
+  /** DC3: la oferta vigente que lo cubre bajo pedido (plazo y precio), o null. */
+  on_order?: { lead_time_days: number; price: string } | null;
 };
 
 export type PosSaleLine = {
@@ -821,6 +823,8 @@ export type PosSaleLine = {
   quantity: number;
   /** De cada equipo con serie, cuál es y cómo se identificó. */
   units?: { id: number; method: "scanner" | "manual" }[];
+  /** DC3: la línea entera es bajo pedido; no lleva `units`, aunque el producto tenga serie. */
+  on_order?: boolean;
 };
 
 /** Un equipo que la caja puede vender, descrito para confirmar que es ese. */
@@ -1184,7 +1188,12 @@ export type PosPreview = {
   customer: { id: number; name: string } | null;
   /** null unless the caller may see earnings. */
   commission: { rate_percent: string; base_amount: string; amount: string } | null;
-  lines: { product: number; name: string; quantity: number; price: string }[];
+  lines: {
+    product: number; name: string; quantity: number; price: string;
+    /** DC3: la línea es bajo pedido, con su plazo. */
+    on_order?: boolean;
+    lead_time_days?: number | null;
+  }[];
 };
 
 export type PosSaleInput = {
@@ -2234,4 +2243,300 @@ export function fetchCatalogSettings(companyId?: number | null): Promise<Catalog
 
 export function updateCatalogSettings(body: Partial<CatalogSettings>, companyId?: number | null): Promise<CatalogSettings> {
   return catalogCall(`/admin/catalog/settings/${companyQuery(companyId)}`, jsonInit("PATCH", body), "No se pudieron guardar los nombres de las líneas.");
+}
+
+// ---------------------------------------------------------------------------
+// DEVICE-COMMERCE-01 · DC3 — suppliers, offers and «venta bajo pedido»
+// ---------------------------------------------------------------------------
+//
+// Seeing needs `products.view`; every write `products.manage`. The agreed cost
+// of an offer travels ONLY to whoever holds `costs.view`: the key is absent
+// otherwise, and the screens show a cost only when the key is there — never a
+// zero or a dash that pretends to be one.
+
+export type SupplierDocumentType = "" | "dni" | "ruc" | "ce" | (string & {});
+
+export const SUPPLIER_DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  "": "Sin documento",
+  dni: "DNI",
+  ruc: "RUC",
+  ce: "Carné de extranjería",
+};
+
+export type SupplierRow = {
+  id: number;
+  name: string;
+  document_type: SupplierDocumentType;
+  document_number: string;
+  contact_name: string;
+  phone: string;
+  email: string;
+  notes: string;
+  is_active: boolean;
+  offer_count: number;
+};
+
+export type SupplierWrite = Partial<Omit<SupplierRow, "id" | "offer_count">>;
+
+export type Paginated<T> = { count: number; page: number; page_size: number; results: T[] };
+
+export type SupplierOfferState = "active" | "expired" | "inactive" | "scheduled" | "unconfirmed" | "exhausted";
+
+export const SUPPLIER_OFFER_STATE_LABELS: Record<SupplierOfferState, string> = {
+  active: "Vigente",
+  scheduled: "Programada",
+  unconfirmed: "Sin cantidad confirmada",
+  exhausted: "Agotada",
+  expired: "Vencida",
+  inactive: "Desactivada",
+};
+
+export type SupplierOffer = {
+  id: number;
+  supplier_id: number;
+  supplier_name: string;
+  product_id: number;
+  product_name: string;
+  product_slug: string;
+  commercial_price: string;
+  /** `null` = not confirmed yet: the offer sells nothing until it is. */
+  confirmed_quantity: number | null;
+  committed_quantity: number;
+  remaining: number | null;
+  valid_from: string;
+  valid_until: string;
+  lead_time_days: number;
+  is_active: boolean;
+  deactivated_reason: string;
+  state: SupplierOfferState;
+  updated_at: string;
+  /** Present ONLY for `costs.view`. Absent is «you may not see it», not zero. */
+  agreed_cost?: string | null;
+};
+
+export type SupplierOfferWrite = Partial<{
+  supplier_id: number;
+  product_id: number;
+  agreed_cost: string | null;
+  commercial_price: string;
+  confirmed_quantity: number | null;
+  valid_from: string;
+  valid_until: string;
+  lead_time_days: number;
+  is_active: boolean;
+}>;
+
+export type SupplierOfferHistoryEntry = {
+  action: string;
+  at: string;
+  actor: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export const SUPPLIER_OFFER_ACTION_LABELS: Record<string, string> = {
+  supplier_offer_created: "Creada",
+  supplier_offer_updated: "Modificada",
+  supplier_offer_deactivated: "Desactivada",
+  supplier_offer_expired: "Vencida",
+};
+
+export type SupplierSettlementRow = {
+  supplier_id: number;
+  supplier_name: string;
+  units: number;
+  amount: string;
+  units_without_cost: number;
+};
+
+export type SupplierImportRow = {
+  row_number: number;
+  action: "create" | "update" | "no_change" | "error" | "skip";
+  errors: string[];
+  warnings: string[];
+  data: {
+    supplier?: string;
+    product_name?: string;
+    commercial_price?: string | null;
+    confirmed_quantity?: number | string | null;
+    valid_from?: string | null;
+    valid_until?: string | null;
+    lead_time_days?: number | string | null;
+    agreed_cost?: string | null;
+  };
+};
+
+export type SupplierImportPreview = {
+  id: number;
+  status: string;
+  rows_total: number;
+  rows_create: number;
+  rows_update: number;
+  rows_no_change: number;
+  rows_error: number;
+  /** The file had a cost column and this person may not see costs: it was ignored, not read. */
+  cost_column_ignored: boolean;
+  rows: SupplierImportRow[];
+};
+
+export type SupplierImportResult = { status: "applied"; created: number; updated: number; unchanged: number };
+
+export type ProductSaleMode = "stock" | "stock_or_order";
+
+export const PRODUCT_SALE_MODE_LABELS: Record<ProductSaleMode, string> = {
+  stock: "Sólo stock propio",
+  stock_or_order: "Stock o bajo pedido",
+};
+
+function withQuery(path: string, params: Record<string, string | number | undefined | null>, companyId?: number | null) {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") qs.set(key, String(value));
+  }
+  if (companyId) qs.set("company", String(companyId));
+  const query = qs.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function listOf<T>(data: T[] | { results?: T[] } | null | undefined): T[] {
+  return Array.isArray(data) ? data : data?.results ?? [];
+}
+
+export function fetchSuppliers(
+  params: { search?: string; active?: "true" | "false" | ""; page?: number } = {},
+  companyId?: number | null,
+): Promise<Paginated<SupplierRow>> {
+  return catalogCall<Paginated<SupplierRow> | SupplierRow[]>(
+    withQuery("/admin/suppliers/", { search: params.search, active: params.active, page: params.page }, companyId),
+    {}, "No se pudieron cargar los proveedores.",
+  ).then((data) => (Array.isArray(data)
+    ? { count: data.length, page: 1, page_size: data.length, results: data }
+    : { ...data, results: data?.results ?? [] }));
+}
+
+export function createSupplier(body: SupplierWrite, companyId?: number | null): Promise<SupplierRow> {
+  return catalogCall(withQuery("/admin/suppliers/", {}, companyId), jsonInit("POST", body), "No se pudo crear el proveedor.");
+}
+
+export function updateSupplier(id: number, body: SupplierWrite, companyId?: number | null): Promise<SupplierRow> {
+  return catalogCall(withQuery(`/admin/suppliers/${id}/`, {}, companyId), jsonInit("PATCH", body), "No se pudo guardar el proveedor.");
+}
+
+export function fetchSupplierSettlement(companyId?: number | null): Promise<SupplierSettlementRow[]> {
+  return catalogCall<{ results: SupplierSettlementRow[] } | SupplierSettlementRow[]>(
+    withQuery("/admin/suppliers/settlement/", {}, companyId), {}, "No se pudo cargar lo pendiente de liquidar.",
+  ).then(listOf);
+}
+
+export function fetchSupplierOffers(
+  params: { supplier?: number | ""; product?: number | ""; state?: "active" | "expired" | "inactive" | ""; page?: number } = {},
+  companyId?: number | null,
+): Promise<SupplierOffer[]> {
+  return catalogCall<{ results: SupplierOffer[] } | SupplierOffer[]>(
+    withQuery("/admin/supplier-offers/", {
+      supplier: params.supplier, product: params.product, state: params.state, page: params.page,
+    }, companyId),
+    {}, "No se pudieron cargar las ofertas.",
+  ).then(listOf);
+}
+
+export function createSupplierOffer(body: SupplierOfferWrite, companyId?: number | null): Promise<SupplierOffer> {
+  return catalogCall(withQuery("/admin/supplier-offers/", {}, companyId), jsonInit("POST", body), "No se pudo crear la oferta.");
+}
+
+export function updateSupplierOffer(id: number, body: SupplierOfferWrite, companyId?: number | null): Promise<SupplierOffer> {
+  return catalogCall(withQuery(`/admin/supplier-offers/${id}/`, {}, companyId), jsonInit("PATCH", body), "No se pudo guardar la oferta.");
+}
+
+export function deactivateSupplierOffer(id: number, reason: string, companyId?: number | null): Promise<SupplierOffer> {
+  return catalogCall(
+    withQuery(`/admin/supplier-offers/${id}/deactivate/`, {}, companyId),
+    jsonInit("POST", { reason }), "No se pudo desactivar la oferta.",
+  );
+}
+
+export function fetchSupplierOfferHistory(id: number, companyId?: number | null): Promise<SupplierOfferHistoryEntry[]> {
+  return catalogCall<{ results: SupplierOfferHistoryEntry[] }>(
+    withQuery(`/admin/supplier-offers/${id}/history/`, {}, companyId), {}, "No se pudo cargar el historial.",
+  ).then(listOf);
+}
+
+/** Absolute URLs for the browser to navigate to — downloads, not fetches. */
+export function supplierOfferTemplateUrl(companyId?: number | null): string {
+  return `${API_BASE}${withQuery("/admin/supplier-offers/import/template/", {}, companyId)}`;
+}
+
+export function supplierOfferExportUrl(companyId?: number | null): string {
+  return `${API_BASE}${withQuery("/admin/supplier-offers/export/", {}, companyId)}`;
+}
+
+/** Multipart, WITHOUT a Content-Type: `fetchWithAuth` leaves it to the browser (IMPORT-UPLOAD-415). */
+export function previewSupplierOfferImport(file: File, companyId?: number | null): Promise<SupplierImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  return catalogCall(
+    withQuery("/admin/supplier-offers/import/preview/", {}, companyId),
+    { method: "POST", body: form }, "No se pudo leer el archivo.",
+  );
+}
+
+export function applySupplierOfferImport(id: number, companyId?: number | null): Promise<SupplierImportResult> {
+  return catalogCall(
+    withQuery(`/admin/supplier-offers/import/${id}/apply/`, {}, companyId),
+    jsonInit("POST", {}), "No se pudo aplicar el archivo.",
+  );
+}
+
+/** `products.manage`. A used variant cannot be sold on order: the server answers 400 and says so. */
+export function updateProductSaleMode(
+  productId: number, saleMode: ProductSaleMode, companyId?: number | null,
+): Promise<{ sale_mode: ProductSaleMode }> {
+  return catalogCall(
+    withQuery(`/admin/products/${productId}/sale-mode/`, {}, companyId),
+    jsonInit("PATCH", { sale_mode: saleMode }), "No se pudo cambiar el modo de venta.",
+  );
+}
+
+// ── Supply of an order ──────────────────────────────────────────────────────
+
+export type OrderSupplyLine = {
+  id: number;
+  supply_origin: "own" | "supplier";
+  supply_status: string;
+  supply_note: string;
+  lead_time_days: number | null;
+  supplier_offer_id: number | null;
+  supplier_name: string;
+};
+
+export type ReceivedUnitInput = { serial_number: string; imei: string; imei2?: string };
+
+function supplyPath(orderId: number, itemId: number, action: "confirm" | "receive" | "fail") {
+  return `/admin/orders/${orderId}/supply/${itemId}/${action}/`;
+}
+
+export function confirmOrderSupply(
+  orderId: number, itemId: number, offerId?: number | null, companyId?: number | null,
+): Promise<OrderSupplyLine> {
+  return catalogCall(
+    withQuery(supplyPath(orderId, itemId, "confirm"), {}, companyId),
+    jsonInit("POST", offerId ? { offer_id: offerId } : {}), "No se pudo confirmar con el proveedor.",
+  );
+}
+
+export function receiveOrderSupply(
+  orderId: number, itemId: number, units?: ReceivedUnitInput[], companyId?: number | null,
+): Promise<OrderSupplyLine> {
+  return catalogCall(
+    withQuery(supplyPath(orderId, itemId, "receive"), {}, companyId),
+    jsonInit("POST", units && units.length ? { units } : {}), "No se pudo registrar la recepción.",
+  );
+}
+
+export function failOrderSupply(
+  orderId: number, itemId: number, reason: string, companyId?: number | null,
+): Promise<OrderSupplyLine> {
+  return catalogCall(
+    withQuery(supplyPath(orderId, itemId, "fail"), {}, companyId),
+    jsonInit("POST", { reason }), "No se pudo registrar que no se abasteció.",
+  );
 }

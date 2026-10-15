@@ -1,0 +1,743 @@
+"use client";
+
+/**
+ * Productos › Proveedores › Ofertas — DEVICE-COMMERCE-01 · DC3.
+ *
+ * An offer says that a supplier sells a product at a price, for a number of
+ * CONFIRMED units, between two dates (both included), delivered in N days. Only
+ * a confirmed, current offer with units left makes a product sellable «bajo
+ * pedido»; the server decides that and says it as the offer's `state`.
+ *
+ * THE COST. `agreed_cost` comes only to `costs.view`. A cost is shown when the
+ * offer carries the key — never derived, never a zero standing in for «you may
+ * not see it».
+ *
+ * Weekly updates are a re-upload of the Excel: preview, then apply.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { fetchAdminProducts, type AdminProduct } from "@/app/lib/admin";
+import {
+  CatalogApiError,
+  SUPPLIER_OFFER_ACTION_LABELS,
+  SUPPLIER_OFFER_STATE_LABELS,
+  applySupplierOfferImport,
+  createSupplierOffer,
+  deactivateSupplierOffer,
+  fetchSupplierOfferHistory,
+  fetchSupplierOffers,
+  fetchSuppliers,
+  previewSupplierOfferImport,
+  supplierOfferExportUrl,
+  supplierOfferTemplateUrl,
+  updateSupplierOffer,
+  type SupplierImportPreview,
+  type SupplierImportResult,
+  type SupplierOffer,
+  type SupplierOfferHistoryEntry,
+  type SupplierOfferState,
+  type SupplierOfferWrite,
+  type SupplierRow,
+} from "../lib/internal-api";
+import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime, formatSoles } from "./InventoryUi";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
+
+const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
+
+/** The cost is the server's to send. Its key, not its value, says whether it may be shown. */
+export function hasAgreedCost(offer: SupplierOffer): offer is SupplierOffer & { agreed_cost: string | null } {
+  return Object.prototype.hasOwnProperty.call(offer, "agreed_cost");
+}
+
+/** «12 jun 2026», from a YYYY-MM-DD date, without a timezone shifting the day. */
+function formatDay(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");
+  if (!match) return value || "—";
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+const STATE_TONE: Record<SupplierOfferState, string> = {
+  active: "border-success-border bg-success-surface text-success",
+  scheduled: "border-bd-border text-muted",
+  unconfirmed: "border-warning-border bg-warning-surface text-warning",
+  exhausted: "border-warning-border bg-warning-surface text-warning",
+  expired: "border-bd-border text-muted",
+  inactive: "border-bd-border text-muted",
+};
+
+export function OfferStateBadge({ state }: { state: SupplierOfferState }) {
+  return (
+    <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-medium ${STATE_TONE[state] ?? "border-bd-border text-muted"}`}>
+      {SUPPLIER_OFFER_STATE_LABELS[state] ?? state}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Product picker — search, then choose one
+// ---------------------------------------------------------------------------
+
+type PickedProduct = { id: number; name: string };
+
+function ProductPicker({
+  label, value, onChange, companyId,
+}: {
+  label: string;
+  value: PickedProduct | null;
+  onChange: (product: PickedProduct | null) => void;
+  companyId: number | null;
+}) {
+  const [term, setTerm] = useState("");
+  const [hits, setHits] = useState<AdminProduct[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (term.trim().length < 2) { setHits([]); return; }
+      fetchAdminProducts({ search: term.trim(), page_size: 8, company: companyId }).then(
+        (page) => { if (!cancelled) setHits(page.results ?? []); },
+        () => { if (!cancelled) setHits([]); },
+      );
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [term, companyId]);
+
+  if (value) {
+    return (
+      <div className="block text-xs text-muted">
+        {label}
+        <div className="mt-1.5 flex items-center justify-between gap-2 rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground">
+          <span className="min-w-0 truncate">{value.name}</span>
+          <button type="button" className="text-xs font-semibold text-muted hover:text-foreground" onClick={() => onChange(null)} aria-label={`Quitar ${value.name}`}>
+            Quitar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <label className="block text-xs text-muted">
+        {label}
+        <input type="search" value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Busca por nombre o código" className={`mt-1.5 ${internalInputClass}`} />
+      </label>
+      {hits.length ? (
+        <ul className="mt-1 max-h-56 overflow-auto rounded-lg border border-bd-border bg-surface" aria-label={`Resultados: ${label}`}>
+          {hits.map((product) => (
+            <li key={product.id}>
+              <button
+                type="button"
+                className="block w-full px-3 py-2 text-left text-sm text-foreground hover:bg-foreground/[0.04]"
+                onClick={() => { onChange({ id: product.id, name: product.name }); setTerm(""); setHits([]); }}
+              >
+                {product.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Offer form
+// ---------------------------------------------------------------------------
+
+type OfferDraft = {
+  supplier_id: string;
+  product: PickedProduct | null;
+  commercial_price: string;
+  agreed_cost: string;
+  confirmed_quantity: string;
+  valid_from: string;
+  valid_until: string;
+  lead_time_days: string;
+  is_active: boolean;
+};
+
+function draftOf(offer: SupplierOffer | null): OfferDraft {
+  if (!offer) {
+    return {
+      supplier_id: "", product: null, commercial_price: "", agreed_cost: "", confirmed_quantity: "",
+      valid_from: "", valid_until: "", lead_time_days: "", is_active: true,
+    };
+  }
+  return {
+    supplier_id: String(offer.supplier_id),
+    product: { id: offer.product_id, name: offer.product_name },
+    commercial_price: offer.commercial_price ?? "",
+    agreed_cost: hasAgreedCost(offer) ? offer.agreed_cost ?? "" : "",
+    confirmed_quantity: offer.confirmed_quantity === null ? "" : String(offer.confirmed_quantity),
+    valid_from: offer.valid_from ?? "",
+    valid_until: offer.valid_until ?? "",
+    lead_time_days: String(offer.lead_time_days ?? ""),
+    is_active: offer.is_active,
+  };
+}
+
+function OfferForm({
+  offer, suppliers, showCost, companyId, onSaved, onCancel,
+}: {
+  /** null = a new offer. */
+  offer: SupplierOffer | null;
+  suppliers: SupplierRow[];
+  /** A cost field only for who may see costs — and, on an edit, only when the offer carried the key. */
+  showCost: boolean;
+  companyId: number | null;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<OfferDraft>(() => draftOf(offer));
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const missing: Record<string, string> = {};
+    if (!draft.supplier_id) missing.supplier_id = "Elige el proveedor.";
+    if (!offer && !draft.product) missing.product_id = "Elige el producto.";
+    if (!draft.commercial_price.trim()) missing.commercial_price = "Escribe el precio de venta bajo pedido.";
+    if (!draft.valid_from) missing.valid_from = "Indica desde cuándo vale.";
+    if (!draft.valid_until) missing.valid_until = "Indica hasta cuándo vale.";
+    if (!draft.lead_time_days.trim()) missing.lead_time_days = "Indica en cuántos días entrega.";
+    if (Object.keys(missing).length) { setFields(missing); return; }
+
+    const body: SupplierOfferWrite = {
+      supplier_id: Number(draft.supplier_id),
+      commercial_price: draft.commercial_price.trim(),
+      confirmed_quantity: draft.confirmed_quantity.trim() === "" ? null : Number(draft.confirmed_quantity),
+      valid_from: draft.valid_from,
+      valid_until: draft.valid_until,
+      lead_time_days: Number(draft.lead_time_days),
+      ...(showCost ? { agreed_cost: draft.agreed_cost.trim() === "" ? null : draft.agreed_cost.trim() } : {}),
+      ...(offer ? { is_active: draft.is_active } : { product_id: draft.product!.id }),
+    };
+    setSaving(true);
+    setFields({});
+    setError(null);
+    try {
+      if (offer) await updateSupplierOffer(offer.id, body, companyId);
+      else await createSupplierOffer(body, companyId);
+      onSaved();
+    } catch (err) {
+      setError(message(err, "No se pudo guardar la oferta."));
+      if (err instanceof CatalogApiError) {
+        if (Object.keys(err.fields).length) setFields(err.fields);
+        if (err.field) setFields((f) => ({ ...f, [err.field as string]: err.message }));
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fieldError = (key: string) => (fields[key] ? <span className="mt-1 block text-danger">{fields[key]}</span> : null);
+  const input = (key: keyof OfferDraft, label: string, extra: React.InputHTMLAttributes<HTMLInputElement> = {}) => (
+    <label className="block text-xs text-muted">
+      {label}
+      <input
+        value={String(draft[key] ?? "")}
+        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+        aria-invalid={fields[key] ? true : undefined}
+        className={`mt-1.5 ${internalInputClass}`}
+        {...extra}
+      />
+      {fieldError(key)}
+    </label>
+  );
+
+  return (
+    <form
+      onSubmit={submit}
+      noValidate
+      aria-label={offer ? `Editar oferta de ${offer.product_name}` : "Nueva oferta"}
+      className="mb-6 grid gap-3 rounded-lg border border-bd-border bg-background p-4 md:grid-cols-2"
+    >
+      <label className="block text-xs text-muted">
+        Proveedor
+        <select
+          value={draft.supplier_id}
+          onChange={(e) => setDraft({ ...draft, supplier_id: e.target.value })}
+          aria-invalid={fields.supplier_id ? true : undefined}
+          className={`mt-1.5 ${internalInputClass}`}
+        >
+          <option value="">Elige un proveedor</option>
+          {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_active ? "" : " (inactivo)"}</option>)}
+        </select>
+        {fieldError("supplier_id")}
+      </label>
+      {offer ? (
+        <div className="block text-xs text-muted">
+          Producto
+          <p className="mt-1.5 rounded-lg border border-bd-border px-3 py-2 text-sm text-foreground">{offer.product_name}</p>
+        </div>
+      ) : (
+        <div>
+          <ProductPicker label="Producto" value={draft.product} onChange={(product) => setDraft({ ...draft, product })} companyId={companyId} />
+          {fieldError("product_id")}
+        </div>
+      )}
+      {input("commercial_price", "Precio de venta bajo pedido (S/)", { inputMode: "decimal" })}
+      {showCost ? input("agreed_cost", "Costo acordado con el proveedor (S/)", { inputMode: "decimal" }) : null}
+      <label className="block text-xs text-muted">
+        Cantidad confirmada
+        <input
+          type="number"
+          min={0}
+          value={draft.confirmed_quantity}
+          onChange={(e) => setDraft({ ...draft, confirmed_quantity: e.target.value })}
+          aria-invalid={fields.confirmed_quantity ? true : undefined}
+          className={`mt-1.5 ${internalInputClass}`}
+        />
+        <span className="mt-1 block">En blanco = sin confirmar: la oferta no vende hasta que se confirme.</span>
+        {fieldError("confirmed_quantity")}
+      </label>
+      {input("lead_time_days", "Entrega en (días)", { type: "number", min: 0 })}
+      {input("valid_from", "Vigente desde", { type: "date" })}
+      {input("valid_until", "Vigente hasta (incluido)", { type: "date" })}
+      {offer ? (
+        <label className="flex items-center gap-2 self-end text-sm text-foreground">
+          <input type="checkbox" checked={draft.is_active} onChange={(e) => setDraft({ ...draft, is_active: e.target.checked })} />
+          Activa
+        </label>
+      ) : null}
+      {error ? <p role="alert" className="text-xs text-danger md:col-span-2">{error}</p> : null}
+      <div className="flex justify-end gap-2 md:col-span-2">
+        <button type="button" className={internalButtonClass} onClick={onCancel} disabled={saving}>Cancelar</button>
+        <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>
+          {saving ? "Guardando…" : offer ? "Guardar oferta" : "Crear oferta"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Deactivate and history
+// ---------------------------------------------------------------------------
+
+function DeactivateForm({
+  offer, companyId, onDone, onCancel,
+}: { offer: SupplierOffer; companyId: number | null; onDone: () => void; onCancel: () => void }) {
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!reason.trim()) { setError("Escribe el motivo."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await deactivateSupplierOffer(offer.id, reason.trim(), companyId);
+      onDone();
+    } catch (err) {
+      setError(message(err, "No se pudo desactivar la oferta."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} noValidate aria-label={`Desactivar oferta de ${offer.product_name}`} className="mb-6 flex flex-wrap items-end gap-3 rounded-lg border border-warning-border bg-warning-surface p-4">
+      <label className="block min-w-60 flex-1 text-xs text-muted">
+        Motivo de la desactivación
+        <input value={reason} onChange={(e) => setReason(e.target.value)} className={`mt-1.5 ${internalInputClass}`} />
+      </label>
+      <button type="button" className={internalButtonClass} onClick={onCancel} disabled={saving}>Cancelar</button>
+      <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Desactivando…" : "Desactivar oferta"}</button>
+      {error ? <p role="alert" className="w-full text-xs text-danger">{error}</p> : null}
+    </form>
+  );
+}
+
+function historyDetail(entry: SupplierOfferHistoryEntry): string {
+  const meta = entry.metadata ?? {};
+  if (typeof meta.reason === "string" && meta.reason) return `Motivo: ${meta.reason}`;
+  const changed = Array.isArray(meta.changed) ? meta.changed : Array.isArray(meta.fields) ? meta.fields : null;
+  if (changed && changed.length) return `Cambió: ${changed.map(String).join(", ")}`;
+  return "";
+}
+
+function HistoryPanel({ offer, companyId, onClose }: { offer: SupplierOffer; companyId: number | null; onClose: () => void }) {
+  const [entries, setEntries] = useState<SupplierOfferHistoryEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchSupplierOfferHistory(offer.id, companyId).then(
+      (rows) => { setEntries(rows); setError(null); },
+      (err) => setError(message(err, "No se pudo cargar el historial.")),
+    );
+  }, [offer.id, companyId]);
+
+  return (
+    <section role="region" aria-label={`Historial de la oferta de ${offer.product_name}`} className="mb-6 rounded-lg border border-bd-border bg-background p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-foreground">Historial · {offer.product_name} · {offer.supplier_name}</h3>
+        <button type="button" className={internalButtonClass} onClick={onClose}>Cerrar</button>
+      </div>
+      {error ? <ErrorBox message={error} /> : null}
+      {entries === null && !error ? <Spinner label="Cargando historial…" /> : null}
+      {entries && entries.length === 0 ? <EmptyBox message="Sin movimientos registrados." /> : null}
+      {entries && entries.length > 0 ? (
+        <ol className="space-y-2 text-sm">
+          {entries.map((entry, index) => (
+            <li key={`${entry.at}-${index}`} className="flex flex-wrap gap-x-3 gap-y-0.5 border-b border-bd-border/60 pb-2 last:border-0">
+              <span className="font-semibold text-foreground">{SUPPLIER_OFFER_ACTION_LABELS[entry.action] ?? entry.action}</span>
+              <span className="text-muted">{formatDateTime(entry.at)}</span>
+              <span className="text-muted">{entry.actor || "Sistema"}</span>
+              {historyDetail(entry) ? <span className="w-full text-xs text-muted">{historyDetail(entry)}</span> : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Offers
+// ---------------------------------------------------------------------------
+
+type Mode = { kind: "none" } | { kind: "create" } | { kind: "edit"; id: number } | { kind: "deactivate"; id: number } | { kind: "history"; id: number };
+
+function OffersSection({
+  canManage, canSeeCosts, companyId, suppliers, reloadKey,
+}: {
+  canManage: boolean;
+  canSeeCosts: boolean;
+  companyId: number | null;
+  suppliers: SupplierRow[];
+  reloadKey: number;
+}) {
+  const [offers, setOffers] = useState<SupplierOffer[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [supplier, setSupplier] = useState<string>("");
+  const [product, setProduct] = useState<PickedProduct | null>(null);
+  const [state, setState] = useState<"" | "active" | "expired" | "inactive">("");
+  const [mode, setMode] = useState<Mode>({ kind: "none" });
+  const [seededFromUrl, setSeededFromUrl] = useState(false);
+
+  // `?supplier=` from the suppliers list. Read once, on the client.
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("supplier");
+    const timer = window.setTimeout(() => {
+      if (fromUrl && /^\d+$/.test(fromUrl)) setSupplier(fromUrl);
+      setSeededFromUrl(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const load = useCallback(() => {
+    fetchSupplierOffers({
+      supplier: supplier ? Number(supplier) : "", product: product?.id ?? "", state,
+    }, companyId).then(
+      (rows) => { setOffers(rows); setError(null); },
+      (err) => setError(message(err, "No se pudieron cargar las ofertas.")),
+    );
+  }, [supplier, product, state, companyId]);
+
+  useEffect(() => {
+    if (seededFromUrl) load();
+  }, [load, seededFromUrl, reloadKey]);
+
+  const showCostColumn = (offers ?? []).some(hasAgreedCost);
+  const current = (id: number) => offers?.find((offer) => offer.id === id) ?? null;
+  const done = () => { setMode({ kind: "none" }); load(); };
+
+  const editing = mode.kind === "edit" ? current(mode.id) : null;
+  const deactivating = mode.kind === "deactivate" ? current(mode.id) : null;
+  const historyOf = mode.kind === "history" ? current(mode.id) : null;
+
+  return (
+    <Panel
+      title="Ofertas de proveedores"
+      description="Sólo una oferta vigente, con cantidad confirmada y unidades por vender, permite vender bajo pedido."
+      action={canManage && mode.kind === "none" ? (
+        <button type="button" className={internalPrimaryButtonClass} onClick={() => setMode({ kind: "create" })}>+ Nueva oferta</button>
+      ) : null}
+    >
+      {canManage && mode.kind === "create" ? (
+        <OfferForm offer={null} suppliers={suppliers} showCost={canSeeCosts} companyId={companyId} onSaved={done} onCancel={() => setMode({ kind: "none" })} />
+      ) : null}
+      {canManage && editing ? (
+        <OfferForm
+          key={editing.id}
+          offer={editing}
+          suppliers={suppliers}
+          showCost={canSeeCosts && hasAgreedCost(editing)}
+          companyId={companyId}
+          onSaved={done}
+          onCancel={() => setMode({ kind: "none" })}
+        />
+      ) : null}
+      {canManage && deactivating ? (
+        <DeactivateForm offer={deactivating} companyId={companyId} onDone={done} onCancel={() => setMode({ kind: "none" })} />
+      ) : null}
+      {historyOf ? <HistoryPanel offer={historyOf} companyId={companyId} onClose={() => setMode({ kind: "none" })} /> : null}
+
+      <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,12rem)] md:items-end" role="group" aria-label="Filtrar ofertas">
+        <label className="block text-xs text-muted">
+          Proveedor
+          <select value={supplier} onChange={(e) => setSupplier(e.target.value)} className={`mt-1.5 ${internalInputClass}`}>
+            <option value="">Todos los proveedores</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </label>
+        <ProductPicker label="Producto" value={product} onChange={setProduct} companyId={companyId} />
+        <label className="block text-xs text-muted">
+          Estado
+          <select value={state} onChange={(e) => setState(e.target.value as typeof state)} className={`mt-1.5 ${internalInputClass}`}>
+            <option value="">Todos</option>
+            <option value="active">Vigentes</option>
+            <option value="expired">Vencidas</option>
+            <option value="inactive">Desactivadas</option>
+          </select>
+        </label>
+      </div>
+
+      {error ? <div className="mb-4"><ErrorBox message={error} /></div> : null}
+      {offers === null && !error ? <Spinner label="Cargando ofertas…" /> : null}
+      {offers && offers.length === 0 ? <EmptyBox message="No hay ofertas que coincidan." /> : null}
+      {offers && offers.length > 0 ? (
+        <TableWrap>
+          <thead>
+            <tr className="border-b border-bd-border">
+              <Th>Producto</Th><Th>Proveedor</Th><Th right>Precio de venta</Th>
+              {showCostColumn ? <Th right>Costo acordado</Th> : null}
+              <Th right>Confirmadas</Th><Th right>Comprometidas</Th><Th right>Quedan</Th>
+              <Th>Vigencia</Th><Th right>Entrega</Th><Th>Estado</Th><Th right>Acciones</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {offers.map((offer) => (
+              <tr key={offer.id} className="border-b border-bd-border/60" data-testid={`offer-row-${offer.id}`}>
+                <Td>
+                  <span className="font-semibold">{offer.product_name}</span>
+                  {offer.deactivated_reason ? <span className="block text-xs text-muted">Motivo: {offer.deactivated_reason}</span> : null}
+                </Td>
+                <Td muted>{offer.supplier_name}</Td>
+                <Td right>{formatSoles(offer.commercial_price)}</Td>
+                {showCostColumn ? (
+                  <Td right>{hasAgreedCost(offer) ? (offer.agreed_cost ? formatSoles(offer.agreed_cost) : "Sin costo") : ""}</Td>
+                ) : null}
+                <Td right>{offer.confirmed_quantity === null ? "Sin confirmar" : offer.confirmed_quantity}</Td>
+                <Td right>{offer.committed_quantity}</Td>
+                <Td right>{offer.remaining ?? "—"}</Td>
+                <Td muted>{formatDay(offer.valid_from)} – {formatDay(offer.valid_until)}</Td>
+                <Td right>{offer.lead_time_days} {offer.lead_time_days === 1 ? "día" : "días"}</Td>
+                <Td><OfferStateBadge state={offer.state} /></Td>
+                <Td right>
+                  <span className="inline-flex flex-wrap justify-end gap-2">
+                    <button type="button" className={internalButtonClass} onClick={() => setMode({ kind: "history", id: offer.id })} aria-label={`Historial de ${offer.product_name} (${offer.supplier_name})`}>
+                      Historial
+                    </button>
+                    {canManage ? (
+                      <button type="button" className={internalButtonClass} onClick={() => setMode({ kind: "edit", id: offer.id })} aria-label={`Editar ${offer.product_name} (${offer.supplier_name})`}>
+                        Editar
+                      </button>
+                    ) : null}
+                    {canManage && offer.is_active ? (
+                      <button type="button" className={internalButtonClass} onClick={() => setMode({ kind: "deactivate", id: offer.id })} aria-label={`Desactivar ${offer.product_name} (${offer.supplier_name})`}>
+                        Desactivar
+                      </button>
+                    ) : null}
+                  </span>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </TableWrap>
+      ) : null}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Excel: template, preview, apply, export
+// ---------------------------------------------------------------------------
+
+const IMPORT_ACTION_LABELS: Record<string, string> = {
+  create: "Nueva", update: "Cambia", no_change: "Sin cambios", error: "Error", skip: "Omitida",
+};
+
+function ImportSection({
+  canManage, companyId, onApplied,
+}: { canManage: boolean; companyId: number | null; onApplied: () => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<SupplierImportPreview | null>(null);
+  const [result, setResult] = useState<SupplierImportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function runPreview() {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    setPreview(null);
+    try {
+      setPreview(await previewSupplierOfferImport(file, companyId));
+    } catch (err) {
+      setError(message(err, "No se pudo leer el archivo."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function apply() {
+    if (!preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await applySupplierOfferImport(preview.id, companyId));
+      setPreview(null);
+      setFile(null);
+      if (fileRef.current) fileRef.current.value = "";
+      onApplied();
+    } catch (err) {
+      setError(message(err, "No se pudo aplicar el archivo."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const shown = preview ? preview.rows.filter((row) => row.action !== "no_change") : [];
+
+  return (
+    <Panel
+      title="Actualizar ofertas desde Excel"
+      description="Descarga la plantilla, complétala con las ofertas de la semana y súbela: primero ves qué cambiaría, luego lo aplicas."
+      action={(
+        <span className="inline-flex flex-wrap gap-2">
+          <a className={internalButtonClass} href={supplierOfferTemplateUrl(companyId)}>Descargar plantilla</a>
+          <a className={internalButtonClass} href={supplierOfferExportUrl(companyId)}>Exportar ofertas</a>
+        </span>
+      )}
+    >
+      {canManage ? (
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="block min-w-60 flex-1 text-xs text-muted">
+            Archivo de ofertas (.xlsx)
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); }}
+              className={`mt-1.5 ${internalInputClass}`}
+            />
+          </label>
+          <button type="button" className={internalButtonClass} onClick={() => void runPreview()} disabled={!file || busy}>
+            {busy && !preview ? "Leyendo…" : "Previsualizar"}
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted">Puedes descargar la plantilla y exportar las ofertas. Subir cambios requiere permiso para gestionar productos.</p>
+      )}
+
+      {error ? <div className="mt-4"><ErrorBox message={error} /></div> : null}
+      {result ? (
+        <p role="status" className="mt-4 text-sm text-success">
+          Ofertas actualizadas: {result.created} nuevas, {result.updated} modificadas, {result.unchanged} sin cambios.
+        </p>
+      ) : null}
+
+      {preview ? (
+        <div className="mt-5 space-y-4" data-testid="supplier-import-preview">
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
+            {[
+              ["Filas", preview.rows_total], ["Nuevas", preview.rows_create], ["Cambian", preview.rows_update],
+              ["Sin cambios", preview.rows_no_change], ["Con error", preview.rows_error],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-bd-border bg-background p-3">
+                <dt className="text-xs text-muted">{label}</dt>
+                <dd className={`text-base font-semibold ${label === "Con error" && Number(value) > 0 ? "text-danger" : "text-foreground"}`}>{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {preview.cost_column_ignored ? (
+            <p role="note" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning">
+              El archivo trae una columna de costo y no tienes permiso para ver costos: esa columna se ignoró. Los costos existentes no cambian.
+            </p>
+          ) : null}
+          {shown.length ? (
+            <TableWrap>
+              <thead>
+                <tr className="border-b border-bd-border">
+                  <Th right>Fila</Th><Th>Acción</Th><Th>Proveedor</Th><Th>Producto</Th><Th right>Precio</Th>
+                  <Th right>Cantidad</Th><Th>Vigencia</Th><Th>Observaciones</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((row) => (
+                  <tr key={row.row_number} className="border-b border-bd-border/60">
+                    <Td right>{row.row_number}</Td>
+                    <Td>
+                      <span className={row.action === "error" ? "font-semibold text-danger" : ""}>{IMPORT_ACTION_LABELS[row.action] ?? row.action}</span>
+                    </Td>
+                    <Td muted>{row.data.supplier || "—"}</Td>
+                    <Td>{row.data.product_name || "—"}</Td>
+                    <Td right>{row.data.commercial_price ? formatSoles(row.data.commercial_price) : "—"}</Td>
+                    <Td right>{row.data.confirmed_quantity ?? "—"}</Td>
+                    <Td muted>
+                      {row.data.valid_from ? formatDay(String(row.data.valid_from)) : "—"} – {row.data.valid_until ? formatDay(String(row.data.valid_until)) : "—"}
+                    </Td>
+                    <Td muted>
+                      {row.errors.map((text) => <span key={text} className="block text-danger">{text}</span>)}
+                      {row.warnings.map((text) => <span key={text} className="block text-warning">{text}</span>)}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </TableWrap>
+          ) : (
+            <p className="text-sm text-muted">Ninguna fila cambia algo.</p>
+          )}
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {preview.rows_error > 0 ? (
+              <p className="text-xs text-danger">Corrige las filas con error y vuelve a subir el archivo para aplicarlo.</p>
+            ) : null}
+            <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
+            <button
+              type="button"
+              className={internalPrimaryButtonClass}
+              onClick={() => void apply()}
+              disabled={busy || preview.rows_error > 0}
+            >
+              {busy ? "Aplicando…" : "Aplicar cambios"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+export function SupplierOffersManager({
+  canManage, canSeeCosts, companyId,
+}: { canManage: boolean; canSeeCosts: boolean; companyId: number | null }) {
+  const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    fetchSuppliers({}, companyId).then((page) => setSuppliers(page.results), () => { /* the list still works without names */ });
+  }, [companyId]);
+
+  return (
+    <div className="space-y-6">
+      <OffersSection
+        canManage={canManage}
+        canSeeCosts={canSeeCosts}
+        companyId={companyId}
+        suppliers={suppliers}
+        reloadKey={reloadKey}
+      />
+      <ImportSection canManage={canManage} companyId={companyId} onApplied={() => setReloadKey((key) => key + 1)} />
+    </div>
+  );
+}

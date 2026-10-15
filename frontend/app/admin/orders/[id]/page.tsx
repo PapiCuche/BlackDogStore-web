@@ -23,6 +23,7 @@ import {
 import { StockShortfallPanel } from "../../components/StockShortfallPanel";
 import { OrderRiskCard } from "../../components/OrderRiskCard";
 import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
+import { OrderSupplyPanel } from "../../components/OrderSupplyPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -344,7 +345,14 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             <tbody>
               {order.items.map((item) => (
                 <tr key={item.id} className="border-b border-bd-border/70">
-                  <td className="py-2.5 pr-4 text-foreground">{item.product_name}</td>
+                  <td className="py-2.5 pr-4 text-foreground">
+                    {item.product_name}
+                    {item.supply_origin === "supplier" ? (
+                      <span className="ml-2 inline-flex rounded border border-warning-border bg-warning-surface px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                        Bajo pedido
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="py-2.5 pr-4 text-right text-muted">
                     S/ {parseFloat(item.price).toFixed(2)}
                   </td>
@@ -357,6 +365,10 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             </tbody>
           </table>
         </section>
+
+        {/* DC3: lo vendido bajo pedido y su abastecimiento. Sólo aparece con
+            líneas de proveedor; las acciones las habilita el servidor. */}
+        <OrderSupplyPanel order={order} onChanged={setOrder} />
 
         {/* SERIAL-PICK-01: qué equipos salen con este pedido. Sólo aparece
             cuando el pedido lleva productos con serie. */}
