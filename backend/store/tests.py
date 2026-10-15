@@ -55668,6 +55668,10 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'products/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/categories/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
         'products/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        # DEVICE-COMMERCE-01 · DC2 — models and the used-device list.
+        'products/models/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'products/models/[id]/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'inventory/used/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'products/new/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
         'products/[id]/stock-card/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
