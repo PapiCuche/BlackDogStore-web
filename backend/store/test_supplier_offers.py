@@ -578,9 +578,16 @@ class StorefrontOnOrderTest(SupplyShop, TestCase):
         body = res.json()
         row = (body['results'] if isinstance(body, dict) else body)[0]
         item = row['items'][0]
-        self.assertEqual((item['supply_origin'], item['lead_time_days']), ('supplier', 4))
-        for secret in ('unit_cost', 'supplier_offer', '70.00', 'Mayorista'):
+        # The public line keeps INVENTORY-UNIFIED-01's shape; an on-order line adds ONLY its lead time.
+        self.assertEqual(list(item), ['id', 'product', 'quantity', 'price', 'lead_time_days'])
+        self.assertEqual(item['lead_time_days'], 4)
+        for secret in ('unit_cost', 'supplier_offer', '70.00', 'Mayorista', 'supply_status', 'supply_origin'):
             self.assertNotIn(secret, res.content.decode())
+        # A product that left the web closes the line: nothing beyond the closed payload, not even the lead time.
+        Product.objects.filter(pk=self.case.pk).update(is_active=False)
+        item = client.get('/api/orders/').json()
+        item = (item['results'] if isinstance(item, dict) else item)[0]['items'][0]
+        self.assertEqual(list(item), ['id', 'product', 'quantity', 'price'])
 
 
 @override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])

@@ -233,26 +233,28 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        # DC3 — added: whether the line comes from a supplier, its lead time
-        # and how its supply goes. Never its cost, never its supplier.
-        fields = ['id', 'product', 'quantity', 'price', 'supply_origin', 'lead_time_days', 'supply_status']
+        # INVENTORY-UNIFIED-01 pins this shape. DC3 adds ONE key, and only to a
+        # line sold on order of a product still on the web: `lead_time_days`
+        # (what the buyer was promised). How its supply goes (`supply_status`)
+        # and where it comes from (`supply_origin`) are the shop's, never shown.
+        fields = ['id', 'product', 'quantity', 'price']
 
     def to_representation(self, instance):
         if instance.product.is_sold_online:
-            return super().to_representation(instance)
+            data = super().to_representation(instance)
+            if instance.supply_origin == OrderItem.SUPPLY_SUPPLIER:
+                data['lead_time_days'] = instance.lead_time_days
+            return data
         # Closed BEFORE the product is serialised, not after: the whole public
         # payload (gallery, rating, stock) is not built just to be thrown away.
         # Same keys, same order, and the line's own fields rendered by their
-        # own serializer fields.
+        # own serializer fields. Nothing else — not even an on-order lead time.
         fields = self.fields
         return {
             'id': instance.pk,
             'product': closed_product_payload(instance.product),
             'quantity': fields['quantity'].to_representation(instance.quantity),
             'price': fields['price'].to_representation(instance.price),
-            'supply_origin': instance.supply_origin,
-            'lead_time_days': instance.lead_time_days,
-            'supply_status': instance.supply_status,
         }
 
 
