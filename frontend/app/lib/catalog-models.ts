@@ -124,7 +124,8 @@ export async function fetchCatalogModel(slug: string): Promise<CatalogModel | nu
 // Cart writes
 // ---------------------------------------------------------------------------
 
-export type CartErrorCode = "unit_required" | "unit_taken" | "sold_out" | "too_many" | "not_found" | "";
+export type CartErrorCode =
+  | "unit_required" | "unit_taken" | "sold_out" | "too_many" | "held_by_others" | "not_found" | "";
 
 /** A refusal from the cart, in the server's words. `code` lets the page react (e.g. reload on unit_taken). */
 export class CartError extends Error {
