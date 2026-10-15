@@ -141,6 +141,12 @@ def resolve(*, is_entry: bool, carries_average_in: bool, quantity: int, stock_be
             # and the cost its sale line freezes (`margin_services.snapshot_unit_cost`).
             costs = [reference_cost if cost is None else cost for cost in costs]
             source = REFERENCE
+        elif is_entry and stated_cost is not None and any(cost is None for cost in costs):
+            # DC2 second review — devices of no cost of their own ARRIVE at the
+            # cost they left with (a transfer's origin line), said the same way:
+            # «transfers arrive at the cost they left with».
+            costs = [stated_cost if cost is None else cost for cost in costs]
+            source = stated_source or ENTRY
         if costs and all(cost is not None for cost in costs):
             mean = sum((Decimal(cost) for cost in costs), Decimal('0')) / Decimal(len(costs))
             return MovementCost(quantize_cost(mean), source, average_before, 0)

@@ -57,6 +57,23 @@ class AverageMathTest(TestCase):
             with self.subTest(qty_in=qty_in, unit_cost=unit_cost), self.assertRaises(ValueError):
                 cost_services.weighted_average(0, None, qty_in, unit_cost)
 
+    def test_devices_arriving_without_a_cost_of_their_own_take_the_cost_they_left_with(self):
+        """DC2 second review — a device that left at the reference cost arrives at it, said so."""
+        arrived = cost_services.resolve(
+            is_entry=True, carries_average_in=False, quantity=1, stock_before=0, average_before=None,
+            reference_cost=None, stated_cost=D('900'), stated_source='reference', unit_costs=[None])
+        self.assertEqual((arrived.unit_cost, arrived.source), (D('900.0000'), 'reference'))
+        # Devices with their own cost keep it: the stated cost does not overwrite theirs.
+        own = cost_services.resolve(
+            is_entry=True, carries_average_in=False, quantity=1, stock_before=0, average_before=None,
+            reference_cost=None, stated_cost=D('900'), stated_source='reference', unit_costs=[D('1000')])
+        self.assertEqual((own.unit_cost, own.source), (D('1000.0000'), 'unit'))
+        # Nothing stated and nothing known: unknown, as before.
+        bare = cost_services.resolve(
+            is_entry=True, carries_average_in=False, quantity=1, stock_before=0, average_before=None,
+            reference_cost=D('5'), unit_costs=[None])
+        self.assertEqual((bare.unit_cost, bare.source), (None, 'unknown'))
+
 
 class _Shop(TestCase):
     def setUp(self):
