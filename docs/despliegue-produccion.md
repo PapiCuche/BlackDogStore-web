@@ -779,6 +779,45 @@ corra).
    aplicada** (la versión anterior no lee sus columnas; sus `db_default` la cubren). Deshacerla
    borraría proveedores, ofertas y el origen de las líneas vendidas.
 
+**DEVICE-COMMERCE-01 · decisiones del propietario (`0135`).** Aditiva: columnas de
+`CompanySettings` (minutos de apartado 15/45/60, `web_on_order_over_stock` false) y de
+`store_orderitem` (`supply_chosen_over_stock` false, `supply_choice_reason` ''), todas con
+`db_default` igual al comportamiento anterior. **Se deja aplicada** al volver atrás.
+
+*Volver atrás a una versión anterior a DC1 con `0126`–`0135` aplicadas, y regresar.* La
+versión anterior no sabe de costos: escribe sus líneas de Kardex sin costo (`cost_source`
+'', el `db_default`) y **cambia la cantidad del estante sin tocar `average_cost` ni
+`uncosted_quantity`**. Al regresar, un estante podría contar como «de costo conocido»
+unidades que entraron sin costo. Por eso:
+
+1. Anota la hora (con zona) en que la versión anterior quedó en línea: es `--since`.
+2. Al regresar a esta versión (después de `$C up -d`), mira qué estantes quedaron así
+   (sólo lectura, no cambia nada):
+   ```sh
+   $C exec -T backend python manage.py uncosted_after_rollback --since 2026-10-20T14:00:00-05:00
+   ```
+3. Si lista estantes, márcalos:
+   ```sh
+   $C exec -T backend python manage.py uncosted_after_rollback --since 2026-10-20T14:00:00-05:00 --apply
+   ```
+   Bajo el bloqueo de cada estante, lo que entró sin costo desde `--since` pasa a «costo
+   pendiente» (nunca más que el stock; como si cada salida se hubiera llevado unidades de
+   costo conocido, así la parte conocida nunca se exagera), y el promedio se vacía si ya no
+   queda nada de costo conocido. **No inventa ningún costo** y no recalcula el promedio.
+   Marca esas líneas como `unknown`, así que repetirlo no cambia nada, y deja una fila de
+   auditoría por estante (`uncosted_recomputed_after_rollback`). Los equipos (costo por
+   unidad) sólo se listan: revisa su costo en Inventario › Equipos.
+4. Si prefieres no escribir: el informe del paso 2 es la lista para revisar a mano (Kardex
+   del producto en esa sucursal desde esa hora; registra una entrada con costo o deja el
+   estante como está, sabiendo que su margen será sólo estimado).
+
+**Al fusionar con #119 (ORDER-CANCEL-01).** #119 añade el tipo `ORDER_CANCEL_RETURN` y
+devuelve el stock de un pedido cancelado sin pasar costo; esta rama no lo conoce. Lo cubre
+la regla «lo que vuelve de la venta de un pedido vuelve al costo de su salida» **si esa
+entrada se escribe con `order=`**. Si no, antes de desplegar la fusión: añade
+`ORDER_CANCEL_RETURN` a `StockMovement.RETURN_TYPES` o pásale el `unit_cost` de la salida, y
+prueba que una cancelación de una venta por cantidad no vuelve como «costo desconocido».
+
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
 duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista

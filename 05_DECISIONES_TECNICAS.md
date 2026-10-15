@@ -2116,3 +2116,32 @@ utilidad neta ni inventar costos.»
 Pasada de mutación de las tres decisiones: 31 mutantes, 29 muertos a la primera; los 2 que
 sobrevivieron (quitar el bloqueo de fila del barrido; `>=` → `>` en la marca de la web)
 tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto justo) y mueren.
+
+**Revisión de integración del PR #123 (2026-10-15).**
+- *P1 — los apartados que retiene un pago cuentan.* Un apartado vencido que `payment_keeps_hold`
+  mantiene seguía `RESERVED` pero salía de los topes (por carrito, por origen, reparto del
+  estante, techo de la empresa): repetir «agregar, checkout, abrir el formulario, cerrar la
+  pestaña» desde un origen apartaba el estante entero. `_live_web_holds` cuenta ahora los no
+  vencidos **y** los vencidos atados a un pedido que aún puede pagarse; un vencido sin pedido
+  vivo (aún sin barrer) no bloquea a nadie, porque `hold()` sólo barre su propio producto.
+- *P2-1 — `ops_status` los dice.* Línea «apartados web»: cuántos equipos retiene un pago tras
+  su reloj, sin límite de antigüedad. Dentro de la ventana de conciliación (2 h) es `NOTA`
+  (la conciliación decide); si alguno la pasó (respuesta indecidible) es `ATENCIÓN`, con
+  cuántos. Sólo cuentas: el registro `payment_undecided` dice cuál.
+- *P2-2 — lo que vuelve de la venta de un pedido vuelve a su costo.* Toda entrada con `order`,
+  sin costo declarado y que no sea stock nuevo (compra, inicial, transferencia) toma el costo
+  y la fuente con que salió su `sale_exit` (ponderado si hubo varias), sea cual sea su tipo
+  (`inventory_services._cost_the_sale_left_with`). Una salida a costo de referencia vuelve
+  pendiente; una de costo desconocido no da nada. **Al fusionar con #119** (añade
+  `ORDER_CANCEL_RETURN` y devuelve stock sin costo): esta regla ya la cubre si esa entrada
+  lleva `order=`; si no lo lleva, añade `ORDER_CANCEL_RETURN` a `StockMovement.RETURN_TYPES`
+  o pásale el `unit_cost` de la salida. Comprobarlo con una prueba de cancelación.
+- *P3 — atribución.* Con el interruptor web apagado, una línea tomada «Bajo pedido» con el
+  estante vacío y pagada después de que llegó stock ya no se marca `supply_chosen_over_stock`
+  ni se audita como elección: lleva el motivo «Tomado bajo pedido cuando la tienda no tenía
+  stock suficiente». Con el interruptor encendido, mantener la línea bajo pedido cuando el
+  estante la cubre al escribir el pedido sigue siendo la elección del comprador.
+- *P3 — liquidación.* «Pendiente de liquidar al proveedor» se limita a los pedidos que
+  despachan las sucursales visibles de quien consulta (como toda cifra de ventas).
+- *Pruebas por valor.* Las comprobaciones de «no se filtra el costo» comparan valores (ids
+  aparte), no subcadenas de `str(payload)`: `'product_id': 685` contenía «68».
