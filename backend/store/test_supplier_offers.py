@@ -804,6 +804,17 @@ class PosOnOrderTest(SupplyShop, TestCase):
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.committed_quantity, 0)
 
+    def test_an_offer_taken_between_pricing_and_charging_refuses_the_whole_sale(self):
+        """Nothing is captured at the till yet: an offer that no longer covers the line refuses the sale."""
+        from unittest import mock
+        from store.pos_services import PosValidationError
+        with mock.patch.object(supply, '_offer_is_valid', return_value=False), \
+                self.assertRaises(PosValidationError):
+            self.sell([{'product': self.case.pk, 'quantity': 1, 'on_order': True}])
+        self.assertFalse(Order.objects.exists())
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.committed_quantity, 0)
+
     def test_one_product_is_never_half_shelf_half_order_at_the_till(self):
         from store.pos_services import PosValidationError
         self.stock(self.case, 1)
