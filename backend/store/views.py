@@ -1165,12 +1165,13 @@ class CartViewSet(
         if product.sells_by_unit:
             # DC2 — ONE concrete device per call, held for this cart. The one
             # the buyer picked (a used device), or the oldest of the variant.
-            from . import unit_hold_services
+            from . import order_risk, unit_hold_services
 
             try:
                 unit_hold_services.hold(
                     product=product, branch=storefront_fulfillment_branch(request),
                     session_key=session_key, unit_public_id=str(request.data.get('unit') or '').strip() or None,
+                    origin=order_risk.origin_hash(product.company, request),
                 )
             except unit_hold_services.HoldError as exc:
                 return Response(exc.body(), status=exc.http_status)

@@ -360,7 +360,8 @@ class PublicModelApiTest(DeviceShop, TestCase):
 # The cart holds a concrete device
 # ---------------------------------------------------------------------------
 
-@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+# Holding every device of a shelf is what these tests do; the share limit has its own test.
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'], DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
 class HoldTest(DeviceShop, TestCase):
     def setUp(self):
         self.build()
@@ -517,6 +518,7 @@ class SaleShop(DeviceShop):
                                                      payment_error=order.payment_error)
 
 
+@override_settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
 class ExactUnitSaleTest(SaleShop, TestCase):
     def test_payment_sells_the_held_device_not_the_oldest(self):
         # The cart got the oldest; let a buyer hold the YOUNG one by freeing the old first.
@@ -842,3 +844,118 @@ class BindGuardTest(SaleShop, TestCase):
         self.assertFalse(Order.objects.exists())
         self.used_a.refresh_from_db()
         self.assertEqual((self.used_a.hold_key, self.used_a.hold_order_id), (holds.key_of('carrito-b'), None))
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class HoldAbuseTest(DeviceShop, TestCase):
+    """One client cannot empty a shelf through many carts, nor keep it forever."""
+
+    def setUp(self):
+        self.build()
+        self.receive(self.new128, 10)
+        self.public = _client(host=self.host)
+
+    def add(self, session, ip='203.0.113.7', product=None):
+        return self.public.post('/api/cart/add/', {'session_key': session, 'product': (product or self.new128).pk},
+                                format='json', REMOTE_ADDR=ip)
+
+    def test_one_origin_holds_at_most_three_devices_whatever_the_carts(self):
+        for n in range(3):
+            self.assertEqual(self.add(f'carro-{n}').status_code, 200)
+        refused = self.add('carro-9')
+        self.assertEqual((refused.status_code, refused.json()['code']), (409, 'too_many'))
+        self.assertEqual(StockUnit.objects.filter(status='reserved').count(), 3)
+        # The origin is a keyed hash, never the address.
+        origins = set(StockUnit.objects.filter(status='reserved').values_list('hold_origin', flat=True))
+        self.assertEqual(len(origins), 1)
+        self.assertNotIn('203.0.113.7', origins.pop())
+        # Somebody else is not affected.
+        self.assertEqual(self.add('vecino', ip='198.51.100.4').status_code, 200)
+        with self.settings(DEVICE_HOLD_MAX_PER_ORIGIN=5):
+            self.assertEqual(self.add('carro-9').status_code, 200)
+
+    def test_web_holds_take_at_most_half_of_a_shelf(self):
+        held = [self.add(f'c{n}', ip=f'198.51.100.{n + 1}').status_code for n in range(6)]
+        self.assertEqual(held, [200] * 5 + [409])
+        self.assertEqual(self.add('c9', ip='198.51.100.99').json()['code'], 'held_by_others')
+        self.assertEqual(StockUnit.objects.filter(status='reserved').count(), 5)
+        # A shelf of one: the one device can be held (max(1, half)).
+        self.receive(self.new256, 1)
+        self.assertEqual(self.add('solo', ip='198.51.100.50', product=self.new256).status_code, 200)
+        self.receive(self.new256, 1)     # 2 devices, one held: half is taken
+        self.assertEqual(self.add('solo2', ip='198.51.100.51', product=self.new256).json()['code'],
+                         'held_by_others')
+        with self.settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100):
+            self.assertEqual(self.add('solo2', ip='198.51.100.51', product=self.new256).status_code, 200)
+
+    def test_a_checkout_never_stretches_a_hold_past_its_ceiling(self):
+        from store.views import CreateCheckoutSessionView  # noqa: F401 - the route exists
+        unit = holds.hold(product=self.new128, branch=self.branch, session_key='carrito-a')
+        started = timezone.now() - timedelta(minutes=50)
+        StockUnit.objects.filter(pk=unit.pk).update(hold_started_at=started)
+        ceiling = started + timedelta(minutes=holds.hold_minutes() + holds.order_hold_minutes())
+        for _ in range(2):          # the second checkout of the same cart cannot push it further
+            Order.objects.filter(cart_session_key='carrito-a').update(status=Order.Status.FAILED)
+            items = list(CartItem.objects.filter(session_key='carrito-a').select_related('product'))
+            lines = checkout.lines_from_cart(self.company, self.branch, 'carrito-a', items)
+            pricing = checkout.price_checkout(self.company, D('3000.00'))
+            checkout.create_pending_order(
+                company=self.company, branch=self.branch, lines=lines, pricing=pricing,
+                details=checkout.CustomerDetails(
+                    name='Ana', email='ana@example.com', phone='987654321', document_type='DNI',
+                    document_number='12345678', delivery_method='pickup', receipt_type='boleta',
+                    accepted_terms=True, accepted_warranty_policy=True),
+                cart_session_key='carrito-a',
+            )
+            unit.refresh_from_db()
+            self.assertLessEqual(unit.hold_until, ceiling)
+            self.assertEqual(unit.hold_started_at, started)
+        # A fresh hold gets the full order time.
+        fresh = holds.hold(product=self.new128, branch=self.branch, session_key='carrito-b')
+        self.assertIsNotNone(fresh.hold_started_at)
+        self.assertGreater(fresh.hold_until, timezone.now() + timedelta(minutes=holds.hold_minutes() - 1))
+
+
+@override_settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
+class CartLimitRaceTest(TransactionTestCase):
+    """Two adds of one cart at the same instant, for two products: the limit still holds."""
+
+    def race(self, shop, calls):
+        barrier, outcomes = Barrier(len(calls)), []
+
+        def run(kwargs):
+            try:
+                barrier.wait(timeout=5)
+                holds.hold(branch=shop.branch, **kwargs)
+                outcomes.append('held')
+            except holds.HoldError as exc:
+                outcomes.append(exc.code)
+            finally:
+                connection.close()
+
+        threads = [Thread(target=run, args=(kwargs,)) for kwargs in calls]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        return sorted(outcomes)
+
+    def test_the_per_cart_and_per_origin_limits_are_counted_under_a_lock(self):
+        shop = DeviceShop()
+        shop.build('dc2-limite')
+        shop.receive(shop.new128, 6)
+        shop.receive(shop.new256, 6)
+        for _ in range(2):
+            holds.hold(product=shop.new128, branch=shop.branch, session_key='c', origin='o')
+        new128, new256 = (Product.objects.get(pk=p.pk) for p in (shop.new128, shop.new256))
+        self.assertEqual(self.race(shop, [
+            {'product': new128, 'session_key': 'c'}, {'product': new256, 'session_key': 'c'},
+        ]), ['held', 'too_many'])
+        self.assertEqual(StockUnit.objects.filter(status='reserved', hold_key=holds.key_of('c')).count(), 3)
+        # The same for one origin through two other carts.
+        self.assertEqual(self.race(shop, [
+            {'product': new128, 'session_key': 'd', 'origin': 'p'},
+            {'product': new256, 'session_key': 'e', 'origin': 'p'},
+            {'product': new256, 'session_key': 'f', 'origin': 'p'},
+            {'product': new128, 'session_key': 'g', 'origin': 'p'},
+        ]), ['held', 'held', 'held', 'too_many'])

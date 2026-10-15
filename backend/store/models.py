@@ -9100,6 +9100,13 @@ class StockUnit(models.Model):
     hold_order = models.ForeignKey(
         'store.Order', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
     )
+    # DC2 review. `hold_origin`: a keyed hash of where the hold came from
+    # (`order_risk.origin_hash`, never the address), so one origin cannot hold
+    # a whole shelf through many carts. `hold_started_at`: when the cart took
+    # it — a checkout extends the hold, but never past this plus the cart's
+    # and the order's minutes.
+    hold_origin = models.CharField(max_length=64, blank=True, default='', db_default='')
+    hold_started_at = models.DateTimeField(null=True, blank=True)
 
     received_at = models.DateTimeField(default=timezone.now)
     sold_at = models.DateTimeField(null=True, blank=True)

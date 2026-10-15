@@ -7,6 +7,7 @@
   "store.test_client_sec.FilingAtOnceTest",
   "store.test_client_sec.TwoAtOnceTest",
   "store.test_delivery_base.TwoDefaultsAtOnceTest",
+  "store.test_device_commerce.CartLimitRaceTest",
   "store.test_device_commerce.TwoBuyersOneDeviceTest",
   "store.test_image_import.TwoAppliesAtOnceTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",

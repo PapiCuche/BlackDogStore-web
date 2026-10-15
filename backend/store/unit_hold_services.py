@@ -32,8 +32,9 @@ import hashlib
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import transaction
-from django.db.models import Count
+from django.db import connection, transaction
+from django.db.models import Count, DateTimeField, ExpressionWrapper, F, Value
+from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
 from . import inventory_services
@@ -48,7 +49,7 @@ SALE_RELEASE_REASON = 'Apartado web: pasa a la venta'
 class HoldError(Exception):
     """The buyer cannot have that device. `code` is stable for the shop's page."""
 
-    STATUS = {'not_found': 404, 'unit_taken': 409, 'sold_out': 409, 'too_many': 409}
+    STATUS = {'not_found': 404, 'unit_taken': 409, 'sold_out': 409, 'too_many': 409, 'held_by_others': 409}
 
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -73,6 +74,30 @@ def order_hold_minutes() -> int:
 
 def max_holds_per_cart() -> int:
     return int(getattr(settings, 'DEVICE_HOLD_MAX_PER_CART', 3))
+
+
+def max_holds_per_origin() -> int:
+    return int(getattr(settings, 'DEVICE_HOLD_MAX_PER_ORIGIN', 3))
+
+
+def max_share_percent() -> int:
+    return int(getattr(settings, 'DEVICE_WEB_HOLD_MAX_SHARE_PERCENT', 50))
+
+
+def hold_ceiling_minutes() -> int:
+    """The longest a web hold lives from the moment a cart took it, checkouts included."""
+    return hold_minutes() + order_hold_minutes()
+
+
+def web_hold_cap(pool: int) -> int:
+    """
+    How many devices of one product in one branch web carts may hold at once.
+
+    `pool` = devices on the shelf + devices web carts hold. At most
+    `DEVICE_WEB_HOLD_MAX_SHARE_PERCENT` of it (50 %), rounded down, and never
+    less than one: a shelf of one can still be bought online.
+    """
+    return max(1, pool * max_share_percent() // 100)
 
 
 def key_of(session_key: str) -> str:
@@ -110,17 +135,46 @@ def _sync_cart_line(session_key, product) -> None:
 
 
 def _clear_hold_fields():
-    return {'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None}
+    return {'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None,
+            'hold_origin': '', 'hold_started_at': None}
+
+
+def _live_web_holds(company, now):
+    return StockUnit.objects.filter(
+        company=company, status=StockUnit.Status.RESERVED, hold_until__gt=now,
+    ).exclude(hold_key='')
+
+
+def _lock_holders(company_id, key, origin) -> None:
+    """
+    Transaction-scoped advisory locks on «this cart» and «this origin», in one
+    fixed order (sorted), always before any shelf lock — so two holds wait
+    for each other instead of deadlocking.
+    """
+    if connection.vendor != 'postgresql':
+        return
+    ids = sorted({
+        int.from_bytes(hashlib.sha256(f'dc2-hold|{company_id}|{kind}|{value}'.encode()).digest()[:8],
+                       'big', signed=True)
+        for kind, value in (('cart', key), ('origin', origin)) if value
+    })
+    with connection.cursor() as cursor:
+        for lock_id in ids:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [lock_id])
 
 
 @transaction.atomic
-def hold(*, product, branch, session_key, unit_public_id=None) -> StockUnit:
+def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> StockUnit:
     """
     Put one device of `product` in this cart.
 
     `unit_public_id`: the device the buyer picked (a used one). Without it —
     a new device — the oldest available of the variant, decided under the
     shelf lock so two buyers never pick the same one.
+
+    `origin`: `order_risk.origin_hash` of the request ('' = unknown). Three
+    limits keep one client from emptying a shelf: holds per cart, holds per
+    origin across every cart, and the share of a shelf web holds may take.
     """
     if not session_key:
         raise HoldError('invalid', 'session_key es requerido.')
@@ -133,12 +187,16 @@ def hold(*, product, branch, session_key, unit_public_id=None) -> StockUnit:
 
     release_expired(company=product.company, product=product)
     key = key_of(session_key)
-    holding = StockUnit.objects.filter(
-        company=product.company, status=StockUnit.Status.RESERVED, hold_key=key,
-        hold_until__gt=timezone.now(),
-    ).count()
+    # The counts below are decided under a lock of this cart and this origin,
+    # taken BEFORE the shelf: two adds of one cart for two products lock two
+    # different shelves, and would otherwise both count the same «2 of 3».
+    _lock_holders(product.company_id, key, origin)
+    now = timezone.now()
+    holding = _live_web_holds(product.company, now).filter(hold_key=key).count()
     if holding >= max_holds_per_cart():
         raise HoldError('too_many', f'Puedes apartar hasta {max_holds_per_cart()} equipos a la vez.')
+    if origin and _live_web_holds(product.company, now).filter(hold_origin=origin).count() >= max_holds_per_origin():
+        raise HoldError('too_many', f'Puedes apartar hasta {max_holds_per_origin()} equipos a la vez.')
 
     # THE SHELF FIRST — the module's one lock order — then the device.
     inventory_services._locked_branch_stocks(branch, [product])
@@ -163,14 +221,26 @@ def hold(*, product, branch, session_key, unit_public_id=None) -> StockUnit:
     if price is None:
         raise HoldError('not_found', 'Ese equipo no existe o ya no está a la venta.')
 
+    # THE SHARE, under the shelf lock: two buyers of this product count the same
+    # shelf. After the device is chosen, so «that one is taken» and «sold out»
+    # keep their own answers.
+    web_held = _live_web_holds(product.company, now).filter(branch=branch, product=product).count()
+    pool = base.filter(status=StockUnit.Status.AVAILABLE).count() + web_held
+    if web_held >= web_hold_cap(pool):
+        raise HoldError(
+            'held_by_others',
+            f'Los demás equipos de «{product.name}» están apartados por otros compradores. '
+            'Vuelve a intentarlo en unos minutos.',
+        )
+
     try:
         _move(
             unit, expected=StockUnit.Status.AVAILABLE, to_status=StockUnit.Status.RESERVED,
             movement_type=StockMovement.MANUAL_EXIT, reason=HOLD_REASON, actor=None,
             action='stock_unit_web_hold', metadata={'web_hold': True},
             extra_fields={
-                'hold_key': key, 'hold_until': timezone.now() + timedelta(minutes=hold_minutes()),
-                'hold_price': price, 'hold_order': None,
+                'hold_key': key, 'hold_until': now + timedelta(minutes=hold_minutes()),
+                'hold_price': price, 'hold_order': None, 'hold_origin': origin or '', 'hold_started_at': now,
             },
         )
     except StockUnitError:
@@ -278,11 +348,20 @@ def bind_to_order(units, order, session_key) -> None:
     from .checkout_services import CheckoutError
 
     now = timezone.now()
+    # NEVER PAST THE CEILING. Every checkout binds again; without a ceiling a
+    # cart that checks out every 40 minutes would hold a device for ever.
+    ceiling = ExpressionWrapper(
+        Coalesce(F('hold_started_at'), Value(now)) + Value(timedelta(minutes=hold_ceiling_minutes())),
+        output_field=DateTimeField(),
+    )
     bound = StockUnit.objects.filter(
         pk__in=[unit.pk for unit in units], status=StockUnit.Status.RESERVED,
         hold_key=key_of(session_key), hold_until__gt=now,
     ).update(
-        hold_order=order, hold_until=now + timedelta(minutes=order_hold_minutes()), updated_at=now,
+        hold_order=order,
+        hold_until=Least(Value(now + timedelta(minutes=order_hold_minutes()), output_field=DateTimeField()),
+                         ceiling),
+        updated_at=now,
     )
     if bound < len({unit.pk for unit in units}):
         raise CheckoutError(

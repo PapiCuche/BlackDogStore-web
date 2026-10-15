@@ -373,7 +373,8 @@ def release(unit, *, actor=None, request=None) -> StockUnit:
         unit, expected=StockUnit.Status.RESERVED, to_status=StockUnit.Status.AVAILABLE,
         movement_type=StockMovement.MANUAL_ENTRY, reason='Apartado liberado',
         actor=actor, action='stock_unit_released', request=request,
-        extra_fields={'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None},
+        extra_fields={'hold_key': '', 'hold_until': None, 'hold_price': None, 'hold_order': None,
+                      'hold_origin': '', 'hold_started_at': None},
     )
 
 
