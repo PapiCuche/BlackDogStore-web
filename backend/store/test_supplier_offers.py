@@ -820,3 +820,148 @@ class PosOnOrderTest(SupplyShop, TestCase):
             items=[{'product': self.case.pk, 'quantity': 1, 'on_order': True}], validate_cash=False)
         line = pos_payloads.preview_payload(priced, may_see_commission=False)['lines'][0]
         self.assertEqual((line['price'], line['on_order'], line['lead_time_days']), ('110.00', True, 4))
+
+
+# ---------------------------------------------------------------------------
+# The weekly Excel
+# ---------------------------------------------------------------------------
+
+OFFER_HEADERS = ['Proveedor', 'Código/SKU del producto', 'Modelo', 'Capacidad', 'Color', 'Línea', 'Costo pactado',
+                 'Precio comercial', 'Cantidad confirmada', 'Vigente desde', 'Vigente hasta', 'Plazo (días)']
+
+
+class OfferExcelTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+        from store.models import ProductBarcode  # noqa: F401
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.staff)
+        self.start, self.end = today(), today() + timedelta(days=6)
+
+    def file(self, rows, headers=OFFER_HEADERS):
+        from store.test_cost_imports import upload
+        return upload(headers, rows, title='Ofertas de proveedor')
+
+    def row(self, **change):
+        values = {'Proveedor': 'Mayorista Lima', 'Código/SKU del producto': self.case.slug, 'Modelo': '',
+                  'Capacidad': '', 'Color': '', 'Línea': '', 'Costo pactado': '68', 'Precio comercial': '109.90',
+                  'Cantidad confirmada': 8, 'Vigente desde': self.start.isoformat(),
+                  'Vigente hasta': self.end.isoformat(), 'Plazo (días)': 5}
+        values.update(change)
+        return [values[h] for h in OFFER_HEADERS]
+
+    def preview(self, rows, client=None, headers=OFFER_HEADERS):
+        return (client or self.client_).post('/api/admin/supplier-offers/import/preview/',
+                                             {'file': self.file(rows, headers)}, format='multipart')
+
+    def apply(self, job_id, client=None):
+        return (client or self.client_).post(f'/api/admin/supplier-offers/import/{job_id}/apply/', {}, format='json')
+
+    def test_template_has_one_sheet_with_the_columns(self):
+        import io
+        import openpyxl
+        res = self.client_.get('/api/admin/supplier-offers/import/template/')
+        self.assertEqual(res.status_code, 200)
+        book = openpyxl.load_workbook(io.BytesIO(res.content))
+        self.assertEqual(book.sheetnames, ['Ofertas de proveedor'])
+        self.assertEqual([c.value for c in book.active[1]], OFFER_HEADERS)
+
+    def test_preview_marks_errors_per_row_and_writes_nothing(self):
+        res = self.preview([
+            self.row(),
+            self.row(**{'Proveedor': 'Nadie'}),
+            self.row(**{'Código/SKU del producto': 'no-existe'}),
+            self.row(**{'Precio comercial': 'gratis'}),
+            self.row(**{'Vigente hasta': (self.start - timedelta(days=1)).isoformat()}),
+            self.row(**{'Cantidad confirmada': -2}),
+        ])
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual((body['rows_create'], body['rows_error']), (1, 5))
+        self.assertEqual([r['action'] for r in body['rows']], ['create'] + ['error'] * 5)
+        self.assertTrue(all(r['errors'] for r in body['rows'][1:]))
+        self.assertEqual(SupplierOffer.objects.count(), 1)
+        self.assertEqual(self.apply(body['id']).status_code, 400)       # a file with errors is not applied
+
+    def test_apply_is_idempotent_and_updates_the_same_window(self):
+        body = self.preview([self.row()]).json()
+        res = self.apply(body['id'])
+        self.assertEqual((res.status_code, res.json()['created']), (200, 1), res.content)
+        made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
+        self.assertEqual((made.agreed_cost, made.commercial_price, made.confirmed_quantity, made.lead_time_days),
+                         (D('68.00'), D('109.90'), 8, 5))
+        self.assertEqual(self.apply(body['id']).json(), {'status': 'applied', 'created': 1, 'updated': 0,
+                                                          'unchanged': 0})    # the same job twice: nothing
+        again = self.preview([self.row()]).json()
+        self.assertEqual(again['rows_no_change'], 1)
+        self.apply(again['id'])
+        self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
+        # Next week's file: a new price for the same window updates it; a new window is a new offer.
+        week = self.preview([self.row(**{'Precio comercial': '105'}),
+                             self.row(**{'Vigente desde': (self.end + timedelta(days=1)).isoformat(),
+                                         'Vigente hasta': (self.end + timedelta(days=7)).isoformat()})]).json()
+        self.assertEqual((week['rows_update'], week['rows_create']), (1, 1))
+        self.apply(week['id'])
+        made.refresh_from_db()
+        self.assertEqual(made.commercial_price, D('105.00'))
+        self.assertEqual(SupplierOffer.objects.count(), 3)
+        self.assertTrue(AdminAuditLog.objects.filter(action='supplier_offer_updated', target_id=str(made.pk)).exists())
+
+    def test_the_cost_column_needs_costs_view(self):
+        manager, _ = _p2d_member(self.company, 'dc3_sin_costo', ['company.view', 'products.view', 'products.manage'])
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        body = self.preview([self.row()], client=client).json()
+        self.assertTrue(body['cost_column_ignored'])
+        self.assertNotIn('agreed_cost', body['rows'][0]['data'])
+        self.assertNotIn('68', str(body['rows'][0]['data']))
+        self.apply(body['id'], client=client)
+        made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
+        self.assertIsNone(made.agreed_cost)
+        export = client.get('/api/admin/supplier-offers/export/')
+        import io
+        import openpyxl
+        sheet = openpyxl.load_workbook(io.BytesIO(export.content)).active
+        self.assertNotIn('Costo pactado', [c.value for c in sheet[1]])
+        viewer, _ = _p2d_member(self.company, 'dc3_solo_ver', ['company.view', 'products.view'])
+        as_viewer = APIClient()
+        as_viewer.force_authenticate(user=viewer)
+        self.assertEqual(self.preview([self.row()], client=as_viewer).status_code, 403)
+
+    def test_a_variant_is_found_by_model_and_options_when_there_is_no_code(self):
+        shop = DeviceShop()
+        shop.company, shop._imei = self.company, iter([])
+        from store import device_catalog
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad')
+        gb = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='512 GB')
+        model = device_catalog.create_model(company=self.company, name='Tableta Z')
+        variant = _prod(self.company, 'Tableta Z 512', 'tableta-z-512', price='5000.00', inventory=0)
+        device_catalog.set_variant(variant, model_id=model.pk, option_ids=[gb.pk])
+        body = self.preview([self.row(**{'Código/SKU del producto': '', 'Modelo': 'Tableta Z', 'Capacidad': '512 GB',
+                                         'Línea': 'Nuevo'})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'][0])
+        self.apply(body['id'])
+        self.assertTrue(SupplierOffer.objects.filter(product=variant).exists())
+
+    def test_the_export_lists_current_offers_and_loads_back_unchanged(self):
+        import io
+        import openpyxl
+        res = self.client_.get('/api/admin/supplier-offers/export/')
+        self.assertEqual(res.status_code, 200)
+        sheet = openpyxl.load_workbook(io.BytesIO(res.content)).active
+        headers = [c.value for c in sheet[1]]
+        for column in OFFER_HEADERS:
+            self.assertIn(column, headers)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        upload = SimpleUploadedFile('ofertas.xlsx', res.content,
+                                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        body = self.client_.post('/api/admin/supplier-offers/import/preview/', {'file': upload},
+                                 format='multipart').json()
+        self.assertEqual((body['rows_no_change'], body['rows_error']), (1, 0), body['rows'])
+
+    def test_confirmed_quantity_below_what_was_sold_is_a_row_error(self):
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=4)
+        body = self.preview([self.row(**{'Vigente desde': self.offer.valid_from.isoformat(),
+                                         'Vigente hasta': self.offer.valid_until.isoformat(),
+                                         'Cantidad confirmada': 3})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'error')

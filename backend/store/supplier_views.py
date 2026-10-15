@@ -343,3 +343,81 @@ class AdminOrderSupplyActionView(APIView):
             return _error(exc)
         line = OrderItem.objects.select_related('supplier_offer__supplier').get(pk=line.pk)
         return Response(supply_line_payload(line))
+
+
+# ---------------------------------------------------------------------------
+# The weekly Excel
+# ---------------------------------------------------------------------------
+
+def _xlsx(payload: bytes, filename: str):
+    from .import_views import _xlsx as as_download
+
+    return as_download(payload, filename)
+
+
+class AdminOfferTemplateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        _company, error = _view(request)
+        if error:
+            return error
+        from . import supplier_offer_import
+
+        return _xlsx(supplier_offer_import.template_bytes(), supplier_offer_import.TEMPLATE_FILENAME)
+
+
+class AdminOfferExportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        company, error = _view(request)
+        if error:
+            return error
+        from . import supplier_offer_import
+
+        payload = supplier_offer_import.export_bytes(
+            company=company, include_cost=user_may_view_costs(request.user, company))
+        return _xlsx(payload, supplier_offer_import.EXPORT_FILENAME)
+
+
+class AdminOfferImportPreviewView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        company, error = _manage(request)
+        if error:
+            return error
+        from . import supplier_offer_import, xlsx_reader
+
+        upload = request.FILES.get('file')
+        if upload is None:
+            return Response({'detail': 'Adjunta el archivo.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            job = supplier_offer_import.preview(company=company, actor=request.user, upload=upload,
+                                                filename=getattr(upload, 'name', '') or 'ofertas.xlsx')
+        except (supplier_offer_import.OfferImportError, xlsx_reader.XlsxError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(supplier_offer_import.job_payload(
+            job, include_cost=user_may_view_costs(request.user, company)))
+
+
+class AdminOfferImportApplyView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        from . import supplier_offer_import
+        from .models import BulkImportJob
+
+        job = BulkImportJob.objects.filter(company=company, pk=pk,
+                                           import_type=BulkImportJob.SUPPLIER_OFFERS).first()
+        if job is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        try:
+            result = supplier_offer_import.apply(job=job, actor=request.user, request=request)
+        except supplier_offer_import.OfferImportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)

@@ -144,7 +144,8 @@ from .account_views import (
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
 from .supplier_views import (
-    AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferHistoryView, AdminOfferListView,
+    AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
+    AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
     AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
     AdminSupplierSettlementView,
 )
@@ -238,6 +239,13 @@ urlpatterns = [
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
     path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
+    path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
+         name='admin-supplier-offers-template'),
+    path('admin/supplier-offers/import/preview/', AdminOfferImportPreviewView.as_view(),
+         name='admin-supplier-offers-preview'),
+    path('admin/supplier-offers/import/<int:pk>/apply/', AdminOfferImportApplyView.as_view(),
+         name='admin-supplier-offers-apply'),
+    path('admin/supplier-offers/export/', AdminOfferExportView.as_view(), name='admin-supplier-offers-export'),
     path('admin/supplier-offers/<int:pk>/', AdminOfferDetailView.as_view(), name='admin-supplier-offer'),
     path('admin/supplier-offers/<int:pk>/deactivate/', AdminOfferDeactivateView.as_view(),
          name='admin-supplier-offer-deactivate'),
