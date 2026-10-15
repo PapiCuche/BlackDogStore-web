@@ -119,10 +119,14 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='supplieroffer',
-            constraint=models.CheckConstraint(condition=models.Q(('committed_quantity', 0), ('confirmed_quantity__gte', models.F('committed_quantity')), _connector='OR'), name='supplier_offer_never_overcommitted'),
+            constraint=models.CheckConstraint(condition=models.Q(('committed_quantity', 0), models.Q(('confirmed_quantity__gte', models.F('committed_quantity')), ('confirmed_quantity__isnull', False)), _connector='OR'), name='supplier_offer_never_overcommitted'),
         ),
         migrations.AddConstraint(
             model_name='supplieroffer',
             constraint=models.CheckConstraint(condition=models.Q(('valid_until__gte', models.F('valid_from'))), name='supplier_offer_valid_window'),
+        ),
+        migrations.AddConstraint(
+            model_name='supplieroffer',
+            constraint=models.UniqueConstraint(fields=('company', 'supplier', 'product', 'valid_from', 'valid_until'), name='unique_supplier_offer_window'),
         ),
     ]

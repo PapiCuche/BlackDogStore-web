@@ -10000,13 +10000,23 @@ class SupplierOffer(models.Model):
         ordering = ['-valid_until', 'pk']
         indexes = [models.Index(fields=['company', 'product', 'is_active'])]
         constraints = [
+            # A commitment needs a confirmed quantity that covers it. Spelled with
+            # `isnull=False` on purpose: `NULL >= 1` is NULL, and a CHECK lets NULL
+            # pass — an unconfirmed offer could otherwise hold a commitment.
             models.CheckConstraint(
-                condition=models.Q(committed_quantity=0) | models.Q(confirmed_quantity__gte=models.F('committed_quantity')),
+                condition=models.Q(committed_quantity=0) | models.Q(
+                    confirmed_quantity__isnull=False, confirmed_quantity__gte=models.F('committed_quantity')),
                 name='supplier_offer_never_overcommitted',
             ),
             models.CheckConstraint(
                 condition=models.Q(valid_until__gte=models.F('valid_from')),
                 name='supplier_offer_valid_window',
+            ),
+            # ONE offer per key (the Excel's key): two previews of one file, or two
+            # people applying at once, never double what can be sold on order.
+            models.UniqueConstraint(
+                fields=['company', 'supplier', 'product', 'valid_from', 'valid_until'],
+                name='unique_supplier_offer_window',
             ),
         ]
 

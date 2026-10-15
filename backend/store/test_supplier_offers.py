@@ -169,8 +169,11 @@ class AvailabilityMatrixTest(SupplyShop, TestCase):
         self.assertEqual(result.own_stock, 1)
 
     def test_the_offer_is_chosen_the_same_way_every_time(self):
-        cheap = self.make_offer(commercial_price='100.00', agreed_cost='80.00', lead_time_days=9)
-        tie_cheaper_cost = self.make_offer(commercial_price='100.00', agreed_cost='75.00', lead_time_days=7)
+        # Distinct windows (one offer per key); `valid_from` plays no part in the choice.
+        cheap = self.make_offer(commercial_price='100.00', agreed_cost='80.00', lead_time_days=9,
+                                valid_from=today() - timedelta(days=2))
+        tie_cheaper_cost = self.make_offer(commercial_price='100.00', agreed_cost='75.00', lead_time_days=7,
+                                           valid_from=today() - timedelta(days=3))
         self.assertEqual(self.answer().offer, tie_cheaper_cost)
         SupplierOffer.objects.filter(pk=tie_cheaper_cost.pk).update(agreed_cost=D('80.00'),
                                                                    valid_until=today() + timedelta(days=9))
@@ -206,8 +209,10 @@ class OfferRulesTest(SupplyShop, TestCase):
             dict(lead_time_days=400),
         ]
         for change in bad:
-            with self.subTest(change), self.assertRaises(supply.SupplyError):
-                self.make_offer(**change)
+            # Its own window: a duplicate key (DC3 review P2) must not be what refuses it.
+            with self.subTest(change), self.assertRaises(supply.SupplyError) as caught:
+                self.make_offer(**{'valid_until': today() + timedelta(days=7), **change})
+            self.assertNotEqual(caught.exception.code, 'duplicate')
 
     def test_without_costs_view_the_cost_is_not_written(self):
         offer = supply.create_offer(
@@ -327,7 +332,8 @@ class OnOrderSaleTest(SupplyShop, TestCase):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(is_active=False)
         self.pay(order)
         line = order.items.get()
-        fresh = self.make_offer(agreed_cost='72.00', commercial_price='115.00', lead_time_days=6)
+        fresh = self.make_offer(agreed_cost='72.00', commercial_price='115.00', lead_time_days=6,
+                                valid_from=today() - timedelta(days=2))
         supply.confirm_line(line, actor=self.staff)
         line.refresh_from_db()
         fresh.refresh_from_db()
@@ -758,7 +764,7 @@ class AdminOrderSupplyApiTest(SupplyShop, TestCase):
     def test_confirm_receive_and_fail_through_the_panel(self):
         url = f'/api/admin/orders/{self.order.pk}/supply/{self.line.pk}/'
         self.assertEqual(self.client_.post(url + 'confirm/', {}, format='json').status_code, 400)   # no valid offer
-        fresh = self.make_offer()
+        fresh = self.make_offer(valid_from=today() - timedelta(days=2))
         res = self.client_.post(url + 'confirm/', {'offer_id': fresh.pk}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(res.json()['supply_status'], 'pending')
@@ -1094,3 +1100,67 @@ class RollbackOnOrderTest(SupplyShop, TestCase):
         self.assertEqual((pending.status, paid.status), (Order.Status.CANCELLED, Order.Status.PAID))
         self.assertTrue(AdminAuditLog.objects.filter(action='order_cancelled_before_rollback',
                                                      target_id=str(pending.pk)).exists())
+
+
+# ---------------------------------------------------------------------------
+# DC3 independent review (P2, P3.1–P3.10)
+# ---------------------------------------------------------------------------
+
+STALE = 'El archivo cambió: vuelve a previsualizarlo'
+
+
+class OfferFile(SupplyShop):
+    """The Excel helpers of `OfferExcelTest`, without its tests."""
+
+    file, row, preview, apply = OfferExcelTest.file, OfferExcelTest.row, OfferExcelTest.preview, OfferExcelTest.apply
+
+    def build_excel(self, slug='dc3-tienda'):
+        self.build(slug)
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.staff)
+        self.start, self.end = today(), today() + timedelta(days=6)
+
+
+class ReviewExcelTest(OfferFile, TestCase):
+    """The weekly Excel after the review: one offer per key, the cost by who applies, nothing reactivated."""
+
+    def setUp(self):
+        self.build_excel()
+
+
+    def test_the_database_refuses_a_second_offer_with_the_same_key(self):
+        from django.db import IntegrityError
+        with self.assertRaises(supply.SupplyError) as caught:
+            self.make_offer(valid_from=self.offer.valid_from, valid_until=self.offer.valid_until)
+        self.assertEqual(caught.exception.code, 'duplicate')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SupplierOffer.objects.create(
+                company=self.company, supplier=self.supplier, product=self.case, commercial_price=D('1'),
+                valid_from=self.offer.valid_from, valid_until=self.offer.valid_until, lead_time_days=1)
+
+
+
+
+
+
+
+
+
+class ReviewSupplyTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+
+
+
+
+    def test_committed_requires_a_confirmed_quantity_in_the_database(self):
+        """P3.10 — NULL confirmed never holds a commitment."""
+        from django.db import IntegrityError
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=1)
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=None, committed_quantity=0)
+
+
+
+
+

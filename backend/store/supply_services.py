@@ -304,11 +304,25 @@ def _offer_snapshot(offer) -> dict:
     }
 
 
+_DUPLICATE = 'Ya hay una oferta de ese proveedor para ese producto con esa misma vigencia.'
+
+
+def _is_duplicate(exc) -> bool:
+    """The one-offer-per-key index refused it (and not, say, the commitment CHECK)."""
+    return 'unique_supplier_offer_window' in str(exc)
+
+
 def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
     values = _offer_values(company, fields, may_view_costs=may_view_costs)
-    offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
+    try:
+        with transaction.atomic():
+            offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
+    except IntegrityError as exc:
+        if not _is_duplicate(exc):
+            raise
+        raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
     _audit('supplier_offer_created', company=company, actor=actor, target_type='supplier_offer',
            target_id=offer.pk, request=request, **_offer_snapshot(offer))
     return offer
@@ -322,7 +336,13 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
         if not values:
             return locked
         before = _offer_snapshot(locked)
-        SupplierOffer.objects.filter(pk=locked.pk).update(updated_at=timezone.now(), **values)
+        try:
+            with transaction.atomic():
+                SupplierOffer.objects.filter(pk=locked.pk).update(updated_at=timezone.now(), **values)
+        except IntegrityError as exc:
+            if not _is_duplicate(exc):
+                raise
+            raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
         locked.refresh_from_db()
         changed = sorted(key for key, value in _offer_snapshot(locked).items() if before.get(key) != value)
         if 'agreed_cost' in values:
