@@ -611,3 +611,153 @@ class DeviceOnOrderTest(DeviceShop, TestCase):
         self.assertEqual(self.shelf(self.new256), 1, 'the device of the shelf is untouched')
         from store import unit_identification
         self.assertEqual(unit_identification.pending_units(order), {})
+
+
+# ---------------------------------------------------------------------------
+# The panel
+# ---------------------------------------------------------------------------
+
+class AdminSupplierApiTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.staff)
+        self.viewer, _ = _p2d_member(self.company, 'dc3_viewer', ['company.view', 'products.view'])
+        self.seller, _ = _p2d_member(self.company, 'dc3_manager_sin_costos',
+                                     ['company.view', 'products.view', 'products.manage'])
+
+    def as_(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_suppliers_are_listed_created_and_edited_by_company(self):
+        res = self.client_.post('/api/admin/suppliers/', {'name': 'Distribuidora Sur', 'document_type': 'RUC',
+                                                         'document_number': '20100070970'}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        bad_ruc = self.client_.post('/api/admin/suppliers/', {'name': 'X', 'document_type': 'RUC',
+                                                             'document_number': '20100070971'}, format='json')
+        self.assertEqual(bad_ruc.status_code, 400)
+        dup = self.client_.post('/api/admin/suppliers/', {'name': 'distribuidora sur'}, format='json')
+        self.assertEqual(dup.status_code, 400)
+        pk = res.json()['id']
+        self.assertEqual(self.client_.patch(f'/api/admin/suppliers/{pk}/', {'is_active': False},
+                                            format='json').json()['is_active'], False)
+        names = [row['name'] for row in self.as_(self.viewer).get('/api/admin/suppliers/').json()['results']]
+        self.assertEqual(sorted(names), ['Distribuidora Sur', 'Mayorista Lima'])
+        self.assertEqual(self.as_(self.viewer).post('/api/admin/suppliers/', {'name': 'Y'},
+                                                    format='json').status_code, 403)
+        # Another company's supplier does not exist here.
+        other = _p3_company('dc3-otra-api', 'Otra')
+        foreign = supply.create_supplier(company=other, name='Ajeno')
+        self.assertEqual(self.client_.get(f'/api/admin/suppliers/{foreign.pk}/').status_code, 404)
+        self.assertEqual(self.client_.patch(f'/api/admin/suppliers/{foreign.pk}/', {'name': 'Mío'},
+                                            format='json').status_code, 404)
+
+    def test_offers_show_the_cost_only_to_costs_view(self):
+        with_cost = self.client_.get('/api/admin/supplier-offers/').json()['results'][0]
+        self.assertEqual(with_cost['agreed_cost'], '70.00')
+        res = self.as_(self.seller).get('/api/admin/supplier-offers/')
+        self.assertNotIn('agreed_cost', res.json()['results'][0])
+        self.assertNotIn('70.00', res.content.decode())
+        detail = self.as_(self.seller).get(f'/api/admin/supplier-offers/{self.offer.pk}/')
+        self.assertNotIn('agreed_cost', detail.json())
+        # Writing a cost without the permission is ignored, not stored.
+        made = self.as_(self.seller).post('/api/admin/supplier-offers/', {
+            'supplier_id': self.supplier.pk, 'product_id': self.case.pk, 'agreed_cost': '1.00',
+            'commercial_price': '100.00', 'confirmed_quantity': 2, 'valid_from': str(today()),
+            'valid_until': str(today()), 'lead_time_days': 3}, format='json')
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertIsNone(SupplierOffer.objects.get(pk=made.json()['id']).agreed_cost)
+        self.as_(self.seller).patch(f'/api/admin/supplier-offers/{self.offer.pk}/', {'agreed_cost': '1.00'},
+                                    format='json')
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.agreed_cost, D('70.00'))
+
+    def test_offer_filters_history_and_deactivation(self):
+        old = self.make_offer(valid_from=today() - timedelta(days=20), valid_until=today() - timedelta(days=10))
+        rows = self.client_.get('/api/admin/supplier-offers/?state=expired').json()['results']
+        self.assertEqual([row['id'] for row in rows], [old.pk])
+        rows = self.client_.get('/api/admin/supplier-offers/?state=active').json()['results']
+        self.assertEqual([row['id'] for row in rows], [self.offer.pk])
+        self.assertEqual(rows[0]['state'], 'active')
+        rows = self.client_.get(f'/api/admin/supplier-offers/?product={self.case.pk}&supplier={self.supplier.pk}').json()
+        self.assertEqual(rows['count'], 2)
+        self.client_.patch(f'/api/admin/supplier-offers/{self.offer.pk}/', {'commercial_price': '105.00'},
+                           format='json')
+        res = self.client_.post(f'/api/admin/supplier-offers/{self.offer.pk}/deactivate/', {'reason': 'Sin stock'},
+                                format='json')
+        self.assertEqual(res.json()['state'], 'inactive')
+        history = self.client_.get(f'/api/admin/supplier-offers/{self.offer.pk}/history/').json()['results']
+        self.assertEqual([row['action'] for row in history],
+                         ['supplier_offer_deactivated', 'supplier_offer_updated', 'supplier_offer_created'])
+        self.assertNotIn('70.00', str(history))
+
+    def test_the_sale_mode_of_a_product(self):
+        url = f'/api/admin/products/{self.case.pk}/sale-mode/'
+        self.assertEqual(self.as_(self.viewer).patch(url, {'sale_mode': 'stock'}, format='json').status_code, 403)
+        res = self.client_.patch(url, {'sale_mode': 'stock'}, format='json')
+        self.assertEqual((res.status_code, res.json()['sale_mode']), (200, 'stock'))
+        self.assertEqual(self.client_.patch(url, {'sale_mode': 'magic'}, format='json').status_code, 400)
+        self.assertEqual(self.client_.get(f'/api/admin/products/{self.case.pk}/').json()['sale_mode'], 'stock')
+
+    def test_the_settlement_summary_reads_received_lines_at_frozen_cost(self):
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.pay(order)
+        supply.receive_line(order.items.get(), actor=self.staff)
+        res = self.client_.get('/api/admin/suppliers/settlement/')
+        self.assertEqual(res.json()['results'], [{'supplier_id': self.supplier.pk, 'supplier_name': 'Mayorista Lima',
+                                                  'units': 2, 'amount': '140.00', 'units_without_cost': 0}])
+        self.assertEqual(self.as_(self.seller).get('/api/admin/suppliers/settlement/').status_code, 403)
+
+
+class AdminOrderSupplyApiTest(SupplyShop, TestCase):
+    def setUp(self):
+        self.build()
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.staff)
+        self.add_on_order(quantity=1)
+        self.order = self.checkout()
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(is_active=False)
+        self.pay(self.order)
+        self.line = self.order.items.get()
+
+    def test_the_panel_shows_the_supply_and_filters_by_it(self):
+        detail = self.client_.get(f'/api/admin/orders/{self.order.pk}/').json()
+        self.assertEqual(detail['supply_status'], 'to_confirm')
+        item = detail['items'][0]
+        self.assertEqual((item['supply_origin'], item['supply_status'], item['lead_time_days'], item['supplier_name']),
+                         ('supplier', 'to_confirm', 4, 'Mayorista Lima'))
+        self.assertNotIn('unit_cost', item)
+        self.assertTrue(detail['can_manage_supply'])
+        rows = self.client_.get('/api/admin/orders/?supply=to_confirm').json()['results']
+        self.assertEqual([row['id'] for row in rows], [self.order.pk])
+        self.assertEqual(rows[0]['supply_status'], 'to_confirm')
+        self.assertEqual(self.client_.get('/api/admin/orders/?supply=pending').json()['results'], [])
+
+    def test_confirm_receive_and_fail_through_the_panel(self):
+        url = f'/api/admin/orders/{self.order.pk}/supply/{self.line.pk}/'
+        self.assertEqual(self.client_.post(url + 'confirm/', {}, format='json').status_code, 400)   # no valid offer
+        fresh = self.make_offer()
+        res = self.client_.post(url + 'confirm/', {'offer_id': fresh.pk}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['supply_status'], 'pending')
+        clerk, _ = _p2d_member(self.company, 'dc3_clerk', ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+        as_clerk = APIClient()
+        as_clerk.force_authenticate(user=clerk)
+        self.assertEqual(as_clerk.post(url + 'receive/', {}, format='json').status_code, 403)   # inventory.adjust
+        res = self.client_.post(url + 'receive/', {}, format='json')
+        self.assertEqual((res.status_code, res.json()['supply_status']), (200, 'received'))
+        self.assertEqual(self.client_.post(url + 'fail/', {'reason': 'x'}, format='json').status_code, 400)
+
+    def test_another_company_cannot_touch_the_line(self):
+        other = _p3_company('dc3-otra-orden', 'Otra')
+        stranger, _ = _p2d_member(other, 'dc3_extrano', ['company.view', 'sales.orders.view', 'sales.orders.manage',
+                                                          'inventory.adjust'])
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+        url = f'/api/admin/orders/{self.order.pk}/supply/{self.line.pk}/fail/'
+        self.assertEqual(client.post(url, {'reason': 'x'}, format='json').status_code, 404)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.supply_status, 'to_confirm')

@@ -143,6 +143,11 @@ from .account_views import (
 )
 from .delivery_views import AdminCarrierDetailView, AdminCarrierListView, AdminOrderDeliveryView
 from .google_views import GoogleConfigView, GoogleLinkView, GoogleSignInView
+from .supplier_views import (
+    AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferHistoryView, AdminOfferListView,
+    AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
+    AdminSupplierSettlementView,
+)
 from .device_catalog_views import (
     AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
     AdminGradeSeedView, AdminModelDetailView, AdminModelListView, AdminOptionDetailView,
@@ -228,6 +233,19 @@ urlpatterns = [
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
     path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
+    # DC3 — suppliers, offers and the supply of on-order lines.
+    path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
+    path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
+    path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
+    path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
+    path('admin/supplier-offers/<int:pk>/', AdminOfferDetailView.as_view(), name='admin-supplier-offer'),
+    path('admin/supplier-offers/<int:pk>/deactivate/', AdminOfferDeactivateView.as_view(),
+         name='admin-supplier-offer-deactivate'),
+    path('admin/supplier-offers/<int:pk>/history/', AdminOfferHistoryView.as_view(),
+         name='admin-supplier-offer-history'),
+    path('admin/products/<int:pk>/sale-mode/', AdminProductSaleModeView.as_view(), name='admin-product-sale-mode'),
+    path('admin/orders/<int:pk>/supply/<int:line_pk>/<str:action>/', AdminOrderSupplyActionView.as_view(),
+         name='admin-order-supply-action'),
     path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),

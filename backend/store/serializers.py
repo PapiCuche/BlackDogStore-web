@@ -511,6 +511,9 @@ class AdminProductSerializer(serializers.ModelSerializer):
             # Read-only here. How a product is counted changes only through
             # `stock_unit_services.set_serialized`, which checks the shelf.
             'is_serialized', 'requires_imei',
+            # DC3: «Bajo pedido» allowed or not. Read-only here; written by
+            # PATCH /api/admin/products/<pk>/sale-mode/.
+            'sale_mode',
             'created_at', 'updated_at',
         ]
 
@@ -682,10 +685,19 @@ class AdminOrderItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source='product.id', read_only=True)
     product_name = serializers.CharField(source='product.name', read_only=True)
     subtotal = serializers.SerializerMethodField()
+    # DC3 — where the line's goods come from and how their supply goes. The
+    # supplier's name is the panel's to see; its cost is not here (costs.view).
+    supplier_name = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal']
+        fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal',
+                  'supply_origin', 'supply_status', 'supply_note', 'lead_time_days', 'supplier_offer_id',
+                  'supplier_name']
+
+    def get_supplier_name(self, obj):
+        offer = obj.supplier_offer if obj.supplier_offer_id else None
+        return offer.supplier.name if offer is not None else ''
 
     def get_subtotal(self, obj):
         return str(obj.price * obj.quantity)

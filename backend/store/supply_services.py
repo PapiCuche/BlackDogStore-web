@@ -147,9 +147,10 @@ def _clean_document(document_type, document_number) -> tuple[str, str]:
     from .identity_validation import IdentityError, clean_document
 
     try:
-        return clean_document(str(document_type or ''), str(document_number or ''))
+        return clean_document(str(document_type or '').strip().lower(), str(document_number or ''))
     except IdentityError as exc:
-        raise SupplyError(str(getattr(exc, 'message', None) or exc.args[-1]), field='document_number') from None
+        field = exc.args[0] if exc.args and exc.args[0] in ('document_type', 'document_number') else 'document_number'
+        raise SupplyError(str(exc.args[-1]) if exc.args else 'Documento inválido.', field=field) from None
 
 
 # ---------------------------------------------------------------------------
