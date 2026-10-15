@@ -981,3 +981,39 @@ class DeviceHoldThrottleTest(DeviceShop, TestCase):
                                           format='json', REMOTE_ADDR='198.51.100.9').status_code, 200)
         self.assertEqual(self.public.post('/api/cart/add/', {'session_key': 's1', 'product': self.accessory.pk},
                                           format='json', REMOTE_ADDR='203.0.113.9').status_code, 200)
+
+
+class SupersededOrderTest(SaleShop, TestCase):
+    """One cart, two checkouts: the device is the LATER order's, and is paid for once."""
+
+    def setUp(self):
+        super().setUp()
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        self.first = self.checkout()
+        self.second = self.checkout()
+
+    def test_the_first_order_cannot_open_a_payment_nor_sell_the_device(self):
+        self.used_a.refresh_from_db()
+        self.assertEqual(self.used_a.hold_order_id, self.second.pk)
+        with self.assertRaises(checkout.CheckoutError) as caught:
+            checkout.start_payment_attempt(self.first, credentials=None)
+        self.assertEqual((caught.exception.code, caught.exception.status_code), ('order_superseded', 409))
+        # A form of the first order that was already open is paid anyway: the device does not go.
+        self.pay(self.first)
+        self.first.refresh_from_db()
+        self.assertIn(f'#{self.second.pk}', self.first.payment_error)
+        self.used_a.refresh_from_db()
+        self.assertEqual(self.used_a.status, 'reserved')
+        self.assertFalse(StockMovement.objects.filter(order=self.first, movement_type='sale_exit').exists())
+        # The later order sells it.
+        self.pay(self.second)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.second.pk))
+        self.assertEqual(self.shelf(self.used128), self.available(self.used128))
+
+    def test_a_later_order_that_failed_does_not_take_the_device_from_the_first(self):
+        Order.objects.filter(pk=self.second.pk).update(status=Order.Status.FAILED)
+        self.pay(self.first)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.order_id), ('sold', self.first.pk))

@@ -720,8 +720,17 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None):
     product = items[0].product
     _locked_branch_stocks(branch, [product])
     buyer_key = unit_hold_services.key_of(order.cart_session_key) if order.cart_session_key else None
+    superseded = unit_hold_services.superseded_lines(order)
     sellable = []
     for item in items:
+        if item.stock_unit_id in superseded:
+            # The same cart checked out again: the device is that order's.
+            _flag_stock_shortfall(
+                order, None,
+                f'El equipo elegido de "{product.name}" pasó al pedido #{superseded[item.stock_unit_id].pk} '
+                'del mismo carrito; este cobro no lo vende.',
+            )
+            continue
         unit = (
             StockUnit.objects.select_for_update()
             .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
