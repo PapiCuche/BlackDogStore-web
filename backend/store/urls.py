@@ -1,4 +1,5 @@
 from rest_framework.routers import DefaultRouter
+from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
     AdminStaffInvitationDetailView, AdminStaffInvitationListView,
@@ -423,6 +424,8 @@ urlpatterns = [
     # All internal control. `sales.pos.use` for the till, `sales.analytics.view`
     # for the numbers, and `inventory.reports` on top for the forecast detail.
     path('admin/pos/context/', AdminPosContextView.as_view(), name='admin-pos-context'),
+    # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad»: read only, `sales.pos.use`.
+    path('admin/availability/', AdminAvailabilityView.as_view(), name='admin-availability'),
     path('admin/pos/products/lookup/', AdminPosLookupView.as_view(), name='admin-pos-lookup'),
     path('admin/pos/products/search/', AdminPosSearchView.as_view(), name='admin-pos-search'),
     path('admin/pos/units/lookup/', AdminPosUnitLookupView.as_view(), name='admin-pos-unit-lookup'),

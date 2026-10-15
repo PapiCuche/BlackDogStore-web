@@ -382,21 +382,32 @@ def expire_offers(*, company=None, on=None) -> int:
     return done
 
 
+def valid_offer_q(*, on=None) -> Q:
+    """
+    What makes an offer able to sell today — the ONE predicate, for one product
+    here and for a page of them in «Consultar disponibilidad».
+    """
+    on = on or today()
+    return Q(
+        is_active=True, supplier__is_active=True, confirmed_quantity__isnull=False,
+        valid_from__lte=on, valid_until__gte=on, confirmed_quantity__gt=F('committed_quantity'),
+    )
+
+
+#: Which offer is best (see WHICH OFFER above), as an `order_by`.
+BEST_OFFER_ORDER = ('commercial_price', F('agreed_cost').asc(nulls_last=True), 'valid_until', 'pk')
+
+
 def valid_offers(product, *, on=None):
     """The offers of `product` that may sell today. Expiry is read here, not waited for."""
-    on = on or today()
-    return SupplierOffer.objects.filter(
-        company_id=product.company_id, product=product, is_active=True, supplier__is_active=True,
-        confirmed_quantity__isnull=False, valid_from__lte=on, valid_until__gte=on,
-        confirmed_quantity__gt=F('committed_quantity'),
-    )
+    return SupplierOffer.objects.filter(valid_offer_q(on=on), company_id=product.company_id, product=product)
 
 
 def best_offer(product, quantity: int = 1, *, on=None):
     return (
         valid_offers(product, on=on)
         .filter(confirmed_quantity__gte=F('committed_quantity') + max(int(quantity), 1))
-        .order_by('commercial_price', F('agreed_cost').asc(nulls_last=True), 'valid_until', 'pk')
+        .order_by(*BEST_OFFER_ORDER)
         .first()
     )
 
