@@ -361,7 +361,7 @@ class PublicModelApiTest(DeviceShop, TestCase):
 # ---------------------------------------------------------------------------
 
 # Holding every device of a shelf is what these tests do; the share limit has its own test.
-@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'], DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
 class HoldTest(DeviceShop, TestCase):
     def setUp(self):
         self.build()
@@ -518,7 +518,6 @@ class SaleShop(DeviceShop):
                                                      payment_error=order.payment_error)
 
 
-@override_settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
 class ExactUnitSaleTest(SaleShop, TestCase):
     def test_payment_sells_the_held_device_not_the_oldest(self):
         # The cart got the oldest; let a buyer hold the YOUNG one by freeing the old first.
@@ -890,13 +889,11 @@ class HoldAbuseTest(DeviceShop, TestCase):
         self.assertEqual(held, [200] * 5 + [409])
         self.assertEqual(self.add('c9', ip='198.51.100.99').json()['code'], 'held_by_others')
         self.assertEqual(StockUnit.objects.filter(status='reserved').count(), 5)
-        # A shelf of one: the one device can be held (max(1, half)).
-        self.receive(self.new256, 1)
-        self.assertEqual(self.add('solo', ip='198.51.100.50', product=self.new256).status_code, 200)
-        self.receive(self.new256, 1)     # 2 devices, one held: half is taken
-        self.assertEqual(self.add('solo2', ip='198.51.100.51', product=self.new256).json()['code'],
-                         'held_by_others')
-        with self.settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100):
+        # Below four devices a variant has no share of its own (DC2 second review):
+        # two buyers of a shelf of two both get one, the company ceiling permitting.
+        self.receive(self.new256, 2)
+        with self.settings(DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT=100):
+            self.assertEqual(self.add('solo', ip='198.51.100.50', product=self.new256).status_code, 200)
             self.assertEqual(self.add('solo2', ip='198.51.100.51', product=self.new256).status_code, 200)
 
     def test_a_checkout_never_stretches_a_hold_past_its_ceiling(self):
@@ -927,7 +924,6 @@ class HoldAbuseTest(DeviceShop, TestCase):
         self.assertGreater(fresh.hold_until, timezone.now() + timedelta(minutes=holds.hold_minutes() - 1))
 
 
-@override_settings(DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
 class CartLimitRaceTest(TransactionTestCase):
     """Two adds of one cart at the same instant, for two products: the limit still holds."""
 
@@ -973,7 +969,8 @@ class CartLimitRaceTest(TransactionTestCase):
 
 
 @override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'], DEVICE_HOLD_MAX_PER_ORIGIN=100,
-                   DEVICE_HOLD_MAX_PER_CART=100, DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100)
+                   DEVICE_HOLD_MAX_PER_CART=100, DEVICE_WEB_HOLD_MAX_SHARE_PERCENT=100,
+                   DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT=100)
 class DeviceHoldThrottleTest(DeviceShop, TestCase):
     """Adding a by-unit product has its own, stricter budget per address."""
 
@@ -1288,3 +1285,55 @@ class HoldLockOrderTest(DeviceShop, TestCase):
                 mock.patch.object(holds, 'release_expired', side_effect=sweep):
             holds.hold(product=self.new128, branch=self.branch, session_key='c', origin='o')
         self.assertEqual(calls, ['advisory', 'sweep'])
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class FairShareTest(DeviceShop, TestCase):
+    """P1 — the shelf share no longer blocks real buyers of distinct used devices."""
+
+    def setUp(self):
+        self.build()
+        self.public = _client(host=self.host)
+
+    def add(self, session, ip, product, unit=None):
+        body = {'session_key': session, 'product': product.pk}
+        if unit is not None:
+            body['unit'] = str(unit.public_id)
+        return self.public.post('/api/cart/add/', body, format='json', REMOTE_ADDR=ip)
+
+    def test_buyers_of_three_used_devices_are_not_blocked_by_each_other(self):
+        a, b, c = self.receive(self.used128, 3)
+        for unit, price in ((a, '1999.00'), (b, '1500.00'), (c, '1200.00')):
+            units.update_unit(unit, sale_price=price)
+        self.assertEqual(self.add('carro-a', '203.0.113.7', self.used128, a).status_code, 200)
+        res = self.add('carro-b', '198.51.100.4', self.used128, b)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(self.add('carro-a', '203.0.113.7', self.used128, c).status_code, 200)
+        self.assertEqual(StockUnit.objects.filter(status='reserved').count(), 3)
+
+    def test_the_share_of_one_variant_applies_from_four_devices(self):
+        self.receive(self.new128, 4)
+        held = [self.add(f'c{n}', f'198.51.100.{n + 1}', self.new128).status_code for n in range(3)]
+        self.assertEqual(held, [200, 200, 409])          # 4 devices: at most 2 held by web carts
+
+    def test_the_company_ceiling_stops_many_origins_across_small_shelves(self):
+        for product in (self.new128, self.new256):
+            self.receive(product, 3)
+        used = self.receive(self.used128, 3)
+        for unit in used:
+            units.update_unit(unit, sale_price='1000.00')
+        # 9 web-available devices: the company's web carts hold at most max(3, 9 × 50 %) = 4.
+        tries = [
+            self.add('c1', '198.51.100.1', self.new128), self.add('c2', '198.51.100.2', self.new256),
+            self.add('c3', '198.51.100.3', self.used128, used[0]), self.add('c4', '198.51.100.4', self.new128),
+            self.add('c5', '198.51.100.5', self.new256),
+        ]
+        self.assertEqual([r.status_code for r in tries], [200, 200, 200, 200, 409])
+        self.assertEqual(tries[-1].json()['code'], 'held_by_others')
+        self.assertEqual(StockUnit.objects.filter(status='reserved').count(), 4)
+
+    def test_a_small_shop_can_always_hold_three(self):
+        [one] = self.receive(self.new128, 1)
+        [two] = self.receive(self.new256, 1)
+        self.assertEqual(self.add('c1', '198.51.100.1', self.new128).status_code, 200)
+        self.assertEqual(self.add('c2', '198.51.100.2', self.new256).status_code, 200)

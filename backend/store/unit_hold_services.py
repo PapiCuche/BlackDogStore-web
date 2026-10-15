@@ -89,15 +89,44 @@ def hold_ceiling_minutes() -> int:
     return hold_minutes() + order_hold_minutes()
 
 
-def web_hold_cap(pool: int) -> int:
+def share_min_units() -> int:
+    return int(getattr(settings, 'DEVICE_WEB_HOLD_SHARE_MIN_UNITS', 4))
+
+
+def company_share_percent() -> int:
+    return int(getattr(settings, 'DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT', 50))
+
+
+def company_min_holds() -> int:
+    return int(getattr(settings, 'DEVICE_WEB_HOLD_COMPANY_MIN', 3))
+
+
+def web_hold_cap(pool: int) -> int | None:
     """
     How many devices of one product in one branch web carts may hold at once.
 
     `pool` = devices on the shelf + devices web carts hold. At most
-    `DEVICE_WEB_HOLD_MAX_SHARE_PERCENT` of it (50 %), rounded down, and never
-    less than one: a shelf of one can still be bought online.
+    `DEVICE_WEB_HOLD_MAX_SHARE_PERCENT` of it (50 %), rounded down — but only
+    from `DEVICE_WEB_HOLD_SHARE_MIN_UNITS` (4) devices up: on a smaller shelf
+    (a used variant of two or three devices, each a different phone) the share
+    blocked real buyers of distinct devices (DC2 second review, P1). None = no
+    share for this shelf; the company ceiling and the per-origin cap still hold.
     """
+    if pool < share_min_units():
+        return None
     return max(1, pool * max_share_percent() // 100)
+
+
+def company_hold_cap(pool: int) -> int:
+    """
+    How many devices sold by unit web carts may hold at once in one company.
+
+    `pool` = the company's web-available devices sold by unit + those web
+    carts hold. `DEVICE_WEB_HOLD_COMPANY_SHARE_PERCENT` of it (50 %), never
+    less than `DEVICE_WEB_HOLD_COMPANY_MIN` (3): what stops many origins from
+    holding every small shelf at once.
+    """
+    return max(company_min_holds(), pool * company_share_percent() // 100)
 
 
 def key_of(session_key: str) -> str:
@@ -145,9 +174,22 @@ def _live_web_holds(company, now):
     ).exclude(hold_key='')
 
 
+def _web_available_by_unit(branch) -> int:
+    """The devices the web could hold right now in the branch that ships: sold by unit, online, on the shelf."""
+    from django.db.models import Q
+
+    return StockUnit.objects.filter(
+        company_id=branch.company_id, branch=branch, status=StockUnit.Status.AVAILABLE,
+        product__is_serialized=True, product__product_model__isnull=False,
+        product__is_active=True, product__is_published_online=True,
+    ).filter(
+        Q(product__condition_line=Product.CONDITION_NEW) | Q(sale_price__isnull=False),
+    ).count()
+
+
 def _lock_holders(company_id, key, origin) -> None:
     """
-    Transaction-scoped advisory locks on «this cart» and «this origin», in one
+    Transaction-scoped advisory locks on «this company», «this cart» and «this origin», in one
     fixed order (sorted), always before any shelf lock — so two holds wait
     for each other instead of deadlocking.
     """
@@ -156,7 +198,9 @@ def _lock_holders(company_id, key, origin) -> None:
     ids = sorted({
         int.from_bytes(hashlib.sha256(f'dc2-hold|{company_id}|{kind}|{value}'.encode()).digest()[:8],
                        'big', signed=True)
-        for kind, value in (('cart', key), ('origin', origin)) if value
+        # «this company» too (DC2 second review, P1): the company ceiling is a
+        # count over every cart of the company, decided under one lock.
+        for kind, value in (('company', 'all'), ('cart', key), ('origin', origin)) if value
     })
     with connection.cursor() as cursor:
         for lock_id in ids:
@@ -172,9 +216,10 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     a new device — the oldest available of the variant, decided under the
     shelf lock so two buyers never pick the same one.
 
-    `origin`: `order_risk.origin_hash` of the request ('' = unknown). Three
+    `origin`: `order_risk.origin_hash` of the request ('' = unknown). Four
     limits keep one client from emptying a shelf: holds per cart, holds per
-    origin across every cart, and the share of a shelf web holds may take.
+    origin across every cart, the share of a shelf of 4+ devices web holds may
+    take, and the company ceiling over every web hold (DC2 second review).
     """
     if not session_key:
         raise HoldError('invalid', 'session_key es requerido.')
@@ -231,7 +276,10 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     # keep their own answers.
     web_held = _live_web_holds(product.company, now).filter(branch=branch, product=product).count()
     pool = base.filter(status=StockUnit.Status.AVAILABLE).count() + web_held
-    if web_held >= web_hold_cap(pool):
+    cap = web_hold_cap(pool)
+    company_held = _live_web_holds(product.company, now).count()
+    if (cap is not None and web_held >= cap) or \
+            company_held >= company_hold_cap(_web_available_by_unit(branch) + company_held):
         raise HoldError(
             'held_by_others',
             f'Los demás equipos de «{product.name}» están apartados por otros compradores. '
