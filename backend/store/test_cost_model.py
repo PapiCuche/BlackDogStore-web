@@ -22,7 +22,7 @@ from django.utils import timezone
 from store import cost_services
 from store import inventory_services as inventory
 from store import stock_unit_services as units
-from store.models import BranchStock, Order, OrderItem, Product, StockMovement, StockUnit
+from store.models import AdminAuditLog, BranchStock, Order, OrderItem, Product, StockMovement, StockUnit
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C
 from store.tests import _p2d_branch, _p3_company, _prod
 
@@ -370,3 +370,93 @@ class SoldUnitCostIsFrozenTest(_Shop):
         units.update_unit(self.unit, cost='3800.00')      # the same value is not a change
         self.unit.refresh_from_db()
         self.assertEqual(self.unit.notes, 'Vendido con funda')
+
+
+class UncostedAfterRollbackTest(_Shop):
+    """
+    Back to a release before DC1 with the cost migrations applied, and forward
+    again: that release wrote Kardex lines without a cost and never touched the
+    average or the pending part. `uncosted_after_rollback` reports those shelves
+    and, with --apply, makes what came in without a cost pending — never a cost
+    invented, and a second run changes nothing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.move(StockMovement.PURCHASE_ENTRY, 5, unit_cost=D('10'))
+        self.since = timezone.now()
+
+    def old_release(self, movement_type, quantity, product=None):
+        """What the release before DC1 writes: the line with no cost, the quantity, nothing else."""
+        from django.db.models import F
+        product = product or self.case
+        stock = BranchStock.objects.get(branch=self.centro, product=product)
+        delta = quantity if movement_type in StockMovement.ENTRY_TYPES else -quantity
+        StockMovement.objects.create(
+            company=self.company, branch=self.centro, product=product, movement_type=movement_type,
+            quantity=quantity, stock_before=stock.quantity, stock_after=stock.quantity + delta, reason='Antes')
+        BranchStock.objects.filter(pk=stock.pk).update(quantity=F('quantity') + delta)
+
+    def run_command(self, *args):
+        import io
+        from django.core.management import call_command
+        out = io.StringIO()
+        call_command('uncosted_after_rollback', '--since', self.since.isoformat(), *args, stdout=out)
+        return out.getvalue()
+
+    def stock(self):
+        return BranchStock.objects.get(branch=self.centro, product=self.case)
+
+    def test_the_report_names_the_shelf_and_writes_nothing(self):
+        self.old_release(StockMovement.MANUAL_ENTRY, 3)
+        out = self.run_command()
+        self.assertIn('Funda: 1 movimiento(s) sin costo, 3 unidad(es) entraron sin costo; stock 8, '
+                      'costo pendiente 0 → 3', out)
+        self.assertEqual((self.stock().uncosted_quantity, self.stock().average_cost), (0, D('10.0000')))
+        self.assertTrue(StockMovement.objects.filter(cost_source='').exists())
+
+    def test_apply_makes_what_came_in_without_a_cost_pending_once(self):
+        self.old_release(StockMovement.MANUAL_ENTRY, 3)
+        self.old_release(StockMovement.MANUAL_EXIT, 2)
+        out = self.run_command('--apply')
+        self.assertIn('costo pendiente 0 → 3', out)
+        stock = self.stock()
+        # 6 on the shelf: 3 pending (as if both exits took costed units), 3 of known cost at 10.
+        self.assertEqual((stock.quantity, stock.uncosted_quantity, stock.average_cost), (6, 3, D('10.0000')))
+        self.assertFalse(StockMovement.objects.filter(cost_source='').exists())
+        self.assertFalse(StockMovement.objects.filter(unit_cost__isnull=True).exclude(cost_source='unknown').exists())
+        log = AdminAuditLog.objects.get(action='uncosted_recomputed_after_rollback')
+        self.assertEqual((log.metadata['uncosted_before'], log.metadata['uncosted_after']), (0, 3))
+        # Again: nothing left to count.
+        self.assertIn('Actualizados: 0', self.run_command('--apply'))
+        self.assertEqual(self.stock().uncosted_quantity, 3)
+        self.assertEqual(AdminAuditLog.objects.filter(action='uncosted_recomputed_after_rollback').count(), 1)
+
+    def test_no_unit_of_known_cost_left_clears_the_average(self):
+        self.old_release(StockMovement.MANUAL_ENTRY, 2)
+        self.old_release(StockMovement.MANUAL_EXIT, 6)
+        self.run_command('--apply')
+        # 1 left; 2 came in without a cost — never more pending than the shelf holds.
+        self.assertEqual((self.stock().uncosted_quantity, self.stock().average_cost), (1, None))
+
+    def test_lines_before_since_are_history_and_untouched(self):
+        from datetime import timedelta
+        self.since = timezone.now() + timedelta(minutes=1)
+        self.old_release(StockMovement.MANUAL_ENTRY, 3)
+        self.assertIn('Actualizados: 0', self.run_command('--apply'))
+        self.assertEqual(StockMovement.objects.filter(cost_source='').count(), 1)
+        self.assertEqual(self.stock().uncosted_quantity, 0)
+
+    def test_devices_are_reported_never_written(self):
+        phone = _prod(self.company, 'iPhone 16', 'iphone-16-rb', price='4500.00', inventory=0)
+        Product.objects.filter(pk=phone.pk).update(is_serialized=True)
+        BranchStock.objects.get_or_create(branch=self.centro, product=phone)
+        self.old_release(StockMovement.MANUAL_ENTRY, 1, product=phone)
+        out = self.run_command('--apply')
+        self.assertIn('equipos con costo por unidad', out)
+        self.assertEqual(StockMovement.objects.filter(product=phone, cost_source='').count(), 1)
+
+    def test_a_since_that_is_not_a_date_is_refused(self):
+        from django.core.management import CommandError, call_command
+        with self.assertRaises(CommandError):
+            call_command('uncosted_after_rollback', '--since', 'ayer')
