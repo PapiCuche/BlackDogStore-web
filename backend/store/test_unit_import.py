@@ -33,6 +33,8 @@ TEMPLATE_URL = '/api/admin/inventory/units/import/template/'
 PREVIEW_URL = '/api/admin/inventory/units/import/preview/'
 HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
            'Motivo / referencia']
+#: DC2 added these, optional, at the end of the template.
+DC2_HEADERS = ['Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético', 'Batería %', 'Precio de venta']
 
 
 def apply_url(job_id):
@@ -115,7 +117,7 @@ class TemplateTest(ImportBase):
         self.assertIn('carga-masiva-equipos.xlsx', response['Content-Disposition'])
         self.assertEqual(book.sheetnames, ['Equipos'])
         page = book['Equipos']
-        self.assertEqual([c.value for c in page[1]], HEADERS)
+        self.assertEqual([c.value for c in page[1]], [*HEADERS, *DC2_HEADERS])
         self.assertEqual(page.max_row, 1)                                # no example row, no help row
         self.assertEqual(page.freeze_panes, 'A2')
         # No hay columna de cantidad: una fila es un equipo.
@@ -182,7 +184,7 @@ class TemplateTest(ImportBase):
         _response, book = self.book()
         notes = {cell.value: cell.comment.text for cell in book['Equipos'][1] if cell.comment}
 
-        self.assertEqual(set(notes), set(HEADERS))
+        self.assertEqual(set(notes), {*HEADERS, *DC2_HEADERS})
         self.assertIn('Obligatorio', notes['Número de serie'])
         self.assertIn('15 dígitos', notes['IMEI'])
         self.assertIn('lleva IMEI', notes['IMEI'])                         # según lo que el producto lleva
