@@ -264,6 +264,24 @@ class Command(BaseCommand):
             )
         report('revisión de pedidos', [], 'sin pedidos por revisar ni pedidos en línea sin evaluar', review_notes)
 
+        # DC3. A PAID order whose on-order line is «por confirmar» (the offer
+        # expired or ran out before the payment) or «no se pudo abastecer» has
+        # money in and no goods coming: somebody has to confirm with the
+        # supplier or refund. Counts, never a customer.
+        from store.models import OrderItem
+
+        supply = []
+        for state, words in ((OrderItem.SUPPLY_TO_CONFIRM, 'con abastecimiento por confirmar'),
+                             (OrderItem.SUPPLY_FAILED, 'que no se pudieron abastecer (cancelar o reembolsar)')):
+            count = Order.objects.filter(
+                status=Order.Status.PAID, items__supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                items__supply_status=state,
+            ).distinct().count()
+            if count:
+                supply.append(f'{_plural(count, "pedido pagado", "pedidos pagados")} {words}. '
+                              'Se ven en Pedidos › Abastecimiento.')
+        report('abastecimiento', supply, 'sin pedidos bajo pedido esperando a una persona')
+
         # What a master configured in Configuración › Integraciones, and the two
         # integrations a shop cannot work without. Labels and states, never values.
         findings, summary = integration_health.report()

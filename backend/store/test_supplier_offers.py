@@ -992,3 +992,46 @@ class ExpiryCommandTest(SupplyShop, TestCase):
         self.assertEqual(order.items.get().supply_status, 'pending')
         self.assertIn('0', self.run_command())                        # idempotent
         self.assertEqual(AdminAuditLog.objects.filter(action='supplier_offer_expired').count(), 1)
+
+
+class SupplyFollowUpSurfacesTest(SupplyShop, TestCase):
+    """What has not arrived is not handed over, and a paid order waiting for a person is said."""
+
+    def setUp(self):
+        self.build()
+        self.add_on_order(quantity=1)
+        self.order = self.checkout()
+        self.pay(self.order)
+
+    def test_an_order_does_not_leave_or_get_ready_before_its_goods_arrive(self):
+        from store import order_fulfillment_services as fulfillment
+        for state in ('ready_for_pickup', 'shipped', 'delivered'):
+            with self.subTest(state), self.assertRaises(fulfillment.FulfillmentBlocked) as caught:
+                fulfillment.change_fulfillment_status(order=self.order, new_status=state, actor=self.staff,
+                                                      company=self.company)
+            self.assertEqual(caught.exception.code, 'supply_pending')
+        fulfillment.change_fulfillment_status(order=self.order, new_status='preparing', actor=self.staff,
+                                              company=self.company)
+        supply.receive_line(self.order.items.get(), actor=self.staff)
+        self.order.refresh_from_db()
+        fulfillment.change_fulfillment_status(order=self.order, new_status='delivered', actor=self.staff,
+                                              company=self.company)
+
+    def test_the_status_check_says_when_a_paid_order_waits_for_its_supply(self):
+        import io
+        from django.core.management import call_command
+        out = io.StringIO()
+        try:
+            call_command('ops_status', stdout=out)
+        except SystemExit:
+            pass                      # other areas of an empty test installation may need somebody
+        self.assertIn('OK    abastecimiento', out.getvalue())
+        self.order.items.update(supply_status='to_confirm')
+        out = io.StringIO()
+        try:
+            call_command('ops_status', stdout=out)
+        except SystemExit:
+            pass
+        text = out.getvalue()
+        self.assertIn('ATENCIÓN abastecimiento', text)
+        self.assertNotIn('ana@example.com', text)
