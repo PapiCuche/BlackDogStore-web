@@ -1035,3 +1035,31 @@ class SupplyFollowUpSurfacesTest(SupplyShop, TestCase):
         text = out.getvalue()
         self.assertIn('ATENCIÓN abastecimiento', text)
         self.assertNotIn('ana@example.com', text)
+
+
+class RollbackOnOrderTest(SupplyShop, TestCase):
+    """Before going back to a release before DC3: no payable on-order order is left."""
+
+    def setUp(self):
+        self.build()
+
+    def test_pending_on_order_orders_are_listed_then_cancelled(self):
+        import io
+        from django.core.management import call_command
+        self.add_on_order(quantity=1)
+        pending = self.checkout()
+        self.add_on_order(quantity=1, session='carrito-b')
+        paid = self.checkout('carrito-b')
+        self.pay(paid)
+        out = io.StringIO()
+        call_command('cancel_pending_on_order_orders', stdout=out)
+        self.assertIn(f'#{pending.pk}', out.getvalue())
+        self.assertNotIn(f'#{paid.pk}', out.getvalue())
+        pending.refresh_from_db()
+        self.assertEqual(pending.status, Order.Status.PENDING_PAYMENT)        # a simulation changes nothing
+        call_command('cancel_pending_on_order_orders', '--apply', stdout=io.StringIO())
+        pending.refresh_from_db()
+        paid.refresh_from_db()
+        self.assertEqual((pending.status, paid.status), (Order.Status.CANCELLED, Order.Status.PAID))
+        self.assertTrue(AdminAuditLog.objects.filter(action='order_cancelled_before_rollback',
+                                                     target_id=str(pending.pk)).exists())
