@@ -2206,3 +2206,47 @@ tenemos, dónde, y si no, lo puede traer un proveedor?» sin entrar al inventari
 - *Costo de una página:* número fijo de consultas (probado: 2 y 8 productos cuestan igual).
 - *«Inventario › Equipos»:* filtros por línea, modelo y opciones (`model`, `option`, mismos
   helpers) y un detalle por equipo hecho con la fila que ya llega; el costo sólo con `costs.view`.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Registro único, publicación y navegación» — EN RAMA
+
+**Contexto.** El propietario pidió registrar cualquier artículo desde el panel sin recorrer
+varias pantallas (equipo nuevo, seminuevo, accesorio/repuesto, disponible por proveedor),
+controlar la publicación e-commerce de todo con acciones en bloque, y un menú con su árbol.
+
+**Decisión.**
+- *Un endpoint orquestador, no composición desde el navegador.* `POST /api/admin/products/register/`
+  (`registration_services.register`). Componer desde el frontend dejaba productos a medias si un
+  paso fallaba, y el movimiento manual no acepta costo unitario. El endpoint NO escribe nada
+  propio: llama en UNA transacción a `AdminProductWriteSerializer`, `device_catalog`
+  (`create_model`/`find_variant`/`set_variant`), `ProductBarcode`, `set_serialized`,
+  `receive_units` (IMEI con dígito de control, duplicados), `apply_initial_stock` (ahora acepta
+  `unit_cost`, compatible: promedio DC1) y `supply_services` (`create_supplier`/`create_offer`/
+  `set_sale_mode`). El stock entra sólo por esos escritores; lo de un proveedor nunca entra al
+  estante (oferta + «Bajo pedido»). Una variante que ya existe (modelo + línea + opciones)
+  RECIBE los equipos y conserva sus datos; la respuesta lo advierte.
+- *Autoridad por paso = la de la acción de debajo.* `products.manage` para registrar;
+  `inventory.adjust` para equipos (control por serie) y para stock en sucursal; `costs.view`
+  para CUALQUIER costo (referencia, equipo, unidad, costo pactado) — sin él, 403 con el campo,
+  más estricto que `receive_units` a propósito; sucursales dentro de las del llamante (404 y
+  nada escrito). En la pantalla, el paso que no se puede usar se ve deshabilitado con el motivo.
+- *Idempotencia sin migración.* Cabecera `Idempotency-Key` obligatoria para escribir; candado
+  consultivo de Postgres (empresa, autor, clave) y la línea de auditoría `article_registered`
+  guarda clave, huella del cuerpo y el registro (ids y banderas, nunca importes). Misma clave y
+  cuerpo → 200 `replayed` con lo primero; otro cuerpo → 409; un intento rechazado no gasta la clave.
+- *`dry_run`.* Los mismos servicios dentro de una transacción que se revierte: la revisión
+  muestra los rechazos reales y los motivos de publicación sin dejar rastro (ni auditoría).
+- *Publicación.* «Mostrar en e-commerce» obedece `product_publication` sin cambiarlo: lo que no
+  está listo se crea OCULTO y se dice por qué; si sólo faltaba la imagen, el asistente sube las
+  imágenes y publica con la acción en bloque de siempre. «Publicación e-commerce» reúne todos los
+  tipos (filtros nuevos `condition_line` y `sale_mode` en la lista y en «todo lo que coincide»)
+  y los modelos (`POST /api/admin/catalog/models/bulk-visibility/`, `products.manage`, todo o nada).
+- *Excel.* Las plantillas ya cubrían casi todo (producto: código, nombre, precio, categoría,
+  destino, costo de referencia, modelo/capacidad/color/línea; equipos: serie, IMEI, costo,
+  estado estético, batería, precio; stock: costo unitario; ofertas: todo). «Producto activo» ya
+  se lee de la columna «Estado» (Sí/No) para productos nuevos. Faltaba «Bajo pedido»: columna
+  opcional «Bajo pedido (Sí/No)» sólo en la plantilla de ofertas; vacía o ausente no cambia nada.
+- *Menú.* Árbol del propietario primero en cada grupo; lo demás sigue después con su ruta.
+  «Equipos nuevos» = `/admin/inventory/units?line=new`; «Cancelaciones / historial» =
+  `/admin/orders?status=cancelled` (el filtro es de la rama de cancelaciones); «Stock y
+  disponibilidad» = pantalla nueva sobre `/api/admin/inventory/stock/`. La barra lateral
+  ilumina la entrada con filtro sólo si la dirección lo lleva (`activeModuleHref`).

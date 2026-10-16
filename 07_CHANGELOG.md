@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · Registro único, publicación y navegación (en rama, NO desplegado)
+
+- **Added** — «Productos › Registro / Carga masiva»: asistente de cuatro pasos para equipo nuevo,
+  seminuevo, accesorio/repuesto o disponible por proveedor sobre `POST /api/admin/products/register/`
+  (servicios existentes en una transacción, `Idempotency-Key`, `dry_run`); «Productos › Publicación
+  e-commerce» para todos los tipos y modelos (`POST /api/admin/catalog/models/bulk-visibility/`);
+  «Inventario › Stock y disponibilidad»; columna opcional «Bajo pedido (Sí/No)» en la plantilla de
+  ofertas; menú según el árbol del propietario. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
+
 ## 2026-10-15 — COMMERCE-ADMIN-UX-01 · A1 «Costos y precios» — en rama (`wip/costs-ux`)
 
 - Inventario › Costos y precios (`costs.view`): margen, inventario al costo, costo promedio por
