@@ -454,7 +454,11 @@ _AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory'
 
 
 def _clean_reference_cost(raw):
-    """`(Decimal | None, error)` — empty clears it; never negative, two decimals."""
+    """`(Decimal | None, error)` — empty clears it; never negative, two decimals.
+
+    The size is checked BEFORE rounding: `quantize` of «1e30» needs more digits
+    than the context has and raises, which used to answer 500.
+    """
     from decimal import InvalidOperation
 
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -463,12 +467,22 @@ def _clean_reference_cost(raw):
         value = Decimal(str(raw).strip().replace(',', '.'))
     except (InvalidOperation, ValueError):
         return None, 'El costo de referencia debe ser un número.'
-    if not value.is_finite() or value < 0:
+    if not value.is_finite():
+        return None, 'El costo de referencia debe ser un número.'
+    if value < 0:
         return None, 'El costo de referencia no puede ser negativo.'
-    value = value.quantize(Decimal('0.01'))
-    if value >= Decimal('10000000000'):
+    try:
+        if value >= _REFERENCE_COST_LIMIT:
+            raise InvalidOperation
+        value = value.quantize(Decimal('0.01'))
+        if value >= _REFERENCE_COST_LIMIT:      # 9999999999.995 rounds up to the limit
+            raise InvalidOperation
+    except InvalidOperation:
         return None, 'El costo de referencia es demasiado alto.'
     return value, None
+
+
+_REFERENCE_COST_LIMIT = Decimal('10000000000')
 
 
 def _product_detail_payload(request, product):

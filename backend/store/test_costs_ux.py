@@ -243,6 +243,19 @@ class ReferenceCostAndPriceTest(A1Fixture):
         self.cable.refresh_from_db()
         self.assertIsNone(self.cable.reference_cost)
 
+    def test_a_huge_or_non_finite_reference_cost_is_a_400_with_its_own_message(self):
+        client = _client(self.admin)
+        for raw, expected in (('1e30', 'demasiado alto'), ('99999999999', 'demasiado alto'),
+                              ('Infinity', 'número'), ('-Infinity', 'número'), ('NaN', 'número'),
+                              ('sNaN', 'número')):
+            res = client.patch(self.url(self.cable), {'reference_cost': raw}, format='json')
+            self.assertEqual(res.status_code, 400, (raw, res.content))
+            message = res.json()['reference_cost'][0]
+            self.assertIn(expected, message, raw)
+            self.assertNotIn('negativo', message, raw)
+        self.cable.refresh_from_db()
+        self.assertEqual(self.cable.reference_cost, D('5.00'))
+
     def test_the_detail_shows_the_reference_cost_only_to_costs_view(self):
         self.assertEqual(_client(self.admin).get(self.url(self.cable)).json()['reference_cost'], '5.00')
         self.assertNotIn('reference_cost', _client(self.vsti).get(self.url(self.cable)).json())
@@ -293,3 +306,26 @@ class CorrectDeviceCostTest(A1Fixture):
         self.assertEqual(res.status_code, 400, res.content)
         self.devices[0].refresh_from_db()
         self.assertEqual(self.devices[0].cost, D('3000.00'))
+
+    def test_a_written_off_device_keeps_its_cost(self):
+        units.write_off(self.devices[0], reason='Pantalla rota', actor=self.admin)
+        res = _client(self.admin).patch(
+            self.url(self.devices[0]), {'cost': '1.00', 'cost_reason': 'Error'}, format='json',
+        )
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['field'], 'cost')
+        self.assertIn('dio de baja', res.json()['detail'])
+        self.devices[0].refresh_from_db()
+        self.assertEqual(self.devices[0].cost, D('3000.00'))
+
+    def test_the_reason_must_be_text(self):
+        for reason in (['Factura'], {'motivo': 'Factura'}, 12):
+            res = _client(self.admin).patch(
+                self.url(self.devices[1]), {'cost': '2900.00', 'cost_reason': reason}, format='json',
+            )
+            self.assertEqual(res.status_code, 400, (reason, res.content))
+            self.assertEqual(res.json()['field'], 'cost_reason')
+        self.devices[1].refresh_from_db()
+        self.assertIsNone(self.devices[1].cost)
+        self.assertFalse(AdminAuditLog.objects.filter(action='stock_unit_updated',
+                                                      target_id=self.devices[1].pk).exists())

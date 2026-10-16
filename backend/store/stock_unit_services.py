@@ -439,9 +439,12 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
     change of cost need a reason; the reason is audited, the amounts are not
     (the audit trail is read by more people than `costs.view`).
     """
+    if cost_reason is not None and not isinstance(cost_reason, str):
+        # A list would reach the audit trail as "['…']".
+        raise StockUnitError('El motivo de la corrección del costo debe ser un texto.', field='cost_reason')
     locked = StockUnit.objects.select_for_update().get(pk=unit.pk)
     changed = []
-    reason = ' '.join(str(cost_reason or '').split())[:300]
+    reason = ' '.join((cost_reason or '').split())[:300]
     if 'condition' in fields:
         locked.condition = _condition(fields['condition'])
         changed.append('condition')
@@ -454,6 +457,12 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             if locked.status == StockUnit.Status.SOLD:
                 raise StockUnitError(
                     f'El equipo {locked.serial_number} ya se vendió: su costo no se puede cambiar.',
+                    field='cost',
+                )
+            # Nor a written-off one's: it left the stock for good; its cost is history too.
+            if locked.status == StockUnit.Status.WRITTEN_OFF:
+                raise StockUnitError(
+                    f'El equipo {locked.serial_number} se dio de baja: su costo no se puede cambiar.',
                     field='cost',
                 )
             if require_cost_reason and not reason:

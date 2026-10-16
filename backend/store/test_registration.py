@@ -348,6 +348,18 @@ class AccessoryTest(RegistrationFixture):
         self.assertEqual(res.json()['field'], 'sku')
         self.assertEqual(self.counts(), before)
 
+    def test_a_huge_or_non_finite_reference_cost_is_refused_and_nothing_is_written(self):
+        for raw, expected in (('1e30', 'demasiado alto'), ('Infinity', 'número'), ('NaN', 'número')):
+            with self.subTest(raw):
+                body = self.accessory(stock=[])
+                body['product']['reference_cost'] = raw
+                before = self.counts()
+                res = self.post(self.admin, body, expect=400)
+                self.assertEqual(res.json()['field'], 'product.reference_cost')
+                self.assertIn(expected, res.json()['detail'])
+                self.assertNotIn('negativo', res.json()['detail'])
+                self.assertEqual(self.counts(), before)
+
     def test_a_zero_quantity_is_refused(self):
         before = self.counts()
         self.post(self.clerk, self.accessory(stock=[{'branch': self.centro.pk, 'quantity': 0}]), expect=400)
@@ -480,14 +492,14 @@ class AuthorityTest(RegistrationFixture):
 class PublicationTest(RegistrationFixture):
     def test_ready_and_asked_for_it_is_published(self):
         data = self.post(self.clerk, self.accessory(stock=[]), expect=201).json()
-        self.assertEqual(data['publication'], {'requested': True, 'published': True, 'problems': []})
+        self.assertEqual(data['publication'], {'requested': True, 'published': True, 'problems': [], 'model_hidden': False})
         self.assertTrue(Product.objects.get(pk=data['product']['id']).is_published_online)
 
     def test_not_ready_stays_hidden_and_says_why(self):
         body = self.accessory(stock=[], product={'name': 'Sin categoría', 'price': '5.00', 'is_active': True,
                                                  'show_online': True})
         data = self.post(self.clerk, body, expect=201).json()
-        self.assertEqual(data['publication'], {'requested': True, 'published': False, 'problems': ['no_category']})
+        self.assertEqual(data['publication'], {'requested': True, 'published': False, 'problems': ['no_category'], 'model_hidden': False})
         self.assertFalse(Product.objects.get(pk=data['product']['id']).is_published_online)
 
     def test_the_company_picture_rule_is_the_same_rule(self):
@@ -502,11 +514,35 @@ class PublicationTest(RegistrationFixture):
         data = self.post(self.clerk, body, expect=201).json()
         self.assertEqual(data['publication']['problems'], ['inactive'])
 
+    def test_a_new_model_whose_first_variant_cannot_be_published_is_created_hidden(self):
+        body = self.new_device(model={'name': 'Galaxy S25'}, options=[], units=[])
+        body['product'] = {'name': 'Galaxy S25 sin categoría', 'price': '3999.00', 'is_active': True,
+                           'show_online': True}
+        data = self.post(self.clerk, body, expect=201).json()
+        model = ProductModel.objects.get(company=self.company, name='Galaxy S25')
+        self.assertFalse(model.is_published_online)
+        self.assertEqual(data['publication'], {'requested': True, 'published': False, 'problems': ['no_category'],
+                                               'model_hidden': True})
+        self.assertIsNone(data['links']['storefront'])
+
+    def test_the_dry_run_already_says_the_new_model_stays_hidden(self):
+        body = self.new_device(model={'name': 'Galaxy S25'}, options=[], units=[], dry_run=True)
+        body['product']['is_active'] = False
+        data = self.post(self.clerk, body, key=False, expect=200).json()
+        self.assertTrue(data['publication']['model_hidden'])
+        self.assertFalse(ProductModel.objects.filter(company=self.company, name='Galaxy S25').exists())
+
+    def test_a_ready_first_variant_publishes_its_new_model(self):
+        body = self.new_device(model={'name': 'Galaxy S25'}, options=[], units=[])
+        data = self.post(self.clerk, body, expect=201).json()
+        self.assertFalse(data['publication']['model_hidden'])
+        self.assertTrue(ProductModel.objects.get(company=self.company, name='Galaxy S25').is_published_online)
+
     def test_hidden_on_request(self):
         body = self.accessory(stock=[])
         body['product']['show_online'] = False
         data = self.post(self.clerk, body, expect=201).json()
-        self.assertEqual(data['publication'], {'requested': False, 'published': False, 'problems': []})
+        self.assertEqual(data['publication'], {'requested': False, 'published': False, 'problems': [], 'model_hidden': False})
 
 
 class IdempotencyTest(RegistrationFixture):
@@ -710,6 +746,25 @@ class OfferOnOrderColumnTest(SupplyShop, TestCase):
         self.apply(body['id'])
         self.case.refresh_from_db()
         self.assertEqual(self.case.sale_mode, Product.SALE_MODE_STOCK_OR_ORDER)
+
+    def test_two_rows_of_one_product_disagreeing_on_bajo_pedido_warn_on_the_later_row(self):
+        later = {'Vigente desde': (self.start + timedelta(days=7)).isoformat(),
+                 'Vigente hasta': (self.end + timedelta(days=7)).isoformat()}
+        body = self.preview([self.row() + ['', 'Sí'], self.row(**later) + ['', 'No']],
+                            headers=self.COLUMNS).json()
+        self.assertEqual([r['action'] for r in body['rows']], ['create', 'create'], body['rows'])
+        self.assertEqual(body['rows'][0]['warnings'], [])
+        self.assertTrue(any('Bajo pedido' in w and 'fila 2' in w for w in body['rows'][1]['warnings']),
+                        body['rows'][1]['warnings'])
+
+    def test_rows_that_agree_on_bajo_pedido_do_not_warn(self):
+        later = {'Vigente desde': (self.start + timedelta(days=7)).isoformat(),
+                 'Vigente hasta': (self.end + timedelta(days=7)).isoformat()}
+        body = self.preview([self.row() + ['', 'Sí'], self.row(**later) + ['', 'Sí'], self.row(
+            **{'Vigente desde': (self.start + timedelta(days=14)).isoformat(),
+               'Vigente hasta': (self.end + timedelta(days=14)).isoformat()}) + ['', '']],
+            headers=self.COLUMNS).json()
+        self.assertEqual([r['warnings'] for r in body['rows']], [[], [], []], body['rows'])
 
     def test_an_unreadable_value_is_an_error(self):
         body = self.preview([self.row() + ['', 'quizás']], headers=self.COLUMNS).json()

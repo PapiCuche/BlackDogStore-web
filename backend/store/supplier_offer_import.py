@@ -276,6 +276,7 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         summary={'cost_column_ignored': cost_ignored},
     )
     staged, counts, seen = [], dict(create=0, update=0, no_change=0, skip=0, error=0), {}
+    modes = {}      # product id → (row, «Bajo pedido» it asks for)
 
     def stage(row_number, action, *, key='', data=None, errors=None, warnings=None):
         staged.append(BulkImportRow(job=job, sheet_name=sheet_name, row_number=row_number, action=action,
@@ -361,6 +362,15 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
                   errors=[f'Repite la oferta de la fila {seen[key]} (mismo proveedor, producto y vigencia).'])
             continue
         seen[key] = row_number
+        if wanted_mode is not None:
+            # A product has ONE sale mode: two rows that disagree would let the
+            # later one win in silence at apply time.
+            earlier = modes.get(product.pk)
+            if earlier is not None and earlier[1] != wanted_mode:
+                warnings.append(
+                    f'La fila {earlier[0]} pide otro «Bajo pedido» para este mismo producto, y un producto tiene '
+                    'un solo modo de venta: queda el de la última fila que se aplique. Revisa cuál quieres.')
+            modes[product.pk] = (row_number, wanted_mode)
         existing = SupplierOffer.objects.filter(
             company=company, supplier=supplier, product=product, valid_from=clean['valid_from'],
             valid_until=clean['valid_until']).first()

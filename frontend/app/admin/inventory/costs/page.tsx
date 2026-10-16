@@ -16,13 +16,13 @@
  * Cada sección tiene su «Cargando…», su vacío y el error del servidor.
  *
  * CORREGIR. El precio y el costo de referencia, por el producto (`products.manage`;
- * el costo, además `costs.view`). El costo de un equipo, si no se vendió, con
+ * el costo, además `costs.view`), enviando sólo lo cambiado. El costo de un equipo, si no se vendió ni se dio de baja, con
  * motivo obligatorio (`inventory.adjust` + `costs.view`). El promedio de una
  * sucursal NO se corrige aquí: requiere un movimiento de ajuste auditado que aún
  * no existe (PENDIENTE). Nada de esto toca lo ya vendido: cada venta guardó su costo.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
 import { AccessGuard } from "../../components/AccessGuard";
 import { BranchSelector } from "../../components/BranchSelector";
@@ -153,10 +153,20 @@ function ProductEditor({ row, onDone, onCancel }: {
   const [error, setError] = useState<string | null>(null);
 
   async function save() {
+    // Only what this person changed: the row was read a while ago, and sending
+    // its old price would undo somebody else's change made since.
+    const changes: { price?: string; reference_cost?: string | null } = {};
+    if (price.trim() !== row.product_price) changes.price = price.trim();
+    const cost = referenceCost.trim();
+    if (cost !== (row.product_reference_cost ?? "")) changes.reference_cost = cost || null;
+    if (Object.keys(changes).length === 0) {
+      onCancel();
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await patchAdminProduct(row.product, { price, reference_cost: referenceCost.trim() || null });
+      await patchAdminProduct(row.product, changes);
       onDone();
     } catch (err) {
       setError(message(err, "No se pudo guardar el producto."));
@@ -278,6 +288,7 @@ function CostCorrection({ unit, onDone, onCancel }: {
 }) {
   const [cost, setCost] = useState(unit.cost ?? "");
   const [reason, setReason] = useState("");
+  const reasonHint = useId();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -308,10 +319,12 @@ function CostCorrection({ unit, onDone, onCancel }: {
         </label>
         <label className="min-w-[16rem] flex-1 text-xs font-semibold text-muted">
           Motivo
-          <input aria-label="Motivo" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej. factura del proveedor" className={`mt-1 block w-full ${internalInputClass}`} />
+          <input aria-label="Motivo" aria-describedby={reasonHint} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej. factura del proveedor" className={`mt-1 block w-full ${internalInputClass}`} />
+          {/* The reason is audited as written, and the audit trail is read by more people than costs.view. */}
+          <span id={reasonHint} className="mt-1 block text-[11px] font-normal text-warning">No escribas montos en el motivo: el historial lo ven personas sin permiso de costos</span>
         </label>
       </div>
-      <p className="text-[11px] text-muted">Queda en la auditoría con su motivo. Un equipo vendido conserva el costo de su venta.</p>
+      <p className="text-[11px] text-muted">Queda en la auditoría con su motivo. Un equipo vendido o dado de baja conserva su costo.</p>
       {error ? <ErrorBox message={error} /> : null}
       <div className="flex gap-2">
         <button type="button" onClick={() => void save()} disabled={saving} className={internalPrimaryButtonClass}>
@@ -362,6 +375,7 @@ function DeviceCostSection({ branch, canCorrect }: { branch: BranchParam; canCor
             {state.data.results.map((unit) => {
               const hidden = !("cost" in unit);
               const sold = unit.status === "sold";
+              const writtenOff = unit.status === "written_off";
               return (
                 <tr key={unit.id} className="border-b border-bd-border/70 last:border-0">
                   <Td>{unit.product_name}</Td>
@@ -375,6 +389,8 @@ function DeviceCostSection({ branch, canCorrect }: { branch: BranchParam; canCor
                   <Td right>
                     {sold ? (
                       <span className="text-[11px] text-muted">Vendido: conserva el costo de su venta</span>
+                    ) : writtenOff ? (
+                      <span className="text-[11px] text-muted">Dado de baja: conserva su costo</span>
                     ) : canCorrect && !hidden ? (
                       <button type="button" onClick={() => setEditing(unit)} className={internalButtonClass}>
                         Corregir costo

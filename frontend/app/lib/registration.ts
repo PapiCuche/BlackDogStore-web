@@ -272,7 +272,8 @@ export type RegistrationResult = {
   movements: number[];
   supplier: { id: number | null; created: boolean; name: string } | null;
   offer: { id: number | null } | null;
-  publication: { requested: boolean; published: boolean; problems: string[] };
+  /** `model_hidden`: a model created here stays hidden with its first variant (absent in older answers). */
+  publication: { requested: boolean; published: boolean; problems: string[]; model_hidden?: boolean };
   warnings: string[];
   links: { product: string | null; units: string | null; storefront: string | null };
 };

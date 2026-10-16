@@ -27,7 +27,9 @@ a shelf needs it too, and any cost needs `costs.view`.
 
 PUBLICATION. «Mostrar en e-commerce» obeys `product_publication`: an article
 that lacks something is created HIDDEN and the answer says what it lacks. It is
-the rule that already gates every write of many products at once.
+the rule that already gates every write of many products at once. A model
+created by the registration follows its first variant: hidden with it, and the
+answer says so (`publication.model_hidden`).
 
 `register` returns a RECORD — ids and flags, never an amount — which is what
 the idempotency trail keeps; `present` turns a record into the answer.
@@ -200,8 +202,15 @@ def check_request(body: dict, *, may_adjust: bool, may_view_costs: bool) -> dict
 # The steps
 # ---------------------------------------------------------------------------
 
-def _model(company, wanted, *, category_id, show_online, actor, request):
-    """(model, created) — by id within this company, or by name (found, else created)."""
+def _model(company, wanted, *, category_id, show_online, first_variant_problems, actor, request):
+    """
+    (model, created) — by id within this company, or by name (found, else created).
+
+    A model created here has no variant yet: the article being registered is
+    its first. If that article cannot be published (`first_variant_problems()`
+    is not empty), the new model is created HIDDEN too — a published model
+    with no published variant is an empty page in the shop.
+    """
     if not wanted:
         return None, False
     if 'id' in wanted and wanted.get('id') not in (None, ''):
@@ -218,7 +227,8 @@ def _model(company, wanted, *, category_id, show_online, actor, request):
         return existing, False
     try:
         model = device_catalog.create_model(
-            company=company, name=name, category_id=category_id, is_published_online=show_online,
+            company=company, name=name, category_id=category_id,
+            is_published_online=show_online and not first_variant_problems(),
             actor=actor, request=request,
         )
     except device_catalog.CatalogError as exc:
@@ -238,8 +248,11 @@ def _product_errors(errors) -> RegistrationError:
     return RegistrationError(str(message), step='product', field=f'product.{field}')
 
 
-def _create_product(company, data, *, show_online, require_image):
-    """The product form's own serializer. Published only if the publication rule lets it."""
+def _validated_product(company, data, *, show_online):
+    """
+    (serializer, problems) — the product form's own serializer, validated and
+    NOT saved, and what keeps it off e-commerce (empty unless `show_online`).
+    """
     from .serializers import AdminProductWriteSerializer
 
     payload = {
@@ -250,13 +263,15 @@ def _create_product(company, data, *, show_online, require_image):
     ser = AdminProductWriteSerializer(data=payload, context={'company': company})
     if not ser.is_valid():
         raise _product_errors(ser.errors)
+    if not show_online:
+        return ser, []
     valid = ser.validated_data
     problems = product_publication.problems_of(
         is_active=valid.get('is_active', True), price=valid.get('price'), has_image=False,
-        has_category=valid.get('category') is not None, require_image=require_image,
-    ) if show_online else []
-    product = ser.save(company=company, inventory=0, is_published_online=show_online and not problems)
-    return product, problems
+        has_category=valid.get('category') is not None,
+        require_image=product_publication.requires_image(company),
+    )
+    return ser, problems
 
 
 def _reference_cost(product, raw):
@@ -403,8 +418,16 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         stock_rows.append((branch, _quantity(row.get('quantity'), index), row.get('unit_cost'), index))
 
     category_id = _pk(data.get('category'), step='product', field='product.category')
+    # The product is validated before a new model is created, so the model
+    # knows whether its first variant can be published (and nothing is read twice).
+    validated = []
+
+    def first_variant_problems():
+        validated.append(_validated_product(company, data, show_online=show_online))
+        return validated[-1][1]
+
     model, model_created = _model(company, asked['model'], category_id=category_id, show_online=show_online,
-                                  actor=actor, request=request)
+                                  first_variant_problems=first_variant_problems, actor=actor, request=request)
     option_ids = _ids(body.get('options'), step='model', field='options')
 
     product, problems, created = None, [], True
@@ -419,8 +442,9 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
                 'su nombre, precio, código y publicación no cambian.')
 
     if product is None:
-        require_image = product_publication.requires_image(company) if show_online else False
-        product, problems = _create_product(company, data, show_online=show_online, require_image=require_image)
+        ser, problems = validated[-1] if validated else _validated_product(company, data, show_online=show_online)
+        # Published only if the publication rule lets it.
+        product = ser.save(company=company, inventory=0, is_published_online=show_online and not problems)
         if _filled(data.get('reference_cost')):
             _reference_cost(product, data.get('reference_cost'))
         if model is not None:
@@ -484,6 +508,8 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
             'requested': show_online,
             'published': product.is_published_online,
             'problems': problems if show_online and not product.is_published_online else [],
+            # Asked to show, but the NEW model stays hidden with its first variant.
+            'model_hidden': bool(model_created and show_online and not model.is_published_online),
         },
         'warnings': warnings,
     }
@@ -533,7 +559,7 @@ def present(company, record: dict, *, dry_run: bool = False, replayed: bool = Fa
             'name': supplier.name,
         },
         'offer': None if not record.get('offer_id') else {'id': None if dry_run else record['offer_id']},
-        'publication': dict(record['publication']),
+        'publication': {'model_hidden': False, **record['publication']},  # records before model_hidden
         'warnings': list(record['warnings']),
         'links': {'product': None, 'units': None, 'storefront': None},
     }

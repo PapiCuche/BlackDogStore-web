@@ -328,6 +328,54 @@ describe('A1 · la pantalla «Costos y precios»', () => {
     expect(mAdmin.patchAdminProduct).toHaveBeenCalledWith(12, { price: '22.00', reference_cost: '6.50' });
   });
 
+  it('sólo envía lo que se cambió: un precio viejo no pisa un cambio de otra persona', async () => {
+    mAdmin.patchAdminProduct.mockResolvedValue({} as admin.AdminProduct);
+    await openPage(dashboard(ADMIN_CAPS));
+    const branch = await screen.findByRole('region', { name: 'Costo promedio por sucursal' });
+    const cable = (await within(branch).findByText('Cable')).closest('tr') as HTMLElement;
+    fireEvent.click(within(cable).getByRole('button', { name: /Editar precio y costo/ }));
+    fireEvent.change(screen.getByLabelText('Costo de referencia'), { target: { value: '6.50' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Guardar producto' })); });
+    expect(mAdmin.patchAdminProduct).toHaveBeenCalledWith(12, { reference_cost: '6.50' });
+
+    const again = (await within(branch).findByText('Cable')).closest('tr') as HTMLElement;
+    fireEvent.click(within(again).getByRole('button', { name: /Editar precio y costo/ }));
+    fireEvent.change(screen.getByLabelText('Precio de venta'), { target: { value: '21.00' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Guardar producto' })); });
+    expect(mAdmin.patchAdminProduct).toHaveBeenLastCalledWith(12, { price: '21.00' });
+  });
+
+  it('sin cambios no se envía nada', async () => {
+    await openPage(dashboard(ADMIN_CAPS));
+    const branch = await screen.findByRole('region', { name: 'Costo promedio por sucursal' });
+    const cable = (await within(branch).findByText('Cable')).closest('tr') as HTMLElement;
+    fireEvent.click(within(cable).getByRole('button', { name: /Editar precio y costo/ }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Guardar producto' })); });
+    expect(mAdmin.patchAdminProduct).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Guardar producto' })).toBeNull();
+  });
+
+  it('el motivo avisa que no lleve montos: el historial lo ven personas sin permiso de costos', async () => {
+    await openPage(dashboard(ADMIN_CAPS));
+    const devices = await screen.findByRole('region', { name: 'Costo de cada equipo' });
+    const row = (await within(devices).findByText('SER-2')).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Corregir costo/ }));
+    const hint = screen.getByText('No escribas montos en el motivo: el historial lo ven personas sin permiso de costos');
+    expect(screen.getByLabelText('Motivo')).toHaveAttribute('aria-describedby', hint.id);
+  });
+
+  it('un equipo dado de baja no ofrece «Corregir costo»', async () => {
+    mUnits.fetchStockUnits.mockResolvedValue({
+      results: [unit({ id: 53, serial_number: 'SER-4', status: 'written_off', status_label: 'Dado de baja' })],
+      count: 1, page: 1, page_size: 50, statuses: [], conditions: [],
+    });
+    await openPage(dashboard(ADMIN_CAPS));
+    const devices = await screen.findByRole('region', { name: 'Costo de cada equipo' });
+    const row = (await within(devices).findByText('SER-4')).closest('tr') as HTMLElement;
+    expect(within(row).queryByRole('button', { name: /Corregir costo/ })).toBeNull();
+    expect(row).toHaveTextContent('Dado de baja: conserva su costo');
+  });
+
   it('sin products.manage no se ofrece editar el precio', async () => {
     await openPage(dashboard(ADMIN_CAPS.filter((c) => c !== 'products.manage')));
     const branch = await screen.findByRole('region', { name: 'Costo promedio por sucursal' });

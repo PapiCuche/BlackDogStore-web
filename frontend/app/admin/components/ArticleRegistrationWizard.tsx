@@ -36,6 +36,7 @@ import {
   ARTICLE_KINDS,
   RegistrationApiError,
   buildRegistrationBody,
+  bulkSetModelVisibility,
   costState,
   emptyDraft,
   emptyUnit,
@@ -134,6 +135,7 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
     failures: string[];
     publishedLater: boolean | null;
     refusedLater: string[];
+    modelPublishedLater: boolean;
   } | null>(null);
   // One key per draft: kept across retries of the same body, renewed by any change.
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
@@ -312,7 +314,18 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
         failures.push(`Publicar: ${err instanceof Error ? err.message : "no se pudo."}`);
       }
     }
-    setDone({ result, failures, publishedLater, refusedLater });
+    // The new model was created hidden with its first variant: now that the
+    // variant is published, the model is too (the action in bulk of always).
+    let modelPublishedLater = false;
+    const modelId = result.model?.id;
+    if (publishedLater && result.publication.model_hidden && modelId) {
+      try {
+        modelPublishedLater = (await bulkSetModelVisibility("publish", [modelId], companyId)).total > 0;
+      } catch (err) {
+        failures.push(`Publicar el modelo: ${err instanceof Error ? err.message : "no se pudo."}`);
+      }
+    }
+    setDone({ result, failures, publishedLater, refusedLater, modelPublishedLater });
     setStep("done");
     setBusy(false);
   }
@@ -733,6 +746,15 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
     return `No se publicará en e-commerce: ${reasons}. Se creará oculto; lo puedes publicar después desde Publicación e-commerce.`;
   }
 
+  /** A new model follows its first variant: hidden with it (`publication.model_hidden`). */
+  function hiddenModelLine(result: RegistrationResult, registered: boolean) {
+    if (!result.publication.model_hidden || !result.model) return null;
+    const name = `El modelo nuevo «${result.model.name}»`;
+    return registered
+      ? `${name} quedó oculto en e-commerce porque su primera variante no se publicó; publícalo desde Publicación e-commerce cuando la variante esté lista.`
+      : `${name} se creará oculto en e-commerce, igual que su primera variante.`;
+  }
+
   function reviewStep() {
     const back = reviewError instanceof RegistrationApiError ? stepOfError(reviewError) : "stock";
     const kindLabel = ARTICLE_KINDS.find((k) => k.kind === kind)?.label ?? "";
@@ -764,7 +786,11 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
                 </dd></>
               ) : null}
               {preview.supplier ? (<><dt className="text-muted">Proveedor</dt><dd className="text-foreground">{preview.supplier.name}{preview.supplier.created ? " (nuevo)" : ""} · bajo pedido</dd></>) : null}
-              <dt className="text-muted">E-commerce</dt><dd className="text-foreground">{publicationLine(preview)}</dd>
+              <dt className="text-muted">E-commerce</dt>
+              <dd className="text-foreground">
+                {publicationLine(preview)}
+                {hiddenModelLine(preview, false) ? <span className="block text-warning">{hiddenModelLine(preview, false)}</span> : null}
+              </dd>
             </dl>
             {preview.warnings.length ? (
               <ul className="list-disc space-y-1 pl-5 text-warning">{preview.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
@@ -784,11 +810,13 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
 
   function doneStep() {
     if (!done) return null;
-    const { result, failures, publishedLater, refusedLater } = done;
+    const { result, failures, publishedLater, refusedLater, modelPublishedLater } = done;
+    const modelVisible = Boolean(result.model) && (!result.publication.model_hidden || modelPublishedLater);
     const storefront = result.links.storefront
       ?? (publishedLater && result.product.is_active
-        ? (result.model ? `/modelo/${result.model.slug}` : `/product/${result.product.slug}`)
+        ? (result.model && modelVisible ? `/modelo/${result.model.slug}` : `/product/${result.product.slug}`)
         : null);
+    const hiddenModel = modelPublishedLater ? null : hiddenModelLine(result, true);
     let publication: string;
     if (result.publication.published || publishedLater) publication = "Publicado en e-commerce.";
     else if (!result.publication.requested) publication = "Oculto en e-commerce, como pediste.";
@@ -804,6 +832,7 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
           {result.replayed ? " — ya se había registrado con este mismo envío; no se repitió." : ""}
         </p>
         <p className="text-sm text-muted">{publication}</p>
+        {hiddenModel ? <p className="text-sm text-warning">{hiddenModel}</p> : null}
         {result.warnings.length ? (
           <ul className="list-disc space-y-1 pl-5 text-sm text-warning">{result.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
         ) : null}

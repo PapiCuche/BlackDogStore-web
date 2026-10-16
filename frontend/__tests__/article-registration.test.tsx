@@ -24,6 +24,7 @@ import * as stockUnits from '@/app/lib/stock-units';
 jest.mock('@/app/lib/registration', () => ({
   ...jest.requireActual('@/app/lib/registration'),
   submitRegistration: jest.fn(),
+  bulkSetModelVisibility: jest.fn(),
 }));
 jest.mock('@/app/lib/admin', () => ({
   ...jest.requireActual('@/app/lib/admin'),
@@ -63,7 +64,7 @@ function result(over: Partial<registration.RegistrationResult> = {}): registrati
     product: { id: 41, existing_id: null, created: true, name: 'Funda MagSafe', slug: 'funda-magsafe', is_active: true,
       is_published_online: true, is_serialized: false, sale_mode: 'stock', condition_line: 'new' },
     model: null, units: [], movements: [7, 8], supplier: null, offer: null,
-    publication: { requested: true, published: true, problems: [] },
+    publication: { requested: true, published: true, problems: [], model_hidden: false },
     warnings: [],
     links: { product: '/admin/products/41', units: null, storefront: '/product/funda-magsafe' },
     ...over,
@@ -393,5 +394,47 @@ describe('la revisión y el envío', () => {
     await waitFor(() => expect(mAdmin.uploadProductImage).toHaveBeenCalledWith(41, image));
     await waitFor(() => expect(mAdmin.bulkSetProductVisibility).toHaveBeenCalledWith('publish', { ids: [41] }, 7));
     expect(await screen.findByText(/Publicado en e-commerce/)).toBeInTheDocument();
+  });
+
+  const NEW_MODEL = { id: 9, created: true, name: 'Galaxy S25', slug: 'galaxy-s25' };
+
+  it('dice que el modelo nuevo se crea oculto cuando su primera variante no se puede publicar', async () => {
+    mReg.submitRegistration.mockImplementation(async (body) => result({
+      dry_run: Boolean(body.dry_run), model: body.dry_run ? { ...NEW_MODEL, id: null } : NEW_MODEL,
+      publication: { requested: true, published: false, problems: ['no_category'], model_hidden: true },
+      links: { product: '/admin/products/41', units: null, storefront: null } }));
+    wizard(ALL);
+    await choose(/Accesorio o repuesto/);
+    await fillProduct({ category: '' });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Revisar' }));
+    expect(await screen.findByText(/El modelo nuevo «Galaxy S25» se creará oculto en e-commerce/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar artículo' }));
+    await screen.findByRole('heading', { name: 'Artículo registrado' });
+    expect(screen.getByText(/El modelo nuevo «Galaxy S25» quedó oculto en e-commerce/)).toBeInTheDocument();
+    expect(mReg.bulkSetModelVisibility).not.toHaveBeenCalled();
+  });
+
+  it('si la variante se publica tras subir sus imágenes, publica también su modelo nuevo', async () => {
+    mReg.submitRegistration.mockImplementation(async (body) => result({
+      dry_run: Boolean(body.dry_run), model: NEW_MODEL,
+      publication: { requested: true, published: false, problems: ['no_image'], model_hidden: true },
+      links: { product: '/admin/products/41', units: null, storefront: null } }));
+    mAdmin.uploadProductImage.mockResolvedValue({} as never);
+    mAdmin.bulkSetProductVisibility.mockResolvedValue({ action: 'publish', changed: 1, unchanged: 0, refused: [], total: 1 });
+    mReg.bulkSetModelVisibility.mockResolvedValue({ action: 'publish', changed: 1, unchanged: 0, total: 1 });
+    wizard(ALL);
+    await choose(/Accesorio o repuesto/);
+    await fillProduct();
+    const image = new File(['x'], 'funda.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText(/Imágenes del producto/), { target: { files: [image] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    await screen.findByRole('heading', { name: 'Artículo registrado' });
+    await waitFor(() => expect(mReg.bulkSetModelVisibility).toHaveBeenCalledWith('publish', [9], 7));
+    expect(await screen.findByText(/Publicado en e-commerce/)).toBeInTheDocument();
+    expect(screen.queryByText(/quedó oculto/)).toBeNull();
+    expect(screen.getByRole('link', { name: /Ver en la tienda/ })).toHaveAttribute('href', '/modelo/galaxy-s25');
   });
 });
