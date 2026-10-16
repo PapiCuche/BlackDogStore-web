@@ -35,7 +35,10 @@ confirmación del propietario.**
   y no se inventa). Igual que un pedido pagado: stock de vuelta una vez al costo de la salida,
   nota interna anulada (`pedido_cancelado`), boleta/factura viva conservada y marcada
   «nota de crédito / baja pendiente». No existe capacidad de «anular venta» en caja: se usa
-  `sales.orders.manage` (P).
+  `sales.orders.manage` (P). (Revisión P2) Si después de la venta entró una devolución
+  manual (`return_entry`) del mismo producto por cantidad y sucursal, no se repone stock
+  (409 `manual_return_after_sale`): se anula con «Anular sin reponer stock»
+  (`restore_stock=false`, sólo POS), registrado y auditado.
 - **Comisión.** (P) Al cancelar/anular una venta pagada, la comisión devengada pasa a
   `voided` (el propio modelo lo prevé «cuando la mercadería vuelve»). No se recalcula nada más.
 - **Reembolsos (`OrderRefund`, `0137`).** Un REGISTRO, no una operación de pago: nunca toca
@@ -43,7 +46,9 @@ confirmación del propietario.**
   aquí se anota la referencia). Sólo para pedidos cancelados. Pendiente → confirmado (con
   referencia de 3+ caracteres, quién y cuándo). (P) Tope: lo cobrado (total si se pagó +
   cobros archivados como duplicados) − pendientes − confirmados; la confirmación vuelve a
-  comprobar el tope con el pedido bloqueado. Medios: pasarela, efectivo, transferencia, otro.
+  comprobar el tope con el pedido bloqueado. (Revisión P3) Los cobros duplicados con claves
+  TEST no cuentan (ni en el tope ni en «Cobros»); un pedido pagado con claves TEST sigue
+  contando como hoy en todo el tablero. Medios: pasarela, efectivo, transferencia, otro.
   (P) Al cancelar, el reembolso pendiente se crea **sólo si quien cancela lo marca**, por
   todo lo que queda por devolver. (P) Registrar: `sales.orders.manage`; **confirmar:
   `sales.orders.manage` + `company.manage`** (administrador de la empresa; puente legacy:

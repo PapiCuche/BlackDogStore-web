@@ -23,6 +23,12 @@ Rama `feat/commerce-admin-ux` (sin push). Integra #121/#119 por merge; migracion
 - Los más vendidos no cuentan las salidas de pedidos cancelados.
 - Al anular/cancelar una venta pagada se anula la comisión devengada del vendedor.
 
+**Fixed (revisión independiente)**
+- Una venta POS con una devolución manual posterior del mismo producto ya no repone stock dos
+  veces: se rechaza y se ofrece «Anular sin reponer stock».
+- Un medio de reembolso que no es texto responde 400; los cobros duplicados con claves TEST no
+  cuentan como dinero.
+
 **Not changed**
 - Ningún pago confirmado se borra ni se modifica; no se llama a la pasarela; no se emite
   nota de crédito ni baja SUNAT; el Kardex y las instantáneas de costo no se reescriben.
