@@ -15,7 +15,6 @@ COMMERCE-ADMIN-UX-01 · financial closure — the owner's decisions of 2026-10-1
 from datetime import timedelta
 from decimal import Decimal as D
 
-from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -23,8 +22,8 @@ from store import inventory_services as inventory
 from store import order_cancellation as cancelling
 from store import order_refunds as refunds
 from store.models import (
-    AdminAuditLog, CompanySettings, FiscalDocument, Order, OrderCancellation, OrderRefund, SalesCommission,
-    StockMovement,
+    AdminAuditLog, CommissionAdjustment, CompanySettings, FiscalDocument, Order, OrderCancellation, OrderRefund,
+    SalesCommission, StockMovement,
 )
 from store import test_order_cancel as cancel_tests
 from store.test_order_cancel import REASON, RETURN
@@ -311,3 +310,115 @@ class RefundEvidenceTest(_ClosureBase):
         figures = refunds.summary(self.order)
         self.assertEqual((figures['confirmed'], figures['held'], figures['refundable']),
                          (D('147.00'), D('0.00'), D('0.00')))
+
+
+# -- decision 3 · the commission of an annulled sale -------------------------------------
+
+class CommissionClosureTest(_ClosureBase):
+    def setUp(self):
+        super().setUp()
+        reporter, _ = _p2d_member(self.company, 'comisiones_lector', ['company.view', 'sales.commissions.view'])
+        self.reporter = APIClient()
+        self.reporter.force_authenticate(reporter)
+
+    def settled_sale(self, amount='1.96'):
+        from store import commission_services
+
+        sale = self.till_sale(1)
+        commission = self.commission(sale, amount=amount)
+        commission_services.settle(commission, self.superior)
+        commission.refresh_from_db()
+        return sale, commission
+
+    def test_an_unsettled_commission_is_voided_once_and_gets_no_adjustment(self):
+        sale = self.till_sale(1)
+        commission = self.commission(sale)
+        self.assertEqual(self.post_cancel(sale, goods_returned=True).status_code, 200)
+        commission.refresh_from_db()
+        self.assertEqual(commission.status, SalesCommission.STATUS_VOIDED)
+        self.assertFalse(CommissionAdjustment.objects.exists())
+        audit = AdminAuditLog.objects.get(action='order_cancelled', target_id=str(sale.pk))
+        self.assertEqual((audit.metadata['commission_voided'], audit.metadata['commission_adjustment_id']),
+                         (True, None))
+
+    def test_settling_is_once_audited_and_only_of_an_accrued_live_sale(self):
+        from store import commission_services
+
+        sale, commission = self.settled_sale()
+        self.assertEqual((commission.status, commission.settled_by), (SalesCommission.STATUS_SETTLED, self.superior))
+        self.assertIsNotNone(commission.settled_at)
+        self.assertTrue(AdminAuditLog.objects.filter(action='commission_settled', target_id=str(commission.pk))
+                        .exists())
+        with self.assertRaises(commission_services.CommissionError):
+            commission_services.settle(commission, self.superior)
+        other = self.till_sale(1)
+        voided = self.commission(other, status=SalesCommission.STATUS_VOIDED)
+        with self.assertRaises(commission_services.CommissionError):
+            commission_services.settle(voided, self.superior)
+        # The database refuses a settled row without its date.
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SalesCommission.objects.filter(pk=voided.pk).update(status=SalesCommission.STATUS_SETTLED)
+
+    def test_a_settled_commission_keeps_its_row_and_gets_one_compensating_adjustment(self):
+        sale, commission = self.settled_sale('2.50')
+        before = SalesCommission.objects.filter(pk=commission.pk).values().get()
+
+        response = self.post_cancel(sale, client=self.superior_desk, goods_returned=True, refund_method='cash')
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(SalesCommission.objects.filter(pk=commission.pk).values().get(), before)
+        [adjustment] = CommissionAdjustment.objects.all()
+        cancellation = OrderCancellation.objects.get(order=sale)
+        self.assertEqual((adjustment.commission, adjustment.cancellation, adjustment.amount, adjustment.kind,
+                          adjustment.seller, adjustment.created_by),
+                         (commission, cancellation, D('-2.50'), 'cancellation', self.manager, self.superior))
+        audit = AdminAuditLog.objects.get(action='order_cancelled', target_id=str(sale.pk))
+        self.assertEqual((audit.metadata['commission_voided'], audit.metadata['commission_adjustment_id']),
+                         (False, adjustment.pk))
+        # The refund path afterwards adds nothing.
+        refund = OrderRefund.objects.get(order=sale)
+        self.post_confirm(sale, refund, self.superior_desk, reference='CAJA-1', evidence=EVIDENCE,
+                          amount=str(refund.amount))
+        self.assertEqual(OrderRefund.objects.get(pk=refund.pk).status, 'confirmed')
+        self.assertEqual(CommissionAdjustment.objects.count(), 1)
+
+    def test_a_second_adjustment_is_impossible(self):
+        from django.db import IntegrityError, transaction
+
+        sale, commission = self.settled_sale()
+        self.post_cancel(sale, client=self.superior_desk, goods_returned=True)
+        adjustment = CommissionAdjustment.objects.get()
+        # The service gives back the one that exists…
+        self.assertEqual(cancelling.compensate_commission(Order.objects.get(pk=sale.pk), adjustment.cancellation,
+                                                          self.superior), adjustment)
+        self.assertEqual(CommissionAdjustment.objects.count(), 1)
+        # …and the database refuses another.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            CommissionAdjustment.objects.create(
+                company=self.company, commission=commission, cancellation=adjustment.cancellation,
+                amount=D('-1.96'))
+
+    def test_the_report_shows_accrued_settled_voided_and_the_balance_to_recover(self):
+        accrued_sale = self.till_sale(1)
+        self.commission(accrued_sale, amount='3.00')                 # stays accrued
+        voided_sale = self.till_sale(1)
+        self.commission(voided_sale, amount='1.00')
+        self.post_cancel(voided_sale, goods_returned=True)           # voided
+        settled_sale, _settled = self.settled_sale('2.50')           # settled, sale stays
+        annulled_sale, _paid = self.settled_sale('4.00')             # settled, then annulled
+        self.post_cancel(annulled_sale, client=self.superior_desk, goods_returned=True)
+
+        body = self.reporter.get(f'/api/admin/sales/commissions/?{self.q}&days=7').json()
+
+        [row] = body['results']
+        self.assertEqual((row['accrued'], row['settled'], row['voided'], row['recoverable'], row['commission']),
+                         ('3.00', '6.50', '1.00', '-4.00', '5.50'))
+        self.assertEqual(row['sales'], 3)
+        self.assertEqual(body['total_commission'], '5.50')
+        self.assertEqual((body['totals']['accrued'], body['totals']['settled'], body['totals']['voided'],
+                          body['totals']['recoverable']), ('3.00', '6.50', '1.00', '-4.00'))
+        [adjustment] = body['adjustments']
+        self.assertEqual((adjustment['order_id'], adjustment['amount'], adjustment['label']),
+                         (annulled_sale.pk, '-4.00', 'Ajuste por anulación (saldo a recuperar)'))

@@ -15,9 +15,11 @@ sale. Three modes (`mode_of`), one service (`cancel_order`), one lock:
           No absolute time limit; but (owner, 2026-10-16) an OLD or COMPLEX
           sale is annulled only by a superior — see `superior_conditions`.
 
-  In the paid modes the seller's accrued commission is voided (the model's
-  own rule: «it may be voided when the goods come back»), and a refund owed
-  may be RECORDED as pending in the same transaction (`order_refunds`).
+  In the paid modes the seller's commission is closed (owner, 2026-10-16):
+  an ACCRUED one is voided; a SETTLED one (already paid out) is kept as it is
+  and gets ONE compensating `CommissionAdjustment` — the balance to recover
+  (`compensate_commission`). A refund owed may be RECORDED as pending in the
+  same transaction (`order_refunds`); never confirmed here.
 
 THE OWNER'S RULES (2026-10-14)
 
@@ -344,6 +346,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
         movements, units_returned, already_returned = (
             _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
         note_voided = _void_sales_note(locked, actor, reason)
+        # Owner, 2026-10-16: only a commission not yet settled is voided.
         commission_voided = bool(SalesCommission.objects.filter(
             order=locked, status=SalesCommission.STATUS_ACCRUED,
         ).update(status=SalesCommission.STATUS_VOIDED, updated_at=timezone.now()))
@@ -361,6 +364,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             fiscal_document=label, sales_note_voided=note_voided,
             was_paid=locked.paid, goods_returned=mode == MODE_POS, holds_released=holds_released,
         )
+        adjustment = compensate_commission(locked, cancellation, actor)
         refund = None
         if refund_method:
             from . import order_refunds
@@ -395,6 +399,8 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
                 'fiscal_document': label,
                 'sales_note_voided': note_voided,
                 'commission_voided': commission_voided,
+                # A settled commission is not voided: it gets its compensating entry.
+                'commission_adjustment_id': adjustment.pk if adjustment else None,
                 # DC3: on-order lines that stopped waiting for their supplier.
                 'supply_released': supply_released,
                 # Said, so nobody reads a cancellation as a refund: the money
@@ -405,6 +411,31 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             request=request, company=locked.company,
         )
     return cancellation
+
+
+def compensate_commission(order, cancellation, actor):
+    """
+    FINANCIAL-CLOSURE. A SETTLED commission of the cancelled `order` stays as
+    it is — paid out, history — and gets one negative `CommissionAdjustment`
+    for its whole amount, linked to the cancellation: the balance to recover
+    from the seller. Once: an existing adjustment is returned, never a second
+    (the database refuses one too). None when there is nothing settled.
+    Called with the order locked.
+    """
+    from .models import CommissionAdjustment
+
+    commission = SalesCommission.objects.filter(
+        order_id=order.pk, status=SalesCommission.STATUS_SETTLED).first()
+    if commission is None or commission.amount <= 0:
+        return None
+    existing = CommissionAdjustment.objects.filter(commission=commission).first()
+    if existing is not None:
+        return existing
+    return CommissionAdjustment.objects.create(
+        company_id=commission.company_id, commission=commission, cancellation=cancellation,
+        seller_id=commission.seller_id, seller_name_snapshot=commission.seller_name_snapshot,
+        kind=CommissionAdjustment.KIND_CANCELLATION, amount=-commission.amount, created_by=actor,
+    )
 
 
 #: ORDER-CANCEL-01's name for it. Every mode goes through the same rules now.
@@ -629,7 +660,8 @@ def is_cancelled(order) -> bool:
 
 
 __all__ = [
-    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'fiscal_label',
+    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'compensate_commission',
+    'fiscal_label',
     'is_cancelled', 'live_fiscal_document', 'may_cancel', 'may_cancel_as_superior', 'mode_of', 'payload',
     'superior_blocker', 'superior_conditions',
 ]
