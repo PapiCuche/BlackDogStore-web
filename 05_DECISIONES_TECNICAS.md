@@ -2178,3 +2178,31 @@ qué. El master sin empresa «pasaba» el permiso y recibía un 403 que nadie ex
   `create_stock_movement` aplica bajo el bloqueo de la fila, fijando `average_cost` y dejando
   `uncosted_quantity` como está; nunca edita movimientos pasados ni ventas. Requiere migración
   (nuevo valor de `movement_type`), por eso no entra en A1.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» — quién, qué y de dónde
+
+**Contexto.** El propietario pidió que cualquier vendedor autorizado pueda preguntar «¿lo
+tenemos, dónde, y si no, lo puede traer un proveedor?» sin entrar al inventario.
+
+**Decisión.**
+- *Capacidad: `sales.pos.use`.* Es la menor autoridad que todo vendedor ya tiene (el preset
+  «Ventas» y el rol legacy de ventas la llevan) y la caja ya muestra lo mismo por sucursal:
+  estante, precio y si se vende bajo pedido. No `inventory.view` (el preset de ventas no la
+  lleva y abriría Kardex e IMEI completos); no `sales.orders.view` (es leer el libro de
+  pedidos, otra cosa). Sin puente legacy, como la caja: Membership o nada
+  (`H412b`: `sales/availability/page.tsx` con lista vacía).
+- *Fuentes.* Stock propio = `BranchStock.quantity` (lo que decide una venta) y, para equipos,
+  los estados de `StockUnit` (apartado web = `hold_key`; apartado por personal = sin él). Las
+  ofertas vigentes (`supply_services.valid_offer_q`, el mismo predicado de la venta) van en su
+  propia lista, ordenadas como `best_offer`, máximo tres, y **nunca se suman** al stock propio.
+- *Sin costos nunca* — tampoco para `costs.view`: los costos viven en «Costos y precios». Sin
+  IMEI ni serie completos (últimos cuatro), sin llave ni origen del apartado, sin nota interna.
+  El nombre del proveedor sólo con `products.view` (lo que piden las pantallas de DC3).
+- *Alcance.* Empresa del llamante y sus sucursales visibles; sin `?branch=` = todas las suyas.
+- *Frescura sin martillar.* Consulta al cambiar filtros (búsqueda con espera de 350 ms), botón
+  «Actualizar», sondeo cada 45 s sólo con la página visible, y nueva consulta al volver a la
+  pestaña o cuando otra pantalla del navegador avisa que el stock cambió (venta en caja,
+  acción sobre un equipo; `lib/stock-events.ts`, sin datos, sólo el aviso).
+- *Costo de una página:* número fijo de consultas (probado: 2 y 8 productos cuestan igual).
+- *«Inventario › Equipos»:* filtros por línea, modelo y opciones (`model`, `option`, mismos
+  helpers) y un detalle por equipo hecho con la fila que ya llega; el costo sólo con `costs.view`.

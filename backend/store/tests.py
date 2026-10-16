@@ -55694,6 +55694,9 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # La bitácora no tiene puente: sin Membership el backend responde 403
         # venga el rol que venga, así que la lista tiene que estar vacía.
         'audit-logs/page.tsx': ('memberships.view', frozenset()),
+        # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad». Same authority as the
+        # till (`pos_views._context`): `has_capability`, no legacy bridge.
+        'sales/availability/page.tsx': ('sales.pos.use', frozenset()),
     }
 
     _GUARD = _h412b_re.compile(

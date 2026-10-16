@@ -24,6 +24,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import availability_views as availability
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -91,7 +92,7 @@ def _refusal(exc) -> Response:
 
 class StockUnitListView(APIView):
     """
-    GET  /api/admin/inventory/units/?branch=&product=&status=&condition=&search=
+    GET  /api/admin/inventory/units/?branch=&product=&status=&condition=&line=&model=&option=&search=
     POST /api/admin/inventory/units/  — receive a batch of units.
     """
 
@@ -126,6 +127,17 @@ class StockUnitListView(APIView):
             if line not in ('new', 'used'):
                 return Response({'detail': 'Parámetro "line" inválido.'}, status=status.HTTP_400_BAD_REQUEST)
             rows = rows.filter(product__condition_line=line)
+
+        # COMMERCE-ADMIN-UX-01 — by model and by option (capacity, colour…),
+        # with the same rules as «Consultar disponibilidad».
+        try:
+            model_id, option_ids = availability.parse_variant_filters(params)
+        except availability.BadParameter as exc:
+            return Response({'detail': f'Parámetro "{exc.args[0]}" inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+        if model_id or option_ids:
+            rows = rows.filter(product__in=availability.filter_variants(
+                Product.objects.filter(company=company), model_id=model_id, option_ids=option_ids,
+            ).values('pk'))
 
         product_id = params.get('product')
         if product_id:

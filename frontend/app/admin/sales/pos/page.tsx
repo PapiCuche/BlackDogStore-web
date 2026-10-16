@@ -37,6 +37,7 @@
 
 import { PosPrintNotice } from "./PosPrintNotice";
 import { retryPrintJob } from "../../lib/printing-api";
+import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
 import { PosReceiptSelector } from "./PosReceiptSelector";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
@@ -519,6 +520,8 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
       // A new basket gets a new key. Retiring it only HERE is what makes a
       // retry of the request above idempotent rather than a second sale.
       keyRef.current = newKey();
+      // «Consultar disponibilidad», open in another tab, asks the server again.
+      notifyStockChanged();
     } catch (err) {
       if (err instanceof PosStockError) {
         const extra = err.elsewhere.length

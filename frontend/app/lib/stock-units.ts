@@ -40,6 +40,9 @@ export type StockUnit = {
   sale_price?: string | null;
   condition_line?: "new" | "used";
   photos?: UnitPhoto[];
+  /** A web buyer's cart or checkout holds it (status `reserved`), until `hold_until`. */
+  held_online?: boolean;
+  hold_until?: string | null;
 };
 
 export type UnitPhoto = { id: number; url: string; alt_text: string };
@@ -131,15 +134,20 @@ export function fetchStockUnits(params: {
   condition?: string;
   search?: string;
   /** DC2: `used` lists the second-hand devices. */
-  line?: "new" | "used";
+  line?: "new" | "used" | "";
+  /** COMMERCE-ADMIN-UX-01: a model of the catalogue. */
+  model?: string;
+  /** COMMERCE-ADMIN-UX-01: option ids (capacity, colour…); every one must hold. */
+  options?: number[];
   page?: number;
 }): Promise<StockUnitPage> {
   const qs = new URLSearchParams();
   if (params.branch !== undefined) qs.set("branch", String(params.branch));
-  for (const key of ["product", "status", "condition", "search", "line"] as const) {
+  for (const key of ["product", "status", "condition", "search", "line", "model"] as const) {
     const value = params[key];
     if (value) qs.set(key, value);
   }
+  for (const option of params.options ?? []) qs.append("option", String(option));
   if (params.page && params.page > 1) qs.set("page", String(params.page));
   const query = qs.toString();
   return call<StockUnitPage>(`/${query ? `?${query}` : ""}`);
