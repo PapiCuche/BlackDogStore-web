@@ -150,6 +150,8 @@ export function OrderCancelDialog({
   }
 
   const fiscal = order.cancel_fiscal_document ?? "";
+  // Cierre financiero: el servidor dice por qué esta venta la anula un superior.
+  const superior = order.cancel_superior_conditions ?? [];
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
@@ -173,6 +175,18 @@ export function OrderCancelDialog({
             gestiona aparte.
           </p>
         )}
+        {superior.length ? (
+          <div
+            data-testid="order-cancel-superior"
+            className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-foreground"
+          >
+            <p className="font-semibold">Requiere autorización superior</p>
+            <ul className="mt-1 list-disc space-y-1 pl-5">
+              {superior.map((condition) => <li key={condition.code}>{condition.detail}</li>)}
+            </ul>
+            <p className="mt-1 text-xs text-muted">La anulación queda registrada con tu usuario y estas condiciones.</p>
+          </div>
+        ) : null}
         <p className="mt-3 text-sm font-semibold text-foreground">{pos ? "Al anular:" : "Al cancelar:"}</p>
         <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted">
           {mode === "unpaid" ? (

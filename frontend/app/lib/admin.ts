@@ -666,6 +666,12 @@ export type AdminOrderDetail = AdminOrder & {
   can_cancel?: boolean;
   /** ORDER-CANCEL-01: por qué no se puede cancelar (vacío cuando se puede). */
   cancel_blockers?: OrderCancelBlocker[];
+  /**
+   * Cierre financiero (2026-10-16): por qué esta venta POS la anula un superior
+   * (antigua, con boleta/factura viva, comisión liquidada o stock de varias
+   * sucursales). Vacío cuando es un caso simple.
+   */
+  cancel_superior_conditions?: OrderCancelBlocker[];
   /** ORDER-CANCEL-01: la cancelación, o null si el pedido no está cancelado. */
   cancellation?: OrderCancellation | null;
   /** ORDER-CANCEL-01: la boleta/factura que quedaría pendiente de nota de crédito, o "". */
@@ -810,6 +816,8 @@ export type OrderRefund = {
   status_label: string;
   reference: string;
   note: string;
+  /** Cierre financiero: lo que hace verificable la confirmación (operación, banco o canal, fecha). */
+  evidence?: string;
   created_at: string;
   created_by: string;
   confirmed_at: string | null;
@@ -852,11 +860,19 @@ export async function recordOrderRefund(
   return refundRequest(`${API_BASE}/admin/orders/${orderId}/refunds/`, body, 'No se pudo registrar el reembolso.');
 }
 
-/** Confirma que el dinero se devolvió, con su referencia. */
+/** Lo que el servidor exige de la evidencia de un reembolso confirmado. */
+export const REFUND_EVIDENCE_MIN = 10;
+export const REFUND_EVIDENCE_MAX = 300;
+
+/**
+ * Confirma que el dinero se devolvió: referencia, evidencia verificable y el
+ * importe EXACTO del reembolso pendiente (uno parcial se registra antes como
+ * pendiente por ese importe).
+ */
 export async function confirmOrderRefund(
   orderId: number,
   refundId: number,
-  body: { reference: string; note?: string },
+  body: { reference: string; evidence?: string; amount?: string; note?: string },
 ): Promise<AdminOrderDetail> {
   return refundRequest(
     `${API_BASE}/admin/orders/${orderId}/refunds/${refundId}/confirm/`, body, 'No se pudo confirmar el reembolso.');
@@ -886,7 +902,12 @@ export async function cancelAdminOrder(
     method: 'POST',
     body: JSON.stringify(body),
   });
-  if (res.status === 403) throw new Error('No tienes permisos para cancelar pedidos.');
+  if (res.status === 403) {
+    // Cierre financiero: «corresponde a un superior» trae su motivo; sin él, el genérico.
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.code === 'superior_required' && err?.detail
+      ? err.detail : 'No tienes permisos para cancelar pedidos.');
+  }
   if (res.status === 404) throw new Error('Orden no encontrada.');
   if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
   if (res.status === 400 || res.status === 409) {

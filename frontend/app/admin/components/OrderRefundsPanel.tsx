@@ -14,6 +14,8 @@ import {
   AdminOrderDetail,
   OrderRefund,
   OrderRefundMethod,
+  REFUND_EVIDENCE_MAX,
+  REFUND_EVIDENCE_MIN,
   REFUND_METHOD_LABELS,
   confirmOrderRefund,
   formatAdminDate,
@@ -77,17 +79,22 @@ function RefundRow({ order, refund, mayConfirm, onChanged }: {
   order: AdminOrderDetail; refund: OrderRefund; mayConfirm: boolean; onChanged: Props["onChanged"];
 }) {
   const referenceId = useId();
+  const evidenceId = useId();
   const [reference, setReference] = useState("");
+  const [evidence, setEvidence] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ready = reference.trim().length >= MIN_REFERENCE;
+  const cleanEvidence = evidence.split(/\s+/).filter(Boolean).join(" ");
+  const ready = reference.trim().length >= MIN_REFERENCE && cleanEvidence.length >= REFUND_EVIDENCE_MIN;
 
   async function confirm() {
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
     try {
-      onChanged(await confirmOrderRefund(order.id, refund.id, { reference: reference.trim() }));
+      // El importe es exactamente el del pendiente: uno parcial se registra antes como pendiente.
+      onChanged(await confirmOrderRefund(order.id, refund.id, {
+        reference: reference.trim(), evidence: cleanEvidence, amount: refund.amount }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo confirmar el reembolso.");
     } finally {
@@ -107,6 +114,7 @@ function RefundRow({ order, refund, mayConfirm, onChanged }: {
           ? ` · confirmado por ${refund.confirmed_by || "—"} el ${formatAdminDate(refund.confirmed_at)}, referencia ${refund.reference}`
           : ""}
       </p>
+      {refund.evidence ? <p className="mt-1 text-xs text-muted">Evidencia: {refund.evidence}</p> : null}
       {refund.note ? <p className="mt-1 text-xs text-muted">{refund.note}</p> : null}
       {refund.status === "pending" && mayConfirm ? (
         <div className="mt-2 flex flex-wrap items-end gap-2">
@@ -122,9 +130,26 @@ function RefundRow({ order, refund, mayConfirm, onChanged }: {
               className={inputClass}
             />
           </label>
+          <label htmlFor={evidenceId} className="block min-w-[16rem] flex-[2] text-xs text-muted">
+            Evidencia del reembolso #{refund.id}
+            <input
+              id={evidenceId}
+              value={evidence}
+              maxLength={REFUND_EVIDENCE_MAX}
+              onChange={(event) => setEvidence(event.target.value)}
+              disabled={busy}
+              placeholder="Operación, banco o canal y fecha"
+              className={inputClass}
+            />
+          </label>
           <button type="button" onClick={() => void confirm()} disabled={!ready || busy} className={internalButtonClass}>
             {busy ? "Confirmando…" : "Confirmar reembolso"}
           </button>
+          <p className="w-full text-xs text-muted">
+            Se confirma exactamente {money(refund.amount)}. Para devolver menos, registra antes un reembolso pendiente
+            por ese importe. La evidencia (mín. {REFUND_EVIDENCE_MIN} caracteres) no debe llevar datos de otros
+            clientes.
+          </p>
         </div>
       ) : null}
       {error ? <p role="alert" className="mt-2 text-xs text-danger">{error}</p> : null}
