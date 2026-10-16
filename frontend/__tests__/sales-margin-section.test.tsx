@@ -68,7 +68,8 @@ describe('Margen comercial', () => {
     expect(within(region).getByTestId('margin-percent')).toHaveTextContent('40.00 %');
     expect(within(region).getByText('Ventas netas (sin IGV)')).toBeInTheDocument();
     expect(within(region).getByText('Costo de lo vendido')).toBeInTheDocument();
-    expect(within(region).getByText('Cobros confirmados')).toBeInTheDocument();
+    // COMMERCE-ADMIN-UX-01: el cobro es neto de reembolsos confirmados.
+    expect(within(region).getByText('Cobro neto')).toBeInTheDocument();
     expect(within(region).getByText('Reembolsos')).toBeInTheDocument();
     expect(region.textContent).not.toMatch(/utilidad/i);
     expect(within(region).getByRole('cell', { name: 'Funda' })).toBeInTheDocument();
@@ -98,10 +99,12 @@ describe('Margen comercial', () => {
     expect(screen.getByTestId('realised-percent')).toHaveTextContent('—');
   });
 
-  it('si el servidor lo niega, la sección se oculta sin romper la página', async () => {
-    mocked.fetchSalesMargin.mockRejectedValue(new Error('403'));
+  it('si el servidor lo niega, la sección dice por qué en vez de ocultarse (A1)', async () => {
+    mocked.fetchSalesMargin.mockRejectedValue(new Error('Se requiere permiso para ver costos y márgenes.'));
     await show();
-    expect(screen.queryByRole('region', { name: 'Margen comercial' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Margen comercial' }))
+      .toHaveTextContent('Se requiere permiso para ver costos y márgenes.');
+    expect(screen.queryByTestId('margin-percent')).toBeNull();
   });
 
   it('una venta anterior a los costos dice que su neto es estimado', async () => {
@@ -148,6 +151,23 @@ describe('Margen comercial', () => {
     expect(refunds.textContent).toMatch(/118\.00/);
     expect(refunds.textContent).toMatch(/100\.00 sin IGV/);
     expect(refunds).toHaveTextContent('1 pedido');
+  });
+
+  it('los pedidos pagados y luego cancelados se listan aparte, fuera del margen', async () => {
+    await show();
+    expect(screen.queryByTestId('margin-cancellations')).toBeNull();
+    mocked.fetchSalesMargin.mockResolvedValue({
+      ...REPORT,
+      cancellations: { orders: 3, units: 5, gross: '250.00', net: '211.86', cost: '100.00',
+        stock_restored_orders: 3, refunds_confirmed: '50.00' },
+    });
+    await show();
+    const box = screen.getAllByTestId('margin-cancellations').at(-1)!;
+    expect(box).toHaveTextContent('Cancelados (fuera del margen)');
+    expect(box.textContent).toMatch(/250\.00/);
+    expect(box).toHaveTextContent('3 pedidos pagados y cancelados');
+    expect(box).toHaveTextContent('5 unidades');
+    expect(box.textContent).toMatch(/costo S\/\s?100\.00/);
   });
 
   it('dice la fórmula en una línea', async () => {

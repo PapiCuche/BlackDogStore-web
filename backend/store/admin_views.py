@@ -453,6 +453,48 @@ _AUDITABLE_PRODUCT_FIELDS = ('name', 'slug', 'description', 'price', 'inventory'
                              'is_published_online')
 
 
+def _clean_reference_cost(raw):
+    """`(Decimal | None, error)` — empty clears it; never negative, two decimals.
+
+    The size is checked BEFORE rounding: `quantize` of «1e30» needs more digits
+    than the context has and raises, which used to answer 500.
+    """
+    from decimal import InvalidOperation
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None, None
+    try:
+        value = Decimal(str(raw).strip().replace(',', '.'))
+    except (InvalidOperation, ValueError):
+        return None, 'El costo de referencia debe ser un número.'
+    if not value.is_finite():
+        return None, 'El costo de referencia debe ser un número.'
+    if value < 0:
+        return None, 'El costo de referencia no puede ser negativo.'
+    try:
+        if value >= _REFERENCE_COST_LIMIT:
+            raise InvalidOperation
+        value = value.quantize(Decimal('0.01'))
+        if value >= _REFERENCE_COST_LIMIT:      # 9999999999.995 rounds up to the limit
+            raise InvalidOperation
+    except InvalidOperation:
+        return None, 'El costo de referencia es demasiado alto.'
+    return value, None
+
+
+_REFERENCE_COST_LIMIT = Decimal('10000000000')
+
+
+def _product_detail_payload(request, product):
+    """The product's detail; its reference cost travels ONLY to `costs.view` (A1)."""
+    from .inventory_views import may_view_costs
+
+    data = AdminProductDetailSerializer(product).data
+    if may_view_costs(request):
+        data['reference_cost'] = None if product.reference_cost is None else str(product.reference_cost)
+    return data
+
+
 def _product_snapshot(product):
     def _fmt(field, value):
         if value is None:
@@ -467,10 +509,14 @@ def _product_snapshot(product):
 
 #: The filters of the product list. The bulk visibility action takes these same
 #: keys for «all that match», and refuses any other.
-PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized')
+PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized',
+                       # COMMERCE-ADMIN-UX-01 — «Publicación e-commerce» by kind of article.
+                       'condition_line', 'sale_mode')
 
 _TRUE_FALSE = ('true', 'false')
 _STOCK_FILTERS = ('in_stock', 'out_of_stock', 'low_stock')
+_LINES = (Product.CONDITION_NEW, Product.CONDITION_USED)
+_SALE_MODES = (Product.SALE_MODE_STOCK, Product.SALE_MODE_STOCK_OR_ORDER)
 
 
 class InvalidProductFilter(ValueError):
@@ -547,6 +593,14 @@ def filter_admin_products(queryset, params, *, strict=False):
     serialized = _filter_choice(params, 'is_serialized', _TRUE_FALSE, strict)
     if serialized:
         queryset = queryset.filter(is_serialized=serialized == 'true')
+
+    # COMMERCE-ADMIN-UX-01: new or used line (DC2), and «Bajo pedido» (DC3).
+    line = _filter_choice(params, 'condition_line', _LINES, strict)
+    if line:
+        queryset = queryset.filter(condition_line=line)
+    sale_mode = _filter_choice(params, 'sale_mode', _SALE_MODES, strict)
+    if sale_mode:
+        queryset = queryset.filter(sale_mode=sale_mode)
 
     stock = _filter_choice(params, 'stock', _STOCK_FILTERS, strict)
     if stock == 'in_stock':
@@ -690,7 +744,7 @@ class AdminProductDetailView(APIView):
         product = get_object_or_404(
             Product.objects.select_related('category').filter(company=company), pk=pk,
         )
-        return Response(AdminProductDetailSerializer(product).data)
+        return Response(_product_detail_payload(request, product))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -725,6 +779,24 @@ class AdminProductDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # COMMERCE-ADMIN-UX-01 · A1 — the catalogue's REFERENCE cost. Changing it
+        # needs `costs.view` on top of `products.manage`: correcting a cost one
+        # may not see is not editing the catalogue. Refused before any write.
+        wants_reference_cost = 'reference_cost' in request.data
+        reference_cost = None
+        if wants_reference_cost:
+            from .inventory_views import may_view_costs
+
+            if not may_view_costs(request):
+                return Response(
+                    {'detail': 'Necesitas el permiso «Ver costos y márgenes» para cambiar el costo de referencia.',
+                     'field': 'reference_cost'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            reference_cost, cost_error = _clean_reference_cost(request.data.get('reference_cost'))
+            if cost_error:
+                return Response({'reference_cost': [cost_error]}, status=status.HTTP_400_BAD_REQUEST)
+
         old = _product_snapshot(product)
 
         ser = AdminProductWriteSerializer(
@@ -741,6 +813,14 @@ class AdminProductDetailView(APIView):
             for f in _AUDITABLE_PRODUCT_FIELDS
             if old[f] != new[f]
         }
+        if wants_reference_cost and product.reference_cost != reference_cost:
+            # A snapshot already taken (Kardex line, sale line) keeps its cost:
+            # only what is valued from now on reads the new one.
+            product.reference_cost = reference_cost
+            product.save(update_fields=['reference_cost', 'updated_at'])
+            # The audit trail is read by more people than `costs.view`: that
+            # it changed, never the amounts.
+            changed['reference_cost'] = {'changed': True}
 
         if changed:
             was_active, is_now_active = old.get('is_active'), new.get('is_active')
@@ -763,7 +843,7 @@ class AdminProductDetailView(APIView):
                 company=company,
             )
 
-        return Response(AdminProductDetailSerializer(product).data)
+        return Response(_product_detail_payload(request, product))
 
 
 class AdminProductBulkVisibilityView(APIView):
@@ -1169,8 +1249,40 @@ def _order_detail_payload(request, order, company):
         item['units_pending'] = 0 if product_id in shown else pending.get(product_id, 0)
         shown.add(product_id)
     transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
+    # ORDER-CANCEL-01: a cancelled order does not move any more.
+    from . import order_cancellation as cancelling
+
+    if cancelling.is_cancelled(order):
+        transitions = []
+    cancel_blockers = cancelling.blockers(order)
+    may_cancel = cancelling.may_cancel(request.user, company)
+    from . import order_refunds
+
+    refunds_block = None
+    if cancelling.is_cancelled(order):
+        # COMMERCE-ADMIN-UX-01: what was collected, what is owed back and what
+        # went back, and what THIS caller may do about it.
+        refunds_block = {
+            **order_refunds.payload(order),
+            'can_record': may_cancel,
+            'can_confirm': order_refunds.may_confirm(request.user, company),
+        }
     return {
         **data,
+        # ORDER-CANCEL-01: whether THIS caller may cancel it now, why not, and
+        # what the cancellation did once it happened. Server-decided.
+        'can_cancel': not cancel_blockers and may_cancel,
+        # COMMERCE-ADMIN-UX-01: which cancellation it is open to — 'unpaid',
+        # 'paid' or 'pos' (a till sale: the cashier confirms the goods are back).
+        'cancel_mode': cancelling.mode_of(order) if not cancel_blockers else None,
+        'refunds': refunds_block,
+        # Why not is said to whoever could cancel it; to a reader it is noise.
+        'cancel_blockers': cancel_blockers if may_cancel else [],
+        'cancellation': cancelling.payload(order),
+        # What the dialog warns about before anyone confirms: the boleta or
+        # factura a cancellation would leave pending its credit note.
+        'cancel_fiscal_document': (
+            cancelling.fiscal_label(cancelling.live_fiscal_document(order)) if not cancel_blockers else ''),
         # CLIENT-SEC-01: what was noticed about this order and what a person
         # decided, for whoever may see orders; null when it was not assessed.
         'risk': _risk_block(request, order, company),
@@ -1192,8 +1304,11 @@ def _order_detail_payload(request, order, company):
         # DC3: the order's supply, derived from its on-order lines ('' when
         # none), and whether THIS caller may confirm, receive or fail them.
         'supply_status': supply_status,
-        'can_manage_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE),
-        'can_receive_supply': bool(supply_status) and has_capability(request.user, company, CAP_ORDERS_MANAGE)
+        # A cancelled order's lines were released with it: nothing to supply.
+        'can_manage_supply': bool(supply_status) and not cancelling.is_cancelled(order)
+        and has_capability(request.user, company, CAP_ORDERS_MANAGE),
+        'can_receive_supply': bool(supply_status) and not cancelling.is_cancelled(order)
+        and has_capability(request.user, company, CAP_ORDERS_MANAGE)
         and has_capability(request.user, company, CAP_INVENTORY_ADJUST),
     }
 
@@ -1283,6 +1398,12 @@ class AdminOrderListView(APIView):
             orders = orders.filter(
                 items__supply_origin=OrderItem.SUPPLY_SUPPLIER, items__supply_status=supply_filter,
             ).distinct()
+
+        # COMMERCE-ADMIN-UX-01: `?refund=pending|confirmed` — cancelled orders
+        # with a refund in that state (the cancellations history's follow-up).
+        refund_filter = request.query_params.get('refund', '').strip()
+        if refund_filter in ('pending', 'confirmed'):
+            orders = orders.filter(refunds__status=refund_filter).distinct()
 
         page_qs, meta = _paginate(orders, request)
         rows = AdminOrderListSerializer(page_qs, many=True).data
@@ -1480,7 +1601,8 @@ class AdminOrderReceiptPdfView(APIView):
         if order is None:
             return Response({"detail": _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
-        if not order.paid or order.status != Order.Status.PAID:
+        # ORDER-CANCEL-01: a cancelled order keeps its receipt, marked void.
+        if not order.paid or order.status not in (Order.Status.PAID, Order.Status.CANCELLED):
             return Response(
                 {"detail": "El PDF solo está disponible para órdenes pagadas."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1558,6 +1680,121 @@ class AdminOrderFulfillmentView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderCancelView(APIView):
+    """
+    POST /api/admin/orders/{pk}/cancel/ — ORDER-CANCEL-01, body `{reason}`.
+
+    Cancels a PAID web order whose goods have not left the shop: the stock
+    comes back once, the internal note is voided and kept, a live boleta or
+    factura is kept and flagged as pending its credit note. It does NOT refund:
+    `paid` stays true and no payment is touched. See `order_cancellation`.
+
+    `sales.orders.manage` decides (the legacy bridge: sales, admin and
+    superadmin). Out of scope is 404, like every order view. A rule that says
+    no is 400 (the request) or 409 (the order), with a `code`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+
+        from . import order_refunds
+
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            cancelling.cancel_order(
+                order, request.user, body.get('reason'),
+                # Only a literal true: the cashier's word, not something truthy.
+                goods_returned=body.get('goods_returned') is True,
+                refund_method=body.get('refund_method') or None,
+                # Review P2: only a literal false annuls a till sale without stock.
+                restore_stock=body.get('restore_stock') is not False,
+                request=request,
+            )
+        except (cancelling.OrderCancelError, order_refunds.RefundError) as exc:
+            return Response(exc.body(), status=exc.http_status)
+
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderRefundListView(APIView):
+    """
+    POST /api/admin/orders/{pk}/refunds/ — COMMERCE-ADMIN-UX-01, body
+    `{amount?, method, note?}`: record a PENDING refund of a cancelled order
+    (no amount = everything still refundable). A record, not a payment: no
+    gateway is called and no payment row changes. `sales.orders.manage`,
+    scoped like every order view (404 out of scope). 201 with the order.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+        from . import order_refunds
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            order_refunds.record_pending(
+                order, request.user, amount=body.get('amount'), method=body.get('method') or '',
+                note=body.get('note') or '', request=request)
+        except order_refunds.RefundError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company), status=status.HTTP_201_CREATED)
+
+
+class AdminOrderRefundConfirmView(APIView):
+    """
+    POST /api/admin/orders/{pk}/refunds/{refund_pk}/confirm/ — body
+    `{reference, note?}`: the money went back. `sales.orders.manage` AND
+    `company.manage` (legacy bridge: admin, superadmin); a reference is
+    required. Once: a confirmed refund answers 409.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk, refund_pk):
+        from . import order_cancellation as cancelling
+        from . import order_refunds
+        from .models import OrderRefund
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        refund = OrderRefund.objects.filter(pk=refund_pk, order_id=order.pk).first() if order else None
+        if refund is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        if not order_refunds.may_confirm(request.user, company):
+            return Response(
+                {'detail': 'Confirmar un reembolso corresponde al administrador de la empresa.'},
+                status=status.HTTP_403_FORBIDDEN)
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            order_refunds.confirm(refund, request.user, reference=body.get('reference') or '',
+                                  note=body.get('note') or '', request=request)
+        except order_refunds.RefundError as exc:
+            return Response(exc.body(), status=exc.http_status)
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
 

@@ -3,6 +3,72 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-16 — Base local SQLite: `migrate` vuelve a pasar `0131`
+
+**Fixed**
+- En SQLite (la base local de desarrollo y la de las pruebas de navegador), `migrate` se
+  detenía en `0131` con «unknown function: GEN_RANDOM_UUID()». La app le da a esa función
+  su forma para SQLite (32 dígitos hexadecimales al azar); la migración aplicada no se
+  edita y PostgreSQL (producción) no cambia.
+
+## 2026-10-16 — COMMERCE-ADMIN-UX-01 · ronda de correcciones (en rama, NO desplegado)
+
+- **Fixed** — costo de referencia «1e30»/«Infinity» ya no da 500; equipo dado de baja sin cambio de costo; motivo de costo sólo texto; «Costos y precios» envía sólo lo cambiado y avisa no escribir montos en el motivo; aviso por «Bajo pedido» contradictorio en ofertas; modelo nuevo oculto si su primera variante no se publica. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (en rama, NO desplegado)
+
+Rama `feat/commerce-admin-ux` (sin push). Integra #121/#119 por merge; migraciones `0124`,
+`0125`, `0136` (fusión) y `0137` (reembolsos). Estado: **en rama, sin desplegar**.
+
+**Added**
+- Cancelar un pedido web sin pagar, con motivo: queda en el historial como cancelado, sin
+  ingreso; los equipos apartados vuelven a la tienda. Un pago que llega después se registra
+  como cobro a devolver y el pedido lo dice.
+- «Anular venta» POS, con motivo y la casilla «La mercadería volvió al local»: stock de vuelta
+  al costo de la venta, nota interna anulada, comprobante fiscal conservado y marcado.
+- Reembolsos registrados por pedido cancelado (pendiente / confirmado con referencia), con
+  tope en lo cobrado; filtro «Reembolso» y botón «Cancelaciones / historial» en Órdenes.
+- Resumen de ventas: sección «Cobros»; margen: «Cobro neto» y «Cancelados (fuera del margen)».
+
+**Changed**
+- Las líneas bajo pedido de un pedido cancelado devuelven lo comprometido a su oferta.
+- Los más vendidos no cuentan las salidas de pedidos cancelados.
+- Al anular/cancelar una venta pagada se anula la comisión devengada del vendedor.
+
+**Fixed (revisión independiente)**
+- Una venta POS con una devolución manual posterior del mismo producto ya no repone stock dos
+  veces: se rechaza y se ofrece «Anular sin reponer stock».
+- Un medio de reembolso que no es texto responde 400; los cobros duplicados con claves TEST no
+  cuentan como dinero.
+
+**Not changed**
+- Ningún pago confirmado se borra ni se modifica; no se llama a la pasarela; no se emite
+  nota de crédito ni baja SUNAT; el Kardex y las instantáneas de costo no se reescriben.
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · Registro único, publicación y navegación (en rama, NO desplegado)
+
+- **Added** — «Productos › Registro / Carga masiva»: asistente de cuatro pasos para equipo nuevo,
+  seminuevo, accesorio/repuesto o disponible por proveedor sobre `POST /api/admin/products/register/`
+  (servicios existentes en una transacción, `Idempotency-Key`, `dry_run`); «Productos › Publicación
+  e-commerce» para todos los tipos y modelos (`POST /api/admin/catalog/models/bulk-visibility/`);
+  «Inventario › Stock y disponibilidad»; columna opcional «Bajo pedido (Sí/No)» en la plantilla de
+  ofertas; menú según el árbol del propietario. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · A1 «Costos y precios» — en rama (`wip/costs-ux`)
+
+- Inventario › Costos y precios (`costs.view`): margen, inventario al costo, costo promedio por
+  sucursal y costo de cada equipo, con su origen; precio y costo de referencia editables;
+  «Corregir costo» de un equipo con motivo auditado; estados de carga, vacío y error. Sin
+  migración. Corregir el promedio de una sucursal: PENDIENTE (DEC-DEVICE-COMMERCE-01 · A1).
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» (en rama, NO desplegado)
+
+- **Added** — «Ventas › Consultar disponibilidad» (`GET /api/admin/availability/`, `sales.pos.use`,
+  sólo lectura, sin migración): stock propio por sucursal y por estado del equipo, ofertas de
+  proveedores aparte («no es stock propio»), equipos con IMEI enmascarado; nunca costos.
+  «Inventario › Equipos» filtra por línea, modelo y opciones y muestra el detalle de cada equipo
+  (DEC-COMMERCE-ADMIN-UX-01).
+
 ## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
 
 **Deployed**
@@ -187,6 +253,71 @@ En la rama `feat/device-commerce` (sin push). Migraciones `0126` (datos), `0127`
 - «Precio costo» de la plantilla POS ya no se ignora: es el costo de referencia.
 - El reporte de stock trae «Costo promedio» (vacío sin `costs.view`).
 - El costo de un equipo vendido no se puede cambiar.
+
+## 2026-10-14 — SALES-NOTE-CONTROL-01
+
+En la rama `feat/sales-note-control` (sin push), sobre #119. Migración nueva `0125` (aditiva).
+
+**Added**
+- Panel › Ventas › Notas de venta: lista con filtros (vigentes, anuladas, prueba, fechas,
+  sucursal, emisor), marca ANULADA y detalle con el registro de anulación.
+- «Anular nota de venta», sólo para el usuario Master en la empresa de la nota: tipo de
+  motivo (prueba, error de emisión, otro) y motivo obligatorios; auditoría `sales_note_voided`.
+  `POST /api/admin/sales-notes/<id>/void/`.
+- Observaciones internas de una nota, sólo añadir, nunca impresas; auditoría
+  `sales_note_remark_added`. `POST /api/admin/sales-notes/<id>/remarks/`.
+- `GET /api/admin/sales-notes/` y `GET /api/admin/sales-notes/<id>/` (PUT, PATCH y DELETE
+  responden 405).
+
+**Changed**
+- La nota de un pedido cancelado guarda el mismo registro de anulación (`pedido_cancelado`).
+- La API de la nota del pedido devuelve el registro de anulación y la sucursal; el panel del
+  pedido muestra ANULADA y el motivo.
+- La térmica no reimprime una nota anulada; un ticket encolado antes sale con ANULADA.
+- El admin de Django de las notas de venta es entero de sólo lectura.
+- (Revisión) Las columnas nuevas de texto llevan valor por defecto en la base: la versión
+  anterior sigue emitiendo notas mientras se migra. Una nota de un pedido cancelado ya se
+  trata como anulada (409). Un ticket de una nota anulada encolado antes se cancela al
+  entregarlo y no se reenvía. La nota anulada con el filtro «Vigentes» sale de la lista.
+
+**Not changed**
+- Número, fecha, líneas, importes, impuestos y pago de una nota emitida; el pedido, los
+  pagos, el stock, los comprobantes SUNAT, la serie y su «Próximo número»; tableros e
+  ingresos. Ninguna nota existente se marca como prueba automáticamente.
+
+## 2026-10-14 — ORDER-CANCEL-01 y SALES-NOTE-DESIGN-01
+
+En la rama `feat/order-cancel-sales-note` (sin push). Migración nueva `0124` (aditiva).
+
+**Added**
+- Panel › Pedido: «Cancelar pedido» para un pedido en línea pagado cuyos productos no han
+  salido, con confirmación y motivo obligatorio; después, el bloque «Pedido cancelado» (quién,
+  cuándo, por qué, stock, aviso fiscal). `POST /api/admin/orders/<id>/cancel/`.
+- Kardex: tipo «Devolución por pedido cancelado» (`order_cancel_return`).
+- Registro `OrderCancellation` (uno por pedido) y entrada de auditoría `order_cancelled`.
+
+**Changed**
+- La nota de venta se titula «NOTA DE VENTA» y termina con la línea «Documento de control
+  interno, sin validez tributaria», sin la franja enmarcada (A4, 80 mm y térmica).
+- Un pedido cancelado no cambia de estado de despacho (409 `order_cancelled`).
+- Los PDF de un pedido cancelado (nota A4 y 80 mm, constancia) se siguen descargando,
+  marcados «ANULADA» / «PEDIDO ANULADO»; su ticket no se imprime en la térmica.
+- Un cobro que llega para un pedido cancelado se archiva como cobro duplicado, con el estado
+  del pedido en la auditoría; el pedido sigue cancelado y pagado.
+- Marcar un fallo de pago sólo afecta a un pedido que todavía espera su pago.
+- Un pedido que alguna vez salió (equipo marcado como entregado, paso por enviado o
+  entregado, o fecha de envío en su entrega) no se cancela aunque se le devuelva a un estado
+  anterior.
+- No se emite boleta/factura ni nota de venta interna de un pedido que se canceló mientras
+  tanto; ninguno gasta su número.
+- Un equipo devuelto antes de cancelar no se repone dos veces, y el que se entregó en su
+  lugar vuelve al estante: se repone todo equipo que siga vendido al pedido.
+- El resumen de un cliente (pedidos e importe pagados, última compra) ya no cuenta los
+  pedidos cancelados.
+
+**Not changed**
+- Pagos (no hay reembolso), comprobantes fiscales (ni nota de crédito ni baja automáticas),
+  avisos al comprador, tableros e ingresos, y el «Cancelado operativo» del despacho.
 
 ## 2026-10-14 — Despliegue de #115, #116 y #117
 

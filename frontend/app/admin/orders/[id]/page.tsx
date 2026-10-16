@@ -24,6 +24,8 @@ import { StockShortfallPanel } from "../../components/StockShortfallPanel";
 import { OrderRiskCard } from "../../components/OrderRiskCard";
 import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
 import { OrderSupplyPanel } from "../../components/OrderSupplyPanel";
+import { OrderCancelPanel } from "../../components/OrderCancelPanel";
+import { OrderRefundsPanel } from "../../components/OrderRefundsPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -166,7 +168,20 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
               )}
             </div>
           )}
+          {/* ORDER-CANCEL-01: el botón sólo si el servidor dice que se puede;
+              una vez cancelado, quién, cuándo, por qué y qué hizo. */}
+          <div className="mt-4">
+            <OrderCancelPanel
+              order={order}
+              mayCancel={access.can("sales.orders.manage", ["sales", "admin", "superadmin"])}
+              onCancelled={setOrder}
+            />
+          </div>
         </div>
+
+        {/* COMMERCE-ADMIN-UX-01: lo cobrado y lo que se registró como devuelto
+            de un pedido cancelado. Sólo aparece cancelado; acciones del servidor. */}
+        <OrderRefundsPanel order={order} onChanged={setOrder} />
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm">
@@ -413,7 +428,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
 
         {/* Internal sales note — sales/admin/superadmin only, paid orders only */}
         {access.can("sales.notes.manage", ["sales", "admin", "superadmin"]) && (
-          <SalesNotePanel orderId={order.id} isPaid={order.status === "paid"} />
+          <SalesNotePanel
+            orderId={order.id}
+            isPaid={order.paid && (order.status === "paid" || order.status === "cancelled")}
+            cancelled={order.status === "cancelled"}
+          />
         )}
 
         {/* El backend vuelve a comprobar la capacidad para cada acción fiscal. */}

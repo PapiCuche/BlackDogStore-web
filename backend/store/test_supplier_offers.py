@@ -923,7 +923,8 @@ class OfferExcelTest(SupplyShop, TestCase):
         book = openpyxl.load_workbook(io.BytesIO(res.content))
         self.assertEqual(book.sheetnames, ['Ofertas de proveedor'])
         # «Activa (Sí/No)» is optional (DC3 review P3.3): the template offers it, files without it still load.
-        self.assertEqual([c.value for c in book.active[1]], OFFER_HEADERS + ['Activa (Sí/No)'])
+        self.assertEqual([c.value for c in book.active[1]],
+                         OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)'])
 
     def test_preview_marks_errors_per_row_and_writes_nothing(self):
         res = self.preview([

@@ -14,6 +14,141 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-COMMERCE-CANCEL-01 · Cancelar, anular y reembolsar son tres actos distintos (COMMERCE-ADMIN-UX-01)
+
+Pedido del propietario del 2026-10-15, sobre DEC-ORDER-CANCEL-01 (sus D1–D4 siguen para el
+pedido web pagado). **Cada punto marcado (P) es una decisión tomada en la rama a falta de
+confirmación del propietario.**
+
+- **Un servicio, tres modos** (`order_cancellation.mode_of`, el servidor lo dice en
+  `cancel_mode`): `unpaid` (web, `pending_payment`, sin pago), `paid` (web pagado sin salir,
+  D1 de antes) y `pos` (venta de caja pagada). Fallidos, expirados y reembolsados no se
+  cancelan (409 `not_paid`). Mismo permiso `sales.orders.manage`, mismo alcance, motivo
+  obligatorio (5–500), un solo `OrderCancellation` por pedido, el pedido bloqueado primero.
+- **Sin pagar.** Pasa a cancelado con su motivo; no hay stock que volver ni ingreso. Los
+  equipos que el comprador tenía apartados (DC2) vuelven al estante en el acto, con su
+  Kardex (`holds_released`). (P) Un pago que llega después sigue el camino que ya existía
+  (`DUPLICATE`, auditado, alerta de salud) y además se anota en `Order.payment_error`; el
+  pedido no se reabre y ese dinero es reembolsable.
+- **Venta POS.** (P) Se anula **sólo si quien anula marca «La mercadería volvió al local»**
+  (`goods_returned`, sólo un `true` literal); no hay regla de tiempo (el propietario no la dio
+  y no se inventa). Igual que un pedido pagado: stock de vuelta una vez al costo de la salida,
+  nota interna anulada (`pedido_cancelado`), boleta/factura viva conservada y marcada
+  «nota de crédito / baja pendiente». No existe capacidad de «anular venta» en caja: se usa
+  `sales.orders.manage` (P). (Revisión P2) Si después de la venta entró una devolución
+  manual (`return_entry`) del mismo producto por cantidad y sucursal, no se repone stock
+  (409 `manual_return_after_sale`): se anula con «Anular sin reponer stock»
+  (`restore_stock=false`, sólo POS), registrado y auditado.
+- **Comisión.** (P) Al cancelar/anular una venta pagada, la comisión devengada pasa a
+  `voided` (el propio modelo lo prevé «cuando la mercadería vuelve»). No se recalcula nada más.
+- **Reembolsos (`OrderRefund`, `0137`).** Un REGISTRO, no una operación de pago: nunca toca
+  `PaymentTransaction` ni llama a la pasarela (el reembolso de Izipay se hace en su panel y
+  aquí se anota la referencia). Sólo para pedidos cancelados. Pendiente → confirmado (con
+  referencia de 3+ caracteres, quién y cuándo). (P) Tope: lo cobrado (total si se pagó +
+  cobros archivados como duplicados) − pendientes − confirmados; la confirmación vuelve a
+  comprobar el tope con el pedido bloqueado. (Revisión P3) Los cobros duplicados con claves
+  TEST no cuentan (ni en el tope ni en «Cobros»); un pedido pagado con claves TEST sigue
+  contando como hoy en todo el tablero. Medios: pasarela, efectivo, transferencia, otro.
+  (P) Al cancelar, el reembolso pendiente se crea **sólo si quien cancela lo marca**, por
+  todo lo que queda por devolver. (P) Registrar: `sales.orders.manage`; **confirmar:
+  `sales.orders.manage` + `company.manage`** (administrador de la empresa; puente legacy:
+  admin y superadmin), porque no hay una capacidad financiera en el catálogo y `costs.view`
+  no es de dinero que sale. (P) Un reembolso pendiente no se puede retirar ni editar todavía.
+- **Métricas.** Ventas = pedidos `paid` vigentes (ya era así: los cancelados quedan fuera).
+  (P) «Cobros» por ventana: vigentes (por `paid_at`) + cancelados después de pagarse (por
+  `paid_at`) + cobros tardíos de pedidos cancelados (por `confirmed_at`) = bruto; reembolsos
+  confirmados (por `confirmed_at`) lo bajan → neto; los pendientes se dicen, no se restan;
+  «aún en la tienda» = lo cobrado de los cancelados de la ventana − sus reembolsos
+  confirmados. Más vendidos sin las salidas de pedidos cancelados. Margen: los cancelados
+  fuera (ya), listados aparte desde sus instantáneas (`cancellations`), que no se tocan;
+  `collected.amount` del margen pasa a ser el cobro neto.
+- **Fiscal.** Nada fiscal se emite ni se anula desde aquí: ni nota de crédito ni baja; el
+  comprobante queda marcado como pendiente para el flujo fiscal.
+- **DC3/DC2 al cancelar.** Las líneas bajo pedido `pending`/`to_confirm` pasan a «No se pudo
+  abastecer» y la oferta recupera lo comprometido (nunca bajo cero), auditado
+  `order_supply_failed` con `source=order_cancellation`; lo recibido vuelve al estante como
+  cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
+  `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
+
+### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
+
+Pedido del propietario del 2026-10-14: «las primeras notas de venta fueron de prueba y el
+usuario Master necesita administrarlas». Lo que el código cumple:
+
+- **Quién.** «Master» es el master de plataforma (`tenancy.is_platform_admin`, hoy
+  `is_superuser`) actuando en la empresa que nombra (`?company=`); es la misma regla de la
+  consola de integraciones. No existe un rol ni una capacidad de empresa «Master», y no se
+  crea: un administrador de empresa con todas las capacidades recibe 403. Delegar la
+  anulación a una capacidad de empresa sería otra decisión del propietario.
+- **Qué es anular.** Marcar el documento interno: `status=void` más `voided_at`,
+  `voided_by`, `void_reason_type` (`prueba`/`error`/`otro`; `pedido_cancelado` sólo lo
+  escribe la cancelación) y `void_reason` (5–500). Un único escritor
+  (`sales_note_control.mark_void`) para las dos vías; bloqueo pedido → nota, el mismo orden
+  que la cancelación, así que las dos se esperan en lugar de competir.
+- **Qué NO es.** No es cancelar el pedido, revertir un pago, una devolución, una nota de
+  crédito ni una baja SUNAT. Nada de eso se toca: el pedido sigue pagado y los tableros, que
+  leen pedidos pagados y no notas, conservan el dinero cobrado. Ningún reporte cuenta notas;
+  la lista nueva las etiqueta (ANULADA) en vez de excluirlas.
+- **Inmutable.** Número, serie, ordinal, fecha de emisión, emisor, líneas, importes,
+  impuestos y pago. No hay ruta que los escriba (405) y el admin de Django es de sólo
+  lectura. El número no se reutiliza: la serie no retrocede y «Próximo número» sigue
+  bloqueado porque `has_issued` lee el contador, no las notas vivas.
+- **Observaciones.** Tabla aparte, sólo añadir (`save` rechaza actualizar, `delete` rechaza);
+  las añade el Master o quien tenga `sales.notes.manage` con el alcance de sucursal de los
+  pedidos. No se imprimen: la nota ya imprime las «Notas» del pedido (`order.notes`) y eso
+  no cambia.
+- **Notas existentes.** La migración no escribe datos y nada marca una nota como prueba por
+  su cuenta: el Master las anula una a una con su motivo.
+- **Una sola idea de «anulada».** La del papel (`sales_note_services.is_void`): el estado o
+  un pedido cancelado. El guardia de anular la usa, así que una nota que su PDF ya imprime
+  ANULADA responde 409.
+- **Observaciones, también en bloque.** El gestor por defecto rechaza `update` y `delete`
+  de un queryset; `_base_manager` queda el de Django para que borrar un usuario siga
+  poniendo `author` a NULL (SET_NULL, como `AdminAuditLog.actor`).
+- **`db_default`** en `void_reason` y `void_reason_type`: la regla del repositorio para
+  columnas nuevas, porque `0125` corre con la versión anterior sirviendo.
+
+### DEC-ORDER-CANCEL-01 · Cancelar un pedido pagado no es devolver el dinero
+
+Decisiones del propietario del 2026-10-14 (ORDER-CANCEL-01), tal como el código las cumple:
+
+- **D1 · Alcance.** Sólo pedidos EN LÍNEA con `status=paid` cuyos productos no han salido:
+  `pending`, `confirmed`, `preparing`, `ready_for_pickup` y también `cancelled` («Cancelado
+  operativo», que nunca movió nada). `shipped`/`delivered` se rechazan (409 `goods_left`, «ya
+  salió: requiere devolución», flujo futuro). **«No ha salido» se lee de la historia del
+  pedido, no sólo de su estado actual** (revisión, P1): también es `goods_left` si algún
+  equipo del pedido tiene `OrderUnit.left_at`, si el pedido pasó alguna vez a enviado o
+  entregado (registro `order_fulfillment_status_changed`) o si su entrega tiene
+  `shipped_at`. Devolver a «en preparación» o a «Cancelado operativo» un pedido entregado no
+  lo hace cancelable. Ventas de caja (409 `pos_sale`) y pedidos sin pagar (409 `not_paid`)
+  quedan fuera; estos últimos, para una fase posterior.
+- **D2 · Stock.** Siempre se repone, una vez: cada `sale_exit` del pedido vuelve con su propio
+  `order_cancel_return` (con el pedido) a la misma sucursal, por `create_stock_movement` y sus
+  bloqueos; los equipos con serie vendidos al pedido vuelven a «disponible», uno por línea, y
+  su `OrderUnit` se suelta (`released_by_return`). Una línea que no descontó stock al pagar
+  (faltante) no tiene nada que devolver. Vuelve todo equipo que siga vendido al pedido (el
+  apartado al pagar, el que lo sustituyó al entregar o el que salió tras una devolución); un
+  equipo ya devuelto con `return_unit` (su `return_entry` nombra el pedido) sólo se cuenta,
+  no se repone dos veces, y uno devuelto de otro pedido no cuenta.
+- **D3 · Permiso.** `sales.orders.manage` con el alcance de empresa y sucursal de las demás
+  vistas de pedidos (fuera de alcance, 404). Sin capacidad nueva ni cambios de rol. En el
+  puente legacy del piloto: ventas, administrador y superadministrador (no inventario, como
+  la regla histórica del despacho). Los motivos por los que no se puede cancelar sólo se
+  muestran a quien podría cancelar.
+- **D4 · Fiscal.** Una boleta/factura viva (01/03 no rechazada) se conserva intacta; la
+  cancelación procede y registra «nota de crédito / baja pendiente» (`fiscal_pending` y el
+  documento en texto), también en la auditoría y en el detalle. Nunca se emite una nota de
+  crédito ni una baja automáticamente. Emitir el comprobante bloquea el pedido antes de
+  reservar el correlativo (pedido, luego serie) y exige que siga PAGADO: no se emite sobre un
+  pedido cancelado mientras tanto. La nota de venta interna hace lo mismo antes de gastar
+  un número `NV-`.
+
+Además: `paid` se queda en verdadero y no se toca ningún `PaymentTransaction` ni la pasarela;
+el pago lee ese `paid` para archivar como `DUPLICATE` cualquier cobro posterior (con
+`order_status: cancelled` en `payment_duplicate`). Todo ocurre en una transacción con el
+pedido bloqueado primero; `change_fulfillment_status` toma el mismo bloqueo siempre. La
+`OneToOne` de `OrderCancellation` es la última barrera contra una segunda cancelación.
+
 ### DEC-DELIVERY-01 · La entrega es un registro propio JUNTO al pedido, y el flete es un dato
 
 Base de DELIVERY-01 (transportistas, libreta de direcciones, registro de entrega). Lo que el
@@ -2145,3 +2280,114 @@ tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto just
   despachan las sucursales visibles de quien consulta (como toda cifra de ventas).
 - *Pruebas por valor.* Las comprobaciones de «no se filtra el costo» comparan valores (ids
   aparte), no subcadenas de `str(payload)`: `'product_id': 685` contenía «68».
+
+### DEC-DEVICE-COMMERCE-01 · A1 — «Costos y precios» (COMMERCE-ADMIN-UX-01) — EN RAMA
+
+**Incidente del propietario:** «un Administrador no encuentra "Margen comercial" ni "Valor al
+costo"». Diagnóstico de solo lectura en producción: el backend respondía bien (200 con costos al
+rol propio `administrador` y al master; los otros dos miembros tienen
+`venta-servicio-tecnico-inventario`, sin `costs.view`, como corresponde). En el frontend,
+`buildInternalAccess` también responde bien al rol propio con `costs.view` y al master con
+empresa (prueba `costs-a1.test.tsx`). **Causa:** no había entrada en el menú (el margen era una
+sección dentro de Ventas › Resumen y el valor al costo una tarjeta dentro de Stock), y las dos
+devolvían `null` al cargar, ante un error y sin datos; quien no tenía el permiso no sabía por
+qué. El master sin empresa «pasaba» el permiso y recibía un 403 que nadie explicaba.
+
+- *Entrada.* Inventario › **Costos y precios** (`/admin/inventory/costs`), sólo con `costs.view`
+  (puente legacy: admin/superadmin, el mismo de `may_view_costs`). Enlazada desde Ventas › Resumen
+  y desde Stock. Sin el permiso: página 403 «Necesitas el permiso Ver costos y márgenes;
+  pídeselo al administrador». Master sin empresa: «Elige una empresa…», sin pedir nada.
+- *Contenido, sin cálculo nuevo.* Margen (`/api/admin/sales/margin/`), inventario al costo
+  (`summary`), costo promedio por sucursal y producto (`/api/admin/inventory/stock/` añade
+  `average_cost`, `uncosted_quantity`, `product_reference_cost`, `product_is_serialized` y
+  `cost_source` = `unit` | `average` | `reference` | `unknown`, **sólo con `costs.view`**; sin él
+  las claves no están) y el costo de cada equipo (`units`). Cada sección: «Cargando…», vacío
+  («Aún no hay ventas con costo conocido») y el mensaje del servidor.
+- *Correcciones.* Precio (`products.manage`) y costo de referencia (`products.manage` +
+  `costs.view`) por `PATCH /api/admin/products/{id}/`; auditado sin importes. «Corregir costo» de
+  un equipo: sólo si no se vendió (regla de DC1), con `cost_reason` obligatorio desde el panel y
+  auditado (el motivo, no los importes). Nunca se tocan instantáneas de venta ni movimientos.
+- **PENDIENTE — corregir el promedio de una sucursal.** No existe un camino seguro: el promedio
+  lo mantiene sólo el Kardex. Diseño: un tipo de movimiento `cost_adjustment` (cantidad 0,
+  `unit_cost` nuevo, motivo obligatorio, `costs.view` + `inventory.adjust`) que
+  `create_stock_movement` aplica bajo el bloqueo de la fila, fijando `average_cost` y dejando
+  `uncosted_quantity` como está; nunca edita movimientos pasados ni ventas. Requiere migración
+  (nuevo valor de `movement_type`), por eso no entra en A1.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» — quién, qué y de dónde
+
+**Contexto.** El propietario pidió que cualquier vendedor autorizado pueda preguntar «¿lo
+tenemos, dónde, y si no, lo puede traer un proveedor?» sin entrar al inventario.
+
+**Decisión.**
+- *Capacidad: `sales.pos.use`.* Es la menor autoridad que todo vendedor ya tiene (el preset
+  «Ventas» y el rol legacy de ventas la llevan) y la caja ya muestra lo mismo por sucursal:
+  estante, precio y si se vende bajo pedido. No `inventory.view` (el preset de ventas no la
+  lleva y abriría Kardex e IMEI completos); no `sales.orders.view` (es leer el libro de
+  pedidos, otra cosa). Sin puente legacy, como la caja: Membership o nada
+  (`H412b`: `sales/availability/page.tsx` con lista vacía).
+- *Fuentes.* Stock propio = `BranchStock.quantity` (lo que decide una venta) y, para equipos,
+  los estados de `StockUnit` (apartado web = `hold_key`; apartado por personal = sin él). Las
+  ofertas vigentes (`supply_services.valid_offer_q`, el mismo predicado de la venta) van en su
+  propia lista, ordenadas como `best_offer`, máximo tres, y **nunca se suman** al stock propio.
+- *Sin costos nunca* — tampoco para `costs.view`: los costos viven en «Costos y precios». Sin
+  IMEI ni serie completos (últimos cuatro), sin llave ni origen del apartado, sin nota interna.
+  El nombre del proveedor sólo con `products.view` (lo que piden las pantallas de DC3).
+- *Alcance.* Empresa del llamante y sus sucursales visibles; sin `?branch=` = todas las suyas.
+- *Frescura sin martillar.* Consulta al cambiar filtros (búsqueda con espera de 350 ms), botón
+  «Actualizar», sondeo cada 45 s sólo con la página visible, y nueva consulta al volver a la
+  pestaña o cuando otra pantalla del navegador avisa que el stock cambió (venta en caja,
+  acción sobre un equipo; `lib/stock-events.ts`, sin datos, sólo el aviso).
+- *Costo de una página:* número fijo de consultas (probado: 2 y 8 productos cuestan igual).
+- *«Inventario › Equipos»:* filtros por línea, modelo y opciones (`model`, `option`, mismos
+  helpers) y un detalle por equipo hecho con la fila que ya llega; el costo sólo con `costs.view`.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Registro único, publicación y navegación» — EN RAMA
+
+**Contexto.** El propietario pidió registrar cualquier artículo desde el panel sin recorrer
+varias pantallas (equipo nuevo, seminuevo, accesorio/repuesto, disponible por proveedor),
+controlar la publicación e-commerce de todo con acciones en bloque, y un menú con su árbol.
+
+**Decisión.**
+- *Un endpoint orquestador, no composición desde el navegador.* `POST /api/admin/products/register/`
+  (`registration_services.register`). Componer desde el frontend dejaba productos a medias si un
+  paso fallaba, y el movimiento manual no acepta costo unitario. El endpoint NO escribe nada
+  propio: llama en UNA transacción a `AdminProductWriteSerializer`, `device_catalog`
+  (`create_model`/`find_variant`/`set_variant`), `ProductBarcode`, `set_serialized`,
+  `receive_units` (IMEI con dígito de control, duplicados), `apply_initial_stock` (ahora acepta
+  `unit_cost`, compatible: promedio DC1) y `supply_services` (`create_supplier`/`create_offer`/
+  `set_sale_mode`). El stock entra sólo por esos escritores; lo de un proveedor nunca entra al
+  estante (oferta + «Bajo pedido»). Una variante que ya existe (modelo + línea + opciones)
+  RECIBE los equipos y conserva sus datos; la respuesta lo advierte.
+- *Autoridad por paso = la de la acción de debajo.* `products.manage` para registrar;
+  `inventory.adjust` para equipos (control por serie) y para stock en sucursal; `costs.view`
+  para CUALQUIER costo (referencia, equipo, unidad, costo pactado) — sin él, 403 con el campo,
+  más estricto que `receive_units` a propósito; sucursales dentro de las del llamante (404 y
+  nada escrito). En la pantalla, el paso que no se puede usar se ve deshabilitado con el motivo.
+- *Idempotencia sin migración.* Cabecera `Idempotency-Key` obligatoria para escribir; candado
+  consultivo de Postgres (empresa, autor, clave) y la línea de auditoría `article_registered`
+  guarda clave, huella del cuerpo y el registro (ids y banderas, nunca importes). Misma clave y
+  cuerpo → 200 `replayed` con lo primero; otro cuerpo → 409; un intento rechazado no gasta la clave.
+- *`dry_run`.* Los mismos servicios dentro de una transacción que se revierte: la revisión
+  muestra los rechazos reales y los motivos de publicación sin dejar rastro (ni auditoría).
+- *Publicación.* «Mostrar en e-commerce» obedece `product_publication` sin cambiarlo: lo que no
+  está listo se crea OCULTO y se dice por qué; si sólo faltaba la imagen, el asistente sube las
+  imágenes y publica con la acción en bloque de siempre. «Publicación e-commerce» reúne todos los
+  tipos (filtros nuevos `condition_line` y `sale_mode` en la lista y en «todo lo que coincide»)
+  y los modelos (`POST /api/admin/catalog/models/bulk-visibility/`, `products.manage`, todo o nada).
+- *Excel.* Las plantillas ya cubrían casi todo (producto: código, nombre, precio, categoría,
+  destino, costo de referencia, modelo/capacidad/color/línea; equipos: serie, IMEI, costo,
+  estado estético, batería, precio; stock: costo unitario; ofertas: todo). «Producto activo» ya
+  se lee de la columna «Estado» (Sí/No) para productos nuevos. Faltaba «Bajo pedido»: columna
+  opcional «Bajo pedido (Sí/No)» sólo en la plantilla de ofertas; vacía o ausente no cambia nada.
+- *Menú.* Árbol del propietario primero en cada grupo; lo demás sigue después con su ruta.
+  «Equipos nuevos» = `/admin/inventory/units?line=new`; «Cancelaciones / historial» =
+  `/admin/orders?status=cancelled` (el filtro es de la rama de cancelaciones); «Stock y
+  disponibilidad» = pantalla nueva sobre `/api/admin/inventory/stock/`. La barra lateral
+  ilumina la entrada con filtro sólo si la dirección lo lleva (`activeModuleHref`).
+- *Ronda de correcciones (2026-10-16).* Costo de referencia enorme o no finito → 400 con su
+  mensaje (antes 500 / «no puede ser negativo»); un equipo dado de baja conserva su costo como
+  uno vendido; `cost_reason` sólo texto; el editor de «Costos y precios» envía sólo lo cambiado
+  y avisa que el motivo no lleve montos; la carga de ofertas advierte dos filas del mismo
+  producto con distinto «Bajo pedido»; un modelo nuevo se crea oculto si su primera variante no
+  se puede publicar (`publication.model_hidden`; el asistente lo publica si luego publica la variante).

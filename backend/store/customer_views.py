@@ -48,7 +48,7 @@ from .customer_services import (
     free_document_for_staff,
     find_possible_duplicates,
 )
-from .models import AdminAuditLog, Customer
+from .models import AdminAuditLog, Customer, Order
 from .serializers import (
     CustomerListSerializer,
     CustomerOrderSerializer,
@@ -341,11 +341,14 @@ class AdminCustomerDetailView(APIView):
         # Aggregated in the database, in one round trip. Summing in Python would
         # mean loading every order a long-standing client ever placed in order to
         # display one number.
+        # ORDER-CANCEL-01: a cancelled order keeps `paid=True` (the money was
+        # taken) and is not a purchase.
+        purchase = Q(paid=True) & ~Q(status=Order.Status.CANCELLED)
         totals = orders.aggregate(
             orders_total=Count('pk'),
-            paid_count=Count('pk', filter=Q(paid=True)),
-            paid_amount=Sum('total', filter=Q(paid=True)),
-            last_purchase_at=Max('paid_at', filter=Q(paid=True)),
+            paid_count=Count('pk', filter=purchase),
+            paid_amount=Sum('total', filter=purchase),
+            last_purchase_at=Max('paid_at', filter=purchase),
         )
 
         return Response({

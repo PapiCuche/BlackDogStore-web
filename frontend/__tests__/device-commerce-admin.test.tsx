@@ -169,7 +169,8 @@ describe('navegación', () => {
   it('«Modelos» y «Seminuevos» están en el menú, con la capacidad de su pantalla', () => {
     const models = INTERNAL_MODULES.find((m) => m.href === '/admin/products/models');
     const used = INTERNAL_MODULES.find((m) => m.href === '/admin/inventory/used');
-    expect(models).toMatchObject({ group: 'products', label: 'Modelos', requiredCapabilities: ['products.view'] });
-    expect(used).toMatchObject({ group: 'inventory', label: 'Seminuevos', requiredCapabilities: ['inventory.view'] });
+    // COMMERCE-ADMIN-UX-01 renamed them after the owner's tree.
+    expect(models).toMatchObject({ group: 'products', label: 'Modelos y variantes', requiredCapabilities: ['products.view'] });
+    expect(used).toMatchObject({ group: 'inventory', label: 'Equipos seminuevos', requiredCapabilities: ['inventory.view'] });
   });
 });

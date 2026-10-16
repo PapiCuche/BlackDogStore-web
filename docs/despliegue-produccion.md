@@ -701,6 +701,15 @@ Ninguna cambia datos. Para volver atrás basta con los contenedores de la imagen
 aplicadas** —la versión anterior no lee esa columna— y no hace falta restaurar la copia.
 Deshacer `0123` (`migrate store 0122`) borraría la columna y la elección de cada empresa.
 
+**ORDER-CANCEL-01 (migración `0124`).** Crea la tabla `store_ordercancellation` (un
+registro por pedido cancelado) y añade el tipo `order_cancel_return` a las opciones del
+Kardex, que no genera SQL. No cambia datos. Para volver atrás: los contenedores de la imagen
+anterior (`git checkout <commit anterior>`, `$C build`, `$C up -d`) y **la migración se deja
+aplicada**: la versión anterior no lee esa tabla. Ojo: con la versión anterior, un pedido ya
+cancelado se ve «Cancelado» pero su despacho vuelve a poder moverse y sus PDF dejan de
+descargarse; sus movimientos `order_cancel_return` se siguen leyendo en el Kardex. Deshacer
+`0124` (`migrate store 0123`) borraría los registros de cancelación.
+
 **DEVICE-COMMERCE-01 · DC1 (`0126`–`0129`): quién puede ver costos.** `0126` sólo da
 «Ver costos y márgenes» (`costs.view`) a un rol `Administrador` que nadie editó; una empresa
 que personalizó ese rol se queda sin nadie que vea costos, y desde ahí sólo su gestor de
@@ -811,12 +820,25 @@ unidades que entraron sin costo. Por eso:
    del producto en esa sucursal desde esa hora; registra una entrada con costo o deja el
    estante como está, sabiendo que su margen será sólo estimado).
 
-**Al fusionar con #119 (ORDER-CANCEL-01).** #119 añade el tipo `ORDER_CANCEL_RETURN` y
-devuelve el stock de un pedido cancelado sin pasar costo; esta rama no lo conoce. Lo cubre
-la regla «lo que vuelve de la venta de un pedido vuelve al costo de su salida» **si esa
-entrada se escribe con `order=`**. Si no, antes de desplegar la fusión: añade
-`ORDER_CANCEL_RETURN` a `StockMovement.RETURN_TYPES` o pásale el `unit_cost` de la salida, y
-prueba que una cancelación de una venta por cantidad no vuelve como «costo desconocido».
+**Fusión con #119/#121 (COMMERCE-ADMIN-UX-01), resuelto.** La devolución de un pedido
+cancelado (`order_cancel_return`) se escribe con `order=`, así que vuelve al costo de su
+salida; está probado (`test_order_cancel_dc`). No hace falta nada antes de desplegar.
+
+**SALES-NOTE-CONTROL-01 (`0125`), fusión (`0136`) y reembolsos (`0137`).** Las tres son
+aditivas y no escriben datos: `0125` añade columnas a `store_salesnote` (las de texto con
+`db_default`) y la tabla `store_salesnoteremark`; `0136` es una fusión vacía de las dos ramas
+de `0123`; `0137` añade a `store_ordercancellation` `was_paid` (`db_default` true),
+`goods_returned` y `holds_released` (`db_default`), y crea `store_orderrefund` (vacía). La
+versión `04640cf` sigue funcionando mientras migra. Orden en producción (desde `0135`):
+`migrate` aplica `0124`, `0125`, `0136` y `0137`, con `lock_timeout` como siempre
+(`0124` y `0137` sólo crean tablas o columnas con valor por defecto).
+
+*Volver atrás* — contenedores de la imagen anterior y **las migraciones se dejan aplicadas**.
+Con la versión anterior: los pedidos sin pagar y las ventas POS ya cancelados se ven
+«Cancelado» (su stock y sus apartados ya se devolvieron); los reembolsos registrados no se
+ven ni se pueden confirmar (siguen en la tabla); las comisiones anuladas siguen anuladas.
+Antes de volver, apunta los reembolsos pendientes (Órdenes › Reembolso: pendiente) para
+seguirlos a mano. Deshacer `0137` (`migrate store 0136`) borraría los reembolsos registrados.
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

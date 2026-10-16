@@ -254,9 +254,12 @@ class SalesNoteAdmin(admin.ModelAdmin):
     list_display = ('id', 'number', 'order', 'status', 'issued_at', 'created_by', 'pdf_generated_at')
     list_filter = ('status', 'created_at')
     search_fields = ('number', 'order__id', 'order__customer_name')
+    # SALES-NOTE-CONTROL-01: every field is read-only here. Voiding goes through
+    # the audited endpoint (`sales_note_control`), never through this form —
+    # including `status`, `sequence` and `sequence_value`, which used to be editable.
     readonly_fields = (
-        'order', 'number', 'issued_at', 'created_at', 'created_by',
-        'pdf_generated_at', 'metadata',
+        'order', 'sequence', 'sequence_value', 'number', 'status', 'issued_at', 'created_at', 'created_by',
+        'pdf_generated_at', 'metadata', 'voided_at', 'voided_by', 'void_reason_type', 'void_reason',
     )
 
     def has_add_permission(self, request):

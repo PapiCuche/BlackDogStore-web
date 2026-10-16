@@ -40,13 +40,30 @@ from .pdf_services import (
 
 logger = logging.getLogger(__name__)
 
-# Must appear visibly on every generated sales-note PDF.
-SALES_NOTE_DISCLAIMER = (
-    "Documento interno de venta. "
-    "No válido como comprobante electrónico SUNAT."
-)
+# SALES-NOTE-DESIGN-01. The one line every printed sales note carries — A4,
+# 80 mm ticket and thermal print — and the API repeats. It replaces the framed
+# band the A4 used to draw: discreet, but on the paper and legible.
+SALES_NOTE_CONTROL_LINE = "Documento de control interno, sin validez tributaria"
 
-_TITLE = "Nota de venta interna"
+# What the paper is called. Printed in capitals as the heading of every form.
+_TITLE = "Nota de venta"
+
+
+#: What a void note prints next to its heading (ORDER-CANCEL-01).
+VOID_STAMP = 'ANULADA'
+
+
+def printable(order) -> bool:
+    """
+    Whether the papers of `order` may be drawn: a paid order, or one that was
+    paid and then cancelled (ORDER-CANCEL-01) — its papers stay available,
+    marked as void.
+    """
+    return bool(order.paid) and order.status in (Order.Status.PAID, Order.Status.CANCELLED)
+
+
+def is_void(sales_note) -> bool:
+    return sales_note.status == SalesNote.STATUS_VOID or sales_note.order.status == Order.Status.CANCELLED
 
 
 class SalesNoteError(Exception):
@@ -85,6 +102,14 @@ def get_or_create_sales_note(order: Order, actor=None) -> tuple[SalesNote, bool]
         existing = SalesNote.objects.filter(order=locked_order).first()
         if existing:
             return existing, False
+        # ORDER-CANCEL-01: re-read under the lock. `order` may have been read
+        # before somebody cancelled it, and a number is spent once allocated.
+        if not locked_order.paid or locked_order.status != Order.Status.PAID:
+            raise SalesNoteError(
+                'El pedido está cancelado: no se emite nota de venta.'
+                if locked_order.status == Order.Status.CANCELLED
+                else 'Solo se puede emitir una nota de venta interna para órdenes pagadas.'
+            )
 
         sequence = _sequences.resolve_sequence_for_order(locked_order)
         value, number = _sequences.allocate(sequence)
@@ -193,7 +218,10 @@ def build_sales_note_context(sales_note: SalesNote) -> dict:
         'unit_count': sum(item['quantity'] for item in items),
         'amount_in_words': amount_in_words(tax['total'], tax['currency']),
         'title': _TITLE,
-        'disclaimer': SALES_NOTE_DISCLAIMER,
+        # ORDER-CANCEL-01: a note of a cancelled order is kept, as void, and
+        # every paper of it says so where it says what it is.
+        'stamp': VOID_STAMP if is_void(sales_note) else '',
+        'control_line': SALES_NOTE_CONTROL_LINE,
         'number': sales_note.number,
         'issued_at': local_stamp(sales_note.issued_at),
         'order_id': order.pk,
@@ -274,7 +302,7 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
     Raises SalesNoteError if the underlying order is no longer paid.
     """
     order = sales_note.order
-    if not order.paid or order.status != Order.Status.PAID:
+    if not printable(order):
         raise SalesNoteError(
             f'No se puede generar el PDF de la nota {sales_note.number}: la orden no está pagada.'
         )
@@ -303,6 +331,7 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
 
     pdf_bytes = document_layout.render_a4({
         'title': ctx['title'].upper(),
+        'stamp': ctx['stamp'],
         'number': ctx['number'],
         # No es una serie fiscal, y el papel lo dice junto al número.
         'number_note': 'Número interno del sistema. No es una serie fiscal.',
@@ -343,9 +372,10 @@ def generate_sales_note_pdf(sales_note: SalesNote) -> bytes:
         'amount_in_words': ctx['amount_in_words'],
         'totals': totals,
         'total': style.money(cur, tax['total']),
-        # El aviso no es opcional: una nota de venta interna no es un
-        # comprobante electrónico, y eso va enmarcado junto al total.
-        'legal': ctx['disclaimer'],
+        # El aviso no es opcional: una nota de venta no es un comprobante
+        # electrónico. Va junto al total en UNA línea discreta, sin la franja
+        # enmarcada que lleva la constancia de pedido (`legal`).
+        'control_line': ctx['control_line'],
         'notes': ctx['notes'],
         'footnotes': [ctx['warranty_note']] if ctx['warranty_note'] else [],
         'footer': '  ·  '.join(part for part in (

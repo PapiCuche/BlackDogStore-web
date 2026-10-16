@@ -18,7 +18,9 @@ THE PAGE, TOP TO BOTTOM
   totals     counts and the amount in words on the left, the figures on the
              right, the total in its own band. Kept together: a page never ends
              with the total orphaned on the next one.
-  legal      the statement the document must carry, in a frame; then notes
+  legal      the statement the document must carry, in a frame — or, instead,
+             `control_line`: the same kind of statement as one plain line,
+             no frame and no fill; then notes
   footer     on EVERY page: whose document, which number, page X of Y
 
 DATA, NOT A SHOP. Nothing in this file knows a company. An empty field prints
@@ -59,6 +61,8 @@ def _styles():
         'box_number': make('DBoxNumber', fontName=style.FONT_BOLD, fontSize=15, leading=19,
                            alignment=TA_CENTER, textColor=ink),
         'box_note': make('DBoxNote', fontSize=6.5, leading=8.5, alignment=TA_CENTER, textColor=muted),
+        'box_stamp': make('DBoxStamp', fontName=style.FONT_BOLD, fontSize=13, leading=16,
+                          alignment=TA_CENTER, textColor=ink),
         'heading': make('DHeading', fontName=style.FONT_BOLD, fontSize=7, leading=9, textColor=muted),
         'label': make('DLabel', fontName=style.FONT_BOLD, fontSize=8.5, leading=11.5, textColor=ink),
         'value': make('DValue', fontSize=8.5, leading=11.5),
@@ -69,6 +73,8 @@ def _styles():
         'total_label': make('DTotalLabel', fontSize=9, leading=12, alignment=TA_RIGHT),
         'legal': make('DLegal', fontName=style.FONT_BOLD, fontSize=8.5, leading=11.5,
                       alignment=TA_CENTER, textColor=ink),
+        'control_line': make('DControlLine', fontSize=8.5, leading=11.5,
+                             alignment=TA_CENTER, textColor=muted),
         'small': make('DSmall', fontSize=7.5, leading=10, textColor=muted),
     }
 
@@ -156,8 +162,16 @@ def _header(document: dict, styles, usable: float):
     box_rows.append([Paragraph(style.markup(document['number']), styles['box_number'])])
     if document.get('number_note'):
         box_rows.append([Paragraph(style.markup(document['number_note']), styles['box_note'])])
+    stamp_row = None
+    if document.get('stamp'):
+        # ORDER-CANCEL-01: «ANULADA» where the paper says what it is, framed.
+        stamp_row = len(box_rows)
+        box_rows.append([Paragraph(style.markup(document['stamp']), styles['box_stamp'])])
     box = Table(box_rows, colWidths=[box_width])
-    box.setStyle(TableStyle([
+    stamp_rules = [] if stamp_row is None else [
+        ('BOX', (0, stamp_row), (-1, stamp_row), 1.6, colors.HexColor(style.RULE)),
+    ]
+    box.setStyle(TableStyle(stamp_rules + [
         ('BOX', (0, 0), (-1, -1), 1.1, colors.HexColor(style.RULE)),
         ('BACKGROUND', (0, title_row), (-1, title_row), colors.HexColor(style.SHADE)),
         ('LINEABOVE', (0, title_row), (-1, title_row), 0.5, colors.HexColor(style.HAIRLINE)),
@@ -333,7 +347,8 @@ def render_a4(document: dict) -> bytes:
     `lines[{number, code, description, units, details, unit, list_price,
     discount, unit_price, quantity, amount}]`, `summary[str]`,
     `amount_in_words`, `totals[(label, value)]`, `total`, `total_label`,
-    `legal`, `notes`, `footnotes[str]`, `footer`.
+    `legal`, `control_line`, `notes`, `footnotes[str]`, `footer`, `stamp`
+    (a word such as «ANULADA», framed in the header box; absent → nothing).
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -367,6 +382,9 @@ def render_a4(document: dict) -> bytes:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
         ]))
         closing += [Spacer(1, 12), legal]
+    if document.get('control_line'):
+        # One discreet line, no frame and no fill (SALES-NOTE-DESIGN-01).
+        closing += [Spacer(1, 10), Paragraph(style.markup(document['control_line']), styles['control_line'])]
     # The figures and the statement about what this paper is travel together.
     story.append(KeepTogether(closing))
 

@@ -134,6 +134,86 @@ def _paid_orders(company, branches, since=None, *, tz=None, until=None):
     return qs
 
 
+def _window(qs, field, since, until, tz):
+    start, _ = _day_bounds(since, tz)
+    _, end = _day_bounds(until, tz)
+    return qs.filter(**{f'{field}__gte': start, f'{field}__lt': end})
+
+
+def _collections(company, branches, since, until, tz):
+    """
+    COMMERCE-ADMIN-UX-01 — the money, as opposed to the sales.
+
+        live             PAID orders, by `paid_at`: the sales themselves.
+        cancelled_paid   orders cancelled AFTER they were paid (web or till),
+                         by `paid_at`: money taken that is not a sale any more.
+        late_charges     charges filed as duplicates on a CANCELLED order, by
+                         when they were confirmed: money taken all the same.
+                         Not those made with TEST keys (review P3), exactly as
+                         `order_refunds.collected` leaves them out.
+        gross            the three together.
+        refunds          `OrderRefund`: CONFIRMED by `confirmed_at` (they
+                         leave `net`), PENDING by `created_at` (said, not
+                         subtracted: the money is still here).
+        net              gross − confirmed refunds.
+        cancelled_held   what is still held for the cancelled orders above:
+                         their money minus every refund of theirs confirmed.
+
+    Each order counted once, on the day it was paid; a refund on the day it
+    was confirmed. No sale is counted here twice: `live` is the sales figure.
+    """
+    from .models import OrderRefund, PaymentTransaction
+    from .order_refunds import TEST_ENVIRONMENT
+
+    ids = [b.pk for b in branches]
+    orders = Order.objects.filter(company=company, fulfillment_branch_id__in=ids)
+    money = Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY)
+    live = _window(orders.filter(status=Order.Status.PAID), 'paid_at', since, until, tz).aggregate(
+        n=Count('pk'), amount=money)
+    cancelled_qs = _window(orders.filter(status=Order.Status.CANCELLED, paid=True), 'paid_at', since, until, tz)
+    cancelled = cancelled_qs.aggregate(n=Count('pk'), amount=money)
+    late_qs = _window(
+        PaymentTransaction.objects.filter(
+            order__in=orders.filter(status=Order.Status.CANCELLED),
+            status=PaymentTransaction.Status.DUPLICATE,
+        ).exclude(environment=TEST_ENVIRONMENT),
+        'confirmed_at', since, until, tz)
+    late = late_qs.aggregate(
+        n=Count('pk'), amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))
+    refund_money = Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY)
+    company_refunds = OrderRefund.objects.filter(company=company, order__fulfillment_branch_id__in=ids)
+    confirmed = _window(company_refunds.filter(status=OrderRefund.STATUS_CONFIRMED), 'confirmed_at',
+                        since, until, tz).aggregate(amount=refund_money)['amount']
+    pending = _window(company_refunds.filter(status=OrderRefund.STATUS_PENDING), 'created_at',
+                      since, until, tz).aggregate(amount=refund_money)['amount']
+    # Held for the cancellations of this window: their money (paid + late
+    # charges, whenever those came) minus their refunds confirmed, whenever.
+    held_orders = list(cancelled_qs.values_list('pk', flat=True)) + list(
+        late_qs.values_list('order_id', flat=True))
+    held_ids = set(held_orders)
+    held_paid = orders.filter(pk__in=held_ids, paid=True).aggregate(amount=money)['amount']
+    held_late = PaymentTransaction.objects.filter(
+        order_id__in=held_ids, status=PaymentTransaction.Status.DUPLICATE,
+    ).exclude(environment=TEST_ENVIRONMENT).aggregate(amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+    held_back = company_refunds.filter(order_id__in=held_ids, status=OrderRefund.STATUS_CONFIRMED).aggregate(
+        amount=refund_money)['amount']
+    gross = live['amount'] + cancelled['amount'] + late['amount']
+    return {
+        'live': {'orders': live['n'], 'amount': str(_cents(live['amount']))},
+        'cancelled_paid': {'orders': cancelled['n'], 'amount': str(_cents(cancelled['amount']))},
+        'late_charges': {'count': late['n'], 'amount': str(_cents(late['amount']))},
+        'gross': str(_cents(gross)),
+        'refunds_confirmed': str(_cents(confirmed)),
+        'refunds_pending': str(_cents(pending)),
+        'net': str(_cents(gross - confirmed)),
+        'cancelled_held': str(_cents(held_paid + held_late - held_back)),
+        # Every order cancelled in the window, paid or not: the history's count.
+        'cancelled_orders': _window(
+            orders.filter(status=Order.Status.CANCELLED), 'cancellation__created_at', since, until, tz,
+        ).count(),
+    }
+
+
 class AdminSalesDashboardView(APIView):
     """
     GET /api/admin/sales/dashboard/ — commercial summary.
@@ -161,6 +241,13 @@ class AdminSalesDashboardView(APIView):
             'today': today.isoformat(),
             'timezone': str(tz),
             'kpis': self._kpis(company, branches, today, tz),
+            # COMMERCE-ADMIN-UX-01: money collected, refunded and still held,
+            # apart from the sales (`kpis`, which count PAID orders only).
+            'collections': {
+                ('today' if window == 1 else f'last_{window}d'): _collections(
+                    company, branches, today - timedelta(days=window - 1), today, tz)
+                for window in (1, *_WINDOWS)
+            },
             'channels': self._channels(company, branches, today, tz),
             'trend': self._trend(company, branches, today, tz),
             'top_products': self._top_products(company, branches, today, tz),
@@ -289,6 +376,9 @@ class AdminSalesDashboardView(APIView):
                 created_at__gte=window_start,
                 created_at__lt=window_end,
             )
+            # COMMERCE-ADMIN-UX-01: a cancelled sale's goods came back — it
+            # is not demand. An exit with no order is kept.
+            .exclude(order__status=Order.Status.CANCELLED)
             .values('product_id', 'product__name')
             .annotate(units=Coalesce(Sum('quantity'), 0))
             .order_by('-units', 'product__name')[:limit]
@@ -400,9 +490,9 @@ class AdminSalesMarginView(APIView):
 
     WHAT IS COUNTED. PAID orders by `paid_at` in the shop's own days — the rule
     of the rest of this dashboard. A pending, failed, expired or cancelled
-    order is not a sale; a REFUNDED one is reported apart, as a refund. (A paid
-    order cancelled afterwards will be excluded the same way the day such a
-    state exists: only PAID counts.)
+    order is not a sale; a REFUNDED one is reported apart, as a refund. A paid
+    order cancelled afterwards is out of every figure and listed apart
+    (`cancellations`); the money is in `collected` (COMMERCE-ADMIN-UX-01).
 
     THE MARGIN IS ONLY OVER WHAT HAS A COST. `margin = net sales of the lines
     whose cost is known − that cost`. Subtracting the known cost from ALL net
@@ -489,14 +579,19 @@ class AdminSalesMarginView(APIView):
         known_net = _cents(totals['net'])
         cost = _cents(totals['cost'])
         realised = self._figures(known.filter(self.REALISED))
+        collections = _collections(company, branches, since, today, tz)
         estimated_only = known.exclude(self.REALISED)
         return Response({
             'window_days': days,
             'label': 'Margen comercial estimado',
             'sales': {'orders': orders, 'gross': str(_cents(gross)), 'net': str(_cents(net))},
-            # The rule of this dashboard: a sale is a PAID order, by the day it
-            # was paid. Both figures read the same set, and say so.
-            'collected': {'orders': orders, 'amount': str(_cents(gross))},
+            # COMMERCE-ADMIN-UX-01: the money, apart from the sales —
+            # `amount` is the NET collected (live sales + money still held for
+            # cancellations − refunds confirmed); `orders` the live ones.
+            'collected': {**collections, 'orders': orders, 'amount': collections['net']},
+            # Cancelled after being paid: out of every figure above, listed
+            # here from their own snapshots (never rewritten).
+            'cancellations': self._cancellations(company, branches, since, today, tz),
             'net_sales_with_cost': str(known_net),
             'cost_of_goods_sold': str(cost),
             'margin': str(known_net - cost),
@@ -534,6 +629,41 @@ class AdminSalesMarginView(APIView):
                                        estimated),
             'by_channel': self._grouped(lines, 'order__sales_channel', None, estimated),
         })
+
+    @staticmethod
+    def _cancellations(company, branches, since, today, tz) -> dict:
+        """
+        Orders cancelled after being paid, by `paid_at` like the sales: what
+        they sold (gross), their lines' frozen net and cost (the snapshots stay
+        as they were) and the refunds confirmed for them. Their stock came back
+        with its own Kardex lines; their margin is not a margin of anything.
+        """
+        from .models import OrderRefund
+
+        cancelled = _window(
+            Order.objects.filter(company=company, fulfillment_branch_id__in=[b.pk for b in branches],
+                                 status=Order.Status.CANCELLED, paid=True),
+            'paid_at', since, today, tz)
+        lines = OrderItem.objects.filter(order__in=cancelled)
+        figures = lines.aggregate(
+            units=Coalesce(Sum('quantity'), 0),
+            net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
+            cost=Coalesce(Sum(F('unit_cost') * F('quantity'), filter=Q(unit_cost__isnull=False), output_field=_COST),
+                          Decimal('0'), output_field=_COST),
+        )
+        gross = cancelled.aggregate(
+            amount=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+        refunded = OrderRefund.objects.filter(order__in=cancelled, status=OrderRefund.STATUS_CONFIRMED).aggregate(
+            amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+        return {
+            'orders': cancelled.count(),
+            'units': figures['units'],
+            'gross': str(_cents(gross)),
+            'net': str(_cents(figures['net'])),
+            'cost': str(_cents(figures['cost'])),
+            'stock_restored_orders': cancelled.filter(cancellation__stock_restored=True).count(),
+            'refunds_confirmed': str(_cents(refunded)),
+        }
 
     #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its
     #: average or its device's own cost, or an on-order line whose goods were

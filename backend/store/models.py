@@ -1500,6 +1500,12 @@ class StockMovement(models.Model):
     # "devolución" cannot tell a customer return from a technician correcting a
     # mis-scanned part, and those are different conversations.
     SERVICE_RETURN = 'service_return'
+    # ORDER-CANCEL-01 — a paid web order cancelled before its goods left: each
+    # of its sale exits comes back as its own line, with the order on it. Not
+    # `return_entry`, for the same reason as `service_return`: a customer
+    # bringing something back and a sale that never happened are different
+    # conversations, and the Kardex has to say which one this was.
+    ORDER_CANCEL_RETURN = 'order_cancel_return'
     # --- Exits (remove stock) ---
     MANUAL_EXIT = 'manual_exit'
     SALE_EXIT = 'sale_exit'
@@ -1517,6 +1523,7 @@ class StockMovement(models.Model):
         (RETURN_ENTRY, 'Entrada por devolución'),
         (CORRECTION_POSITIVE, 'Corrección positiva'),
         (SERVICE_RETURN, 'Entrada por reverso de servicio técnico'),
+        (ORDER_CANCEL_RETURN, 'Devolución por pedido cancelado'),
         (TRANSFER_IN, 'Entrada por transferencia'),
         (MANUAL_EXIT, 'Salida manual'),
         (SALE_EXIT, 'Salida por venta'),
@@ -1528,7 +1535,7 @@ class StockMovement(models.Model):
 
     ENTRY_TYPES = frozenset([
         INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY,
-        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN,
+        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN, ORDER_CANCEL_RETURN,
     ])
     EXIT_TYPES = frozenset([
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
@@ -1733,6 +1740,32 @@ class SalesNote(models.Model):
     pdf_generated_at = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
+    # SALES-NOTE-CONTROL-01 — THE VOID RECORD. Written once, by the one writer
+    # (`sales_note_control.mark_void`): the platform master's act or the
+    # cancellation of the order. Voiding never touches the number, the issue
+    # date, the lines, the order, a payment or the series.
+    VOID_REASON_TEST = 'prueba'
+    VOID_REASON_ERROR = 'error'
+    VOID_REASON_OTHER = 'otro'
+    VOID_REASON_ORDER_CANCELLED = 'pedido_cancelado'
+    VOID_REASON_CHOICES = [
+        (VOID_REASON_TEST, 'Prueba'),
+        (VOID_REASON_ERROR, 'Error de emisión'),
+        (VOID_REASON_OTHER, 'Otro motivo'),
+        (VOID_REASON_ORDER_CANCELLED, 'Pedido cancelado'),
+    ]
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sales_notes_voided',
+    )
+    # `db_default`: 0125 runs while the previous release still serves, and its
+    # inserts do not name these columns (the repo rule, DEC: «Las columnas nuevas
+    # llevan valor por defecto en la base»).
+    void_reason_type = models.CharField(
+        max_length=20, choices=VOID_REASON_CHOICES, blank=True, default='', db_default='')
+    void_reason = models.CharField(max_length=500, blank=True, default='', db_default='')
+
     class Meta:
         ordering = ['-created_at', '-id']
         constraints = [
@@ -1755,6 +1788,183 @@ class SalesNote(models.Model):
 
     def __str__(self):
         return f"SalesNote({self.number}, order={self.order_id})"
+
+
+class SalesNoteRemarkQuerySet(models.QuerySet):
+    """Append-only in bulk too: no queryset rewrites or deletes remarks."""
+
+    def update(self, **kwargs):
+        raise ValueError('Una observación de la nota de venta no se modifica: añade otra.')
+
+    def delete(self):
+        raise ValueError('Una observación de la nota de venta no se borra.')
+
+
+class SalesNoteRemark(models.Model):
+    """
+    SALES-NOTE-CONTROL-01 — an internal observation about an issued note.
+
+    APPEND-ONLY. A remark is history: written once, never edited or deleted
+    (`save` refuses an update, `delete` refuses outright). A correction is a new
+    remark. NEVER PRINTED — the paper of a note says what it said when it was
+    issued; remarks live only in the panel.
+    """
+
+    sales_note = models.ForeignKey(SalesNote, on_delete=models.PROTECT, related_name='remarks')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sales_note_remarks',
+    )
+    text = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # The default manager (and so `note.remarks`) refuses bulk update/delete.
+    # `_base_manager` stays Django's plain one on purpose: deleting a user sets
+    # `author` NULL through it (SET_NULL, as `AdminAuditLog.actor`), and that
+    # must keep working — the remark stays, without a name.
+    objects = SalesNoteRemarkQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError('Una observación de la nota de venta no se modifica: añade otra.')
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('Una observación de la nota de venta no se borra.')
+
+    def __str__(self):
+        return f"SalesNoteRemark({self.sales_note_id}, {self.created_at:%Y-%m-%d})"
+
+
+class OrderCancellation(models.Model):
+    """
+    ORDER-CANCEL-01 — the record that a PAID web order was cancelled.
+
+    ONE PER ORDER, AND THE DATABASE SAYS SO. The one-to-one is the last guard
+    against a second cancellation: the service already re-checks under the
+    order's lock, and a second row could only come from a path that skipped
+    both.
+
+    CANCELLING IS NOT REFUNDING. Nothing here says money went back: the order
+    keeps `paid=True`, no payment row changes and no gateway is called. A
+    refund is a separate process with its own record, when it exists.
+
+    What it keeps is what the order looked like before, who did it and why,
+    and what the cancellation did — stock returned, the internal note voided —
+    and what it could NOT do: a live boleta/factura is kept untouched and
+    `fiscal_pending` says a credit note or a void still has to be handled
+    through the fiscal flow.
+    """
+
+    order = models.OneToOneField(Order, on_delete=models.PROTECT, related_name='cancellation')
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='order_cancellations')
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_cancellations',
+    )
+    reason = models.CharField(max_length=500)
+    previous_status = models.CharField(max_length=20)
+    previous_fulfillment_status = models.CharField(max_length=30)
+    #: Whether any stock came back. False for an order whose exits were all
+    #: skipped at payment (a shortfall): there was nothing to return.
+    stock_restored = models.BooleanField(default=False)
+    #: A live boleta/factura exists and is kept: its credit note or void is
+    #: still to be handled through the fiscal flow. Never issued from here.
+    fiscal_pending = models.BooleanField(default=False)
+    #: The affected document as people read it («Boleta B001-12»), or empty.
+    fiscal_document = models.CharField(max_length=80, blank=True)
+    sales_note_voided = models.BooleanField(default=False)
+    # COMMERCE-ADMIN-UX-01. Whether money had been taken when it was cancelled
+    # (every cancellation before this column was of a paid order), whether a
+    # cashier confirmed the goods of a till sale are back in the shop, and how
+    # many devices a buyer's unpaid order held went back to the shelf.
+    # `db_default`: the previous release keeps inserting rows while this migrates.
+    was_paid = models.BooleanField(default=True, db_default=True)
+    goods_returned = models.BooleanField(default=False, db_default=False)
+    holds_released = models.PositiveIntegerField(default=0, db_default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['company', '-created_at'])]
+
+    def __str__(self):
+        return f"OrderCancellation(order={self.order_id})"
+
+
+class OrderRefund(models.Model):
+    """
+    COMMERCE-ADMIN-UX-01 — money given back for a CANCELLED order, as staff record it.
+
+    A RECORD, NOT A PAYMENT OPERATION. Nothing here calls a gateway, and no
+    `PaymentTransaction` row is touched: a confirmed payment stays confirmed,
+    and the gateway's own refund is made in the gateway's panel. This row says
+    that a refund is owed (`pending`) or that somebody gave the money back and
+    with which reference (`confirmed`).
+
+    THE CEILING. What was collected for the order (its total if it was paid,
+    plus any charge filed as a duplicate — a late payment of a cancelled
+    order) minus what is already pending or confirmed. Checked by the service
+    with the order locked; the CHECKs below guard what a row can say on its own.
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Reembolso pendiente'),
+        (STATUS_CONFIRMED, 'Reembolso confirmado'),
+    ]
+
+    METHOD_GATEWAY = 'gateway'
+    METHOD_CASH = 'cash'
+    METHOD_TRANSFER = 'transfer'
+    METHOD_OTHER = 'other'
+    METHOD_CHOICES = [
+        (METHOD_GATEWAY, 'Pasarela de pago'),
+        (METHOD_CASH, 'Efectivo'),
+        (METHOD_TRANSFER, 'Transferencia'),
+        (METHOD_OTHER, 'Otro'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='order_refunds')
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='refunds')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.CharField(max_length=12, choices=METHOD_CHOICES)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    #: The operation number, voucher or gateway reference. Required to confirm.
+    reference = models.CharField(max_length=120, blank=True, default='')
+    #: What a person wrote as evidence: who received it, how, where the voucher is.
+    note = models.CharField(max_length=500, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_refunds_created',
+    )
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_refunds_confirmed',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ['created_at', 'pk']
+        indexes = [models.Index(fields=['company', 'status', 'created_at'])]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=Decimal('0.00')),
+                                   name='order_refund_amount_positive'),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='pending', confirmed_at__isnull=True)
+                    | (models.Q(status='confirmed', confirmed_at__isnull=False) & ~models.Q(reference=''))
+                ),
+                name='order_refund_confirmed_has_date_and_reference',
+            ),
+        ]
+
+    def __str__(self):
+        return f'OrderRefund(order={self.order_id}, {self.amount}, {self.status})'
 
 
 # ---------------------------------------------------------------------------

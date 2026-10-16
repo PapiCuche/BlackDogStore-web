@@ -235,6 +235,45 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
     return model
 
 
+#: Ids in one «publish / hide models» batch (COMMERCE-ADMIN-UX-01).
+MAX_BULK_MODELS = 500
+
+
+@transaction.atomic
+def set_models_visibility(*, company, ids, publish: bool, actor=None, request=None) -> dict:
+    """
+    Publish or hide many models of `company` at once. All of the batch or none.
+
+    COMMERCE-ADMIN-UX-01 — «Publicación e-commerce». The same fact the model
+    form writes (`is_published_online`), for several models: a hidden model
+    takes its page and its devices off the shop; its variants, stock and
+    history do not move. Models have no readiness rule of their own, so
+    nothing is refused for being «not ready» — what a variant needs is still
+    `product_publication`'s, on each product.
+
+    An id of another company refuses the batch exactly like an id nobody used.
+    Locked in id order, written with one UPDATE naming the field.
+    """
+    wanted = sorted(set(ids))
+    if not wanted:
+        raise CatalogError('Elige al menos un modelo.', field='ids')
+    if len(wanted) > MAX_BULK_MODELS:
+        raise CatalogError(f'Hasta {MAX_BULK_MODELS} modelos por vez.', field='ids')
+    locked = list(
+        ProductModel.objects.select_for_update().filter(company=company, pk__in=wanted).order_by('pk')
+    )
+    if len(locked) != len(wanted):
+        raise CatalogError('Algún modelo no existe.', field='ids', code='not_found')
+    to_change = [m.pk for m in locked if m.is_published_online != publish]
+    if to_change:
+        ProductModel.objects.filter(pk__in=to_change).update(is_published_online=publish,
+                                                            updated_at=timezone.now())
+        _audit('product_models_visibility_changed', company=company, actor=actor, request=request,
+               target_type='product_model', target_id='', visibility='publish' if publish else 'hide',
+               changed=len(to_change), unchanged=len(locked) - len(to_change), changed_ids=to_change[:200])
+    return {'changed': len(to_change), 'unchanged': len(locked) - len(to_change), 'total': len(locked)}
+
+
 # ---------------------------------------------------------------------------
 # Variants
 # ---------------------------------------------------------------------------

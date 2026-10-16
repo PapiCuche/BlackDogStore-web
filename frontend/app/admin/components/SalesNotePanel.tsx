@@ -13,8 +13,14 @@ import {
   fetchSalesNote,
   type SalesNote,
 } from "../../lib/inventory";
+import { SalesNoteStatusBadge } from "./sales-notes/SalesNoteStatusBadge";
 
-type Props = { orderId: number; isPaid: boolean };
+type Props = {
+  orderId: number;
+  isPaid: boolean;
+  /** ORDER-CANCEL-01: pedido cancelado. Su nota (anulada) se descarga; no se emite otra. */
+  cancelled?: boolean;
+};
 
 function formatWhen(iso: string | null): string {
   if (!iso) return "—";
@@ -29,7 +35,7 @@ function formatWhen(iso: string | null): string {
   });
 }
 
-export function SalesNotePanel({ orderId, isPaid }: Props) {
+export function SalesNotePanel({ orderId, isPaid, cancelled = false }: Props) {
   const [note, setNote] = useState<SalesNote | null>(null);
   // Starts false for unpaid orders so the effect never has to setState synchronously.
   const [loading, setLoading] = useState(isPaid);
@@ -118,7 +124,9 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
                 <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
                   Estado
                 </dt>
-                <dd className="mt-0.5 text-sm text-foreground/85">{note.status_label}</dd>
+                <dd className="mt-0.5 text-sm text-foreground/85">
+                  {note.is_void ? <SalesNoteStatusBadge note={note} /> : note.status_label}
+                </dd>
               </div>
               <div>
                 <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
@@ -128,10 +136,23 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
                   {note.created_by_username ?? "—"}
                 </dd>
               </div>
+              {note.is_void && note.void_reason ? (
+                <div className="sm:col-span-2">
+                  <dt className="text-[11px] font-semibold uppercase tracking-widest text-muted">
+                    Motivo de la anulación
+                  </dt>
+                  <dd className="mt-0.5 whitespace-pre-wrap text-sm text-foreground/85">
+                    {note.void_reason_type_label ? `${note.void_reason_type_label}: ` : ""}
+                    {note.void_reason}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
           ) : (
             <p className="mb-4 text-sm text-muted">
-              Esta orden todavía no tiene nota de venta interna.
+              {cancelled
+                ? "Pedido cancelado: no se emite nota de venta."
+                : "Esta orden todavía no tiene nota de venta interna."}
             </p>
           )}
 
@@ -142,7 +163,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
           ) : null}
 
           <div className="flex flex-wrap gap-2">
-            {!note ? (
+            {!note ? (cancelled ? null : (
               <button
                 type="button"
                 onClick={() => void handleIssue()}
@@ -151,7 +172,7 @@ export function SalesNotePanel({ orderId, isPaid }: Props) {
               >
                 {issuing ? "Emitiendo…" : "Generar nota de venta"}
               </button>
-            ) : (
+            )) : (
               <>
                 <button
                   type="button"

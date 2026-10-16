@@ -1039,11 +1039,30 @@ export type SalesKpi = {
   average_ticket: string;
 };
 
+/**
+ * COMMERCE-ADMIN-UX-01 — el dinero de una ventana, aparte de las ventas.
+ * `net` = `gross` − reembolsos confirmados; los pendientes no se restan.
+ */
+export type SalesCollections = {
+  live: { orders: number; amount: string };
+  cancelled_paid: { orders: number; amount: string };
+  late_charges: { count: number; amount: string };
+  gross: string;
+  refunds_confirmed: string;
+  refunds_pending: string;
+  net: string;
+  /** Lo que aún se tiene de los pedidos cancelados de la ventana. */
+  cancelled_held: string;
+  cancelled_orders: number;
+};
+
 export type SalesDashboard = {
   company: { id: number; name: string };
   branches: PosBranch[];
   today: string;
   kpis: Record<string, SalesKpi>;
+  /** COMMERCE-ADMIN-UX-01: `today`, `last_7d`, `last_30d`, `last_90d`. */
+  collections?: Record<string, SalesCollections>;
   channels: {
     window_days: number;
     by_channel: Record<string, { orders: number; revenue: string; units: number }>;
@@ -1148,7 +1167,17 @@ export type SalesMarginTotals = {
 export type SalesMargin = {
   window_days: number;
   sales: { orders: number; gross: string; net: string };
-  collected: { orders: number; amount: string };
+  /**
+   * COMMERCE-ADMIN-UX-01: `amount` es el cobro NETO (ventas vigentes + dinero
+   * aún en la tienda por cancelaciones − reembolsos confirmados); `orders`, las
+   * ventas vigentes. El resto, el desglose de `SalesCollections`.
+   */
+  collected: { orders: number; amount: string } & Partial<SalesCollections>;
+  /** COMMERCE-ADMIN-UX-01: pagados y luego cancelados, fuera del margen, desde sus snapshots. */
+  cancellations?: {
+    orders: number; units: number; gross: string; net: string; cost: string;
+    stock_restored_orders: number; refunds_confirmed: string;
+  };
   net_sales_with_cost: string;
   cost_of_goods_sold: string;
   margin: string;

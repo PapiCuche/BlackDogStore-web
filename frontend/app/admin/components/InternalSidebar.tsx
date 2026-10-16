@@ -14,10 +14,11 @@
 import Link from "next/link";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { BrandLogo } from "../../components/BrandLogo";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { IconClose, IconDashboard } from "./icons";
 import {
+  activeModuleHref,
   navigableGroups,
   type ModuleAccessContext,
 } from "../lib/internal-modules";
@@ -44,6 +45,19 @@ export function InternalSidebarContent({
 }: Props) {
   const pathname = usePathname();
   const groups = navigableGroups(access);
+  // COMMERCE-ADMIN-UX-01: some entries are a screen opened with a filter. The
+  // query is read from the address after each navigation (no `useSearchParams`:
+  // that would need a Suspense boundary around every admin page).
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const read = () => setSearch(typeof window === "undefined" ? "" : window.location.search);
+    read();
+    window.addEventListener("popstate", read);
+    return () => window.removeEventListener("popstate", read);
+  }, [pathname]);
+  const activeHref = activeModuleHref(
+    pathname, search, groups.flatMap(({ modules }) => modules.map((m) => m.href!)),
+  );
 
   const linkClass = (active: boolean) =>
     `flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition ${
@@ -115,12 +129,17 @@ export function InternalSidebarContent({
               </p>
               <div className="space-y-0.5">
                 {modules.map((module) => {
-                  const active = isActive(pathname, module.href!);
+                  const active = module.href === activeHref;
                   return (
                     <Link
                       key={module.id}
                       href={module.href!}
-                      onClick={onNavigate}
+                      onClick={() => {
+                        // Same screen, another filter: the path does not change, the query does.
+                        const query = module.href!.split("?")[1];
+                        setSearch(query ? `?${query}` : "");
+                        onNavigate?.();
+                      }}
                       aria-current={active ? "page" : undefined}
                       className={`${linkClass(active)} pl-8`}
                     >
