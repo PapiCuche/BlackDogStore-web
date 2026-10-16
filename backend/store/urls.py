@@ -152,9 +152,11 @@ from .supplier_views import (
 )
 from .device_catalog_views import (
     AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
-    AdminGradeSeedView, AdminModelDetailView, AdminModelListView, AdminOptionDetailView,
+    AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
+    AdminOptionDetailView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
+from .registration_views import AdminProductRegisterView
 from .stock_unit_views import (
     StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
@@ -231,6 +233,8 @@ urlpatterns = [
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     path('admin/products/', AdminProductListView.as_view(), name='admin-products'),
     path('admin/products/bulk-visibility/', AdminProductBulkVisibilityView.as_view(), name='admin-product-bulk-visibility'),
+    # COMMERCE-ADMIN-UX-01 — «Registrar artículo»: one article, the existing services, one transaction.
+    path('admin/products/register/', AdminProductRegisterView.as_view(), name='admin-product-register'),
     path('admin/products/<int:pk>/', AdminProductDetailView.as_view(), name='admin-product-detail'),
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
@@ -256,6 +260,8 @@ urlpatterns = [
     path('admin/orders/<int:pk>/supply/<int:line_pk>/<str:action>/', AdminOrderSupplyActionView.as_view(),
          name='admin-order-supply-action'),
     path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
+    path('admin/catalog/models/bulk-visibility/', AdminModelBulkVisibilityView.as_view(),
+         name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/attributes/', AdminAttributeListView.as_view(), name='admin-catalog-attributes'),
     path('admin/catalog/attributes/<int:pk>/options/', AdminAttributeOptionsView.as_view(),

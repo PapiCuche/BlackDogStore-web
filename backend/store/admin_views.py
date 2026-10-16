@@ -495,10 +495,14 @@ def _product_snapshot(product):
 
 #: The filters of the product list. The bulk visibility action takes these same
 #: keys for «all that match», and refuses any other.
-PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized')
+PRODUCT_FILTER_KEYS = ('search', 'category', 'is_active', 'is_published_online', 'stock', 'is_serialized',
+                       # COMMERCE-ADMIN-UX-01 — «Publicación e-commerce» by kind of article.
+                       'condition_line', 'sale_mode')
 
 _TRUE_FALSE = ('true', 'false')
 _STOCK_FILTERS = ('in_stock', 'out_of_stock', 'low_stock')
+_LINES = (Product.CONDITION_NEW, Product.CONDITION_USED)
+_SALE_MODES = (Product.SALE_MODE_STOCK, Product.SALE_MODE_STOCK_OR_ORDER)
 
 
 class InvalidProductFilter(ValueError):
@@ -575,6 +579,14 @@ def filter_admin_products(queryset, params, *, strict=False):
     serialized = _filter_choice(params, 'is_serialized', _TRUE_FALSE, strict)
     if serialized:
         queryset = queryset.filter(is_serialized=serialized == 'true')
+
+    # COMMERCE-ADMIN-UX-01: new or used line (DC2), and «Bajo pedido» (DC3).
+    line = _filter_choice(params, 'condition_line', _LINES, strict)
+    if line:
+        queryset = queryset.filter(condition_line=line)
+    sale_mode = _filter_choice(params, 'sale_mode', _SALE_MODES, strict)
+    if sale_mode:
+        queryset = queryset.filter(sale_mode=sale_mode)
 
     stock = _filter_choice(params, 'stock', _STOCK_FILTERS, strict)
     if stock == 'in_stock':
