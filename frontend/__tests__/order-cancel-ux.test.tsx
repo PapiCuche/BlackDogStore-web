@@ -127,6 +127,17 @@ describe('venta POS', () => {
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Cliente devolvió', { goodsReturned: true }));
   });
 
+  it('puede anularse sin reponer stock cuando ya hubo una devolución manual', async () => {
+    mockCancel.mockResolvedValue(order({ status: 'cancelled' }));
+    const { dialog } = openDialog(POS, 'Anular venta');
+    fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Ya se devolvió' } });
+    fireEvent.click(screen.getByLabelText('La mercadería volvió al local'));
+    fireEvent.click(within(dialog).getByLabelText(/Anular sin reponer stock/));
+    fireEvent.click(confirmIn(dialog, 'Anular venta'));
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(
+      42, 'Ya se devolvió', { goodsReturned: true, restoreStock: false }));
+  });
+
   it('el bloque de una venta anulada lo dice con esas palabras', () => {
     render(<OrderCancelPanel order={order({ status: 'cancelled', can_cancel: false, cancellation: {
       ...CANCELLATION, was_paid: true, goods_returned: true, stock_restored: true } })} onCancelled={jest.fn()} />);

@@ -38,6 +38,9 @@ it('cancelar manda sólo lo que se marcó', async () => {
     { reason: 'Motivo válido', goods_returned: true, refund_method: 'cash' });
   await cancelAdminOrder(42, 'Motivo válido');
   expect(JSON.parse(String(send.mock.calls[1][1]?.body))).toEqual({ reason: 'Motivo válido' });
+  await cancelAdminOrder(42, 'Motivo válido', { goodsReturned: true, restoreStock: false });
+  expect(JSON.parse(String(send.mock.calls[2][1]?.body))).toEqual(
+    { reason: 'Motivo válido', goods_returned: true, restore_stock: false });
 });
 
 it('registrar y confirmar un reembolso van a sus direcciones, con el motivo del servidor si se niega', async () => {

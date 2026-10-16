@@ -157,7 +157,11 @@ class UnpaidOrderLatePaymentTest(PaymentBase):
         self.assertIn('Cobro recibido con el pedido cancelado', self.order.payment_error)
         self.assertFalse(StockMovement.objects.filter(order=self.order, movement_type='sale_exit').exists())
         self.assertEqual(self.stock(), stock_before)
-        # The money is there to give back: it is what can be refunded.
+        # Charged with TEST keys: recorded, but it is not money (review P3).
+        self.assertEqual(self.attempt.environment, 'test')
+        self.assertEqual(refunds.summary(self.order)['refundable'], D('0.00'))
+        # The same charge with PRODUCTION keys is money to give back.
+        PaymentTransaction.objects.filter(pk=self.attempt.pk).update(environment='production')
         self.assertEqual(refunds.summary(self.order)['refundable'], self.attempt.amount)
         refund = refunds.record_pending(self.order, operator, method='gateway')
         self.assertEqual(refund.amount, self.attempt.amount)
@@ -427,7 +431,12 @@ class MetricsFixtureTest(_UxBase):
         self.post_cancel(self.g)
         PaymentTransaction.objects.create(
             order=self.g, provider='izipay', transaction_id='LATE-G', order_number='LATE-G', amount=D('50.00'),
-            currency='PEN', environment='test', status=PaymentTransaction.Status.DUPLICATE,
+            currency='PEN', environment='production', status=PaymentTransaction.Status.DUPLICATE,
+            confirmed_at=timezone.now())
+        # A late charge with TEST keys is not money: in no figure (review P3).
+        PaymentTransaction.objects.create(
+            order=self.e, provider='izipay', transaction_id='LATE-E-TEST', order_number='LATE-E-TEST',
+            amount=D('50.00'), currency='PEN', environment='test', status=PaymentTransaction.Status.DUPLICATE,
             confirmed_at=timezone.now())
 
     def unpaid_mouse(self):
@@ -520,7 +529,7 @@ class UnpaidCancelAgainstPaymentRaceTest(_RaceBase):
         OrderItem.objects.create(order=order, product=self.cable, quantity=3, price=D('10.00'))
         attempt = PaymentTransaction.objects.create(
             order=order, provider='izipay', transaction_id='RACE0001', order_number='RACE0001',
-            amount=D('30.00'), currency='PEN', environment='test')
+            amount=D('30.00'), currency='PEN', environment='production')
 
         def cancel():
             return cancelling.cancel_order(Order.objects.get(pk=order.pk), self.user, REASON)
@@ -672,3 +681,140 @@ class LegacyRefundTest(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.refund.refresh_from_db()
         self.assertEqual(self.refund.status, 'confirmed')
+
+
+# -- independent review of 5317114..2874caf --------------------------------------------
+
+class PosAnnulAfterManualReturnTest(_UxBase):
+    """P2: a manual return after the till sale must not put the same goods back twice."""
+
+    def setUp(self):
+        super().setUp()
+        self.sale = self.till_sale(2)                            # shelf 20 → 18
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=self.cable.pk, movement_type=StockMovement.RETURN_ENTRY,
+            quantity=1, reason='Devolución en mostrador', actor=self.manager)   # → 19
+
+    def test_the_annulment_is_refused_and_says_why(self):
+        response = self.post_cancel(self.sale, goods_returned=True)
+
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'manual_return_after_sale'))
+        self.assertIn('Hay una devolución manual posterior de este producto', response.json()['detail'])
+        self.assertIn('anula sin reponer stock o revisa el Kardex', response.json()['detail'])
+        self.assertEqual(Order.objects.get(pk=self.sale.pk).status, Order.Status.PAID)
+        self.assertEqual(self.cable_stock(), 19)
+
+    def test_annulled_without_restoring_stock_it_is_recorded_and_audited(self):
+        response = self.post_cancel(self.sale, goods_returned=True, restore_stock=False)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.cable_stock(), 19)
+        self.assertFalse(StockMovement.objects.filter(order=self.sale, movement_type=RETURN).exists())
+        cancellation = OrderCancellation.objects.get(order=self.sale)
+        self.assertEqual((cancellation.stock_restored, cancellation.goods_returned), (False, True))
+        audit = AdminAuditLog.objects.get(action='order_cancelled', target_id=str(self.sale.pk))
+        self.assertEqual((audit.metadata['stock_restore_skipped'], audit.metadata['movements']), (True, []))
+
+    def test_a_return_before_the_sale_does_not_block_it(self):
+        other = self.till_sale(1)                               # after the manual return: 19 → 18
+        self.assertEqual(self.post_cancel(other, goods_returned=True).status_code, 200)
+        self.assertEqual(self.cable_stock(), 19)
+
+    def test_only_a_literal_false_skips_the_stock_and_only_for_a_till_sale(self):
+        refused = self.post_cancel(self.sale, goods_returned=True, restore_stock='false')
+        self.assertEqual(refused.json()['code'], 'manual_return_after_sale')
+        web = self.web_order()
+        response = self.post_cancel(web, restore_stock=False)
+        self.assertEqual((response.status_code, response.json()['code']), (400, 'restore_stock_not_allowed'))
+        self.assertEqual(Order.objects.get(pk=web.pk).status, Order.Status.PAID)
+
+
+class NonStringMethodTest(_UxBase):
+    """P3: a method that is not text is a bad request, never a 500."""
+
+    def test_cancel_and_refund_refuse_a_method_that_is_not_text(self):
+        order = self.web_order()
+        for value in (['cash'], {'m': 'cash'}, 3):
+            with self.subTest(value=value):
+                response = self.post_cancel(order, refund_method=value)
+                self.assertEqual((response.status_code, response.json()['code']), (400, 'method_invalid'))
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PAID)
+        self.post_cancel(order)
+        for value in (['cash'], {'m': 'cash'}, 3):
+            with self.subTest(value=value):
+                response = self.post_refund(order, method=value)
+                self.assertEqual((response.status_code, response.json()['code']), (400, 'method_invalid'))
+
+
+class TestKeysAreNotMoneyTest(_UxBase):
+    """P3: a charge filed as a duplicate with TEST keys is not refundable money."""
+
+    def test_a_test_late_charge_raises_no_ceiling(self):
+        order = self.unpaid_order()
+        self.post_cancel(order)
+        PaymentTransaction.objects.create(
+            order=order, provider='izipay', transaction_id='LATE-T', order_number='LATE-T', amount=D('49.00'),
+            currency='PEN', environment='test', status=PaymentTransaction.Status.DUPLICATE,
+            confirmed_at=timezone.now())
+        self.assertEqual(refunds.collected(order), D('0.00'))
+        response = self.post_refund(order, method='cash')
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'nothing_to_refund'))
+        # A row older than the column (environment '') is counted, as reconciliation reads it.
+        PaymentTransaction.objects.create(
+            order=order, provider='izipay', transaction_id='LATE-L', order_number='LATE-L', amount=D('49.00'),
+            currency='PEN', environment='', status=PaymentTransaction.Status.DUPLICATE,
+            confirmed_at=timezone.now())
+        self.assertEqual(refunds.collected(order), D('49.00'))
+
+
+class RealTillSaleAnnulTest(_UxBase):
+    """End to end: a sale rung up by `create_pos_sale`, annulled from the panel."""
+
+    def test_annulling_a_real_till_sale(self):
+        from store.models import Membership
+        from store.sales_note_services import get_or_create_sales_note
+        from store.tests import _c1_sale
+
+        funda = _prod(self.company, 'Funda', 'funda-pos-real', price='30.00', inventory=0)
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=funda.pk, movement_type=StockMovement.PURCHASE_ENTRY,
+            quantity=10, reason='Compra', unit_cost=D('12'))
+        [device] = self.receive(self.row('SER-POS-1', None, cost='3000.00'), product=self.laptop)
+        seller, _ = _p2d_member(self.company, 'cajera_real', ['company.view', 'sales.pos.use'])
+        Membership.objects.filter(user=seller, company=self.company).update(commission_rate_percent=D('2.00'))
+        documents = FiscalDocument.objects.count()
+
+        sale, created = _c1_sale(actor=seller, company=self.company, branch=self.branch_a, items=[
+            {'product': funda.pk, 'quantity': 2},
+            {'product': self.laptop.pk, 'quantity': 1, 'units': [{'id': device.pk, 'method': 'manual'}]},
+        ])
+        self.assertTrue(created)
+        commission = SalesCommission.objects.get(order=sale)
+        self.assertEqual(commission.status, SalesCommission.STATUS_ACCRUED)
+        note, _ = get_or_create_sales_note(sale, actor=self.manager)
+        device.refresh_from_db()
+        self.assertEqual(device.status, StockUnit.Status.SOLD)
+        funda_row = BranchStock.objects.get(branch=self.branch_a, product=funda)
+        self.assertEqual(funda_row.quantity, 8)
+
+        response = self.post_cancel(sale, goods_returned=True)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        commission.refresh_from_db()
+        note.refresh_from_db()
+        device.refresh_from_db()
+        self.assertEqual(commission.status, SalesCommission.STATUS_VOIDED)
+        self.assertEqual(note.status, SalesNote.STATUS_VOID)
+        self.assertEqual((device.status, device.order_id), (StockUnit.Status.AVAILABLE, None))
+        after = BranchStock.objects.get(branch=self.branch_a, product=funda)
+        self.assertEqual((after.quantity, after.average_cost, after.uncosted_quantity),
+                         (10, funda_row.average_cost, 0))
+        backs = {m.product_id: m for m in StockMovement.objects.filter(order=sale, movement_type=RETURN)}
+        self.assertEqual(set(backs), {funda.pk, self.laptop.pk})
+        self.assertEqual(backs[funda.pk].unit_cost, D('12.0000'))
+        self.assertEqual(backs[self.laptop.pk].unit_cost, D('3000.0000'))
+        self.assertEqual(FiscalDocument.objects.count(), documents)
+        self.assertEqual(Order.objects.get(pk=sale.pk).status, Order.Status.CANCELLED)
+        again = self.post_cancel(sale, goods_returned=True)
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(StockMovement.objects.filter(order=sale, movement_type=RETURN).count(), 2)

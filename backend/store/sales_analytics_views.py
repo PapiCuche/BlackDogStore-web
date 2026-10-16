@@ -149,6 +149,8 @@ def _collections(company, branches, since, until, tz):
                          by `paid_at`: money taken that is not a sale any more.
         late_charges     charges filed as duplicates on a CANCELLED order, by
                          when they were confirmed: money taken all the same.
+                         Not those made with TEST keys (review P3), exactly as
+                         `order_refunds.collected` leaves them out.
         gross            the three together.
         refunds          `OrderRefund`: CONFIRMED by `confirmed_at` (they
                          leave `net`), PENDING by `created_at` (said, not
@@ -161,6 +163,7 @@ def _collections(company, branches, since, until, tz):
     was confirmed. No sale is counted here twice: `live` is the sales figure.
     """
     from .models import OrderRefund, PaymentTransaction
+    from .order_refunds import TEST_ENVIRONMENT
 
     ids = [b.pk for b in branches]
     orders = Order.objects.filter(company=company, fulfillment_branch_id__in=ids)
@@ -172,7 +175,8 @@ def _collections(company, branches, since, until, tz):
     late_qs = _window(
         PaymentTransaction.objects.filter(
             order__in=orders.filter(status=Order.Status.CANCELLED),
-            status=PaymentTransaction.Status.DUPLICATE),
+            status=PaymentTransaction.Status.DUPLICATE,
+        ).exclude(environment=TEST_ENVIRONMENT),
         'confirmed_at', since, until, tz)
     late = late_qs.aggregate(
         n=Count('pk'), amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))
@@ -190,7 +194,7 @@ def _collections(company, branches, since, until, tz):
     held_paid = orders.filter(pk__in=held_ids, paid=True).aggregate(amount=money)['amount']
     held_late = PaymentTransaction.objects.filter(
         order_id__in=held_ids, status=PaymentTransaction.Status.DUPLICATE,
-    ).aggregate(amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+    ).exclude(environment=TEST_ENVIRONMENT).aggregate(amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
     held_back = company_refunds.filter(order_id__in=held_ids, status=OrderRefund.STATUS_CONFIRMED).aggregate(
         amount=refund_money)['amount']
     gross = live['amount'] + cancelled['amount'] + late['amount']

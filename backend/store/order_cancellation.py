@@ -79,7 +79,9 @@ class OrderCancelError(Exception):
 
     #: A request that is wrong in itself (400); everything else is the order's
     #: state (409).
-    _BAD_REQUEST = frozenset(['reason_required', 'reason_too_long', 'goods_return_required'])
+    _BAD_REQUEST = frozenset([
+        'reason_required', 'reason_too_long', 'goods_return_required', 'restore_stock_not_allowed',
+    ])
 
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -201,7 +203,8 @@ def fiscal_label(document) -> str:
     return f'{document.get_document_type_display()} {document.series}-{document.number}'[:80]
 
 
-def cancel_order(order, user, reason, *, goods_returned=False, refund_method=None, request=None) -> OrderCancellation:
+def cancel_order(order, user, reason, *, goods_returned=False, refund_method=None, restore_stock=True,
+                 request=None) -> OrderCancellation:
     """
     Cancel `order` — already resolved through the caller's scoped queryset —
     and return its cancellation. Raises `OrderCancelError` (or, for the
@@ -214,6 +217,10 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
     """
     reason = clean_reason(reason)
     actor = user if getattr(user, 'is_authenticated', False) else None
+    if refund_method is not None:
+        from . import order_refunds
+
+        order_refunds.clean_method(refund_method)
 
     with transaction.atomic():
         locked = Order.objects.select_for_update(of=('self',)).get(pk=order.pk)
@@ -227,12 +234,24 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             raise OrderCancelError(
                 'goods_return_required',
                 'Confirma que la mercadería volvió al local antes de anular la venta.')
+        # Review P2. Annulling without putting stock back is the cashier's
+        # call for a till sale only — and the way out when goods of the sale
+        # already came back by a manual return the sale does not know about.
+        if not restore_stock and mode != MODE_POS:
+            raise OrderCancelError(
+                'restore_stock_not_allowed', 'Sólo una venta POS se anula sin reponer stock.')
+        if mode == MODE_POS and restore_stock and _manual_return_after_sale(locked):
+            raise OrderCancelError(
+                'manual_return_after_sale',
+                'Hay una devolución manual posterior de este producto: anula sin reponer stock o revisa el '
+                'Kardex.')
 
         previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
         # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
         supply_released = _release_supply(locked, actor, reason, request)
         holds_released = _release_holds(locked) if mode == MODE_UNPAID else 0
-        movements, units_returned, already_returned = _restore_stock(locked, actor, reason, request)
+        movements, units_returned, already_returned = (
+            _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
         note_voided = _void_sales_note(locked, actor, reason)
         commission_voided = bool(SalesCommission.objects.filter(
             order=locked, status=SalesCommission.STATUS_ACCRUED,
@@ -274,6 +293,8 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
                 # Devices of this sale given back before (a return): not restored twice.
                 'units_already_returned': already_returned,
                 'holds_released': holds_released,
+                # Review P2: annulled WITHOUT putting stock back, by the cashier's choice.
+                'stock_restore_skipped': not restore_stock,
                 'goods_returned': mode == MODE_POS,
                 'fiscal_pending': document is not None,
                 'fiscal_document': label,
@@ -328,6 +349,26 @@ def _release_holds(order) -> int:
             continue
         released += 1
     return released
+
+
+def _manual_return_after_sale(order) -> bool:
+    """
+    Review P2. Whether goods of a product counted by quantity, sold by this
+    sale, came back to the same branch through a `return_entry` written AFTER
+    the sale exit. Such a return does not name the sale, so `_restore_stock`
+    cannot tell it apart and would put the same goods back a second time. A
+    serialized product is safe: only the devices still sold to the order come
+    back, and a device returned by `return_unit` is counted, not restored.
+    """
+    exits = StockMovement.objects.filter(
+        order=order, movement_type=StockMovement.SALE_EXIT, product__is_serialized=False,
+    ).values_list('pk', 'product_id', 'branch_id')
+    return any(
+        StockMovement.objects.filter(
+            movement_type=StockMovement.RETURN_ENTRY, product_id=product_id, branch_id=branch_id, pk__gt=pk,
+        ).exists()
+        for pk, product_id, branch_id in exits
+    )
 
 
 def _release_supply(order, actor, reason, request) -> list[dict]:

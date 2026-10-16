@@ -1640,6 +1640,8 @@ class AdminOrderCancelView(APIView):
                 # Only a literal true: the cashier's word, not something truthy.
                 goods_returned=body.get('goods_returned') is True,
                 refund_method=body.get('refund_method') or None,
+                # Review P2: only a literal false annuls a till sale without stock.
+                restore_stock=body.get('restore_stock') is not False,
                 request=request,
             )
         except (cancelling.OrderCancelError, order_refunds.RefundError) as exc:

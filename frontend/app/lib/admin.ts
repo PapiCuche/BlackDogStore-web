@@ -857,11 +857,13 @@ export const CANCEL_REASON_MAX = 500;
 export async function cancelAdminOrder(
   orderId: number,
   reason: string,
-  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod },
+  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean },
 ): Promise<AdminOrderDetail> {
   const body: Record<string, unknown> = { reason };
   if (options?.goodsReturned) body.goods_returned = true;
   if (options?.refundMethod) body.refund_method = options.refundMethod;
+  // Sólo una venta POS: anular sin reponer stock (ya volvió por una devolución manual).
+  if (options?.restoreStock === false) body.restore_stock = false;
   const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/cancel/`, {
     method: 'POST',
     body: JSON.stringify(body),

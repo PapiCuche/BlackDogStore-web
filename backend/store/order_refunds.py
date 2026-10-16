@@ -10,7 +10,8 @@ back from Izipay's panel, and its reference is written here afterwards.
 WHAT CAN BE GIVEN BACK (`summary`)
     collected   the order's total if it was paid, plus every charge filed as
                 a duplicate (a payment that arrived after the order was paid
-                or cancelled: money the shop holds all the same).
+                or cancelled: money the shop holds all the same) — except
+                those made with TEST keys, which are not money.
     refundable  collected − pending − confirmed. A new refund never exceeds it.
     held        collected − confirmed: still in the shop's hands.
 
@@ -45,6 +46,11 @@ NOTE_MAX = 500
 ZERO = Decimal('0.00')
 CENT = Decimal('0.01')
 METHODS = frozenset(code for code, _label in OrderRefund.METHOD_CHOICES)
+#: A charge made with TEST keys is not money (review P3). An order PAID with
+#: TEST keys keeps counting as it does everywhere today (sales, its total as
+#: collected): only the extra charges filed as duplicates are left out here.
+#: A row older than the column (environment '') counts, as reconciliation reads it.
+TEST_ENVIRONMENT = 'test'
 
 
 class RefundError(Exception):
@@ -90,7 +96,7 @@ def collected(order) -> Decimal:
     """Everything the shop took for `order`: its total if paid, plus charges filed as duplicates."""
     late = PaymentTransaction.objects.filter(
         order_id=order.pk, status=PaymentTransaction.Status.DUPLICATE,
-    ).aggregate(total=Coalesce(Sum('amount'), ZERO))['total']
+    ).exclude(environment=TEST_ENVIRONMENT).aggregate(total=Coalesce(Sum('amount'), ZERO))['total']
     return ((order.total if order.paid else ZERO) + late).quantize(CENT)
 
 
@@ -133,13 +139,19 @@ def _clean_text(value, *, max_length, code, label) -> str:
 
 # -- writes --------------------------------------------------------------------
 
+def clean_method(method) -> str:
+    """The refund's method, or `RefundError` — also for anything that is not text (review P3)."""
+    if not isinstance(method, str) or method not in METHODS:
+        raise RefundError('method_invalid', 'Elige cómo se devuelve el dinero.')
+    return method
+
+
 def record_pending(order, user, *, amount=None, method, note='', request=None) -> OrderRefund:
     """
     A refund that is owed, for a CANCELLED order. `amount` None = everything
     still refundable. Raises `RefundError`; nothing is written then.
     """
-    if method not in METHODS:
-        raise RefundError('method_invalid', 'Elige cómo se devuelve el dinero.')
+    method = clean_method(method)
     note = _clean_text(note, max_length=NOTE_MAX, code='note_too_long', label='La nota')
     wanted = clean_amount(amount) if amount not in (None, '') else None
     actor = user if getattr(user, 'is_authenticated', False) else None

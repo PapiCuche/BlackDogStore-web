@@ -96,6 +96,7 @@ export function OrderCancelDialog({
   const mode = order.cancel_mode ?? "paid";
   const pos = mode === "pos";
   const [goodsBack, setGoodsBack] = useState(false);
+  const [skipStock, setSkipStock] = useState(false);
   const [withRefund, setWithRefund] = useState(false);
   const [refundMethod, setRefundMethod] = useState<OrderRefundMethod>(pos ? "cash" : "gateway");
   const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN && (!pos || goodsBack);
@@ -134,8 +135,9 @@ export function OrderCancelDialog({
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
-    const options: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod } = {};
+    const options: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean } = {};
     if (pos) options.goodsReturned = true;
+    if (pos && skipStock) options.restoreStock = false;
     if (mode !== "unpaid" && withRefund) options.refundMethod = refundMethod;
     try {
       onCancelled(await (Object.keys(options).length
@@ -220,6 +222,21 @@ export function OrderCancelDialog({
               className="mt-0.5"
             />
             <span>La mercadería volvió al local</span>
+          </label>
+        ) : null}
+        {pos ? (
+          <label className="mt-2 flex items-start gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={skipStock}
+              onChange={(event) => setSkipStock(event.target.checked)}
+              disabled={busy}
+              className="mt-0.5"
+            />
+            <span>
+              Anular sin reponer stock — sólo si la mercadería ya volvió al stock por una devolución manual
+              (revisa el Kardex)
+            </span>
           </label>
         ) : null}
         {mode !== "unpaid" ? (
