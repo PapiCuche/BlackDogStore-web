@@ -3,7 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (rama `feat/commerce-admin-ux`, sin push, NO desplegado)
+## 2026-10-16 — COMMERCE-ADMIN-UX-01 completo (PR a `master`, NO desplegado)
+
+Rama `feat/commerce-admin-ux` desde `master` `5317114`. Integra #121 (y con él #119) por merge
+commit y añade, en ramas de trabajo fusionadas aquí:
+- **Cancelaciones** (abajo): pedido web pagado o impago, anulación de venta de caja con
+  mercadería devuelta, reembolsos registrados (pendiente/confirmado) sin tocar la pasarela,
+  métricas de cobros y margen sin doble conteo.
+- **Costos y precios (A1):** entrada propia en Inventario para `costs.view`; margen, valor al
+  costo, costo promedio por sucursal y costo por equipo, con estados de carga/vacío/error;
+  edición de costo de referencia y corrección de costo con motivo. Causa de A1: la sección no
+  tenía entrada de menú y desaparecía en silencio; el backend ya respondía bien.
+- **Consultar disponibilidad** (Ventas, `sales.pos.use`): stock propio por estado y ofertas
+  de proveedor aparte, sin costos, IMEI enmascarado; filtros nuevos en Inventario › Equipos.
+- **Registro único de artículos** (nuevo, seminuevo, accesorio, por proveedor) que compone los
+  servicios existentes en una transacción idempotente; **Publicación e-commerce** para todos
+  los tipos; menú reordenado según el propietario, rutas antiguas vigentes.
+- Base local SQLite: `migrate` vuelve a pasar `0131`.
+
+Migraciones nuevas para `master`: `0124`, `0125` (de #119/#121), `0136` (fusión vacía) y `0137`
+(reembolsos). Suite completa 7664 OK sobre `b664f1f`; ensayo `ENSAYO: OK`; Jest 1597; navegador
+8 specs en verde tras alinear dos pruebas viejas; cuatro revisiones independientes sin P0/P1.
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (rama `feat/commerce-admin-ux`, incluida arriba)
 
 **EN LA RAMA, sin push ni PR, sin desplegar.** Sobre `master` `5317114` (producción `04640cf`).
 
