@@ -14,6 +14,57 @@ ADR por dominio, que no se reescriben.
 
 ## Decisiones registradas en esta entrada
 
+### DEC-COMMERCE-CANCEL-01 · Cancelar, anular y reembolsar son tres actos distintos (COMMERCE-ADMIN-UX-01)
+
+Pedido del propietario del 2026-10-15, sobre DEC-ORDER-CANCEL-01 (sus D1–D4 siguen para el
+pedido web pagado). **Cada punto marcado (P) es una decisión tomada en la rama a falta de
+confirmación del propietario.**
+
+- **Un servicio, tres modos** (`order_cancellation.mode_of`, el servidor lo dice en
+  `cancel_mode`): `unpaid` (web, `pending_payment`, sin pago), `paid` (web pagado sin salir,
+  D1 de antes) y `pos` (venta de caja pagada). Fallidos, expirados y reembolsados no se
+  cancelan (409 `not_paid`). Mismo permiso `sales.orders.manage`, mismo alcance, motivo
+  obligatorio (5–500), un solo `OrderCancellation` por pedido, el pedido bloqueado primero.
+- **Sin pagar.** Pasa a cancelado con su motivo; no hay stock que volver ni ingreso. Los
+  equipos que el comprador tenía apartados (DC2) vuelven al estante en el acto, con su
+  Kardex (`holds_released`). (P) Un pago que llega después sigue el camino que ya existía
+  (`DUPLICATE`, auditado, alerta de salud) y además se anota en `Order.payment_error`; el
+  pedido no se reabre y ese dinero es reembolsable.
+- **Venta POS.** (P) Se anula **sólo si quien anula marca «La mercadería volvió al local»**
+  (`goods_returned`, sólo un `true` literal); no hay regla de tiempo (el propietario no la dio
+  y no se inventa). Igual que un pedido pagado: stock de vuelta una vez al costo de la salida,
+  nota interna anulada (`pedido_cancelado`), boleta/factura viva conservada y marcada
+  «nota de crédito / baja pendiente». No existe capacidad de «anular venta» en caja: se usa
+  `sales.orders.manage` (P).
+- **Comisión.** (P) Al cancelar/anular una venta pagada, la comisión devengada pasa a
+  `voided` (el propio modelo lo prevé «cuando la mercadería vuelve»). No se recalcula nada más.
+- **Reembolsos (`OrderRefund`, `0137`).** Un REGISTRO, no una operación de pago: nunca toca
+  `PaymentTransaction` ni llama a la pasarela (el reembolso de Izipay se hace en su panel y
+  aquí se anota la referencia). Sólo para pedidos cancelados. Pendiente → confirmado (con
+  referencia de 3+ caracteres, quién y cuándo). (P) Tope: lo cobrado (total si se pagó +
+  cobros archivados como duplicados) − pendientes − confirmados; la confirmación vuelve a
+  comprobar el tope con el pedido bloqueado. Medios: pasarela, efectivo, transferencia, otro.
+  (P) Al cancelar, el reembolso pendiente se crea **sólo si quien cancela lo marca**, por
+  todo lo que queda por devolver. (P) Registrar: `sales.orders.manage`; **confirmar:
+  `sales.orders.manage` + `company.manage`** (administrador de la empresa; puente legacy:
+  admin y superadmin), porque no hay una capacidad financiera en el catálogo y `costs.view`
+  no es de dinero que sale. (P) Un reembolso pendiente no se puede retirar ni editar todavía.
+- **Métricas.** Ventas = pedidos `paid` vigentes (ya era así: los cancelados quedan fuera).
+  (P) «Cobros» por ventana: vigentes (por `paid_at`) + cancelados después de pagarse (por
+  `paid_at`) + cobros tardíos de pedidos cancelados (por `confirmed_at`) = bruto; reembolsos
+  confirmados (por `confirmed_at`) lo bajan → neto; los pendientes se dicen, no se restan;
+  «aún en la tienda» = lo cobrado de los cancelados de la ventana − sus reembolsos
+  confirmados. Más vendidos sin las salidas de pedidos cancelados. Margen: los cancelados
+  fuera (ya), listados aparte desde sus instantáneas (`cancellations`), que no se tocan;
+  `collected.amount` del margen pasa a ser el cobro neto.
+- **Fiscal.** Nada fiscal se emite ni se anula desde aquí: ni nota de crédito ni baja; el
+  comprobante queda marcado como pendiente para el flujo fiscal.
+- **DC3/DC2 al cancelar.** Las líneas bajo pedido `pending`/`to_confirm` pasan a «No se pudo
+  abastecer» y la oferta recupera lo comprometido (nunca bajo cero), auditado
+  `order_supply_failed` con `source=order_cancellation`; lo recibido vuelve al estante como
+  cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
+  `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
+
 ### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
 
 Pedido del propietario del 2026-10-14: «las primeras notas de venta fueron de prueba y el

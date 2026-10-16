@@ -3,6 +3,30 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (en rama, NO desplegado)
+
+Rama `feat/commerce-admin-ux` (sin push). Integra #121/#119 por merge; migraciones `0124`,
+`0125`, `0136` (fusión) y `0137` (reembolsos). Estado: **en rama, sin desplegar**.
+
+**Added**
+- Cancelar un pedido web sin pagar, con motivo: queda en el historial como cancelado, sin
+  ingreso; los equipos apartados vuelven a la tienda. Un pago que llega después se registra
+  como cobro a devolver y el pedido lo dice.
+- «Anular venta» POS, con motivo y la casilla «La mercadería volvió al local»: stock de vuelta
+  al costo de la venta, nota interna anulada, comprobante fiscal conservado y marcado.
+- Reembolsos registrados por pedido cancelado (pendiente / confirmado con referencia), con
+  tope en lo cobrado; filtro «Reembolso» y botón «Cancelaciones / historial» en Órdenes.
+- Resumen de ventas: sección «Cobros»; margen: «Cobro neto» y «Cancelados (fuera del margen)».
+
+**Changed**
+- Las líneas bajo pedido de un pedido cancelado devuelven lo comprometido a su oferta.
+- Los más vendidos no cuentan las salidas de pedidos cancelados.
+- Al anular/cancelar una venta pagada se anula la comisión devengada del vendedor.
+
+**Not changed**
+- Ningún pago confirmado se borra ni se modifica; no se llama a la pasarela; no se emite
+  nota de crédito ni baja SUNAT; el Kardex y las instantáneas de costo no se reescriben.
+
 ## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
 
 **Deployed**

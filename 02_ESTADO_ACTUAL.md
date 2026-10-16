@@ -3,6 +3,33 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (rama `feat/commerce-admin-ux`, sin push, NO desplegado)
+
+**EN LA RAMA, sin push ni PR, sin desplegar.** Sobre `master` `5317114` (producción `04640cf`).
+
+- **Integra #121 (y #119)** con un merge (`6472bef`): ORDER-CANCEL-01, SALES-NOTE-DESIGN-01 y
+  SALES-NOTE-CONTROL-01. Conflictos resueltos conservando ambos lados (despacho: códigos
+  `supply_pending` y `order_cancelled`; detalle del pedido: panel de abastecimiento y de
+  cancelación; documentos: ambas entradas). Migraciones `0124`, `0125` (desde `0123`) y
+  `0126`–`0135` unidas por `0136_merge_cancellations_device_commerce` (vacía, sin renumerar).
+- **Checklist DEVICE-COMMERCE con la cancelación** (`ad5a765`): la devolución
+  `order_cancel_return` lleva `order=`, así que vuelve al costo de su salida (probado: promedio y
+  «costo pendiente» intactos tras ida y vuelta; un equipo vuelve a su costo; la línea de
+  equipo exacto devuelve ESE equipo). Las líneas bajo pedido que esperan al proveedor quedan
+  «No se pudo abastecer» y devuelven a la oferta lo comprometido, una vez, auditado.
+- **Lo que pidió el propietario** (`800a798`, `9446f35`, migración `0137`):
+  cancelar un pedido web **sin pagar** (motivo, sin ingreso, libera los equipos apartados; un
+  pago tardío queda como cobro a devolver y marcado en el pedido, nunca lo reabre); **anular una
+  venta POS** cuando quien anula marca «la mercadería volvió al local» (stock al costo de la
+  venta, nota interna anulada, boleta/factura conservada con «nota de crédito pendiente»,
+  comisión anulada); **reembolsos registrados** (`OrderRefund`: pendiente → confirmado con
+  referencia, hasta lo cobrado; nunca toca `PaymentTransaction` ni la pasarela); **métricas**:
+  ventas sin cancelados, «Cobros» aparte (vigentes, cancelados con cobro, cobros tardíos,
+  reembolsos, neto, aún en la tienda), margen con los cancelados listados aparte.
+- Decisiones a confirmar por el propietario: **DEC-COMMERCE-CANCEL-01**. Deuda en
+  `docs/AUDIT_MEMORY.md` §10. Despliegue: `docs/despliegue-produccion.md` §7 (`0124`, `0125`,
+  `0136`, `0137`).
+
 ## 2026-10-15 — #123 (DEVICE-COMMERCE-01) desplegado en producción
 
 **Producción en `04640cf`** desde el 2026-10-15, 14:52 (Lima), desde `041d0fd`. Sólo #123:
