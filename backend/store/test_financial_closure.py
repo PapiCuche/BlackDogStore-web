@@ -182,6 +182,48 @@ class PosSuperiorAuthorityTest(_ClosureBase):
         self.assertEqual((refused.exception.code, refused.exception.http_status), ('superior_required', 403))
 
 
+class GuardEdgesTest(_ClosureBase):
+    """Mutation pass: the exact edges of the new guards."""
+
+    def test_the_window_edge_is_inclusive(self):
+        sale = self.till_sale(1)
+        sold = sale.paid_at
+        self.assertEqual(cancelling.superior_conditions(sale, now=sold + timedelta(days=7)), [])
+        self.assertEqual(
+            [c['code'] for c in cancelling.superior_conditions(sale, now=sold + timedelta(days=7, seconds=1))],
+            ['older_than_window'])
+
+    def test_a_company_without_settings_gets_seven_days(self):
+        CompanySettings.objects.filter(company=self.company).delete()
+        self.company.refresh_from_db()
+        self.assertEqual(cancelling.simple_days(self.company), 7)
+
+    def test_the_superior_needs_both_capabilities(self):
+        only_company, _ = _p2d_member(self.company, 'solo_empresa_2', ['company.view', 'company.manage'])
+        self.assertFalse(cancelling.may_cancel_as_superior(only_company, self.company))
+        self.assertFalse(cancelling.may_cancel_as_superior(self.manager, self.company))
+        self.assertTrue(cancelling.may_cancel_as_superior(self.superior, self.company))
+
+    def test_the_evidence_edge_is_ten_characters(self):
+        self.assertEqual(refunds.clean_evidence(' 0123456789 '), '0123456789')
+        with self.assertRaises(refunds.RefundError) as short:
+            refunds.clean_evidence('012345678')
+        self.assertEqual(short.exception.code, 'evidence_required')
+        self.assertEqual(len(refunds.clean_evidence('x' * 300)), 300)
+
+    def test_a_cancelled_sale_is_not_settled(self):
+        from store import commission_services
+
+        sale = self.till_sale(1)
+        commission = self.commission(sale)
+        Order.objects.filter(pk=sale.pk).update(status=Order.Status.CANCELLED)
+        with self.assertRaises(commission_services.CommissionError) as refused:
+            commission_services.settle(commission, self.superior)
+        self.assertEqual(refused.exception.code, 'sale_cancelled')
+        commission.refresh_from_db()
+        self.assertEqual(commission.status, SalesCommission.STATUS_ACCRUED)
+
+
 class PosCancelWindowSettingTest(_ClosureBase):
     def patch(self, client, value):
         return client.patch(f'/api/admin/company-settings/?{self.q}', {'pos_cancel_simple_days': value},
