@@ -227,7 +227,7 @@ def simple_days(company) -> int:
     return DEFAULT_POS_CANCEL_SIMPLE_DAYS if value is None else int(value)
 
 
-def superior_conditions(order, *, now=None) -> list[dict]:
+def superior_conditions(order, *, now=None, restore_stock=True) -> list[dict]:
     """
     FINANCIAL-CLOSURE (owner, 2026-10-16). Why annulling the till sale
     `order` takes a superior, in a fixed order; empty for a simple case and
@@ -240,7 +240,10 @@ def superior_conditions(order, *, now=None) -> list[dict]:
       live_fiscal_document  a boleta/factura stands — it is never voided here:
                             it stays, flagged «nota de crédito pendiente»;
       commission_settled    the seller's commission was already paid out;
-      several_branches      the sale took stock from more than one branch.
+      several_branches      the sale took stock from more than one branch;
+      no_stock_restore      annulled WITHOUT putting stock back (review: a
+                            non-standard operation — the goods came back by
+                            a manual return the sale does not know about).
     """
     if mode_of(order) != MODE_POS:
         return []
@@ -264,6 +267,9 @@ def superior_conditions(order, *, now=None) -> list[dict]:
         order_id=order.pk, movement_type=StockMovement.SALE_EXIT).values_list('branch_id', flat=True))
     if len(branches) > 1:
         conditions.append(_blocker('several_branches', 'La venta sacó stock de varias sucursales.'))
+    if not restore_stock:
+        conditions.append(_blocker(
+            'no_stock_restore', 'Se anula sin reponer stock (la mercadería volvió por una devolución manual).'))
     return conditions
 
 
@@ -324,7 +330,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
                 'goods_return_required',
                 'Confirma que la mercadería volvió al local antes de anular la venta.')
         # FINANCIAL-CLOSURE: an old or complex till sale is a superior's.
-        conditions = superior_conditions(locked)
+        conditions = superior_conditions(locked, restore_stock=restore_stock)
         if conditions and not may_cancel_as_superior(user, locked.company):
             raise OrderCancelError(**superior_blocker(conditions), conditions=conditions)
         # Review P2. Annulling without putting stock back is the cashier's

@@ -904,7 +904,8 @@ class AdminCommissionsView(APIView):
     a later annulment voids — it was never owed):
         accrued      owed, not yet paid out;
         settled      paid out (`commission_services.settle`); kept even when
-                     the sale is annulled later;
+                     the sale is annulled later — that sale then counts in
+                     `annulled_sales` / `annulled_net_amount`, not in `sales`;
         voided       annulled before being paid out — shown, never counted;
         recoverable  the compensating adjustments of settled commissions whose
                      sale was annulled, by the day of the annulment (negative:
@@ -964,6 +965,8 @@ class AdminCommissionsView(APIView):
                 'settled': zero,
                 'voided': zero,
                 'voided_sales': 0,
+                'annulled_sales': 0,
+                'annulled_net_amount': zero,
                 'recoverable': zero,
             })
 
@@ -973,8 +976,14 @@ class AdminCommissionsView(APIView):
                 entry['voided'] += row.amount
                 entry['voided_sales'] += 1
                 continue
-            entry['sales'] += 1
-            entry['net_amount'] += row.base_amount
+            if row.order.status == Order.Status.CANCELLED:
+                # Review P2: settled, then its sale was annulled. The commission
+                # stays settled (paid out); the sale is not a current sale.
+                entry['annulled_sales'] += 1
+                entry['annulled_net_amount'] += row.base_amount
+            else:
+                entry['sales'] += 1
+                entry['net_amount'] += row.base_amount
             entry[row.status if row.status == SalesCommission.STATUS_SETTLED else 'accrued'] += row.amount
         for adjustment in adjustments:
             entry_for(adjustment.seller_id, adjustment.seller_name_snapshot)['recoverable'] += adjustment.amount
@@ -994,6 +1003,7 @@ class AdminCommissionsView(APIView):
                 {
                     **entry,
                     'net_amount': cents(entry['net_amount']),
+                    'annulled_net_amount': cents(entry['annulled_net_amount']),
                     'accrued': cents(entry['accrued']),
                     'settled': cents(entry['settled']),
                     'voided': cents(entry['voided']),

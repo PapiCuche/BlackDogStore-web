@@ -37,6 +37,7 @@ instead of racing past the ceiling.
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -52,6 +53,11 @@ LEGACY_CONFIRM_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPER
 
 REFERENCE_MIN, REFERENCE_MAX = 3, 120
 EVIDENCE_MIN, EVIDENCE_MAX = 10, 300
+#: Review P2: what makes text say something. Evidence: 6+ letters or digits,
+#: at least 4 of them different ('aaaaaaaaaa' is not an operation number);
+#: a reference: 3+ letters or digits.
+EVIDENCE_MIN_ALNUM, EVIDENCE_MIN_DISTINCT = 6, 4
+REFERENCE_MIN_ALNUM = 3
 NOTE_MAX = 500
 ZERO = Decimal('0.00')
 CENT = Decimal('0.01')
@@ -67,6 +73,7 @@ class RefundError(Exception):
     _BAD_REQUEST = frozenset([
         'amount_invalid', 'method_invalid', 'reference_required', 'reference_too_long', 'note_too_long',
         'evidence_required', 'evidence_invalid', 'evidence_too_long', 'amount_mismatch',
+        'reference_invalid', 'note_invalid',
     ])
 
     def __init__(self, code: str, detail: str):
@@ -141,8 +148,31 @@ def clean_amount(value) -> Decimal:
     return amount.quantize(CENT)
 
 
-def _clean_text(value, *, max_length, code, label) -> str:
-    text = ' '.join(str(value or '').split())
+def _visible(value, *, field, label) -> str:
+    """
+    Review P2. The text as people see it: invisible format characters
+    (zero-width spaces, joiners, bidi marks — Unicode Cf) are dropped,
+    whitespace is collapsed, and any other control character (NUL, BEL…:
+    Unicode Cc that is not whitespace) is a 400 `<field>_invalid` instead of
+    reaching the database (a NUL there was a 500).
+    """
+    kept = []
+    for char in str(value or ''):
+        category = unicodedata.category(char)
+        if category == 'Cf':
+            continue
+        if category == 'Cc' and not char.isspace():
+            raise RefundError(f'{field}_invalid', f'{label} lleva caracteres de control no permitidos.')
+        kept.append(char)
+    return ' '.join(''.join(kept).split())
+
+
+def _alnum(text) -> list[str]:
+    return [char for char in text if char.isalnum()]
+
+
+def _clean_text(value, *, max_length, code, label, field='note') -> str:
+    text = _visible(value, field=field, label=label)
     if len(text) > max_length:
         raise RefundError(code, f'{label} no puede pasar de {max_length} caracteres.')
     return text
@@ -197,12 +227,15 @@ def clean_evidence(value) -> str:
     """What makes the confirmation verifiable: text only, at least `EVIDENCE_MIN` characters."""
     if value is not None and not isinstance(value, str):
         raise RefundError('evidence_invalid', 'La evidencia del reembolso debe ser texto.')
-    text = _clean_text(value, max_length=EVIDENCE_MAX, code='evidence_too_long', label='La evidencia')
-    if len(text) < EVIDENCE_MIN:
+    text = _clean_text(value, max_length=EVIDENCE_MAX, code='evidence_too_long', label='La evidencia',
+                       field='evidence')
+    letters = _alnum(text)
+    if (len(text) < EVIDENCE_MIN or len(letters) < EVIDENCE_MIN_ALNUM
+            or len(set(letters)) < EVIDENCE_MIN_DISTINCT):
         raise RefundError(
             'evidence_required',
             'Escribe la evidencia del reembolso: número de operación, banco o canal y fecha '
-            f'(al menos {EVIDENCE_MIN} caracteres).')
+            f'(al menos {EVIDENCE_MIN} caracteres, con {EVIDENCE_MIN_ALNUM} letras o números).')
     return text
 
 
@@ -213,8 +246,9 @@ def confirm(refund, user, *, reference, evidence=None, amount=None, note='', req
     """
     if not isinstance(reference, str):
         reference = ''
-    reference = _clean_text(reference, max_length=REFERENCE_MAX, code='reference_too_long', label='La referencia')
-    if len(reference) < REFERENCE_MIN:
+    reference = _clean_text(reference, max_length=REFERENCE_MAX, code='reference_too_long', label='La referencia',
+                            field='reference')
+    if len(reference) < REFERENCE_MIN or len(_alnum(reference)) < REFERENCE_MIN_ALNUM:
         raise RefundError(
             'reference_required',
             f'Escribe la referencia del reembolso (número de operación o voucher, al menos {REFERENCE_MIN} caracteres).')

@@ -209,7 +209,7 @@ class GuardEdgesTest(_ClosureBase):
         with self.assertRaises(refunds.RefundError) as short:
             refunds.clean_evidence('012345678')
         self.assertEqual(short.exception.code, 'evidence_required')
-        self.assertEqual(len(refunds.clean_evidence('x' * 300)), 300)
+        self.assertEqual(len(refunds.clean_evidence(('BCP 0123456789 ' * 20)[:300])), 299)
 
     def test_a_cancelled_sale_is_not_settled(self):
         from store import commission_services
@@ -459,7 +459,9 @@ class CommissionClosureTest(_ClosureBase):
         [row] = body['results']
         self.assertEqual((row['accrued'], row['settled'], row['voided'], row['recoverable'], row['commission']),
                          ('3.00', '6.50', '1.00', '-4.00', '5.50'))
-        self.assertEqual(row['sales'], 3)
+        # Review P2: the settled commission of an annulled sale stays settled, its sale is not current.
+        self.assertEqual((row['sales'], row['net_amount'], row['annulled_sales'], row['annulled_net_amount']),
+                         (2, '196.00', 1, '98.00'))
         self.assertEqual(body['total_commission'], '5.50')
         self.assertEqual((body['totals']['accrued'], body['totals']['settled'], body['totals']['voided'],
                           body['totals']['recoverable']), ('3.00', '6.50', '1.00', '-4.00'))
@@ -615,6 +617,10 @@ class FinancialBoardsFixtureTest(_ClosureBase):
         self.assertEqual(body['totals'], {'accrued': '1.00', 'settled': '2.00', 'voided': '1.00',
                                           'recoverable': '-2.00'})
         self.assertEqual(body['total_commission'], '1.00')
+        [row] = body['results']
+        # P1 accrued, P3 settled then annulled (apart), P2 voided (apart).
+        self.assertEqual((row['sales'], row['net_amount'], row['annulled_sales'], row['annulled_net_amount'],
+                          row['voided_sales']), (1, '98.00', 1, '98.00', 1))
 
     def test_the_internal_dashboard(self):
         sales = self.get('/api/me/internal-dashboard/')['sales']
@@ -683,3 +689,110 @@ class SupplierPayableAfterCancelTest(_CostShop, TestCase):
         self.pay(order)
         cancelling.cancel_paid_order(order, self.staff, REASON)
         self.assertEqual(supply.pending_settlement(self.company), [])
+
+
+# -- independent review of 315bedf..b7ae083 ----------------------------------------------
+
+class ReviewTextTest(_ClosureBase):
+    """P2: evidence and reference are visible, meaningful text; control characters are a 400, never a 500."""
+
+    def setUp(self):
+        super().setUp()
+        self.order = self.web_order()
+        self.post_cancel(self.order, refund_method='cash')
+        self.refund = OrderRefund.objects.get()
+
+    def confirm(self, **body):
+        base = {'reference': 'OP-123456', 'evidence': EVIDENCE, 'amount': '147.00'}
+        return self.post_confirm(self.order, self.refund, self.superior_desk, **{**base, **body})
+
+    def test_evidence_that_says_nothing_is_refused(self):
+        for evidence in ('​' * 10, '..........', '----------', 'aaaa......', ' ​​a b c d e​'):
+            with self.subTest(evidence=evidence):
+                response = self.confirm(evidence=evidence)
+                self.assertEqual((response.status_code, response.json()['code']), (400, 'evidence_required'))
+        self.refund.refresh_from_db()
+        self.assertEqual(self.refund.status, 'pending')
+
+    def test_a_repeated_character_is_not_evidence(self):
+        response = self.confirm(evidence='aaaaaaaaaa')
+        self.assertEqual((response.status_code, response.json()['code']), (400, 'evidence_required'))
+
+    def test_invisible_characters_are_stripped_from_what_is_kept(self):
+        response = self.confirm(evidence='BCP​ op.​ 998877 16/10', reference='​OP-77​')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.refund.refresh_from_db()
+        self.assertEqual((self.refund.evidence, self.refund.reference), ('BCP op. 998877 16/10', 'OP-77'))
+
+    def test_a_reference_needs_three_letters_or_digits(self):
+        for reference in ('...', '​​​AB', '-/-'):
+            with self.subTest(reference=reference):
+                response = self.confirm(reference=reference)
+                self.assertEqual((response.status_code, response.json()['code']), (400, 'reference_required'))
+
+    def test_control_characters_are_a_bad_request(self):
+        for field in ('evidence', 'reference', 'note'):
+            for bad in ('BCP op. 998877\x00 16/10', 'BCP op. 998877\x07 16/10'):
+                with self.subTest(field=field, bad=bad):
+                    response = self.confirm(**{field: bad})
+                    self.assertEqual(response.status_code, 400, response.content)
+                    self.assertEqual(response.json()['code'], f'{field}_invalid')
+        recorded = self.post_refund(self.order, amount='1.00', method='cash', note='nota\x00rota')
+        self.assertEqual((recorded.status_code, recorded.json()['code']), (400, 'note_invalid'))
+        self.refund.refresh_from_db()
+        self.assertEqual(self.refund.status, 'pending')
+
+    def test_ordinary_line_breaks_are_whitespace(self):
+        response = self.confirm(evidence='BCP\nop. 998877\t16/10')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.refund.refresh_from_db()
+        self.assertEqual(self.refund.evidence, 'BCP op. 998877 16/10')
+
+
+class ReviewSuperiorTest(_ClosureBase):
+    def test_annulling_without_restoring_stock_is_a_superiors(self):
+        sale = self.till_sale(2)
+        self.assertEqual(self.detail(sale)['cancel_superior_conditions'], [])
+        response = self.post_cancel(sale, goods_returned=True, restore_stock=False)
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual([c['code'] for c in response.json()['conditions']], ['no_stock_restore'])
+        self.assertIn('sin reponer stock', response.json()['detail'])
+        self.assertEqual(Order.objects.get(pk=sale.pk).status, Order.Status.PAID)
+
+        done = self.post_cancel(sale, client=self.superior_desk, goods_returned=True, restore_stock=False)
+
+        self.assertEqual(done.status_code, 200, done.content)
+        audit = AdminAuditLog.objects.get(action='order_cancelled', target_id=str(sale.pk))
+        self.assertEqual((audit.metadata['authority'], audit.metadata['superior_conditions'],
+                          audit.metadata['stock_restore_skipped']), ('superior', ['no_stock_restore'], True))
+
+
+class LegacySuperiorTest(TestCase):
+    """P2: on the pilot's legacy bridge, sales annuls simple till sales; only admin/superadmin the rest."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from store.tests import _p60_paid_order, _p60_product, _p60_users
+
+        cache.clear()
+        self.users = _p60_users()
+        product = _p60_product(name='Cable superior', inventory=10, price='49.00')
+        self.sale = _p60_paid_order(product, quantity=1, sales_channel='pos')
+        inventory.record_sale_stock_movements(self.sale)
+        Order.objects.filter(pk=self.sale.pk).update(
+            fulfillment_status='delivered', paid_at=timezone.now() - timedelta(days=30))
+
+    def cancel(self, role):
+        client = APIClient()
+        client.force_authenticate(self.users[role])
+        return client.post(f'/api/admin/orders/{self.sale.pk}/cancel/',
+                           {'reason': REASON, 'goods_returned': True}, format='json')
+
+    def test_legacy_sales_is_refused_and_legacy_admin_annuls(self):
+        refused = self.cancel('sales')
+        self.assertEqual((refused.status_code, refused.json()['code']), (403, 'superior_required'))
+        self.assertEqual(Order.objects.get(pk=self.sale.pk).status, Order.Status.PAID)
+        done = self.cancel('admin')
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertEqual(Order.objects.get(pk=self.sale.pk).status, Order.Status.CANCELLED)

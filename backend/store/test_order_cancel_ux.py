@@ -713,7 +713,9 @@ class PosAnnulAfterManualReturnTest(_UxBase):
         self.assertEqual(self.cable_stock(), 19)
 
     def test_annulled_without_restoring_stock_it_is_recorded_and_audited(self):
-        response = self.post_cancel(self.sale, goods_returned=True, restore_stock=False)
+        # Review of the financial closure: annulling without stock is a superior's.
+        _admin, superior = self.admin_client('superior_sin_stock')
+        response = self.post_cancel(self.sale, client=superior, goods_returned=True, restore_stock=False)
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(self.cable_stock(), 19)
