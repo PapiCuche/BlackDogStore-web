@@ -21,8 +21,10 @@ from rest_framework.test import APIClient
 
 from store import inventory_services as inventory
 from store import order_cancellation as cancelling
+from store import order_refunds as refunds
 from store.models import (
-    AdminAuditLog, CompanySettings, FiscalDocument, Order, OrderCancellation, SalesCommission, StockMovement,
+    AdminAuditLog, CompanySettings, FiscalDocument, Order, OrderCancellation, OrderRefund, SalesCommission,
+    StockMovement,
 )
 from store import test_order_cancel as cancel_tests
 from store.test_order_cancel import REASON, RETURN
@@ -198,3 +200,114 @@ class PosCancelWindowSettingTest(_ClosureBase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['settings']['pos_cancel_simple_days'], 0)
         self.assertEqual(self.patch(client, 365).json()['settings']['pos_cancel_simple_days'], 365)
+
+
+# -- decision 2 · a confirmed refund is evidence, not a cancellation ---------------------
+
+EVIDENCE = 'Transferencia BCP op. 00123456 del 16/10/2026'
+
+
+class RefundEvidenceTest(_ClosureBase):
+    def setUp(self):
+        super().setUp()
+        self.order = self.web_order()                         # 3 × 49.00 = 147.00
+
+    def confirm(self, refund, client=None, **body):
+        return self.post_confirm(self.order, refund, client or self.superior_desk, **body)
+
+    def full(self, refund, **extra):
+        return {'reference': 'OP-123456', 'evidence': EVIDENCE, 'amount': str(refund.amount), **extra}
+
+    def test_cancelling_never_confirms_a_refund_in_any_mode(self):
+        till = self.till_sale(1)
+        unpaid = self.unpaid_order()
+        for order, extra in ((self.order, {'refund_method': 'gateway'}), (till, {'goods_returned': True,
+                                                                               'refund_method': 'cash'}),
+                             (unpaid, {'refund_method': 'cash'})):
+            with self.subTest(order.sales_channel, paid=order.paid):
+                self.assertEqual(self.post_cancel(order, client=self.superior_desk, **extra).status_code, 200)
+        self.assertFalse(OrderRefund.objects.filter(status=OrderRefund.STATUS_CONFIRMED).exists())
+        self.assertEqual(set(OrderRefund.objects.values_list('order_id', 'status')),
+                         {(self.order.pk, 'pending'), (till.pk, 'pending')})
+        for order in (self.order, till):
+            self.assertEqual(refunds.summary(order)['confirmed'], D('0.00'))
+            self.assertEqual(refunds.summary(order)['held'], order.total)
+
+    def test_confirming_needs_evidence_reference_and_the_exact_amount(self):
+        self.post_cancel(self.order, refund_method='transfer')
+        refund = OrderRefund.objects.get()
+        for body, code in (
+            ({'reference': 'OP-1', 'amount': '147.00'}, 'evidence_required'),
+            ({'reference': 'OP-1', 'amount': '147.00', 'evidence': ' corto '}, 'evidence_required'),
+            ({'reference': 'OP-1', 'amount': '147.00', 'evidence': {'op': '123'}}, 'evidence_invalid'),
+            ({'reference': 'OP-1', 'amount': '147.00', 'evidence': ['Transferencia BCP 1234']}, 'evidence_invalid'),
+            ({'reference': 'OP-1', 'amount': '147.00', 'evidence': 'x' * 301}, 'evidence_too_long'),
+            ({'reference': 'OP-1', 'evidence': EVIDENCE}, 'amount_invalid'),
+            ({'reference': 'OP-1', 'evidence': EVIDENCE, 'amount': '100.00'}, 'amount_mismatch'),
+            ({'reference': 'OP-1', 'evidence': EVIDENCE, 'amount': '147.01'}, 'amount_mismatch'),
+            ({'reference': ['OP-1'], 'evidence': EVIDENCE, 'amount': '147.00'}, 'reference_required'),
+        ):
+            with self.subTest(body=body):
+                response = self.confirm(refund, **body)
+                self.assertEqual((response.status_code, response.json()['code']), (400, code), response.content)
+        refund.refresh_from_db()
+        self.assertEqual((refund.status, refund.evidence), ('pending', ''))
+
+        done = self.confirm(refund, **self.full(refund))
+
+        self.assertEqual(done.status_code, 200, done.content)
+        refund.refresh_from_db()
+        self.assertEqual((refund.status, refund.evidence, refund.reference, refund.confirmed_by),
+                         ('confirmed', EVIDENCE, 'OP-123456', self.superior))
+        [item] = done.json()['refunds']['items']
+        self.assertEqual(item['evidence'], EVIDENCE)
+
+    def test_only_the_companys_administrator_confirms(self):
+        self.post_cancel(self.order, refund_method='cash')
+        refund = OrderRefund.objects.get()
+        self.assertEqual(self.confirm(refund, client=self.desk, **self.full(refund)).status_code, 403)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, 'pending')
+
+    def test_the_audit_proves_the_evidence_without_copying_it(self):
+        import hashlib
+
+        self.post_cancel(self.order, refund_method='cash')
+        refund = OrderRefund.objects.get()
+        self.confirm(refund, **self.full(refund, note='Entregado a Rosa Quispe, DNI 40404040'))
+        audit = AdminAuditLog.objects.get(action='order_refund_confirmed')
+        self.assertEqual(audit.metadata['evidence_sha256'], hashlib.sha256(EVIDENCE.encode()).hexdigest())
+        self.assertEqual(audit.metadata['amount'], '147.00')
+        self.assertEqual(audit.metadata['reference'], 'OP-123456')
+        self.assertEqual(audit.actor, self.superior)
+        for value in audit.metadata.values():
+            self.assertNotIn('BCP', str(value))
+            self.assertNotIn('40404040', str(value))
+            self.assertNotIn('Rosa', str(value))
+
+    def test_a_partial_refund_is_a_smaller_pending_then_its_confirmation(self):
+        self.post_cancel(self.order)                          # no refund chosen
+        self.assertFalse(OrderRefund.objects.exists())
+        self.assertEqual(self.post_refund(self.order, amount='47.00', method='transfer').status_code, 201)
+        first = OrderRefund.objects.get()
+        self.assertEqual(self.confirm(first, **self.full(first)).status_code, 200)
+        figures = refunds.summary(self.order)
+        self.assertEqual((figures['collected'], figures['confirmed'], figures['pending'], figures['refundable'],
+                          figures['held']), (D('147.00'), D('47.00'), D('0.00'), D('100.00'), D('100.00')))
+        # The rest, then nothing more: the ceiling holds.
+        self.assertEqual(self.post_refund(self.order, amount='100.00', method='cash').status_code, 201)
+        over = self.post_refund(self.order, amount='0.01', method='cash')
+        self.assertEqual((over.status_code, over.json()['code']), (409, 'nothing_to_refund'))
+        second = OrderRefund.objects.get(status='pending')
+        self.assertEqual(self.confirm(second, **self.full(second, reference='CAJA-77')).status_code, 200)
+        self.assertEqual(refunds.summary(self.order)['held'], D('0.00'))
+        self.assertTrue(Order.objects.get(pk=self.order.pk).paid)
+
+    def test_a_full_refund_recorded_with_the_cancellation(self):
+        self.post_cancel(self.order, refund_method='gateway')
+        refund = OrderRefund.objects.get()
+        self.assertEqual(refund.amount, D('147.00'))
+        self.assertEqual(self.confirm(refund, **self.full(refund)).status_code, 200)
+        figures = refunds.summary(self.order)
+        self.assertEqual((figures['confirmed'], figures['held'], figures['refundable']),
+                         (D('147.00'), D('0.00'), D('0.00')))

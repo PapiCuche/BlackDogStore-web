@@ -38,6 +38,8 @@ from store.test_payment_hardening import Base as PaymentBase
 from store.tests import _p2d_member, _prod
 
 MANAGE = ['company.view', 'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage']
+#: FINANCIAL-CLOSURE (owner, 2026-10-16): a confirmation carries its evidence.
+EVIDENCE = 'Transferencia BCP op. 00123456 del 16/10/2026'
 
 
 class _UxBase(_Base):
@@ -341,7 +343,8 @@ class RefundTest(_UxBase):
         missing = self.post_confirm(self.order, refund, self.admin_desk, reference=' ab ')
         self.assertEqual((missing.status_code, missing.json()['code']), (400, 'reference_required'))
 
-        done = self.post_confirm(self.order, refund, self.admin_desk, reference='IZI-998877', note='Voucher en caja')
+        done = self.post_confirm(self.order, refund, self.admin_desk, reference='IZI-998877', note='Voucher en caja',
+                                 evidence=EVIDENCE, amount='147.00')
 
         self.assertEqual(done.status_code, 200, done.content)
         refund.refresh_from_db()
@@ -352,7 +355,8 @@ class RefundTest(_UxBase):
         block = done.json()['refunds']
         self.assertEqual((block['confirmed'], block['pending'], block['held']), ('147.00', '0.00', '0.00'))
         self.assertEqual(AdminAuditLog.objects.filter(action='order_refund_confirmed').count(), 1)
-        again = self.post_confirm(self.order, refund, self.admin_desk, reference='IZI-998877')
+        again = self.post_confirm(self.order, refund, self.admin_desk, reference='IZI-998877', evidence=EVIDENCE,
+                                  amount='147.00')
         self.assertEqual((again.status_code, again.json()['code']), (409, 'already_confirmed'))
         self.attempt.refresh_from_db()
         self.assertEqual(self.attempt.status, PaymentTransaction.Status.AUTHORIZED)
@@ -426,7 +430,8 @@ class MetricsFixtureTest(_UxBase):
             item.pk: (item.unit_cost, item.net_amount) for item in OrderItem.objects.filter(product=self.mouse)}
 
         self.post_cancel(self.b, refund_method='transfer')
-        self.post_confirm(self.b, OrderRefund.objects.get(order=self.b), self.admin_desk, reference='TR-1')
+        self.post_confirm(self.b, OrderRefund.objects.get(order=self.b), self.admin_desk, reference='TR-1',
+                          evidence=EVIDENCE, amount='50.00')
         self.post_cancel(self.c, refund_method='gateway')
         self.post_cancel(self.d, goods_returned=True)
         self.post_cancel(self.e)
@@ -585,7 +590,8 @@ class RefundRaceTest(_RaceBase):
         refund = refunds.record_pending(self.order, self.user, method='cash')
 
         def confirm():
-            return refunds.confirm(OrderRefund.objects.get(pk=refund.pk), self.user, reference='CAJA-1')
+            return refunds.confirm(OrderRefund.objects.get(pk=refund.pk), self.user, reference='CAJA-1',
+                                   evidence=EVIDENCE, amount=refund.amount)
 
         outcomes = self.race(('a', confirm), ('b', confirm))
 
@@ -628,9 +634,9 @@ class GuardEdgesTest(_UxBase):
         stray = OrderRefund.objects.create(company=self.company, order=order, amount=D('0.01'), method='cash')
         admin, _ = self.admin_client('admin_techo')
         first = OrderRefund.objects.exclude(pk=stray.pk).get()
-        refunds.confirm(first, admin, reference='OP-1')
+        refunds.confirm(first, admin, reference='OP-1', evidence=EVIDENCE, amount=first.amount)
         with self.assertRaises(refunds.RefundError) as refused:
-            refunds.confirm(stray, admin, reference='OP-2')
+            refunds.confirm(stray, admin, reference='OP-2', evidence=EVIDENCE, amount=stray.amount)
         self.assertEqual(refused.exception.code, 'amount_exceeds')
         stray.refresh_from_db()
         self.assertEqual(stray.status, 'pending')
@@ -667,7 +673,7 @@ class LegacyRefundTest(TestCase):
 
     def confirm(self, role):
         return self.client_for(role).post(
-            f'/api/admin/orders/{self.order.pk}/refunds/{self.refund.pk}/confirm/', {'reference': 'CAJA-9'},
+            f'/api/admin/orders/{self.order.pk}/refunds/{self.refund.pk}/confirm/', {'reference': 'CAJA-9', 'evidence': EVIDENCE, 'amount': '49.00'},
             format='json')
 
     def test_sales_records_but_does_not_confirm_and_inventory_does_neither(self):

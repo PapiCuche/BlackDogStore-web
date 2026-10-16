@@ -1774,9 +1774,10 @@ class AdminOrderRefundListView(APIView):
 class AdminOrderRefundConfirmView(APIView):
     """
     POST /api/admin/orders/{pk}/refunds/{refund_pk}/confirm/ — body
-    `{reference, note?}`: the money went back. `sales.orders.manage` AND
-    `company.manage` (legacy bridge: admin, superadmin); a reference is
-    required. Once: a confirmed refund answers 409.
+    `{reference, evidence, amount, note?}`: the money went back.
+    `sales.orders.manage` AND `company.manage` (legacy bridge: admin,
+    superadmin); the reference, the evidence (text) and exactly the pending
+    amount are required. Once: a confirmed refund answers 409.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderStatusChangeThrottle]
@@ -1800,6 +1801,7 @@ class AdminOrderRefundConfirmView(APIView):
         body = request.data if isinstance(request.data, dict) else {}
         try:
             order_refunds.confirm(refund, request.user, reference=body.get('reference') or '',
+                                  evidence=body.get('evidence'), amount=body.get('amount'),
                                   note=body.get('note') or '', request=request)
         except order_refunds.RefundError as exc:
             return Response(exc.body(), status=exc.http_status)
