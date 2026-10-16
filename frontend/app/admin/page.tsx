@@ -43,6 +43,7 @@ import {
   SummaryStatCard,
   formatSoles,
 } from "./components/dashboard-ui";
+import { DashboardCancelledMoney } from "./components/CancelledMoneyNotes";
 import { ModuleCard } from "./components/internal-ui";
 import {
   IconAdministration,
@@ -219,6 +220,7 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
               icon={IconSales}
             />
           </div>
+          <DashboardCancelledMoney collections={sales.collections} />
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <ChartCard

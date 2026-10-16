@@ -103,6 +103,16 @@ export type SalesSnapshot = {
   awaiting_fulfillment: number;
   revenue_trend: SeriesPoint[];
   orders_by_status: SeriesPoint[];
+  /** Cierre financiero: el dinero de los cancelados, aparte de las ventas. Ausente en una respuesta anterior. */
+  collections?: DashboardCollections;
+};
+
+/** Cierre financiero (2026-10-16): importes en soles, como texto con dos decimales. */
+export type DashboardCollections = {
+  cancelled_paid: { orders: number; amount: string };
+  refunds_confirmed: string;
+  refunds_pending: string;
+  cancelled_held: string;
 };
 
 /**
@@ -670,6 +680,9 @@ export type CustomerDetail = CustomerRow & {
     /** Decimal as a string: money does not survive a round trip through float. */
     paid_amount: string;
     last_purchase_at: string | null;
+    /** Cierre financiero: pedidos cancelados (fuera de las compras) y reembolsos confirmados. */
+    cancelled_orders?: number;
+    refunds_confirmed?: string;
   };
   orders: CustomerOrderRow[];
   orders_truncated: boolean;
