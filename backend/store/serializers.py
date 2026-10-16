@@ -1527,6 +1527,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # the shelf has it. Changing them takes `settings.manage` too.
             'device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes',
             'web_on_order_over_stock',
+            # FINANCIAL-CLOSURE (owner, 2026-10-16) — days a till sale is
+            # annulled without a superior. `settings.manage` too.
+            'pos_cancel_simple_days',
             'updated_at',
         ]
         read_only_fields = [

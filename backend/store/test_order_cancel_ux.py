@@ -250,8 +250,10 @@ class TillSaleTest(_UxBase):
         sale = self.till_sale()
         document = PapersTest.fiscal_document(self, sale)
         before = FiscalDocument.objects.filter(pk=document.pk).values().get()
+        # FINANCIAL-CLOSURE (owner, 2026-10-16): a sale with a live boleta is a superior's.
+        _admin, superior = self.admin_client('superior_boleta')
 
-        self.post_cancel(sale, goods_returned=True)
+        self.assertEqual(self.post_cancel(sale, client=superior, goods_returned=True).status_code, 200)
 
         self.assertEqual(FiscalDocument.objects.filter(pk=document.pk).values().get(), before)
         cancellation = OrderCancellation.objects.get(order=sale)

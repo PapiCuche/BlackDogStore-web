@@ -1256,6 +1256,12 @@ def _order_detail_payload(request, order, company):
         transitions = []
     cancel_blockers = cancelling.blockers(order)
     may_cancel = cancelling.may_cancel(request.user, company)
+    # FINANCIAL-CLOSURE: an old or complex till sale is annulled by a superior.
+    # Whoever is not one reads why, as a blocker; a superior is warned.
+    superior_conditions = cancelling.superior_conditions(order) if not cancel_blockers else []
+    needs_superior = bool(superior_conditions) and not cancelling.may_cancel_as_superior(request.user, company)
+    if needs_superior:
+        cancel_blockers = [cancelling.superior_blocker(superior_conditions)]
     from . import order_refunds
 
     refunds_block = None
@@ -1275,6 +1281,8 @@ def _order_detail_payload(request, order, company):
         # COMMERCE-ADMIN-UX-01: which cancellation it is open to — 'unpaid',
         # 'paid' or 'pos' (a till sale: the cashier confirms the goods are back).
         'cancel_mode': cancelling.mode_of(order) if not cancel_blockers else None,
+        # FINANCIAL-CLOSURE: why this till sale takes a superior (empty when simple).
+        'cancel_superior_conditions': superior_conditions if may_cancel else [],
         'refunds': refunds_block,
         # Why not is said to whoever could cancel it; to a reader it is noise.
         'cancel_blockers': cancel_blockers if may_cancel else [],
