@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-16 — Base local SQLite: `migrate` vuelve a pasar `0131`
+
+**Fixed**
+- En SQLite (la base local de desarrollo y la de las pruebas de navegador), `migrate` se
+  detenía en `0131` con «unknown function: GEN_RANDOM_UUID()». La app le da a esa función
+  su forma para SQLite (32 dígitos hexadecimales al azar); la migración aplicada no se
+  edita y PostgreSQL (producción) no cambia.
+
 ## 2026-10-16 — COMMERCE-ADMIN-UX-01 · ronda de correcciones (en rama, NO desplegado)
 
 - **Fixed** — costo de referencia «1e30»/«Infinity» ya no da 500; equipo dado de baja sin cambio de costo; motivo de costo sólo texto; «Costos y precios» envía sólo lo cambiado y avisa no escribir montos en el motivo; aviso por «Bajo pedido» contradictorio en ofertas; modelo nuevo oculto si su primera variante no se publica. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
