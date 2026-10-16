@@ -500,6 +500,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
     category_id = serializers.IntegerField(source='category.id', read_only=True, default=None, allow_null=True)
     category_name = serializers.CharField(source='category.name', read_only=True, default='', allow_null=True)
     publication_problems = serializers.SerializerMethodField()
+    product_model_id = serializers.IntegerField(read_only=True, allow_null=True)
 
     class Meta:
         model = Product
@@ -516,6 +517,8 @@ class AdminProductSerializer(serializers.ModelSerializer):
             # DC3: «Bajo pedido» allowed or not. Read-only here; written by
             # PATCH /api/admin/products/<pk>/sale-mode/.
             'sale_mode',
+            # COMMERCE-ADMIN-UX-01: the kind of article, for «Publicación e-commerce».
+            'condition_line', 'product_model_id',
             'created_at', 'updated_at',
         ]
 

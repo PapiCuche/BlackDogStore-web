@@ -236,6 +236,43 @@ class AdminModelDetailView(APIView):
         return Response(_model_payload(model, variants=True))
 
 
+class AdminModelBulkVisibilityView(APIView):
+    """
+    POST /api/admin/catalog/models/bulk-visibility/ — {"action": "publish"|"hide", "ids": [..]}
+
+    COMMERCE-ADMIN-UX-01 — «Publicación e-commerce». `products.manage`, like
+    the model form. Answers `{action, changed, unchanged, total}`.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        from .throttles import AdminProductWriteThrottle
+
+        return [AdminProductWriteThrottle()]
+
+    def post(self, request):
+        company, error = _manage(request)
+        if error:
+            return error
+        data = request.data if isinstance(request.data, dict) else {}
+        action = data.get('action')
+        ids = data.get('ids')
+        if action not in ('publish', 'hide'):
+            return Response({'detail': 'Indica la acción: «publish» o «hide».'}, status=status.HTTP_400_BAD_REQUEST)
+        if (not isinstance(ids, list) or not ids
+                or any(isinstance(i, bool) or not isinstance(i, int) or i <= 0 for i in ids)):
+            return Response({'detail': '«ids» debe ser una lista de identificadores de modelo.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = device_catalog.set_models_visibility(
+                company=company, ids=ids, publish=action == 'publish', actor=request.user, request=request,
+            )
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response({'action': action, **result})
+
+
 class AdminAttributeListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

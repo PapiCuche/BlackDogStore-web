@@ -33,6 +33,30 @@ Rama `feat/commerce-admin-ux` (sin push). Integra #121/#119 por merge; migracion
 - Ningún pago confirmado se borra ni se modifica; no se llama a la pasarela; no se emite
   nota de crédito ni baja SUNAT; el Kardex y las instantáneas de costo no se reescriben.
 
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · Registro único, publicación y navegación (en rama, NO desplegado)
+
+- **Added** — «Productos › Registro / Carga masiva»: asistente de cuatro pasos para equipo nuevo,
+  seminuevo, accesorio/repuesto o disponible por proveedor sobre `POST /api/admin/products/register/`
+  (servicios existentes en una transacción, `Idempotency-Key`, `dry_run`); «Productos › Publicación
+  e-commerce» para todos los tipos y modelos (`POST /api/admin/catalog/models/bulk-visibility/`);
+  «Inventario › Stock y disponibilidad»; columna opcional «Bajo pedido (Sí/No)» en la plantilla de
+  ofertas; menú según el árbol del propietario. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · A1 «Costos y precios» — en rama (`wip/costs-ux`)
+
+- Inventario › Costos y precios (`costs.view`): margen, inventario al costo, costo promedio por
+  sucursal y costo de cada equipo, con su origen; precio y costo de referencia editables;
+  «Corregir costo» de un equipo con motivo auditado; estados de carga, vacío y error. Sin
+  migración. Corregir el promedio de una sucursal: PENDIENTE (DEC-DEVICE-COMMERCE-01 · A1).
+
+## 2026-10-15 — COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» (en rama, NO desplegado)
+
+- **Added** — «Ventas › Consultar disponibilidad» (`GET /api/admin/availability/`, `sales.pos.use`,
+  sólo lectura, sin migración): stock propio por sucursal y por estado del equipo, ofertas de
+  proveedores aparte («no es stock propio»), equipos con IMEI enmascarado; nunca costos.
+  «Inventario › Equipos» filtra por línea, modelo y opciones y muestra el detalle de cada equipo
+  (DEC-COMMERCE-ADMIN-UX-01).
+
 ## 2026-10-15 — Despliegue de #123 (DEVICE-COMMERCE-01)
 
 **Deployed**

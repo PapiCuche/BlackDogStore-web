@@ -50,7 +50,7 @@ type Data = {
   movements: StockMovement[];
 };
 
-function InventoryDashboardPage({ user }: { user: AuthUser }) {
+function InventoryDashboardPage({ user, canSeeCosts = false }: { user: AuthUser; canSeeCosts?: boolean }) {
   const scope = useBranchScope({ preferAggregate: true });
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
@@ -124,6 +124,8 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
               ["/admin/inventory/counts", "Recuentos"],
               ["/admin/inventory/replenishment", "Reposición"],
               ["/admin/inventory/reports", "Reportes"],
+              // A1: the value at cost and the margin have their own screen.
+              ...(canSeeCosts ? [["/admin/inventory/costs", "Costos y precios"]] : []),
             ].map(([href, label]) => (
               <Link
                 key={href}
@@ -283,7 +285,12 @@ function InventoryDashboardPage({ user }: { user: AuthUser }) {
 export default function InventoryPage() {
   return (
     <AccessGuard capability="inventory.view" legacyRoles={["inventory", "admin", "superadmin"]}>
-      {(access) => <InventoryDashboardPage user={access.user} />}
+      {(access) => (
+        <InventoryDashboardPage
+          user={access.user}
+          canSeeCosts={access.can("costs.view", ["admin", "superadmin"])}
+        />
+      )}
     </AccessGuard>
   );
 }

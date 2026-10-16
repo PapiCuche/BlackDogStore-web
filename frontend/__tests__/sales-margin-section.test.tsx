@@ -99,10 +99,12 @@ describe('Margen comercial', () => {
     expect(screen.getByTestId('realised-percent')).toHaveTextContent('—');
   });
 
-  it('si el servidor lo niega, la sección se oculta sin romper la página', async () => {
-    mocked.fetchSalesMargin.mockRejectedValue(new Error('403'));
+  it('si el servidor lo niega, la sección dice por qué en vez de ocultarse (A1)', async () => {
+    mocked.fetchSalesMargin.mockRejectedValue(new Error('Se requiere permiso para ver costos y márgenes.'));
     await show();
-    expect(screen.queryByRole('region', { name: 'Margen comercial' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Margen comercial' }))
+      .toHaveTextContent('Se requiere permiso para ver costos y márgenes.');
+    expect(screen.queryByTestId('margin-percent')).toBeNull();
   });
 
   it('una venta anterior a los costos dice que su neto es estimado', async () => {

@@ -31,6 +31,17 @@ function unit(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const MODELS = [{ id: 5, name: 'iPhone 16' }];
+const ATTRIBUTES = [
+  { id: 1, name: 'Capacidad', kind: 'text', sort_order: 0, options: [{ id: 11, label: '128 GB', swatch_hex: '', sort_order: 0 }, { id: 12, label: '256 GB', swatch_hex: '', sort_order: 1 }] },
+  { id: 2, name: 'Color', kind: 'color', sort_order: 1, options: [{ id: 21, label: 'Negro', swatch_hex: '#111111', sort_order: 0 }] },
+];
+let catalogStatus = 200;
+function catalogReply(which: 'models' | 'attributes'): Response {
+  if (catalogStatus !== 200) return reply(catalogStatus, { detail: 'Sin permiso.' });
+  return reply(200, { results: which === 'models' ? MODELS : ATTRIBUTES });
+}
+
 type Call = { method: string; path: string; body: unknown };
 let calls: Call[];
 let rows: ReturnType<typeof unit>[];
@@ -43,11 +54,15 @@ function reply(status: number, body: unknown): Response {
 
 beforeEach(() => {
   calls = [];
+  catalogStatus = 200;
   rows = [unit(), unit({ id: 2, serial_number: 'F2LXK1ABC2', imei: '356938035643817', status: 'sold', status_label: 'Vendido', order_id: 77 })];
   receiveReply = { status: 201, body: { results: [unit({ id: 3, serial_number: 'NUEVO00001' })] } };
   actionReply = { status: 200, body: unit({ status: 'reserved', status_label: 'Apartado' }) };
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    // COMMERCE-ADMIN-UX-01: the filters read the catalogue's models and options.
+    if (String(input).includes('/admin/catalog/models/')) return catalogReply('models');
+    if (String(input).includes('/admin/catalog/attributes/')) return catalogReply('attributes');
     const method = (init.method ?? 'GET').toUpperCase();
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : null });
@@ -174,4 +189,75 @@ test('an empty shelf says so', async () => {
   rows = [];
   mount();
   expect(await screen.findByText(/No hay equipos/)).toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// COMMERCE-ADMIN-UX-01 — filters by line, model and option; the detail drawer.
+// ---------------------------------------------------------------------------
+
+test('line, model, capacity and colour are filters the server answers', async () => {
+  mount({ branch: 'all' });
+  await screen.findByText('F2LXK1ABC1');
+  await screen.findByRole('option', { name: '256 GB' });
+
+  fireEvent.change(screen.getByLabelText('Línea'), { target: { value: 'used' } });
+  fireEvent.change(screen.getByLabelText('Modelo'), { target: { value: '5' } });
+  fireEvent.change(screen.getByLabelText('Capacidad'), { target: { value: '12' } });
+  fireEvent.change(screen.getByLabelText('Color'), { target: { value: '21' } });
+  fireEvent.change(screen.getByLabelText('Estado'), { target: { value: 'reserved' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Filtrar' }));
+
+  await waitFor(() => expect(gets().length).toBeGreaterThan(1));
+  const last = gets()[gets().length - 1].path;
+  for (const part of ['branch=all', 'line=used', 'model=5', 'option=12', 'option=21', 'status=reserved']) {
+    expect(last).toContain(part);
+  }
+
+  fireEvent.click(screen.getByRole('button', { name: 'Limpiar' }));
+  await waitFor(() => expect(gets()[gets().length - 1].path).not.toContain('line='));
+});
+
+test('without the catalogue the model and option filters simply are not there', async () => {
+  catalogStatus = 403;
+  mount();
+  await screen.findByText('F2LXK1ABC1');
+  expect(screen.getByLabelText('Línea')).toBeInTheDocument();
+  expect(screen.queryByLabelText('Modelo')).toBeNull();
+  expect(screen.queryByLabelText('Capacidad')).toBeNull();
+});
+
+test('the detail drawer shows the device, and its cost only to costs.view', async () => {
+  rows = [unit({
+    condition_line: 'used', battery_health: 87, cosmetic_grade_label: 'Excelente', sale_price: '2500.00',
+    status: 'reserved', status_label: 'Apartado', held_online: true, hold_until: '2026-10-15T15:30:00Z',
+  })];
+  mount({ canSeeCost: true });
+  await screen.findByText('F2LXK1ABC1');
+  expect(screen.getByText('Apartado web')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Detalle del equipo F2LXK1ABC1' }));
+  const drawer = screen.getByRole('dialog', { name: 'Detalle del equipo F2LXK1ABC1' });
+  expect(within(drawer).getByText('87%')).toBeInTheDocument();
+  expect(within(drawer).getByText('Excelente')).toBeInTheDocument();
+  expect(within(drawer).getByText(/Apartado web hasta/)).toBeInTheDocument();
+  expect(within(drawer).getByText('Costo')).toBeInTheDocument();
+  expect(within(drawer).getByText(/3[.,]?800/)).toBeInTheDocument();
+
+  fireEvent.click(within(drawer).getByRole('button', { name: 'Cerrar' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('without costs.view the drawer has no cost, even if one came', async () => {
+  mount({ canSeeCost: false });
+  await screen.findByText('F2LXK1ABC1');
+  fireEvent.click(screen.getByRole('button', { name: 'Detalle del equipo F2LXK1ABC1' }));
+  const drawer = screen.getByRole('dialog');
+  expect(within(drawer).queryByText('Costo')).toBeNull();
+  expect(within(drawer).queryByText(/3[.,]?800/)).toBeNull();
+});
+
+test('the drawer is offered to whoever can only look, too', async () => {
+  mount({ canAdjust: false });
+  await screen.findByText('F2LXK1ABC1');
+  expect(screen.getAllByRole('button', { name: /Detalle del equipo/ })).toHaveLength(2);
 });

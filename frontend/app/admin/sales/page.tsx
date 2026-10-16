@@ -207,6 +207,8 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
           companyId={companyId}
           branchId={branch}
           canSeeCosts={buildInternalAccess(ctx.user, ctx.dashboard).can("costs.view", ["admin", "superadmin"])}
+          // A1: the margin has its own screen now, under Inventario.
+          costsHref="/admin/inventory/costs"
         />
 
         <DashboardSection title="Tendencia" description="Ingresos diarios, últimos 30 días.">

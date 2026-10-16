@@ -34,6 +34,11 @@ type Props = {
   capability: string;
   /** Los roles que el backend acepta en el puente legacy para esa pantalla. */
   legacyRoles: readonly string[];
+  /**
+   * A1: what to tell someone who may not open the screen, when the generic text
+   * would not say which permission is missing or whom to ask.
+   */
+  deniedMessage?: string;
   children: (access: InternalAccess) => React.ReactNode;
 };
 
@@ -73,7 +78,7 @@ function Notice({
   );
 }
 
-export function AccessGuard({ capability, legacyRoles, children }: Props) {
+export function AccessGuard({ capability, legacyRoles, deniedMessage, children }: Props) {
   const [user, setUser] = useState<AuthUser | null | undefined>(undefined);
   const [dashboard, setDashboard] = useState<InternalDashboard | null | undefined>(undefined);
   // H4.1.2B: lo dice el servidor en el cuerpo del 403. Sin esa afirmación no hay
@@ -151,7 +156,7 @@ export function AccessGuard({ capability, legacyRoles, children }: Props) {
         message={
           needsCompany
             ? "Elige una empresa en el control interno para abrir esta sección."
-            : "Tu cuenta no tiene permiso para esta sección en esta empresa."
+            : deniedMessage ?? "Tu cuenta no tiene permiso para esta sección en esta empresa."
         }
         linkLabel="Volver al panel"
         linkHref="/admin"

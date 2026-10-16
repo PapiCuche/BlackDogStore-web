@@ -55226,6 +55226,7 @@ from .admin_views import (  # noqa: E402
     _LEGACY_VIEW_ORDERS_ROLES,
 )
 from .inventory_views import (  # noqa: E402
+    _LEGACY_COSTS_VIEW_ROLES,
     _LEGACY_INVENTORY_VIEW_ROLES,
     _LEGACY_SALES_NOTES_ROLES,
     _LEGACY_SALES_REPORT_ROLES,
@@ -55744,6 +55745,9 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         'inventory/counts/[id]/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/reports/page.tsx': ('inventory.reports', _LEGACY_SALES_REPORT_ROLES),
         'inventory/replenishment/page.tsx': ('inventory.reports', _LEGACY_INVENTORY_VIEW_ROLES),
+        # COMMERCE-ADMIN-UX-01 · A1 — «Costos y precios»: `costs.view`, whose
+        # bridge is the one `may_view_costs` / `user_may_view_costs` accept.
+        'inventory/costs/page.tsx': ('costs.view', _LEGACY_COSTS_VIEW_ROLES),
         # La bitácora no tiene puente: sin Membership el backend responde 403
         # venga el rol que venga, así que la lista tiene que estar vacía.
         'audit-logs/page.tsx': ('memberships.view', frozenset()),
@@ -55751,6 +55755,15 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # authority and its legacy set. Voiding is the platform master's alone
         # (`can_void`), whatever the screen shows; the guard only opens the list.
         'sales/notes/page.tsx': ('sales.notes.manage', _LEGACY_SALES_NOTES_ROLES),
+        # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad». Same authority as the
+        # till (`pos_views._context`): `has_capability`, no legacy bridge.
+        'sales/availability/page.tsx': ('sales.pos.use', frozenset()),
+        # COMMERCE-ADMIN-UX-01 — «Registrar artículo» (the product form's
+        # authority), «Publicación e-commerce» (the product list's) and «Stock y
+        # disponibilidad» (the inventory's).
+        'products/register/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
+        'products/publication/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'inventory/stock/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
     }
 
     _GUARD = _h412b_re.compile(

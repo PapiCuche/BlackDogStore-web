@@ -1020,7 +1020,7 @@ def reprocess_order_stock_exit(order: Order, *, actor=None, request=None) -> dic
 
 
 def apply_initial_stock(
-    *, branch, product, quantity: int, actor=None, reason: str = '', request=None,
+    *, branch, product, quantity: int, actor=None, reason: str = '', request=None, unit_cost=None,
 ) -> StockMovement | None:
     """
     Open a branch's balance for a product with an `initial_stock` Kardex line.
@@ -1031,6 +1031,10 @@ def apply_initial_stock(
     unexplained stock a Kardex is supposed to make impossible.
 
     Returns None for a zero quantity: nothing happened, so nothing is recorded.
+
+    `unit_cost` (COMMERCE-ADMIN-UX-01): what one unit cost, when the caller
+    knows it — it opens the branch's weighted average (DC1). Without it the
+    line is valued as before (reference cost, else «costo pendiente»).
     """
     quantity = int(quantity or 0)
     if quantity <= 0:
@@ -1046,6 +1050,7 @@ def apply_initial_stock(
         reference_type='product',
         reference_id=product.pk,
         metadata={'product_id': product.pk},
+        unit_cost=unit_cost,
     )
     AdminAuditLog.log(
         actor=actor,

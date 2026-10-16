@@ -118,12 +118,17 @@ export type AdminProduct = {
    * (`PUBLICATION_PROBLEM_LABELS`). Vacío = listo. La ficha individual no lo exige.
    */
   publication_problems?: string[];
+  /** A1: the catalogue's reference cost. Only in the detail, and only for `costs.view`. */
+  reference_cost?: string | null;
   created_at: string;
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
   images?: AdminProductImage[];
-  /** DC3: `stock` = sólo stock propio; `stock_or_order` = también bajo pedido. Sólo en el detalle. */
+  /** DC3: `stock` = sólo stock propio; `stock_or_order` = también bajo pedido. */
   sale_mode?: 'stock' | 'stock_or_order';
+  /** COMMERCE-ADMIN-UX-01: línea del equipo (DC2) y su modelo, si es una variante. */
+  condition_line?: 'new' | 'used';
+  product_model_id?: number | null;
 };
 
 /** Una imagen de la galería de un producto. */
@@ -227,6 +232,10 @@ export type ProductListFilter = {
   is_published_online?: 'true' | 'false';
   is_serialized?: 'true' | 'false';
   stock?: 'in_stock' | 'out_of_stock' | 'low_stock';
+  /** COMMERCE-ADMIN-UX-01: línea nueva o seminueva (DC2). */
+  condition_line?: 'new' | 'used';
+  /** COMMERCE-ADMIN-UX-01: «Bajo pedido» (DC3). */
+  sale_mode?: 'stock' | 'stock_or_order';
 };
 
 export async function fetchAdminProducts(params?: ProductListFilter & {
@@ -247,6 +256,8 @@ export async function fetchAdminProducts(params?: ProductListFilter & {
     is_published_online: params?.is_published_online,
     is_serialized: params?.is_serialized,
     stock: params?.stock,
+    condition_line: params?.condition_line,
+    sale_mode: params?.sale_mode,
     page: params?.page,
     page_size: params?.page_size,
   });
@@ -389,6 +400,8 @@ export async function patchAdminProduct(
     category: number | null;
     is_active: boolean;
     is_published_online: boolean;
+    /** A1: `costs.view` + `products.manage`. Empty or null clears it. */
+    reference_cost: string | null;
   }>,
 ): Promise<AdminProduct> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/`, {
@@ -402,7 +415,12 @@ export async function patchAdminProduct(
       : 'Datos inválidos.';
     throw new Error(msg);
   }
-  if (res.status === 403) throw new Error('No tienes permisos para editar productos.');
+  if (res.status === 403) {
+    // A1: the server says WHICH permission is missing (the reference cost needs
+    // «Ver costos y márgenes»); a generic text would hide it.
+    const err = await Promise.resolve().then(() => res.json()).catch(() => null);
+    throw new Error(err?.detail ? String(err.detail) : 'No tienes permisos para editar productos.');
+  }
   if (res.status === 404) throw new Error('Producto no encontrado.');
   if (!res.ok) throw new Error('No se pudo actualizar el producto.');
   return res.json();

@@ -2280,3 +2280,108 @@ tienen ahora su prueba (`SweepAgainstCheckoutRaceTest`, el estante cubierto just
   despachan las sucursales visibles de quien consulta (como toda cifra de ventas).
 - *Pruebas por valor.* Las comprobaciones de «no se filtra el costo» comparan valores (ids
   aparte), no subcadenas de `str(payload)`: `'product_id': 685` contenía «68».
+
+### DEC-DEVICE-COMMERCE-01 · A1 — «Costos y precios» (COMMERCE-ADMIN-UX-01) — EN RAMA
+
+**Incidente del propietario:** «un Administrador no encuentra "Margen comercial" ni "Valor al
+costo"». Diagnóstico de solo lectura en producción: el backend respondía bien (200 con costos al
+rol propio `administrador` y al master; los otros dos miembros tienen
+`venta-servicio-tecnico-inventario`, sin `costs.view`, como corresponde). En el frontend,
+`buildInternalAccess` también responde bien al rol propio con `costs.view` y al master con
+empresa (prueba `costs-a1.test.tsx`). **Causa:** no había entrada en el menú (el margen era una
+sección dentro de Ventas › Resumen y el valor al costo una tarjeta dentro de Stock), y las dos
+devolvían `null` al cargar, ante un error y sin datos; quien no tenía el permiso no sabía por
+qué. El master sin empresa «pasaba» el permiso y recibía un 403 que nadie explicaba.
+
+- *Entrada.* Inventario › **Costos y precios** (`/admin/inventory/costs`), sólo con `costs.view`
+  (puente legacy: admin/superadmin, el mismo de `may_view_costs`). Enlazada desde Ventas › Resumen
+  y desde Stock. Sin el permiso: página 403 «Necesitas el permiso Ver costos y márgenes;
+  pídeselo al administrador». Master sin empresa: «Elige una empresa…», sin pedir nada.
+- *Contenido, sin cálculo nuevo.* Margen (`/api/admin/sales/margin/`), inventario al costo
+  (`summary`), costo promedio por sucursal y producto (`/api/admin/inventory/stock/` añade
+  `average_cost`, `uncosted_quantity`, `product_reference_cost`, `product_is_serialized` y
+  `cost_source` = `unit` | `average` | `reference` | `unknown`, **sólo con `costs.view`**; sin él
+  las claves no están) y el costo de cada equipo (`units`). Cada sección: «Cargando…», vacío
+  («Aún no hay ventas con costo conocido») y el mensaje del servidor.
+- *Correcciones.* Precio (`products.manage`) y costo de referencia (`products.manage` +
+  `costs.view`) por `PATCH /api/admin/products/{id}/`; auditado sin importes. «Corregir costo» de
+  un equipo: sólo si no se vendió (regla de DC1), con `cost_reason` obligatorio desde el panel y
+  auditado (el motivo, no los importes). Nunca se tocan instantáneas de venta ni movimientos.
+- **PENDIENTE — corregir el promedio de una sucursal.** No existe un camino seguro: el promedio
+  lo mantiene sólo el Kardex. Diseño: un tipo de movimiento `cost_adjustment` (cantidad 0,
+  `unit_cost` nuevo, motivo obligatorio, `costs.view` + `inventory.adjust`) que
+  `create_stock_movement` aplica bajo el bloqueo de la fila, fijando `average_cost` y dejando
+  `uncosted_quantity` como está; nunca edita movimientos pasados ni ventas. Requiere migración
+  (nuevo valor de `movement_type`), por eso no entra en A1.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Consultar disponibilidad» — quién, qué y de dónde
+
+**Contexto.** El propietario pidió que cualquier vendedor autorizado pueda preguntar «¿lo
+tenemos, dónde, y si no, lo puede traer un proveedor?» sin entrar al inventario.
+
+**Decisión.**
+- *Capacidad: `sales.pos.use`.* Es la menor autoridad que todo vendedor ya tiene (el preset
+  «Ventas» y el rol legacy de ventas la llevan) y la caja ya muestra lo mismo por sucursal:
+  estante, precio y si se vende bajo pedido. No `inventory.view` (el preset de ventas no la
+  lleva y abriría Kardex e IMEI completos); no `sales.orders.view` (es leer el libro de
+  pedidos, otra cosa). Sin puente legacy, como la caja: Membership o nada
+  (`H412b`: `sales/availability/page.tsx` con lista vacía).
+- *Fuentes.* Stock propio = `BranchStock.quantity` (lo que decide una venta) y, para equipos,
+  los estados de `StockUnit` (apartado web = `hold_key`; apartado por personal = sin él). Las
+  ofertas vigentes (`supply_services.valid_offer_q`, el mismo predicado de la venta) van en su
+  propia lista, ordenadas como `best_offer`, máximo tres, y **nunca se suman** al stock propio.
+- *Sin costos nunca* — tampoco para `costs.view`: los costos viven en «Costos y precios». Sin
+  IMEI ni serie completos (últimos cuatro), sin llave ni origen del apartado, sin nota interna.
+  El nombre del proveedor sólo con `products.view` (lo que piden las pantallas de DC3).
+- *Alcance.* Empresa del llamante y sus sucursales visibles; sin `?branch=` = todas las suyas.
+- *Frescura sin martillar.* Consulta al cambiar filtros (búsqueda con espera de 350 ms), botón
+  «Actualizar», sondeo cada 45 s sólo con la página visible, y nueva consulta al volver a la
+  pestaña o cuando otra pantalla del navegador avisa que el stock cambió (venta en caja,
+  acción sobre un equipo; `lib/stock-events.ts`, sin datos, sólo el aviso).
+- *Costo de una página:* número fijo de consultas (probado: 2 y 8 productos cuestan igual).
+- *«Inventario › Equipos»:* filtros por línea, modelo y opciones (`model`, `option`, mismos
+  helpers) y un detalle por equipo hecho con la fila que ya llega; el costo sólo con `costs.view`.
+
+### DEC-COMMERCE-ADMIN-UX-01 · «Registro único, publicación y navegación» — EN RAMA
+
+**Contexto.** El propietario pidió registrar cualquier artículo desde el panel sin recorrer
+varias pantallas (equipo nuevo, seminuevo, accesorio/repuesto, disponible por proveedor),
+controlar la publicación e-commerce de todo con acciones en bloque, y un menú con su árbol.
+
+**Decisión.**
+- *Un endpoint orquestador, no composición desde el navegador.* `POST /api/admin/products/register/`
+  (`registration_services.register`). Componer desde el frontend dejaba productos a medias si un
+  paso fallaba, y el movimiento manual no acepta costo unitario. El endpoint NO escribe nada
+  propio: llama en UNA transacción a `AdminProductWriteSerializer`, `device_catalog`
+  (`create_model`/`find_variant`/`set_variant`), `ProductBarcode`, `set_serialized`,
+  `receive_units` (IMEI con dígito de control, duplicados), `apply_initial_stock` (ahora acepta
+  `unit_cost`, compatible: promedio DC1) y `supply_services` (`create_supplier`/`create_offer`/
+  `set_sale_mode`). El stock entra sólo por esos escritores; lo de un proveedor nunca entra al
+  estante (oferta + «Bajo pedido»). Una variante que ya existe (modelo + línea + opciones)
+  RECIBE los equipos y conserva sus datos; la respuesta lo advierte.
+- *Autoridad por paso = la de la acción de debajo.* `products.manage` para registrar;
+  `inventory.adjust` para equipos (control por serie) y para stock en sucursal; `costs.view`
+  para CUALQUIER costo (referencia, equipo, unidad, costo pactado) — sin él, 403 con el campo,
+  más estricto que `receive_units` a propósito; sucursales dentro de las del llamante (404 y
+  nada escrito). En la pantalla, el paso que no se puede usar se ve deshabilitado con el motivo.
+- *Idempotencia sin migración.* Cabecera `Idempotency-Key` obligatoria para escribir; candado
+  consultivo de Postgres (empresa, autor, clave) y la línea de auditoría `article_registered`
+  guarda clave, huella del cuerpo y el registro (ids y banderas, nunca importes). Misma clave y
+  cuerpo → 200 `replayed` con lo primero; otro cuerpo → 409; un intento rechazado no gasta la clave.
+- *`dry_run`.* Los mismos servicios dentro de una transacción que se revierte: la revisión
+  muestra los rechazos reales y los motivos de publicación sin dejar rastro (ni auditoría).
+- *Publicación.* «Mostrar en e-commerce» obedece `product_publication` sin cambiarlo: lo que no
+  está listo se crea OCULTO y se dice por qué; si sólo faltaba la imagen, el asistente sube las
+  imágenes y publica con la acción en bloque de siempre. «Publicación e-commerce» reúne todos los
+  tipos (filtros nuevos `condition_line` y `sale_mode` en la lista y en «todo lo que coincide»)
+  y los modelos (`POST /api/admin/catalog/models/bulk-visibility/`, `products.manage`, todo o nada).
+- *Excel.* Las plantillas ya cubrían casi todo (producto: código, nombre, precio, categoría,
+  destino, costo de referencia, modelo/capacidad/color/línea; equipos: serie, IMEI, costo,
+  estado estético, batería, precio; stock: costo unitario; ofertas: todo). «Producto activo» ya
+  se lee de la columna «Estado» (Sí/No) para productos nuevos. Faltaba «Bajo pedido»: columna
+  opcional «Bajo pedido (Sí/No)» sólo en la plantilla de ofertas; vacía o ausente no cambia nada.
+- *Menú.* Árbol del propietario primero en cada grupo; lo demás sigue después con su ruta.
+  «Equipos nuevos» = `/admin/inventory/units?line=new`; «Cancelaciones / historial» =
+  `/admin/orders?status=cancelled` (el filtro es de la rama de cancelaciones); «Stock y
+  disponibilidad» = pantalla nueva sobre `/api/admin/inventory/stock/`. La barra lateral
+  ilumina la entrada con filtro sólo si la dirección lo lleva (`activeModuleHref`).

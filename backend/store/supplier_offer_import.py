@@ -62,6 +62,11 @@ HEADERS = ['Proveedor', 'Código/SKU del producto', 'Modelo', 'Capacidad', 'Colo
 #: Optional, only in the template: an export never writes it (re-loading an old
 #: export must not switch back on an offer somebody switched off since).
 ACTIVE_HEADER = 'Activa (Sí/No)'
+#: COMMERCE-ADMIN-UX-01 — optional, template only, like «Activa»: whether the
+#: product may be sold «Bajo pedido» (`supply_services.set_sale_mode`). Empty =
+#: no change. Without it an offer loaded from a file was never sellable until
+#: somebody switched the product to «Bajo pedido» by hand.
+ON_ORDER_HEADER = 'Bajo pedido (Sí/No)'
 STALE = 'El archivo cambió: vuelve a previsualizarlo.'
 _YES = {'si', 's', 'yes', 'y', '1', 'true', 'verdadero', 'x'}
 _NO = {'no', 'n', '0', 'false', 'falso'}
@@ -81,6 +86,7 @@ _ALIASES = {
     'valid_until': ('vigente hasta', 'hasta', 'fin de vigencia'),
     'lead_time_days': ('plazo dias', 'plazo', 'plazo de entrega dias', 'dias de entrega'),
     'active': ('activa si no', 'activa', 'activo', 'activa sino'),
+    'on_order': ('bajo pedido si no', 'bajo pedido', 'bajo pedido sino', 'venta bajo pedido'),
 }
 
 
@@ -116,6 +122,8 @@ def _notes() -> dict:
         'Plazo (días)': 'Días hasta la entrega al cliente.',
         ACTIVE_HEADER: ('Opcional. Vacío = no cambia. «Sí» reactiva una oferta desactivada; «No» la desactiva. '
                         'Sin «Sí», una oferta desactivada a mano sigue desactivada.'),
+        ON_ORDER_HEADER: ('Opcional. Vacío = no cambia. «Sí»: el producto se puede vender bajo pedido con sus '
+                          'ofertas vigentes; «No»: sólo con stock propio.'),
     }
 
 
@@ -129,7 +137,7 @@ def _sheet(headers):
 
 
 def template_bytes() -> bytes:
-    workbook, sheet = _sheet(HEADERS + [ACTIVE_HEADER])
+    workbook, sheet = _sheet(HEADERS + [ACTIVE_HEADER, ON_ORDER_HEADER])
     header_notes(sheet, _notes())
     _autosize(sheet, [28, 28, 22, 14, 14, 12, 16, 18, 20, 16, 16, 14, 16])
     text_columns(sheet, ('B',))
@@ -327,6 +335,12 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         if active == 'invalid':
             errors.append('La columna «Activa» lleva «Sí», «No» o nada.')
             active = None
+        on_order = _clean_active(fields.get('on_order'))
+        if on_order == 'invalid':
+            errors.append('La columna «Bajo pedido» lleva «Sí», «No» o nada.')
+            on_order = None
+        wanted_mode = (None if on_order is None else
+                       Product.SALE_MODE_STOCK_OR_ORDER if on_order else Product.SALE_MODE_STOCK)
         if clean.get('valid_from') and clean.get('valid_until') and clean['valid_until'] < clean['valid_from']:
             errors.append('La vigencia termina antes de empezar.')
         if cost_ignored:
@@ -360,6 +374,8 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
             payload['agreed_cost'] = str(clean['agreed_cost'])
         if active is not None:
             payload['is_active'] = active
+        if wanted_mode is not None:
+            payload['sale_mode'] = wanted_mode
         if existing is None:
             stage(row_number, BulkImportRow.CREATE, key=f'{supplier.pk}:{product.pk}', data=payload,
                   warnings=warnings)
@@ -377,7 +393,8 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
                 and existing.confirmed_quantity == confirmed
                 and existing.lead_time_days == clean['lead_time_days']
                 and (active is None or existing.is_active == active)
-                and ('agreed_cost' not in clean or existing.agreed_cost == clean['agreed_cost']))
+                and ('agreed_cost' not in clean or existing.agreed_cost == clean['agreed_cost'])
+                and (wanted_mode is None or product.sale_mode == wanted_mode))
         stage(row_number, BulkImportRow.NO_CHANGE if same else BulkImportRow.UPDATE,
               key=f'{supplier.pk}:{product.pk}', data=payload, warnings=warnings)
 
@@ -474,6 +491,10 @@ def apply(*, job, actor, request=None) -> dict:
                 updated += 1
             elif row.action == BulkImportRow.NO_CHANGE:
                 unchanged += 1
+            if data.get('sale_mode') and row.action in (BulkImportRow.CREATE, BulkImportRow.UPDATE):
+                product = Product.objects.filter(company=job.company, pk=data.get('product_id')).first()
+                if product is not None:
+                    supply_services.set_sale_mode(product, data['sale_mode'], actor=actor, request=request)
         except supply_services.SupplyError as exc:
             if exc.code == 'duplicate':
                 raise OfferImportError(STALE, code='stale') from None
