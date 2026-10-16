@@ -254,6 +254,15 @@ class TillSaleTest(_UxBase):
         self.assertTrue(cancellation.fiscal_pending)
         self.assertIn('B001-12', cancellation.fiscal_document)
 
+    def test_a_till_sale_that_is_no_longer_paid_is_not_annulled(self):
+        # Mutation pass: the «pos» mode needs a paid sale, not just the channel.
+        sale = self.till_sale()
+        Order.objects.filter(pk=sale.pk).update(status=Order.Status.REFUNDED)
+        response = self.post_cancel(sale, goods_returned=True)
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'not_paid'))
+        self.assertIsNone(self.detail(sale)['cancel_mode'])
+        self.assertFalse(StockMovement.objects.filter(order=sale, movement_type=RETURN).exists())
+
     def test_a_till_sale_without_authority_is_not_annulled(self):
         sale = self.till_sale()
         seller, _ = _p2d_member(self.company, 'cajero_sin_pedidos', ['company.view', 'sales.orders.view',
@@ -573,3 +582,93 @@ class RefundRaceTest(_RaceBase):
         self.assertEqual(len(lost), 1, outcomes)
         self.assertEqual(lost[0].code, 'already_confirmed')
         self.assertEqual(AdminAuditLog.objects.filter(action='order_refund_confirmed').count(), 1)
+
+
+# -- guards pinned for the mutation pass ---------------------------------------------
+
+class GuardEdgesTest(_UxBase):
+    def test_only_a_literal_true_says_the_goods_are_back(self):
+        sale = self.till_sale()
+        for value in ('true', 'yes', 1, 'false'):
+            with self.subTest(value=value):
+                response = self.post_cancel(sale, goods_returned=value)
+                self.assertEqual((response.status_code, response.json()['code']), (400, 'goods_return_required'))
+        self.assertEqual(Order.objects.get(pk=sale.pk).status, Order.Status.PAID)
+
+    def test_asking_a_refund_while_cancelling_an_unpaid_order_cancels_it_and_records_nothing(self):
+        order = self.unpaid_order()
+        response = self.post_cancel(order, refund_method='cash')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.CANCELLED)
+        self.assertFalse(OrderRefund.objects.exists())
+
+    def test_a_bad_refund_method_with_the_cancellation_cancels_nothing(self):
+        order = self.web_order()
+        response = self.post_cancel(order, refund_method='bitcoin')
+        self.assertEqual((response.status_code, response.json()['code']), (400, 'method_invalid'))
+        self.assertEqual(Order.objects.get(pk=order.pk).status, Order.Status.PAID)
+        self.assertFalse(OrderCancellation.objects.exists())
+        self.assertEqual(self.cable_stock(), 17)
+
+    def test_confirming_never_gives_back_more_than_was_collected(self):
+        """The confirm re-checks the ceiling itself: a pending row that passed it by another road is refused."""
+        order = self.web_order()                                  # 147.00
+        self.post_cancel(order, refund_method='cash')             # pending 147.00
+        stray = OrderRefund.objects.create(company=self.company, order=order, amount=D('0.01'), method='cash')
+        admin, _ = self.admin_client('admin_techo')
+        first = OrderRefund.objects.exclude(pk=stray.pk).get()
+        refunds.confirm(first, admin, reference='OP-1')
+        with self.assertRaises(refunds.RefundError) as refused:
+            refunds.confirm(stray, admin, reference='OP-2')
+        self.assertEqual(refused.exception.code, 'amount_exceeds')
+        stray.refresh_from_db()
+        self.assertEqual(stray.status, 'pending')
+        self.assertEqual(refunds.summary(order)['held'], D('0.00'))
+
+    def test_an_exact_refund_of_what_remains_is_accepted(self):
+        order = self.web_order()
+        self.post_cancel(order)
+        self.assertEqual(self.post_refund(order, amount='147.00', method='cash').status_code, 201)
+        self.assertEqual(refunds.summary(order)['refundable'], D('0.00'))
+
+
+class LegacyRefundTest(TestCase):
+    """On the pilot's legacy bridge: sales may record, only admin and superadmin may confirm."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from store.tests import _p60_paid_order, _p60_product, _p60_users
+
+        cache.clear()
+        self.users = _p60_users()
+        product = _p60_product(name='Cable reembolso', inventory=10, price='49.00')
+        self.order = _p60_paid_order(product, quantity=1)
+        inventory.record_sale_stock_movements(self.order)
+        self.client_for('sales').post(f'/api/admin/orders/{self.order.pk}/cancel/',
+                                      {'reason': REASON, 'refund_method': 'cash'}, format='json')
+        self.refund = OrderRefund.objects.get(order=self.order)
+
+    def client_for(self, role):
+        client = APIClient()
+        client.force_authenticate(self.users[role])
+        return client
+
+    def confirm(self, role):
+        return self.client_for(role).post(
+            f'/api/admin/orders/{self.order.pk}/refunds/{self.refund.pk}/confirm/', {'reference': 'CAJA-9'},
+            format='json')
+
+    def test_sales_records_but_does_not_confirm_and_inventory_does_neither(self):
+        self.assertEqual(self.refund.status, 'pending')
+        self.assertEqual(self.confirm('sales').status_code, 403)
+        self.assertEqual(self.confirm('inventory').status_code, 403)
+        self.assertEqual(self.client_for('inventory').post(
+            f'/api/admin/orders/{self.order.pk}/refunds/', {'method': 'cash', 'amount': '1.00'},
+            format='json').status_code, 403)
+
+    def test_admin_confirms(self):
+        response = self.confirm('admin')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.refund.refresh_from_db()
+        self.assertEqual(self.refund.status, 'confirmed')
