@@ -2,6 +2,9 @@
 
 /**
  * ORDER-CANCEL-01 — cancelar un pedido PAGADO cuyos productos no han salido.
+ * COMMERCE-ADMIN-UX-01 — también un pedido web SIN PAGAR y una venta POS
+ * («Anular venta»: hay que marcar que la mercadería volvió al local). El modo
+ * lo dice el servidor (`cancel_mode`); el diálogo cambia sus palabras con él.
  *
  * Tres piezas: el botón (sólo si el servidor dice `can_cancel`), el diálogo de
  * confirmación (motivo obligatorio, foco atrapado, Esc cierra) y, una vez
@@ -18,6 +21,8 @@ import {
   CANCEL_REASON_MIN,
   FULFILLMENT_STATUS_LABELS,
   OrderCancellation,
+  OrderRefundMethod,
+  REFUND_METHOD_LABELS,
   cancelAdminOrder,
   formatAdminDate,
 } from "../../lib/admin";
@@ -58,7 +63,7 @@ export function OrderCancelPanel({ order, mayCancel, onCancelled }: Props) {
   return (
     <>
       <button type="button" onClick={() => setOpen(true)} className={dangerButtonClass}>
-        Cancelar pedido
+        {order.cancel_mode === "pos" ? "Anular venta" : "Cancelar pedido"}
       </button>
       {open ? (
         <OrderCancelDialog
@@ -88,7 +93,13 @@ export function OrderCancelDialog({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN;
+  const mode = order.cancel_mode ?? "paid";
+  const pos = mode === "pos";
+  const [goodsBack, setGoodsBack] = useState(false);
+  const [withRefund, setWithRefund] = useState(false);
+  const [refundMethod, setRefundMethod] = useState<OrderRefundMethod>(pos ? "cash" : "gateway");
+  const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN && (!pos || goodsBack);
+  const verb = pos ? "Anular venta" : "Cancelar pedido";
 
   useEffect(() => {
     // Entra por el motivo: es lo primero que hay que escribir, y Enter en un
@@ -107,7 +118,7 @@ export function OrderCancelDialog({
       if (event.key !== "Tab" || !panel.current) return;
       // El foco da la vuelta dentro del diálogo: lo de detrás no se alcanza.
       const stops = [...panel.current.querySelectorAll<HTMLElement>(
-        "textarea:not([disabled]), button:not([disabled])",
+        "textarea:not([disabled]), input:not([disabled]), select:not([disabled]), button:not([disabled])",
       )];
       if (stops.length === 0) return;
       const at = stops.indexOf(document.activeElement as HTMLElement);
@@ -123,8 +134,13 @@ export function OrderCancelDialog({
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
+    const options: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod } = {};
+    if (pos) options.goodsReturned = true;
+    if (mode !== "unpaid" && withRefund) options.refundMethod = refundMethod;
     try {
-      onCancelled(await cancelAdminOrder(order.id, normaliseReason(reason)));
+      onCancelled(await (Object.keys(options).length
+        ? cancelAdminOrder(order.id, normaliseReason(reason), options)
+        : cancelAdminOrder(order.id, normaliseReason(reason))));
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cancelar el pedido.");
       setBusy(false);
@@ -142,16 +158,32 @@ export function OrderCancelDialog({
         className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-bd-border bg-surface p-5 shadow-xl sm:p-6"
       >
         <h2 id={titleId} className="text-lg font-bold text-foreground">
-          Cancelar pedido #{order.id}
+          {verb} #{order.id}
         </h2>
-        <p className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-foreground">
-          <span className="font-semibold">Pagado</span> — el dinero NO se devuelve al cancelar; el reembolso se
-          gestiona aparte.
-        </p>
-        <p className="mt-3 text-sm font-semibold text-foreground">Al cancelar:</p>
+        {mode === "unpaid" ? (
+          <p className="mt-3 rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground">
+            <span className="font-semibold">Sin pago</span> — el pedido queda cancelado en el historial y no se
+            registra ningún ingreso.
+          </p>
+        ) : (
+          <p className="mt-3 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-foreground">
+            <span className="font-semibold">Pagado</span> — el dinero NO se devuelve al cancelar; el reembolso se
+            gestiona aparte.
+          </p>
+        )}
+        <p className="mt-3 text-sm font-semibold text-foreground">{pos ? "Al anular:" : "Al cancelar:"}</p>
         <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted">
-          <li>El stock de sus productos vuelve a la sucursal, una sola vez.</li>
-          <li>Si tiene nota de venta interna, queda anulada (se conserva).</li>
+          {mode === "unpaid" ? (
+            <>
+              <li>Los equipos que el comprador tenía apartados vuelven a la tienda.</li>
+              <li>Si llega un pago después, queda registrado para devolverlo; el pedido no se reabre.</li>
+            </>
+          ) : (
+            <>
+              <li>El stock de sus productos vuelve a la sucursal, una sola vez.</li>
+              <li>Si tiene nota de venta interna, queda anulada (se conserva).</li>
+            </>
+          )}
           {fiscal ? (
             <li className="text-warning">
               El comprobante {fiscal} se conserva: queda pendiente su nota de crédito o baja, que se gestiona en el
@@ -161,7 +193,7 @@ export function OrderCancelDialog({
           <li>El pedido ya no cambia de estado de despacho.</li>
         </ul>
         <label htmlFor={reasonId} className="mt-4 block text-sm font-semibold text-foreground">
-          Motivo de la cancelación
+          {pos ? "Motivo de la anulación" : "Motivo de la cancelación"}
         </label>
         <textarea
           id={reasonId}
@@ -178,6 +210,51 @@ export function OrderCancelDialog({
         <p id={`${reasonId}-hint`} className="mt-1 text-xs text-muted">
           Obligatorio, al menos {CANCEL_REASON_MIN} caracteres. Queda registrado con tu usuario y la fecha.
         </p>
+        {pos ? (
+          <label className="mt-3 flex items-start gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={goodsBack}
+              onChange={(event) => setGoodsBack(event.target.checked)}
+              disabled={busy}
+              className="mt-0.5"
+            />
+            <span>La mercadería volvió al local</span>
+          </label>
+        ) : null}
+        {mode !== "unpaid" ? (
+          <div className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-sm">
+            <label className="flex items-start gap-2 text-foreground">
+              <input
+                type="checkbox"
+                checked={withRefund}
+                onChange={(event) => setWithRefund(event.target.checked)}
+                disabled={busy}
+                className="mt-0.5"
+              />
+              <span>Registrar reembolso pendiente por lo cobrado</span>
+            </label>
+            {withRefund ? (
+              <div className="mt-2 text-xs text-muted">
+                <label htmlFor={`${reasonId}-refund-method`}>Medio del reembolso</label>
+                <select
+                  id={`${reasonId}-refund-method`}
+                  value={refundMethod}
+                  onChange={(event) => setRefundMethod(event.target.value as OrderRefundMethod)}
+                  disabled={busy}
+                  className="mt-1 block w-full rounded-lg border border-bd-border bg-surface px-2 py-1.5 text-sm text-foreground"
+                >
+                  {(Object.keys(REFUND_METHOD_LABELS) as OrderRefundMethod[]).map((method) => (
+                    <option key={method} value={method}>{REFUND_METHOD_LABELS[method]}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <p className="mt-2 text-xs text-muted">
+              Sólo queda anotado como pendiente; el dinero se devuelve aparte y se confirma con su referencia.
+            </p>
+          </div>
+        ) : null}
         {error ? (
           <p role="alert" className="mt-3 text-sm text-danger">{error}</p>
         ) : null}
@@ -186,7 +263,7 @@ export function OrderCancelDialog({
             Volver
           </button>
           <button type="button" onClick={() => void confirm()} disabled={!ready || busy} className={dangerButtonClass}>
-            {busy ? "Cancelando…" : "Cancelar pedido"}
+            {busy ? (pos ? "Anulando…" : "Cancelando…") : verb}
           </button>
         </div>
       </div>
@@ -197,15 +274,19 @@ export function OrderCancelDialog({
 export function OrderCancellationBlock({ cancellation }: { cancellation: OrderCancellation }) {
   const before = FULFILLMENT_STATUS_LABELS[cancellation.previous_fulfillment_status]
     ?? cancellation.previous_fulfillment_status;
+  const unpaid = cancellation.was_paid === false;
+  const held = cancellation.holds_released ?? 0;
   return (
     <section
       aria-labelledby="order-cancellation-title"
       className="rounded-xl border border-danger-border bg-surface p-6"
     >
-      <h2 id="order-cancellation-title" className="text-sm font-semibold text-danger">Pedido cancelado</h2>
+      <h2 id="order-cancellation-title" className="text-sm font-semibold text-danger">
+        {cancellation.goods_returned ? "Venta anulada" : "Pedido cancelado"}
+      </h2>
       <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
         <div>
-          <dt className="text-xs text-muted">Cancelado por</dt>
+          <dt className="text-xs text-muted">{cancellation.goods_returned ? "Anulada por" : "Cancelado por"}</dt>
           <dd className="text-foreground">{cancellation.cancelled_by || "—"}</dd>
         </div>
         <div>
@@ -226,6 +307,20 @@ export function OrderCancellationBlock({ cancellation }: { cancellation: OrderCa
             {cancellation.stock_restored ? "Repuesto en la sucursal" : "No había stock que reponer"}
           </dd>
         </div>
+        {cancellation.goods_returned ? (
+          <div>
+            <dt className="text-xs text-muted">Mercadería</dt>
+            <dd className="text-foreground">Mercadería devuelta al local, confirmada al anular</dd>
+          </div>
+        ) : null}
+        {held > 0 ? (
+          <div>
+            <dt className="text-xs text-muted">Equipos apartados</dt>
+            <dd className="text-foreground">
+              {held === 1 ? "1 equipo apartado volvió a la tienda" : `${held} equipos apartados volvieron a la tienda`}
+            </dd>
+          </div>
+        ) : null}
         {cancellation.sales_note_voided ? (
           <div>
             <dt className="text-xs text-muted">Nota de venta interna</dt>
@@ -240,7 +335,9 @@ export function OrderCancellationBlock({ cancellation }: { cancellation: OrderCa
         </p>
       ) : null}
       <p className="mt-4 text-xs text-muted">
-        El pedido sigue figurando como pagado: cancelar no devuelve el dinero. El reembolso se gestiona aparte.
+        {unpaid
+          ? "Cancelado sin pago: no se registró ningún ingreso. Si llega un pago después, queda registrado para devolverlo."
+          : "El pedido sigue figurando como pagado: cancelar no devuelve el dinero. El reembolso se registra aparte."}
       </p>
     </section>
   );

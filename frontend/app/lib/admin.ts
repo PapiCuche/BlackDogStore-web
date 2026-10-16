@@ -652,6 +652,14 @@ export type AdminOrderDetail = AdminOrder & {
   cancellation?: OrderCancellation | null;
   /** ORDER-CANCEL-01: la boleta/factura que quedaría pendiente de nota de crédito, o "". */
   cancel_fiscal_document?: string;
+  /**
+   * COMMERCE-ADMIN-UX-01: qué cancelación admite ahora — `unpaid` (pedido web
+   * sin pagar), `paid` (pagado, sin salir) o `pos` (venta de mostrador: hay
+   * que confirmar que la mercadería volvió). null cuando no se puede.
+   */
+  cancel_mode?: OrderCancelMode | null;
+  /** COMMERCE-ADMIN-UX-01: los reembolsos de un pedido cancelado; null si no está cancelado. */
+  refunds?: OrderRefunds | null;
   /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
   risk?: OrderRisk | null;
   /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
@@ -704,6 +712,8 @@ export async function fetchAdminOrders(params?: {
   review?: 'pending';
   /** DC3: por estado de abastecimiento de lo vendido bajo pedido. */
   supply?: 'to_confirm' | 'pending' | 'failed' | 'received';
+  /** COMMERCE-ADMIN-UX-01: pedidos cancelados con un reembolso en ese estado. */
+  refund?: 'pending' | 'confirmed';
   date_from?: string;
   date_to?: string;
   page?: number;
@@ -717,6 +727,7 @@ export async function fetchAdminOrders(params?: {
     shortfall: params?.shortfall,
     review: params?.review,
     supply: params?.supply,
+    refund: params?.refund,
     date_from: params?.date_from,
     date_to: params?.date_to,
     page: params?.page,
@@ -751,20 +762,109 @@ export type OrderCancellation = {
   fiscal_pending: boolean;
   fiscal_document: string;
   sales_note_voided: boolean;
+  /** COMMERCE-ADMIN-UX-01: si se había cobrado al cancelarlo. */
+  was_paid?: boolean;
+  /** COMMERCE-ADMIN-UX-01: venta POS cuya mercadería volvió al local (lo confirmó quien la anuló). */
+  goods_returned?: boolean;
+  /** COMMERCE-ADMIN-UX-01: equipos que el comprador tenía apartados y volvieron a la tienda. */
+  holds_released?: number;
 };
+
+export type OrderCancelMode = 'unpaid' | 'paid' | 'pos';
+
+// ── COMMERCE-ADMIN-UX-01: reembolsos registrados ────────────────────────────
+
+export type OrderRefundMethod = 'gateway' | 'cash' | 'transfer' | 'other';
+
+export const REFUND_METHOD_LABELS: Record<OrderRefundMethod, string> = {
+  gateway: 'Pasarela de pago',
+  cash: 'Efectivo',
+  transfer: 'Transferencia',
+  other: 'Otro',
+};
+
+export type OrderRefund = {
+  id: number;
+  amount: string;
+  method: OrderRefundMethod;
+  method_label: string;
+  status: 'pending' | 'confirmed';
+  status_label: string;
+  reference: string;
+  note: string;
+  created_at: string;
+  created_by: string;
+  confirmed_at: string | null;
+  confirmed_by: string;
+};
+
+/** Importes en soles, como texto con dos decimales. */
+export type OrderRefunds = {
+  /** Lo cobrado: el total si se pagó, más cobros registrados como duplicados. */
+  collected: string;
+  confirmed: string;
+  pending: string;
+  /** Lo que aún se puede registrar: cobrado − pendiente − confirmado. */
+  refundable: string;
+  /** Lo que la tienda aún tiene: cobrado − confirmado. */
+  held: string;
+  can_record: boolean;
+  can_confirm: boolean;
+  items: OrderRefund[];
+};
+
+async function refundRequest(url: string, body: unknown, fallback: string): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(url, { method: 'POST', body: JSON.stringify(body) });
+  if (res.status === 403) throw new Error('Confirmar un reembolso corresponde al administrador de la empresa.');
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  if (res.status === 400 || res.status === 409) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? fallback);
+  }
+  if (!res.ok) throw new Error(fallback);
+  return res.json();
+}
+
+/** Registra un reembolso PENDIENTE de un pedido cancelado. No mueve dinero ni llama a la pasarela. */
+export async function recordOrderRefund(
+  orderId: number,
+  body: { amount?: string; method: OrderRefundMethod; note?: string },
+): Promise<AdminOrderDetail> {
+  return refundRequest(`${API_BASE}/admin/orders/${orderId}/refunds/`, body, 'No se pudo registrar el reembolso.');
+}
+
+/** Confirma que el dinero se devolvió, con su referencia. */
+export async function confirmOrderRefund(
+  orderId: number,
+  refundId: number,
+  body: { reference: string; note?: string },
+): Promise<AdminOrderDetail> {
+  return refundRequest(
+    `${API_BASE}/admin/orders/${orderId}/refunds/${refundId}/confirm/`, body, 'No se pudo confirmar el reembolso.');
+}
 
 /** Lo que el servidor exige del motivo. El botón espera a que se cumpla. */
 export const CANCEL_REASON_MIN = 5;
 export const CANCEL_REASON_MAX = 500;
 
 /**
- * Cancela un pedido PAGADO cuyos productos no han salido. No devuelve el
- * dinero: el reembolso se gestiona aparte. Devuelve el detalle actualizado.
+ * Cancela un pedido (sin pagar, pagado sin salir) o anula una venta POS. No
+ * devuelve el dinero: el reembolso se registra aparte. `goodsReturned`: la
+ * mercadería de una venta POS volvió al local. `refundMethod`: registrar, con
+ * la cancelación, un reembolso pendiente por lo cobrado. Devuelve el detalle.
  */
-export async function cancelAdminOrder(orderId: number, reason: string): Promise<AdminOrderDetail> {
+export async function cancelAdminOrder(
+  orderId: number,
+  reason: string,
+  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod },
+): Promise<AdminOrderDetail> {
+  const body: Record<string, unknown> = { reason };
+  if (options?.goodsReturned) body.goods_returned = true;
+  if (options?.refundMethod) body.refund_method = options.refundMethod;
   const res = await fetchWithAuth(`${API_BASE}/admin/orders/${orderId}/cancel/`, {
     method: 'POST',
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify(body),
   });
   if (res.status === 403) throw new Error('No tienes permisos para cancelar pedidos.');
   if (res.status === 404) throw new Error('Orden no encontrada.');

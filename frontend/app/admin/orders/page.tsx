@@ -27,6 +27,8 @@ type Filters = {
   shortfall: string;
   review: string;
   supply: string;
+  /** COMMERCE-ADMIN-UX-01: cancelados con un reembolso pendiente o confirmado. */
+  refund: string;
   date_from: string;
   date_to: string;
 };
@@ -41,6 +43,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
     shortfall: "",
     review: "",
     supply: "",
+    refund: "",
     date_from: "",
     date_to: "",
   });
@@ -61,6 +64,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         shortfall: (filters.shortfall || undefined) as "true" | undefined,
         review: (filters.review || undefined) as "pending" | undefined,
         supply: (filters.supply || undefined) as "to_confirm" | "pending" | "failed" | "received" | undefined,
+        refund: (filters.refund || undefined) as "pending" | "confirmed" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         page,
@@ -102,7 +106,18 @@ function OrdersContent({ user }: { user: AuthUser }) {
         />
 
         <FilterBar>
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(8,minmax(0,auto))]">
+          {/* COMMERCE-ADMIN-UX-01: «Cancelaciones / historial» es este listado filtrado. */}
+          <div className="mb-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              aria-pressed={filters.status === "cancelled"}
+              onClick={() => setFilter("status", filters.status === "cancelled" ? "" : "cancelled")}
+              className={internalButtonClass}
+            >
+              {filters.status === "cancelled" ? "Ver todas las órdenes" : "Cancelaciones / historial"}
+            </button>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_repeat(9,minmax(0,auto))]">
             <label>
               <span className="sr-only">Buscar órdenes</span>
               <input
@@ -148,6 +163,15 @@ function OrdersContent({ user }: { user: AuthUser }) {
                 <option value="pending">Pedido al proveedor</option>
                 <option value="received">Recibido del proveedor</option>
                 <option value="failed">No se pudo abastecer</option>
+              </select>
+            </label>
+            {/* COMMERCE-ADMIN-UX-01: el seguimiento de los cancelados con dinero por devolver. */}
+            <label>
+              <span className="sr-only">Reembolso</span>
+              <select value={filters.refund} onChange={(e) => setFilter("refund", e.target.value)} className={internalInputClass}>
+                <option value="">Reembolso: todos</option>
+                <option value="pending">Reembolso pendiente</option>
+                <option value="confirmed">Reembolso confirmado</option>
               </select>
             </label>
             <label>

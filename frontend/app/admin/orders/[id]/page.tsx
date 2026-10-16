@@ -25,6 +25,7 @@ import { OrderRiskCard } from "../../components/OrderRiskCard";
 import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
 import { OrderSupplyPanel } from "../../components/OrderSupplyPanel";
 import { OrderCancelPanel } from "../../components/OrderCancelPanel";
+import { OrderRefundsPanel } from "../../components/OrderRefundsPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -177,6 +178,10 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
             />
           </div>
         </div>
+
+        {/* COMMERCE-ADMIN-UX-01: lo cobrado y lo que se registró como devuelto
+            de un pedido cancelado. Sólo aparece cancelado; acciones del servidor. */}
+        <OrderRefundsPanel order={order} onChanged={setOrder} />
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm">

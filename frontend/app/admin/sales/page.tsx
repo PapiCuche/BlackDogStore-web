@@ -29,6 +29,7 @@ import {
   type InternalContext,
 } from "../components/InternalControlGuard";
 import { DashboardSection } from "../components/dashboard-ui";
+import { SalesCollectionsSection } from "../components/SalesCollectionsSection";
 import { SalesMarginSection } from "../components/SalesMarginSection";
 import { buildInternalAccess } from "../lib/internal-access";
 import { PageHeader, internalButtonClass, internalInputClass } from "../components/internal-ui";
@@ -187,7 +188,7 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
 
         <DashboardSection
           title="Resumen"
-          description="Sólo pedidos pagados. Un carrito abandonado no es una venta."
+          description="Sólo pedidos pagados y vigentes. Un carrito abandonado o un pedido cancelado no es una venta."
         >
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Kpi label="Hoy" value={money(data.kpis.today.revenue)} hint={`${data.kpis.today.orders} pedidos`} />
@@ -199,6 +200,8 @@ function SalesContent({ ctx }: { ctx: InternalContext }) {
             />
           </div>
         </DashboardSection>
+
+        <SalesCollectionsSection collections={data.collections} />
 
         <SalesMarginSection
           companyId={companyId}

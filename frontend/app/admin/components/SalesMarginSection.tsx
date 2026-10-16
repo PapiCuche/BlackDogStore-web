@@ -136,7 +136,7 @@ export function SalesMarginSection({
         ) : null}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Figure label="Ventas netas (sin IGV)" value={money(report.sales.net)} hint={`${money(report.sales.gross)} con IGV · ${report.sales.orders} ventas`} />
-          <Figure label="Cobros confirmados" value={money(report.collected.amount)} hint={`${report.collected.orders} pedidos pagados`} />
+          <Figure label="Cobro neto" value={money(report.collected.amount)} hint={`${report.collected.orders} pedidos pagados vigentes · menos reembolsos confirmados`} />
           <Figure label="Costo de lo vendido" value={money(report.cost_of_goods_sold)} hint={`sobre ${money(report.net_sales_with_cost)} vendidos con costo conocido`} />
           <MarginFigure
             label="Margen comercial estimado"
@@ -164,6 +164,14 @@ export function SalesMarginSection({
             hint={`${plural(unknown.lines, "línea", "líneas")} de ${plural(unknown.orders, "venta", "ventas")}, sin IGV · fuera de ambos márgenes`}
             boxTestId="margin-unknown-cost"
           />
+          {report.cancellations && report.cancellations.orders > 0 ? (
+            <Figure
+              label="Cancelados (fuera del margen)"
+              value={money(report.cancellations.gross)}
+              hint={`${plural(report.cancellations.orders, "pedido pagado", "pedidos pagados")} y cancelados · ${plural(report.cancellations.units, "unidad", "unidades")} · costo ${money(report.cancellations.cost)} · ${money(report.cancellations.refunds_confirmed)} devueltos`}
+              boxTestId="margin-cancellations"
+            />
+          ) : null}
           <Figure
             label="Reembolsos"
             value={money(refunds.amount)}
