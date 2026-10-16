@@ -1937,6 +1937,11 @@ class OrderRefund(models.Model):
     reference = models.CharField(max_length=120, blank=True, default='')
     #: What a person wrote as evidence: who received it, how, where the voucher is.
     note = models.CharField(max_length=500, blank=True, default='')
+    #: FINANCIAL-CLOSURE (owner, 2026-10-16): what makes the confirmation
+    #: verifiable — operation number, bank or channel, date. Required by the
+    #: service to confirm; empty on a pending row. `db_default`: the previous
+    #: release keeps inserting refunds while this migrates.
+    evidence = models.CharField(max_length=300, blank=True, default='', db_default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name='order_refunds_created',
@@ -3346,6 +3351,14 @@ class CompanySettings(models.Model):
     # supplier («Bajo pedido») while the shelf covers the line ONLY where the
     # company turns this on. Off as created: own stock first, never switched.
     web_on_order_over_stock = models.BooleanField(default=False, db_default=False)
+    # FINANCIAL-CLOSURE (owner, 2026-10-16): a till sale older than this many
+    # days is annulled only by a superior (`order_cancellation.superior_conditions`).
+    # 0 = every till sale. Changing it takes `settings.manage` too.
+    POS_CANCEL_SIMPLE_DAYS_MIN, POS_CANCEL_SIMPLE_DAYS_MAX = 0, 365
+    pos_cancel_simple_days = models.PositiveSmallIntegerField(
+        default=7, db_default=7,
+        validators=[MinValueValidator(POS_CANCEL_SIMPLE_DAYS_MIN), MaxValueValidator(POS_CANCEL_SIMPLE_DAYS_MAX)],
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -3398,6 +3411,10 @@ class CompanySettings(models.Model):
                 errors[field] = exc.messages
         errors.update(self.hold_minutes_errors(
             self.device_cart_hold_minutes, self.device_checkout_hold_minutes, self.device_hold_ceiling_minutes))
+        if not (self.POS_CANCEL_SIMPLE_DAYS_MIN <= int(self.pos_cancel_simple_days)
+                <= self.POS_CANCEL_SIMPLE_DAYS_MAX):
+            errors['pos_cancel_simple_days'] = [
+                f'Debe estar entre {self.POS_CANCEL_SIMPLE_DAYS_MIN} y {self.POS_CANCEL_SIMPLE_DAYS_MAX} días.']
         if errors:
             raise ValidationError(errors)
 
@@ -4050,13 +4067,18 @@ class SalesCommission(models.Model):
 
     STATUS_ACCRUED = 'accrued'
     STATUS_VOIDED = 'voided'
+    STATUS_SETTLED = 'settled'
     STATUS_CHOICES = [
         # ACCRUED: earned and owed. Deliberately NOT called "pending", which
         # would imply a payment process that does not exist yet.
         (STATUS_ACCRUED, 'Devengada'),
-        # VOIDED: the sale came back. Written by a future returns flow; nothing
-        # in this phase sets it, and pretending otherwise would be a fiction.
+        # VOIDED: the sale came back before the commission was settled
+        # (`order_cancellation`). Never owed.
         (STATUS_VOIDED, 'Anulada'),
+        # SETTLED (FINANCIAL-CLOSURE, owner 2026-10-16): paid out to the
+        # seller. Never edited or deleted afterwards: a sale annulled later
+        # gets a compensating `CommissionAdjustment` instead.
+        (STATUS_SETTLED, 'Liquidada'),
     ]
 
     company = models.ForeignKey(
@@ -4082,6 +4104,12 @@ class SalesCommission(models.Model):
         max_length=12, choices=STATUS_CHOICES, default=STATUS_ACCRUED,
         db_index=True,
     )
+    # When and by whom it was settled (paid out). Only a settled row has them.
+    settled_at = models.DateTimeField(null=True, blank=True)
+    settled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='commissions_settled',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -4092,6 +4120,10 @@ class SalesCommission(models.Model):
             models.Index(fields=['company', 'status']),
         ]
         constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(status='settled') | models.Q(settled_at__isnull=False),
+                name='commission_settled_has_date',
+            ),
             models.CheckConstraint(
                 condition=models.Q(rate_percent__gte=Decimal('0.00'))
                 & models.Q(rate_percent__lte=Decimal('100.00')),
@@ -4124,6 +4156,58 @@ class SalesCommission(models.Model):
             self.company_id = self.order.company_id
         self.clean()
         return super().save(*args, **kwargs)
+
+
+class CommissionAdjustment(models.Model):
+    """
+    FINANCIAL-CLOSURE (owner, 2026-10-16) — a compensating entry for a SETTLED
+    commission whose sale was annulled.
+
+    «Anular únicamente comisión todavía no liquidada. Si ya se liquidó,
+    registrar ajuste compensatorio o saldo recuperable, conservando historial
+    y evitando doble ajuste.» A commission still accrued is simply voided. A
+    settled one was already paid out: its row is history and is never edited
+    or deleted; this row says the seller owes it back (a NEGATIVE amount, the
+    whole commission), linked to the commission and to the cancellation that
+    caused it.
+
+    ONCE. The database refuses a second adjustment of the same commission for
+    the same cancellation, and an order has one cancellation; the service
+    re-checks under the order's lock.
+    """
+
+    KIND_CANCELLATION = 'cancellation'
+    KIND_CHOICES = [(KIND_CANCELLATION, 'Ajuste por anulación (saldo a recuperar)')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='commission_adjustments')
+    commission = models.ForeignKey(SalesCommission, on_delete=models.PROTECT, related_name='adjustments')
+    cancellation = models.ForeignKey(
+        'store.OrderCancellation', on_delete=models.PROTECT, related_name='commission_adjustments')
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='commission_adjustments',
+    )
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, default=KIND_CANCELLATION)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='commission_adjustments_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [models.Index(fields=['company', 'created_at'])]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__lt=Decimal('0.00')),
+                                   name='commission_adjustment_negative'),
+            models.UniqueConstraint(fields=['commission', 'cancellation'],
+                                    name='commission_adjustment_once_per_cancellation'),
+        ]
+
+    def __str__(self):
+        return f'CommissionAdjustment(commission={self.commission_id}, {self.amount})'
 
 
 # ---------------------------------------------------------------------------
