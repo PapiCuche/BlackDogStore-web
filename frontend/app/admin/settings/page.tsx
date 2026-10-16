@@ -30,6 +30,7 @@ import { SequenceSettings } from "../components/SequenceSettings";
 import { OrderReviewSettings } from "../components/OrderReviewSettings";
 import { PublicationSettings } from "../components/PublicationSettings";
 import { DeviceHoldSettings } from "../components/DeviceHoldSettings";
+import { PosCancelSettings } from "../components/PosCancelSettings";
 import { CarrierSettings } from "../components/CarrierSettings";
 import {
   fetchCompanyConfiguration,
@@ -514,6 +515,21 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                       checkoutMinutes={config.settings.device_checkout_hold_minutes ?? 45}
                       ceilingMinutes={config.settings.device_hold_ceiling_minutes ?? 60}
                       overStock={config.settings.web_on_order_over_stock ?? false}
+                      canEdit={Boolean(config.can_manage_order_review) && companyWide}
+                      onSaved={setConfig}
+                    />
+                  </DashboardSection>
+                </div>
+                {/* FINANCIAL-CLOSURE — how many days a till sale is annulled
+                    without a superior. Its own save; the same pair of capabilities. */}
+                <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                  <DashboardSection
+                    title="Anulación de ventas POS"
+                    description="Hasta cuántos días después de la venta puede anularla quien cancela pedidos; después, un superior."
+                  >
+                    <PosCancelSettings
+                      companyId={companyId}
+                      days={config.settings.pos_cancel_simple_days ?? 7}
                       canEdit={Boolean(config.can_manage_order_review) && companyWide}
                       onSaved={setConfig}
                     />

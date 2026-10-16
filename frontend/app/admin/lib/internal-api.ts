@@ -367,6 +367,8 @@ export type CompanySettingsPayload = {
   device_hold_ceiling_minutes?: number;
   /** DEVICE-COMMERCE: whether a web buyer may order from the supplier although there is stock. Off as created. */
   web_on_order_over_stock?: boolean;
+  /** Cierre financiero: días en que una venta POS se anula sin superior (0–365, 7 al crear). */
+  pos_cancel_simple_days?: number;
   updated_at: string;
 };
 
