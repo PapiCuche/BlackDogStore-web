@@ -116,7 +116,8 @@ test.describe("DC2 · página de modelo", () => {
     const blanco = colour.getByRole("radio", { name: "Blanco, no disponible" });
     await expect(blanco).toBeVisible();
     await expect(blanco).toHaveAttribute("aria-disabled", "true");
-    await blanco.click();
+    // A disabled option ignores the click (forced: Playwright never clicks a disabled control).
+    await blanco.click({ force: true });
     await expect(colour.getByRole("radio", { name: "Azul" })).toHaveAttribute("aria-checked", "true");
 
     // Back to 128 GB with the keyboard: Blanco becomes available again.
