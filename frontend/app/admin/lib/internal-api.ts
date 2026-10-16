@@ -1287,17 +1287,39 @@ export type CommissionRow = {
   sales: number;
   net_amount: string;
   commission: string;
+  /** Cierre financiero: por estado. `recoverable` es negativo. */
+  accrued?: string;
+  settled?: string;
+  voided?: string;
+  voided_sales?: number;
+  recoverable?: string;
   /** Shown BESIDE the historical total, never used to compute it. */
   current_rate_percent: string | null;
+};
+
+export type CommissionAdjustmentRow = {
+  id: number;
+  order_id: number;
+  commission_id: number;
+  seller_name: string;
+  /** Negativo: lo que el vendedor debe devolver de una comisión ya liquidada. */
+  amount: string;
+  kind: string;
+  label: string;
+  created_at: string;
 };
 
 export type CommissionReport = {
   window_days: number;
   today: string;
   branches: PosBranch[];
+  /** Devengada + liquidada + saldo a recuperar: lo que los vendedores conservan. */
   total_commission: string;
+  /** Cierre financiero (2026-10-16). Ausente en una respuesta anterior. */
+  totals?: { accrued: string; settled: string; voided: string; recoverable: string };
   note: string;
   results: CommissionRow[];
+  adjustments?: CommissionAdjustmentRow[];
 };
 
 export type CommissionSetting = {
