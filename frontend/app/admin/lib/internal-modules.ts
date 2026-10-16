@@ -126,26 +126,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
   },
 
   // ── Ventas ───────────────────────────────────────────────────────────────
-  {
-    id: "sales.orders",
-    group: "sales",
-    label: "Pedidos",
-    description: "Pedidos del e-commerce y su estado de despacho.",
-    href: "/admin/orders",
-    requiredCapabilities: ["sales.orders.view"],
-    legacyRoles: STAFF_ROLES,
-    status: "implemented",
-    quickAction: true,
-  },
-  {
-    id: "sales.notes",
-    group: "sales",
-    label: "Notas de venta",
-    description: "Documento interno de venta. Se emite desde el detalle del pedido.",
-    requiredCapabilities: ["sales.notes.manage"],
-    legacyRoles: ["sales", "admin", "superadmin"],
-    status: "partial",
-  },
+  // COMMERCE-ADMIN-UX-01 — the owner's order first: Resumen comercial · Punto de
+  // venta · Consultar disponibilidad · Pedidos · Cancelaciones / historial.
   {
     id: "sales.summary",
     group: "sales",
@@ -178,6 +160,39 @@ export const INTERNAL_MODULES: InternalModule[] = [
     href: "/admin/sales/availability",
     requiredCapabilities: ["sales.pos.use"],
     status: "implemented",
+  },
+  {
+    id: "sales.orders",
+    group: "sales",
+    label: "Pedidos",
+    description: "Pedidos del e-commerce y su estado de despacho.",
+    href: "/admin/orders",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+    quickAction: true,
+  },
+  {
+    // COMMERCE-ADMIN-UX-01: the orders list, filtered by «cancelado» (the
+    // filter itself belongs to the cancellations work). Same authority as the
+    // orders list, because it IS the orders list.
+    id: "sales.cancellations",
+    group: "sales",
+    label: "Cancelaciones / historial",
+    description: "Pedidos cancelados y su historial.",
+    href: "/admin/orders?status=cancelled",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+  },
+  {
+    id: "sales.notes",
+    group: "sales",
+    label: "Notas de venta",
+    description: "Documento interno de venta. Se emite desde el detalle del pedido.",
+    requiredCapabilities: ["sales.notes.manage"],
+    legacyRoles: ["sales", "admin", "superadmin"],
+    status: "partial",
   },
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
   {
@@ -234,6 +249,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "customers.loyalty", group: "customers", label: "Fidelización", description: "Programas, reglas y premios.", status: "proposed" },
 
   // ── Productos ────────────────────────────────────────────────────────────
+  // COMMERCE-ADMIN-UX-01 — the owner's order first: Productos · Modelos y
+  // variantes · Registro / Carga masiva · Publicación e-commerce.
   {
     id: "products.list",
     group: "products",
@@ -248,12 +265,37 @@ export const INTERNAL_MODULES: InternalModule[] = [
     quickAction: true,
   },
   {
-    id: "products.import",
+    // DEVICE-COMMERCE-01 · DC2: un modelo agrupa los productos que son opciones
+    // de un mismo equipo. Ver con `products.view`; cambiar, `products.manage`.
+    id: "products.models",
     group: "products",
-    label: "Carga de productos",
-    description: "Crear y editar productos y accesorios desde Excel. No mueve stock.",
-    href: "/admin/products/import",
+    label: "Modelos y variantes",
+    description: "Modelos con sus variantes, atributos, escala de estado y nombres de línea.",
+    href: "/admin/products/models",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
+    // COMMERCE-ADMIN-UX-01: «Registrar artículo», one screen for the four kinds,
+    // with the Excel loads one click away. `products.manage`, like the endpoint;
+    // devices, stock and costs are gated inside, step by step.
+    id: "products.register",
+    group: "products",
+    label: "Registro / Carga masiva",
+    description: "Registrar un equipo nuevo, un seminuevo, un accesorio o lo que vende un proveedor; o muchos desde Excel.",
+    href: "/admin/products/register",
     requiredCapabilities: ["products.manage"],
+    status: "implemented",
+  },
+  {
+    // COMMERCE-ADMIN-UX-01: what the shop shows, for every kind of article and
+    // for models. `products.view` to look; publishing needs `products.manage`.
+    id: "products.publication",
+    group: "products",
+    label: "Publicación e-commerce",
+    description: "Publicar u ocultar en bloque productos, variantes y modelos, con el motivo de lo que no se puede publicar.",
+    href: "/admin/products/publication",
+    requiredCapabilities: ["products.view"],
     status: "implemented",
   },
   {
@@ -264,17 +306,6 @@ export const INTERNAL_MODULES: InternalModule[] = [
     href: "/admin/products/categories",
     // `products.view` para llegar; cambiar exige `products.manage`, que el
     // servidor comprueba en cada guardado.
-    requiredCapabilities: ["products.view"],
-    status: "implemented",
-  },
-  {
-    // DEVICE-COMMERCE-01 · DC2: un modelo agrupa los productos que son opciones
-    // de un mismo equipo. Ver con `products.view`; cambiar, `products.manage`.
-    id: "products.models",
-    group: "products",
-    label: "Modelos",
-    description: "Modelos con sus variantes, atributos, escala de estado y nombres de línea.",
-    href: "/admin/products/models",
     requiredCapabilities: ["products.view"],
     status: "implemented",
   },
@@ -299,31 +330,65 @@ export const INTERNAL_MODULES: InternalModule[] = [
     requiredCapabilities: ["products.view"],
     status: "implemented",
   },
+  {
+    id: "products.import",
+    group: "products",
+    label: "Carga de productos",
+    description: "Crear y editar productos y accesorios desde Excel. No mueve stock.",
+    href: "/admin/products/import",
+    requiredCapabilities: ["products.manage"],
+    status: "implemented",
+  },
 
   // ── Inventario ───────────────────────────────────────────────────────────
   // Phase 2D: `legacyRoles` is gone from every inventory module. Stock belongs
   // to a company and sits in a branch now, so `inventory.*` is real authority
   // rather than a label over globally shared data.
+  // COMMERCE-ADMIN-UX-01 — the owner's order first: Resumen · Equipos nuevos ·
+  // Equipos seminuevos · Stock y disponibilidad · Costos y precios · Movimientos / Kardex.
   {
     id: "inventory.stock",
     group: "inventory",
-    label: "Stock",
-    description: "Existencias por sucursal y alertas de reposición.",
+    label: "Resumen",
+    description: "Existencias por sucursal, alertas de reposición y últimos movimientos.",
     href: "/admin/inventory",
     requiredCapabilities: ["inventory.view"],
     status: "implemented",
     quickAction: true,
   },
   {
-    // INVENTORY-UNIFIED-01: un centro para importar, exportar, imágenes e
-    // historial. Las tres cargas conservan su entrada y su ruta; esto las reúne,
-    // no las reemplaza.
-    id: "inventory.bulk",
+    id: "inventory.serial",
     group: "inventory",
-    label: "Gestión masiva de inventario",
-    description: "Importar, exportar, imágenes en lote e historial de cargas, en un solo lugar.",
-    href: "/admin/inventory/bulk",
-    anyCapabilities: ["products.manage", "inventory.adjust", "products.view", "inventory.view"],
+    label: "Equipos nuevos",
+    description: "Equipos nuevos con número de serie e IMEI, como parte del stock.",
+    // COMMERCE-ADMIN-UX-01: the same screen, opened on the new line. Without
+    // the filter (old links) it still lights this entry.
+    href: "/admin/inventory/units?line=new",
+    // Ver exige `inventory.view`; registrar o dar de baja, `inventory.adjust`.
+    // El servidor comprueba las dos en cada operación.
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    // DEVICE-COMMERCE-01 · DC2: la ficha pública de cada equipo seminuevo.
+    // Ver con `inventory.view`; cambiarla, `inventory.adjust`.
+    id: "inventory.used",
+    group: "inventory",
+    label: "Equipos seminuevos",
+    description: "Equipos seminuevos: batería, estado, precio propio y fotos.",
+    href: "/admin/inventory/used",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    // COMMERCE-ADMIN-UX-01: the shelf of every branch, product by product —
+    // what «Resumen» only samples. Same authority as the rest of the inventory.
+    id: "inventory.availability",
+    group: "inventory",
+    label: "Stock y disponibilidad",
+    description: "Existencias de cada producto por sucursal, con búsqueda y filtros.",
+    href: "/admin/inventory/stock",
+    requiredCapabilities: ["inventory.view"],
     status: "implemented",
   },
   {
@@ -338,6 +403,27 @@ export const INTERNAL_MODULES: InternalModule[] = [
     href: "/admin/inventory/costs",
     requiredCapabilities: ["costs.view"],
     legacyRoles: ADMIN_ROLES,
+    status: "implemented",
+  },
+  {
+    id: "inventory.movements",
+    group: "inventory",
+    label: "Movimientos / Kardex",
+    description: "Kardex por sucursal: entradas, salidas y ajustes.",
+    href: "/admin/inventory/movements",
+    requiredCapabilities: ["inventory.view"],
+    status: "implemented",
+  },
+  {
+    // INVENTORY-UNIFIED-01: un centro para importar, exportar, imágenes e
+    // historial. Las tres cargas conservan su entrada y su ruta; esto las reúne,
+    // no las reemplaza.
+    id: "inventory.bulk",
+    group: "inventory",
+    label: "Gestión masiva de inventario",
+    description: "Importar, exportar, imágenes en lote e historial de cargas, en un solo lugar.",
+    href: "/admin/inventory/bulk",
+    anyCapabilities: ["products.manage", "inventory.adjust", "products.view", "inventory.view"],
     status: "implemented",
   },
   {
@@ -361,24 +447,6 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
-    id: "inventory.movements",
-    group: "inventory",
-    label: "Movimientos",
-    description: "Kardex por sucursal: entradas, salidas y ajustes.",
-    href: "/admin/inventory/movements",
-    requiredCapabilities: ["inventory.view"],
-    status: "implemented",
-  },
-  {
-    id: "inventory.reports",
-    group: "inventory",
-    label: "Reportes",
-    description: "Bajo stock, rotación y valorización estimada.",
-    href: "/admin/inventory/reports",
-    requiredCapabilities: ["inventory.reports"],
-    status: "implemented",
-  },
-  {
     id: "inventory.transfers",
     group: "inventory",
     label: "Transferencias",
@@ -397,34 +465,21 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    id: "inventory.reports",
+    group: "inventory",
+    label: "Reportes",
+    description: "Bajo stock, rotación y valorización estimada.",
+    href: "/admin/inventory/reports",
+    requiredCapabilities: ["inventory.reports"],
+    status: "implemented",
+  },
+  {
     id: "inventory.replenishment",
     group: "inventory",
     label: "Reposición",
     description: "Sugerencias por mínimo y objetivo de cada sucursal.",
     href: "/admin/inventory/replenishment",
     requiredCapabilities: ["inventory.reports"],
-    status: "implemented",
-  },
-  {
-    id: "inventory.serial",
-    group: "inventory",
-    label: "Equipos",
-    description: "Equipos con número de serie e IMEI, como parte del stock.",
-    href: "/admin/inventory/units",
-    // Ver exige `inventory.view`; registrar o dar de baja, `inventory.adjust`.
-    // El servidor comprueba las dos en cada operación.
-    requiredCapabilities: ["inventory.view"],
-    status: "implemented",
-  },
-  {
-    // DEVICE-COMMERCE-01 · DC2: la ficha pública de cada equipo seminuevo.
-    // Ver con `inventory.view`; cambiarla, `inventory.adjust`.
-    id: "inventory.used",
-    group: "inventory",
-    label: "Seminuevos",
-    description: "Equipos seminuevos: batería, estado, precio propio y fotos.",
-    href: "/admin/inventory/used",
-    requiredCapabilities: ["inventory.view"],
     status: "implemented",
   },
 
@@ -641,6 +696,38 @@ export function navigableGroups(
 
 export function quickActions(ctx: ModuleAccessContext): InternalModule[] {
   return navigableModules(ctx).filter((m) => m.quickAction);
+}
+
+/**
+ * Which of `hrefs` the sidebar lights for the page at `pathname` + `search`.
+ * COMMERCE-ADMIN-UX-01.
+ *
+ * Some entries are the same screen opened with a filter
+ * (`/admin/orders?status=cancelled`, `/admin/inventory/units?line=new`). The
+ * rule: the LONGEST path that is the page or one of its parents wins; among
+ * entries with that path, one whose filter the address carries beats the bare
+ * path; and a filtered entry with no bare sibling still lights for the bare
+ * path, so an old link to the same screen keeps its place in the menu.
+ */
+export function activeModuleHref(pathname: string, search: string, hrefs: string[]): string | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const pathOf = (href: string) => href.split("?")[0];
+  const covers = (path: string) =>
+    path === "/admin" ? pathname === "/admin" : pathname === path || pathname.startsWith(`${path}/`);
+  const candidates = hrefs.filter((href) => covers(pathOf(href)));
+  if (!candidates.length) return null;
+  const longest = Math.max(...candidates.map((href) => pathOf(href).length));
+  const same = candidates.filter((href) => pathOf(href).length === longest);
+  const filtered = same.filter((href) => href.includes("?"));
+  const bare = same.find((href) => !href.includes("?"));
+  if (pathname === pathOf(same[0])) {
+    const matching = filtered.find((href) => {
+      const wanted = new URLSearchParams(href.split("?")[1]);
+      return [...wanted.entries()].every(([key, value]) => params.get(key) === value);
+    });
+    if (matching) return matching;
+  }
+  return bare ?? filtered[0] ?? null;
 }
 
 /** Roadmap for the dashboard: everything, grouped, with its honest status. */

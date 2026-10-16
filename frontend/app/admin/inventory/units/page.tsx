@@ -8,12 +8,13 @@
  * resto del inventario, todo ocurre dentro de las sucursales de quien mira.
  */
 
+import { useState } from "react";
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { BranchSelector } from "../../components/BranchSelector";
 import { ErrorBox, Spinner } from "../../components/InventoryUi";
 import { PageHeader } from "../../components/internal-ui";
-import { StockUnitsPanel } from "../../components/StockUnitsPanel";
+import { StockUnitsPanel, unitFiltersFromSearch } from "../../components/StockUnitsPanel";
 import type { InternalAccess } from "../../lib/internal-access";
 import { useBranchScope } from "../../lib/use-branch-scope";
 import type { AuthUser } from "../../../lib/auth";
@@ -21,6 +22,9 @@ import type { AuthUser } from "../../../lib/auth";
 function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   const scope = useBranchScope({ preferAggregate: true });
   const canAdjust = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
+  // COMMERCE-ADMIN-UX-01: «Equipos nuevos» is this screen opened with `?line=new`.
+  // Read once on the client; the panel only mounts once the branches arrive.
+  const [initialFilters] = useState(() => (typeof window === "undefined" ? {} : unitFiltersFromSearch(window.location.search)));
 
   return (
     <AdminShell user={user}>
@@ -46,6 +50,7 @@ function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess
             branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))}
             canAdjust={canAdjust}
             canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
+            initialFilters={initialFilters}
           />
         ) : null}
       </div>

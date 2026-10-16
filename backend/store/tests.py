@@ -55697,6 +55697,12 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad». Same authority as the
         # till (`pos_views._context`): `has_capability`, no legacy bridge.
         'sales/availability/page.tsx': ('sales.pos.use', frozenset()),
+        # COMMERCE-ADMIN-UX-01 — «Registrar artículo» (the product form's
+        # authority), «Publicación e-commerce» (the product list's) and «Stock y
+        # disponibilidad» (the inventory's).
+        'products/register/page.tsx': ('products.manage', _LEGACY_MANAGE_CATALOG_ROLES),
+        'products/publication/page.tsx': ('products.view', _LEGACY_VIEW_CATALOG_ROLES),
+        'inventory/stock/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
     }
 
     _GUARD = _h412b_re.compile(

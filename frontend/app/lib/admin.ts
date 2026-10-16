@@ -124,8 +124,11 @@ export type AdminProduct = {
   updated_at: string;
   /** La galería. Sólo viene en el detalle; `image_url` es la principal. */
   images?: AdminProductImage[];
-  /** DC3: `stock` = sólo stock propio; `stock_or_order` = también bajo pedido. Sólo en el detalle. */
+  /** DC3: `stock` = sólo stock propio; `stock_or_order` = también bajo pedido. */
   sale_mode?: 'stock' | 'stock_or_order';
+  /** COMMERCE-ADMIN-UX-01: línea del equipo (DC2) y su modelo, si es una variante. */
+  condition_line?: 'new' | 'used';
+  product_model_id?: number | null;
 };
 
 /** Una imagen de la galería de un producto. */
@@ -229,6 +232,10 @@ export type ProductListFilter = {
   is_published_online?: 'true' | 'false';
   is_serialized?: 'true' | 'false';
   stock?: 'in_stock' | 'out_of_stock' | 'low_stock';
+  /** COMMERCE-ADMIN-UX-01: línea nueva o seminueva (DC2). */
+  condition_line?: 'new' | 'used';
+  /** COMMERCE-ADMIN-UX-01: «Bajo pedido» (DC3). */
+  sale_mode?: 'stock' | 'stock_or_order';
 };
 
 export async function fetchAdminProducts(params?: ProductListFilter & {
@@ -249,6 +256,8 @@ export async function fetchAdminProducts(params?: ProductListFilter & {
     is_published_online: params?.is_published_online,
     is_serialized: params?.is_serialized,
     stock: params?.stock,
+    condition_line: params?.condition_line,
+    sale_mode: params?.sale_mode,
     page: params?.page,
     page_size: params?.page_size,
   });

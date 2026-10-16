@@ -44,6 +44,23 @@ type Filters = {
 };
 const NO_FILTERS: Filters = { product: "", status: "", condition: "", search: "", line: "", model: "", options: {} };
 
+/** What a link may preselect: the line and the product. Anything else is ignored. */
+export type UnitInitialFilters = Partial<Pick<Filters, "line" | "product">>;
+
+/**
+ * COMMERCE-ADMIN-UX-01 — «Equipos nuevos» (`?line=new`) and the registration's
+ * «Ver los equipos» (`?product=41`) open this list already filtered.
+ */
+export function unitFiltersFromSearch(search: string): UnitInitialFilters {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const found: UnitInitialFilters = {};
+  const line = params.get("line");
+  if (line === "new" || line === "used") found.line = line;
+  const product = params.get("product");
+  if (product && /^\d+$/.test(product)) found.product = product;
+  return found;
+}
+
 const ACTION_LABEL: Record<UnitAction, string> = {
   reserve: "Apartar",
   release: "Liberar",
@@ -127,7 +144,7 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
 }
 
 export function StockUnitsPanel({
-  branch, branches, canAdjust, canSeeCost = false,
+  branch, branches, canAdjust, canSeeCost = false, initialFilters,
 }: {
   /** The branch in view; "all" for every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -135,11 +152,13 @@ export function StockUnitsPanel({
   canAdjust: boolean;
   /** `costs.view`: the drawer shows the cost the server sent. Without it there is none to show. */
   canSeeCost?: boolean;
+  /** COMMERCE-ADMIN-UX-01: filters a link asked for (`unitFiltersFromSearch`). */
+  initialFilters?: UnitInitialFilters;
 }) {
   const [page, setPage] = useState<StockUnitPage | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
-  const [draft, setDraft] = useState<Filters>(NO_FILTERS);
-  const [applied, setApplied] = useState<Filters>(NO_FILTERS);
+  const [draft, setDraft] = useState<Filters>(() => ({ ...NO_FILTERS, ...initialFilters }));
+  const [applied, setApplied] = useState<Filters>(() => ({ ...NO_FILTERS, ...initialFilters }));
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
