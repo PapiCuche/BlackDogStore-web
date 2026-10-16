@@ -33,6 +33,7 @@ from .models import (
     AppliedPromotion,
     Branch,
     Coupon,
+    Order,
     Product,
     Promotion,
     PromotionBranch,
@@ -110,6 +111,8 @@ class AdminPromotionListView(APIView):
             row['promotion']: row
             for row in AppliedPromotion.objects
             .filter(company=company)
+            # FINANCIAL-CLOSURE: an annulled sale gave no discount away.
+            .exclude(order__status=Order.Status.CANCELLED)
             .values('promotion')
             .annotate(
                 orders=Count('order', distinct=True),

@@ -15,6 +15,7 @@ COMMERCE-ADMIN-UX-01 · financial closure — the owner's decisions of 2026-10-1
 from datetime import timedelta
 from decimal import Decimal as D
 
+from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -27,6 +28,7 @@ from store.models import (
 )
 from store import test_order_cancel as cancel_tests
 from store.test_order_cancel import REASON, RETURN
+from store.test_order_cancel_dc import _CostShop
 from store.test_order_cancel_ux import MANAGE, _UxBase
 from store.tests import _m7_stock, _p2d_member
 
@@ -422,3 +424,220 @@ class CommissionClosureTest(_ClosureBase):
         [adjustment] = body['adjustments']
         self.assertEqual((adjustment['order_id'], adjustment['amount'], adjustment['label']),
                          (annulled_sale.pk, '-4.00', 'Ajuste por anulación (saldo a recuperar)'))
+
+
+# -- decision 4 and the board audit · one hand-computed fixture --------------------------
+
+class FinancialBoardsFixtureTest(_ClosureBase):
+    """
+    One day, one product. Mouse: price 50.00, cost 20.00, 30 on the shelf.
+
+      W1  web paid, 2                     100.00  live sale
+      W2  web unpaid, 1                    50.00  pending payment (no money)
+      W3  web paid, 1, cancelled           50.00  refund PENDING 50.00
+                                                  + a TEST-keys duplicate charge of 50.00 (not money)
+      W4  web paid, 3, cancelled          150.00  refund CONFIRMED 60.00 (partial)
+      P1  till sale, 1                     50.00  live; commission 1.00 accrued
+      P2  till sale, 1, annulled simply    50.00  commission 1.00 → voided
+      P3  till sale, 2, commission 2.00 settled, annulled by a superior
+                                          100.00  commission kept settled, adjustment −2.00
+
+      sales          150.00 = W1 + P1 · 2 orders · 3 units · ticket 75.00
+                     online 1 / 100.00 / 2 units · pos 1 / 50.00 / 1 unit
+      collected      live 150.00 + cancelled paid 350.00 (W3 W4 P2 P3) + late 0.00 = gross 500.00
+      refunds        confirmed 60.00 · pending 50.00
+      net collected  440.00; still held for cancellations 350.00 − 60.00 = 290.00
+      margin         net sales of W1+P1 at cost 3 × 20 = 60.00; cancellations 4 orders, 7 units,
+                     gross 350.00, cost 140.00, refunds 60.00 confirmed / 50.00 pending
+      demand         3 units (cancelled exits left out)
+      commissions    accrued 1.00 · settled 2.00 · voided 1.00 · recoverable −2.00 · net 1.00
+    """
+
+    def setUp(self):
+        from store.models import Customer, PaymentTransaction, Product
+        from store.tests import _prod
+
+        super().setUp()
+        self.mouse = _prod(self.company, 'Mouse', 'mouse-cierre', price='50.00', inventory=0)
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=self.mouse.pk, movement_type=StockMovement.PURCHASE_ENTRY,
+            quantity=30, reason='Compra', unit_cost=D('20'))
+        self.assertIsInstance(self.mouse, Product)
+        self.client_record = Customer.objects.create(company=self.company, first_name='Rosa', last_name='Quispe')
+        analyst, _ = _p2d_member(self.company, 'analista_cierre', [
+            'company.view', 'sales.analytics.view', 'costs.view', 'sales.commissions.view', 'sales.orders.view',
+            'inventory.reports', 'service.customers.view', 'sales.promotions.view'])
+        self.analyst = APIClient()
+        self.analyst.force_authenticate(analyst)
+
+        self.w1 = self.web_order((self.mouse, 2), customer=self.client_record)
+        self.w2 = self.unpaid(customer=self.client_record)
+        self.w3 = self.web_order((self.mouse, 1), customer=self.client_record)
+        self.w4 = self.web_order((self.mouse, 3), customer=self.client_record)
+        self.p1 = self.web_order((self.mouse, 1), sales_channel='pos', fulfillment_status='delivered')
+        self.p2 = self.web_order((self.mouse, 1), sales_channel='pos', fulfillment_status='delivered')
+        self.p3 = self.web_order((self.mouse, 2), sales_channel='pos', fulfillment_status='delivered')
+        self.commission(self.p1, amount='1.00')
+        self.commission(self.p2, amount='1.00')
+        from store import commission_services
+
+        commission_services.settle(self.commission(self.p3, amount='2.00'), self.superior)
+        self.snapshots = self.frozen()
+
+        self.post_cancel(self.w3, refund_method='gateway')
+        PaymentTransaction.objects.create(
+            order=self.w3, provider='izipay', transaction_id='DUP-TEST', order_number='DUP-TEST', amount=D('50.00'),
+            currency='PEN', environment='test', status=PaymentTransaction.Status.DUPLICATE,
+            confirmed_at=timezone.now())
+        self.post_cancel(self.w4)
+        self.post_refund(self.w4, amount='60.00', method='transfer')
+        refund = OrderRefund.objects.get(order=self.w4)
+        self.post_confirm(self.w4, refund, self.superior_desk, reference='TR-60', evidence=EVIDENCE, amount='60.00')
+        self.assertEqual(self.post_cancel(self.p2, goods_returned=True).status_code, 200)
+        self.assertEqual(self.post_cancel(self.p3, goods_returned=True).status_code, 403)
+        self.assertEqual(self.post_cancel(self.p3, client=self.superior_desk, goods_returned=True).status_code, 200)
+
+    def unpaid(self, **fields):
+        order = Order.objects.create(
+            company=self.company, fulfillment_branch=self.branch_a, customer_email='x@example.com',
+            total=D('50.00'), status=Order.Status.PENDING_PAYMENT, paid=False, **fields)
+        from store.models import OrderItem
+
+        OrderItem.objects.create(order=order, product=self.mouse, quantity=1, price=self.mouse.price)
+        return order
+
+    def frozen(self):
+        from store.models import OrderItem
+
+        return {
+            'lines': list(OrderItem.objects.filter(product=self.mouse).order_by('pk').values(
+                'pk', 'price', 'quantity', 'unit_cost', 'cost_source', 'net_amount')),
+            'exits': list(StockMovement.objects.filter(movement_type=StockMovement.SALE_EXIT, product=self.mouse)
+                          .order_by('pk').values('pk', 'quantity', 'unit_cost', 'branch_id', 'order_id')),
+            'orders': list(Order.objects.filter(company=self.company).order_by('pk').values(
+                'pk', 'total', 'paid', 'paid_at', 'taxable_amount', 'tax_amount', 'discount_amount')),
+            'settled': list(SalesCommission.objects.filter(status=SalesCommission.STATUS_SETTLED).values()),
+        }
+
+    def get(self, path):
+        response = self.analyst.get(f'{path}{"&" if "?" in path else "?"}{self.q}')
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    # decision 4 ------------------------------------------------------------------------
+
+    def test_no_snapshot_of_a_sale_is_rewritten(self):
+        self.assertEqual(self.frozen(), self.snapshots)
+
+    # the boards ------------------------------------------------------------------------
+
+    def test_the_commercial_summary(self):
+        body = self.get('/api/admin/sales/dashboard/')
+        today = body['kpis']['today']
+        self.assertEqual((today['revenue'], today['orders'], today['units'], today['average_ticket']),
+                         ('150.00', 2, 3, '75.00'))
+        channels = body['channels']['by_channel']
+        self.assertEqual((channels['online'], channels['pos']),
+                         ({'orders': 1, 'revenue': '100.00', 'units': 2}, {'orders': 1, 'revenue': '50.00', 'units': 1}))
+        self.assertEqual(body['trend'][-1]['revenue'], '150.00')
+        collections = body['collections']['today']
+        self.assertEqual(collections['live'], {'orders': 2, 'amount': '150.00'})
+        self.assertEqual(collections['cancelled_paid'], {'orders': 4, 'amount': '350.00'})
+        self.assertEqual(collections['late_charges'], {'count': 0, 'amount': '0.00'})
+        self.assertEqual((collections['gross'], collections['refunds_confirmed'], collections['refunds_pending'],
+                          collections['net'], collections['cancelled_held'], collections['cancelled_orders']),
+                         ('500.00', '60.00', '50.00', '440.00', '290.00', 4))
+        [mouse] = [r for r in body['top_products']['results'] if r['product_id'] == self.mouse.pk]
+        self.assertEqual((mouse['units_sold'], mouse['revenue']), (3, '150.00'))
+
+    def test_the_margin(self):
+        body = self.get('/api/admin/sales/margin/?days=7')
+        self.assertEqual((body['sales']['orders'], body['sales']['gross'], body['cost_of_goods_sold']),
+                         (2, '150.00', '60.00'))
+        self.assertEqual(body['collected']['amount'], '440.00')
+        cancelled = body['cancellations']
+        self.assertEqual((cancelled['orders'], cancelled['units'], cancelled['gross'], cancelled['cost'],
+                          cancelled['refunds_confirmed'], cancelled['refunds_pending']),
+                         (4, 7, '350.00', '140.00', '60.00', '50.00'))
+
+    def test_the_demand_forecast_leaves_cancelled_exits_out(self):
+        from store import inventory_forecasting as forecasting
+        from store.sales_analytics_views import _company_today
+
+        today = _company_today(self.company)
+        demand = forecasting.collect_demand([self.branch_a], today=today)
+        self.assertEqual(demand[(self.branch_a.pk, self.mouse.pk)].units_in(today, today), 3)
+
+    def test_the_commissions(self):
+        body = self.get('/api/admin/sales/commissions/?days=7')
+        self.assertEqual(body['totals'], {'accrued': '1.00', 'settled': '2.00', 'voided': '1.00',
+                                          'recoverable': '-2.00'})
+        self.assertEqual(body['total_commission'], '1.00')
+
+    def test_the_internal_dashboard(self):
+        sales = self.get('/api/me/internal-dashboard/')['sales']
+        self.assertEqual((sales['today_revenue'], sales['today_orders'], sales['total_revenue'],
+                          sales['total_paid_orders'], sales['average_ticket'], sales['pending_payment']),
+                         ('150.00', 2, '150.00', 2, '75.00', 1))
+        self.assertEqual(sales['collections'], {
+            'cancelled_paid': {'orders': 4, 'amount': '350.00'}, 'refunds_confirmed': '60.00',
+            'refunds_pending': '50.00', 'cancelled_held': '290.00'})
+        by_status = {row['label']: row['value'] for row in sales['orders_by_status']}
+        self.assertEqual((by_status['Pagado'], by_status['Cancelado'], by_status['Pendiente de pago']), (2, 4, 1))
+
+    def test_the_customer_summary(self):
+        summary = self.get(f'/api/admin/customers/{self.client_record.pk}/')['summary']
+        self.assertEqual((summary['orders_total'], summary['paid_orders'], summary['paid_amount'],
+                          summary['cancelled_orders'], summary['refunds_confirmed']),
+                         (4, 1, '100.00', 2, '60.00'))
+
+    def test_the_orders_list_filters(self):
+        def ids(params):
+            return {row['id'] for row in self.get(f'/api/admin/orders/?{params}')['results']}
+
+        self.assertEqual(ids('paid=true'), {self.w1.pk, self.p1.pk})
+        self.assertEqual(ids('paid=false'), {self.w2.pk})
+        self.assertEqual(ids('status=cancelled'), {self.w3.pk, self.w4.pk, self.p2.pk, self.p3.pk})
+        self.assertEqual(ids('refund=pending'), {self.w3.pk})
+        self.assertEqual(ids('refund=confirmed'), {self.w4.pk})
+
+    def test_the_promotion_report_leaves_annulled_sales_out(self):
+        from store.models import AppliedPromotion, Promotion
+
+        promotion = Promotion.objects.create(company=self.company, name='Combo cierre',
+                                             promotion_type=Promotion.BUNDLE_PERCENT, discount_percent=D('10'))
+        for order in (self.p1, self.p2):
+            AppliedPromotion.objects.create(
+                company=self.company, order=order, promotion=promotion, promotion_name_snapshot='Combo cierre',
+                promotion_type_snapshot=Promotion.BUNDLE_PERCENT, applications=1, regular_amount=D('55.00'),
+                discount_amount=D('5.00'))
+        [row] = [r for r in self.get('/api/admin/sales/promotions/')['results'] if r['id'] == promotion.pk]
+        self.assertEqual((row['stats']['orders'], row['stats']['discount_given']), (1, '5.00'))
+
+
+class SupplierPayableAfterCancelTest(_CostShop, TestCase):
+    """What the supplier delivered is owed to it, even when the customer's order is cancelled afterwards."""
+
+    def test_a_received_line_stays_payable_after_the_cancellation(self):
+        from store import supply_services as supply
+
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        self.assertEqual(self.pay(order), 'paid')
+        [line] = order.items.all()
+        supply.receive_line(line, actor=self.staff)
+        [before] = supply.pending_settlement(self.company)
+        self.assertEqual(before['units'], 2)
+
+        cancelling.cancel_paid_order(order, self.staff, REASON)
+
+        self.assertEqual(supply.pending_settlement(self.company), [before])
+
+    def test_a_line_never_received_is_not_owed(self):
+        from store import supply_services as supply
+
+        self.add_on_order(quantity=1)
+        order = self.checkout()
+        self.pay(order)
+        cancelling.cancel_paid_order(order, self.staff, REASON)
+        self.assertEqual(supply.pending_settlement(self.company), [])

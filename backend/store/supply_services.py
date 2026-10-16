@@ -765,8 +765,11 @@ def pending_settlement(company, branch_ids=None) -> list[dict]:
     `branch_ids`: only orders fulfilled by those branches — the caller's
     visible ones (integration review of PR #123, P3). None = the company.
     """
+    # FINANCIAL-CLOSURE: goods RECEIVED from the supplier are owed to it even
+    # when the customer's order was cancelled afterwards (they came back to
+    # our own shelf at their cost); only a line never received is not owed.
     lines = OrderItem.objects.filter(
-        order__company=company, order__status=Order.Status.PAID,
+        order__company=company, order__status__in=(Order.Status.PAID, Order.Status.CANCELLED),
         supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED,
         supplier_offer__isnull=False,
     )

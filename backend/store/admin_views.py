@@ -1365,7 +1365,10 @@ class AdminOrderListView(APIView):
 
         paid_param = request.query_params.get('paid', '').strip().lower()
         if paid_param == 'true':
-            orders = orders.filter(paid=True)
+            # FINANCIAL-CLOSURE: «Pagado» is a CURRENT paid sale. A cancelled
+            # order keeps `paid=True` (the money was taken) and is listed under
+            # `?status=cancelled` (and `?refund=`), labelled, never as a sale.
+            orders = orders.filter(paid=True).exclude(status=Order.Status.CANCELLED)
         elif paid_param == 'false':
             orders = orders.filter(paid=False)
 

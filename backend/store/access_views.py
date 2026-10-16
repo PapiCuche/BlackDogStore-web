@@ -1084,6 +1084,47 @@ class InternalDashboardView(APIView):
             ).count(),
             'revenue_trend': self._revenue_trend(paid),
             'orders_by_status': self._orders_by_status(pipeline),
+            # FINANCIAL-CLOSURE: the money of cancelled orders, apart from the sales above.
+            'collections': self._collections(pipeline),
+        }
+
+    def _collections(self, pipeline):
+        """
+        FINANCIAL-CLOSURE (owner, 2026-10-16), over the caller's scoped orders,
+        all time like `total_revenue`. A cancelled order is not a sale, but the
+        money taken for it stays collected until a refund is CONFIRMED:
+
+            cancelled_paid     orders cancelled after being paid, and their total;
+            refunds_confirmed  money given back (`OrderRefund`, confirmed);
+            refunds_pending    money owed back, not given back yet — said, not subtracted;
+            cancelled_held     cancelled paid totals + late charges filed as
+                               duplicates on cancelled orders (never TEST keys)
+                               − confirmed refunds: still in the shop's hands.
+        """
+        from decimal import Decimal
+
+        from django.db.models import Count, Sum
+
+        from .models import Order, OrderRefund, PaymentTransaction
+        from .order_refunds import TEST_ENVIRONMENT
+
+        cancelled = pipeline.filter(status=Order.Status.CANCELLED)
+        paid = cancelled.filter(paid=True).aggregate(n=Count('id'), amount=Sum('total'))
+        late = PaymentTransaction.objects.filter(
+            order__in=cancelled, status=PaymentTransaction.Status.DUPLICATE,
+        ).exclude(environment=TEST_ENVIRONMENT).aggregate(amount=Sum('amount'))['amount'] or Decimal('0')
+        refunds = OrderRefund.objects.filter(order__in=pipeline)
+        confirmed = refunds.filter(status=OrderRefund.STATUS_CONFIRMED).aggregate(
+            amount=Sum('amount'))['amount'] or Decimal('0')
+        pending = refunds.filter(status=OrderRefund.STATUS_PENDING).aggregate(
+            amount=Sum('amount'))['amount'] or Decimal('0')
+        given_back = refunds.filter(order__in=cancelled, status=OrderRefund.STATUS_CONFIRMED).aggregate(
+            amount=Sum('amount'))['amount'] or Decimal('0')
+        return {
+            'cancelled_paid': {'orders': paid['n'] or 0, 'amount': str(_money(paid['amount']))},
+            'refunds_confirmed': str(_money(confirmed)),
+            'refunds_pending': str(_money(pending)),
+            'cancelled_held': str(_money((paid['amount'] or Decimal('0')) + late - given_back)),
         }
 
     def _revenue_trend(self, paid):

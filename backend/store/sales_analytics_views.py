@@ -653,8 +653,12 @@ class AdminSalesMarginView(APIView):
         )
         gross = cancelled.aggregate(
             amount=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+        refund_money = Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY)
         refunded = OrderRefund.objects.filter(order__in=cancelled, status=OrderRefund.STATUS_CONFIRMED).aggregate(
-            amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+            amount=refund_money)['amount']
+        # FINANCIAL-CLOSURE: owed back but not given back yet — said, never subtracted.
+        owed = OrderRefund.objects.filter(order__in=cancelled, status=OrderRefund.STATUS_PENDING).aggregate(
+            amount=refund_money)['amount']
         return {
             'orders': cancelled.count(),
             'units': figures['units'],
@@ -663,6 +667,7 @@ class AdminSalesMarginView(APIView):
             'cost': str(_cents(figures['cost'])),
             'stock_restored_orders': cancelled.filter(cancellation__stock_restored=True).count(),
             'refunds_confirmed': str(_cents(refunded)),
+            'refunds_pending': str(_cents(owed)),
         }
 
     #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its

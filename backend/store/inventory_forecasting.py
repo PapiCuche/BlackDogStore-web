@@ -40,7 +40,7 @@ from datetime import date, datetime, time, timedelta
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 
-from .models import BranchStock, StockMovement
+from .models import BranchStock, Order, StockMovement
 
 # --- windows ---------------------------------------------------------------
 SHORT_WINDOW = 7
@@ -149,6 +149,10 @@ def collect_demand(branches, *, today: date, days: int = LONG_WINDOW, tz=None):
             created_at__gte=start,
             created_at__lt=end,
         )
+        # FINANCIAL-CLOSURE: a cancelled or annulled sale's goods came back
+        # (`order_cancel_return`): it is not demand. An exit with no order
+        # (a sale exit written by hand) is kept, as the best sellers keep it.
+        .exclude(order__status=Order.Status.CANCELLED)
         .annotate(day=TruncDate('created_at', tzinfo=tz))
         .values('branch_id', 'product_id', 'day')
         .annotate(units=Sum('quantity'))
