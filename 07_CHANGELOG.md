@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-16 — COMMERCE-ADMIN-UX-01 · ronda de correcciones (en rama, NO desplegado)
+
+- **Fixed** — costo de referencia «1e30»/«Infinity» ya no da 500; equipo dado de baja sin cambio de costo; motivo de costo sólo texto; «Costos y precios» envía sólo lo cambiado y avisa no escribir montos en el motivo; aviso por «Bajo pedido» contradictorio en ofertas; modelo nuevo oculto si su primera variante no se publica. Sin migración (DEC-COMMERCE-ADMIN-UX-01 · Registro).
+
 ## 2026-10-15 — COMMERCE-ADMIN-UX-01 · cancelaciones (en rama, NO desplegado)
 
 Rama `feat/commerce-admin-ux` (sin push). Integra #121/#119 por merge; migraciones `0124`,

@@ -2385,3 +2385,9 @@ controlar la publicación e-commerce de todo con acciones en bloque, y un menú 
   `/admin/orders?status=cancelled` (el filtro es de la rama de cancelaciones); «Stock y
   disponibilidad» = pantalla nueva sobre `/api/admin/inventory/stock/`. La barra lateral
   ilumina la entrada con filtro sólo si la dirección lo lleva (`activeModuleHref`).
+- *Ronda de correcciones (2026-10-16).* Costo de referencia enorme o no finito → 400 con su
+  mensaje (antes 500 / «no puede ser negativo»); un equipo dado de baja conserva su costo como
+  uno vendido; `cost_reason` sólo texto; el editor de «Costos y precios» envía sólo lo cambiado
+  y avisa que el motivo no lleve montos; la carga de ofertas advierte dos filas del mismo
+  producto con distinto «Bajo pedido»; un modelo nuevo se crea oculto si su primera variante no
+  se puede publicar (`publication.model_hidden`; el asistente lo publica si luego publica la variante).
