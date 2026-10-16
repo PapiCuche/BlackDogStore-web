@@ -32,7 +32,8 @@ confirmación del propietario.**
   pedido no se reabre y ese dinero es reembolsable.
 - **Venta POS.** (P) Se anula **sólo si quien anula marca «La mercadería volvió al local»**
   (`goods_returned`, sólo un `true` literal); no hay regla de tiempo (el propietario no la dio
-  y no se inventa). Igual que un pedido pagado: stock de vuelta una vez al costo de la salida,
+  y no se inventa). **Superado el 2026-10-16:** una venta antigua o compleja la anula un
+  superior (ver «Cierre financiero», decisión 1). Igual que un pedido pagado: stock de vuelta una vez al costo de la salida,
   nota interna anulada (`pedido_cancelado`), boleta/factura viva conservada y marcada
   «nota de crédito / baja pendiente». No existe capacidad de «anular venta» en caja: se usa
   `sales.orders.manage` (P). (Revisión P2) Si después de la venta entró una devolución
@@ -41,6 +42,8 @@ confirmación del propietario.**
   (`restore_stock=false`, sólo POS), registrado y auditado.
 - **Comisión.** (P) Al cancelar/anular una venta pagada, la comisión devengada pasa a
   `voided` (el propio modelo lo prevé «cuando la mercadería vuelve»). No se recalcula nada más.
+  **Aprobado y ampliado el 2026-10-16:** una comisión liquidada no se anula, recibe un ajuste
+  compensatorio (ver «Cierre financiero», decisión 3).
 - **Reembolsos (`OrderRefund`, `0137`).** Un REGISTRO, no una operación de pago: nunca toca
   `PaymentTransaction` ni llama a la pasarela (el reembolso de Izipay se hace en su panel y
   aquí se anota la referencia). Sólo para pedidos cancelados. Pendiente → confirmado (con
@@ -54,6 +57,8 @@ confirmación del propietario.**
   `sales.orders.manage` + `company.manage`** (administrador de la empresa; puente legacy:
   admin y superadmin), porque no hay una capacidad financiera en el catálogo y `costs.view`
   no es de dinero que sale. (P) Un reembolso pendiente no se puede retirar ni editar todavía.
+  **Aprobado el 2026-10-16** (`company.manage`), y confirmar exige además evidencia e importe
+  exacto (ver «Cierre financiero», decisión 2).
 - **Métricas.** Ventas = pedidos `paid` vigentes (ya era así: los cancelados quedan fuera).
   (P) «Cobros» por ventana: vigentes (por `paid_at`) + cancelados después de pagarse (por
   `paid_at`) + cobros tardíos de pedidos cancelados (por `confirmed_at`) = bruto; reembolsos
@@ -69,6 +74,114 @@ confirmación del propietario.**
   `order_supply_failed` con `source=order_cancellation`; lo recibido vuelve al estante como
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
+
+### DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero — decisiones del propietario (2026-10-16) — APROBADAS, EN RAMA
+
+Rama `fix/financial-closure` desde `master` `315bedf`, **sin desplegar**. Migración `0138`
+(aditiva: `db_default` o nula, reversible, sin datos). Reemplaza las (P) de
+DEC-COMMERCE-CANCEL-01 sobre tiempo de anulación, confirmación de reembolsos y comisión.
+
+**1. Anular una venta POS: sin límite absoluto, pero lo antiguo o complejo es de un superior.**
+«Cancelación POS sin límite temporal absoluto, pero restringir según estado de entrega,
+comprobante fiscal, permisos y antigüedad. Operaciones antiguas o complejas requieren
+autorización superior, motivo y auditoría. No permitir anulación simplificada de comprobantes
+SUNAT.»
+- *Caso simple* (como hasta hoy): `sales.orders.manage`, motivo (5–500) y «La mercadería volvió
+  al local». Una venta de caja nace entregada: el estado de entrega lo vigilan `goods_returned`
+  y la devolución manual posterior (409 `manual_return_after_sale`), sin cambio.
+- *Superior* = `sales.orders.manage` **y** `company.manage` (la misma autoridad que confirma un
+  reembolso; puente legacy: admin y superadmin), cuando se cumple CUALQUIERA de
+  (`order_cancellation.superior_conditions`, en este orden):
+  `older_than_window` — vendida hace más de `CompanySettings.pos_cancel_simple_days` días
+  (7 al crear; 0–365; 0 = toda anulación de caja es de un superior; contado desde `paid_at`,
+  si falta `created_at`; cambiarlo exige `settings.manage`, como los apartados);
+  `live_fiscal_document` — boleta/factura viva (no rechazada): **nunca se anula aquí**, queda
+  y se marca «nota de crédito pendiente» como antes; `commission_settled` — comisión ya
+  liquidada; `several_branches` — sus salidas de stock son de más de una sucursal.
+  *Lectura de «complejo»:* el propietario dijo «mezcla equipos con serie y líneas por cantidad
+  de varias sucursales»; se lee como **varias sucursales**. Un equipo más un accesorio de la
+  misma sucursal sigue siendo simple (`RealTillSaleAnnulTest`). Si se quiere que toda mezcla
+  serie + cantidad sea de un superior, es una línea más.
+- *Negativa:* 403 `superior_required`, «Anular esta venta corresponde a un superior
+  (administrador de la empresa)» + cada condición, y la lista `conditions`. El panel la muestra
+  como bloqueo a quien no es superior (`can_cancel=false`) y como aviso al superior
+  (`cancel_superior_conditions`). Auditoría `order_cancelled`: `authority` (`simple` |
+  `superior`), `superior_conditions` (códigos) y el actor es quien autorizó. Las ventas web
+  siguen sus reglas (D1–D4).
+
+**2. Reembolso confirmado = evidencia, no cancelación.** «Reembolso confirmado requiere
+company.manage por ahora, más evidencia verificable, importe, referencia y registro de
+auditoría. No registrar un reembolso como ejecutado solo porque se canceló una venta.»
+- Confirmar: `sales.orders.manage` + `company.manage` (sin cambio), referencia (3–120, sólo
+  texto), **evidencia** (`OrderRefund.evidence`, 10–300, sólo texto: operación, banco o canal,
+  fecha) e **importe exacto** del pendiente (400 `amount_mismatch` si difiere). Un reembolso
+  parcial es un pendiente menor registrado antes; el tope (lo cobrado − pendientes −
+  confirmados) se vuelve a comprobar con el pedido bloqueado.
+- Auditoría `order_refund_confirmed`: importe, medio, referencia y `evidence_sha256` — nunca
+  el texto de la evidencia ni la nota (pueden llevar nombres o documentos). La evidencia vive
+  en el reembolso, que sólo ve quien ve el pedido.
+- Cancelar **nunca** confirma: sólo crea un pendiente si quien cancela lo marca (probado en los
+  tres modos). Parcial (47 de 147 y luego 100) y total, con tope, probados.
+
+**3. Comisión de una venta anulada.** «Anular únicamente comisión todavía no liquidada. Si ya
+se liquidó, registrar ajuste compensatorio o saldo recuperable, conservando historial y
+evitando doble ajuste.»
+- Estados de `SalesCommission`: `accrued` (devengada), `voided` (anulada) y, nuevo, `settled`
+  (liquidada, con `settled_at`/`settled_by`; CHECK: liquidada ⇒ fecha). El único escritor de
+  `settled` es `commission_services.settle` (sólo una devengada de una venta vigente, bajo el
+  bloqueo del pedido, auditado `commission_settled`). **No hay todavía pantalla de
+  liquidación**: hoy nada en producción liquida, y una anulación sólo anula.
+- Al anular: devengada → `voided` (como antes). Liquidada → la fila **no se toca** y se crea
+  UN `CommissionAdjustment` (importe negativo = la comisión entera, `kind=cancellation`,
+  «Ajuste por anulación (saldo a recuperar)»), enlazado a la comisión y a la cancelación,
+  `UNIQUE(commission, cancellation)` + guardia del servicio (`compensate_commission` devuelve
+  el existente). Un reembolso posterior no añade nada.
+- Informe de comisiones: por vendedor `accrued`, `settled`, `voided` (dicha, no contada),
+  `recoverable` (ajustes, por la fecha de la anulación) y `commission` = devengada +
+  liquidada + saldo a recuperar; totales y lista `adjustments`.
+
+**4. Costo promedio por sucursal: PENDIENTE (fase aparte).** «Nunca editar retrospectivamente
+snapshots de ventas.» Nada de esta rama escribe `OrderItem` (precio, costo, fuente, neto),
+`sale_exit`, totales del pedido ni una comisión liquidada: lo prueba
+`FinancialBoardsFixtureTest.test_no_snapshot_of_a_sale_is_rewritten`.
+
+**Auditoría de tableros, indicadores y agregaciones** (prueba común:
+`test_financial_closure.FinancialBoardsFixtureTest`, un día calculado a mano con web pagada,
+web impaga, web pagada cancelada con reembolso pendiente, ídem con reembolso parcial
+confirmado, venta POS, POS anulada simple, POS anulada por superior con comisión liquidada y
+un cobro duplicado con claves TEST). Líneas en la rama:
+
+| Agregación (archivo:línea) | Antes | Después |
+|---|---|---|
+| `sales_analytics_views.py:114` `_paid_orders` (KPIs `:259`, canales `:283`, tendencia `:321`, ingreso de más vendidos `:356`, margen `:484`) | `status=paid` por `paid_at`, sucursales visibles | Sin cambio: venta vigente = pagado no cancelado |
+| `sales_analytics_views.py:143` `_collections` («Cobros») | Vigentes + cancelados con pago + cobros tardíos (sin TEST) = bruto; confirmados restan; pendientes se dicen | Sin cambio (ya cumplía) |
+| `sales_analytics_views.py:356` más vendidos (unidades) | `sale_exit` sin pedidos cancelados | Sin cambio |
+| `sales_analytics_views.py:634` margen › `cancellations` | Pedidos, unidades, bruto, costo, reembolsos confirmados | + `refunds_pending` (dicho, no restado) |
+| `sales_analytics_views.py:484` margen › `refunds` | Pedidos en estado `refunded` (nada lo escribe) | Sin cambio; los reembolsos reales están en `collected` y `cancellations` |
+| `inventory_forecasting.py:114` `collect_demand` (reposición, cobertura, más vendidos) | Toda `sale_exit`, también la de un pedido cancelado | Sin las salidas de pedidos cancelados (sus bienes volvieron) |
+| `sales_analytics_views.py:892` comisiones | Sólo `accrued` | `accrued`, `settled`, `voided`, `recoverable`, neto y ajustes |
+| `access_views.py:1051` tablero interno (`_sales_snapshot`) | Pagados vigentes; «Cancelado» sólo como conteo en el gráfico por estado | + `collections` (`:1091`): cancelados con pago (pedidos, importe), reembolsos confirmados/pendientes, aún en la tienda; el panel lo dice aparte |
+| `admin_views.py:1366` lista de pedidos `?paid=true` | `paid=True`, incluía cancelados pagados | Pagado **vigente** (excluye cancelados; «Pagado (vigente)»); los cancelados por `?status=cancelled` y `?refund=` |
+| `customer_views.py:348` resumen del cliente | Compras pagadas sin cancelados | + `cancelled_orders` y `refunds_confirmed`; el historial sigue listando todos con su estado |
+| `promotion_views.py:115` uso de promociones | Toda venta con la promoción | Sin ventas anuladas (no regalaron descuento) |
+| `supply_services.py:758` pendiente de liquidar al proveedor | Líneas recibidas de pedidos `paid` | + pedidos cancelados: lo recibido se le debe al proveedor igual |
+| `inventory_services.py:1743` más vendidos de inventario | `status=paid` | Sin cambio |
+| `order_risk.py:344/363/412/539` primera compra, velocidad, cola de revisión | `status=paid` | Sin cambio: señales sobre ventas vigentes (contar cancelados en la velocidad sería otra decisión de riesgo) |
+| `customer_services.py:161`, `customer_profile.py:115` | «tiene una compra pagada» congela el documento | Sin cambio: identidad, no dinero |
+| `order_refunds.py:106/119` tope y resumen por pedido | Cobrado (total si pagado + duplicados no TEST) − pendientes − confirmados | Sin cambio |
+| `management/commands/ops_status.py:236/277` | Colas operativas de pedidos pagados | Sin cambio (operación, no dinero) |
+| Informes fiscales (`fiscal_summary_services`) | Leen comprobantes | Sin cambio: anular nunca anula un comprobante |
+
+Reglas que cumplen todas: un cancelado nunca es venta vigente y sigue en el historial con su
+etiqueta; lo cobrado sigue cobrado hasta un reembolso **confirmado**; ningún movimiento de
+dinero inventado; filtros de empresa y sucursal intactos; un periodo pasado se recalcula igual
+(ventas por `paid_at`, reembolsos por `confirmed_at`, ajustes por su fecha), salvo que una
+venta anulada después deja de ser venta de su día y pasa a «cancelados con pago» del mismo día.
+
+Pasada de mutación de los guardias nuevos: 27 mutantes, 26 muertos; 1 equivalente (ajustar
+también una comisión devengada: al llegar a `compensate_commission` la devengada ya pasó a
+`voided`). Las pruebas de borde del plazo (inclusivo), de la evidencia (10 caracteres), de las
+dos capacidades del superior y de no liquidar una venta anulada están en `GuardEdgesTest`.
 
 ### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
 
