@@ -64,6 +64,14 @@ describe('anular una venta POS antigua o compleja', () => {
     expect(warning).toHaveTextContent('queda registrada con tu usuario');
   });
 
+  it('anular sin reponer stock avisa que es de un superior (revisión)', () => {
+    render(<OrderCancelPanel order={order()} mayCancel onCancelled={jest.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Anular venta' }));
+    expect(within(screen.getByRole('dialog')).getByLabelText(/Anular sin reponer stock/))
+      .toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toHaveTextContent('requiere autorización superior');
+  });
+
   it('una venta simple no muestra el aviso', () => {
     render(<OrderCancelPanel order={order()} mayCancel onCancelled={jest.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Anular venta' }));

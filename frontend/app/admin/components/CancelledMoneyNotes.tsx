@@ -15,7 +15,11 @@ function plural(n: number, one: string, many: string) {
 }
 
 export function DashboardCancelledMoney({ collections }: { collections?: DashboardCollections }) {
-  if (!collections || collections.cancelled_paid.orders === 0) return null;
+  // Revisión P3: un cobro tardío de un pedido cancelado sin pagar, o un
+  // reembolso pendiente, también es dinero que decir aunque no haya pagados cancelados.
+  if (!collections) return null;
+  if (collections.cancelled_paid.orders === 0 && Number(collections.cancelled_held) <= 0
+    && Number(collections.refunds_pending) <= 0) return null;
   return (
     <p data-testid="dashboard-cancelled-money" className="mt-3 text-xs text-muted">
       {plural(collections.cancelled_paid.orders, "pedido cancelado con pago", "pedidos cancelados con pago")}:{" "}

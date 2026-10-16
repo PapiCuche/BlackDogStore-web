@@ -29,6 +29,14 @@ it('sin cancelados con pago, o con una respuesta anterior, no dice nada', () => 
   expect(container).toBeEmptyDOMElement();
 });
 
+it('sin pedidos pagados cancelados, un cobro tardío o un reembolso pendiente también se dicen (revisión P3)', () => {
+  render(<DashboardCancelledMoney collections={{ cancelled_paid: { orders: 0, amount: '0.00' },
+    refunds_confirmed: '0.00', refunds_pending: '50.00', cancelled_held: '50.00' }} />);
+  const note = screen.getByTestId('dashboard-cancelled-money');
+  expect(note).toHaveTextContent('S/ 50.00 aún en la tienda');
+  expect(note).toHaveTextContent('S/ 50.00 por devolver');
+});
+
 it('la ficha del cliente cuenta sus pedidos cancelados y lo que se le devolvió', () => {
   render(<CustomerCancelledNote cancelledOrders={2} refundsConfirmed="60.00" />);
   expect(screen.getByTestId('customer-cancelled-note'))

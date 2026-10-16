@@ -249,7 +249,7 @@ export function OrderCancelDialog({
             />
             <span>
               Anular sin reponer stock — sólo si la mercadería ya volvió al stock por una devolución manual
-              (revisa el Kardex)
+              (revisa el Kardex); requiere autorización superior
             </span>
           </label>
         ) : null}

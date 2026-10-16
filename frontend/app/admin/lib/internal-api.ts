@@ -1305,6 +1305,9 @@ export type CommissionRow = {
   settled?: string;
   voided?: string;
   voided_sales?: number;
+  /** Revisión: ventas anuladas cuya comisión ya estaba liquidada (fuera de `sales`). */
+  annulled_sales?: number;
+  annulled_net_amount?: string;
   recoverable?: string;
   /** Shown BESIDE the historical total, never used to compute it. */
   current_rate_percent: string | null;
