@@ -1248,12 +1248,12 @@ def _order_detail_payload(request, order, company):
         item['units'] = [] if product_id in shown else records.get(product_id, [])
         item['units_pending'] = 0 if product_id in shown else pending.get(product_id, 0)
         shown.add(product_id)
-    transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
-    # ORDER-CANCEL-01: a cancelled order does not move any more.
+    # ORDER-FULFILLMENT-SAFETY-01: the next step and the one back, never a
+    # free list; empty for a cancelled order (ORDER-CANCEL-01).
     from . import order_cancellation as cancelling
 
-    if cancelling.is_cancelled(order):
-        transitions = []
+    may_move = bool(fulfillment.allowed_fulfillment_statuses(request.user, company)) and not cancelling.is_cancelled(order)
+    transitions = fulfillment.available_moves(order, request.user, company)
     cancel_blockers = cancelling.blockers(order)
     may_cancel = cancelling.may_cancel(request.user, company)
     # FINANCIAL-CLOSURE: an old or complex till sale is annulled by a superior.
@@ -1300,8 +1300,12 @@ def _order_detail_payload(request, order, company):
         'units_pending': sum(pending.values()),
         # Whether THIS caller may say which device it is: whoever may change how
         # the order is dispatched, and only until it has left the shop.
-        'units_can_change': bool(transitions) and not view['left'],
+        'units_can_change': may_move and not view['left'],
         'available_fulfillment_transitions': transitions,
+        # ORDER-FULFILLMENT-SAFETY-01: the path by delivery mode, its history
+        # from the audit log and the leaving entries a superior may correct.
+        # Shown to whoever may see the order; actions only to who may act.
+        'dispatch': fulfillment.dispatch_view(order, request.user, company),
         # INV-04: the oversell/shortfall, derived — see order_stock_shortfall.
         'stock_shortfall': shortfall,
         # Whether THIS caller may reprocess the pending exit: a shortfall to
@@ -1688,7 +1692,7 @@ class AdminOrderFulfillmentView(APIView):
             # the company asked for it (CLIENT-SEC-01), its review is pending.
             return Response(
                 {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
-                status=status.HTTP_409_CONFLICT,
+                status=exc.http_status,
             )
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
@@ -1740,6 +1744,43 @@ class AdminOrderCancelView(APIView):
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
+
+
+class AdminOrderLeftMarkingCorrectView(APIView):
+    """
+    POST /api/admin/orders/{pk}/left-markings/{audit_id}/correct/ —
+    ORDER-FULFILLMENT-SAFETY-01, body `{reason, never_left: true}`.
+
+    A superior declares ONE audited move to sent/delivered accidental
+    (`left_marking`). Nothing is edited or deleted: a new audit entry names the
+    old one, and `ever_left` stops counting it. Refused (409) when anything
+    else says the goods left. Out of scope is 404, like every order view.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminOrderStatusChangeThrottle]
+
+    def post(self, request, pk, audit_id):
+        from . import left_marking
+        from . import order_cancellation as cancelling
+
+        company, error = _company_context(request, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            _, created = left_marking.correct(
+                order=order, audit_id=audit_id, actor=request.user, company=company,
+                reason=body.get('reason'), never_left=body.get('never_left'), request=request,
+            )
+        except left_marking.CorrectionError as exc:
+            return Response({'detail': exc.detail, 'code': exc.code}, status=exc.http_status)
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        payload = _order_detail_payload(request, order, company)
+        payload['correction_created'] = created
+        return Response(payload, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 class AdminOrderRefundListView(APIView):

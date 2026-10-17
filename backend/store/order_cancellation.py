@@ -177,17 +177,40 @@ def ever_left(order) -> bool:
       * the order was ever moved to sent or delivered — every such move goes
         through `change_fulfillment_status`, which audits the new status;
       * somebody wrote the date it was shipped on its delivery record.
+
+    ORDER-FULFILLMENT-SAFETY-01: a move to sent or delivered that a superior
+    declared accidental (`left_marking.correct`) no longer counts — that one
+    entry, by its id, and nothing else. Its record stays where it was.
     """
     from .models import OrderDelivery, OrderUnit
 
     if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exists():
         return True
-    if AdminAuditLog.objects.filter(
-        action='order_fulfillment_status_changed', target_type='order', target_id=str(order.pk),
-        metadata__new_fulfillment_status__in=list(LEAVING),
-    ).exists():
+    if leaving_events(order).exclude(pk__in=corrected_event_ids(order)).exists():
         return True
     return OrderDelivery.objects.filter(order_id=order.pk, shipped_at__isnull=False).exists()
+
+
+LEFT_MARKING_CORRECTED = 'order_left_marking_corrected'
+
+
+def leaving_events(order):
+    """Every audited move of `order` to sent or delivered, oldest first."""
+    return AdminAuditLog.objects.filter(
+        action='order_fulfillment_status_changed', target_type='order', target_id=str(order.pk),
+        metadata__new_fulfillment_status__in=list(LEAVING),
+    ).order_by('created_at', 'pk')
+
+
+def corrected_event_ids(order) -> set[int]:
+    """Ids of the leaving entries of `order` a correction names. Only entries of THIS order count."""
+    named = AdminAuditLog.objects.filter(
+        action=LEFT_MARKING_CORRECTED, target_type='order', target_id=str(order.pk),
+    ).values_list('metadata__corrected_audit_id', flat=True)
+    ids = {int(v) for v in named if isinstance(v, int) or (isinstance(v, str) and v.isdigit())}
+    if not ids:
+        return set()
+    return set(leaving_events(order).filter(pk__in=ids).values_list('pk', flat=True))
 
 
 def _blocker(code, detail) -> dict:
