@@ -4041,17 +4041,34 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
     def _patch(self, user, order=None, data=None):
         self.client.force_authenticate(user=user)
         pk = (order or self.order).pk
+        # ORDER-FULFILLMENT-SAFETY-01: the default move is the next step of a
+        # pending order; «Confirmado» is no longer one.
         return self.client.patch(
             f'/api/admin/orders/{pk}/fulfillment-status/',
-            data or {'fulfillment_status': 'confirmed'},
+            data or {'fulfillment_status': 'preparing'},
             format='json',
         )
+
+    def _at(self, fulfillment_status, delivery_method=None):
+        """ORDER-FULFILLMENT-SAFETY-01: the order at the step right before the one under test."""
+        from .fulfillment_test_support import place_at
+        if delivery_method is not None:
+            Order.objects.filter(pk=self.order.pk).update(delivery_method=delivery_method)
+        return place_at(self.order, fulfillment_status)
 
     def test_admin_can_change_fulfillment_status(self):
         res = self._patch(self.admin)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.order.refresh_from_db()
-        self.assertEqual(self.order.fulfillment_status, 'confirmed')
+        self.assertEqual(self.order.fulfillment_status, 'preparing')
+
+    def test_admin_can_no_longer_set_confirmed(self):
+        # ORDER-FULFILLMENT-SAFETY-01: «Confirmado» is legacy — an order in it
+        # stands where «Pendiente» stands, and nobody moves one into it.
+        res = self._patch(self.admin, data={'fulfillment_status': 'confirmed'})
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'transition_not_allowed'))
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_status, 'pending')
 
     def test_sales_can_change_fulfillment_status(self):
         res = self._patch(self.sales)
@@ -4067,14 +4084,17 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
     def test_inventory_can_set_ready_for_pickup(self):
+        self._at(Order.FulfillmentStatus.PREPARING)
         res = self._patch(self.inventory, data={'fulfillment_status': 'ready_for_pickup'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
     def test_inventory_can_set_shipped(self):
+        self._at(Order.FulfillmentStatus.PREPARING, Order.DeliveryMethod.DELIVERY_AREQUIPA)
         res = self._patch(self.inventory, data={'fulfillment_status': 'shipped'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
     def test_inventory_can_set_delivered(self):
+        self._at(Order.FulfillmentStatus.READY_FOR_PICKUP)
         res = self._patch(self.inventory, data={'fulfillment_status': 'delivered'})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 
@@ -4131,7 +4151,7 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
         self.client.force_authenticate(user=self.admin)
         res = self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed', 'paid': True, 'total': '0.01', 'status': 'refunded'},
+            {'fulfillment_status': 'preparing', 'paid': True, 'total': '0.01', 'status': 'refunded'},
             format='json',
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -4172,6 +4192,9 @@ class Phase33FulfillmentStatusChangeTest(TestCase):
 class Phase33AuditLogTest(TestCase):
     """Fulfillment changes must create correct audit log entries."""
 
+    # ORDER-FULFILLMENT-SAFETY-01: every move below is the next step of a
+    # pending order («En preparación»); «Confirmado» is no longer one.
+
     def setUp(self):
         self.client = APIClient()
         cache.clear()
@@ -4185,7 +4208,7 @@ class Phase33AuditLogTest(TestCase):
         before = AdminAuditLog.objects.count()
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         self.assertEqual(AdminAuditLog.objects.count(), before + 1)
@@ -4202,17 +4225,17 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_contains_old_and_new_status(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
         self.assertEqual(log.metadata.get('old_fulfillment_status'), 'pending')
-        self.assertEqual(log.metadata.get('new_fulfillment_status'), 'confirmed')
+        self.assertEqual(log.metadata.get('new_fulfillment_status'), 'preparing')
 
     def test_audit_log_contains_order_id(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4221,7 +4244,7 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_contains_customer_email(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4230,7 +4253,7 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_does_not_contain_gateway_data(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4241,7 +4264,7 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_note_is_stored(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed', 'note': 'Confirmed by warehouse team'},
+            {'fulfillment_status': 'preparing', 'note': 'Confirmed by warehouse team'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4251,7 +4274,7 @@ class Phase33AuditLogTest(TestCase):
         long_note = 'x' * 300
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed', 'note': long_note},
+            {'fulfillment_status': 'preparing', 'note': long_note},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4260,7 +4283,7 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_actor_is_admin(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4269,7 +4292,7 @@ class Phase33AuditLogTest(TestCase):
     def test_audit_log_target_type_is_order(self):
         self.client.patch(
             f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},
             format='json',
         )
         log = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('created_at')
@@ -4399,11 +4422,11 @@ class Phase33RegressionTest(TestCase):
         audit_before = AdminAuditLog.objects.count()
         self.client.patch(
             f'/api/admin/orders/{order.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},          # the next step (ORDER-FULFILLMENT-SAFETY-01)
             format='json',
         )
         order.refresh_from_db()
-        self.assertEqual(order.fulfillment_status, 'confirmed')
+        self.assertEqual(order.fulfillment_status, 'preparing')
         self.assertEqual(AdminAuditLog.objects.count(), audit_before + 1)
 
 
@@ -11752,7 +11775,7 @@ class Phase2cAdminOrderIsolationTest(TestCase):
         self.assertEqual(
             client.patch(
                 f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/?company={self.a.pk}',
-                {'fulfillment_status': 'confirmed'}, format='json').status_code,
+                {'fulfillment_status': 'preparing'}, format='json').status_code,
             status.HTTP_200_OK)
         self.assertEqual(
             client.get(f'/api/admin/orders/?company={self.b.pk}').status_code,
@@ -11766,7 +11789,7 @@ class Phase2cAdminOrderIsolationTest(TestCase):
     def test_fulfillment_change_is_audited_with_company(self):
         self._as(self.admin_a).patch(
             f'/api/admin/orders/{self.order_a.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'}, format='json')
+            {'fulfillment_status': 'preparing'}, format='json')
         log = AdminAuditLog.objects.filter(
             action='order_fulfillment_status_changed').first()
         self.assertIsNotNone(log)
@@ -14141,10 +14164,10 @@ class Erp1ShortfallFulfillmentGuardTest(TestCase):
         user, _m = _p2d_member(
             self.company, 'fulfil_admin',
             ['company.view', 'sales.orders.view', 'sales.orders.manage'])
+        # ORDER-FULFILLMENT-SAFETY-01: one step at a time along the pickup path.
         for target in (
-            Order.FulfillmentStatus.CONFIRMED,
             Order.FulfillmentStatus.PREPARING,
-            Order.FulfillmentStatus.SHIPPED,
+            Order.FulfillmentStatus.READY_FOR_PICKUP,
             Order.FulfillmentStatus.DELIVERED,
         ):
             change_fulfillment_status(
@@ -27285,10 +27308,14 @@ class M6InternalOrderDetailTest(M6InternalBase):
 
     def test_it_reports_the_allowed_transitions_FROM_THE_SERVER(self):
         # So the app does not carry a second copy of the state machine.
+        # ORDER-FULFILLMENT-SAFETY-01: what it reports is this order's step
+        # back and next step, not every state — here, ready for pickup.
+        from .fulfillment_test_support import place_at
+        place_at(self.order, Order.FulfillmentStatus.READY_FOR_PICKUP)
         payload = self.client.get(_m6_order_url('m6-shop', self.order.id)).json()
 
         self.assertIn('available_fulfillment_transitions', payload)
-        self.assertIn('delivered', payload['available_fulfillment_transitions'])
+        self.assertEqual(payload['available_fulfillment_transitions'], ['preparing', 'delivered'])
 
     def test_without_the_capability_it_is_403(self):
         role = _role(self.company, 'Sin ventas', capabilities=['company.view'])
@@ -27314,14 +27341,15 @@ class M6InternalFulfillmentTest(M6InternalBase):
     def test_a_manager_can_move_the_state(self):
         client = self._manage_client()
 
+        # ORDER-FULFILLMENT-SAFETY-01: the next step of a pending order.
         response = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
-            {'fulfillment_status': 'shipped'}, format='json',
+            {'fulfillment_status': 'preparing'}, format='json',
         )
 
         self.assertEqual(response.status_code, 200)
         self.order.refresh_from_db()
-        self.assertEqual(self.order.fulfillment_status, 'shipped')
+        self.assertEqual(self.order.fulfillment_status, 'preparing')
 
     def test_VIEW_alone_cannot_move_it(self):
         # `manage` is checked, not `view`, and the catalogue declares them
@@ -27345,7 +27373,7 @@ class M6InternalFulfillmentTest(M6InternalBase):
 
         client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
-            {'fulfillment_status': 'shipped', 'note': 'salió hoy'}, format='json',
+            {'fulfillment_status': 'preparing', 'note': 'se prepara hoy'}, format='json',
         )
 
         entry = AdminAuditLog.objects.filter(
@@ -27354,7 +27382,7 @@ class M6InternalFulfillmentTest(M6InternalBase):
         self.assertEqual(entry.actor, self.staff)
         self.assertEqual(entry.company, self.company)
         self.assertEqual(entry.metadata['old_fulfillment_status'], before)
-        self.assertEqual(entry.metadata['new_fulfillment_status'], 'shipped')
+        self.assertEqual(entry.metadata['new_fulfillment_status'], 'preparing')
 
     def test_a_global_INVENTORY_role_does_not_narrow_what_the_company_granted(self):
         """
@@ -27380,19 +27408,28 @@ class M6InternalFulfillmentTest(M6InternalBase):
         _assign(Membership.objects.get(user=inventory, company=self.company), role)
         client, _ = _m6_login('almacen')
 
-        shipped = client.patch(
+        # ORDER-FULFILLMENT-SAFETY-01: «Cancelado operativo» is no longer set
+        # by anyone, so the state the legacy inventory rule withholds and the
+        # path still offers is the step back to «Pendiente», with a reason.
+        prepared = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
-            {'fulfillment_status': 'shipped'}, format='json',
+            {'fulfillment_status': 'preparing'}, format='json',
+        )
+        back = client.patch(
+            _m6_fulfillment_url('m6-shop', self.order.id),
+            {'fulfillment_status': 'pending', 'note': 'Falta confirmar el pago'}, format='json',
         )
         cancelled = client.patch(
             _m6_fulfillment_url('m6-shop', self.order.id),
             {'fulfillment_status': 'cancelled'}, format='json',
         )
 
-        self.assertEqual(shipped.status_code, 200)
-        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(prepared.status_code, 200)
+        self.assertEqual(back.status_code, 200, back.content)
+        # Refused by the path, not by the role: no 403.
+        self.assertEqual((cancelled.status_code, cancelled.json()['code']), (409, 'transition_not_allowed'))
         self.order.refresh_from_db()
-        self.assertEqual(self.order.fulfillment_status, 'cancelled')
+        self.assertEqual(self.order.fulfillment_status, 'pending')
 
     def test_it_reports_the_transitions_that_actor_may_use(self):
         """
@@ -44018,11 +44055,11 @@ class M12BCommerceEventsTest(TestCase):
 
     def test_28_fulfillment_ready_notifies_the_customer(self):
         from . import order_fulfillment_services as fulfil
+        from .fulfillment_test_support import walk_to
         self._pay()
-        fulfil.change_fulfillment_status(
-            order=self.order, company=self.company,
-            new_status=Order.FulfillmentStatus.READY_FOR_PICKUP, actor=self._staff_actor(),
-        )
+        # ORDER-FULFILLMENT-SAFETY-01: through «En preparación», which tells nobody.
+        walk_to(self.order, Order.FulfillmentStatus.READY_FOR_PICKUP,
+                actor=self._staff_actor(), company=self.company)
         note = _Notif.objects.filter(
             event__event_type=_ev.COMMERCE_FULFILLMENT_READY,
         ).first()
@@ -44031,13 +44068,13 @@ class M12BCommerceEventsTest(TestCase):
 
     def test_29_shipped_promises_no_tracking_it_does_not_have(self):
         from . import order_fulfillment_services as fulfil
+        from .fulfillment_test_support import walk_to
         self._pay()
         staff = self._staff_actor()
-        for status_value in (Order.FulfillmentStatus.SHIPPED,):
-            fulfil.change_fulfillment_status(
-                order=self.order, company=self.company,
-                new_status=status_value, actor=staff,
-            )
+        # ORDER-FULFILLMENT-SAFETY-01: only a shipping order is «sent» (own
+        # delivery: no carrier asked), one step at a time.
+        Order.objects.filter(pk=self.order.pk).update(delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        walk_to(self.order, Order.FulfillmentStatus.SHIPPED, actor=staff, company=self.company)
         note = _Notif.objects.filter(
             event__event_type=_ev.COMMERCE_FULFILLMENT_SHIPPED,
         ).first()
@@ -54637,7 +54674,7 @@ class H412SelectedBranchWebTest(H412ScopeBase):
 
         ok = self.web_send(
             self.selected_a, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'),
-            {'fulfillment_status': 'shipped'},
+            {'fulfillment_status': 'preparing'},                  # its next step (ORDER-FULFILLMENT-SAFETY-01)
         )
         self.assertEqual(ok.status_code, 200)
 
@@ -54787,6 +54824,7 @@ class H412SelectedBranchV1Test(H412ScopeBase):
     """§15 — la misma frontera por v1, con cookie y con Bearer."""
 
     def test_list_detail_and_fulfillment_by_both_channels(self):
+        from .fulfillment_test_support import place_at
         for channel in ('cookie', 'bearer'):
             with self.subTest(channel=channel):
                 listed = self.v1_get(channel, self.selected_a, self.v1())
@@ -54808,9 +54846,11 @@ class H412SelectedBranchV1Test(H412ScopeBase):
                 self.assertEqual(
                     self.v1_get(channel, self.selected_a, self.v1(f'{self.a1.pk}/')).status_code, 200,
                 )
+                # ORDER-FULFILLMENT-SAFETY-01: its next step, from «Pendiente» on each channel.
+                place_at(self.a1, Order.FulfillmentStatus.PENDING)
                 ok = self.v1_patch(
                     channel, self.selected_a, self.v1(f'{self.a1.pk}/fulfillment/'),
-                    {'fulfillment_status': 'shipped'},
+                    {'fulfillment_status': 'preparing'},
                 )
                 self.assertEqual(ok.status_code, 200)
 
@@ -54922,31 +54962,46 @@ class H412LegacyBridgeTest(TestCase):
 
     def test_the_bridge_creates_no_membership(self):
         self._get(self.sales, '/api/admin/orders/')
-        self._patch(
+        moved = self._patch(
             self.sales, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
-            {'fulfillment_status': 'confirmed'},
+            {'fulfillment_status': 'preparing'},                  # its next step (ORDER-FULFILLMENT-SAFETY-01)
         )
+        self.assertEqual(moved.status_code, 200)
         self.assertFalse(Membership.objects.filter(user__in=[self.sales, self.inventory]).exists())
 
     def test_legacy_inventory_keeps_the_historical_rule(self):
+        # ORDER-FULFILLMENT-SAFETY-01: the detail offers this order's step back
+        # and next step, and the legacy rule still filters them: in preparation
+        # the path offers «Pendiente» and «Listo para retiro», the warehouse
+        # gets the second only.
+        from .fulfillment_test_support import place_at
+        place_at(self.a, Order.FulfillmentStatus.PREPARING)
+        self.assertEqual(_h412_allowed(self.inventory, self.pilot), tuple(_H412_LEGACY_INVENTORY_STATES))
         detail = self._get(self.inventory, f'/api/admin/orders/{self.a.pk}/').json()
-        self.assertEqual(detail['available_fulfillment_transitions'], _H412_LEGACY_INVENTORY_STATES)
+        self.assertEqual(detail['available_fulfillment_transitions'], ['ready_for_pickup'])
 
-        refused = self._patch(
-            self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
-            {'fulfillment_status': 'cancelled'},
-        )
-        self.assertEqual(refused.status_code, 403)
-        self.assertIn('inventario', refused.json()['detail'])
+        for state, data in (('cancelled', {}), ('pending', {'note': 'Vuelve a pendiente'})):
+            with self.subTest(state):
+                refused = self._patch(
+                    self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
+                    {'fulfillment_status': state, **data},
+                )
+                self.assertEqual(refused.status_code, 403)
+                self.assertIn('inventario', refused.json()['detail'])
         moved = self._patch(
             self.inventory, f'/api/admin/orders/{self.a.pk}/fulfillment-status/',
-            {'fulfillment_status': 'shipped'},
+            {'fulfillment_status': 'ready_for_pickup'},
         )
         self.assertEqual(moved.status_code, 200)
 
-    def test_legacy_sales_may_set_every_state(self):
+    def test_legacy_sales_may_set_every_state_and_is_offered_every_step(self):
+        # ORDER-FULFILLMENT-SAFETY-01: the rule still grants every state; the
+        # detail offers what the path allows now — back and next, unfiltered.
+        from .fulfillment_test_support import place_at
+        self.assertEqual(_h412_allowed(self.sales, self.pilot), _H412_ALL_STATES)
+        place_at(self.a, Order.FulfillmentStatus.PREPARING)
         detail = self._get(self.sales, f'/api/admin/orders/{self.a.pk}/').json()
-        self.assertEqual(detail['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+        self.assertEqual(detail['available_fulfillment_transitions'], ['pending', 'ready_for_pickup'])
 
     def test_a_membership_anywhere_turns_the_bridge_off(self):
         Membership.objects.create(user=self.sales, company=self.other, role='sales')
@@ -54964,24 +55019,34 @@ class H412SaasCapabilityAuthorityTest(H412ScopeBase):
         return user
 
     def test_a_global_INVENTORY_profile_with_manage_may_set_every_state(self):
+        # ORDER-FULFILLMENT-SAFETY-01: «Cancelado operativo» is set by nobody
+        # now, so what shows the profile does not narrow the company's grant is
+        # the step back to «Pendiente» — a state the legacy inventory rule
+        # withholds — offered and taken, on both surfaces.
+        from .fulfillment_test_support import place_at
         user = self._member(
             'h412_inv_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_INVENTORY,
         )
+        self.assertEqual(_h412_allowed(user, self.company), _H412_ALL_STATES)
+        place_at(self.a1, Order.FulfillmentStatus.PREPARING)
+        place_at(self.a2, Order.FulfillmentStatus.PREPARING)
         web = self.web_get(user, self.web(f'{self.a1.pk}/')).json()
-        self.assertEqual(web['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+        self.assertEqual(web['available_fulfillment_transitions'], ['pending', 'ready_for_pickup'])
         v1 = self.v1_get('bearer', user, self.v1(f'{self.a1.pk}/')).json()
-        self.assertEqual(v1['available_fulfillment_transitions'], list(_H412_ALL_STATES))
+        self.assertEqual(v1['available_fulfillment_transitions'], ['pending', 'ready_for_pickup'])
 
-        by_web = self.web_send(
-            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
-        )
-        by_v1 = self.v1_patch(
-            'bearer', user, self.v1(f'{self.a2.pk}/fulfillment/'), {'fulfillment_status': 'cancelled'},
-        )
+        back = {'fulfillment_status': 'pending', 'note': 'Vuelve a pendiente'}
+        by_web = self.web_send(user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), back)
+        by_v1 = self.v1_patch('bearer', user, self.v1(f'{self.a2.pk}/fulfillment/'), back)
         self.assertEqual((by_web.status_code, by_v1.status_code), (200, 200))
         self.a1.refresh_from_db()
         self.a2.refresh_from_db()
-        self.assertEqual((self.a1.fulfillment_status, self.a2.fulfillment_status), ('cancelled', 'cancelled'))
+        self.assertEqual((self.a1.fulfillment_status, self.a2.fulfillment_status), ('pending', 'pending'))
+        # «Cancelado operativo» is refused by the path, not by the profile: 409, never 403.
+        cancelled = self.web_send(
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+        )
+        self.assertEqual((cancelled.status_code, cancelled.json()['code']), (409, 'transition_not_allowed'))
 
     def test_a_global_ADMIN_profile_without_manage_has_nothing_to_move(self):
         user = self._member('h412_admin_view', ['sales.orders.view'], UserProfile.ROLE_ADMIN)
@@ -54999,11 +55064,17 @@ class H412SaasCapabilityAuthorityTest(H412ScopeBase):
         self.assertEqual((by_web.status_code, by_v1.status_code), (403, 403))
 
     def test_a_CUSTOMER_profile_with_manage_may_set_every_state(self):
+        # ORDER-FULFILLMENT-SAFETY-01: the step back to «Pendiente» stands in
+        # for «Cancelado operativo», which nobody sets now.
+        from .fulfillment_test_support import place_at
         user = self._member(
             'h412_cust_manage', ['sales.orders.view', 'sales.orders.manage'], UserProfile.ROLE_CUSTOMER,
         )
+        self.assertEqual(_h412_allowed(user, self.company), _H412_ALL_STATES)
+        place_at(self.a1, Order.FulfillmentStatus.PREPARING)
         res = self.web_send(
-            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'), {'fulfillment_status': 'cancelled'},
+            user, 'patch', self.web(f'{self.a1.pk}/fulfillment-status/'),
+            {'fulfillment_status': 'pending', 'note': 'Vuelve a pendiente'},
         )
         self.assertEqual(res.status_code, 200)
 

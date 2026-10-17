@@ -38,6 +38,7 @@ from store.models import (
     FiscalSeries, Order, OrderCancellation, OrderItem, OrderUnit, PaymentTransaction, Product,
     SalesNote, StockMovement, StockUnit,
 )
+from store.fulfillment_test_support import legacy_move, place_at, walk_to
 from store.test_document_design import text_of
 from store.test_payment_hardening import Base as PaymentBase
 from store.test_stock_units import IMEI_A, IMEI_B, UnitsBase
@@ -197,16 +198,28 @@ class GoodsThatLeftTest(_Base):
     an order back from sent or delivered does not bring the goods back.
     """
 
-    def move(self, order, *states):
+    def move(self, order, *states, note=''):
         for state in states:
             fulfillment.change_fulfillment_status(
-                order=Order.objects.get(pk=order.pk), new_status=state, actor=self.manager, company=self.company)
+                order=Order.objects.get(pk=order.pk), new_status=state, actor=self.manager, company=self.company,
+                note=note)
+
+    # ORDER-FULFILLMENT-SAFETY-01: dispatch no longer goes back once the goods
+    # left, nor is «Cancelado operativo» set by hand. Production holds such
+    # pasts from the old free selector; `legacy_move` writes them as it did.
+    def walk(self, order, target):
+        walk_to(order, target, actor=self.manager, company=self.company)
+
+    def legacy(self, order, *states):
+        for state in states:
+            legacy_move(order, state, actor=self.manager, company=self.company)
 
     def test_a_device_that_left_does_not_come_back_by_moving_the_order_backwards(self):
         self.receive(self.row('F2LXK1ONE01', IMEI_A), self.row('F2LXK1TWO02', IMEI_B))
         order = self.web_order((self.phone, 1))
         picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
-        self.move(order, 'delivered', 'preparing')
+        self.walk(order, 'delivered')
+        self.legacy(order, 'preparing')
         unit = StockUnit.objects.get(order=order)
 
         response = self.post_cancel(order)
@@ -234,7 +247,8 @@ class GoodsThatLeftTest(_Base):
 
     def test_a_delivered_order_relabelled_cancelado_operativo_is_not_cancellable(self):
         order = self.web_order((self.cable, 3))
-        self.move(order, 'delivered', 'cancelled')
+        self.walk(order, 'delivered')
+        self.legacy(order, 'cancelled')
 
         response = self.post_cancel(order)
 
@@ -244,13 +258,15 @@ class GoodsThatLeftTest(_Base):
 
     def test_a_sent_order_moved_back_is_not_cancellable_either(self):
         order = self.web_order((self.cable, 3))
-        self.move(order, 'shipped', 'pending')
+        self.legacy(order, 'shipped', 'pending')                           # a pickup order «sent», then back
         self.assertEqual(self.post_cancel(order).json()['code'], 'goods_left')
         self.assertEqual(self.cable_stock(), 17)
 
     def test_an_order_moved_back_after_ready_for_pickup_only_can_still_be_cancelled(self):
         order = self.web_order((self.cable, 3))
-        self.move(order, 'ready_for_pickup', 'pending', 'cancelled')
+        self.walk(order, 'ready_for_pickup')
+        self.move(order, 'preparing', 'pending', note='Se marcó listo por error')   # one step back at a time
+        self.legacy(order, 'cancelled')
 
         self.assertEqual(self.post_cancel(order).status_code, 200)
         self.assertEqual(self.cable_stock(), 20)
@@ -470,9 +486,10 @@ class AFulfilmentChangeAfterwardsTest(_Base):
         stale = Order.objects.get(pk=order.pk)                        # read before the cancellation
         self.post_cancel(order)
 
-        with self.assertRaises(fulfillment.FulfillmentBlocked):
+        with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
             fulfillment.change_fulfillment_status(
                 order=stale, new_status='shipped', actor=self.manager, company=self.company)
+        self.assertEqual(blocked.exception.code, 'order_cancelled')      # not merely «not the next step»
         self.assertEqual(Order.objects.get(pk=order.pk).fulfillment_status, 'cancelled')
 
 
@@ -878,6 +895,12 @@ class CancelAtTheSameInstantTest(TransactionTestCase):
         self.assertEqual(self.stock(), 10)
 
     def test_a_cancellation_and_a_shipment_at_once_end_in_one_coherent_state(self):
+        # ORDER-FULFILLMENT-SAFETY-01: «Enviado» is only the next step of a
+        # shipping order in preparation; anywhere else it is refused before
+        # the race is decided, and the race would test nothing.
+        Order.objects.filter(pk=self.order.pk).update(delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        place_at(self.order, Order.FulfillmentStatus.PREPARING)
+
         def ship():
             return fulfillment.change_fulfillment_status(
                 order=Order.objects.get(pk=self.order.pk), new_status='shipped', actor=self.user,
@@ -889,6 +912,7 @@ class CancelAtTheSameInstantTest(TransactionTestCase):
         if order.status == Order.Status.CANCELLED:
             self.assertIsInstance(outcomes['cancel'], OrderCancellation, outcomes)
             self.assertIsInstance(outcomes['ship'], fulfillment.FulfillmentBlocked, outcomes)
+            self.assertEqual(outcomes['ship'].code, 'order_cancelled')
             self.assertEqual(order.fulfillment_status, 'cancelled')
             self.assertEqual(self.stock(), 10)
         else:

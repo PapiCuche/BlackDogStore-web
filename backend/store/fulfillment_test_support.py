@@ -11,7 +11,7 @@ with `legacy_move`, which imitates what the old free selector recorded.
 from __future__ import annotations
 
 from . import fulfillment_flow
-from .models import AdminAuditLog, Order
+from .models import AdminAuditLog, Order, OrderDelivery
 
 
 def walk_to(order, target, *, actor, company, note=''):
@@ -34,6 +34,18 @@ def place_at(order, status):
     Order.objects.filter(pk=order.pk).update(fulfillment_status=status)
     order.refresh_from_db()
     return order
+
+
+def carrier_details(order, *, carrier_name='Transportes de prueba', waybill_number='GR-0001', agency_name=''):
+    """
+    Write on the delivery record what «Enviado» asks of a carrier mode
+    (`fulfillment_flow.logistics_blockers`). No shipping date: that alone
+    would count as the goods having left.
+    """
+    record, _ = OrderDelivery.objects.get_or_create(order=order, defaults={'company': order.company})
+    record.carrier_name, record.waybill_number, record.agency_name = carrier_name, waybill_number, agency_name
+    record.save(update_fields=['carrier_name', 'waybill_number', 'agency_name'])
+    return record
 
 
 def legacy_move(order, new_status, *, actor=None, company=None, note=''):
