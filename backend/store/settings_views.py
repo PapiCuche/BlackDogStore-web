@@ -75,6 +75,8 @@ ORDER_REVIEW_OPTIONS = frozenset({'risk_review_amount', 'hold_orders_pending_rev
 SALES_POLICY_OPTIONS = frozenset({
     'device_cart_hold_minutes', 'device_checkout_hold_minutes', 'device_hold_ceiling_minutes',
     'web_on_order_over_stock',
+    # FINANCIAL-CLOSURE (owner, 2026-10-16): who may annul a till sale alone.
+    'pos_cancel_simple_days',
 })
 
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'

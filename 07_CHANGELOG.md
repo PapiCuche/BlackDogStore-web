@@ -3,6 +3,29 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-16 — COMMERCE-ADMIN-UX-01 · cierre financiero (en rama, NO desplegado)
+
+Rama `fix/financial-closure` desde `master` `315bedf`; migración `0138`.
+
+**Added**
+- Plazo de anulación simple de ventas POS por empresa (`pos_cancel_simple_days`, 7 días,
+  0–365) y anulación por superior para ventas antiguas o complejas.
+- Evidencia e importe exacto al confirmar un reembolso.
+- Estado «Liquidada» de comisiones y ajuste por anulación (saldo a recuperar).
+
+**Changed**
+- Informe de comisiones por estado; tablero interno y ficha del cliente dicen aparte el dinero
+  de los cancelados; filtro «Pagado (vigente)» en Órdenes.
+
+**Fixed**
+- (Revisión) Evidencia y referencia de un reembolso: sin caracteres invisibles, con letras o
+  números reales; un carácter de control es 400 (antes un NUL daba 500). Anular sin reponer
+  stock exige superior. El informe de comisiones separa la venta anulada de una comisión
+  liquidada. La nota del tablero sale también con sólo un cobro tardío o un reembolso pendiente.
+- La previsión de demanda contaba las salidas de ventas canceladas; el uso de promociones
+  contaba ventas anuladas; lo recibido de un proveedor dejaba de figurar como por pagar al
+  cancelarse el pedido.
+
 ## 2026-10-16 — Base local SQLite: `migrate` vuelve a pasar `0131`
 
 **Fixed**

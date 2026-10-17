@@ -12,11 +12,14 @@ sale. Three modes (`mode_of`), one service (`cancel_order`), one lock:
           cashier confirms the goods are back in the shop (`goods_returned`);
           then exactly like a paid order: stock back once at the sale's cost,
           the internal note voided, a live boleta/factura kept and flagged.
-          No time limit: the owner set none, and none is invented here.
+          No absolute time limit; but (owner, 2026-10-16) an OLD or COMPLEX
+          sale is annulled only by a superior — see `superior_conditions`.
 
-  In the paid modes the seller's accrued commission is voided (the model's
-  own rule: «it may be voided when the goods come back»), and a refund owed
-  may be RECORDED as pending in the same transaction (`order_refunds`).
+  In the paid modes the seller's commission is closed (owner, 2026-10-16):
+  an ACCRUED one is voided; a SETTLED one (already paid out) is kept as it is
+  and gets ONE compensating `CommissionAdjustment` — the balance to recover
+  (`compensate_commission`). A refund owed may be RECORDED as pending in the
+  same transaction (`order_refunds`); never confirmed here.
 
 THE OWNER'S RULES (2026-10-14)
 
@@ -45,6 +48,8 @@ then the units (`inventory_services.create_stock_movement`).
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -54,6 +59,13 @@ from .models import (
 )
 
 CAP_ORDERS_MANAGE = 'sales.orders.manage'
+#: FINANCIAL-CLOSURE (owner, 2026-10-16): the SUPERIOR authority an old or
+#: complex till annulment needs — the company's own administrator (the same
+#: authority that confirms a refund). Legacy bridge: admin and superadmin.
+CAP_COMPANY_MANAGE = 'company.manage'
+LEGACY_SUPERIOR_ROLES = frozenset([UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN])
+#: A company without a settings row: the value a new row is created with.
+DEFAULT_POS_CANCEL_SIMPLE_DAYS = 7
 
 #: Legacy bridge only: who may cancel a sale there. Not `inventory`.
 LEGACY_CANCEL_ROLES = frozenset([
@@ -82,18 +94,26 @@ class OrderCancelError(Exception):
     _BAD_REQUEST = frozenset([
         'reason_required', 'reason_too_long', 'goods_return_required', 'restore_stock_not_allowed',
     ])
+    #: The caller may cancel orders, but not THIS one: a superior must (403).
+    _FORBIDDEN = frozenset(['superior_required'])
 
-    def __init__(self, code: str, detail: str):
+    def __init__(self, code: str, detail: str, conditions=None):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+        self.conditions = conditions
 
     @property
     def http_status(self) -> int:
+        if self.code in self._FORBIDDEN:
+            return 403
         return 400 if self.code in self._BAD_REQUEST else 409
 
     def body(self) -> dict:
-        return {'detail': self.detail, 'code': self.code}
+        body = {'detail': self.detail, 'code': self.code}
+        if self.conditions is not None:
+            body['conditions'] = self.conditions
+        return body
 
 
 def clean_reason(reason) -> str:
@@ -186,6 +206,81 @@ def may_cancel(user, company) -> bool:
     return has_capability(user, company, CAP_ORDERS_MANAGE)
 
 
+def may_cancel_as_superior(user, company) -> bool:
+    """Whether `user` may annul an old or complex till sale of `company`: orders AND the company."""
+    from .permissions import get_user_role
+    from .tenancy import has_capability, uses_legacy_bridge
+
+    if company is None or user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if uses_legacy_bridge(user, company):
+        return get_user_role(user) in LEGACY_SUPERIOR_ROLES
+    return has_capability(user, company, CAP_ORDERS_MANAGE) and has_capability(user, company, CAP_COMPANY_MANAGE)
+
+
+def simple_days(company) -> int:
+    """How many days a till sale may be annulled by whoever cancels orders (the company's setting)."""
+    from .company_settings import get_company_settings
+
+    row = get_company_settings(company)
+    value = getattr(row, 'pos_cancel_simple_days', None)
+    return DEFAULT_POS_CANCEL_SIMPLE_DAYS if value is None else int(value)
+
+
+def superior_conditions(order, *, now=None, restore_stock=True) -> list[dict]:
+    """
+    FINANCIAL-CLOSURE (owner, 2026-10-16). Why annulling the till sale
+    `order` takes a superior, in a fixed order; empty for a simple case and
+    for anything that is not a till sale. «Cancelación POS sin límite temporal
+    absoluto, pero restringir según estado de entrega, comprobante fiscal,
+    permisos y antigüedad.» A till sale is delivered at birth: the delivery
+    state is guarded by `goods_returned` and the manual-return check.
+
+      older_than_window     sold more than the company's `pos_cancel_simple_days` ago;
+      live_fiscal_document  a boleta/factura stands — it is never voided here:
+                            it stays, flagged «nota de crédito pendiente»;
+      commission_settled    the seller's commission was already paid out;
+      several_branches      the sale took stock from more than one branch;
+      no_stock_restore      annulled WITHOUT putting stock back (review: a
+                            non-standard operation — the goods came back by
+                            a manual return the sale does not know about).
+    """
+    if mode_of(order) != MODE_POS:
+        return []
+    conditions = []
+    days = simple_days(order.company)
+    sold = order.paid_at or order.created_at
+    if sold is not None and (now or timezone.now()) - sold > timedelta(days=days):
+        conditions.append(_blocker(
+            'older_than_window',
+            f'La venta tiene más de {days} día{"" if days == 1 else "s"} (el plazo de anulación simple '
+            'de la empresa).'))
+    document = live_fiscal_document(order)
+    if document is not None:
+        conditions.append(_blocker(
+            'live_fiscal_document',
+            f'Tiene {fiscal_label(document)} vigente: el comprobante no se anula aquí, queda pendiente '
+            'de nota de crédito.'))
+    if SalesCommission.objects.filter(order_id=order.pk, status=SalesCommission.STATUS_SETTLED).exists():
+        conditions.append(_blocker('commission_settled', 'La comisión del vendedor ya se liquidó.'))
+    branches = set(StockMovement.objects.filter(
+        order_id=order.pk, movement_type=StockMovement.SALE_EXIT).values_list('branch_id', flat=True))
+    if len(branches) > 1:
+        conditions.append(_blocker('several_branches', 'La venta sacó stock de varias sucursales.'))
+    if not restore_stock:
+        conditions.append(_blocker(
+            'no_stock_restore', 'Se anula sin reponer stock (la mercadería volvió por una devolución manual).'))
+    return conditions
+
+
+SUPERIOR_REQUIRED = 'Anular esta venta corresponde a un superior (administrador de la empresa).'
+
+
+def superior_blocker(conditions) -> dict:
+    """The refusal as people read it: who must do it, and every reason."""
+    return _blocker('superior_required', ' '.join([SUPERIOR_REQUIRED, *(c['detail'] for c in conditions)]))
+
+
 def live_fiscal_document(order):
     """The order's boleta/factura that still stands (not rejected), or None."""
     return (
@@ -234,6 +329,10 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             raise OrderCancelError(
                 'goods_return_required',
                 'Confirma que la mercadería volvió al local antes de anular la venta.')
+        # FINANCIAL-CLOSURE: an old or complex till sale is a superior's.
+        conditions = superior_conditions(locked, restore_stock=restore_stock)
+        if conditions and not may_cancel_as_superior(user, locked.company):
+            raise OrderCancelError(**superior_blocker(conditions), conditions=conditions)
         # Review P2. Annulling without putting stock back is the cashier's
         # call for a till sale only — and the way out when goods of the sale
         # already came back by a manual return the sale does not know about.
@@ -253,6 +352,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
         movements, units_returned, already_returned = (
             _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
         note_voided = _void_sales_note(locked, actor, reason)
+        # Owner, 2026-10-16: only a commission not yet settled is voided.
         commission_voided = bool(SalesCommission.objects.filter(
             order=locked, status=SalesCommission.STATUS_ACCRUED,
         ).update(status=SalesCommission.STATUS_VOIDED, updated_at=timezone.now()))
@@ -270,6 +370,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             fiscal_document=label, sales_note_voided=note_voided,
             was_paid=locked.paid, goods_returned=mode == MODE_POS, holds_released=holds_released,
         )
+        adjustment = compensate_commission(locked, cancellation, actor)
         refund = None
         if refund_method:
             from . import order_refunds
@@ -296,10 +397,16 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
                 # Review P2: annulled WITHOUT putting stock back, by the cashier's choice.
                 'stock_restore_skipped': not restore_stock,
                 'goods_returned': mode == MODE_POS,
+                # FINANCIAL-CLOSURE: whether a superior's authority was needed,
+                # and why. `actor` is who authorised it.
+                'authority': 'superior' if conditions else 'simple',
+                'superior_conditions': [condition['code'] for condition in conditions],
                 'fiscal_pending': document is not None,
                 'fiscal_document': label,
                 'sales_note_voided': note_voided,
                 'commission_voided': commission_voided,
+                # A settled commission is not voided: it gets its compensating entry.
+                'commission_adjustment_id': adjustment.pk if adjustment else None,
                 # DC3: on-order lines that stopped waiting for their supplier.
                 'supply_released': supply_released,
                 # Said, so nobody reads a cancellation as a refund: the money
@@ -310,6 +417,31 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
             request=request, company=locked.company,
         )
     return cancellation
+
+
+def compensate_commission(order, cancellation, actor):
+    """
+    FINANCIAL-CLOSURE. A SETTLED commission of the cancelled `order` stays as
+    it is — paid out, history — and gets one negative `CommissionAdjustment`
+    for its whole amount, linked to the cancellation: the balance to recover
+    from the seller. Once: an existing adjustment is returned, never a second
+    (the database refuses one too). None when there is nothing settled.
+    Called with the order locked.
+    """
+    from .models import CommissionAdjustment
+
+    commission = SalesCommission.objects.filter(
+        order_id=order.pk, status=SalesCommission.STATUS_SETTLED).first()
+    if commission is None or commission.amount <= 0:
+        return None
+    existing = CommissionAdjustment.objects.filter(commission=commission).first()
+    if existing is not None:
+        return existing
+    return CommissionAdjustment.objects.create(
+        company_id=commission.company_id, commission=commission, cancellation=cancellation,
+        seller_id=commission.seller_id, seller_name_snapshot=commission.seller_name_snapshot,
+        kind=CommissionAdjustment.KIND_CANCELLATION, amount=-commission.amount, created_by=actor,
+    )
 
 
 #: ORDER-CANCEL-01's name for it. Every mode goes through the same rules now.
@@ -534,6 +666,8 @@ def is_cancelled(order) -> bool:
 
 
 __all__ = [
-    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'fiscal_label',
-    'is_cancelled', 'live_fiscal_document', 'may_cancel', 'mode_of', 'payload',
+    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'compensate_commission',
+    'fiscal_label',
+    'is_cancelled', 'live_fiscal_document', 'may_cancel', 'may_cancel_as_superior', 'mode_of', 'payload',
+    'superior_blocker', 'superior_conditions',
 ]

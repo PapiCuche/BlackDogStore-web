@@ -103,6 +103,16 @@ export type SalesSnapshot = {
   awaiting_fulfillment: number;
   revenue_trend: SeriesPoint[];
   orders_by_status: SeriesPoint[];
+  /** Cierre financiero: el dinero de los cancelados, aparte de las ventas. Ausente en una respuesta anterior. */
+  collections?: DashboardCollections;
+};
+
+/** Cierre financiero (2026-10-16): importes en soles, como texto con dos decimales. */
+export type DashboardCollections = {
+  cancelled_paid: { orders: number; amount: string };
+  refunds_confirmed: string;
+  refunds_pending: string;
+  cancelled_held: string;
 };
 
 /**
@@ -367,6 +377,8 @@ export type CompanySettingsPayload = {
   device_hold_ceiling_minutes?: number;
   /** DEVICE-COMMERCE: whether a web buyer may order from the supplier although there is stock. Off as created. */
   web_on_order_over_stock?: boolean;
+  /** Cierre financiero: días en que una venta POS se anula sin superior (0–365, 7 al crear). */
+  pos_cancel_simple_days?: number;
   updated_at: string;
 };
 
@@ -668,6 +680,9 @@ export type CustomerDetail = CustomerRow & {
     /** Decimal as a string: money does not survive a round trip through float. */
     paid_amount: string;
     last_purchase_at: string | null;
+    /** Cierre financiero: pedidos cancelados (fuera de las compras) y reembolsos confirmados. */
+    cancelled_orders?: number;
+    refunds_confirmed?: string;
   };
   orders: CustomerOrderRow[];
   orders_truncated: boolean;
@@ -1285,17 +1300,42 @@ export type CommissionRow = {
   sales: number;
   net_amount: string;
   commission: string;
+  /** Cierre financiero: por estado. `recoverable` es negativo. */
+  accrued?: string;
+  settled?: string;
+  voided?: string;
+  voided_sales?: number;
+  /** Revisión: ventas anuladas cuya comisión ya estaba liquidada (fuera de `sales`). */
+  annulled_sales?: number;
+  annulled_net_amount?: string;
+  recoverable?: string;
   /** Shown BESIDE the historical total, never used to compute it. */
   current_rate_percent: string | null;
+};
+
+export type CommissionAdjustmentRow = {
+  id: number;
+  order_id: number;
+  commission_id: number;
+  seller_name: string;
+  /** Negativo: lo que el vendedor debe devolver de una comisión ya liquidada. */
+  amount: string;
+  kind: string;
+  label: string;
+  created_at: string;
 };
 
 export type CommissionReport = {
   window_days: number;
   today: string;
   branches: PosBranch[];
+  /** Devengada + liquidada + saldo a recuperar: lo que los vendedores conservan. */
   total_commission: string;
+  /** Cierre financiero (2026-10-16). Ausente en una respuesta anterior. */
+  totals?: { accrued: string; settled: string; voided: string; recoverable: string };
   note: string;
   results: CommissionRow[];
+  adjustments?: CommissionAdjustmentRow[];
 };
 
 export type CommissionSetting = {

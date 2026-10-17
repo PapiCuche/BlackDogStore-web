@@ -1256,6 +1256,12 @@ def _order_detail_payload(request, order, company):
         transitions = []
     cancel_blockers = cancelling.blockers(order)
     may_cancel = cancelling.may_cancel(request.user, company)
+    # FINANCIAL-CLOSURE: an old or complex till sale is annulled by a superior.
+    # Whoever is not one reads why, as a blocker; a superior is warned.
+    superior_conditions = cancelling.superior_conditions(order) if not cancel_blockers else []
+    needs_superior = bool(superior_conditions) and not cancelling.may_cancel_as_superior(request.user, company)
+    if needs_superior:
+        cancel_blockers = [cancelling.superior_blocker(superior_conditions)]
     from . import order_refunds
 
     refunds_block = None
@@ -1275,6 +1281,8 @@ def _order_detail_payload(request, order, company):
         # COMMERCE-ADMIN-UX-01: which cancellation it is open to — 'unpaid',
         # 'paid' or 'pos' (a till sale: the cashier confirms the goods are back).
         'cancel_mode': cancelling.mode_of(order) if not cancel_blockers else None,
+        # FINANCIAL-CLOSURE: why this till sale takes a superior (empty when simple).
+        'cancel_superior_conditions': superior_conditions if may_cancel else [],
         'refunds': refunds_block,
         # Why not is said to whoever could cancel it; to a reader it is noise.
         'cancel_blockers': cancel_blockers if may_cancel else [],
@@ -1357,7 +1365,10 @@ class AdminOrderListView(APIView):
 
         paid_param = request.query_params.get('paid', '').strip().lower()
         if paid_param == 'true':
-            orders = orders.filter(paid=True)
+            # FINANCIAL-CLOSURE: «Pagado» is a CURRENT paid sale. A cancelled
+            # order keeps `paid=True` (the money was taken) and is listed under
+            # `?status=cancelled` (and `?refund=`), labelled, never as a sale.
+            orders = orders.filter(paid=True).exclude(status=Order.Status.CANCELLED)
         elif paid_param == 'false':
             orders = orders.filter(paid=False)
 
@@ -1766,9 +1777,10 @@ class AdminOrderRefundListView(APIView):
 class AdminOrderRefundConfirmView(APIView):
     """
     POST /api/admin/orders/{pk}/refunds/{refund_pk}/confirm/ — body
-    `{reference, note?}`: the money went back. `sales.orders.manage` AND
-    `company.manage` (legacy bridge: admin, superadmin); a reference is
-    required. Once: a confirmed refund answers 409.
+    `{reference, evidence, amount, note?}`: the money went back.
+    `sales.orders.manage` AND `company.manage` (legacy bridge: admin,
+    superadmin); the reference, the evidence (text) and exactly the pending
+    amount are required. Once: a confirmed refund answers 409.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminOrderStatusChangeThrottle]
@@ -1792,6 +1804,7 @@ class AdminOrderRefundConfirmView(APIView):
         body = request.data if isinstance(request.data, dict) else {}
         try:
             order_refunds.confirm(refund, request.user, reference=body.get('reference') or '',
+                                  evidence=body.get('evidence'), amount=body.get('amount'),
                                   note=body.get('note') or '', request=request)
         except order_refunds.RefundError as exc:
             return Response(exc.body(), status=exc.http_status)

@@ -33,6 +33,7 @@ import { DashboardSection } from "../../components/dashboard-ui";
 import { PageHeader, TableShell, internalButtonClass } from "../../components/internal-ui";
 import { CustomerForm } from "../../components/CustomerForm";
 import { CustomerAccountLink } from "../../components/CustomerAccountLink";
+import { CustomerCancelledNote } from "../../components/CancelledMoneyNotes";
 import {
   fetchCustomer,
   updateCustomer,
@@ -285,6 +286,10 @@ function CustomerDetailContent({
               </p>
             </div>
           </div>
+          <CustomerCancelledNote
+            cancelledOrders={customer.summary.cancelled_orders}
+            refundsConfirmed={customer.summary.refunds_confirmed}
+          />
 
           {customer.orders.length === 0 ? (
             <p className="rounded-xl border border-bd-border bg-surface px-5 py-8 text-center text-sm text-muted">

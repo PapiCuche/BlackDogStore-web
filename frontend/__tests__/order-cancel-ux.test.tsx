@@ -195,15 +195,18 @@ describe('OrderRefundsPanel', () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
-  it('confirmar pide la referencia', async () => {
+  it('confirmar pide la referencia y la evidencia (cierre financiero)', async () => {
     mockConfirm.mockResolvedValue(order({ status: 'cancelled', refunds: REFUNDS }));
     render(<OrderRefundsPanel order={order({ status: 'cancelled', refunds: REFUNDS })} onChanged={jest.fn()} />);
     const button = screen.getByRole('button', { name: 'Confirmar reembolso' });
     expect(button).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Referencia del reembolso #7'), { target: { value: 'IZI-1' } });
+    expect(button).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Evidencia del reembolso #7'), { target: { value: 'Izipay op. 1 del 16/10' } });
     expect(button).toBeEnabled();
     fireEvent.click(button);
-    await waitFor(() => expect(mockConfirm).toHaveBeenCalledWith(42, 7, { reference: 'IZI-1' }));
+    await waitFor(() => expect(mockConfirm).toHaveBeenCalledWith(
+      42, 7, { reference: 'IZI-1', evidence: 'Izipay op. 1 del 16/10', amount: '100.00' }));
   });
 
   it('sin autoridad no hay acciones, y sin dinero no se ofrece registrar', () => {

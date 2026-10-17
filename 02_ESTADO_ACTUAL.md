@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-16 — Cierre financiero de COMMERCE-ADMIN-UX-01 (rama `fix/financial-closure`, NO desplegado)
+
+Desde `master` `315bedf` (producción sigue en `04640cf`). Decisiones del propietario del
+2026-10-16, aprobadas: **DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero**. Migración `0138`
+(aditiva, reversible).
+- **Anular venta POS:** simple como hasta hoy; antigua (más de `pos_cancel_simple_days`, 7),
+  con boleta/factura viva (nunca se anula aquí), con comisión liquidada o con stock de varias
+  sucursales → sólo un superior (`company.manage`); la negativa dice por qué; ajuste nuevo en
+  Configuración.
+- **Reembolso confirmado:** `company.manage` + referencia + evidencia + importe exacto del
+  pendiente; la auditoría guarda la huella de la evidencia. Cancelar nunca confirma.
+- **Comisiones:** estado `settled` y ajuste compensatorio único («saldo a recuperar»); el
+  informe separa devengada, liquidada, anulada y por recuperar. Sin pantalla de liquidación aún.
+- **Tableros:** auditados todos (tabla en la DEC); corregidos previsión de demanda, tablero
+  interno, resumen del cliente, `?paid=true`, promociones y pendiente al proveedor.
+- Costo promedio por sucursal: sigue PENDIENTE (fase aparte); ninguna instantánea de venta se
+  reescribe (probado).
+- Pruebas: focal 1001 OK (cancelaciones, reembolsos, margen, comisiones, analítica, pagos,
+  clientes, `test_ci_shards`, paridades); Jest 1613 OK; `tsc` y ESLint sin errores;
+  `makemigrations --check` sin cambios; mutación 27/26 + 1 equivalente. Suite completa no corrida.
+
 ## 2026-10-16 — COMMERCE-ADMIN-UX-01 completo (PR a `master`, NO desplegado)
 
 Rama `feat/commerce-admin-ux` desde `master` `5317114`. Integra #121 (y con él #119) por merge

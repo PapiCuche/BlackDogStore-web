@@ -150,7 +150,8 @@ function OrdersContent({ user }: { user: AuthUser }) {
               <span className="sr-only">Pagado o no pagado</span>
               <select value={filters.paid} onChange={(e) => setFilter("paid", e.target.value)} className={internalInputClass}>
                 <option value="">Pagado / No pagado</option>
-                <option value="true">Pagado</option>
+                {/* Cierre financiero: «Pagado» es una venta vigente; los cancelados con pago están en «Cancelado». */}
+                <option value="true">Pagado (vigente)</option>
                 <option value="false">No pagado</option>
               </select>
             </label>

@@ -11872,7 +11872,8 @@ class Phase2cDashboardSalesTest(TestCase):
             set(sales.keys()),
             {'today_revenue', 'today_orders', 'total_revenue', 'total_paid_orders',
              'average_ticket', 'pending_payment', 'awaiting_fulfillment',
-             'revenue_trend', 'orders_by_status'},
+             # FINANCIAL-CLOSURE: money of cancelled orders, apart (no cost in it).
+             'revenue_trend', 'orders_by_status', 'collections'},
         )
         for forbidden in ('profit', 'margin', 'utilidad', 'cost'):
             self.assertNotIn(forbidden, str(sales).lower())

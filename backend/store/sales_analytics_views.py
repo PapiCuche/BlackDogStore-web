@@ -653,8 +653,12 @@ class AdminSalesMarginView(APIView):
         )
         gross = cancelled.aggregate(
             amount=Coalesce(Sum('total', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+        refund_money = Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY)
         refunded = OrderRefund.objects.filter(order__in=cancelled, status=OrderRefund.STATUS_CONFIRMED).aggregate(
-            amount=Coalesce(Sum('amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['amount']
+            amount=refund_money)['amount']
+        # FINANCIAL-CLOSURE: owed back but not given back yet — said, never subtracted.
+        owed = OrderRefund.objects.filter(order__in=cancelled, status=OrderRefund.STATUS_PENDING).aggregate(
+            amount=refund_money)['amount']
         return {
             'orders': cancelled.count(),
             'units': figures['units'],
@@ -663,6 +667,7 @@ class AdminSalesMarginView(APIView):
             'cost': str(_cents(figures['cost'])),
             'stock_restored_orders': cancelled.filter(cancellation__stock_restored=True).count(),
             'refunds_confirmed': str(_cents(refunded)),
+            'refunds_pending': str(_cents(owed)),
         }
 
     #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its
@@ -893,13 +898,26 @@ class AdminCommissionsView(APIView):
     exists: a seller moved from 3% to 5% is owed 3% on everything sold before
     the change, and computing the total from the current rate would silently
     rewrite what the company agreed to pay.
+
+    FINANCIAL-CLOSURE (owner, 2026-10-16). Per seller, by the day the row was
+    written (so a past window recomputes the same, except an accrued row that
+    a later annulment voids — it was never owed):
+        accrued      owed, not yet paid out;
+        settled      paid out (`commission_services.settle`); kept even when
+                     the sale is annulled later — that sale then counts in
+                     `annulled_sales` / `annulled_net_amount`, not in `sales`;
+        voided       annulled before being paid out — shown, never counted;
+        recoverable  the compensating adjustments of settled commissions whose
+                     sale was annulled, by the day of the annulment (negative:
+                     «ajuste por anulación / saldo a recuperar»);
+        commission   accrued + settled + recoverable — what the seller keeps.
     """
 
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminSalesAnalyticsThrottle]
 
     def get(self, request):
-        from .models import Membership, SalesCommission
+        from .models import CommissionAdjustment, Membership, SalesCommission
         from .pos_views import CAP_COMMISSIONS_VIEW
 
         company, error = _context(request, CAP_COMMISSIONS_VIEW)
@@ -918,37 +936,57 @@ class AdminCommissionsView(APIView):
         start, _ = _day_bounds(since, tz)
         _, end = _day_bounds(today, tz)
 
+        branch_ids = {b.pk for b in branches}
         rows = (
             SalesCommission.objects
-            .filter(
-                company=company,
-                status=SalesCommission.STATUS_ACCRUED,
-                created_at__gte=start,
-                created_at__lt=end,
-            )
+            .filter(company=company, created_at__gte=start, created_at__lt=end,
+                    order__fulfillment_branch_id__in=branch_ids)
             .select_related('order')
         )
-        branch_ids = {b.pk for b in branches}
-        if branch_ids:
-            rows = rows.filter(order__fulfillment_branch_id__in=branch_ids)
-        else:
-            rows = rows.none()
+        adjustments = (
+            CommissionAdjustment.objects
+            .filter(company=company, created_at__gte=start, created_at__lt=end,
+                    commission__order__fulfillment_branch_id__in=branch_ids)
+            .select_related('commission')
+        )
 
+        zero = Decimal('0.00')
         by_seller = {}
-        for row in rows:
+
+        def entry_for(seller_id, seller_name):
             # Keyed by the SNAPSHOT, so a seller whose account was later removed
             # still appears with what they earned.
-            key = (row.seller_id, row.seller_name_snapshot)
-            entry = by_seller.setdefault(key, {
-                'seller_id': row.seller_id,
-                'seller_name': row.seller_name_snapshot or '—',
+            return by_seller.setdefault((seller_id, seller_name), {
+                'seller_id': seller_id,
+                'seller_name': seller_name or '—',
                 'sales': 0,
-                'net_amount': Decimal('0.00'),
-                'commission': Decimal('0.00'),
+                'net_amount': zero,
+                'accrued': zero,
+                'settled': zero,
+                'voided': zero,
+                'voided_sales': 0,
+                'annulled_sales': 0,
+                'annulled_net_amount': zero,
+                'recoverable': zero,
             })
-            entry['sales'] += 1
-            entry['net_amount'] += row.base_amount
-            entry['commission'] += row.amount
+
+        for row in rows:
+            entry = entry_for(row.seller_id, row.seller_name_snapshot)
+            if row.status == SalesCommission.STATUS_VOIDED:
+                entry['voided'] += row.amount
+                entry['voided_sales'] += 1
+                continue
+            if row.order.status == Order.Status.CANCELLED:
+                # Review P2: settled, then its sale was annulled. The commission
+                # stays settled (paid out); the sale is not a current sale.
+                entry['annulled_sales'] += 1
+                entry['annulled_net_amount'] += row.base_amount
+            else:
+                entry['sales'] += 1
+                entry['net_amount'] += row.base_amount
+            entry[row.status if row.status == SalesCommission.STATUS_SETTLED else 'accrued'] += row.amount
+        for adjustment in adjustments:
+            entry_for(adjustment.seller_id, adjustment.seller_name_snapshot)['recoverable'] += adjustment.amount
 
         # The CURRENT rate, shown beside the historical total rather than used
         # to compute it.
@@ -957,12 +995,20 @@ class AdminCommissionsView(APIView):
             for m in Membership.objects.filter(company=company, is_active=True)
         }
 
+        def cents(value):
+            return str(value.quantize(Decimal('0.01')))
+
         results = sorted(
             (
                 {
                     **entry,
-                    'net_amount': str(entry['net_amount'].quantize(Decimal('0.01'))),
-                    'commission': str(entry['commission'].quantize(Decimal('0.01'))),
+                    'net_amount': cents(entry['net_amount']),
+                    'annulled_net_amount': cents(entry['annulled_net_amount']),
+                    'accrued': cents(entry['accrued']),
+                    'settled': cents(entry['settled']),
+                    'voided': cents(entry['voided']),
+                    'recoverable': cents(entry['recoverable']),
+                    'commission': cents(entry['accrued'] + entry['settled'] + entry['recoverable']),
                     'current_rate_percent': current_rates.get(entry['seller_id']),
                 }
                 for entry in by_seller.values()
@@ -971,15 +1017,33 @@ class AdminCommissionsView(APIView):
             reverse=True,
         )
 
-        total = sum((Decimal(r['commission']) for r in results), Decimal('0.00'))
+        def total(key):
+            return cents(sum((Decimal(r[key]) for r in results), zero))
+
         return Response({
             'window_days': window,
             'today': today.isoformat(),
             'branches': [{'id': b.pk, 'name': b.name} for b in branches],
-            'total_commission': str(total.quantize(Decimal('0.01'))),
+            'total_commission': total('commission'),
+            'totals': {key: total(key) for key in ('accrued', 'settled', 'voided', 'recoverable')},
             'note': (
                 'Las comisiones históricas salen del registro de cada venta, no '
-                'de la tasa actual. Cambiar la tasa no reescribe lo ya devengado.'
+                'de la tasa actual. Cambiar la tasa no reescribe lo ya devengado. '
+                'Una comisión liquidada de una venta anulada no se borra: queda su '
+                'ajuste por anulación (saldo a recuperar).'
             ),
             'results': results,
+            'adjustments': [
+                {
+                    'id': adjustment.pk,
+                    'order_id': adjustment.commission.order_id,
+                    'commission_id': adjustment.commission_id,
+                    'seller_name': adjustment.seller_name_snapshot or '—',
+                    'amount': cents(adjustment.amount),
+                    'kind': adjustment.kind,
+                    'label': adjustment.get_kind_display(),
+                    'created_at': adjustment.created_at.isoformat(),
+                }
+                for adjustment in adjustments.order_by('-created_at', '-pk')
+            ],
         })

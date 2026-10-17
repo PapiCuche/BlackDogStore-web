@@ -25,6 +25,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
+import { CommissionClosureSummary } from "../../components/CommissionClosureSummary";
 import {
   InternalControlGuard,
   type InternalContext,
@@ -248,6 +249,8 @@ function CommissionsContent({ ctx }: { ctx: InternalContext }) {
             </div>
           )}
         </DashboardSection>
+
+        <CommissionClosureSummary report={report} />
 
         {settings ? (
           <DashboardSection

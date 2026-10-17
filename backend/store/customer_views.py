@@ -37,6 +37,8 @@ member granted one shop sees what that client bought there, not a record of the
 other shops' sales they could not open one by one.
 """
 
+from decimal import Decimal
+
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Q, Sum
 from rest_framework import permissions, status
@@ -349,7 +351,14 @@ class AdminCustomerDetailView(APIView):
             paid_count=Count('pk', filter=purchase),
             paid_amount=Sum('total', filter=purchase),
             last_purchase_at=Max('paid_at', filter=purchase),
+            # FINANCIAL-CLOSURE: cancelled orders stay in the history, counted apart.
+            cancelled_count=Count('pk', filter=Q(status=Order.Status.CANCELLED)),
         )
+        # Money actually given back to this client (CONFIRMED refunds only).
+        from .models import OrderRefund
+
+        refunded = OrderRefund.objects.filter(
+            order__in=orders, status=OrderRefund.STATUS_CONFIRMED).aggregate(total=Sum('amount'))['total']
 
         return Response({
             **CustomerSerializer(customer).data,
@@ -362,6 +371,8 @@ class AdminCustomerDetailView(APIView):
                 'paid_orders': totals['paid_count'] or 0,
                 'paid_amount': str(totals['paid_amount'] or 0),
                 'last_purchase_at': totals['last_purchase_at'],
+                'cancelled_orders': totals['cancelled_count'] or 0,
+                'refunds_confirmed': str(refunded or Decimal('0.00')),
             },
             'orders': CustomerOrderSerializer(orders[:_HISTORY_LIMIT], many=True).data,
             'orders_truncated': (totals['orders_total'] or 0) > _HISTORY_LIMIT,
