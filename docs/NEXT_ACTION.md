@@ -1,6 +1,6 @@
 # NEXT ACTION
 
-## ORDER-FULFILLMENT-SAFETY-01 — pruebas del propietario (PENDIENTES)
+## Desplegado: ORDER-FULFILLMENT-SAFETY-01 (#128, `7903a49`) el 2026-10-17 — pruebas del propietario (PENDIENTES)
 
 Con su sesión, sobre pedidos de prueba (no sobre pedidos reales):
 1. Pedido de recojo: avanzar Pendiente → En preparación → Listo para retiro → Entregado; ver
@@ -8,7 +8,10 @@ Con su sesión, sobre pedidos de prueba (no sobre pedidos reales):
 2. Pedido con envío nacional: «Enviado» se bloquea sin transportista y guía; con ellos, pasa.
 3. Volver un paso exige motivo; después de «Enviado» no hay vuelta atrás.
 4. Historial: cada cambio con fecha, responsable y motivo.
-5. Orden #4: como administrador, «Corregir este registro» con motivo y la declaración; revisar
+5. Orden #4 (elegible, sin modificar): entrar con la cuenta del rol `administrador`, abrir
+   Pedidos › #4 › «Estado de despacho» › «Corregir marcado de salida» › «Corregir este
+   registro», escribir el motivo, marcar «Confirmo que el producto nunca salió de la tienda» y
+   «Corregir registro»; revisar
    que el registro original sigue y sale «Corregido»; decidir después si se cancela (la
    cancelación no ocurre sola; el pago fue TEST, así que no hay dinero que devolver).
 6. Con una cuenta sin `company.manage`: la corrección no aparece.

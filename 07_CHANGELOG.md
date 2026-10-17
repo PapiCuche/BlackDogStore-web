@@ -3,7 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 · despacho seguro
+## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 · despacho seguro (#128, desplegado `7903a49`)
+
+**Deployed**
+- Producción pasa de `68137e5` a `7903a49` el 2026-10-17; sin migraciones; copia previa
+  `20261017-013840`; imágenes `rollback-68137e5`.
 
 **Added**
 - Panel «Estado de despacho» con pasos según la modalidad, historial de despacho y

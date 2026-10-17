@@ -3,7 +3,28 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 (rama `feat/fulfillment-safety`)
+## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 desplegado en producción (#128)
+
+**Producción en `7903a49`** desde el 2026-10-17, 01:39 (Lima), desde `68137e5`. Sólo #128; sin
+migraciones (`migrate --check` limpio).
+- Antes: copia `20261017-013840` (`gzip -t` OK), restaurada en un PostgreSQL desechable de red
+  interna (esquema igual al de producción); la imagen nueva arrancó sobre esa copia. Imágenes en
+  uso etiquetadas `rollback-68137e5`; Caddyfile respaldado en `backups/Caddyfile.before-128` y
+  sin cambios. Pagos pendientes: 2 intentos de hace más de 5 días, ninguno en curso.
+- Después: `deploy/healthcheck.sh` 17 OK; recuentos iguales (6 pedidos, 3 cancelaciones y 2
+  reembolsos pendientes de las pruebas del propietario, 7 movimientos, 5 intentos); sin errores
+  en los registros del backend.
+- Smoke: tienda en 200; panel y corrección piden sesión (401). Con las 3 membresías, sólo
+  lectura (GET con `force_authenticate`, 0 filas de auditoría escritas): la #4 se ve como
+  recojo (sin «Enviado»), con su historial (6 entradas, sin correos), sin pasos disponibles y
+  con la cancelación bloqueada por `goods_left`; «Corregir» sólo para la membresía
+  `administrador`, sin bloqueos. Otra empresa: 403.
+- **Orden #4 (sin modificar): elegible para corrección.** Evidencia: ninguna fecha de envío,
+  guía, seguimiento ni equipo identificado; una sola entrada de salida (12/10, cuenta de
+  plataforma); su única edición de entrega cambió `freight_paid_by`. Quién: la cuenta con el rol
+  `administrador`. Pasos en `docs/NEXT_ACTION.md`.
+- **Vuelta atrás:** imágenes `rollback-68137e5` (sin migraciones). La versión anterior ignora
+  las correcciones: una orden corregida volvería a quedar bloqueada (dirección segura).
 
 Desde `master` `ebde440`. Sin migraciones. Decisión: **DEC-ORDER-FULFILLMENT-SAFETY-01**.
 - **IMPLEMENTADO:** despacho por pasos según la modalidad (recojo / envío), sin saltos, un paso
