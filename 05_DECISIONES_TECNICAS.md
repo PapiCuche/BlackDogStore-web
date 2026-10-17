@@ -75,7 +75,7 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
-### DEC-ORDER-FULFILLMENT-SAFETY-01 · Despacho por pasos y corrección auditada (2026-10-17)
+### DEC-ORDER-FULFILLMENT-SAFETY-01 · Despacho por pasos y corrección auditada (2026-10-17) — DESPLEGADA (#128, `7903a49`)
 
 Origen: la orden #4 de producción (recojo en tienda, pagada con Izipay TEST) quedó «Enviado» por
 un clic del selector libre; `ever_left` lee ese registro y bloquea su cancelación para siempre.
