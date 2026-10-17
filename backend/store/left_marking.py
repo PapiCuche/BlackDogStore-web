@@ -14,7 +14,8 @@ the old one by id, and `ever_left` stops counting that id. The old entry stays
 exactly as it was, and every other entry still counts.
 
 It is refused when anything else says the goods did leave: a device stamped
-as gone, a shipping date or a waybill/tracking code on the delivery record, or
+as gone, a shipping date or a waybill/tracking code the delivery record holds
+or ever held (an edit that blanks them does not unsay them), or
 a later move to sent or delivered that is not corrected (correct the newest
 first). And for an order already cancelled — there is nothing left to unlock.
 
@@ -34,7 +35,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from . import order_cancellation as cancelling
-from .models import AdminAuditLog, Order, OrderDelivery, OrderUnit
+from .models import AdminAuditLog, Order, OrderUnit
 
 ACTION = cancelling.LEFT_MARKING_CORRECTED
 REASON_MIN, REASON_MAX = 5, 500
@@ -73,11 +74,14 @@ def blockers(order, event, corrections=None) -> list[dict]:
     found = []
     if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exists():
         found.append({'code': 'unit_left', 'detail': 'Un equipo identificado de este pedido figura como salido de la tienda.'})
-    record = OrderDelivery.objects.filter(order_id=order.pk).first()
-    if record is not None and record.shipped_at is not None:
-        found.append({'code': 'shipped_at', 'detail': 'La tarjeta «Entrega» tiene una fecha de envío registrada.'})
-    if record is not None and (record.waybill_number.strip() or record.tracking_code.strip()):
-        found.append({'code': 'waybill', 'detail': 'La tarjeta «Entrega» tiene una guía o un código de seguimiento.'})
+    # Now or ever: a waybill or a date blanked afterwards still says it left,
+    # and so does what the leaving entry itself recorded when it was written.
+    snapshot = (event.metadata or {}).get('logistics') or {}
+    if cancelling.logistics_ever_recorded(order, ('shipped_at',)) or snapshot.get('shipped_at'):
+        found.append({'code': 'shipped_at', 'detail': 'La tarjeta «Entrega» tiene (o tuvo) una fecha de envío registrada.'})
+    if (cancelling.logistics_ever_recorded(order, ('waybill_number', 'tracking_code'))
+            or snapshot.get('waybill') or snapshot.get('tracking')):
+        found.append({'code': 'waybill', 'detail': 'La tarjeta «Entrega» tiene (o tuvo) una guía o un código de seguimiento.'})
     later = cancelling.leaving_events(order).filter(created_at__gte=event.created_at).exclude(pk=event.pk)
     if any(row.pk not in corrections and (row.created_at, row.pk) > (event.created_at, event.pk) for row in later):
         found.append({'code': 'later_leaving', 'detail': 'Hay un envío o una entrega registrados después de este, sin corregir: corrige primero el más reciente.'})

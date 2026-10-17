@@ -101,11 +101,15 @@ def moves(order, current=None, record=None) -> dict:
     else:
         at = _position(current, path)
         if at is None:
-            # A status this path does not have — only «Enviado» on a pickup
-            # order, from before this phase. The goods left: the one way on is
-            # to hand them over.
+            # A status this path does not have, from before this phase or from
+            # a delivery mode changed afterwards. «Enviado» on a pickup order:
+            # the goods left, the one way on is to hand them over. «Listo para
+            # retiro» on a shipping order: it stands where «En preparación»
+            # does — on to «Enviado», or back to «En preparación».
             if current == FS.SHIPPED:
                 forward = FS.DELIVERED
+            elif current == FS.READY_FOR_PICKUP:
+                forward, back = FS.SHIPPED, FS.PREPARING
         else:
             if at + 1 < len(path):
                 forward = path[at + 1]

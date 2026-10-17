@@ -270,9 +270,18 @@ def change_fulfillment_status(
                 'customer_email': order.customer_email,
                 'old_fulfillment_status': previous,
                 'new_fulfillment_status': new_status,
-                'note': note[:200] if note else '',
+                # A step back keeps its whole reason; any other note, as before.
+                'note': (reason if going_back else (note[:200] if note else '')),
                 'direction': 'back' if going_back else 'forward',
                 'delivery_mode': fulfillment_flow.delivery_mode(order, record),
+                # WHETHER (never what) the delivery record held the carrier's
+                # data when this was written — evidence a later edit cannot blank.
+                **({'logistics': {
+                    'carrier': bool(record and (record.carrier_id or record.carrier_name.strip())),
+                    'waybill': bool(record and record.waybill_number.strip()),
+                    'tracking': bool(record and record.tracking_code.strip()),
+                    'shipped_at': bool(record and record.shipped_at),
+                }} if leaving else {}),
             },
             request=request,
         )

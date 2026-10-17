@@ -188,7 +188,40 @@ def ever_left(order) -> bool:
         return True
     if leaving_events(order).exclude(pk__in=corrected_event_ids(order)).exists():
         return True
-    return OrderDelivery.objects.filter(order_id=order.pk, shipped_at__isnull=False).exists()
+    # A shipping date counts while it is there AND after somebody blanks it:
+    # the delivery audit names every field it changed (ORDER-FULFILLMENT-SAFETY-01).
+    return logistics_ever_recorded(order, ('shipped_at',))
+
+
+#: What on a delivery record says a carrier took the goods.
+LOGISTICS_FIELDS = ('shipped_at', 'waybill_number', 'tracking_code')
+
+
+def logistics_ever_recorded(order, fields=LOGISTICS_FIELDS) -> bool:
+    """
+    Whether the delivery record of `order` holds, or EVER held, any of `fields`.
+
+    Now: the record itself. Before: `order_delivery_updated` lists the names of
+    the fields each edit changed, and a field that changed was set at some
+    point — so blanking a waybill or a shipping date does not make it unsaid.
+    """
+    from .models import OrderDelivery
+
+    record = OrderDelivery.objects.filter(order_id=order.pk).first()
+    if record is not None:
+        if 'shipped_at' in fields and record.shipped_at is not None:
+            return True
+        if any(f != 'shipped_at' and (getattr(record, f) or '').strip() for f in fields):
+            return True
+    # A handful of rows per order; read in Python because a JSON «contains»
+    # is not available on every database the project runs on (SQLite locally).
+    wanted = set(fields)
+    for changed in AdminAuditLog.objects.filter(
+        action='order_delivery_updated', target_type='order', target_id=str(order.pk),
+    ).values_list('metadata__changed_fields', flat=True):
+        if isinstance(changed, list) and wanted.intersection(changed):
+            return True
+    return False
 
 
 LEFT_MARKING_CORRECTED = 'order_left_marking_corrected'

@@ -444,6 +444,75 @@ class WhatElseSaysItLeftTest(_Flow):
         self.assertFalse(cancelling.ever_left(order))
 
 
+class EvidenceBlankedLaterTest(_Flow):
+    """Review P1: blanking the waybill or the date after the goods left does not unsay them."""
+
+    def edit_delivery(self, order, **fields):
+        response = self.desk.patch(f'/api/admin/orders/{order.pk}/delivery/?{self.q}', fields, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_a_waybill_blanked_after_shipping_still_refuses_the_correction(self):
+        order = self.shipping(mode=OrderDelivery.Mode.NATIONAL_ADDRESS, fulfillment_status='preparing')
+        OrderDelivery.objects.filter(order=order).update(carrier_name='Olva Courier')
+        self.edit_delivery(order, waybill_number='GR-REAL-77')
+        self.assertEqual(self.move(order, FS.SHIPPED).status_code, 200)
+        event = cancelling.leaving_events(order).get()
+        self.assertEqual(event.metadata['logistics'],
+                         {'carrier': True, 'waybill': True, 'tracking': False, 'shipped_at': False})
+        self.assertNotIn('GR-REAL-77', str(event.metadata))              # whether, never what
+        self.edit_delivery(order, waybill_number='', tracking_code='')
+        response = self.correct(order, event.pk)
+        self.refused(response, 'contradicting_evidence')
+        self.assertIn('guía', response.json()['detail'])
+        self.assertTrue(cancelling.ever_left(order))
+        self.refused(self.post_cancel(order), 'goods_left')
+
+    def test_the_snapshot_alone_refuses_it(self):
+        order = self.shipping(mode=OrderDelivery.Mode.NATIONAL_ADDRESS, fulfillment_status='preparing')
+        OrderDelivery.objects.filter(order=order).update(carrier_name='Olva', tracking_code='T-1')
+        self.assertEqual(self.move(order, FS.SHIPPED).status_code, 200)
+        OrderDelivery.objects.filter(order=order).update(tracking_code='')   # no audit: only the snapshot remembers
+        event = cancelling.leaving_events(order).get()
+        self.refused(self.correct(order, event.pk), 'contradicting_evidence')
+
+    def test_a_shipping_date_blanked_still_counts_as_gone(self):
+        order = self.shipping(fulfillment_status='preparing')
+        self.edit_delivery(order, shipped_at='2026-10-16T10:00:00-05:00')
+        self.assertTrue(cancelling.ever_left(order))
+        self.edit_delivery(order, shipped_at=None)
+        self.assertIsNone(OrderDelivery.objects.get(order=order).shipped_at)
+        self.assertTrue(cancelling.ever_left(order))
+        self.refused(self.post_cancel(order), 'goods_left')
+
+    def test_other_delivery_edits_say_nothing_about_leaving(self):
+        order = self.pickup()
+        OrderDelivery.objects.create(company=self.company, order=order, mode=OrderDelivery.Mode.PICKUP_STORE)
+        self.edit_delivery(order, freight_paid_by='store')
+        self.assertFalse(cancelling.ever_left(order))
+        self.assertEqual(self.post_cancel(order).status_code, 200)
+
+
+class StrandedStatusTest(_Flow):
+    """Review P2: a status the order's path lacks still has a way on."""
+
+    def test_a_shipping_order_left_ready_for_pickup_moves_on(self):
+        order = self.shipping(fulfillment_status='ready_for_pickup')
+        self.assertEqual(self.detail(order)['available_fulfillment_transitions'], [FS.PREPARING, FS.SHIPPED])
+        self.assertEqual(self.move(order, FS.SHIPPED).status_code, 200)
+
+    def test_or_steps_back_with_a_reason(self):
+        order = self.shipping(fulfillment_status='ready_for_pickup')
+        self.assertEqual(self.move(order, FS.PREPARING, note='Era un envío, no un recojo').status_code, 200)
+
+    def test_a_long_reason_is_kept_whole(self):
+        order = self.pickup(fulfillment_status='preparing')
+        reason = 'Se armó con el color equivocado; ' * 12
+        self.assertEqual(self.move(order, FS.PENDING, note=reason).status_code, 200)
+        entry = AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').latest('pk')
+        self.assertEqual(entry.metadata['note'], ' '.join(reason.split()))
+        self.assertGreater(len(entry.metadata['note']), 200)
+
+
 class ConcurrentCorrectionTest(TransactionTestCase):
     """Two superiors correcting the same entry at once: one correction, the other is told «already»."""
 
