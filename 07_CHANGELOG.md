@@ -3,7 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-16 — COMMERCE-ADMIN-UX-01 · cierre financiero (en rama, NO desplegado)
+## 2026-10-16 — Despliegue de #125 y #126 en producción (`68137e5`)
+
+**Deployed**
+- Producción pasa de `04640cf` a `68137e5`: COMMERCE-ADMIN-UX-01 (#125, con #119 y #121) y su
+  cierre financiero (#126). Migraciones `0124`, `0125`, `0136`, `0137` y `0138`, aplicadas con
+  `lock_timeout` y `statement_timeout` tras ensayarlas en una copia de la base.
+- Copia previa `20261016-225654`; imágenes `rollback-04640cf`; Caddyfile sin cambios.
+
+## 2026-10-16 — COMMERCE-ADMIN-UX-01 · cierre financiero (#126, desplegado)
 
 Rama `fix/financial-closure` desde `master` `315bedf`; migración `0138`.
 

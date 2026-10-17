@@ -75,11 +75,20 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
-### DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero — decisiones del propietario (2026-10-16) — APROBADAS, EN RAMA
+### DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero — decisiones del propietario (2026-10-16) — APROBADAS, DESPLEGADAS
 
-Rama `fix/financial-closure` desde `master` `315bedf`, **sin desplegar**. Migración `0138`
+Rama `fix/financial-closure` desde `master` `315bedf`, fusionada por #126 (`68137e5`) y
+**desplegada el 2026-10-16** junto con #125. Migración `0138`
 (aditiva: `db_default` o nula, reversible, sin datos). Reemplaza las (P) de
 DEC-COMMERCE-CANCEL-01 sobre tiempo de anulación, confirmación de reembolsos y comisión.
+
+**Vuelta atrás de este despliegue: sólo el código.** Todo lo que añaden `0124`, `0125`, `0137` y
+`0138` es tabla nueva, columna nula o columna con `db_default`; la imagen anterior
+(`rollback-04640cf`) se probó contra el esquema nuevo en una copia y guarda pedidos, notas,
+comisiones y ajustes de empresa sin error. Por eso se vuelve atrás con las imágenes y se dejan
+las migraciones aplicadas. `0124_order_cancellation` no se puede deshacer sola: su padre `0123`
+es también el de `0126`–`0135`, y migrar a `0123` desharía DEVICE-COMMERCE. Si hiciera falta
+quitarla, es restaurar la copia previa, y sólo si no hubo pagos ni ventas nuevas después.
 
 **1. Anular una venta POS: sin límite absoluto, pero lo antiguo o complejo es de un superior.**
 «Cancelación POS sin límite temporal absoluto, pero restringir según estado de entrega,
