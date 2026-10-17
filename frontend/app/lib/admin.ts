@@ -761,6 +761,8 @@ export type OrderDispatch = {
   back: string | null;
   back_label: string;
   reason_min: number;
+  /** Mínimo del motivo de una corrección de marcado de salida; falta en servidores anteriores. */
+  correction_reason_min?: number;
   /** Por qué el servidor rechazaría ahora el paso siguiente. */
   blockers: DispatchBlocker[];
   may_manage: boolean;

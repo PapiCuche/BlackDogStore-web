@@ -414,10 +414,13 @@ def dispatch_view(order, user, company) -> dict:
     steps = []
     for index, status_code in enumerate(path):
         hit = reached.get(status_code)
+        at = hit['at'] if hit else None
+        if at is None and index == 0 and order.created_at:
+            at = order.created_at.isoformat()     # nobody moves an order into «Pendiente»: it is born there
         steps.append({
             'status': status_code, 'label': labels[status_code],
             'state': ('current' if index == here else 'done' if here is not None and index < here else 'todo'),
-            'at': hit['at'] if hit else None, 'actor': hit['actor'] if hit else '',
+            'at': at, 'actor': hit['actor'] if hit else '',
         })
     may_manage = bool(allowed_fulfillment_statuses(user, company))
     if cancelling.is_cancelled(order):
@@ -437,6 +440,7 @@ def dispatch_view(order, user, company) -> dict:
         'forward': forward, 'forward_label': labels.get(forward, '') if forward else '',
         'back': back, 'back_label': labels.get(back, '') if back else '',
         'reason_min': fulfillment_flow.REASON_MIN,
+        'correction_reason_min': left_marking.REASON_MIN,
         'blockers': blockers,
         'may_manage': may_manage,
         'notice': notice,

@@ -90,7 +90,12 @@ export function DispatchPanel({ order, onChanged }: Props) {
       <DispatchHistory entries={dispatch.history} />
 
       {dispatch.may_correct && dispatch.left_markings.length > 0 ? (
-        <LeftMarkingCorrections orderId={order.id} markings={dispatch.left_markings} onChanged={onChanged} />
+        <LeftMarkingCorrections
+          orderId={order.id}
+          markings={dispatch.left_markings}
+          reasonMin={dispatch.correction_reason_min ?? LEFT_MARKING_REASON_MIN}
+          onChanged={onChanged}
+        />
       ) : null}
     </section>
   );
@@ -413,10 +418,11 @@ function DispatchHistory({ entries }: { entries: DispatchHistoryEntry[] }) {
 }
 
 function LeftMarkingCorrections({
-  orderId, markings, onChanged,
+  orderId, markings, reasonMin, onChanged,
 }: {
   orderId: number;
   markings: LeftMarking[];
+  reasonMin: number;
   onChanged: (order: AdminOrderDetail) => void;
 }) {
   const [openId, setOpenId] = useState<number | null>(null);
@@ -450,6 +456,7 @@ function LeftMarkingCorrections({
                 <LeftMarkingForm
                   orderId={orderId}
                   marking={marking}
+                  reasonMin={reasonMin}
                   onClose={() => setOpenId(null)}
                   onChanged={(updated) => { setOpenId(null); onChanged(updated); }}
                 />
@@ -478,10 +485,11 @@ function LeftMarkingCorrections({
 }
 
 function LeftMarkingForm({
-  orderId, marking, onClose, onChanged,
+  orderId, marking, reasonMin, onClose, onChanged,
 }: {
   orderId: number;
   marking: LeftMarking;
+  reasonMin: number;
   onClose: () => void;
   onChanged: (order: AdminOrderDetail) => void;
 }) {
@@ -490,7 +498,7 @@ function LeftMarkingForm({
   const [neverLeft, setNeverLeft] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ready = normaliseReason(reason).length >= LEFT_MARKING_REASON_MIN && neverLeft;
+  const ready = normaliseReason(reason).length >= reasonMin && neverLeft;
 
   async function submit() {
     if (!ready || busy) return;
@@ -520,7 +528,7 @@ function LeftMarkingForm({
         className="mt-1 w-full rounded-lg border border-bd-border bg-background px-3 py-2 text-sm text-foreground"
       />
       <p className="mt-1 text-xs text-muted">
-        Obligatorio, al menos {LEFT_MARKING_REASON_MIN} caracteres. Queda registrado con tu usuario y la fecha.
+        Obligatorio, al menos {reasonMin} caracteres. Queda registrado con tu usuario y la fecha.
       </p>
       <label className="mt-3 flex items-start gap-2 text-sm text-foreground">
         <input

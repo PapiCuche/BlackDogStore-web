@@ -222,6 +222,9 @@ class DispatchViewTest(_Flow):
         self.assertEqual(dispatch['kind'], 'pickup')
         self.assertEqual((dispatch['forward'], dispatch['back']), (FS.READY_FOR_PICKUP, FS.PENDING))
         self.assertEqual([s['state'] for s in dispatch['steps']], ['done', 'current', 'todo', 'todo'])
+        self.assertEqual(dispatch['steps'][0]['at'], order.created_at.isoformat())
+        self.assertIsNone(dispatch['steps'][2]['at'])
+        self.assertEqual(dispatch['correction_reason_min'], 5)
 
     def test_a_shipping_path_has_no_pickup_step(self):
         dispatch = self.detail(self.shipping())['dispatch']
