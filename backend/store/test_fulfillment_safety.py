@@ -199,6 +199,8 @@ class BackOneStepTest(_Flow):
 
     def test_an_operational_cancel_left_by_the_old_selector_goes_back_to_pending(self):
         order = self.pickup(fulfillment_status='cancelled')
+        self.assertEqual(self.detail(order)['available_fulfillment_transitions'], [FS.PENDING])
+        self.refused(self.move(order, FS.CANCELLED, note='otra vez cancelado'))
         self.refused(self.move(order, FS.PENDING), 'reason_required', 400)
         self.assertEqual(self.move(order, FS.PENDING, note='Se detuvo por error').status_code, 200)
 
