@@ -246,11 +246,15 @@ test.describe("el equipo que sale es el que alguien identificó", () => {
     // El pago apartó un equipo, pero nadie lo ha identificado: no se muestra ninguno.
     await expect(page.locator("body")).not.toContainText(APARTADO.imei);
 
-    // Marcarlo entregado así se rechaza, con el motivo.
-    await page.getByLabel("Estado de despacho").selectOption("delivered");
-    await page.getByRole("button", { name: "Guardar" }).click();
-    await expect(page.getByText(/identific/i).last()).toBeVisible({ timeout: 20_000 });
-    expect((await pedido(page, siembra.order)).body.fulfillment_status).not.toBe("delivered");
+    // ORDER-FULFILLMENT-SAFETY-01: recojo en tienda, un paso a la vez. Listo
+    // para retiro, entregarlo no se ofrece mientras falte decir qué equipo sale.
+    const despacho = page.getByRole("region", { name: "Estado de despacho" });
+    await despacho.getByRole("button", { name: "Marcar como En preparación" }).click();
+    await despacho.getByRole("button", { name: "Marcar como Listo para retiro" }).click();
+    await expect(despacho.getByRole("button", { name: "Marcar como Entregado" })).toBeDisabled({ timeout: 20_000 });
+    await expect(despacho.getByText(/Falta identificar 1 equipo/)).toBeVisible();
+    await expect(despacho).not.toContainText("Enviado");
+    expect((await pedido(page, siembra.order)).body.fulfillment_status).toBe("ready_for_pickup");
 
     // Se entrega OTRO equipo del mismo modelo, escrito a mano: se muestra y se confirma.
     await page.getByRole("button", { name: "El lector no lee: escribirlo a mano" }).click();
@@ -270,22 +274,20 @@ test.describe("el equipo que sale es el que alguien identificó", () => {
     expect(body.units_pending).toBe(0);
     expect(body.items[0].units[0]).toMatchObject({ imei: ENTREGADO.imei, method: "manual", identified_by: "dev_admin" });
 
-    // Ahora sí se entrega, y lo entregado ya no se cambia.
-    await page.getByLabel("Estado de despacho").selectOption("delivered");
-    await page.getByRole("button", { name: "Guardar" }).click();
+    // Ahora sí se entrega, con confirmación, y lo entregado ya no se cambia.
+    await despacho.getByRole("button", { name: "Marcar como Entregado" }).click();
+    await despacho.getByRole("group", { name: "Confirmar entrega" }).getByRole("button", { name: "Sí, se entregó" }).click();
     await expect.poll(async () => (await pedido(page, siembra.order)).body.fulfillment_status, { timeout: 20_000 }).toBe("delivered");
     await expect(page.getByRole("button", { name: /Quitar el equipo/ })).toHaveCount(0);
     ({ body } = await pedido(page, siembra.order));
     expect(body.units_can_change).toBe(false);
 
-    // Devolver el pedido a «en preparación» no reabre el equipo que salió.
-    await page.getByLabel("Estado de despacho").selectOption("preparing");
-    await page.getByRole("button", { name: "Guardar" }).click();
-    await expect.poll(async () => (await pedido(page, siembra.order)).body.fulfillment_status, { timeout: 20_000 }).toBe("preparing");
+    // Lo que salió no vuelve atrás: no hay paso anterior, el equipo sigue en el pedido.
+    await expect(despacho.getByRole("button", { name: /^Volver a/ })).toHaveCount(0);
     await expect(page.getByText(new RegExp(`IMEI ${ENTREGADO.imei}`))).toBeVisible();
-    await expect(page.getByRole("button", { name: /Quitar el equipo/ })).toHaveCount(0);
-    ({ body } = await pedido(page, siembra.order));
+    expect(body.dispatch.back).toBeNull();
     expect(body.items[0].units[0].can_remove).toBe(false);
+    await expect(despacho.getByText("Historial de despacho")).toBeVisible();
 
     // El equipo que el pago había apartado volvió al estante: la caja lo puede vender.
     // Pegado en el campo de escaneo no hay teclas que medir: cuenta como escrito
