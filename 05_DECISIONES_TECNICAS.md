@@ -75,6 +75,64 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
+### DEC-ORDER-FULFILLMENT-SAFETY-01 · Despacho por pasos y corrección auditada (2026-10-17)
+
+Origen: la orden #4 de producción (recojo en tienda, pagada con Izipay TEST) quedó «Enviado» por
+un clic del selector libre; `ever_left` lee ese registro y bloquea su cancelación para siempre.
+Sin migraciones: todo vive en `AdminAuditLog` y en el código.
+
+**Estados y transiciones** (`fulfillment_flow`). El camino lo da la modalidad real: la del
+registro de entrega (`OrderDelivery.mode`), si no la del pedido (`delivery_method`); una venta de
+caja es recojo. Igual para todas las empresas.
+- Recojo: Pendiente → En preparación → Listo para retiro → Entregado. «Enviado» nunca.
+- Envío (delivery local, nacional, agencia): Pendiente → En preparación → Enviado → Entregado.
+  «Enviado» por transportista (nacional, agencia) exige transportista y guía o seguimiento (y
+  agencia de destino en agencia); el reparto propio no exige nada inventado.
+- Adelante: exactamente el paso siguiente. Atrás: exactamente uno, con motivo (5–500), y sólo
+  mientras el producto nunca salió (`ever_left`); desde Enviado o Entregado, nunca.
+- «Cancelado operativo» no lo elige nadie: sólo lo escribe la cancelación comercial. Un pedido
+  que el selector anterior dejó ahí, pagado y vigente, puede volver a Pendiente con motivo si
+  nunca salió. «Confirmado» (legado) cuenta como Pendiente. Retención temporal: no hay estado
+  propio (PROPUESTA); hoy es quedarse en el paso con una nota, o la retención por revisión de
+  CLIENT-SEC-01.
+- Pasados incoherentes (recojo «Enviado», envío «Listo para retiro») se muestran tal cual; el
+  primero sólo puede ir a Entregado; el segundo, a Enviado o atrás a En preparación.
+- Mismo servicio para el panel y la app V1. Cambios para clientes: un paso atrás sin motivo es
+  400 `reason_required` (antes todo era 409) y `available_fulfillment_transitions` trae sólo
+  [atrás, adelante] de ese pedido.
+
+**Cancelación ≠ devolución.** Cancelar es el flujo existente (stock vuelve, reembolso sólo
+pendiente) y sólo con el producto en la tienda. Lo que salió requiere devolución: el flujo de
+devolución posterior a la entrega de un pedido web queda **PENDIENTE** (faltan decisiones:
+devolución parcial, flete, estado del equipo devuelto, nota de crédito); la caja ya tiene
+«Anular venta» con mercadería devuelta.
+
+**Corrección auditada de un marcado de salida** (`left_marking`, `POST
+/api/admin/orders/{id}/left-markings/{audit_id}/correct/`).
+- Sólo un superior por capacidades efectivas (`sales.orders.manage` + `company.manage`; puente
+  legacy: admin/superadmin), motivo (5–500), declaración literal `never_left: true` y el id exacto
+  de la entrada.
+- Se rechaza (409) si hay evidencia: equipo identificado con salida (`OrderUnit.left_at`), fecha
+  de envío, guía o seguimiento **que el registro tiene o tuvo** (el audit de entregas nombra cada
+  campo cambiado y cada entrada de salida guarda si había datos del transportista: borrarlos no
+  los desdice — revisión P1), una salida posterior sin corregir (se corrige de la más reciente a
+  la más antigua), o pedido ya cancelado (`order_cancelled`).
+- Escribe una entrada nueva `order_left_marking_corrected` que nombra la original; ninguna
+  entrada se edita ni se borra. `ever_left` ignora sólo esa entrada; otra salida sigue
+  bloqueando. Idempotente (la segunda vez responde 200 sin escribir) y con el pedido bloqueado.
+- No cancela, no reembolsa, no toca stock, Kardex, costos, margen, pagos ni comisiones. Si el
+  pedido sigue donde lo dejó el error (todo lo posterior también corregido), su estado vuelve al
+  anterior en la misma entrada.
+- `ever_left` también cuenta una fecha de envío que alguna vez estuvo y se borró.
+- *Decisión abierta:* un equipo identificado queda con `left_at` por el mismo clic erróneo, así
+  que un pedido con IMEI identificado nunca se puede corregir. Se dejó así porque la orden pide
+  comprobar `left_at`; si el propietario quiere que no cuente el sello puesto por esa misma
+  entrada, es una comparación de fechas.
+
+**Historial**: en el detalle del pedido (`dispatch.history`), sólo lectura, desde la auditoría,
+para quien ve el pedido; sin el correo del comprador. Las notas libres del personal se muestran
+a quien ve el pedido (aceptado: ya ve el pedido completo).
+
 ### DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero — decisiones del propietario (2026-10-16) — APROBADAS, DESPLEGADAS
 
 Rama `fix/financial-closure` desde `master` `315bedf`, fusionada por #126 (`68137e5`) y
@@ -111,6 +169,10 @@ SUNAT.»
   de varias sucursales»; se lee como **varias sucursales**. Un equipo más un accesorio de la
   misma sucursal sigue siendo simple (`RealTillSaleAnnulTest`). Si se quiere que toda mezcla
   serie + cantidad sea de un superior, es una línea más.
+  *Confirmado por el propietario (2026-10-16):* «compleja» NO se limita a varias sucursales.
+  Exigen superior: fuera del plazo simple, boleta/factura vigente, comisión liquidada, stock de
+  varias sucursales y anulación sin reponer stock (`no_stock_restore`), con la razón concreta a
+  la vista. La lógica desplegada ya lo cumple: sin cambio de código.
 - *Negativa:* 403 `superior_required`, «Anular esta venta corresponde a un superior
   (administrador de la empresa)» + cada condición, y la lista `conditions`. El panel la muestra
   como bloqueo a quien no es superior (`can_cancel=false`) y como aviso al superior

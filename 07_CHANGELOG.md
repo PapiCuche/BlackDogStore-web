@@ -3,6 +3,25 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 · despacho seguro
+
+**Added**
+- Panel «Estado de despacho» con pasos según la modalidad, historial de despacho y
+  «Corregir marcado de salida» (superior, motivo, declaración; entrada de auditoría nueva).
+- `POST /api/admin/orders/{id}/left-markings/{audit_id}/correct/`; bloque `dispatch` en el detalle.
+
+**Changed**
+- El despacho avanza un paso a la vez; recojo sin «Enviado»; envío sin «Listo para retiro»;
+  un paso atrás exige motivo (400 `reason_required`) y sólo si nunca salió;
+  `available_fulfillment_transitions` trae sólo el paso siguiente y el anterior.
+
+**Removed**
+- «Cancelado operativo» del selector manual (sólo lo escribe la cancelación comercial).
+
+**Fixed**
+- Borrar la guía, el seguimiento o la fecha de envío ya no permite cancelar ni corregir un
+  pedido que salió.
+
 ## 2026-10-16 — Despliegue de #125 y #126 en producción (`68137e5`)
 
 **Deployed**

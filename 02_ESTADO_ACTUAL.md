@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 (rama `feat/fulfillment-safety`)
+
+Desde `master` `ebde440`. Sin migraciones. Decisión: **DEC-ORDER-FULFILLMENT-SAFETY-01**.
+- **IMPLEMENTADO:** despacho por pasos según la modalidad (recojo / envío), sin saltos, un paso
+  atrás con motivo sólo si nunca salió, «Cancelado operativo» sólo por cancelación comercial,
+  guía y transportista antes de «Enviado» por transportista; panel «Estado de despacho» siempre
+  visible con pasos, responsable, fecha, motivo del bloqueo e historial; corrección auditada del
+  marcado de salida por un superior. Mismas reglas en la app V1.
+- **PENDIENTE:** devolución posterior a la entrega de un pedido web (decisiones abiertas en la
+  DEC); estado propio de «retenido».
+- Pruebas: 45 nuevas en `test_fulfillment_safety` (mutación 22/23, la restante equivalente);
+  suites existentes ajustadas al paso a paso sin perder lo que protegían; suite completa 7763 OK
+  sobre `f20de11`; Jest 1633 + 21 del panel; Playwright: pedidos, caja y equipos 11/11 y el caso
+  #4 en navegador; `next build` OK; `ENSAYO: OK`.
+- Revisión independiente: un P1 (borrar guía/fecha antes de corregir) corregido en `97e0fbe`.
+- Orden #4: elegible para corrección (sin guía, fecha ni equipos; su única edición de entrega
+  cambió `freight_paid_by`). No se tocó.
+
 ## 2026-10-16 — #125 y #126 (COMMERCE-ADMIN-UX-01 y su cierre financiero) desplegados en producción
 
 **Producción en `68137e5`** desde el 2026-10-16, 22:58 (Lima), desde `04640cf`. Sólo `master`:
