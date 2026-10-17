@@ -643,6 +643,8 @@ export type AdminOrderDetail = AdminOrder & {
   /**
    * Fulfilment states THIS caller may set on this order, decided by the server
    * for this company (H4.1.2). Empty = read-only. Never derive it from the role.
+   * ORDER-FULFILLMENT-SAFETY-01: at most [back, forward] — one step either way;
+   * the panel reads `dispatch` instead.
    */
   available_fulfillment_transitions: string[];
   /** INV-04: per-product shortfall for this order (empty when fully covered). */
@@ -692,7 +694,85 @@ export type AdminOrderDetail = AdminOrder & {
   can_manage_supply?: boolean;
   /** DC3: si QUIEN CONSULTA puede recibir del proveedor (entra stock). Lo decide el servidor. */
   can_receive_supply?: boolean;
+  /**
+   * ORDER-FULFILLMENT-SAFETY-01: el despacho de este pedido para QUIEN CONSULTA
+   * — su recorrido, el paso siguiente y el anterior que puede marcar, por qué
+   * no puede todavía, y el historial tal como quedó escrito.
+   */
+  dispatch?: OrderDispatch | null;
+  /** Sólo en la respuesta de una corrección: false si ya estaba corregido. */
+  correction_created?: boolean;
 };
+
+// ── ORDER-FULFILLMENT-SAFETY-01: el despacho de un pedido ───────────────────
+
+export type DispatchBlocker = { code: string; detail: string };
+
+export type DispatchStep = {
+  status: string;
+  label: string;
+  state: 'done' | 'current' | 'todo';
+  /** Cuándo se marcó este paso (el último registro sin corregir), o null. */
+  at: string | null;
+  actor: string;
+};
+
+export type DispatchHistoryEntry = {
+  id: number;
+  at: string;
+  /** order_fulfillment_status_changed | order_left_marking_corrected | order_delivery_updated | order_cancelled */
+  action: string;
+  actor: string;
+  old_status: string;
+  new_status: string;
+  old_label: string;
+  new_label: string;
+  note: string;
+  direction: string;
+  /** Un superior declaró este registro un error; el registro se conserva. */
+  corrected: boolean;
+  /** En una corrección: el registro que corrige. */
+  corrects_id: number | null;
+};
+
+export type LeftMarking = {
+  audit_id: number;
+  at: string;
+  old_status: string;
+  new_status: string;
+  actor: string;
+  corrected: boolean;
+  correction: { at: string; actor: string; reason: string } | null;
+  /** Si QUIEN CONSULTA puede corregirlo ahora. Lo decide el servidor. */
+  can_correct: boolean;
+  blockers: DispatchBlocker[];
+};
+
+export type OrderDispatch = {
+  kind: 'pickup' | 'shipping';
+  mode: string;
+  current: string;
+  current_label: string;
+  steps: DispatchStep[];
+  /** El paso siguiente que QUIEN CONSULTA puede marcar, o null. */
+  forward: string | null;
+  forward_label: string;
+  /** El paso anterior al que QUIEN CONSULTA puede volver (con motivo), o null. */
+  back: string | null;
+  back_label: string;
+  reason_min: number;
+  /** Por qué el servidor rechazaría ahora el paso siguiente. */
+  blockers: DispatchBlocker[];
+  may_manage: boolean;
+  notice: string;
+  ever_left: boolean;
+  history: DispatchHistoryEntry[];
+  left_markings: LeftMarking[];
+  may_correct: boolean;
+};
+
+/** Mínimo del motivo de una corrección de marcado de salida (left_marking.REASON_MIN). */
+export const LEFT_MARKING_REASON_MIN = 5;
 
 /** DC3 — el abastecimiento de un pedido, en palabras del panel. */
 export const SUPPLY_STATUS_LABELS: Record<string, string> = {
@@ -940,12 +1020,47 @@ export async function updateOrderFulfillment(
     throw new Error(err?.detail ?? 'No tienes permisos para cambiar el estado de despacho.');
   }
   if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
   if (res.status === 409) {
-    // SERIAL-PICK-01: faltan equipos por identificar. El motivo lo dice el servidor.
+    // El motivo lo dice el servidor: paso no permitido, faltan equipos o datos
+    // de envío, revisión o abastecimiento pendiente, pedido cancelado.
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail ?? 'Este pedido todavía no se puede marcar así.');
   }
   if (!res.ok) throw new Error('No se pudo actualizar el estado de despacho.');
+  return res.json();
+}
+
+/**
+ * ORDER-FULFILLMENT-SAFETY-01 — un superior declara que UN registro de salida
+ * («Enviado» o «Entregado») fue un error y que el producto nunca salió. El
+ * registro original se conserva; no cancela, no reembolsa ni mueve stock.
+ * 201 (corregido ahora) o 200 (ya estaba corregido), con el pedido completo.
+ */
+export async function correctLeftMarking(
+  orderId: number,
+  auditId: number,
+  reason: string,
+  neverLeft: boolean,
+): Promise<AdminOrderDetail> {
+  const body: Record<string, unknown> = { reason };
+  if (neverLeft) body.never_left = true;
+  const res = await fetchWithAuth(
+    `${API_BASE}/admin/orders/${orderId}/left-markings/${auditId}/correct/`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  if (res.status === 403) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? 'No tienes permisos para corregir este registro.');
+  }
+  if (res.status === 400 || res.status === 404 || res.status === 409) {
+    // El motivo lo dice el servidor: motivo corto, falta la declaración, el
+    // registro no existe en el pedido, o algo dice que el producto sí salió.
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? (res.status === 404 ? 'Orden no encontrada.' : 'No se pudo corregir el registro.'));
+  }
+  if (!res.ok) throw new Error('No se pudo corregir el registro.');
   return res.json();
 }
 

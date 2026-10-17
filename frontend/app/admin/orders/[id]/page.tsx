@@ -9,7 +9,7 @@ import { AdminShell } from "../../components/AdminShell";
 import { PageHeader, internalButtonClass } from "../../components/internal-ui";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { FulfillmentStatusBadge } from "../../components/FulfillmentStatusBadge";
-import { FulfillmentStatusSelect } from "../../components/FulfillmentStatusSelect";
+import { DispatchPanel } from "../../components/DispatchPanel";
 import { OrderUnitsPanel } from "../../components/OrderUnitsPanel";
 import { SalesNotePanel } from "../../components/SalesNotePanel";
 import { FiscalDocumentPanel } from "../../components/FiscalDocumentPanel";
@@ -115,9 +115,6 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
   }
 
   const subtotal = parseFloat(order.total) + parseFloat(order.discount_amount);
-  // Who may move this order, and to where, is the server's answer for THIS
-  // company — never the global `user.role` (H4.1.2). Empty means read-only.
-  const fulfillmentTransitions = order.available_fulfillment_transitions ?? [];
 
   return (
     <AdminShell user={user}>
@@ -443,24 +440,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
           canIssue={access.can('sales.fiscal.issue')}
         />
 
-        {/* Fulfillment management */}
-        {fulfillmentTransitions.length > 0 && (
-          <section className="rounded-xl border border-bd-border bg-surface p-6">
-            <h2 className="text-sm font-semibold text-foreground mb-1">Estado de despacho</h2>
-            <p className="text-xs text-muted mb-4">
-              Cambia el estado operativo de la orden. El estado de pago no se puede modificar desde aquí.
-            </p>
-            <FulfillmentStatusSelect
-              orderId={order.id}
-              current={order.fulfillment_status}
-              allowed={fulfillmentTransitions}
-              onChanged={(newStatus) =>
-                setOrder((prev) => prev ? { ...prev, fulfillment_status: newStatus } : prev)
-              }
-              onSaved={setOrder}
-            />
-          </section>
-        )}
+        {/* ORDER-FULFILLMENT-SAFETY-01: el despacho de esta modalidad, paso a
+            paso, y su historial. Siempre visible; las acciones las habilita el
+            servidor (`order.dispatch`), también la corrección de un marcado de
+            salida por error. */}
+        <DispatchPanel order={order} onChanged={setOrder} />
       </div>
     </AdminShell>
   );
