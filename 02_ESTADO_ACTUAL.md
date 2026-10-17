@@ -3,9 +3,39 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-16 — Cierre financiero de COMMERCE-ADMIN-UX-01 (rama `fix/financial-closure`, NO desplegado)
+## 2026-10-16 — #125 y #126 (COMMERCE-ADMIN-UX-01 y su cierre financiero) desplegados en producción
 
-Desde `master` `315bedf` (producción sigue en `04640cf`). Decisiones del propietario del
+**Producción en `68137e5`** desde el 2026-10-16, 22:58 (Lima), desde `04640cf`. Sólo `master`:
+#120 y #122 siguen abiertos y sin desplegar.
+- Antes: copia `20261016-225654` (base y evidencias, `gzip -t` OK), restaurada en un PostgreSQL
+  desechable de red interna. Imágenes en uso etiquetadas `blackdog-{backend,frontend}:rollback-04640cf`.
+  Caddyfile local respaldado en `backups/Caddyfile.before-126` y sin cambios (md5 igual).
+- Abiertos al desplegar: 3 pedidos `pending_payment` y 2 intentos `pending`, todos de hace unos
+  5 días (pruebas TEST); ningún pago en curso.
+- Ensayo sobre la copia con la imagen nueva, `lock_timeout=5s` y `statement_timeout=300s`:
+  `0124`, `0125`, `0136`, `0137`, `0138` de ida en 8 s; vuelta a `0124_order_cancellation` y
+  reaplicación con esquema idéntico; la imagen anterior funciona sobre el esquema nuevo.
+- En producción: `migrate` con los mismos límites aplicó las cinco; `up -d` cambió `backend` y
+  `frontend` (sanos). `deploy/healthcheck.sh`: 17 OK. Recuentos iguales antes y después
+  (6 pedidos, total pagado 14970.00, 5 intentos, 2 notas emitidas, 1 producto, 5 movimientos);
+  0 cancelaciones, 0 reembolsos, 0 ajustes; plazo de anulación 7 días.
+- Smoke sin sesión: tienda, `/auth`, carrito, servicios y nosotros en 200; catálogo público sin
+  campos de costo ni margen; panel de ventas, comisiones, anular, reembolsos, inventario,
+  Kardex y disponibilidad piden sesión (401).
+- Smoke autenticado de sólo lectura dentro del servidor (GET con `force_authenticate`, sin
+  sesión ni contraseña), por cada una de las 3 membresías: tablero con el bloque de cobros,
+  comisiones, pedidos, disponibilidad, stock, movimientos, tarjeta de existencias, clientes y
+  configuración en 200. Margen y costos sólo para `administrador` (las otras dos: margen 403,
+  stock sin campos de costo). Otra empresa: pedidos 403, tablero 404. KPIs de 7/30/90 días =
+  14970.00 en 3 pedidos (los impagos no cuentan).
+- No probado por el agente (cambia datos comerciales): anular, reembolsar, liquidar comisiones,
+  registrar artículos y pagar con Izipay TEST. Lista en `docs/NEXT_ACTION.md`.
+- **Vuelta atrás:** sólo imágenes `rollback-04640cf`, con las migraciones aplicadas (DEC del
+  cierre financiero en `05_DECISIONES_TECNICAS.md`).
+
+## 2026-10-16 — Cierre financiero de COMMERCE-ADMIN-UX-01 (#126, desplegado arriba)
+
+Desde `master` `315bedf`. Decisiones del propietario del
 2026-10-16, aprobadas: **DEC-COMMERCE-ADMIN-UX-01 · Cierre financiero**. Migración `0138`
 (aditiva, reversible).
 - **Anular venta POS:** simple como hasta hoy; antigua (más de `pos_cancel_simple_days`, 7),
@@ -22,7 +52,9 @@ Desde `master` `315bedf` (producción sigue en `04640cf`). Decisiones del propie
   reescribe (probado).
 - Pruebas: focal 1001 OK (cancelaciones, reembolsos, margen, comisiones, analítica, pagos,
   clientes, `test_ci_shards`, paridades); Jest 1613 OK; `tsc` y ESLint sin errores;
-  `makemigrations --check` sin cambios; mutación 27/26 + 1 equivalente. Suite completa no corrida.
+  `makemigrations --check` sin cambios; mutación 27/26 + 1 equivalente. Después: suite completa
+  7716 OK sobre `b7ae083`, `ENSAYO: OK`, revisión independiente GO sin P0/P1 (sus P2 corregidos
+  en `14a6c01` y `ed43fc9`, focal 362 OK) y CI en verde sobre `2ebbc5b`.
 
 ## 2026-10-16 — COMMERCE-ADMIN-UX-01 completo (PR a `master`, NO desplegado)
 

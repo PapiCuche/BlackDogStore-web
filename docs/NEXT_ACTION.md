@@ -1,5 +1,29 @@
 # NEXT ACTION
 
+## Desplegado: COMMERCE-ADMIN-UX-01 y cierre financiero (#125, #126, `68137e5`) el 2026-10-16
+
+Pruebas que el propietario debe hacer con su sesión (no hechas por el agente). Usar un
+producto y pedidos de prueba, y pagar sólo con Izipay TEST:
+1. Con la cuenta `administrador`: Inventario › Costos y precios muestra margen y valor al
+   costo. Con una cuenta de ventas, esa entrada no aparece.
+2. Ventas › Consultar disponibilidad con una cuenta de ventas: stock por sucursal, sin costos,
+   IMEI enmascarado.
+3. Registrar un artículo con el asistente único y publicarlo en el centro de publicación; verlo
+   en la tienda.
+4. Cancelar un pedido web impago: los equipos apartados se liberan y no aparece ingreso.
+5. Pagar un pedido web con Izipay TEST y cancelarlo marcando reembolso: queda «pendiente».
+   Confirmarlo con referencia, evidencia e importe exacto (sólo con `company.manage`).
+6. Venta de caja reciente: anularla con «la mercadería volvió al local» (simple). Configuración
+   › plazo de anulación a 0 y repetir con otra venta: debe pedir un superior.
+7. Revisar el tablero: la venta anulada sale del total y el dinero cobrado aparece aparte en
+   «Cobros»; el informe de comisiones la muestra como anulada.
+8. Kardex: la devolución de stock de la anulación aparece al costo de la venta.
+9. Devolver el plazo de anulación a 7 y desactivar los datos de prueba.
+
+Decisiones abiertas: confirmar que «compleja» = stock de varias sucursales; pantalla para
+liquidar comisiones (hoy no existe, así que anular sólo anula). PR abiertos: #120 (necesita
+una migración de fusión) y #122.
+
 ## Desplegado: DEVICE-COMMERCE-01 (#123, `04640cf`) el 2026-10-15
 
 Pruebas que el propietario debe hacer con su sesión (no hechas por el agente):
