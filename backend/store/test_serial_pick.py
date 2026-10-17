@@ -26,6 +26,7 @@ from store import inventory_services as inventory
 from store import order_fulfillment_services as fulfillment
 from store import pos_services as pos
 from store import unit_identification as picking
+from store.fulfillment_test_support import legacy_move, place_at, walk_to
 from store.models import (
     AdminAuditLog, Order, OrderItem, OrderUnit, Product, StockMovement, StockUnit,
 )
@@ -376,8 +377,11 @@ class TheWebOrderTest(_Base):
 
         order = self.paid()
         self.identify(order, IMEI_A)
+        # ORDER-FULFILLMENT-SAFETY-01: from the step before, so the capture
+        # holds the hand-over alone, and nothing read before the lock.
+        place_at(order, Order.FulfillmentStatus.READY_FOR_PICKUP)
         with CaptureQueriesContext(connection) as seen:
-            self.deliver(order)
+            fulfillment.change_fulfillment_status(order=order, new_status='delivered', actor=self.manager, company=self.company)
         statements = [q['sql'] for q in seen.captured_queries]
         lock = next(i for i, sql in enumerate(statements) if 'FOR UPDATE' in sql and '"store_order"' in sql.split('WHERE')[0])
         check = next(i for i, sql in enumerate(statements) if '"store_orderunit"' in sql)
@@ -397,7 +401,9 @@ class TheWebOrderTest(_Base):
         self.assertTrue(AdminAuditLog.objects.filter(action='order_unit_forgotten').exists())
 
     def deliver(self, order, state='delivered'):
-        return fulfillment.change_fulfillment_status(order=order, new_status=state, actor=self.manager, company=self.company)
+        # ORDER-FULFILLMENT-SAFETY-01: one step at a time, through the real
+        # service — a refusal stops the walk on the step that was refused.
+        return walk_to(order, state, actor=self.manager, company=self.company)
 
     def test_what_left_the_shop_is_not_renamed(self):
         order = self.paid()
@@ -415,9 +421,15 @@ class TheWebOrderTest(_Base):
         for order in (self.sell([self.line(self.old)])[0], self.paid()):
             if not OrderUnit.objects.filter(order=order).exists():
                 self.identify(order, IMEI_B)
-                self.deliver(order, 'shipped')
+                self.deliver(order)
             record = OrderUnit.objects.get(order=order)
-            self.deliver(order, 'preparing')
+            # ORDER-FULFILLMENT-SAFETY-01: dispatch no longer goes back once the
+            # goods left; such a move back is a past the old selector wrote.
+            with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
+                fulfillment.change_fulfillment_status(order=order, new_status='preparing', actor=self.manager,
+                                                      company=self.company, note='Vuelve a preparación')
+            self.assertEqual(blocked.exception.code, 'transition_not_allowed')
+            legacy_move(order, 'preparing', actor=self.manager, company=self.company)
             with self.assertRaises(picking.UnitIdentificationError) as refused:
                 picking.forget(order=order, order_unit_id=record.pk, actor=self.manager)
             self.assertEqual(refused.exception.code, 'already_left')
@@ -427,20 +439,29 @@ class TheWebOrderTest(_Base):
 
     def test_it_does_not_leave_the_shop_without_being_identified(self):
         order = self.paid(quantity=2)
-        for status in ('shipped', 'delivered'):
+        # ORDER-FULFILLMENT-SAFETY-01: each is tried from the step right before
+        # it, on a path that has it (only a shipping order is «sent»).
+        for status, method, before in (('shipped', Order.DeliveryMethod.DELIVERY_AREQUIPA, 'preparing'),
+                                       ('delivered', Order.DeliveryMethod.PICKUP_STORE, 'ready_for_pickup')):
+            Order.objects.filter(pk=order.pk).update(delivery_method=method)
+            place_at(order, before)
             with self.subTest(status), self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
                 fulfillment.change_fulfillment_status(order=order, new_status=status, actor=self.manager, company=self.company)
+            self.assertEqual(blocked.exception.code, 'units_pending')
             self.assertIn('2', blocked.exception.detail)
-        order.refresh_from_db()
-        self.assertEqual(order.fulfillment_status, 'pending')
+            order.refresh_from_db()
+            self.assertEqual(order.fulfillment_status, before)
+        place_at(order, 'pending')
 
-        # Getting it ready is not handing it over.
-        for status in ('confirmed', 'preparing', 'ready_for_pickup'):
+        # Getting it ready is not handing it over. («Confirmado» is no longer a
+        # step: ORDER-FULFILLMENT-SAFETY-01.)
+        for status in ('preparing', 'ready_for_pickup'):
             fulfillment.change_fulfillment_status(order=order, new_status=status, actor=self.manager, company=self.company)
 
         self.identify(order, IMEI_A)
-        with self.assertRaises(fulfillment.FulfillmentBlocked):                       # one of two is not both
+        with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:            # one of two is not both
             fulfillment.change_fulfillment_status(order=order, new_status='delivered', actor=self.manager, company=self.company)
+        self.assertEqual(blocked.exception.code, 'units_pending')
         self.identify(order, IMEI_B)
         fulfillment.change_fulfillment_status(order=order, new_status='delivered', actor=self.manager, company=self.company)
         order.refresh_from_db()
@@ -451,7 +472,7 @@ class TheWebOrderTest(_Base):
             company=self.company, fulfillment_branch=self.branch_a, customer_email='x@example.com',
             total=Decimal('49.00'), status=Order.Status.PAID, paid=True, paid_at=timezone.now())
         OrderItem.objects.create(order=order, product=self.cable, quantity=1, price=self.cable.price)
-        fulfillment.change_fulfillment_status(order=order, new_status='delivered', actor=self.manager, company=self.company)
+        self.deliver(order)
         self.assertEqual(picking.pending_units(order), {})
 
     def test_an_order_from_before_the_rule_is_not_held_back(self):
@@ -459,7 +480,7 @@ class TheWebOrderTest(_Base):
         order = self.paid()
         OrderUnit.objects.create(company=self.company, order=order, product=self.phone, unit=self.old, method='legacy')
         self.assertEqual(picking.pending_units(order), {})
-        fulfillment.change_fulfillment_status(order=order, new_status='delivered', actor=self.manager, company=self.company)
+        self.deliver(order)
 
     def test_a_device_returned_later_is_still_the_one_that_sale_named(self):
         from store import stock_unit_services as units
@@ -488,8 +509,9 @@ class TheWebOrderTest(_Base):
         self.assertFalse(OrderUnit.objects.filter(order=order).exists())
         self.assertEqual(sold_units(order), {})
         self.assertEqual(picking.pending_units(order), {self.phone.pk: 1})
-        with self.assertRaises(fulfillment.FulfillmentBlocked):
+        with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
             self.deliver(order)
+        self.assertEqual(blocked.exception.code, 'units_pending')
         self.assertTrue(AdminAuditLog.objects.filter(action='order_unit_forgotten', target_id=order.pk).exists())
 
     def test_a_device_that_is_not_out_for_the_order_does_not_count_as_identified(self):
@@ -498,8 +520,9 @@ class TheWebOrderTest(_Base):
         self.identify(order, IMEI_A)
         StockUnit.objects.filter(pk=self.old.pk).update(status='available', order=None)
         self.assertEqual(picking.pending_units(order), {self.phone.pk: 1})
-        with self.assertRaises(fulfillment.FulfillmentBlocked):
+        with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
             self.deliver(order)
+        self.assertEqual(blocked.exception.code, 'units_pending')
 
     def test_an_order_whose_device_went_back_is_handed_another_one(self):
         """Not a dead end: the return put one back, the hand-over takes one out — one Kardex line."""
@@ -641,9 +664,11 @@ class WhenTheRuleArrivedTest(_Base):
         order = waiting[0]
         self.assertEqual(picking.pending_units(order), {self.phone.pk: 1})
         self.assertEqual(self.status(self.old), (StockUnit.Status.SOLD, order.pk))   # still set aside
-        with self.assertRaises(fulfillment.FulfillmentBlocked):
+        place_at(order, 'ready_for_pickup')                  # the step before the hand-over (ORDER-FULFILLMENT-SAFETY-01)
+        with self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
             fulfillment.change_fulfillment_status(
                 order=order, new_status='delivered', actor=self.manager, company=self.company)
+        self.assertEqual(blocked.exception.code, 'units_pending')
 
     def test_what_was_cancelled_after_the_fact_is_history_too(self):
         order = self.sold_the_old_way(state='cancelled')
@@ -764,12 +789,12 @@ class OverHttpTest(_Base):
         self.assertFalse(looking.get(url).json()['units_can_change'])
 
         picking.identify_for_order(order=order, code=IMEI_A, method=SCANNER, actor=self.manager)
-        fulfillment.change_fulfillment_status(
-            order=order, new_status='delivered', actor=self.manager, company=self.company)
+        walk_to(order, 'delivered', actor=self.manager, company=self.company)
         self.assertFalse(self.desk.get(url).json()['units_can_change'])
 
     def test_identifying_then_handing_over(self):
         order = self.web_order()
+        place_at(order, 'ready_for_pickup')                  # the step before the hand-over (ORDER-FULFILLMENT-SAFETY-01)
         blocked = self.desk.patch(f'/api/admin/orders/{order.pk}/fulfillment-status/?{self.q}', {'fulfillment_status': 'delivered'}, format='json')
         self.assertEqual((blocked.status_code, blocked.json()['code']), (409, 'units_pending'), blocked.content)
 
@@ -795,8 +820,10 @@ class OverHttpTest(_Base):
         self.assertTrue(self.desk.get(url).json()['items'][0]['requires_imei'])
         self.desk.post(f'/api/admin/orders/{order.pk}/units/?{self.q}', {'code': IMEI_A, 'method': SCANNER}, format='json')
         self.assertTrue(self.desk.get(url).json()['items'][0]['units'][0]['can_remove'])
-        fulfillment.change_fulfillment_status(order=order, new_status='shipped', actor=self.manager, company=self.company)
-        fulfillment.change_fulfillment_status(order=order, new_status='preparing', actor=self.manager, company=self.company)
+        # ORDER-FULFILLMENT-SAFETY-01: it leaves through the real service; the
+        # move back after it left is a past only the old selector wrote.
+        walk_to(order, 'delivered', actor=self.manager, company=self.company)
+        legacy_move(order, 'preparing', actor=self.manager, company=self.company)
         body = self.desk.get(url).json()
         self.assertFalse(body['items'][0]['units'][0]['can_remove'])      # it left: moving the order back does not reopen it
         record_id = body['items'][0]['units'][0]['id']
@@ -814,6 +841,7 @@ class OverHttpTest(_Base):
         self.assertEqual((detail['units'], detail['units_pending'], detail['units_can_change']), ([], 1, True))
         self.assertEqual(detail['units_pending_by_product'], {str(self.phone.pk): 1})
 
+        place_at(order, 'ready_for_pickup')                  # the step before the hand-over (ORDER-FULFILLMENT-SAFETY-01)
         blocked = self.desk.patch(self.v1(f'orders/{order.pk}/fulfillment/'), {'fulfillment_status': 'delivered'}, format='json')
         self.assertEqual((blocked.status_code, blocked.json()['code'], blocked.json()['pending']), (409, 'units_pending', 1))
 

@@ -275,7 +275,9 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
     def _payload(self, request, order, company):
         from . import unit_identification
 
-        transitions = list(fulfillment.allowed_fulfillment_statuses(request.user, company))
+        # ORDER-FULFILLMENT-SAFETY-01: the same next/back steps as the web panel.
+        may_move = bool(fulfillment.allowed_fulfillment_statuses(request.user, company))
+        transitions = fulfillment.available_moves(order, request.user, company)
         view = unit_identification.order_view(order)
         return {
             **V1InternalOrderDetailSerializer(order).data,
@@ -294,7 +296,7 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
             'units': [record for records in view['records'].values() for record in records],
             'units_pending': sum(view['pending'].values()),
             'units_pending_by_product': {str(product_id): count for product_id, count in view['pending'].items()},
-            'units_can_change': bool(transitions) and not view['left'],
+            'units_can_change': may_move and not view['left'],
             # CLIENT-SEC-01, the same block the web panel shows: what was
             # noticed about this order and what a person decided; null when it
             # was not assessed. For `sales.orders.view`: this payload is also
@@ -356,7 +358,7 @@ class V1InternalOrderFulfillmentView(V1InternalOrderDetailView):
             # pending: `code` says which.
             return Response(
                 {'detail': exc.detail, 'code': exc.code, 'pending': sum(exc.pending.values())},
-                status=status.HTTP_409_CONFLICT,
+                status=exc.http_status,
             )
 
         order = Order.objects.prefetch_related('items__product').get(pk=order.pk)

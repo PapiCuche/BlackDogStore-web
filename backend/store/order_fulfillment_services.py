@@ -47,7 +47,7 @@ how every company starts, nothing here changes.
 """
 from django.db import transaction
 
-from . import order_risk
+from . import fulfillment_flow, order_risk
 from .commerce_notifications import emit_fulfillment_changed
 from .models import AdminAuditLog, Order, OrderItem, UserProfile
 from .permissions import get_user_role
@@ -106,12 +106,22 @@ class FulfillmentBlocked(Exception):
     SUPPLY_PENDING = 'supply_pending'
     #: ORDER-CANCEL-01: a cancelled order's fulfilment does not move.
     ORDER_CANCELLED = 'order_cancelled'
+    #: ORDER-FULFILLMENT-SAFETY-01 (`fulfillment_flow`): not the next step of
+    #: this order's path, or back after the goods left; «Enviado» without the
+    #: carrier's data; a step back without a reason (the only 400).
+    TRANSITION_NOT_ALLOWED = 'transition_not_allowed'
+    LOGISTICS_MISSING = 'logistics_missing'
+    REASON_REQUIRED = 'reason_required'
 
     def __init__(self, detail: str, *, pending: dict, code: str = UNITS_PENDING):
         super().__init__(detail)
         self.detail = detail
         self.pending = pending
         self.code = code
+
+    @property
+    def http_status(self) -> int:
+        return 400 if self.code == self.REASON_REQUIRED else 409
 
 
 def allowed_fulfillment_statuses(user, company) -> tuple[str, ...]:
@@ -194,6 +204,30 @@ def change_fulfillment_status(
                 pending={}, code=FulfillmentBlocked.ORDER_CANCELLED,
             )
         previous = current[1] if current is not None else order.fulfillment_status
+        # ORDER-FULFILLMENT-SAFETY-01. Exactly the next step of this order's
+        # path, or exactly one back with a reason while the goods never left.
+        # Asked of the locked status, not of `order`.
+        record = fulfillment_flow.delivery_record(order)
+        allowed_moves = fulfillment_flow.moves(order, current=previous, record=record)
+        going_back = new_status == allowed_moves['back']
+        if new_status not in (allowed_moves['forward'], allowed_moves['back']):
+            raise FulfillmentBlocked(
+                transition_refusal(order, previous, new_status, record),
+                pending={}, code=FulfillmentBlocked.TRANSITION_NOT_ALLOWED,
+            )
+        reason = fulfillment_flow.clean_reason(note)
+        if going_back and not reason:
+            raise FulfillmentBlocked(
+                'Volver al paso anterior exige un motivo (al menos '
+                f'{fulfillment_flow.REASON_MIN} caracteres).',
+                pending={}, code=FulfillmentBlocked.REASON_REQUIRED,
+            )
+        if new_status == Order.FulfillmentStatus.SHIPPED:
+            missing = fulfillment_flow.logistics_blockers(order, record)
+            if missing:
+                raise FulfillmentBlocked(
+                    missing[0]['detail'], pending={}, code=FulfillmentBlocked.LOGISTICS_MISSING,
+                )
         # CLIENT-SEC-01. Only where the company asked for it: an order waiting
         # for its review does not leave — nor is its buyer told to come for it —
         # until somebody has decided. Asked with the order locked, like the
@@ -236,7 +270,18 @@ def change_fulfillment_status(
                 'customer_email': order.customer_email,
                 'old_fulfillment_status': previous,
                 'new_fulfillment_status': new_status,
-                'note': note[:200] if note else '',
+                # A step back keeps its whole reason; any other note, as before.
+                'note': (reason if going_back else (note[:200] if note else '')),
+                'direction': 'back' if going_back else 'forward',
+                'delivery_mode': fulfillment_flow.delivery_mode(order, record),
+                # WHETHER (never what) the delivery record held the carrier's
+                # data when this was written — evidence a later edit cannot blank.
+                **({'logistics': {
+                    'carrier': bool(record and (record.carrier_id or record.carrier_name.strip())),
+                    'waybill': bool(record and record.waybill_number.strip()),
+                    'tracking': bool(record and record.tracking_code.strip()),
+                    'shipped_at': bool(record and record.shipped_at),
+                }} if leaving else {}),
             },
             request=request,
         )
@@ -248,3 +293,168 @@ def change_fulfillment_status(
         emit_fulfillment_changed(order, new_status)
 
     return order
+
+
+def transition_refusal(order, current, new_status, record=None) -> str:
+    """What to tell the person whose step is not the next one (or not allowed back)."""
+    FS = Order.FulfillmentStatus
+    labels = dict(FS.choices)
+    if new_status == FS.CANCELLED:
+        return ('«Cancelado operativo» no se elige a mano: para cancelar la venta usa «Cancelar pedido», '
+                'que repone el stock y deja el reembolso registrado.')
+    if new_status == current:
+        return f'El pedido ya está en «{labels.get(current, current)}».'
+    if new_status == FS.SHIPPED and fulfillment_flow.kind(order, record) == fulfillment_flow.PICKUP:
+        return 'Es un pedido de recojo en tienda: no se envía, se marca «Listo para retiro» y luego «Entregado».'
+    if new_status == FS.READY_FOR_PICKUP and fulfillment_flow.kind(order, record) == fulfillment_flow.SHIPPING:
+        return 'Es un pedido con envío: no pasa por «Listo para retiro», se marca «Enviado».'
+    allowed = fulfillment_flow.moves(order, current=current, record=record)
+    path = fulfillment_flow.steps(order, record)
+    here = path.index(FS.PENDING if current == FS.CONFIRMED else current) if (
+        current in path or current == FS.CONFIRMED) else None
+    backwards = current in (FS.SHIPPED, FS.DELIVERED, FS.CANCELLED) or (
+        here is not None and new_status in path and path.index(new_status) < here)
+    if backwards:
+        if allowed['back'] is None and new_status in path:
+            return ('El producto ya salió de la tienda (o así quedó registrado): el despacho no vuelve atrás. '
+                    'Si fue un marcado por error, un superior puede corregirlo; si salió, corresponde una devolución.')
+        if allowed['back']:
+            return f'Sólo se puede volver un paso, a «{labels.get(allowed["back"], allowed["back"])}», con un motivo.'
+    nxt = allowed['forward']
+    if nxt:
+        return f'El siguiente paso de este pedido es «{labels.get(nxt, nxt)}»: los pasos no se saltan.'
+    return 'Este pedido no tiene más pasos de despacho.'
+
+
+def available_moves(order, user, company) -> list[str]:
+    """
+    The statuses THIS user may set on THIS order now, in path order: the next
+    step and the one back, each only if the user may set it. Empty for a
+    cancelled order or for someone who cannot manage orders.
+    """
+    from . import order_cancellation as cancelling
+
+    allowed = set(allowed_fulfillment_statuses(user, company))
+    if not allowed or cancelling.is_cancelled(order):
+        return []
+    found = fulfillment_flow.moves(order)
+    return [s for s in (found['back'], found['forward']) if s and s in allowed]
+
+
+HISTORY_ACTIONS = (
+    'order_fulfillment_status_changed', 'order_left_marking_corrected', 'order_delivery_updated', 'order_cancelled',
+)
+
+
+def history(order) -> list[dict]:
+    """
+    The order's dispatch record, oldest first, AS IT WAS WRITTEN — read-only,
+    from the audit log. An incoherent past (a pickup order «sent») is shown, not
+    tidied; an entry a superior declared accidental says so and stays.
+    """
+    from . import left_marking
+    from . import order_cancellation as cancelling
+
+    corrected = cancelling.corrected_event_ids(order)
+    labels = dict(Order.FulfillmentStatus.choices)
+    rows = []
+    for row in AdminAuditLog.objects.filter(
+        action__in=HISTORY_ACTIONS, target_type='order', target_id=str(order.pk),
+    ).select_related('actor').order_by('created_at', 'pk'):
+        meta = row.metadata or {}
+        item = {
+            'id': row.pk, 'at': row.created_at.isoformat(), 'action': row.action,
+            'actor': left_marking.actor_label(row.actor),
+            'old_status': '', 'new_status': '', 'old_label': '', 'new_label': '',
+            'note': '', 'direction': '', 'corrected': False, 'corrects_id': None,
+        }
+        if row.action == 'order_fulfillment_status_changed':
+            old, new = meta.get('old_fulfillment_status', ''), meta.get('new_fulfillment_status', '')
+            item.update(old_status=old, new_status=new, old_label=labels.get(old, old),
+                        new_label=labels.get(new, new), note=meta.get('note', '') or '',
+                        direction=meta.get('direction', ''), corrected=row.pk in corrected)
+        elif row.action == 'order_left_marking_corrected':
+            restored = meta.get('status_restored_to', '') or ''
+            item.update(note=meta.get('reason', '') or '', corrects_id=meta.get('corrected_audit_id'),
+                        new_status=restored, new_label=labels.get(restored, restored))
+        elif row.action == 'order_cancelled':
+            item.update(note=meta.get('reason', '') or '')
+        rows.append(item)
+    return rows
+
+
+def dispatch_view(order, user, company) -> dict:
+    """Everything the order detail shows about dispatch, for THIS user. Read-only."""
+    from . import left_marking
+    from . import order_cancellation as cancelling
+    from . import unit_identification
+
+    FS = Order.FulfillmentStatus
+    labels = dict(FS.choices)
+    record = fulfillment_flow.delivery_record(order)
+    path = fulfillment_flow.steps(order, record)
+    entries = history(order)
+    reached = {}
+    for item in entries:
+        if item['action'] == 'order_fulfillment_status_changed' and item['new_status'] and not item['corrected']:
+            reached[item['new_status']] = item
+    current = order.fulfillment_status
+    moves = available_moves(order, user, company)
+    found = fulfillment_flow.moves(order, record=record)
+    forward = found['forward'] if found['forward'] in moves else None
+    back = found['back'] if found['back'] in moves else None
+    blockers = []
+    if forward in (FS.READY_FOR_PICKUP, FS.SHIPPED, FS.DELIVERED):
+        if order_risk.review_holds_dispatch(order, company):
+            blockers.append({'code': FulfillmentBlocked.REVIEW_PENDING, 'detail': order_risk.REVIEW_PENDING_DETAIL})
+        if order.items.filter(supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(
+                supply_status=OrderItem.SUPPLY_RECEIVED).exists():
+            blockers.append({'code': FulfillmentBlocked.SUPPLY_PENDING,
+                             'detail': 'Hay productos bajo pedido que aún no se recibieron del proveedor.'})
+    if forward in (FS.SHIPPED, FS.DELIVERED):
+        missing = sum(unit_identification.pending_units(order).values())
+        if missing:
+            blockers.append({'code': FulfillmentBlocked.UNITS_PENDING,
+                             'detail': f'Falta identificar {missing} equipo(s) (IMEI o serie).'})
+    if forward == FS.SHIPPED:
+        blockers.extend(fulfillment_flow.logistics_blockers(order, record))
+    here = path.index(FS.PENDING if current == FS.CONFIRMED else current) if (
+        current in path or current == FS.CONFIRMED) else None
+    steps = []
+    for index, status_code in enumerate(path):
+        hit = reached.get(status_code)
+        at = hit['at'] if hit else None
+        if at is None and index == 0 and order.created_at:
+            at = order.created_at.isoformat()     # nobody moves an order into «Pendiente»: it is born there
+        steps.append({
+            'status': status_code, 'label': labels[status_code],
+            'state': ('current' if index == here else 'done' if here is not None and index < here else 'todo'),
+            'at': at, 'actor': hit['actor'] if hit else '',
+        })
+    may_manage = bool(allowed_fulfillment_statuses(user, company))
+    if cancelling.is_cancelled(order):
+        notice = 'Pedido cancelado: su despacho ya no cambia.'
+    elif current == FS.CANCELLED:
+        notice = ('Despacho detenido con el selector anterior («Cancelado operativo»), pero la venta sigue vigente. '
+                  'Para cancelarla usa «Cancelar pedido».')
+    elif here is None:
+        notice = f'Estado «{labels.get(current, current)}», que no corresponde a esta modalidad (registro anterior).'
+    else:
+        notice = ''
+    return {
+        'kind': fulfillment_flow.kind(order, record),
+        'mode': fulfillment_flow.delivery_mode(order, record),
+        'current': current, 'current_label': labels.get(current, current),
+        'steps': steps,
+        'forward': forward, 'forward_label': labels.get(forward, '') if forward else '',
+        'back': back, 'back_label': labels.get(back, '') if back else '',
+        'reason_min': fulfillment_flow.REASON_MIN,
+        'correction_reason_min': left_marking.REASON_MIN,
+        'blockers': blockers,
+        'may_manage': may_manage,
+        'notice': notice,
+        'ever_left': cancelling.ever_left(order),
+        'history': entries,
+        'left_markings': left_marking.markings(order, user, company),
+        'may_correct': left_marking.may_correct(user, company),
+    }

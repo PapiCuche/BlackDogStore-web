@@ -1069,17 +1069,27 @@ class SupplyFollowUpSurfacesTest(SupplyShop, TestCase):
 
     def test_an_order_does_not_leave_or_get_ready_before_its_goods_arrive(self):
         from store import order_fulfillment_services as fulfillment
-        for state in ('ready_for_pickup', 'shipped', 'delivered'):
+        from store.fulfillment_test_support import place_at, walk_to
+        # ORDER-FULFILLMENT-SAFETY-01: each state is tried from the step right
+        # before it, on a path that has it (only a shipping order is «sent»).
+        method = self.order.delivery_method
+        for state, path_method, before in (
+            ('ready_for_pickup', method, 'preparing'),
+            ('shipped', Order.DeliveryMethod.DELIVERY_AREQUIPA, 'preparing'),
+            ('delivered', method, 'ready_for_pickup'),
+        ):
+            Order.objects.filter(pk=self.order.pk).update(delivery_method=path_method)
+            place_at(self.order, before)
             with self.subTest(state), self.assertRaises(fulfillment.FulfillmentBlocked) as caught:
                 fulfillment.change_fulfillment_status(order=self.order, new_status=state, actor=self.staff,
                                                       company=self.company)
             self.assertEqual(caught.exception.code, 'supply_pending')
+        place_at(self.order, 'pending')
         fulfillment.change_fulfillment_status(order=self.order, new_status='preparing', actor=self.staff,
                                               company=self.company)
         supply.receive_line(self.order.items.get(), actor=self.staff)
         self.order.refresh_from_db()
-        fulfillment.change_fulfillment_status(order=self.order, new_status='delivered', actor=self.staff,
-                                              company=self.company)
+        walk_to(self.order, 'delivered', actor=self.staff, company=self.company)
 
     def test_the_status_check_says_when_a_paid_order_waits_for_its_supply(self):
         import io

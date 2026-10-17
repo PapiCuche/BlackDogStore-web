@@ -2007,6 +2007,7 @@ class ReviewNeededNotificationTest(_RiskBase):
 # =============================================================================
 
 from store import order_fulfillment_services as fulfillment  # noqa: E402
+from store.fulfillment_test_support import carrier_details, place_at, walk_to  # noqa: E402
 
 SETTINGS_URL = '/api/admin/company-settings/'
 
@@ -2017,13 +2018,28 @@ class HoldPendingReviewTest(_ReviewBase):
             company=company or self.a, defaults={'hold_orders_pending_review': on},
         )
 
-    def move(self, status, *, order=None, user=None, surface='panel'):
+    def move(self, status, *, order=None, user=None, surface='panel', note=''):
         order = order or self.order
         url = (
             f'/api/admin/orders/{order.pk}/fulfillment-status/' if surface == 'panel'
             else f'/api/v1/internal/revision-a/orders/{order.pk}/fulfillment/'
         )
-        return acting(user or self.manager).patch(url, {'fulfillment_status': status}, format='json')
+        body = {'fulfillment_status': status, **({'note': note} if note else {})}
+        return acting(user or self.manager).patch(url, body, format='json')
+
+    def before(self, status, order=None):
+        """
+        ORDER-FULFILLMENT-SAFETY-01: the order at the step right before
+        `status`, on a path that has it — so the hold, not the path, is what
+        answers. Only a shipping order is «sent» (own delivery: no carrier).
+        """
+        order = order or self.order
+        method, at = {
+            'shipped': (Order.DeliveryMethod.DELIVERY_AREQUIPA, Order.FulfillmentStatus.PREPARING),
+            'delivered': (Order.DeliveryMethod.PICKUP_STORE, Order.FulfillmentStatus.READY_FOR_PICKUP),
+        }[status]
+        Order.objects.filter(pk=order.pk).update(delivery_method=method)
+        return place_at(order, at)
 
     def state(self, order=None):
         return Order.objects.get(pk=(order or self.order).pk).fulfillment_status
@@ -2037,6 +2053,7 @@ class HoldPendingReviewTest(_ReviewBase):
     def test_off_a_pending_review_holds_nothing(self):
         for surface, status in (('panel', 'shipped'), ('app', 'delivered')):
             with self.subTest(surface):
+                self.before(status)
                 response = self.move(status, surface=surface)
                 self.assertEqual(response.status_code, 200, response.content)
                 self.assertEqual(self.state(), status)
@@ -2047,27 +2064,37 @@ class HoldPendingReviewTest(_ReviewBase):
         for surface in ('panel', 'app'):
             for status in ('shipped', 'delivered'):
                 with self.subTest(surface=surface, status=status):
+                    at = self.before(status).fulfillment_status
                     response = self.move(status, surface=surface)
                     self.assertEqual(response.status_code, 409, response.content)
                     body = response.json()
                     self.assertEqual(body['code'], 'review_pending')
                     self.assertIn('revisión', body['detail'])
-                    self.assertEqual(self.state(), Order.FulfillmentStatus.PENDING)
+                    self.assertEqual(self.state(), at)
         self.assertFalse(AdminAuditLog.objects.filter(action='order_fulfillment_status_changed').exists())
 
-    def test_on_every_other_state_is_free(self):
+    def test_on_every_other_step_is_free(self):
         self.hold()
         self.assertEqual(fulfillment.HELD_WHILE_REVIEW_PENDING, {'ready_for_pickup', 'shipped', 'delivered'})
-        for status in ('confirmed', 'preparing', 'cancelled', 'pending'):
+        for status, note in (('preparing', ''), ('pending', 'Faltaba confirmar el color')):
             with self.subTest(status):
-                self.assertEqual(self.move(status).status_code, 200)
+                self.assertEqual(self.move(status, note=note).status_code, 200)
                 self.assertEqual(self.state(), status)
+        # ORDER-FULFILLMENT-SAFETY-01: «Confirmado» and «Cancelado operativo»
+        # are no longer steps anyone sets — refused by the path, not the hold.
+        for status in ('confirmed', 'cancelled'):
+            with self.subTest(status):
+                response = self.move(status)
+                self.assertEqual((response.status_code, response.json()['code']), (409, 'transition_not_allowed'))
+                self.assertEqual(self.state(), 'pending')
 
     def test_either_answer_lets_it_go(self):
         self.hold()
         rejected = self.pending(self.a, self.north)
-        self.assertEqual(self.move('shipped').status_code, 409)
-        self.assertEqual(self.move('shipped', order=rejected).status_code, 409)
+        self.before('shipped')
+        self.before('delivered', order=rejected)
+        for response in (self.move('shipped'), self.move('delivered', order=rejected)):
+            self.assertEqual((response.status_code, response.json()['code']), (409, 'review_pending'))
 
         self.decide(self.manager, 'approve')
         self.decide(self.manager, 'reject', order=rejected)
@@ -2080,15 +2107,19 @@ class HoldPendingReviewTest(_ReviewBase):
         self.hold()
         quiet = self.pending(self.a, self.north, status=Review.NOT_REQUIRED, level=Level.LOW)
         unassessed = _order(self.a, total='10.00', paid=True, fulfillment_branch=self.north)
+        self.before('shipped', order=quiet)
+        self.before('delivered', order=unassessed)
         self.assertEqual(self.move('shipped', order=quiet).status_code, 200)
         self.assertEqual(self.move('delivered', order=unassessed).status_code, 200)
 
     def test_it_is_each_companys_own_option(self):
         self.hold(self.b)
+        self.before('shipped')
         self.assertEqual(self.move('shipped').status_code, 200)               # A did not turn it on
 
         self.hold(self.a)
         self.hold(self.b, on=False)
+        self.before('shipped', order=self.foreign)
         theirs = acting(self.foreigner).patch(
             f'/api/admin/orders/{self.foreign.pk}/fulfillment-status/', {'fulfillment_status': 'shipped'}, format='json',
         )
@@ -2099,6 +2130,7 @@ class HoldPendingReviewTest(_ReviewBase):
         from django.test.utils import CaptureQueriesContext
 
         self.hold()
+        self.before('shipped')
         with CaptureQueriesContext(connection) as queries, self.assertRaises(fulfillment.FulfillmentBlocked) as blocked:
             fulfillment.change_fulfillment_status(
                 order=self.order, new_status='shipped', actor=self.manager, company=self.a,
@@ -3088,6 +3120,10 @@ class OnlyPaidOrdersWaitForReviewTest(_ReviewBase):
     def test_with_the_hold_on_the_buyer_is_not_told_to_come_and_collect_it_either(self):
         # F6 · «listo para retiro» sends the buyer a notice to come: it waits for the review as well.
         CompanySettings.objects.update_or_create(company=self.a, defaults={'hold_orders_pending_review': True})
+        # The states that send the buyer nothing stay free — and «listo para
+        # retiro» is the step after preparation (ORDER-FULFILLMENT-SAFETY-01).
+        self.assertEqual(acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
+                                                   {'fulfillment_status': 'preparing'}, format='json').status_code, 200)
         for surface, url in (('panel', f'/api/admin/orders/{self.order.pk}/fulfillment-status/'),
                              ('app', f'/api/v1/internal/revision-a/orders/{self.order.pk}/fulfillment/')):
             with self.subTest(surface):
@@ -3095,16 +3131,15 @@ class OnlyPaidOrdersWaitForReviewTest(_ReviewBase):
                 self.assertEqual(response.status_code, 409, response.content)
                 self.assertEqual(response.json()['code'], 'review_pending')
         self.order.refresh_from_db()
-        self.assertEqual(self.order.fulfillment_status, Order.FulfillmentStatus.PENDING)
+        self.assertEqual(self.order.fulfillment_status, Order.FulfillmentStatus.PREPARING)
         self.assertFalse(Notification.objects.filter(event__event_type=events.COMMERCE_FULFILLMENT_READY).exists())
-        # The states that send the buyer nothing stay free, and a decision lets it go.
-        self.assertEqual(acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
-                                                   {'fulfillment_status': 'preparing'}, format='json').status_code, 200)
+        # And a decision lets it go.
         self.decide(self.manager, 'approve')
         self.assertEqual(acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
                                                    {'fulfillment_status': 'ready_for_pickup'}, format='json').status_code, 200)
 
     def test_off_ready_for_pickup_is_as_free_as_it_always_was(self):
+        place_at(self.order, Order.FulfillmentStatus.PREPARING)          # its step before (ORDER-FULFILLMENT-SAFETY-01)
         response = acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/',
                                               {'fulfillment_status': 'ready_for_pickup'}, format='json')
         self.assertEqual(response.status_code, 200)
@@ -3119,8 +3154,10 @@ class OnlyPaidOrdersWaitForReviewTest(_ReviewBase):
     def test_managing_orders_without_seeing_them_does_not_read_what_was_noticed(self):
         # Routes that ask only for `manage` answer with the order's payload: the risk block is not part of that road.
         blind, _ = _p2d_member(self.a, 'gestiona_sin_ver', ['company.view', MANAGE])
+        # Any allowed step will do (ORDER-FULFILLMENT-SAFETY-01: forward, then one back with a reason).
         panel = acting(blind).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/', {'fulfillment_status': 'preparing'}, format='json')
-        app = acting(blind).patch(f'/api/v1/internal/revision-a/orders/{self.order.pk}/fulfillment/', {'fulfillment_status': 'confirmed'}, format='json')
+        app = acting(blind).patch(f'/api/v1/internal/revision-a/orders/{self.order.pk}/fulfillment/',
+                                  {'fulfillment_status': 'pending', 'note': 'Vuelve a pendiente'}, format='json')
         for response in (panel, app):
             self.assertEqual(response.status_code, 200, response.content)
             self.assertIn('risk', response.json())
@@ -3128,7 +3165,7 @@ class OnlyPaidOrdersWaitForReviewTest(_ReviewBase):
             self.assertIsNone(response.json()['delivery'])
             self.assertNotIn(risk.SIGNAL_VELOCITY_IP, response.content.decode())
         # With `view` as well, the same routes carry it.
-        seen = acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/', {'fulfillment_status': 'pending'}, format='json')
+        seen = acting(self.manager).patch(f'/api/admin/orders/{self.order.pk}/fulfillment-status/', {'fulfillment_status': 'preparing'}, format='json')
         self.assertEqual(seen.json()['risk']['level'], 'high')
 
 
@@ -3859,7 +3896,8 @@ class _SeededRecordBase(_CheckoutBase):
         """Staff say it can be collected. Who was written to."""
         django_mail.outbox = []
         with self.captureOnCommitCallbacks(execute=True):
-            fulfillment.change_fulfillment_status(order=order, new_status='ready_for_pickup', actor=self.staff, company=self.company)
+            # Through preparation, which tells nobody (ORDER-FULFILLMENT-SAFETY-01: one step at a time).
+            walk_to(order, 'ready_for_pickup', actor=self.staff, company=self.company)
         return sorted(address for message in django_mail.outbox for address in message.to)
 
     def file(self, **typed):
@@ -4473,8 +4511,11 @@ class AGuestWhoseDocumentIsOnAnAccountIsStillToldTest(_SeededRecordBase):
         self.assertNotEqual(own, account_record)
         self.assertEqual((own.user, own.created_by, own.document_type, own.document_number), (None, None, '', ''))
         self.assertEqual((own.first_name, own.last_name, own.email, own.phone), ('Victoria', 'Real', self.HOLDERS, '922222222'))
-        # The buyer is told, at the address of the order.
-        self.assertEqual(self.told(order, 'ready_for_pickup'), [self.HOLDERS])
+        # The buyer is told, at the address of the order. ORDER-FULFILLMENT-SAFETY-01:
+        # a shipping order is never «listo para retiro» — it is prepared, which
+        # tells nobody, and told when it leaves with its carrier and waybill.
+        self.assertEqual(self.told(order, 'preparing'), [])
+        carrier_details(order)
         self.assertEqual(self.told(order, 'shipped'), [self.HOLDERS])
         # The account's record is exactly what it was, and the account sees nothing of that order.
         self.assertEqual(Customer.objects.filter(pk=account_record.pk).values().get(), kept)
@@ -4510,7 +4551,10 @@ class AGuestWhoseDocumentIsOnAnAccountIsStillToldTest(_SeededRecordBase):
         second = self.pay(self.shipped_order('dos'))
         self.assertIsNotNone(second.customer)
         self.assertNotEqual(second.customer.user_id, user.pk)
-        self.assertEqual(self.told(second, 'ready_for_pickup'), [self.HOLDERS])
+        # ORDER-FULFILLMENT-SAFETY-01: a shipping order is told when it leaves, not «ready».
+        self.told(second, 'preparing')
+        carrier_details(second)
+        self.assertEqual(self.told(second, 'shipped'), [self.HOLDERS])
         self.assertIsNotNone(first.customer)
 
 
