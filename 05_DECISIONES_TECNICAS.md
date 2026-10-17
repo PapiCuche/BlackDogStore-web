@@ -123,7 +123,10 @@ devolución parcial, flete, estado del equipo devuelto, nota de crédito); la ca
 - No cancela, no reembolsa, no toca stock, Kardex, costos, margen, pagos ni comisiones. Si el
   pedido sigue donde lo dejó el error (todo lo posterior también corregido), su estado vuelve al
   anterior en la misma entrada.
-- `ever_left` también cuenta una fecha de envío que alguna vez estuvo y se borró.
+- `ever_left` también cuenta una fecha de envío que alguna vez estuvo y se borró. Consecuencia
+  aceptada (dirección segura): una fecha escrita por error y borrada deja el pedido sin
+  cancelación, y la corrección no la desdice (sólo nombra cambios de estado). Si pasa, es caso
+  para la devolución pendiente o para una decisión del propietario.
 - *Decisión abierta:* un equipo identificado queda con `left_at` por el mismo clic erróneo, así
   que un pedido con IMEI identificado nunca se puede corregir. Se dejó así porque la orden pide
   comprobar `left_at`; si el propietario quiere que no cuente el sello puesto por esa misma
