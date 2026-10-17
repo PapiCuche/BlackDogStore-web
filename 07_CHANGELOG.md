@@ -18,6 +18,10 @@ Rama `fix/financial-closure` desde `master` `315bedf`; migración `0138`.
   de los cancelados; filtro «Pagado (vigente)» en Órdenes.
 
 **Fixed**
+- (Revisión) Evidencia y referencia de un reembolso: sin caracteres invisibles, con letras o
+  números reales; un carácter de control es 400 (antes un NUL daba 500). Anular sin reponer
+  stock exige superior. El informe de comisiones separa la venta anulada de una comisión
+  liquidada. La nota del tablero sale también con sólo un cobro tardío o un reembolso pendiente.
 - La previsión de demanda contaba las salidas de ventas canceladas; el uso de promociones
   contaba ventas anuladas; lo recibido de un proveedor dejaba de figurar como por pagar al
   cancelarse el pedido.

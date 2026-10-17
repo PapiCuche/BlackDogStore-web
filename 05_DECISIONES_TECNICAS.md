@@ -183,6 +183,23 @@ también una comisión devengada: al llegar a `compensate_commission` la devenga
 `voided`). Las pruebas de borde del plazo (inclusivo), de la evidencia (10 caracteres), de las
 dos capacidades del superior y de no liquidar una venta anulada están en `GuardEdgesTest`.
 
+**Revisión independiente de `315bedf..b7ae083` (GO, sin P0/P1), corregido en la rama:**
+- *Texto visible.* Evidencia, referencia y nota: se quitan los caracteres de formato invisibles
+  (Unicode Cf: espacios de ancho cero, marcas bidi), se colapsan los espacios y un carácter de
+  control (Cc que no es espacio, NUL incluido) es 400 `<campo>_invalid` (antes un NUL daba 500).
+  Evidencia: ≥ 10 caracteres visibles con ≥ 6 letras o números, al menos 4 distintos
+  («aaaaaaaaaa», «..........» o diez espacios de ancho cero no son evidencia). Referencia: ≥ 3
+  letras o números.
+- *Anular sin reponer stock* (`restore_stock=false`) es una operación no estándar: quinta
+  condición de superior, `no_stock_restore`, en la negativa y en la auditoría.
+- *Informe de comisiones:* la venta de una comisión liquidada y luego anulada sale de `sales`/
+  `net_amount` y se cuenta en `annulled_sales`/`annulled_net_amount`; la comisión sigue en
+  `settled` y su ajuste en `recoverable`.
+- *Puente legacy del superior* probado (`LegacySuperiorTest`: ventas recibe `superior_required`
+  en una venta POS antigua; administrador la anula).
+- *Tablero interno:* la nota del dinero de cancelados aparece también sin pedidos pagados
+  cancelados cuando hay un cobro tardío retenido o un reembolso pendiente.
+
 ### DEC-SALES-NOTE-CONTROL-01 · Anular una nota de venta es un acto del Master y no mueve dinero
 
 Pedido del propietario del 2026-10-14: «las primeras notas de venta fueron de prueba y el
