@@ -190,6 +190,8 @@ def correct(*, order, audit_id, actor, company, reason, never_left, request=None
         if event.pk in corrections:
             return corrections[event.pk], False
         found = blockers(locked, event, corrections)
+        if found and found[0]['code'] == 'order_cancelled':
+            raise CorrectionError('order_cancelled', found[0]['detail'])
         if found:
             raise CorrectionError(
                 'contradicting_evidence',
