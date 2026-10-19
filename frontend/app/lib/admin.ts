@@ -686,6 +686,8 @@ export type AdminOrderDetail = AdminOrder & {
   cancel_mode?: OrderCancelMode | null;
   /** COMMERCE-ADMIN-UX-01: los reembolsos de un pedido cancelado; null si no está cancelado. */
   refunds?: OrderRefunds | null;
+  /** POST-DELIVERY-RETURN: la devolución del pedido para QUIEN CONSULTA; falta en servidores anteriores. */
+  return_block?: OrderReturnBlock | null;
   /** CLIENT-SEC-01: the assessment of this order, or null when it has none. */
   risk?: OrderRisk | null;
   /** DELIVERY-01: the order's delivery record (or its empty shape); null for whoever may not see orders. */
@@ -720,8 +722,13 @@ export type DispatchStep = {
 export type DispatchHistoryEntry = {
   id: number;
   at: string;
-  /** order_fulfillment_status_changed | order_left_marking_corrected | order_delivery_updated | order_cancelled */
+  /**
+   * order_fulfillment_status_changed | order_left_marking_corrected | order_delivery_updated | order_cancelled
+   * | order_return_requested | order_return_received | order_return_closed | order_return_withdrawn
+   */
   action: string;
+  /** El nombre del registro como lo lee la gente (`HISTORY_LABELS`); falta en servidores anteriores. */
+  label?: string;
   actor: string;
   old_status: string;
   new_status: string;
@@ -999,6 +1006,163 @@ export async function cancelAdminOrder(
   }
   if (!res.ok) throw new Error('No se pudo cancelar el pedido.');
   return res.json();
+}
+
+// ── POST-DELIVERY-RETURN (fase 1): devolución del pedido completo ───────────
+
+export type OrderReturnKind = 'desistimiento' | 'defectuoso' | 'error_envio' | 'otro';
+
+/** `OrderReturn.KIND_CHOICES`, en el orden del servidor. */
+export const RETURN_KIND_LABELS: Record<OrderReturnKind, string> = {
+  desistimiento: 'Desistimiento del cliente',
+  defectuoso: 'Producto defectuoso',
+  error_envio: 'Error de envío',
+  otro: 'Otro',
+};
+
+export type OrderReturnCondition = 'sellable' | 'review' | 'damaged';
+
+/** `OrderReturnLine.CONDITION_CHOICES`. Un producto por cantidad sólo admite «sellable» o «damaged». */
+export const RETURN_CONDITION_LABELS: Record<OrderReturnCondition, string> = {
+  sellable: 'Vendible',
+  review: 'A revisión',
+  damaged: 'Dañado',
+};
+
+export type OrderReturnStatus = 'requested' | 'received' | 'closed' | 'withdrawn';
+
+/** Lo que el servidor exige de cada texto (`order_returns`). Los botones esperan a que se cumpla. */
+export const RETURN_REASON_MIN = 5;
+export const RETURN_REASON_MAX = 500;
+export const RETURN_DEDUCTION_REASON_MIN = 5;
+export const RETURN_DEDUCTION_REASON_MAX = 300;
+
+/** Una línea recibida. El IMEI y la serie llegan enmascarados del servidor. */
+export type OrderReturnLine = {
+  id: number;
+  order_item: number;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  unit_id: number | null;
+  serial_number: string;
+  imei: string;
+  condition: OrderReturnCondition;
+  condition_label: string;
+};
+
+/** `order_returns.describe`: la devolución como la enseña el panel. Importes en soles, texto con dos decimales. */
+export type OrderReturn = {
+  id: number;
+  status: OrderReturnStatus;
+  status_label: string;
+  kind: OrderReturnKind;
+  kind_label: string;
+  reason: string;
+  requested_at: string | null;
+  requested_by: string;
+  received_at: string | null;
+  received_by: string;
+  receiving_branch: { id: number; name: string } | null;
+  closed_at: string | null;
+  closed_by: string;
+  withdrawn_at: string | null;
+  withdrawn_by: string;
+  withdrawn_reason: string;
+  paid_amount: string | null;
+  deduction_amount: string | null;
+  deduction_reason: string;
+  refund_amount: string | null;
+  refund_method: OrderRefundMethod | '';
+  refund_method_label: string;
+  cancellation_id: number | null;
+  lines: OrderReturnLine[];
+};
+
+/**
+ * `order_returns.block`: lo que QUIEN CONSULTA puede hacer ahora con la
+ * devolución de este pedido, y por qué no. Lo decide el servidor.
+ */
+export type OrderReturnBlock = {
+  /** El pedido admite una devolución: pagado, sin cancelar, y su mercadería salió. */
+  eligible: boolean;
+  can_request: boolean;
+  can_receive: boolean;
+  can_close: boolean;
+  can_withdraw: boolean;
+  /** Fuera del plazo de la empresa: registrarla corresponde a un superior. */
+  superior_needed: boolean;
+  superior_conditions: OrderCancelBlocker[];
+  blockers: OrderCancelBlocker[];
+  window_days: number;
+  /** Lo cobrado (texto con dos decimales). */
+  paid_amount: string;
+  /** Las sucursales en las que QUIEN CONSULTA puede recibir la mercadería (sólo si `can_receive`). */
+  receive_branches: { id: number; name: string }[];
+  /** La devolución vigente (o la última retirada), o null. */
+  return: OrderReturn | null;
+};
+
+/** Una línea de la recepción. Un equipo: `quantity` 1 y su IMEI o serie en `code`. */
+export type OrderReturnReceiveLine = {
+  order_item: number;
+  quantity: number;
+  condition: OrderReturnCondition;
+  code?: string;
+};
+
+async function returnRequest(path: string, body: unknown, fallback: string): Promise<AdminOrderDetail> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/${path}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  if (res.status === 404) throw new Error('Orden no encontrada.');
+  if (res.status === 429) throw new Error('Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.');
+  if (res.status === 400 || res.status === 403 || res.status === 409) {
+    // El motivo lo dice el servidor, tal cual: plazo, superior, equipo que no es, importe…
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail ?? (res.status === 403 ? 'No tienes permisos para esta devolución.' : fallback));
+  }
+  if (!res.ok) throw new Error(fallback);
+  return res.json();
+}
+
+/** Registra la devolución (`{kind, reason}`). No mueve nada. Devuelve el detalle del pedido. */
+export async function requestOrderReturn(
+  orderId: number,
+  kind: OrderReturnKind,
+  reason: string,
+): Promise<AdminOrderDetail> {
+  return returnRequest(`${orderId}/return/`, { kind, reason }, 'No se pudo registrar la devolución.');
+}
+
+/** La mercadería volvió a `branch`: cada equipo por su IMEI o serie, cada cantidad entera. */
+export async function receiveOrderReturn(
+  orderId: number,
+  body: { branch: number; lines: OrderReturnReceiveLine[] },
+): Promise<AdminOrderDetail> {
+  return returnRequest(`${orderId}/return/receive/`, body, 'No se pudo recibir la devolución.');
+}
+
+/**
+ * Un superior cierra la devolución: el pedido queda cancelado por devolución
+ * y el reembolso queda PENDIENTE. `refund_amount` = lo cobrado − el descuento.
+ */
+export async function closeOrderReturn(
+  orderId: number,
+  body: {
+    refund_amount: string;
+    deduction_amount?: string;
+    deduction_reason?: string;
+    refund_method: OrderRefundMethod;
+  },
+): Promise<AdminOrderDetail> {
+  return returnRequest(`${orderId}/return/close/`, body, 'No se pudo cerrar la devolución.');
+}
+
+/** Retira una devolución antes de recibir la mercadería, con el motivo. */
+export async function withdrawOrderReturn(orderId: number, reason: string): Promise<AdminOrderDetail> {
+  return returnRequest(`${orderId}/return/withdraw/`, { reason }, 'No se pudo retirar la devolución.');
 }
 
 export async function updateOrderFulfillment(

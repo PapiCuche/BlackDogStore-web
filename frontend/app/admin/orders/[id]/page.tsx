@@ -26,6 +26,7 @@ import { OrderDeliveryCard } from "../../components/OrderDeliveryCard";
 import { OrderSupplyPanel } from "../../components/OrderSupplyPanel";
 import { OrderCancelPanel } from "../../components/OrderCancelPanel";
 import { OrderRefundsPanel } from "../../components/OrderRefundsPanel";
+import { OrderReturnPanel } from "../../components/OrderReturnPanel";
 import {
   DOCUMENT_TYPE_LABELS,
   DELIVERY_METHOD_LABELS,
@@ -179,6 +180,11 @@ function OrderDetailContent({ user, access }: { user: AuthUser; access: Internal
         {/* COMMERCE-ADMIN-UX-01: lo cobrado y lo que se registró como devuelto
             de un pedido cancelado. Sólo aparece cancelado; acciones del servidor. */}
         <OrderRefundsPanel order={order} onChanged={setOrder} />
+
+        {/* POST-DELIVERY-RETURN: la devolución del pedido completo cuando la
+            mercadería ya salió — registrar, recibir, cerrar o retirar. Sólo
+            aparece si el pedido la admite o ya tiene una; acciones del servidor. */}
+        <OrderReturnPanel order={order} onChanged={setOrder} />
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 text-sm">
