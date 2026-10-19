@@ -49,7 +49,7 @@ from django.db import transaction
 
 from . import fulfillment_flow, order_risk
 from .commerce_notifications import emit_fulfillment_changed
-from .models import AdminAuditLog, Order, OrderItem, UserProfile
+from .models import AdminAuditLog, Order, OrderItem, OrderUnit, UserProfile
 from .permissions import get_user_role
 from .tenancy import has_capability, uses_legacy_bridge
 
@@ -257,7 +257,9 @@ def change_fulfillment_status(
                 )
         order.fulfillment_status = new_status
         order.save(update_fields=['fulfillment_status'])
+        stamped_units = []
         if leaving:
+            stamped_units = list(OrderUnit.objects.filter(order=order, left_at__isnull=True).values_list('pk', flat=True))
             unit_identification.mark_left(order)
         AdminAuditLog.log(
             actor=actor,
@@ -276,6 +278,9 @@ def change_fulfillment_status(
                 'delivery_mode': fulfillment_flow.delivery_mode(order, record),
                 # WHETHER (never what) the delivery record held the carrier's
                 # data when this was written — evidence a later edit cannot blank.
+                # Which devices THIS move stamped as gone: a correction of it
+                # explains those stamps and no others.
+                **({'stamped_units': stamped_units} if leaving else {}),
                 **({'logistics': {
                     'carrier': bool(record and (record.carrier_id or record.carrier_name.strip())),
                     'waybill': bool(record and record.waybill_number.strip()),

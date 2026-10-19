@@ -14,7 +14,7 @@ the old one by id, and `ever_left` stops counting that id. The old entry stays
 exactly as it was, and every other entry still counts.
 
 It is refused when anything else says the goods did leave: a device stamped
-as gone, a shipping date or a waybill/tracking code the delivery record holds
+as gone by anything but this entry (owner, 2026-10-19), a shipping date or a waybill/tracking code the delivery record holds
 or ever held (an edit that blanks them does not unsay them), or
 a later move to sent or delivered that is not corrected (correct the newest
 first). And for an order already cancelled — there is nothing left to unlock.
@@ -72,7 +72,12 @@ def blockers(order, event, corrections=None) -> list[dict]:
     if cancelling.is_cancelled(order):
         return [{'code': 'order_cancelled', 'detail': 'El pedido ya está cancelado: no hay nada que corregir.'}]
     found = []
-    if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exists():
+    # A device this very entry stamped as gone is explained by it (owner,
+    # 2026-10-19); any other stamp — a till sale, another uncorrected move —
+    # still says a device left.
+    explained = cancelling.units_stamped_by(
+        order, cancelling.leaving_events(order).filter(pk__in=set(corrections) | {event.pk}))
+    if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exclude(pk__in=explained).exists():
         found.append({'code': 'unit_left', 'detail': 'Un equipo identificado de este pedido figura como salido de la tienda.'})
     # Now or ever: a waybill or a date blanked afterwards still says it left,
     # and so does what the leaving entry itself recorded when it was written.

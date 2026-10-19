@@ -182,11 +182,17 @@ def ever_left(order) -> bool:
     declared accidental (`left_marking.correct`) no longer counts — that one
     entry, by its id, and nothing else. Its record stays where it was.
     """
-    from .models import OrderDelivery, OrderUnit
+    from .models import OrderUnit
 
-    if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exists():
+    corrected = corrected_event_ids(order)
+    stamped = OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False)
+    if corrected:
+        # Owner, 2026-10-19: a device stamped by the very click a superior
+        # declared accidental did not leave either.
+        stamped = stamped.exclude(pk__in=units_stamped_by(order, leaving_events(order).filter(pk__in=corrected)))
+    if stamped.exists():
         return True
-    if leaving_events(order).exclude(pk__in=corrected_event_ids(order)).exists():
+    if leaving_events(order).exclude(pk__in=corrected).exists():
         return True
     # A shipping date counts while it is there AND after somebody blanks it:
     # the delivery audit names every field it changed (ORDER-FULFILLMENT-SAFETY-01).
@@ -225,6 +231,34 @@ def logistics_ever_recorded(order, fields=LOGISTICS_FIELDS) -> bool:
 
 
 LEFT_MARKING_CORRECTED = 'order_left_marking_corrected'
+
+#: How long before its audit entry a move to sent/delivered stamps its devices
+#: (same transaction, a few milliseconds). Only for entries written before they
+#: named the devices themselves (`stamped_units`).
+STAMP_WINDOW_SECONDS = 5
+
+
+def units_stamped_by(order, events) -> set[int]:
+    """
+    Ids of the `OrderUnit`s of `order` that the leaving entries `events` stamped
+    as gone: the ones each entry names, or — for an entry from before it named
+    them — the ones stamped in the seconds just before it was written.
+    """
+    from datetime import timedelta
+
+    from .models import OrderUnit
+
+    found = set()
+    for event in events:
+        named = (event.metadata or {}).get('stamped_units')
+        if isinstance(named, list):
+            found.update(pk for pk in named if isinstance(pk, int))
+            continue
+        found.update(OrderUnit.objects.filter(
+            order_id=order.pk, left_at__lte=event.created_at,
+            left_at__gte=event.created_at - timedelta(seconds=STAMP_WINDOW_SECONDS),
+        ).values_list('pk', flat=True))
+    return found
 
 
 def leaving_events(order):
