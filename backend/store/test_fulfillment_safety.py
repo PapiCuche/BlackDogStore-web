@@ -453,6 +453,15 @@ class WhatElseSaysItLeftTest(_Flow):
         response = self.move(order, FS.DELIVERED)
         self.refused(response, 'units_pending')
 
+    def test_an_excused_device_of_an_order_that_stands_gone_keeps_its_row(self):
+        """Review P3: excused, but the order stands at a leaving status — a return does not unname it."""
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.correct(order, cancelling.leaving_events(order).get().pk)
+        place_at(order, FS.DELIVERED)
+        stock_unit_services.return_unit(StockUnit.objects.get(imei=IMEI_A), reason='Devolución', actor=self.manager)
+        self.assertTrue(OrderUnit.objects.filter(order=order).exists())
+
     def test_a_device_on_sent_then_delivered_is_corrected_newest_first(self):
         """Review P2: the stamp belongs to «sent»; correcting «delivered» first does not trip over it."""
         self.receive(self.row('F2LXKFSTWO2', IMEI_A))

@@ -277,7 +277,9 @@ def released_by_return(unit, order_id, *, actor=None, request=None) -> None:
     if not order_id:
         return
     order = Order.objects.filter(pk=order_id).first()
-    excused = _excused(order) if order is not None else set()
+    # An excused stamp counts as never left only while the order is not
+    # standing at sent/delivered itself (review P3).
+    excused = _excused(order) if order is not None and not left_the_shop(order) else set()
     for row in OrderUnit.objects.filter(
         Q(left_at__isnull=True) | Q(pk__in=excused), order_id=order_id, unit=unit,
     ).select_related('order__company'):
