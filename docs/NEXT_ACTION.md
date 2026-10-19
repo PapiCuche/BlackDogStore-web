@@ -1,8 +1,16 @@
 # NEXT ACTION
 
-## Decisiones pendientes del propietario
+## ORDER-RETURN-01 — pruebas del propietario (PENDIENTES)
 
-- Devolución posterior a la entrega: D1–D8 en `docs/diseno-devolucion-post-entrega.md`.
+Sobre un pedido de prueba entregado (pagado con Izipay TEST):
+1. Cancelarlo: debe decir «requiere devolución».
+2. «Devolución» › Registrar (tipo y motivo); con una cuenta de inventario, recibir (sucursal,
+   IMEI del equipo, estado); revisar en Kardex la «Devolución de cliente» al costo de la venta.
+3. Con la cuenta `administrador`, cerrar con un descuento y motivo: la venta queda «Cancelado por
+   devolución» y el reembolso pendiente por lo cobrado menos el descuento; confirmarlo después con
+   evidencia (sólo si de verdad se devolvió dinero).
+4. Un equipo recibido «a revisión» queda apartado; «dañado», dado de baja.
+5. Configuración › plazo de devolución (7 días).
 
 ## Desplegado: ORDER-FULFILLMENT-SAFETY-01 (#128, `7903a49`) el 2026-10-17 — pruebas del propietario (PENDIENTES)
 

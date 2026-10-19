@@ -1,7 +1,7 @@
 # Devolución posterior a la entrega — PROPUESTA (sin implementar)
 
 Estado: **APROBADA** por el propietario el 2026-10-19 (D1–D8, todas según la recomendación).
-Fase 1 en implementación: devolución del pedido completo. Origen: DEC-ORDER-FULFILLMENT-SAFETY-01
+Fase 1 implementada (DEC-ORDER-RETURN-01): devolución del pedido completo. Origen: DEC-ORDER-FULFILLMENT-SAFETY-01
 dejó PENDIENTE este flujo.
 
 **Precisión de la fase 1 sobre D3.** Un equipo con serie: «vendible» vuelve disponible; «a

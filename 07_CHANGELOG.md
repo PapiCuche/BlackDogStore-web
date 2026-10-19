@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-19 — Devolución posterior a la entrega (fase 1)
+
+**Added**
+- Panel «Devolución» y `GET/POST /api/admin/orders/{id}/return/` (+ `receive/`, `close/`,
+  `withdraw/`); movimiento de Kardex «Devolución de cliente»; plazo de devolución por empresa.
+
+**Changed**
+- Una cancelación cerrada por devolución lo dice («Cancelado por devolución»).
+- Con una devolución en curso no se anula la venta, no avanza el despacho (una vez recibida) ni se
+  identifica otro equipo; lo descontado al cerrar queda retenido.
+
 ## 2026-10-19 — Corrección de salida con equipos identificados (#132, desplegado `055cf0d`)
 
 **Changed**

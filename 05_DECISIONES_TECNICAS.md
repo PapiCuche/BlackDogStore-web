@@ -75,6 +75,33 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
+### DEC-ORDER-RETURN-01 · Devolución posterior a la entrega, fase 1 (2026-10-19)
+
+Decisiones D1–D8 del propietario (todas según la recomendación de
+`docs/diseno-devolucion-post-entrega.md`). Migración `0139_order_returns` (aditiva).
+- **Qué:** un pedido pagado cuya mercadería salió (web entregado/enviado, o venta de caja) se
+  devuelve completo (D1). Tres pasos, cada uno con su autoridad (D6): registrar
+  (`sales.orders.manage`; pasado `CompanySettings.return_simple_days`, 7, desde la última salida
+  o el pago en caja, sólo un superior, D5), recibir (`inventory.adjust` en una sucursal visible)
+  y cerrar (superior). Se puede retirar antes de recibir.
+- **Recepción:** el equipo exacto que salió con ese pedido, cada cantidad entera; un movimiento
+  `customer_return` por línea al costo de la venta. Estado (D3): vendible → disponible; a revisión →
+  apartado; dañado → entrada y baja. Cantidades: sólo vendible o dañado. Una cantidad ya devuelta
+  a mano después de la venta se rechaza (`manual_return_after_sale`). Con la mercadería recibida,
+  el despacho no se mueve y no se puede identificar otro equipo para el pedido.
+- **Cierre:** la venta queda cancelada «por devolución» por la cancelación existente, sin reponer
+  stock otra vez; un reembolso **pendiente** por lo cobrado menos un descuento opcional con motivo
+  (D4); la comisión se anula o se compensa; la nota interna se anula; la boleta/factura queda con
+  nota de crédito pendiente. Lo descontado queda retenido: no se puede registrar otro reembolso por
+  ese importe. Nada toca pagos ni la pasarela.
+- **Garantía** va a Servicio técnico (D7); la venta de caja usa la misma devolución (D8).
+- **Vuelta atrás:** sólo de código y sólo si no hay devoluciones en curso ni movimientos
+  `customer_return` (la versión anterior los leería como salidas y no conoce las devoluciones).
+  Si ya los hay, se corrige hacia adelante.
+- **Fase 2 (deuda):** devolución parcial por línea, «a revisión» para cantidades, liberar un
+  equipo apartado por devolución desde una acción propia, deriva del costo medio al dar de baja
+  cantidades dañadas.
+
 ### DEC-ORDER-FULFILLMENT-SAFETY-01 · Despacho por pasos y corrección auditada (2026-10-17) — DESPLEGADA (#128, `7903a49`)
 
 Origen: la orden #4 de producción (recojo en tienda, pagada con Izipay TEST) quedó «Enviado» por
