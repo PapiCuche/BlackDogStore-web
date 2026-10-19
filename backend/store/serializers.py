@@ -1530,6 +1530,9 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # FINANCIAL-CLOSURE (owner, 2026-10-16) — days a till sale is
             # annulled without a superior. `settings.manage` too.
             'pos_cancel_simple_days',
+            # POST-DELIVERY-RETURN (owner, 2026-10-19, D5) — days after delivery
+            # a return is registered without a superior. `settings.manage` too.
+            'return_simple_days',
             'updated_at',
         ]
         read_only_fields = [

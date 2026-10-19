@@ -296,7 +296,7 @@ class V1InternalOrderDetailView(V1InternalSurfaceMixin, APIView):
             'units': [record for records in view['records'].values() for record in records],
             'units_pending': sum(view['pending'].values()),
             'units_pending_by_product': {str(product_id): count for product_id, count in view['pending'].items()},
-            'units_can_change': may_move and not view['left'],
+            'units_can_change': may_move and not view['left'] and not view['returning'],
             # CLIENT-SEC-01, the same block the web panel shows: what was
             # noticed about this order and what a person decided; null when it
             # was not assessed. For `sales.orders.view`: this payload is also

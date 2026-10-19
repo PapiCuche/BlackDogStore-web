@@ -1,7 +1,14 @@
 # Devolución posterior a la entrega — PROPUESTA (sin implementar)
 
-Estado: **PROPUESTA**, 2026-10-19. No se implementa hasta que el propietario apruebe las
-decisiones D1–D8. Origen: DEC-ORDER-FULFILLMENT-SAFETY-01 dejó PENDIENTE este flujo.
+Estado: **APROBADA** por el propietario el 2026-10-19 (D1–D8, todas según la recomendación).
+Fase 1 implementada (DEC-ORDER-RETURN-01): devolución del pedido completo. Origen: DEC-ORDER-FULFILLMENT-SAFETY-01
+dejó PENDIENTE este flujo.
+
+**Precisión de la fase 1 sobre D3.** Un equipo con serie: «vendible» vuelve disponible; «a
+revisión» entra apartado (el estado «Apartado» que ya existe, con el motivo) hasta que alguien lo
+libere; «dañado» entra y se da de baja (Kardex: entrada y baja). Un producto por cantidad: sólo
+«vendible» o «dañado» (no hay dónde apartar cantidades); «a revisión» para cantidades queda para
+la fase 2.
 
 ## El problema
 

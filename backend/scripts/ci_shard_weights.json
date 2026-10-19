@@ -16,6 +16,7 @@
   "store.test_order_cancel.CancelAtTheSameInstantTest",
   "store.test_order_cancel_ux.RefundRaceTest",
   "store.test_order_cancel_ux.UnpaidCancelAgainstPaymentRaceTest",
+  "store.test_order_returns.ReceiveAtTheSameInstantTest",
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",

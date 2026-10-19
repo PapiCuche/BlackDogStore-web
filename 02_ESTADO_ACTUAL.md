@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-19 — ORDER-RETURN-01 fase 1 (rama `feat/post-delivery-return`)
+
+Desde `master` `91b927c`. Decisión **DEC-ORDER-RETURN-01**; migración `0139`.
+- **IMPLEMENTADO:** devolución del pedido completo después de la entrega: registrar, recibir
+  (stock al costo de la venta, estado del equipo), cerrar (cancelación por devolución, reembolso
+  pendiente menos descuento) y retirar; panel «Devolución» en el pedido; historial de despacho.
+- **PENDIENTE (fase 2):** devolución parcial; «a revisión» para cantidades; liberar un apartado
+  por devolución desde su propia acción.
+- Pruebas: 60 en `test_order_returns` (mutación 12/12 en las guardas); suite completa 7824 OK
+  sobre `75ff3fa`; Jest 1655; Playwright 10/10 (incluye la devolución en navegador); `next build`.
+- Revisión independiente: NO-GO con dos P1 (un gestor podía registrar el descuento como otro
+  reembolso; un equipo podía perderse si se identificaba tras la recepción) y un P2 (doble entrada
+  tras una devolución manual), corregidos en `29cbf85`.
+
 ## 2026-10-19 — #132 desplegado: corrección de salida con equipos identificados
 
 **Producción en `055cf0d`** desde `7903a49`. Sin migraciones. Decisión del propietario: el sello

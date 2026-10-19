@@ -357,13 +357,22 @@ function historyTitle(entry: DispatchHistoryEntry, byId: Map<number, DispatchHis
       return `Marcado de salida corregido${what}${restored}`;
     }
     case "order_delivery_updated":
-      return "Datos de entrega actualizados";
+      return entry.label || "Datos de entrega actualizados";
     case "order_cancelled":
-      return "Pedido cancelado";
+      return entry.label || "Pedido cancelado";
     default:
-      return entry.action;
+      // POST-DELIVERY-RETURN y lo que venga: el nombre lo dice el servidor.
+      return entry.label || entry.action;
   }
 }
+
+/** Registros cuyo texto es el motivo que escribió una persona, no una nota. */
+const REASON_ACTIONS = new Set([
+  "order_left_marking_corrected",
+  "order_cancelled",
+  "order_return_requested",
+  "order_return_withdrawn",
+]);
 
 function DispatchHistory({ entries }: { entries: DispatchHistoryEntry[] }) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -375,10 +384,7 @@ function DispatchHistory({ entries }: { entries: DispatchHistoryEntry[] }) {
       ) : (
         <ol data-testid="dispatch-history" className="mt-3 space-y-3">
           {entries.map((entry) => {
-            const isReason =
-              entry.direction === "back"
-              || entry.action === "order_left_marking_corrected"
-              || entry.action === "order_cancelled";
+            const isReason = entry.direction === "back" || REASON_ACTIONS.has(entry.action);
             return (
               <li
                 key={entry.id}

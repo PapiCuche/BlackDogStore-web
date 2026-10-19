@@ -141,11 +141,15 @@ def mode_of(order) -> str | None:
     return None
 
 
-def blockers(order) -> list[dict]:
+def blockers(order, *, for_return=False) -> list[dict]:
     """
     Why `order` cannot be cancelled, in the order a person needs to read it.
     Empty when it can. The same answer the service gives on the locked row.
     A till sale's «goods are back» is asked when it is cancelled, not here.
+
+    `for_return`: the cancellation that closes a post-delivery return
+    (`cancel_for_return`). Its goods did leave — that is the point — and they
+    are back through the return, so only the order's own state is asked.
     """
     if order.status == Order.Status.CANCELLED:
         return [_blocker('already_cancelled', 'Este pedido ya está cancelado.')]
@@ -155,11 +159,27 @@ def blockers(order) -> list[dict]:
             'not_paid',
             'Sólo se cancela un pedido pendiente de pago o pagado. '
             f'Este pedido figura como «{order.get_status_display().lower()}».')]
+    if for_return:
+        return [] if mode in (MODE_PAID, MODE_POS) else [_blocker(
+            'not_paid', 'Sólo se cierra la devolución de un pedido pagado.')]
+    # POST-DELIVERY-RETURN: while a return is open, its goods come back through
+    # it — an annulment now would put them back a second time.
+    if return_in_progress(order):
+        return [_blocker(
+            'return_in_progress',
+            'Este pedido tiene una devolución en curso: ciérrala o retírala desde «Devolución».')]
     if mode == MODE_PAID and (order.fulfillment_status not in GOODS_IN_THE_SHOP or ever_left(order)):
         return [_blocker(
             'goods_left',
             'El pedido ya salió de la tienda (fue enviado o entregado): requiere devolución, no cancelación.')]
     return []
+
+
+def return_in_progress(order) -> bool:
+    """Whether `order` has a post-delivery return requested or received (`order_returns`)."""
+    from .models import OrderReturn
+
+    return OrderReturn.objects.filter(order_id=order.pk, status__in=OrderReturn.OPEN_STATUSES).exists()
 
 
 #: The fulfilment states in which the goods leave the shop.
@@ -449,77 +469,129 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
                 'Hay una devolución manual posterior de este producto: anula sin reponer stock o revisa el '
                 'Kardex.')
 
-        previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
-        # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
-        supply_released = _release_supply(locked, actor, reason, request)
-        holds_released = _release_holds(locked) if mode == MODE_UNPAID else 0
-        movements, units_returned, already_returned = (
-            _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
-        note_voided = _void_sales_note(locked, actor, reason)
-        # Owner, 2026-10-16: only a commission not yet settled is voided.
-        commission_voided = bool(SalesCommission.objects.filter(
-            order=locked, status=SalesCommission.STATUS_ACCRUED,
-        ).update(status=SalesCommission.STATUS_VOIDED, updated_at=timezone.now()))
-        document = live_fiscal_document(locked)
-        label = fiscal_label(document)
+        return _commit(
+            locked, actor, reason, mode=mode, restore_stock=restore_stock, conditions=conditions,
+            authority='superior' if conditions else 'simple', goods_returned=mode == MODE_POS,
+            refund_method=refund_method, request=request)
 
-        locked.status = Order.Status.CANCELLED
-        locked.fulfillment_status = Order.FulfillmentStatus.CANCELLED
-        locked.save(update_fields=['status', 'fulfillment_status'])
 
-        cancellation = OrderCancellation.objects.create(
-            order=locked, company=locked.company, cancelled_by=actor, reason=reason,
-            previous_status=previous_status, previous_fulfillment_status=previous_fulfillment,
-            stock_restored=bool(movements), fiscal_pending=document is not None,
-            fiscal_document=label, sales_note_voided=note_voided,
-            was_paid=locked.paid, goods_returned=mode == MODE_POS, holds_released=holds_released,
-        )
-        adjustment = compensate_commission(locked, cancellation, actor)
-        refund = None
-        if refund_method:
-            from . import order_refunds
+def cancel_for_return(order, user, reason, *, refund_method, refund_amount, return_id, request=None):
+    """
+    POST-DELIVERY-RETURN — the commercial cancellation that closes a return
+    (`order_returns.close_return`), through the same tail as every other.
 
-            if order_refunds.summary(locked)['refundable'] > 0:
-                refund = order_refunds.record_pending(locked, actor, method=refund_method, request=request)
-        AdminAuditLog.log(
-            actor=actor, action='order_cancelled', target_type='order', target_id=locked.pk,
-            metadata={
-                'order_id': locked.pk,
-                'branch_id': locked.fulfillment_branch_id,
-                'mode': mode,
-                'channel': locked.sales_channel,
-                'reason': reason,
-                'previous_status': previous_status,
-                'new_status': locked.status,
-                'previous_fulfillment_status': previous_fulfillment,
-                'new_fulfillment_status': locked.fulfillment_status,
-                'movements': [movement.pk for movement in movements],
-                'units_returned': units_returned,
-                # Devices of this sale given back before (a return): not restored twice.
-                'units_already_returned': already_returned,
-                'holds_released': holds_released,
-                # Review P2: annulled WITHOUT putting stock back, by the cashier's choice.
-                'stock_restore_skipped': not restore_stock,
-                'goods_returned': mode == MODE_POS,
-                # FINANCIAL-CLOSURE: whether a superior's authority was needed,
-                # and why. `actor` is who authorised it.
-                'authority': 'superior' if conditions else 'simple',
-                'superior_conditions': [condition['code'] for condition in conditions],
-                'fiscal_pending': document is not None,
-                'fiscal_document': label,
-                'sales_note_voided': note_voided,
-                'commission_voided': commission_voided,
-                # A settled commission is not voided: it gets its compensating entry.
-                'commission_adjustment_id': adjustment.pk if adjustment else None,
-                # DC3: on-order lines that stopped waiting for their supplier.
-                'supply_released': supply_released,
-                # Said, so nobody reads a cancellation as a refund: the money
-                # taken stays recorded as taken.
-                'paid_kept': locked.paid,
-                'refund_id': refund.pk if refund else None,
-            },
-            request=request, company=locked.company,
-        )
+    The goods LEFT and came back through the return, which already put them
+    on the Kardex as `customer_return`: no stock is restored here. The rest is
+    the cancellation as always — order and dispatch cancelled, the internal
+    note voided, a live boleta/factura kept and flagged, the commission voided
+    or compensated — plus ONE pending refund of `refund_amount` (none when it
+    is zero), never confirmed. The caller already decided the authority (a
+    superior) and holds the order's lock; it is taken again here, harmlessly.
+    """
+    reason = clean_reason(reason)
+    actor = user if getattr(user, 'is_authenticated', False) else None
+    from . import order_refunds
+
+    order_refunds.clean_method(refund_method)
+    with transaction.atomic():
+        locked = Order.objects.select_for_update(of=('self',)).get(pk=order.pk)
+        refused = blockers(locked, for_return=True)
+        if refused:
+            raise OrderCancelError(**refused[0])
+        if OrderCancellation.objects.filter(order=locked).exists():  # pragma: no cover — status says it first
+            raise OrderCancelError('already_cancelled', 'Este pedido ya está cancelado.')
+        return _commit(
+            locked, actor, reason, mode=mode_of(locked), restore_stock=False, conditions=[],
+            authority='superior', goods_returned=True, refund_method=refund_method,
+            refund_amount=refund_amount, request=request,
+            extra_audit={'return_id': return_id, 'stock_returned_by': 'order_return'})
+
+
+def _commit(locked, actor, reason, *, mode, restore_stock, conditions, authority, goods_returned,
+            refund_method, request, refund_amount=None, extra_audit=None) -> OrderCancellation:
+    """
+    Everything a cancellation does once its rules said yes, on the locked
+    order: the one tail of `cancel_order` and `cancel_for_return`.
+
+    `refund_amount` None: a refund asked for (`refund_method`) is everything
+    still refundable; otherwise exactly that amount, and none when it is zero.
+    """
+    previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
+    # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
+    supply_released = _release_supply(locked, actor, reason, request)
+    holds_released = _release_holds(locked) if mode == MODE_UNPAID else 0
+    movements, units_returned, already_returned = (
+        _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
+    note_voided = _void_sales_note(locked, actor, reason)
+    # Owner, 2026-10-16: only a commission not yet settled is voided.
+    commission_voided = bool(SalesCommission.objects.filter(
+        order=locked, status=SalesCommission.STATUS_ACCRUED,
+    ).update(status=SalesCommission.STATUS_VOIDED, updated_at=timezone.now()))
+    document = live_fiscal_document(locked)
+    label = fiscal_label(document)
+
+    locked.status = Order.Status.CANCELLED
+    locked.fulfillment_status = Order.FulfillmentStatus.CANCELLED
+    locked.save(update_fields=['status', 'fulfillment_status'])
+
+    cancellation = OrderCancellation.objects.create(
+        order=locked, company=locked.company, cancelled_by=actor, reason=reason,
+        previous_status=previous_status, previous_fulfillment_status=previous_fulfillment,
+        stock_restored=bool(movements), fiscal_pending=document is not None,
+        fiscal_document=label, sales_note_voided=note_voided,
+        was_paid=locked.paid, goods_returned=goods_returned, holds_released=holds_released,
+    )
+    adjustment = compensate_commission(locked, cancellation, actor)
+    refund = None
+    if refund_method:
+        from . import order_refunds
+
+        if refund_amount is not None:
+            if refund_amount > 0:
+                refund = order_refunds.record_pending(
+                    locked, actor, amount=refund_amount, method=refund_method, request=request)
+        elif order_refunds.summary(locked)['refundable'] > 0:
+            refund = order_refunds.record_pending(locked, actor, method=refund_method, request=request)
+    AdminAuditLog.log(
+        actor=actor, action='order_cancelled', target_type='order', target_id=locked.pk,
+        metadata={
+            'order_id': locked.pk,
+            'branch_id': locked.fulfillment_branch_id,
+            'mode': mode,
+            'channel': locked.sales_channel,
+            'reason': reason,
+            'previous_status': previous_status,
+            'new_status': locked.status,
+            'previous_fulfillment_status': previous_fulfillment,
+            'new_fulfillment_status': locked.fulfillment_status,
+            'movements': [movement.pk for movement in movements],
+            'units_returned': units_returned,
+            # Devices of this sale given back before (a return): not restored twice.
+            'units_already_returned': already_returned,
+            'holds_released': holds_released,
+            # Review P2: annulled WITHOUT putting stock back, by the cashier's choice.
+            'stock_restore_skipped': not restore_stock,
+            'goods_returned': goods_returned,
+            # FINANCIAL-CLOSURE: whether a superior's authority was needed,
+            # and why. `actor` is who authorised it.
+            'authority': authority,
+            'superior_conditions': [condition['code'] for condition in conditions],
+            'fiscal_pending': document is not None,
+            'fiscal_document': label,
+            'sales_note_voided': note_voided,
+            'commission_voided': commission_voided,
+            # A settled commission is not voided: it gets its compensating entry.
+            'commission_adjustment_id': adjustment.pk if adjustment else None,
+            # DC3: on-order lines that stopped waiting for their supplier.
+            'supply_released': supply_released,
+            # Said, so nobody reads a cancellation as a refund: the money
+            # taken stays recorded as taken.
+            'paid_kept': locked.paid,
+            'refund_id': refund.pk if refund else None,
+            **(extra_audit or {}),
+        },
+        request=request, company=locked.company,
+    )
     return cancellation
 
 
@@ -596,15 +668,25 @@ def _manual_return_after_sale(order) -> bool:
     serialized product is safe: only the devices still sold to the order come
     back, and a device returned by `return_unit` is counted, not restored.
     """
+    return bool(products_returned_by_hand_after_sale(order))
+
+
+def products_returned_by_hand_after_sale(order) -> set[int]:
+    """
+    The rule of `_manual_return_after_sale`, product by product: ids of the
+    products counted by quantity of `order` with a `return_entry` into the
+    branch of one of their sale exits, written after it. POST-DELIVERY-RETURN
+    asks it per line (`order_returns._plan`).
+    """
     exits = StockMovement.objects.filter(
         order=order, movement_type=StockMovement.SALE_EXIT, product__is_serialized=False,
     ).values_list('pk', 'product_id', 'branch_id')
-    return any(
-        StockMovement.objects.filter(
+    return {
+        product_id for pk, product_id, branch_id in exits
+        if StockMovement.objects.filter(
             movement_type=StockMovement.RETURN_ENTRY, product_id=product_id, branch_id=branch_id, pk__gt=pk,
         ).exists()
-        for pk, product_id, branch_id in exits
-    )
+    }
 
 
 def _release_supply(order, actor, reason, request) -> list[dict]:
@@ -743,6 +825,8 @@ def _void_sales_note(order, actor, reason) -> bool:
 
 def payload(order) -> dict | None:
     """The cancellation as the panel shows it, or None."""
+    from .models import OrderReturn
+
     cancellation = (
         OrderCancellation.objects.select_related('cancelled_by').filter(order=order).first()
     )
@@ -762,6 +846,9 @@ def payload(order) -> dict | None:
         'was_paid': cancellation.was_paid,
         'goods_returned': cancellation.goods_returned,
         'holds_released': cancellation.holds_released,
+        # A post-delivery return closed it: the stock already came back at the
+        # reception (`order_returns`), so «no stock to restore» would mislead.
+        'by_return': OrderReturn.objects.filter(cancellation=cancellation).exists(),
     }
 
 
@@ -770,7 +857,8 @@ def is_cancelled(order) -> bool:
 
 
 __all__ = [
-    'OrderCancelError', 'blockers', 'cancel_order', 'cancel_paid_order', 'clean_reason', 'compensate_commission',
+    'OrderCancelError', 'blockers', 'cancel_for_return', 'cancel_order', 'cancel_paid_order', 'clean_reason',
+    'compensate_commission', 'return_in_progress',
     'fiscal_label',
     'is_cancelled', 'live_fiscal_document', 'may_cancel', 'may_cancel_as_superior', 'mode_of', 'payload',
     'superior_blocker', 'superior_conditions',

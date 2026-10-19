@@ -1262,15 +1262,17 @@ def _order_detail_payload(request, order, company):
     needs_superior = bool(superior_conditions) and not cancelling.may_cancel_as_superior(request.user, company)
     if needs_superior:
         cancel_blockers = [cancelling.superior_blocker(superior_conditions)]
-    from . import order_refunds
+    from . import order_refunds, order_returns
 
     refunds_block = None
     if cancelling.is_cancelled(order):
         # COMMERCE-ADMIN-UX-01: what was collected, what is owed back and what
         # went back, and what THIS caller may do about it.
+        refunds_block = order_refunds.payload(order)
         refunds_block = {
-            **order_refunds.payload(order),
-            'can_record': may_cancel,
+            **refunds_block,
+            # Nothing left to give back (a closed return's deduction is kept): nothing to record.
+            'can_record': may_cancel and Decimal(refunds_block['refundable']) > 0,
             'can_confirm': order_refunds.may_confirm(request.user, company),
         }
     return {
@@ -1287,6 +1289,9 @@ def _order_detail_payload(request, order, company):
         # Why not is said to whoever could cancel it; to a reader it is noise.
         'cancel_blockers': cancel_blockers if may_cancel else [],
         'cancellation': cancelling.payload(order),
+        # POST-DELIVERY-RETURN: whether THIS caller may request, receive, close
+        # or withdraw a return of the order now, why not, and the return itself.
+        'return_block': order_returns.block(order, request.user, company),
         # What the dialog warns about before anyone confirms: the boleta or
         # factura a cancellation would leave pending its credit note.
         'cancel_fiscal_document': (
@@ -1300,7 +1305,8 @@ def _order_detail_payload(request, order, company):
         'units_pending': sum(pending.values()),
         # Whether THIS caller may say which device it is: whoever may change how
         # the order is dispatched, and only until it has left the shop.
-        'units_can_change': may_move and not view['left'],
+        # POST-DELIVERY-RETURN: nor while a return is registered, received or closed.
+        'units_can_change': may_move and not view['left'] and not view['returning'],
         'available_fulfillment_transitions': transitions,
         # ORDER-FULFILLMENT-SAFETY-01: the path by delivery mode, its history
         # from the audit log and the leaving entries a superior may correct.
@@ -1744,6 +1750,142 @@ class AdminOrderCancelView(APIView):
 
         order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
         return Response(_order_detail_payload(request, order, company))
+
+
+class _OrderReturnMixin:
+    """
+    POST-DELIVERY-RETURN — the four steps of a return, scoped like every order
+    view: another company's order, or one of a branch out of reach, is 404.
+    Each step's authority is the service's (`order_returns`); the door here is
+    the capability that step needs. A rule that says no is 400 (the request),
+    403 (who) or 409 (the order), with a `code`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        if self.request.method == 'GET':
+            return [AdminOrdersThrottle()]
+        return [AdminOrderStatusChangeThrottle()]
+
+    def _order(self, request, pk, capability, legacy_roles):
+        company, error = _company_context(request, capability, legacy_roles)
+        if error:
+            return None, None, error
+        order = visible_orders(request.user, company).filter(pk=pk).first()
+        if order is None:
+            return None, None, Response({'detail': _ORDER_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return company, order, None
+
+    @staticmethod
+    def _body(request):
+        return request.data if isinstance(request.data, dict) else {}
+
+    def _done(self, request, order, company, code=status.HTTP_200_OK):
+        order = Order.objects.select_related('user').prefetch_related('items__product').get(pk=order.pk)
+        return Response(_order_detail_payload(request, order, company), status=code)
+
+
+class AdminOrderReturnView(_OrderReturnMixin, APIView):
+    """
+    GET  /api/admin/orders/{pk}/return/ — the order's `return_block` (who sees the order).
+    POST /api/admin/orders/{pk}/return/ — `{kind, reason}`: register the return
+    (`sales.orders.manage`; past the company's window, a superior). Nothing
+    moves. 201 with the order.
+    """
+
+    def get(self, request, pk):
+        from . import order_returns
+
+        company, order, error = self._order(request, pk, CAP_ORDERS_VIEW, _LEGACY_VIEW_ORDERS_ROLES)
+        if error:
+            return error
+        return Response(order_returns.block(order, request.user, company))
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+        from . import order_returns
+
+        company, order, error = self._order(request, pk, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        body = self._body(request)
+        try:
+            order_returns.request_return(order, request.user, body.get('kind'), body.get('reason'), request=request)
+        except order_returns.OrderReturnError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self._done(request, order, company, status.HTTP_201_CREATED)
+
+
+class AdminOrderReturnReceiveView(_OrderReturnMixin, APIView):
+    """
+    POST /api/admin/orders/{pk}/return/receive/ — `{branch?, lines: [{order_item,
+    quantity?, condition, code?}]}`: the goods are back. `inventory.adjust`
+    (legacy: inventory, admin, superadmin), into a branch the caller operates
+    (default: the order's own). Each device by its IMEI or serial (`code`).
+    """
+
+    def post(self, request, pk):
+        from . import order_returns
+
+        company, order, error = self._order(request, pk, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES)
+        if error:
+            return error
+        body = self._body(request)
+        branch = body.get('branch')
+        if branch in (None, ''):
+            branch = order.fulfillment_branch_id
+        try:
+            order_returns.receive_return(order, request.user, branch=branch, lines=body.get('lines'),
+                                         request=request)
+        except order_returns.OrderReturnError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self._done(request, order, company)
+
+
+class AdminOrderReturnCloseView(_OrderReturnMixin, APIView):
+    """
+    POST /api/admin/orders/{pk}/return/close/ — `{refund_amount, deduction_amount?,
+    deduction_reason?, refund_method}`: a superior closes the return. The order
+    is cancelled «por devolución» and ONE refund is recorded PENDING; nothing
+    is paid, no payment row changes and no gateway is called.
+    """
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+        from . import order_returns
+
+        company, order, error = self._order(request, pk, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        body = self._body(request)
+        try:
+            order_returns.close_return(
+                order, request.user, refund_amount=body.get('refund_amount'),
+                deduction_amount=body.get('deduction_amount'), deduction_reason=body.get('deduction_reason'),
+                refund_method=body.get('refund_method'), request=request)
+        except order_returns.OrderReturnError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self._done(request, order, company)
+
+
+class AdminOrderReturnWithdrawView(_OrderReturnMixin, APIView):
+    """
+    POST /api/admin/orders/{pk}/return/withdraw/ — `{reason}`: abandon a return
+    before its goods are received. Whoever registered it, or a superior.
+    """
+
+    def post(self, request, pk):
+        from . import order_cancellation as cancelling
+        from . import order_returns
+
+        company, order, error = self._order(request, pk, CAP_ORDERS_MANAGE, cancelling.LEGACY_CANCEL_ROLES)
+        if error:
+            return error
+        try:
+            order_returns.withdraw_return(order, request.user, self._body(request).get('reason'), request=request)
+        except order_returns.OrderReturnError as exc:
+            return Response(exc.body(), status=exc.http_status)
+        return self._done(request, order, company)
 
 
 class AdminOrderLeftMarkingCorrectView(APIView):
