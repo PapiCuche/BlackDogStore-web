@@ -304,6 +304,7 @@ function ReturnSummary({ ret }: { ret: OrderReturn }) {
                     <span className="text-muted">× {line.quantity}</span>
                   )}
                   <span className="text-muted">· {line.condition_label}</span>
+                  {line.entered_by_hand ? <span className="text-muted">· ya ingresado a mano (sin mover stock)</span> : null}
                 </li>
               );
             })}
@@ -464,6 +465,9 @@ function ReceiveForm({
   const [branch, setBranch] = useState<string>(branches.length === 1 ? String(branches[0].id) : "");
   const [codes, setCodes] = useState<Record<string, string>>({});
   const [conditions, setConditions] = useState<Record<string, OrderReturnCondition | "">>({});
+  // Líneas que ya entraron con una devolución manual: un superior las recibe sin mover stock.
+  const flagged = new Set(block.manual_return_lines ?? []);
+  const [byHand, setByHand] = useState<Record<number, boolean>>({});
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -489,7 +493,9 @@ function ReceiveForm({
   const conditionKey = (kind: "d" | "q", key: string | number) => `${kind}:${key}`;
   const ready = branch !== ""
     && devices.every((row) => deviceReady(row) && conditions[conditionKey("d", row.key)])
-    && quantities.every((item) => conditions[conditionKey("q", item.id)]);
+    && quantities.every((item) => (flagged.has(item.id)
+      ? Boolean(byHand[item.id])
+      : Boolean(conditions[conditionKey("q", item.id)])));
 
   function setCondition(key: string, value: OrderReturnCondition | "") {
     setConditions((current) => ({ ...current, [key]: value }));
@@ -507,11 +513,13 @@ function ReceiveForm({
         condition: conditions[conditionKey("d", row.key)] as OrderReturnCondition,
         code: (codes[row.key] ?? "").trim(),
       })),
-      ...quantities.map((item) => ({
-        order_item: item.id,
-        quantity: item.quantity,
-        condition: conditions[conditionKey("q", item.id)] as OrderReturnCondition,
-      })),
+      ...quantities.map((item) => (byHand[item.id]
+        ? { order_item: item.id, quantity: item.quantity, condition: "sellable" as OrderReturnCondition, already_in_stock: true }
+        : {
+          order_item: item.id,
+          quantity: item.quantity,
+          condition: conditions[conditionKey("q", item.id)] as OrderReturnCondition,
+        })),
     ];
     try {
       onDone(await receiveOrderReturn(order.id, { branch: Number(branch), lines }));
@@ -648,7 +656,7 @@ function ReceiveForm({
                     id={`${id}-qcond-${item.id}`}
                     value={conditions[key] ?? ""}
                     onChange={(event) => setCondition(key, event.target.value as OrderReturnCondition | "")}
-                    disabled={busy}
+                    disabled={busy || Boolean(byHand[item.id])}
                     className={selectClass}
                   >
                     <option value="">Elige el estado…</option>
@@ -659,6 +667,31 @@ function ReceiveForm({
                   <p className="mt-1 text-xs text-muted">Por cantidad: vendible o dañado.</p>
                 </div>
               </div>
+              {flagged.has(item.id) ? (
+                <div data-testid={`order-return-by-hand-${item.id}`} className="mt-3 rounded-lg border border-warning-border bg-warning-surface p-3 text-xs text-foreground">
+                  <p>
+                    Este producto tuvo una devolución manual en esta sucursal después de la venta. Si esa entrada
+                    fue esta misma devolución, ya está en el stock y no debe entrar otra vez.
+                  </p>
+                  {block.can_receive_by_hand ? (
+                    <label className="mt-2 flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(byHand[item.id])}
+                        onChange={(event) => {
+                          setByHand((current) => ({ ...current, [item.id]: event.target.checked }));
+                          setConfirming(false);
+                        }}
+                        disabled={busy}
+                        className="mt-0.5"
+                      />
+                      <span>Ya ingresó a mano con esta devolución: recibirla sin mover stock</span>
+                    </label>
+                  ) : (
+                    <p className="mt-2 font-semibold">Recibir esta línea corresponde a un superior.</p>
+                  )}
+                </div>
+              ) : null}
             </li>
           );
         })}

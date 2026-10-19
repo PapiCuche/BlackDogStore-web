@@ -1051,6 +1051,8 @@ export type OrderReturnLine = {
   imei: string;
   condition: OrderReturnCondition;
   condition_label: string;
+  /** Recibida sin mover stock: ya había entrado con una devolución manual (sólo un superior). */
+  entered_by_hand?: boolean;
 };
 
 /** `order_returns.describe`: la devolución como la enseña el panel. Importes en soles, texto con dos decimales. */
@@ -1103,6 +1105,10 @@ export type OrderReturnBlock = {
   receive_branches: { id: number; name: string }[];
   /** La devolución vigente (o la última retirada), o null. */
   return: OrderReturn | null;
+  /** Líneas por cantidad con una devolución manual posterior a la venta (sólo para quien recibe). */
+  manual_return_lines?: number[];
+  /** QUIEN CONSULTA puede recibirlas «ya ingresadas a mano» (superior). */
+  can_receive_by_hand?: boolean;
 };
 
 /** Una línea de la recepción. Un equipo: `quantity` 1 y su IMEI o serie en `code`. */
@@ -1111,6 +1117,8 @@ export type OrderReturnReceiveLine = {
   quantity: number;
   condition: OrderReturnCondition;
   code?: string;
+  /** Sólo un superior, sólo en una línea de `manual_return_lines`: no mueve stock. */
+  already_in_stock?: boolean;
 };
 
 async function returnRequest(path: string, body: unknown, fallback: string): Promise<AdminOrderDetail> {

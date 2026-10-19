@@ -256,6 +256,35 @@ describe('recibir', () => {
     });
   });
 
+  it('una cantidad devuelta a mano: un superior la recibe sin mover stock y se manda `already_in_stock`', async () => {
+    send.mockResolvedValueOnce(reply(200, order({ return: theReturn({ status: 'received' }) })));
+    renderPanel(order({ ...RECEIVING, manual_return_lines: [8], can_receive_by_hand: true }));
+    const form = screen.getByTestId('order-return-receive');
+    const device = screen.getByTestId('order-return-device-7-0');
+    const byHand = screen.getByTestId('order-return-by-hand-8');
+    const receive = within(form).getByRole('button', { name: 'Recibir mercadería' });
+    fireEvent.change(within(form).getByLabelText('Sucursal que recibe'), { target: { value: '1' } });
+    fireEvent.change(within(device).getByLabelText('Estado en que llega'), { target: { value: 'sellable' } });
+    fireEvent.change(within(device).getByLabelText('IMEI o serie del equipo que vuelve'), { target: { value: IMEI } });
+    expect(receive).toBeDisabled();                      // la línea marcada pide la casilla
+    fireEvent.click(within(byHand).getByRole('checkbox', { name: /Ya ingresó a mano/ }));
+    expect(within(screen.getByTestId('order-return-quantity-8')).getByLabelText('Estado en que llega')).toBeDisabled();
+    fireEvent.click(receive);
+    fireEvent.click(within(screen.getByTestId('order-return-receive-confirm')).getByRole('button', { name: 'Sí, recibir' }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(sentBody().lines[1]).toEqual({ order_item: 8, quantity: 2, condition: 'sellable', already_in_stock: true });
+  });
+
+  it('sin ser superior, la línea devuelta a mano no se puede recibir', () => {
+    renderPanel(order({ ...RECEIVING, manual_return_lines: [8], can_receive_by_hand: false }));
+    const byHand = screen.getByTestId('order-return-by-hand-8');
+    expect(within(byHand).queryByRole('checkbox')).toBeNull();
+    expect(byHand).toHaveTextContent('corresponde a un superior');
+    const quantity = screen.getByTestId('order-return-quantity-8');
+    fireEvent.change(within(quantity).getByLabelText('Estado en que llega'), { target: { value: 'sellable' } });
+    expect(within(screen.getByTestId('order-return-receive')).getByRole('button', { name: 'Recibir mercadería' })).toBeDisabled();
+  });
+
   it('también vale la serie, sin importar mayúsculas', () => {
     renderPanel(order(RECEIVING));
     const device = screen.getByTestId('order-return-device-7-0');
