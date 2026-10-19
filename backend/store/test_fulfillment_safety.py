@@ -25,7 +25,7 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from store import left_marking
+from store import left_marking, stock_unit_services
 from store import order_cancellation as cancelling
 from store import unit_identification as picking
 from store.fulfillment_test_support import legacy_move, place_at
@@ -433,6 +433,52 @@ class WhatElseSaysItLeftTest(_Flow):
         self.assertTrue(cancelling.ever_left(order))                          # «sent» and its stamp still stand
         self.assertEqual(self.correct(order, sent.pk).status_code, 201)
         self.assertFalse(cancelling.ever_left(order))
+
+    def walk(self, order, *states):
+        for state in states:
+            response = self.move(order, state)
+            self.assertEqual(response.status_code, 200, response.content)
+
+    def test_after_the_correction_the_device_is_the_orders_to_change_again(self):
+        """Review P1: an excused stamp must not freeze the identification."""
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.assertEqual(self.correct(order, cancelling.leaving_events(order).get().pk).status_code, 201)
+        self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
+        record = self.detail(order)['items'][0]['units'][0]
+        self.assertTrue(record['can_remove'])
+        unit = StockUnit.objects.get(imei=IMEI_A)
+        stock_unit_services.return_unit(unit, reason='Volvió al estante', actor=self.manager)
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())     # names nothing any more
+        response = self.move(order, FS.DELIVERED)
+        self.refused(response, 'units_pending')
+
+    def test_a_device_on_sent_then_delivered_is_corrected_newest_first(self):
+        """Review P2: the stamp belongs to «sent»; correcting «delivered» first does not trip over it."""
+        self.receive(self.row('F2LXKFSTWO2', IMEI_A))
+        order = self.web_order((self.phone, 1), delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        OrderDelivery.objects.create(company=self.company, order=order, mode=OrderDelivery.Mode.LOCAL_DELIVERY)
+        picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
+        self.walk(order, FS.PREPARING, FS.SHIPPED, FS.DELIVERED)
+        sent, delivered = cancelling.leaving_events(order)
+        self.assertEqual((len(sent.metadata['stamped_units']), delivered.metadata['stamped_units']), (1, []))
+        self.assertEqual(self.correct(order, delivered.pk).status_code, 201)
+        self.assertTrue(cancelling.ever_left(order))
+        self.assertEqual(self.correct(order, sent.pk).status_code, 201)
+        self.assertEqual(self.status_of(order), FS.PREPARING)
+        self.assertFalse(cancelling.ever_left(order))
+
+    def test_handed_over_for_real_afterwards_it_left_again(self):
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.correct(order, cancelling.leaving_events(order).get().pk)
+        self.walk(order, FS.DELIVERED)
+        again = cancelling.leaving_events(order).last()
+        self.assertEqual(again.metadata['stamped_units'], [OrderUnit.objects.get(order=order).pk])
+        self.assertTrue(cancelling.ever_left(order))
+        self.assertFalse(self.detail(order)['items'][0]['units'][0]['can_remove'])
+        stock_unit_services.return_unit(StockUnit.objects.get(imei=IMEI_A), reason='Devolución', actor=self.manager)
+        self.assertTrue(OrderUnit.objects.filter(order=order).exists())       # what left keeps its row
 
     def test_a_shipping_date_or_a_waybill_refuses_it(self):
         for field, value in (('shipped_at', None), ('waybill_number', 'G-77'), ('tracking_code', 'T-9')):

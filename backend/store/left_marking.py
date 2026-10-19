@@ -72,11 +72,15 @@ def blockers(order, event, corrections=None) -> list[dict]:
     if cancelling.is_cancelled(order):
         return [{'code': 'order_cancelled', 'detail': 'El pedido ya está cancelado: no hay nada que corregir.'}]
     found = []
-    # A device this very entry stamped as gone is explained by it (owner,
-    # 2026-10-19); any other stamp — a till sale, another uncorrected move —
-    # still says a device left.
+    # A device stamped by a move to sent/delivered is explained by that move
+    # (owner, 2026-10-19): by this one, by one already corrected, or by an
+    # EARLIER one not corrected yet — that one still says the goods left
+    # (`ever_left`) and is checked when it is corrected itself. Review P2: sent
+    # then delivered stamps the device on «sent», so correcting «delivered»
+    # first must not trip over it. Any other stamp (a till hand-over) counts.
     explained = cancelling.units_stamped_by(
-        order, cancelling.leaving_events(order).filter(pk__in=set(corrections) | {event.pk}))
+        order, cancelling.leaving_events(order).filter(created_at__lte=event.created_at)
+        | cancelling.leaving_events(order).filter(pk__in=set(corrections) | {event.pk}))
     if OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exclude(pk__in=explained).exists():
         found.append({'code': 'unit_left', 'detail': 'Un equipo identificado de este pedido figura como salido de la tienda.'})
     # Now or ever: a waybill or a date blanked afterwards still says it left,

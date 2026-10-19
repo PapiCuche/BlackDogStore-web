@@ -218,10 +218,13 @@ def _identified(order) -> dict:
     shelf for it. One that went back to the shelf before anybody handed it over
     names nothing any more.
     """
+    excused = _excused(order)
     done: dict[int, int] = {}
-    for product_id, left_at, unit_order, unit_status in OrderUnit.objects.filter(order=order).values_list(
-        'product_id', 'left_at', 'unit__order_id', 'unit__status',
+    for pk, product_id, left_at, unit_order, unit_status in OrderUnit.objects.filter(order=order).values_list(
+        'pk', 'product_id', 'left_at', 'unit__order_id', 'unit__status',
     ):
+        if pk in excused:
+            left_at = None          # stamped by a move a superior corrected: it never left
         if left_at is None and not (unit_order == order.pk and unit_status == StockUnit.Status.SOLD):
             continue
         done[product_id] = done.get(product_id, 0) + 1
@@ -252,7 +255,17 @@ def mark_left(order) -> None:
     afterwards is a status, not a time machine — the device that left is the
     one that left, and no paper is rewritten.
     """
-    OrderUnit.objects.filter(order=order, left_at__isnull=True).update(left_at=_now())
+    OrderUnit.objects.filter(pk__in=stamping(order)).update(left_at=_now())
+
+
+def stamping(order) -> list[int]:
+    """
+    The rows a move to sent/delivered stamps now: the ones not stamped yet, and
+    the ones whose stamp a correction explained (they are leaving for real now).
+    """
+    excused = _excused(order)
+    return list(OrderUnit.objects.filter(Q(left_at__isnull=True) | Q(pk__in=excused), order=order)
+                .order_by('pk').values_list('pk', flat=True))
 
 
 def released_by_return(unit, order_id, *, actor=None, request=None) -> None:
@@ -263,7 +276,11 @@ def released_by_return(unit, order_id, *, actor=None, request=None) -> None:
     """
     if not order_id:
         return
-    for row in OrderUnit.objects.filter(order_id=order_id, unit=unit, left_at__isnull=True).select_related('order__company'):
+    order = Order.objects.filter(pk=order_id).first()
+    excused = _excused(order) if order is not None else set()
+    for row in OrderUnit.objects.filter(
+        Q(left_at__isnull=True) | Q(pk__in=excused), order_id=order_id, unit=unit,
+    ).select_related('order__company'):
         metadata = {'order_id': order_id, 'unit_id': unit.pk, 'product_id': row.product_id,
                     'method': row.method, 'because': 'returned_before_it_left'}
         company = row.order.company
@@ -447,7 +464,7 @@ def forget(*, order, order_unit_id, actor, request=None) -> None:
     row = OrderUnit.objects.filter(order=order, pk=order_unit_id).first()
     if row is None:
         raise UnitIdentificationError('not_found', 'Ese equipo no está identificado en este pedido.')
-    if row.left_at is not None or left_the_shop(order):
+    if (row.left_at is not None and row.pk not in _excused(order)) or left_the_shop(order):
         raise UnitIdentificationError('already_left', 'El pedido ya salió de la tienda: el equipo que se entregó no se cambia aquí.')
     if row.method == OrderUnit.Method.BUYER:
         # DC2: the buyer chose and paid for THIS device. Handing over another
@@ -471,6 +488,7 @@ def order_view(order) -> dict:
     """
     pending = pending_units(order)
     left = left_the_shop(order)
+    excused = _excused(order)
     records: dict[int, list[dict]] = {}
     for row in (
         OrderUnit.objects.filter(order=order, company_id=order.company_id)
@@ -486,9 +504,16 @@ def order_view(order) -> dict:
             'method_label': row.get_method_display(),
             'identified_at': row.identified_at.isoformat(),
             'identified_by': row.identified_by.username if row.identified_by_id else '',
-            'can_remove': row.left_at is None and not left,
+            'can_remove': (row.left_at is None or row.pk in excused) and not left,
         })
     return {'pending': pending, 'records': records, 'left': left}
+
+
+def _excused(order) -> set[int]:
+    """Rows whose «gone» stamp a superior's correction explains (ORDER-FULFILLMENT-SAFETY-01)."""
+    from .order_cancellation import excused_unit_ids
+
+    return excused_unit_ids(order)
 
 
 def _now():

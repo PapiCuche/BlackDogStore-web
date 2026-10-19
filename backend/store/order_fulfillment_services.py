@@ -49,7 +49,7 @@ from django.db import transaction
 
 from . import fulfillment_flow, order_risk
 from .commerce_notifications import emit_fulfillment_changed
-from .models import AdminAuditLog, Order, OrderItem, OrderUnit, UserProfile
+from .models import AdminAuditLog, Order, OrderItem, UserProfile
 from .permissions import get_user_role
 from .tenancy import has_capability, uses_legacy_bridge
 
@@ -259,7 +259,7 @@ def change_fulfillment_status(
         order.save(update_fields=['fulfillment_status'])
         stamped_units = []
         if leaving:
-            stamped_units = list(OrderUnit.objects.filter(order=order, left_at__isnull=True).values_list('pk', flat=True))
+            stamped_units = unit_identification.stamping(order)
             unit_identification.mark_left(order)
         AdminAuditLog.log(
             actor=actor,

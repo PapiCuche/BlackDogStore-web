@@ -185,11 +185,10 @@ def ever_left(order) -> bool:
     from .models import OrderUnit
 
     corrected = corrected_event_ids(order)
-    stamped = OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False)
-    if corrected:
-        # Owner, 2026-10-19: a device stamped by the very click a superior
-        # declared accidental did not leave either.
-        stamped = stamped.exclude(pk__in=units_stamped_by(order, leaving_events(order).filter(pk__in=corrected)))
+    # Owner, 2026-10-19: a device stamped by the very click a superior declared
+    # accidental did not leave either.
+    stamped = OrderUnit.objects.filter(order_id=order.pk, left_at__isnull=False).exclude(
+        pk__in=excused_unit_ids(order, corrected))
     if stamped.exists():
         return True
     if leaving_events(order).exclude(pk__in=corrected).exists():
@@ -236,6 +235,21 @@ LEFT_MARKING_CORRECTED = 'order_left_marking_corrected'
 #: (same transaction, a few milliseconds). Only for entries written before they
 #: named the devices themselves (`stamped_units`).
 STAMP_WINDOW_SECONDS = 5
+
+
+def excused_unit_ids(order, corrected=None) -> set[int]:
+    """
+    Ids of the `OrderUnit`s of `order` whose «gone» stamp a correction explains:
+    those stamped by a corrected leaving entry. Such a device never left — for
+    `ever_left`, and for identifying, swapping and returning it
+    (`unit_identification`). The stamp itself stays on the row.
+    """
+    corrected = corrected_event_ids(order) if corrected is None else corrected
+    if not corrected:
+        return set()
+    # A device stamped again by a later move nobody corrected did leave then.
+    return (units_stamped_by(order, leaving_events(order).filter(pk__in=corrected))
+            - units_stamped_by(order, leaving_events(order).exclude(pk__in=corrected)))
 
 
 def units_stamped_by(order, events) -> set[int]:
