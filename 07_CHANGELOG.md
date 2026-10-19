@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-19 — Corrección de salida con equipos identificados
+
+**Changed**
+- Un equipo identificado que el mismo «Enviado» erróneo marcó como salido ya no impide
+  corregir ese registro (decisión del propietario). Cada salida nombra los equipos que selló.
+
+**Added**
+- Propuesta de devolución posterior a la entrega (`docs/diseno-devolucion-post-entrega.md`).
+
 ## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 · despacho seguro (#128, desplegado `7903a49`)
 
 **Deployed**

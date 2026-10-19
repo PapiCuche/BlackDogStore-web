@@ -127,10 +127,13 @@ devolución parcial, flete, estado del equipo devuelto, nota de crédito); la ca
   aceptada (dirección segura): una fecha escrita por error y borrada deja el pedido sin
   cancelación, y la corrección no la desdice (sólo nombra cambios de estado). Si pasa, es caso
   para la devolución pendiente o para una decisión del propietario.
-- *Decisión abierta:* un equipo identificado queda con `left_at` por el mismo clic erróneo, así
-  que un pedido con IMEI identificado nunca se puede corregir. Se dejó así porque la orden pide
-  comprobar `left_at`; si el propietario quiere que no cuente el sello puesto por esa misma
-  entrada, es una comparación de fechas.
+- *Decidido por el propietario (2026-10-19):* el sello `OrderUnit.left_at` que puso el mismo
+  clic erróneo no cuenta. Cada entrada de salida nombra los equipos que selló
+  (`stamped_units`); para las anteriores, los sellados en los 5 s previos a la entrada.
+  `ever_left` y la corrección ignoran sólo esos sellos; cualquier otro (una venta de caja, otra
+  salida sin corregir) sigue bloqueando. El sello se conserva.
+- Devolución posterior a la entrega: propuesta en `docs/diseno-devolucion-post-entrega.md`
+  (decisiones D1–D8 pendientes).
 
 **Historial**: en el detalle del pedido (`dispatch.history`), sólo lectura, desde la auditoría,
 para quien ve el pedido; sin el correo del comprador. Las notas libres del personal se muestran
