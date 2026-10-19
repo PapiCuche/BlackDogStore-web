@@ -1,5 +1,9 @@
 # NEXT ACTION
 
+## Decisiones pendientes del propietario
+
+- Devolución posterior a la entrega: D1–D8 en `docs/diseno-devolucion-post-entrega.md`.
+
 ## Desplegado: ORDER-FULFILLMENT-SAFETY-01 (#128, `7903a49`) el 2026-10-17 — pruebas del propietario (PENDIENTES)
 
 Con su sesión, sobre pedidos de prueba (no sobre pedidos reales):
@@ -8,7 +12,8 @@ Con su sesión, sobre pedidos de prueba (no sobre pedidos reales):
 2. Pedido con envío nacional: «Enviado» se bloquea sin transportista y guía; con ellos, pasa.
 3. Volver un paso exige motivo; después de «Enviado» no hay vuelta atrás.
 4. Historial: cada cambio con fecha, responsable y motivo.
-5. Orden #4 (elegible, sin modificar): entrar con la cuenta del rol `administrador`, abrir
+5. **HECHA por el propietario el 2026-10-19** (corregida y cancelada, reembolso pendiente
+   de un pago TEST). Texto original: Orden #4 (elegible, sin modificar): entrar con la cuenta del rol `administrador`, abrir
    Pedidos › #4 › «Estado de despacho» › «Corregir marcado de salida» › «Corregir este
    registro», escribir el motivo, marcar «Confirmo que el producto nunca salió de la tienda» y
    «Corregir registro»; revisar

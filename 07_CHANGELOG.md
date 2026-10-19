@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-19 — Corrección de salida con equipos identificados
+## 2026-10-19 — Corrección de salida con equipos identificados (#132, desplegado `055cf0d`)
 
 **Changed**
 - Un equipo identificado que el mismo «Enviado» erróneo marcó como salido ya no impide

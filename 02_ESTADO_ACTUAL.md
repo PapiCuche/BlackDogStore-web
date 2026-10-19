@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-19 — #132 desplegado: corrección de salida con equipos identificados
+
+**Producción en `055cf0d`** desde `7903a49`. Sin migraciones. Decisión del propietario: el sello
+`OrderUnit.left_at` que puso el mismo «Enviado»/«Entregado» erróneo no cuenta
+(`excused_unit_ids`: sellado por una salida corregida y por ninguna posterior sin corregir); el
+equipo vuelve a poder cambiarse o devolverse como si no hubiera salido, y una salida real
+posterior lo vuelve a sellar. Dos revisiones independientes: la primera NO-GO (P1: el sello
+ignorado congelaba el registro del equipo; P2: enviado→entregado con equipo no se podía
+corregir), corregido; la segunda GO. Focal 1191 OK; CI en verde.
+- Antes: copia `20261019-153213` (`gzip -t` OK) restaurada en una base desechable; imagen nueva
+  probada sobre la copia; imágenes `rollback-7903a49`; Caddyfile sin cambios.
+- Después: 17 OK; recuentos iguales; sin errores; smoke de solo lectura con las 3 membresías
+  (0 escrituras); otra empresa 403.
+- **Prueba 5 del propietario hecha (observada, sólo lectura):** el 2026-10-19 la cuenta
+  `administrador` corrigió el «Enviado» de la orden #4 y la canceló con un reembolso pendiente;
+  el registro original sigue y figura «Corregido». El pago fue Izipay TEST: no hay dinero real
+  que devolver.
+- Devolución posterior a la entrega: propuesta en `docs/diseno-devolucion-post-entrega.md`,
+  pendiente de decisiones D1–D8.
+
 ## 2026-10-17 — ORDER-FULFILLMENT-SAFETY-01 desplegado en producción (#128)
 
 **Producción en `7903a49`** desde el 2026-10-17, 01:39 (Lima), desde `68137e5`. Sólo #128; sin
