@@ -16,6 +16,7 @@ The rules now:
   * a superior may declare ONE leaving entry accidental: a new audit entry
     names it, `ever_left` stops counting it, nothing else changes.
 """
+from datetime import timedelta
 from decimal import Decimal
 from threading import Barrier, Thread
 
@@ -24,13 +25,13 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from store import left_marking
+from store import left_marking, stock_unit_services
 from store import order_cancellation as cancelling
 from store import unit_identification as picking
 from store.fulfillment_test_support import legacy_move, place_at
 from store.models import (
     AdminAuditLog, Order, OrderDelivery, OrderRefund, OrderUnit, PaymentTransaction, SalesCommission,
-    StockMovement,
+    StockMovement, StockUnit,
 )
 from store.test_order_cancel import _Base
 from store.test_stock_units import IMEI_A
@@ -386,16 +387,107 @@ class OrderFourTest(_Flow):
 
 
 class WhatElseSaysItLeftTest(_Flow):
-    def test_a_device_stamped_gone_refuses_the_correction(self):
-        self.receive(self.row('F2LXKFSONE1', IMEI_A))
+    def device_order(self, serial='F2LXKFSONE1'):
+        self.receive(self.row(serial, IMEI_A))
         order = self.web_order((self.phone, 1), delivery_method=Order.DeliveryMethod.PICKUP_STORE)
         picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
+        return order
+
+    def test_a_device_stamped_by_the_mistaken_click_itself_does_not_refuse_it(self):
+        """Owner, 2026-10-19: the stamp the accidental «sent» put on the device is that same mistake."""
+        order = self.device_order()
         event = legacy_move(order, FS.SHIPPED, actor=self.manager)     # stamps the device as gone
         self.assertTrue(OrderUnit.objects.filter(order=order, left_at__isnull=False).exists())
+        self.assertTrue(cancelling.ever_left(order))
+        self.assertEqual(self.correct(order, event.pk).status_code, 201)
+        self.assertFalse(cancelling.ever_left(order))
+        self.assertIsNotNone(OrderUnit.objects.get(order=order).left_at)   # the stamp itself is kept
+        self.assertEqual(self.post_cancel(order).status_code, 200)
+        self.assertEqual(StockUnit.objects.get(imei=IMEI_A).status, StockUnit.Status.AVAILABLE)
+
+    def test_todays_move_names_the_devices_it_stamped(self):
+        order = self.device_order()
+        place_at(order, FS.READY_FOR_PICKUP)
+        self.assertEqual(self.move(order, FS.DELIVERED).status_code, 200)
+        event = cancelling.leaving_events(order).get()
+        self.assertEqual(event.metadata['stamped_units'], [OrderUnit.objects.get(order=order).pk])
+        self.assertEqual(self.correct(order, event.pk).status_code, 201)
+        self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
+        self.assertFalse(cancelling.ever_left(order))
+
+    def test_a_device_stamped_by_anything_else_still_refuses_it(self):
+        order = self.device_order()
+        event = legacy_move(order, FS.SHIPPED, actor=self.manager)
+        # The device was stamped an hour before the entry: not by it (a till hand-over, another move).
+        OrderUnit.objects.filter(order=order).update(left_at=event.created_at - timedelta(hours=1))
         response = self.correct(order, event.pk)
         self.refused(response, 'contradicting_evidence')
         self.assertIn('equipo', response.json()['detail'])
         self.assertTrue(cancelling.ever_left(order))
+
+    def test_a_stamp_from_an_uncorrected_move_keeps_counting(self):
+        order = self.device_order()
+        sent = legacy_move(order, FS.SHIPPED, actor=self.manager)
+        later = legacy_move(order, FS.DELIVERED, actor=self.manager)        # stamps nothing new
+        self.assertEqual(self.correct(order, later.pk).status_code, 201)
+        self.assertTrue(cancelling.ever_left(order))                          # «sent» and its stamp still stand
+        self.assertEqual(self.correct(order, sent.pk).status_code, 201)
+        self.assertFalse(cancelling.ever_left(order))
+
+    def walk(self, order, *states):
+        for state in states:
+            response = self.move(order, state)
+            self.assertEqual(response.status_code, 200, response.content)
+
+    def test_after_the_correction_the_device_is_the_orders_to_change_again(self):
+        """Review P1: an excused stamp must not freeze the identification."""
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.assertEqual(self.correct(order, cancelling.leaving_events(order).get().pk).status_code, 201)
+        self.assertEqual(self.status_of(order), FS.READY_FOR_PICKUP)
+        record = self.detail(order)['items'][0]['units'][0]
+        self.assertTrue(record['can_remove'])
+        unit = StockUnit.objects.get(imei=IMEI_A)
+        stock_unit_services.return_unit(unit, reason='Volvió al estante', actor=self.manager)
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())     # names nothing any more
+        response = self.move(order, FS.DELIVERED)
+        self.refused(response, 'units_pending')
+
+    def test_an_excused_device_of_an_order_that_stands_gone_keeps_its_row(self):
+        """Review P3: excused, but the order stands at a leaving status — a return does not unname it."""
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.correct(order, cancelling.leaving_events(order).get().pk)
+        place_at(order, FS.DELIVERED)
+        stock_unit_services.return_unit(StockUnit.objects.get(imei=IMEI_A), reason='Devolución', actor=self.manager)
+        self.assertTrue(OrderUnit.objects.filter(order=order).exists())
+
+    def test_a_device_on_sent_then_delivered_is_corrected_newest_first(self):
+        """Review P2: the stamp belongs to «sent»; correcting «delivered» first does not trip over it."""
+        self.receive(self.row('F2LXKFSTWO2', IMEI_A))
+        order = self.web_order((self.phone, 1), delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        OrderDelivery.objects.create(company=self.company, order=order, mode=OrderDelivery.Mode.LOCAL_DELIVERY)
+        picking.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.manager)
+        self.walk(order, FS.PREPARING, FS.SHIPPED, FS.DELIVERED)
+        sent, delivered = cancelling.leaving_events(order)
+        self.assertEqual((len(sent.metadata['stamped_units']), delivered.metadata['stamped_units']), (1, []))
+        self.assertEqual(self.correct(order, delivered.pk).status_code, 201)
+        self.assertTrue(cancelling.ever_left(order))
+        self.assertEqual(self.correct(order, sent.pk).status_code, 201)
+        self.assertEqual(self.status_of(order), FS.PREPARING)
+        self.assertFalse(cancelling.ever_left(order))
+
+    def test_handed_over_for_real_afterwards_it_left_again(self):
+        order = self.device_order()
+        self.walk(order, FS.PREPARING, FS.READY_FOR_PICKUP, FS.DELIVERED)
+        self.correct(order, cancelling.leaving_events(order).get().pk)
+        self.walk(order, FS.DELIVERED)
+        again = cancelling.leaving_events(order).last()
+        self.assertEqual(again.metadata['stamped_units'], [OrderUnit.objects.get(order=order).pk])
+        self.assertTrue(cancelling.ever_left(order))
+        self.assertFalse(self.detail(order)['items'][0]['units'][0]['can_remove'])
+        stock_unit_services.return_unit(StockUnit.objects.get(imei=IMEI_A), reason='Devolución', actor=self.manager)
+        self.assertTrue(OrderUnit.objects.filter(order=order).exists())       # what left keeps its row
 
     def test_a_shipping_date_or_a_waybill_refuses_it(self):
         for field, value in (('shipped_at', None), ('waybill_number', 'G-77'), ('tracking_code', 'T-9')):
