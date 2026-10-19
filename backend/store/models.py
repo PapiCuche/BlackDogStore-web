@@ -1506,6 +1506,12 @@ class StockMovement(models.Model):
     # bringing something back and a sale that never happened are different
     # conversations, and the Kardex has to say which one this was.
     ORDER_CANCEL_RETURN = 'order_cancel_return'
+    # POST-DELIVERY-RETURN (owner, 2026-10-19) — goods that LEFT with a paid
+    # order come back from the customer (`order_returns.receive_return`), at the
+    # cost their sale exit left with, with the order on the line. Not
+    # `order_cancel_return` (those goods never left) nor `return_entry` (a
+    # manual return that names no sale).
+    CUSTOMER_RETURN = 'customer_return'
     # --- Exits (remove stock) ---
     MANUAL_EXIT = 'manual_exit'
     SALE_EXIT = 'sale_exit'
@@ -1524,6 +1530,7 @@ class StockMovement(models.Model):
         (CORRECTION_POSITIVE, 'Corrección positiva'),
         (SERVICE_RETURN, 'Entrada por reverso de servicio técnico'),
         (ORDER_CANCEL_RETURN, 'Devolución por pedido cancelado'),
+        (CUSTOMER_RETURN, 'Devolución de cliente'),
         (TRANSFER_IN, 'Entrada por transferencia'),
         (MANUAL_EXIT, 'Salida manual'),
         (SALE_EXIT, 'Salida por venta'),
@@ -1535,7 +1542,7 @@ class StockMovement(models.Model):
 
     ENTRY_TYPES = frozenset([
         INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ENTRY, RETURN_ENTRY,
-        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN, ORDER_CANCEL_RETURN,
+        CORRECTION_POSITIVE, SERVICE_RETURN, TRANSFER_IN, ORDER_CANCEL_RETURN, CUSTOMER_RETURN,
     ])
     EXIT_TYPES = frozenset([
         MANUAL_EXIT, SALE_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT, SERVICE_EXIT,
@@ -1970,6 +1977,181 @@ class OrderRefund(models.Model):
 
     def __str__(self):
         return f'OrderRefund(order={self.order_id}, {self.amount}, {self.status})'
+
+
+class OrderReturn(models.Model):
+    """
+    POST-DELIVERY-RETURN (owner, 2026-10-19) — goods that LEFT the shop with a
+    paid order come back. Phase 1: the whole order. See `order_returns`.
+
+    THREE STEPS, BY THREE AUTHORITIES. Requested by whoever manages orders
+    (nothing moves); received by inventory in the branch that takes the goods
+    back (the stock enters, device by device, the exact ones that left);
+    closed by a superior, who confirms the amount to give back. Closing is
+    the commercial cancellation (`OrderCancellation`, without restoring stock
+    again) with ONE pending refund. Withdrawn: abandoned before reception.
+
+    ONE AT A TIME PER ORDER, AND THE DATABASE SAYS SO: a partial unique index
+    over every return that is not withdrawn. A withdrawn one is kept and a new
+    one may be requested.
+
+    THE AMOUNTS. `paid_amount` is what the order was paid when the return was
+    closed; `refund_amount = paid_amount − deduction_amount`, the deduction
+    never negative and never above what was paid. The CHECKs say it on the
+    row itself; the service says it first, with a reason for the person.
+    """
+
+    STATUS_REQUESTED = 'requested'
+    STATUS_RECEIVED = 'received'
+    STATUS_CLOSED = 'closed'
+    STATUS_WITHDRAWN = 'withdrawn'
+    STATUS_CHOICES = [
+        (STATUS_REQUESTED, 'Devolución registrada'),
+        (STATUS_RECEIVED, 'Mercadería recibida'),
+        (STATUS_CLOSED, 'Devolución cerrada'),
+        (STATUS_WITHDRAWN, 'Devolución retirada'),
+    ]
+    OPEN_STATUSES = (STATUS_REQUESTED, STATUS_RECEIVED)
+
+    KIND_WITHDRAWAL = 'desistimiento'
+    KIND_DEFECTIVE = 'defectuoso'
+    KIND_SHIPPING_ERROR = 'error_envio'
+    KIND_OTHER = 'otro'
+    KIND_CHOICES = [
+        (KIND_WITHDRAWAL, 'Desistimiento del cliente'),
+        (KIND_DEFECTIVE, 'Producto defectuoso'),
+        (KIND_SHIPPING_ERROR, 'Error de envío'),
+        (KIND_OTHER, 'Otro'),
+    ]
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='order_returns')
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='returns')
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_REQUESTED, db_index=True)
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    reason = models.CharField(max_length=500)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_returns_requested',
+    )
+    requested_at = models.DateTimeField(default=timezone.now, db_index=True)
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_returns_received',
+    )
+    received_at = models.DateTimeField(null=True, blank=True)
+    receiving_branch = models.ForeignKey(
+        'store.Branch', null=True, blank=True, on_delete=models.PROTECT, related_name='order_returns_received',
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_returns_closed',
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    refund_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    deduction_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    deduction_reason = models.CharField(max_length=300, blank=True, default='')
+    refund_method = models.CharField(max_length=12, blank=True, default='', choices=OrderRefund.METHOD_CHOICES)
+    #: The commercial cancellation the close made. Null until then.
+    cancellation = models.OneToOneField(
+        OrderCancellation, null=True, blank=True, on_delete=models.PROTECT, related_name='order_return',
+    )
+    withdrawn_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='order_returns_withdrawn',
+    )
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    withdrawn_reason = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        ordering = ['-requested_at', '-pk']
+        indexes = [models.Index(fields=['company', 'status', '-requested_at'])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['order'], condition=~models.Q(status='withdrawn'), name='order_return_one_open_per_order',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='requested', received_at__isnull=True, closed_at__isnull=True,
+                             withdrawn_at__isnull=True)
+                    | models.Q(status='received', received_at__isnull=False, receiving_branch__isnull=False,
+                               closed_at__isnull=True, withdrawn_at__isnull=True)
+                    | models.Q(status='closed', received_at__isnull=False, receiving_branch__isnull=False,
+                               closed_at__isnull=False, withdrawn_at__isnull=True,
+                               cancellation__isnull=False, paid_amount__isnull=False,
+                               refund_amount__isnull=False, deduction_amount__isnull=False)
+                    | models.Q(status='withdrawn', withdrawn_at__isnull=False, received_at__isnull=True,
+                               closed_at__isnull=True)
+                ),
+                name='order_return_status_matches_dates',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(deduction_amount__isnull=True) | models.Q(deduction_amount__gte=Decimal('0.00')),
+                name='order_return_deduction_not_negative',
+            ),
+            models.CheckConstraint(
+                condition=(models.Q(deduction_amount__isnull=True) | models.Q(paid_amount__isnull=True)
+                           | models.Q(deduction_amount__lte=models.F('paid_amount'))),
+                name='order_return_deduction_within_paid',
+            ),
+            models.CheckConstraint(
+                condition=(models.Q(refund_amount__isnull=True)
+                           | models.Q(refund_amount=models.F('paid_amount') - models.F('deduction_amount'))),
+                name='order_return_refund_is_paid_minus_deduction',
+            ),
+        ]
+
+    def __str__(self):
+        return f'OrderReturn(order={self.order_id}, {self.status})'
+
+
+class OrderReturnLine(models.Model):
+    """
+    What came back with an `OrderReturn`, as inventory received it: a device
+    (`unit`, quantity 1) or a quantity of a product counted by number, and the
+    state it arrived in. A quantity cannot be set aside for review (phase 1):
+    only «vendible» or «dañado». `movement` is the `customer_return` Kardex
+    line it entered with.
+    """
+
+    CONDITION_SELLABLE = 'sellable'
+    CONDITION_REVIEW = 'review'
+    CONDITION_DAMAGED = 'damaged'
+    CONDITION_CHOICES = [
+        (CONDITION_SELLABLE, 'Vendible'),
+        (CONDITION_REVIEW, 'A revisión'),
+        (CONDITION_DAMAGED, 'Dañado'),
+    ]
+
+    order_return = models.ForeignKey(OrderReturn, on_delete=models.PROTECT, related_name='lines')
+    order_item = models.ForeignKey(OrderItem, on_delete=models.PROTECT, related_name='return_lines')
+    unit = models.ForeignKey(
+        'store.StockUnit', null=True, blank=True, on_delete=models.PROTECT, related_name='return_lines',
+    )
+    quantity = models.PositiveIntegerField()
+    condition = models.CharField(max_length=10, choices=CONDITION_CHOICES)
+    movement = models.ForeignKey(
+        'store.StockMovement', null=True, blank=True, on_delete=models.PROTECT, related_name='return_lines',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['pk']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name='order_return_line_quantity_positive'),
+            models.CheckConstraint(
+                condition=(models.Q(unit__isnull=True, condition__in=['sellable', 'damaged'])
+                           | models.Q(unit__isnull=False, quantity=1)),
+                name='order_return_line_device_or_quantity',
+            ),
+            models.UniqueConstraint(
+                fields=['order_return', 'unit'], condition=models.Q(unit__isnull=False),
+                name='order_return_line_device_once',
+            ),
+        ]
+
+    def __str__(self):
+        return f'OrderReturnLine(return={self.order_return_id}, item={self.order_item_id}, {self.quantity})'
 
 
 # ---------------------------------------------------------------------------
@@ -3359,6 +3541,14 @@ class CompanySettings(models.Model):
         default=7, db_default=7,
         validators=[MinValueValidator(POS_CANCEL_SIMPLE_DAYS_MIN), MaxValueValidator(POS_CANCEL_SIMPLE_DAYS_MAX)],
     )
+    # POST-DELIVERY-RETURN (owner, 2026-10-19, D5): a return registered more
+    # than this many days after the goods were delivered takes a superior
+    # (`order_returns.window_conditions`). 0 = every return. `settings.manage` too.
+    RETURN_SIMPLE_DAYS_MIN, RETURN_SIMPLE_DAYS_MAX = 0, 365
+    return_simple_days = models.PositiveSmallIntegerField(
+        default=7, db_default=7,
+        validators=[MinValueValidator(RETURN_SIMPLE_DAYS_MIN), MaxValueValidator(RETURN_SIMPLE_DAYS_MAX)],
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -3415,6 +3605,9 @@ class CompanySettings(models.Model):
                 <= self.POS_CANCEL_SIMPLE_DAYS_MAX):
             errors['pos_cancel_simple_days'] = [
                 f'Debe estar entre {self.POS_CANCEL_SIMPLE_DAYS_MIN} y {self.POS_CANCEL_SIMPLE_DAYS_MAX} días.']
+        if not (self.RETURN_SIMPLE_DAYS_MIN <= int(self.return_simple_days) <= self.RETURN_SIMPLE_DAYS_MAX):
+            errors['return_simple_days'] = [
+                f'Debe estar entre {self.RETURN_SIMPLE_DAYS_MIN} y {self.RETURN_SIMPLE_DAYS_MAX} días.']
         if errors:
             raise ValidationError(errors)
 

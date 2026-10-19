@@ -77,6 +77,8 @@ SALES_POLICY_OPTIONS = frozenset({
     'web_on_order_over_stock',
     # FINANCIAL-CLOSURE (owner, 2026-10-16): who may annul a till sale alone.
     'pos_cancel_simple_days',
+    # POST-DELIVERY-RETURN (owner, 2026-10-19, D5): who may register a late return alone.
+    'return_simple_days',
 })
 
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
