@@ -348,7 +348,21 @@ def available_moves(order, user, company) -> list[str]:
 
 HISTORY_ACTIONS = (
     'order_fulfillment_status_changed', 'order_left_marking_corrected', 'order_delivery_updated', 'order_cancelled',
+    # POST-DELIVERY-RETURN: each step of a return is part of the dispatch record.
+    'order_return_requested', 'order_return_received', 'order_return_closed', 'order_return_withdrawn',
 )
+#: Each entry as people read it (`label` of a history row). A move between
+#: states is read from its own labels; this is its generic name.
+HISTORY_LABELS = {
+    'order_fulfillment_status_changed': 'Cambio de estado de despacho',
+    'order_left_marking_corrected': 'Marcado de salida corregido',
+    'order_delivery_updated': 'Datos de entrega actualizados',
+    'order_cancelled': 'Pedido cancelado',
+    'order_return_requested': 'Devolución registrada',
+    'order_return_received': 'Devolución recibida',
+    'order_return_closed': 'Devolución cerrada',
+    'order_return_withdrawn': 'Devolución retirada',
+}
 
 
 def history(order) -> list[dict]:
@@ -369,6 +383,7 @@ def history(order) -> list[dict]:
         meta = row.metadata or {}
         item = {
             'id': row.pk, 'at': row.created_at.isoformat(), 'action': row.action,
+            'label': HISTORY_LABELS.get(row.action, row.action),
             'actor': left_marking.actor_label(row.actor),
             'old_status': '', 'new_status': '', 'old_label': '', 'new_label': '',
             'note': '', 'direction': '', 'corrected': False, 'corrects_id': None,
@@ -383,6 +398,9 @@ def history(order) -> list[dict]:
             item.update(note=meta.get('reason', '') or '', corrects_id=meta.get('corrected_audit_id'),
                         new_status=restored, new_label=labels.get(restored, restored))
         elif row.action == 'order_cancelled':
+            item.update(note=meta.get('reason', '') or '')
+        elif row.action in ('order_return_requested', 'order_return_withdrawn'):
+            # The reason a person wrote, as for a cancellation. Never the devices.
             item.update(note=meta.get('reason', '') or '')
         rows.append(item)
     return rows
