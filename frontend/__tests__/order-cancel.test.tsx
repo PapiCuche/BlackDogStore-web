@@ -243,4 +243,18 @@ describe('OrderCancelPanel · después', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByRole('region', { name: 'Pedido cancelado' })).toHaveTextContent('No había stock que reponer');
   });
+
+  it('cerrado por una devolución dice que el stock entró al recibirla', () => {
+    render(
+      <OrderCancelPanel
+        order={order({ status: 'cancelled', can_cancel: false,
+          cancellation: { ...CANCELLATION, stock_restored: false, goods_returned: true, by_return: true } })}
+        onCancelled={jest.fn()}
+      />,
+    );
+    const block = screen.getByRole('region', { name: 'Cancelado por devolución' });
+    expect(block).toHaveTextContent('Entró al recibir la devolución');
+    expect(block).toHaveTextContent('Recibida con la devolución posterior a la entrega');
+    expect(block).not.toHaveTextContent('No había stock que reponer');
+  });
 });

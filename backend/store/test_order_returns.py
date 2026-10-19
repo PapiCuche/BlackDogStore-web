@@ -546,6 +546,7 @@ class CloseTest(_ReturnBase):
                                    deduction_reason='Flete de vuelta')
 
         self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()['cancellation']['by_return'])      # the panel says why, not «no stock»
         order.refresh_from_db()
         self.assertEqual((order.status, order.fulfillment_status, order.paid), ('cancelled', 'cancelled', True))
         cancellation = OrderCancellation.objects.get(order=order)

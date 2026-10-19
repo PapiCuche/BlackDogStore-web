@@ -815,6 +815,8 @@ def _void_sales_note(order, actor, reason) -> bool:
 
 def payload(order) -> dict | None:
     """The cancellation as the panel shows it, or None."""
+    from .models import OrderReturn
+
     cancellation = (
         OrderCancellation.objects.select_related('cancelled_by').filter(order=order).first()
     )
@@ -834,6 +836,9 @@ def payload(order) -> dict | None:
         'was_paid': cancellation.was_paid,
         'goods_returned': cancellation.goods_returned,
         'holds_released': cancellation.holds_released,
+        # A post-delivery return closed it: the stock already came back at the
+        # reception (`order_returns`), so «no stock to restore» would mislead.
+        'by_return': OrderReturn.objects.filter(cancellation=cancellation).exists(),
     }
 
 

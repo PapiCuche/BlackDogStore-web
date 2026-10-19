@@ -872,6 +872,8 @@ export type OrderCancellation = {
   previous_status: string;
   previous_fulfillment_status: string;
   stock_restored: boolean;
+  /** Cerrada por una devolución posterior a la entrega: el stock entró al recibirla. */
+  by_return?: boolean;
   fiscal_pending: boolean;
   fiscal_document: string;
   sales_note_voided: boolean;

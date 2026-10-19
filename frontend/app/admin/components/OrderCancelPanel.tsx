@@ -313,7 +313,7 @@ export function OrderCancellationBlock({ cancellation }: { cancellation: OrderCa
       className="rounded-xl border border-danger-border bg-surface p-6"
     >
       <h2 id="order-cancellation-title" className="text-sm font-semibold text-danger">
-        {cancellation.goods_returned ? "Venta anulada" : "Pedido cancelado"}
+        {cancellation.by_return ? "Cancelado por devolución" : cancellation.goods_returned ? "Venta anulada" : "Pedido cancelado"}
       </h2>
       <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
         <div>
@@ -335,13 +335,19 @@ export function OrderCancellationBlock({ cancellation }: { cancellation: OrderCa
         <div>
           <dt className="text-xs text-muted">Stock</dt>
           <dd className="text-foreground">
-            {cancellation.stock_restored ? "Repuesto en la sucursal" : "No había stock que reponer"}
+            {cancellation.by_return
+              ? "Entró al recibir la devolución (Kardex: devolución de cliente)"
+              : cancellation.stock_restored ? "Repuesto en la sucursal" : "No había stock que reponer"}
           </dd>
         </div>
         {cancellation.goods_returned ? (
           <div>
             <dt className="text-xs text-muted">Mercadería</dt>
-            <dd className="text-foreground">Mercadería devuelta al local, confirmada al anular</dd>
+            <dd className="text-foreground">
+              {cancellation.by_return
+                ? "Recibida con la devolución posterior a la entrega"
+                : "Mercadería devuelta al local, confirmada al anular"}
+            </dd>
           </div>
         ) : null}
         {held > 0 ? (
