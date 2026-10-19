@@ -87,7 +87,9 @@ Decisiones D1–D8 del propietario (todas según la recomendación de
 - **Recepción:** el equipo exacto que salió con ese pedido, cada cantidad entera; un movimiento
   `customer_return` por línea al costo de la venta. Estado (D3): vendible → disponible; a revisión →
   apartado; dañado → entrada y baja. Cantidades: sólo vendible o dañado. Una cantidad ya devuelta
-  a mano después de la venta se rechaza (`manual_return_after_sale`). Con la mercadería recibida,
+  a mano después de la venta se rechaza (`manual_return_after_sale`); si esa entrada manual fue esta
+  misma devolución, un superior recibe la línea «ya ingresada a mano», sin mover stock
+  (`OrderReturnLine.entered_by_hand`, auditado). Nunca se pide revertir una entrada ajena. Con la mercadería recibida,
   el despacho no se mueve y no se puede identificar otro equipo para el pedido.
 - **Cierre:** la venta queda cancelada «por devolución» por la cancelación existente, sin reponer
   stock otra vez; un reembolso **pendiente** por lo cobrado menos un descuento opcional con motivo
