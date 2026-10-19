@@ -979,7 +979,8 @@ class ManualReturnBeforeReceptionTest(_ReturnBase):
 
         self.assertEqual((response.status_code, response.json()['code']), (409, 'manual_return_after_sale'))
         self.assertIn('Cable USB-C', response.json()['detail'])
-        self.assertIn('superior', response.json()['detail'])
+        self.assertIn('ya ingresado a mano', response.json()['detail'])
+        self.assertNotIn('Revierte', response.json()['detail'])
         self.assertEqual(self.cable_stock(), stock)
         self.assertFalse(self.customer_returns(order).exists())
 
@@ -1016,3 +1017,79 @@ class ReceptionLockOrderTest(_ReturnBase):
 
         ids = [int(pk) for pk in re.search(r'"product_id" IN \(([^)]*)\)', shelf_locks[0]).group(1).split(',')]
         self.assertEqual(ids, sorted([self.cable.pk, mouse.pk]))
+
+
+class ReceivedByHandTest(_ReturnBase):
+    """
+    Re-review P2. A later `return_entry` of the same product and branch may be
+    somebody else's. A superior may say that THIS return's goods already came
+    in by hand: the line is recorded, and writes no stock movement.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.mouse = _prod(self.company, 'Mouse', 'mouse-a-mano', price='50.00', inventory=0)
+        _m7_stock(self.branch_a, self.mouse, 10)
+        self.order = self.requested(self.delivered((self.cable, 3), (self.mouse, 1)))
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=self.cable.pk, movement_type=StockMovement.RETURN_ENTRY, quantity=3,
+            reason='Devolución en mostrador', actor=self.manager)
+        self.boss, _ = _p2d_member(self.company, 'superior_almacen', MANAGE + INVENTORY + ['company.manage'])
+        self.boss_desk = APIClient()
+        self.boss_desk.force_authenticate(self.boss)
+
+    def lines(self, cable_extra=None, mouse_extra=None):
+        return [self.line(self.order, self.cable, quantity=3, **(cable_extra or {})),
+                self.line(self.order, self.mouse, quantity=1, **(mouse_extra or {}))]
+
+    def test_the_payload_says_which_lines_and_who_may_receive_them_by_hand(self):
+        cable_item = self.order.items.get(product=self.cable).pk
+        as_keeper = self.block(self.order, self.store_desk)
+        self.assertEqual((as_keeper['manual_return_lines'], as_keeper['can_receive_by_hand']), ([cable_item], False))
+        as_boss = self.block(self.order, self.boss_desk)
+        self.assertEqual((as_boss['manual_return_lines'], as_boss['can_receive_by_hand']), ([cable_item], True))
+        as_desk = self.block(self.order)                      # cannot receive: told nothing about lines
+        self.assertEqual((as_desk['manual_return_lines'], as_desk['can_receive_by_hand']), ([], False))
+
+    def test_the_inventory_member_is_refused_even_saying_it_came_in_by_hand(self):
+        for extra in (None, {'already_in_stock': True}):
+            with self.subTest(extra=extra):
+                response = self.post_receive(self.order, self.lines(extra))
+                self.assertEqual(response.json()['code'],
+                                 'manual_return_after_sale' if extra is None else 'superior_required')
+        self.assertFalse(self.customer_returns(self.order).exists())
+
+    def test_a_superior_receives_it_without_a_movement_for_that_line_only(self):
+        cable_stock, mouse_stock = self.cable_stock(), inventory.branch_quantity(self.branch_a, self.mouse)
+
+        response = self.post_receive(self.order, self.lines({'already_in_stock': True}), client=self.boss_desk)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.cable_stock(), cable_stock)                            # already counted
+        self.assertEqual(inventory.branch_quantity(self.branch_a, self.mouse), mouse_stock + 1)
+        self.assertEqual(list(self.customer_returns(self.order).values_list('product_id', flat=True)),
+                         [self.mouse.pk])
+        by_hand = OrderReturnLine.objects.get(order_item__product=self.cable)
+        self.assertEqual((by_hand.entered_by_hand, by_hand.movement, by_hand.quantity), (True, None, 3))
+        self.assertFalse(OrderReturnLine.objects.get(order_item__product=self.mouse).entered_by_hand)
+        audit = AdminAuditLog.objects.get(action='order_return_received')
+        self.assertEqual(audit.metadata['entered_by_hand_lines'], [by_hand.pk])
+        self.assertEqual(OrderReturn.objects.get(order=self.order).status, 'received')
+
+    def test_by_hand_is_only_for_a_flagged_sellable_quantity_line(self):
+        self.phones(IMEI_A)
+        cases = (
+            (self.lines(mouse_extra={'already_in_stock': True}), 'already_in_stock_invalid'),     # not flagged
+            (self.lines({'already_in_stock': True, 'condition': 'damaged'}), 'condition_invalid'),
+            (self.lines({'already_in_stock': 'true'}), 'manual_return_after_sale'),             # only a literal true
+        )
+        for lines, code in cases:
+            with self.subTest(code=code):
+                response = self.post_receive(self.order, lines, client=self.boss_desk)
+                self.assertEqual(response.json()['code'], code, response.content)
+        phone_order = self.requested(self.delivered((self.phone, 1), devices=[IMEI_A]))
+        response = self.post_receive(
+            phone_order, [{**self.line(phone_order, self.phone), 'code': IMEI_A, 'already_in_stock': True}],
+            client=self.boss_desk)
+        self.assertEqual(response.json()['code'], 'already_in_stock_invalid')
+        self.assertFalse(StockMovement.objects.filter(movement_type=CUSTOMER_RETURN).exists())

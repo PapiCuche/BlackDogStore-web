@@ -2133,6 +2133,9 @@ class OrderReturnLine(models.Model):
     movement = models.ForeignKey(
         'store.StockMovement', null=True, blank=True, on_delete=models.PROTECT, related_name='return_lines',
     )
+    #: A superior said these goods were already entered by hand (a `return_entry`
+    #: after the sale): the line is recorded and writes no stock movement.
+    entered_by_hand = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2147,6 +2150,11 @@ class OrderReturnLine(models.Model):
             models.UniqueConstraint(
                 fields=['order_return', 'unit'], condition=models.Q(unit__isnull=False),
                 name='order_return_line_device_once',
+            ),
+            models.CheckConstraint(
+                condition=(models.Q(entered_by_hand=False)
+                           | models.Q(unit__isnull=True, movement__isnull=True, condition='sellable')),
+                name='order_return_line_by_hand_is_a_sellable_quantity',
             ),
         ]
 

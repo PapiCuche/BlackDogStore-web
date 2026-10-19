@@ -85,7 +85,7 @@ class OrderReturnError(Exception):
         'reason_required', 'reason_too_long', 'kind_invalid', 'lines_required', 'lines_invalid',
         'lines_incomplete', 'condition_invalid', 'branch_invalid', 'unit_code_required', 'unit_ambiguous',
         'amount_invalid', 'amount_mismatch', 'deduction_reason_required', 'deduction_reason_too_long',
-        'deduction_exceeds_paid', 'method_invalid',
+        'deduction_exceeds_paid', 'method_invalid', 'already_in_stock_invalid',
     ])
     _FORBIDDEN = frozenset(['superior_required', 'not_allowed', 'not_the_requester'])
 
@@ -300,7 +300,9 @@ def _clean_lines(lines) -> list[dict]:
             raise OrderReturnError('condition_invalid', 'Indica el estado en que llega: vendible, a revisión o dañado.')
         code = raw.get('code')
         rows.append({'order_item': item, 'quantity': quantity, 'condition': condition,
-                     'code': code if isinstance(code, str) else ''})
+                     'code': code if isinstance(code, str) else '',
+                     # Re-review P2: only a literal true — a superior's word.
+                     'already_in_stock': raw.get('already_in_stock') is True})
     return rows
 
 
@@ -370,19 +372,50 @@ def _find_device(order, code):
 NOT_THIS_ORDERS_DEVICE = 'Ese equipo no es uno de los que salieron con este pedido.'
 
 
-def _plan(order, rows):
+def manual_return_items(order) -> list[int]:
+    """
+    Ids of the quantity lines of `order` whose product has a manual
+    `return_entry` after its sale exit, in the same branch. That entry may be
+    this return's goods put back by hand — or somebody else's: only a
+    superior says which (`already_in_stock`).
+    """
+    by_hand = cancelling.products_returned_by_hand_after_sale(order)
+    if not by_hand:
+        return []
+    return sorted(order.items.filter(product_id__in=by_hand, product__is_serialized=False)
+                  .values_list('pk', flat=True))
+
+
+MANUAL_RETURN_DETAIL = (
+    '«{name}» tiene una entrada manual de devolución en el Kardex posterior a esta venta. Si esa entrada fue '
+    'la mercadería de esta devolución, un superior la recibe como «ya ingresado a mano» (sin mover stock); si '
+    'no, consulta a un superior antes de recibirla.')
+
+
+def _plan(order, rows, *, superior=False):
     """
     The reception, checked whole before anything moves: every line is of this
     order, every device named is one sold to it, and what comes back is
-    exactly what was sold (phase 1, D1).
+    exactly what was sold (phase 1, D1). A line `already_in_stock` (re-review
+    P2) is a superior's, for a quantity line flagged by the manual-return
+    check, sellable — it moves no stock.
     """
     items = {item.pk: item for item in order.items.select_related('product')}
+    flagged = set(manual_return_items(order))
     planned, seen_units, returned = [], set(), {}
     for row in rows:
         item = items.get(row['order_item'])
         if item is None:
             raise OrderReturnError('lines_invalid', 'Una de las líneas no es de este pedido.')
         product = item.product
+        if row['already_in_stock']:
+            if product.is_serialized or item.pk not in flagged:
+                raise OrderReturnError(
+                    'already_in_stock_invalid',
+                    f'«{product.name}» no tiene una entrada manual posterior a la venta: entra con la devolución.')
+            if row['condition'] != OrderReturnLine.CONDITION_SELLABLE:
+                raise OrderReturnError(
+                    'condition_invalid', 'Lo ya ingresado a mano está en el stock vendible: su estado es «vendible».')
         if product.is_serialized:
             if row['quantity'] != 1:
                 raise OrderReturnError('lines_invalid', f'«{product.name}» vuelve equipo por equipo: uno por línea.')
@@ -392,13 +425,13 @@ def _plan(order, rows):
             if unit.pk in seen_units:
                 raise OrderReturnError('lines_invalid', 'El mismo equipo figura dos veces.')
             seen_units.add(unit.pk)
-            planned.append((item, unit, 1, row['condition']))
+            planned.append((item, unit, 1, row['condition'], False))
         else:
             if row['condition'] not in QUANTITY_CONDITIONS:
                 raise OrderReturnError(
                     'condition_invalid',
                     f'«{product.name}» se cuenta por cantidad: vuelve «vendible» o «dañado» (a revisión, más adelante).')
-            planned.append((item, None, row['quantity'], row['condition']))
+            planned.append((item, None, row['quantity'], row['condition'], row['already_in_stock']))
         returned[product.pk] = returned.get(product.pk, 0) + row['quantity']
 
     sold, names = {}, {}
@@ -411,19 +444,21 @@ def _plan(order, rows):
                 'lines_incomplete',
                 f'La devolución es del pedido completo: de «{names[product_id]}» se vendieron {quantity} y se '
                 f'indican {returned.get(product_id, 0)}.')
-    # Review P2: goods of the sale put back by hand (`return_entry` after its
-    # exit, same product and branch) are not entered a second time.
-    by_hand = cancelling.products_returned_by_hand_after_sale(order)
-    for item, unit, _quantity, _condition in planned:
-        if unit is None and item.product_id in by_hand:
-            raise OrderReturnError(
-                'manual_return_after_sale',
-                f'«{item.product.name}» ya tiene una devolución manual en el Kardex posterior a esta venta: la '
-                'mercadería no entra dos veces. Revierte esa entrada manual o consulta a un superior antes de '
-                'recibir la devolución.')
+    # Review P2: goods of the sale may have been put back by hand already
+    # (`return_entry` after its exit, same product and branch): they do not
+    # enter twice. Whose they were, only a superior says.
+    for item, unit, _quantity, _condition, by_hand in planned:
+        if unit is None and item.pk in flagged:
+            if not by_hand:
+                raise OrderReturnError('manual_return_after_sale', MANUAL_RETURN_DETAIL.format(name=item.product.name))
+            if not superior:
+                raise OrderReturnError(
+                    'superior_required',
+                    f'Recibir «{item.product.name}» como ya ingresado a mano corresponde a un superior '
+                    '(administrador de la empresa).')
     # What comes back by quantity is what LEFT by quantity: a line short at
     # payment never left the stock, and must not come into it.
-    for item, unit, quantity, _condition in planned:
+    for item, unit, quantity, _condition, _by_hand in planned:
         if unit is None and not item.product.is_serialized:
             left = sum(StockMovement.objects.filter(
                 order=order, product_id=item.product_id, movement_type=StockMovement.SALE_EXIT,
@@ -517,19 +552,27 @@ def receive_return(order, user, *, branch, lines, request=None) -> OrderReturn:
         refused = order_blockers(locked)
         if refused:
             raise OrderReturnError(**refused[0])
-        planned = _plan(locked, rows)
+        planned = _plan(locked, rows, superior=may_close(user, locked.company))
         # Review P3: every shelf row of the reception up front, sorted — the
         # module's lock order (as a sale or a transfer takes them) — then the
         # devices by id. The per-line writers take them again, harmlessly.
         from . import inventory_services as inventory
 
-        inventory._locked_branch_stocks(branch, sorted({item.product for item, *_ in planned}, key=lambda p: p.pk))
+        inventory._locked_branch_stocks(
+            branch, sorted({item.product for item, _u, _q, _c, by_hand in planned if not by_hand},
+                           key=lambda p: p.pk))
         devices = sorted(unit.pk for _item, unit, *_ in planned if unit is not None)
         if devices:
             list(StockUnit.objects.select_for_update().filter(pk__in=devices).order_by('pk'))
 
         movements, written = [], []
-        for item, unit, quantity, condition in planned:
+        for item, unit, quantity, condition, by_hand in planned:
+            if by_hand:
+                # Its goods are already counted (the manual entry): recorded, not moved.
+                written.append(OrderReturnLine.objects.create(
+                    order_return=order_return, order_item=item, quantity=quantity, condition=condition,
+                    entered_by_hand=True))
+                continue
             common = dict(
                 branch=branch, movement_type=StockMovement.CUSTOMER_RETURN, actor=actor, order=locked,
                 reason=f'Devolución del pedido #{locked.pk}', reference_type='order_return',
@@ -569,8 +612,11 @@ def receive_return(order, user, *, branch, lines, request=None) -> OrderReturn:
                 'order_id': locked.pk, 'return_id': order_return.pk, 'branch_id': branch.pk,
                 # Ids and states only: the devices are the record, not their numbers.
                 'lines': [{'line_id': line.pk, 'order_item_id': line.order_item_id, 'unit_id': line.unit_id,
-                           'quantity': line.quantity, 'condition': line.condition} for line in written],
+                           'quantity': line.quantity, 'condition': line.condition,
+                           'entered_by_hand': line.entered_by_hand} for line in written],
                 'movements': sorted(movements),
+                # Re-review P2: the lines a superior received as already entered by hand — no movement.
+                'entered_by_hand_lines': [line.pk for line in written if line.entered_by_hand],
                 'fulfillment_status': locked.fulfillment_status,
             },
             request=request, company=locked.company,
@@ -760,6 +806,7 @@ def describe(order_return) -> dict | None:
                 'imei': mask(line.unit.imei) if line.unit_id else '',
                 'condition': line.condition,
                 'condition_label': line.get_condition_display(),
+                'entered_by_hand': line.entered_by_hand,
             }
             for line in lines
         ],
@@ -788,6 +835,7 @@ def block(order, user, company) -> dict:
     if can_receive:
         branches = [{'id': b.pk, 'name': b.name} for b in receiving_branches(user, company)]
         can_receive = bool(branches)
+    manual_lines = manual_return_items(order) if can_receive else []
     return {
         'eligible': not refused,
         'can_request': requester and not blockers,
@@ -800,12 +848,18 @@ def block(order, user, company) -> dict:
         'window_days': window_days(company),
         'paid_amount': str((order.total if order.paid else ZERO).quantize(CENT)),
         'receive_branches': branches,
+        # Re-review P2: the quantity lines with a manual entry after the sale
+        # (to whoever may receive), and whether THIS caller may receive them as
+        # already entered by hand (a superior).
+        'manual_return_lines': manual_lines,
+        'can_receive_by_hand': can_receive and superior and bool(manual_lines),
         'return': describe(shown),
     }
 
 
 __all__ = [
-    'OrderReturnError', 'block', 'close_return', 'current', 'delivered_at', 'describe', 'may_close',
+    'OrderReturnError', 'block', 'close_return', 'current', 'delivered_at', 'describe', 'manual_return_items',
+    'may_close',
     'may_receive', 'may_request', 'may_withdraw', 'order_blockers', 'receive_return', 'request_blockers',
     'request_return', 'window_conditions', 'window_days', 'withdraw_return',
 ]
