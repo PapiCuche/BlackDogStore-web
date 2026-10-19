@@ -338,6 +338,11 @@ def candidate_for_order(*, order, code, method):
     method = clean_method(method)
     if order.status != Order.Status.PAID:
         raise UnitIdentificationError('not_paid', 'Este pedido no está pagado: todavía no se entrega ningún equipo.')
+    if returning(order):
+        raise UnitIdentificationError(
+            'return_open',
+            'Este pedido tiene una devolución: sus equipos vuelven a la tienda, no se identifica ninguno para '
+            'entregarlo. Revisa la devolución desde «Devolución».')
     unit = find_unit(order.company, code)
     _typed_by_hand_is_an_imei(unit, code, method)
 
@@ -353,6 +358,18 @@ def candidate_for_order(*, order, code, method):
         raise UnitIdentificationError('complete', f'Los equipos de «{unit.product.name}» de este pedido ya están identificados.')
     _standing(order, unit)
     return unit
+
+
+def returning(order) -> bool:
+    """
+    POST-DELIVERY-RETURN. Whether `order` has a return registered, received or
+    closed (not withdrawn). Its goods are on their way back or back: naming a
+    device for it now would take one out of the shelf («second exit») that the
+    close of the return never puts back.
+    """
+    from .models import OrderReturn
+
+    return OrderReturn.objects.filter(order_id=order.pk).exclude(status=OrderReturn.STATUS_WITHDRAWN).exists()
 
 
 def _set_aside(order, product_id):
@@ -508,7 +525,7 @@ def order_view(order) -> dict:
             'identified_by': row.identified_by.username if row.identified_by_id else '',
             'can_remove': (row.left_at is None or row.pk in excused) and not left,
         })
-    return {'pending': pending, 'records': records, 'left': left}
+    return {'pending': pending, 'records': records, 'left': left, 'returning': returning(order)}
 
 
 def _excused(order) -> set[int]:

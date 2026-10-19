@@ -12,7 +12,9 @@ WHAT CAN BE GIVEN BACK (`summary`)
                 a duplicate (a payment that arrived after the order was paid
                 or cancelled: money the shop holds all the same) — except
                 those made with TEST keys, which are not money.
-    refundable  collected − pending − confirmed. A new refund never exceeds it.
+    kept        POST-DELIVERY-RETURN: what a closed return deducted (the freight
+                back, a used product): money the shop keeps, never refunded.
+    refundable  collected − kept − pending − confirmed. A new refund never exceeds it.
     held        collected − confirmed: still in the shop's hands.
 
 CONFIRMING IS EVIDENCE (owner, 2026-10-16). «Reembolso confirmado requiere
@@ -123,15 +125,25 @@ def _sum(order, status) -> Decimal:
         total=Coalesce(Sum('amount'), ZERO))['total'].quantize(CENT)
 
 
+def kept(order) -> Decimal:
+    """What a closed post-delivery return of `order` deducted: the shop keeps it (D4)."""
+    from .models import OrderReturn
+
+    return OrderReturn.objects.filter(order_id=order.pk, status=OrderReturn.STATUS_CLOSED).aggregate(
+        total=Coalesce(Sum('deduction_amount'), ZERO))['total'].quantize(CENT)
+
+
 def summary(order) -> dict:
     taken = collected(order)
     confirmed = _sum(order, OrderRefund.STATUS_CONFIRMED)
     pending = _sum(order, OrderRefund.STATUS_PENDING)
+    deducted = kept(order)
     return {
         'collected': taken,
         'confirmed': confirmed,
         'pending': pending,
-        'refundable': max(taken - confirmed - pending, ZERO),
+        'kept': deducted,
+        'refundable': max(taken - deducted - confirmed - pending, ZERO),
         'held': max(taken - confirmed, ZERO),
     }
 
@@ -268,7 +280,7 @@ def confirm(refund, user, *, reference, evidence=None, amount=None, note='', req
                 f'El importe confirmado debe ser exactamente el del reembolso pendiente (S/ {locked.amount}). '
                 'Para un reembolso parcial, registra antes un pendiente por ese importe.')
         figures = summary(locked_order)
-        if figures['confirmed'] + locked.amount > figures['collected']:
+        if figures['confirmed'] + locked.amount > figures['collected'] - figures['kept']:
             raise RefundError(
                 'amount_exceeds', 'Confirmarlo devolvería más de lo cobrado por este pedido.')
         now = timezone.now()
@@ -319,4 +331,4 @@ def payload(order) -> dict:
     }
 
 
-__all__ = ['RefundError', 'clean_evidence', 'collected', 'confirm', 'may_confirm', 'may_record', 'payload', 'record_pending', 'summary']
+__all__ = ['RefundError', 'clean_evidence', 'collected', 'confirm', 'kept', 'may_confirm', 'may_record', 'payload', 'record_pending', 'summary']

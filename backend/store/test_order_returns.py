@@ -883,3 +883,136 @@ class DispatchWhileReturnedTest(_ReturnBase):
         detail = self.detail(order)
         self.assertEqual(detail['available_fulfillment_transitions'], [])
         self.assertIsNone(detail['dispatch']['forward'])
+
+
+# -- review of 2026-10-19 ----------------------------------------------------------------------
+
+class RefundAfterADeductionTest(_ReturnBase):
+    """P1-a. What the close deducted is kept by the shop: nobody records it as a refund later."""
+
+    def test_nothing_beyond_paid_minus_deduction_can_be_recorded(self):
+        from store import order_refunds
+
+        order = self.received(self.delivered((self.cable, 3)))                 # 147.00
+        self.assertEqual(self.post_close(order, refund_amount='127.00', deduction_amount='20.00',
+                                         deduction_reason='Flete de vuelta').status_code, 200)
+        figures = order_refunds.summary(order)
+        self.assertEqual((figures['refundable'], figures['pending'], figures['kept']),
+                         (D('0.00'), D('127.00'), D('20.00')))
+        self.assertFalse(self.detail(order)['refunds']['can_record'])
+        for body in ({'method': 'cash', 'amount': '20.00'}, {'method': 'cash'}):
+            with self.subTest(body=body):
+                response = self.post_refund(order, **body)
+                self.assertEqual((response.status_code, response.json()['code']), (409, 'nothing_to_refund'))
+        self.assertEqual(OrderRefund.objects.filter(order=order).count(), 1)
+
+    def test_a_cancellation_without_a_return_still_records_its_refund(self):
+        order = self.web_order((self.cable, 1))
+        self.post_cancel(order)
+        self.assertTrue(self.detail(order)['refunds']['can_record'])
+        self.assertEqual(self.post_refund(order, method='cash').status_code, 201)
+        self.assertFalse(self.detail(order)['refunds']['can_record'])
+
+
+class IdentificationWhileReturningTest(_ReturnBase):
+    """
+    P1-b. An order delivered before devices were identified has no `OrderUnit`.
+    Once its device is back, identifying one for it would take a device out
+    again («second exit») that the close never puts back.
+    """
+
+    def returning(self):
+        from store.fulfillment_test_support import legacy_move
+
+        self.phones(IMEI_A, IMEI_B)
+        order = self.web_order((self.phone, 1))
+        legacy_move(order, 'delivered', actor=self.manager, company=self.company)   # no device named
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())
+        return self.requested(order)
+
+    def attempts(self, order, code):
+        lookup = self.desk.get(f'/api/admin/orders/{order.pk}/units/lookup/?{self.q}&code={code}&method=scanner')
+        identify = self.desk.post(f'/api/admin/orders/{order.pk}/units/?{self.q}', {'code': code, 'method': 'scanner'},
+                                  format='json')
+        return lookup, identify
+
+    def assert_refused(self, order, code):
+        for response in self.attempts(order, code):
+            self.assertEqual((response.status_code, response.json()['code']), (409, 'return_open'), response.content)
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())
+        self.assertFalse(self.detail(order)['units_can_change'])
+
+    def test_a_requested_return_already_stops_identifying_devices(self):
+        order = self.returning()
+        sold = StockUnit.objects.get(order=order)
+        self.assert_refused(order, sold.imei)
+
+    def test_after_the_reception_no_second_exit_takes_the_device_out_again(self):
+        order = self.returning()
+        sold = StockUnit.objects.get(order=order)
+        self.assertEqual(self.post_receive(order, [{**self.line(order, self.phone), 'code': sold.imei}]).status_code,
+                         200)
+        self.assert_refused(order, sold.imei)
+        with self.assertRaises(picking.UnitIdentificationError):
+            picking.identify_for_order(order=order, code=sold.imei, method='scanner', actor=self.manager)
+        self.assertEqual(StockUnit.objects.get(pk=sold.pk).status, 'available')
+        self.assertFalse(StockMovement.objects.filter(metadata__second_exit_for_order=order.pk).exists())
+
+    def test_a_withdrawn_return_lets_identification_happen_again(self):
+        order = self.returning()
+        self.assertEqual(self.post_withdraw(order).status_code, 200)
+        lookup, _identify = self.attempts(order, StockUnit.objects.get(order=order).imei)
+        self.assertNotEqual(lookup.json().get('code'), 'return_open')
+
+
+class ManualReturnBeforeReceptionTest(_ReturnBase):
+    """P2. Goods put back by hand (`return_entry`) after the sale are not entered a second time."""
+
+    def test_a_quantity_already_entered_by_hand_is_refused(self):
+        order = self.requested(self.delivered((self.cable, 3)))
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=self.cable.pk, movement_type=StockMovement.RETURN_ENTRY, quantity=3,
+            reason='Devolución del cliente', actor=self.manager)
+        stock = self.cable_stock()
+
+        response = self.post_receive(order, self.whole(order))
+
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'manual_return_after_sale'))
+        self.assertIn('Cable USB-C', response.json()['detail'])
+        self.assertIn('superior', response.json()['detail'])
+        self.assertEqual(self.cable_stock(), stock)
+        self.assertFalse(self.customer_returns(order).exists())
+
+    def test_a_manual_return_in_another_branch_or_before_the_sale_does_not_count(self):
+        _m7_stock(self.branch_b, self.cable, 5)
+        inventory.create_stock_movement(
+            branch=self.branch_a, product_id=self.cable.pk, movement_type=StockMovement.RETURN_ENTRY, quantity=1,
+            reason='Antes de la venta', actor=self.manager)
+        order = self.requested(self.delivered((self.cable, 3)))
+        inventory.create_stock_movement(
+            branch=self.branch_b, product_id=self.cable.pk, movement_type=StockMovement.RETURN_ENTRY, quantity=1,
+            reason='Otra sucursal', actor=self.manager)
+        self.assertEqual(self.post_receive(order, self.whole(order)).status_code, 200)
+
+
+class ReceptionLockOrderTest(_ReturnBase):
+    """P3. Every shelf row of the reception is locked up front, in the module's order."""
+
+    def test_the_shelf_rows_are_locked_together_sorted_before_anything_moves(self):
+        from django.test.utils import CaptureQueriesContext
+
+        mouse = _prod(self.company, 'Mouse', 'mouse-orden', price='50.00', inventory=0)
+        _m7_stock(self.branch_a, mouse, 10)
+        order = self.requested(self.delivered((self.cable, 1), (mouse, 1)))
+        lines = [self.line(order, mouse, quantity=1), self.line(order, self.cable, quantity=1)]
+        lines.sort(key=lambda row: -OrderItem.objects.get(pk=row['order_item']).product_id)
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.post_receive(order, lines).status_code, 200)
+
+        shelf_locks = [q['sql'] for q in queries.captured_queries
+                       if 'FOR UPDATE' in q['sql'] and '"store_branchstock"' in q['sql']]
+        import re
+
+        ids = [int(pk) for pk in re.search(r'"product_id" IN \(([^)]*)\)', shelf_locks[0]).group(1).split(',')]
+        self.assertEqual(ids, sorted([self.cable.pk, mouse.pk]))

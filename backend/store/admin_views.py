@@ -1268,9 +1268,11 @@ def _order_detail_payload(request, order, company):
     if cancelling.is_cancelled(order):
         # COMMERCE-ADMIN-UX-01: what was collected, what is owed back and what
         # went back, and what THIS caller may do about it.
+        refunds_block = order_refunds.payload(order)
         refunds_block = {
-            **order_refunds.payload(order),
-            'can_record': may_cancel,
+            **refunds_block,
+            # Nothing left to give back (a closed return's deduction is kept): nothing to record.
+            'can_record': may_cancel and Decimal(refunds_block['refundable']) > 0,
             'can_confirm': order_refunds.may_confirm(request.user, company),
         }
     return {
@@ -1303,7 +1305,8 @@ def _order_detail_payload(request, order, company):
         'units_pending': sum(pending.values()),
         # Whether THIS caller may say which device it is: whoever may change how
         # the order is dispatched, and only until it has left the shop.
-        'units_can_change': may_move and not view['left'],
+        # POST-DELIVERY-RETURN: nor while a return is registered, received or closed.
+        'units_can_change': may_move and not view['left'] and not view['returning'],
         'available_fulfillment_transitions': transitions,
         # ORDER-FULFILLMENT-SAFETY-01: the path by delivery mode, its history
         # from the audit log and the leaving entries a superior may correct.

@@ -411,6 +411,16 @@ def _plan(order, rows):
                 'lines_incomplete',
                 f'La devolución es del pedido completo: de «{names[product_id]}» se vendieron {quantity} y se '
                 f'indican {returned.get(product_id, 0)}.')
+    # Review P2: goods of the sale put back by hand (`return_entry` after its
+    # exit, same product and branch) are not entered a second time.
+    by_hand = cancelling.products_returned_by_hand_after_sale(order)
+    for item, unit, _quantity, _condition in planned:
+        if unit is None and item.product_id in by_hand:
+            raise OrderReturnError(
+                'manual_return_after_sale',
+                f'«{item.product.name}» ya tiene una devolución manual en el Kardex posterior a esta venta: la '
+                'mercadería no entra dos veces. Revierte esa entrada manual o consulta a un superior antes de '
+                'recibir la devolución.')
     # What comes back by quantity is what LEFT by quantity: a line short at
     # payment never left the stock, and must not come into it.
     for item, unit, quantity, _condition in planned:
@@ -508,6 +518,15 @@ def receive_return(order, user, *, branch, lines, request=None) -> OrderReturn:
         if refused:
             raise OrderReturnError(**refused[0])
         planned = _plan(locked, rows)
+        # Review P3: every shelf row of the reception up front, sorted — the
+        # module's lock order (as a sale or a transfer takes them) — then the
+        # devices by id. The per-line writers take them again, harmlessly.
+        from . import inventory_services as inventory
+
+        inventory._locked_branch_stocks(branch, sorted({item.product for item, *_ in planned}, key=lambda p: p.pk))
+        devices = sorted(unit.pk for _item, unit, *_ in planned if unit is not None)
+        if devices:
+            list(StockUnit.objects.select_for_update().filter(pk__in=devices).order_by('pk'))
 
         movements, written = [], []
         for item, unit, quantity, condition in planned:

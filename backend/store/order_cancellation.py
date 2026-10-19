@@ -668,15 +668,25 @@ def _manual_return_after_sale(order) -> bool:
     serialized product is safe: only the devices still sold to the order come
     back, and a device returned by `return_unit` is counted, not restored.
     """
+    return bool(products_returned_by_hand_after_sale(order))
+
+
+def products_returned_by_hand_after_sale(order) -> set[int]:
+    """
+    The rule of `_manual_return_after_sale`, product by product: ids of the
+    products counted by quantity of `order` with a `return_entry` into the
+    branch of one of their sale exits, written after it. POST-DELIVERY-RETURN
+    asks it per line (`order_returns._plan`).
+    """
     exits = StockMovement.objects.filter(
         order=order, movement_type=StockMovement.SALE_EXIT, product__is_serialized=False,
     ).values_list('pk', 'product_id', 'branch_id')
-    return any(
-        StockMovement.objects.filter(
+    return {
+        product_id for pk, product_id, branch_id in exits
+        if StockMovement.objects.filter(
             movement_type=StockMovement.RETURN_ENTRY, product_id=product_id, branch_id=branch_id, pk__gt=pk,
         ).exists()
-        for pk, product_id, branch_id in exits
-    )
+    }
 
 
 def _release_supply(order, actor, reason, request) -> list[dict]:
