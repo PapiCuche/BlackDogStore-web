@@ -110,6 +110,8 @@ class FulfillmentBlocked(Exception):
     #: this order's path, or back after the goods left; «Enviado» without the
     #: carrier's data; a step back without a reason (the only 400).
     TRANSITION_NOT_ALLOWED = 'transition_not_allowed'
+    #: Post-delivery return: the goods are back in the shop; the path stops.
+    RETURN_RECEIVED = 'return_received'
     LOGISTICS_MISSING = 'logistics_missing'
     REASON_REQUIRED = 'reason_required'
 
@@ -204,6 +206,12 @@ def change_fulfillment_status(
                 pending={}, code=FulfillmentBlocked.ORDER_CANCELLED,
             )
         previous = current[1] if current is not None else order.fulfillment_status
+        if _return_received(order):
+            raise FulfillmentBlocked(
+                'La mercadería de este pedido volvió con una devolución: su despacho ya no cambia. '
+                'Cierra la devolución desde «Devolución».',
+                pending={}, code=FulfillmentBlocked.RETURN_RECEIVED,
+            )
         # ORDER-FULFILLMENT-SAFETY-01. Exactly the next step of this order's
         # path, or exactly one back with a reason while the goods never left.
         # Asked of the locked status, not of `order`.
@@ -340,7 +348,7 @@ def available_moves(order, user, company) -> list[str]:
     from . import order_cancellation as cancelling
 
     allowed = set(allowed_fulfillment_statuses(user, company))
-    if not allowed or cancelling.is_cancelled(order):
+    if not allowed or cancelling.is_cancelled(order) or _return_received(order):
         return []
     found = fulfillment_flow.moves(order)
     return [s for s in (found['back'], found['forward']) if s and s in allowed]
@@ -481,3 +489,10 @@ def dispatch_view(order, user, company) -> dict:
         'left_markings': left_marking.markings(order, user, company),
         'may_correct': left_marking.may_correct(user, company),
     }
+
+
+def _return_received(order) -> bool:
+    """Whether a post-delivery return of `order` already brought its goods back."""
+    from .models import OrderReturn
+
+    return OrderReturn.objects.filter(order_id=order.pk, status=OrderReturn.STATUS_RECEIVED).exists()

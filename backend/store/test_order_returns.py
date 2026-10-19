@@ -854,3 +854,31 @@ class ReceiveAtTheSameInstantTest(TransactionTestCase):
         self.assertIn(lost[0].code, ('already_closed', 'already_cancelled'))
         self.assertEqual((OrderCancellation.objects.count(), OrderRefund.objects.count()), (1, 1))
         self.assertEqual(Order.objects.get(pk=self.order.pk).status, 'cancelled')
+
+
+class DispatchWhileReturnedTest(_ReturnBase):
+    """Once the goods are back in the shop, the dispatch path does not move on."""
+
+    def sent(self):
+        from store.models import OrderDelivery
+
+        order = self.web_order(delivery_method=Order.DeliveryMethod.DELIVERY_AREQUIPA)
+        OrderDelivery.objects.create(company=self.company, order=order, mode=OrderDelivery.Mode.LOCAL_DELIVERY)
+        walk_to(order, 'shipped', actor=self.manager, company=self.company)
+        return order
+
+    def test_a_requested_return_still_lets_the_parcel_be_delivered(self):
+        order = self.requested(self.sent())
+        response = self.desk.patch(f'/api/admin/orders/{order.pk}/fulfillment-status/?{self.q}',
+                                   {'fulfillment_status': 'delivered'}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_a_received_return_stops_the_dispatch(self):
+        order = self.received(self.sent())
+        response = self.desk.patch(f'/api/admin/orders/{order.pk}/fulfillment-status/?{self.q}',
+                                   {'fulfillment_status': 'delivered'}, format='json')
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()['code'], 'return_received')
+        detail = self.detail(order)
+        self.assertEqual(detail['available_fulfillment_transitions'], [])
+        self.assertIsNone(detail['dispatch']['forward'])
