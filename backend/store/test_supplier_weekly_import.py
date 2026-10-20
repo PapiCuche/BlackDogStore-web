@@ -191,6 +191,14 @@ class PartialUpdateTest(WeeklyFile, TestCase):
                          (running_before.valid_from, running_before.valid_until, running_before.updated_at))
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
 
+    def test_a_future_row_that_reaches_no_scheduled_offer_is_a_new_one(self):
+        later = self.make_offer(valid_from=today() + timedelta(days=20), valid_until=today() + timedelta(days=25))
+        body = self.preview([self.same(**{'Vigente desde': (today() + timedelta(days=8)).isoformat(),
+                                          'Vigente hasta': (today() + timedelta(days=14)).isoformat()})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(SupplierOffer.objects.get(pk=later.pk).valid_from, today() + timedelta(days=20))
+
     def test_a_scheduled_offer_the_row_reaches_is_updated_in_place(self):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=today() + timedelta(days=3),
                                                               valid_until=today() + timedelta(days=9))
