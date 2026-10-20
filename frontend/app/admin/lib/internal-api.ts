@@ -2175,7 +2175,30 @@ export type AdminModelVariant = {
   price: string;
   options: AdminVariantOption[];
   stock: number;
+  /** CATALOG-VARIANTS-UX: the product's own publication in the shop. */
+  is_published_online: boolean;
+  /** What the variant already carries: order lines, devices received, devices set aside. */
+  history: VariantHistory;
+  /** How its model and options may change (see `VariantEditRule`). */
+  identity_change: VariantEditRule;
+  /** How its line (new / used) may change. */
+  line_change: VariantEditRule;
+  /** How it may be taken out of the model: blocked while it holds devices or stock. */
+  removal?: VariantEditRule;
 };
+
+export type VariantHistory = {
+  sold: number; units: number; reserved: number;
+  /** Units on the shelves of a product counted by quantity; Kardex history; orders not handed over. */
+  stock?: number; moved?: boolean; open_orders?: number;
+};
+
+/**
+ * CATALOG-VARIANTS-UX — `free`: anyone with `products.manage`; `superior`: a
+ * company administrator, with a reason that stays in the audit; `blocked`:
+ * nobody, until what holds it (a reservation, its own devices) is gone.
+ */
+export type VariantEditRule = "free" | "superior" | "blocked";
 
 export type AdminCatalogModelDetail = AdminCatalogModel & { variants: AdminModelVariant[] };
 
@@ -2312,10 +2335,16 @@ export function updateAttributeOption(
   );
 }
 
-/** Make a product a variant of a model (or take it out with `model_id: null`). */
+/**
+ * Make a product a variant of a model (or take it out with `model_id: null`).
+ * Editing a variant is this same call on the same product: it never creates
+ * one. `reason` is what a superior writes when the variant already has history
+ * (400 `history_reason_required` without it, 403 `history_needs_superior` for
+ * anyone else; 409 `variant_reserved` / `line_change_with_units` when nobody may).
+ */
 export function setProductVariant(
   productId: number,
-  body: { model_id: number | null; condition_line: CatalogLine; option_ids: number[] },
+  body: { model_id: number | null; condition_line: CatalogLine; option_ids: number[]; reason?: string },
   companyId?: number | null,
 ): Promise<unknown> {
   return catalogCall(

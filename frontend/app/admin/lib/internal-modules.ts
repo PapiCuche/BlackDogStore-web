@@ -8,13 +8,19 @@
  *
  * THE VISIBILITY RULE
  * -------------------
- *     visible and clickable  =  status === "implemented"
+ *     visible and clickable  =  status is "implemented" or "partial"
  *                               AND the caller has access
  *                               AND the module has an href
  *
- * A module that does not exist yet never becomes a dead link. Pending and
- * proposed entries exist so the Dashboard can show an honest roadmap, and they
- * are only rendered there — never in the sidebar.
+ * A module that does not exist yet never becomes a dead link: a partial module
+ * carries an `href` only when its page exists (a test checks every `href`
+ * against the page files). Pending and proposed entries exist so company
+ * administrators can see an honest roadmap in a collapsed section of the
+ * Dashboard — never in the sidebar, and never as a link.
+ *
+ * ONE ENTRY PER MEANING. Two entries for the same screen or the same pending
+ * flow make the reader ask which one is real; each duplicate removed below
+ * says where its meaning lives now.
  *
  * TWO ACCESS PREDICATES, ON PURPOSE
  * ---------------------------------
@@ -220,6 +226,16 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   { id: "sales.receivables", group: "sales", label: "Cuentas por cobrar", description: "Saldos pendientes de cobro.", status: "pending" },
+  {
+    // Partial and without `href`: there is no screen of its own. The electronic
+    // receipt is issued and followed from the order (and the till); the daily
+    // summary and the void communications have no screen yet.
+    id: "sales.invoicing",
+    group: "sales",
+    label: "Facturación electrónica",
+    description: "Boletas y facturas se emiten y consultan desde el pedido. El Resumen Diario y las comunicaciones de baja todavía no tienen pantalla.",
+    status: "partial",
+  },
 
   // ── Caja ─────────────────────────────────────────────────────────────────
   { id: "cash.session", group: "cash", label: "Apertura / cierre", description: "Sesiones de caja por turno.", status: "pending" },
@@ -227,9 +243,20 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "cash.petty", group: "cash", label: "Caja chica", description: "Gastos menores.", status: "pending" },
 
   // ── Compras ──────────────────────────────────────────────────────────────
-  { id: "purchases.suppliers", group: "purchases", label: "Proveedores", description: "Directorio de proveedores.", status: "pending" },
+  // «Proveedores» is `products.suppliers` (Productos › Proveedores): the pending
+  // duplicate that used to sit here is gone.
   { id: "purchases.orders", group: "purchases", label: "Órdenes de compra", description: "Compras a proveedores.", status: "pending" },
   { id: "purchases.receipts", group: "purchases", label: "Recepciones", description: "Recepción de mercadería.", status: "pending" },
+  {
+    // PAYABLES-01. Partial and without `href`: what is owed to each supplier
+    // for on-order sales can be READ in Proveedores (with `costs.view`), but
+    // nothing records a payment or settles it yet.
+    id: "purchases.payables",
+    group: "purchases",
+    label: "Cuentas por pagar",
+    description: "Lo pendiente de liquidar a cada proveedor se consulta en Proveedores; registrar pagos y liquidar está pendiente.",
+    status: "partial",
+  },
 
   // ── Clientes ─────────────────────────────────────────────────────────────
   {
@@ -245,8 +272,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
     quickAction: true,
   },
-  { id: "customers.devices", group: "customers", label: "Equipos", description: "Equipos registrados por cliente. Fase 5.", status: "pending" },
-  { id: "customers.warranties", group: "customers", label: "Garantías", description: "Garantías vigentes.", status: "pending" },
+  {
+    // Partial and without `href`: a device is registered when Servicio Técnico
+    // receives it, and every service order shows its own; there is no screen
+    // that lists a customer's devices.
+    id: "customers.devices",
+    group: "customers",
+    label: "Equipos",
+    description: "Los equipos se registran al recibirlos en Servicio Técnico; aún no hay una lista de equipos por cliente.",
+    status: "partial",
+  },
+  // «Garantías» is one pending flow, `service.warranty`: the duplicate here is gone.
   { id: "customers.loyalty", group: "customers", label: "Fidelización", description: "Programas, reglas y premios.", status: "proposed" },
 
   // ── Productos ────────────────────────────────────────────────────────────
@@ -493,13 +529,19 @@ export const INTERNAL_MODULES: InternalModule[] = [
   { id: "service.diagnostic", group: "service", label: "Diagnóstico", description: "Diagnóstico y cotización.", href: "/admin/service/diagnostics", requiredCapabilities: ["service.diagnostic.manage"], status: "implemented" },
   { id: "service.repair", group: "service", label: "Reparación", description: "Ejecución y repuestos.", href: "/admin/service/repairs", requiredCapabilities: ["service.repair.manage"], status: "implemented" },
   { id: "service.quality", group: "service", label: "Control de calidad", description: "Verificación previa a entrega.", href: "/admin/service/quality", requiredCapabilities: ["service.quality.manage"], status: "implemented" },
-  { id: "service.delivery", group: "service", label: "Entrega", description: "Entrega al cliente. No registra cobro.", href: "/admin/service/delivery", requiredCapabilities: ["service.delivery.manage"], status: "implemented" },
-  { id: "service.warranty", group: "service", label: "Garantías", description: "Reingresos y garantías.", status: "pending" },
+  { id: "service.delivery", group: "service", label: "Entrega", description: "Entrega al cliente. El cobro del servicio se registra en la orden, y la entrega puede exigir el saldo pagado.", href: "/admin/service/delivery", requiredCapabilities: ["service.delivery.manage"], status: "implemented" },
+  { id: "service.warranty", group: "service", label: "Garantías", description: "Garantías vigentes, reingresos y reclamos de garantía.", status: "pending" },
 
   // ── Reportes ─────────────────────────────────────────────────────────────
-  { id: "reports.sales", group: "reports", label: "Ventas", description: "Más vendidos e ingresos por producto.", status: "partial" },
+  // Two entries left this group because they already exist elsewhere, and a
+  // second entry to the same screen breaks «one entry per screen»:
+  //   · «Ventas» (más vendidos e ingresos por producto) is `sales.summary`,
+  //     Ventas › Resumen comercial (/admin/sales).
+  //   · «Rentabilidad» (margen por producto, sucursal y canal) is
+  //     `inventory.costs`, Inventario › Costos y precios (/admin/inventory/costs),
+  //     gated by `costs.view`. Removed rather than reclassified: reclassified, it
+  //     would be a second link to the same page under another name.
   { id: "reports.technicians", group: "reports", label: "Técnicos", description: "Productividad de taller.", status: "pending" },
-  { id: "reports.profitability", group: "reports", label: "Rentabilidad", description: "Margen por producto y periodo.", status: "pending" },
 
   // ── Administración ───────────────────────────────────────────────────────
   {
@@ -678,11 +720,19 @@ export function canAccessModule(
   return Boolean(ctx.legacyRole) && legacyRoles.includes(ctx.legacyRole as string);
 }
 
-/** Sidebar entries: implemented, reachable and actually routable. */
+/**
+ * Whether a module is a link for this caller: it exists (implemented, or
+ * partial with a page of its own), it has an `href` and the caller reaches it.
+ */
+export function isNavigable(module: InternalModule, ctx: ModuleAccessContext): boolean {
+  return (module.status === "implemented" || module.status === "partial")
+    && Boolean(module.href)
+    && canAccessModule(module, ctx);
+}
+
+/** Sidebar entries: existing, reachable and actually routable. */
 export function navigableModules(ctx: ModuleAccessContext): InternalModule[] {
-  return INTERNAL_MODULES.filter(
-    (m) => m.status === "implemented" && Boolean(m.href) && canAccessModule(m, ctx),
-  );
+  return INTERNAL_MODULES.filter((m) => isNavigable(m, ctx));
 }
 
 export function navigableGroups(
@@ -731,12 +781,25 @@ export function activeModuleHref(pathname: string, search: string, hrefs: string
   return bare ?? filtered[0] ?? null;
 }
 
-/** Roadmap for the dashboard: everything, grouped, with its honest status. */
-export function roadmapByGroup(): { group: ModuleGroup; modules: InternalModule[] }[] {
-  return MODULE_GROUPS.filter((g) => g.id !== "dashboard").map((group) => ({
+/**
+ * «En desarrollo / Próximamente»: what is not finished (partial, pending,
+ * proposed), grouped, empty groups left out. What exists is in the sidebar
+ * and in «Herramientas operativas», not here.
+ */
+export function upcomingByGroup(): { group: ModuleGroup; modules: InternalModule[] }[] {
+  return MODULE_GROUPS.map((group) => ({
     group,
-    modules: INTERNAL_MODULES.filter((m) => m.group === group.id),
-  }));
+    modules: INTERNAL_MODULES.filter((m) => m.group === group.id && m.status !== "implemented"),
+  })).filter((entry) => entry.modules.length > 0);
+}
+
+/**
+ * Who sees the roadmap: whoever administers the company (`company.manage`) and
+ * the platform master. A seller has nothing to do with modules that do not
+ * exist yet; they only crowd the screen where the real tools are.
+ */
+export function seesRoadmap(ctx: ModuleAccessContext): boolean {
+  return ctx.isPlatformAdmin || (ctx.hasCompanyContext && ctx.capabilities.includes("company.manage"));
 }
 
 export const STATUS_LABELS: Record<ModuleStatus, string> = {

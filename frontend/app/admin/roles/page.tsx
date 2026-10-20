@@ -360,7 +360,7 @@ function RolesContent({ ctx }: { ctx: InternalContext }) {
           description="Configura autoridad por empresa. El nombre del rol organiza; las capacidades son las que realmente autorizan."
           actions={
             <>
-              <Link href="/admin/users" className={internalButtonClass}>Personal</Link>
+              <Link href="/admin/staff" className={internalButtonClass}>Personal</Link>
               {canManage && companyId && catalog ? <NewRole companyId={companyId} catalog={catalog} onCreated={load} /> : null}
             </>
           }
