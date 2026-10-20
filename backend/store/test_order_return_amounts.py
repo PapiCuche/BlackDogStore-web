@@ -45,7 +45,8 @@ class CommercialDiscountTest(_ReturnBase):
     def test_no_deduction_refunds_what_was_paid(self):
         order = self.discounted()
         self.receive_all(order)
-        self.assertEqual(self.post_close(order, refund_amount='4000.00').status_code, 400)   # discount twice: refused
+        twice = self.post_close(order, refund_amount='4000.00')                        # discount twice: refused
+        self.assertEqual((twice.status_code, twice.json()['code']), (400, 'amount_mismatch'))
         r = self.post_close(order, refund_amount='4500.00')
         self.assertEqual(r.status_code, 200, r.content)
         refund = OrderRefund.objects.get(order=order)
@@ -72,7 +73,7 @@ class CommercialDiscountTest(_ReturnBase):
         order = self.discounted()
         self.receive_all(order)
         r = self.post_close(order, refund_amount='0.00', deduction_amount='4600.00', deduction_reason='No procede')
-        self.assertIn(r.status_code, (400, 409), r.content)
+        self.assertEqual(r.json()['code'], 'deduction_exceeds_paid', r.content)
         self.assertFalse(OrderRefund.objects.filter(order=order).exists())
 
     def test_reception_moves_stock_once_at_the_sale_cost(self):
@@ -93,6 +94,6 @@ class CommercialDiscountTest(_ReturnBase):
             currency='PEN', environment='test', status=PaymentTransaction.Status.AUTHORIZED)
         before = PaymentTransaction.objects.filter(pk=pay.pk).values().get()
         self.receive_all(order)
-        self.post_close(order, refund_amount='4500.00')
+        self.assertEqual(self.post_close(order, refund_amount='4500.00').status_code, 200)
         self.assertEqual(PaymentTransaction.objects.filter(pk=pay.pk).values().get(), before)
         self.assertEqual(PaymentTransaction.objects.filter(order=order).count(), 1)
