@@ -45,7 +45,8 @@ class _Edit(DeviceShop, TestCase):
     def sold(self, product):
         order = Order.objects.create(
             company=self.company, fulfillment_branch=self.branch, customer_email='c@example.com',
-            total=product.price, status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+            total=product.price, status=Order.Status.PAID, paid=True, paid_at=timezone.now(),
+            fulfillment_status=Order.FulfillmentStatus.DELIVERED)          # a past sale, handed over
         OrderItem.objects.create(order=order, product=product, quantity=1, price=product.price)
         return order
 
@@ -69,7 +70,8 @@ class FreeEditTest(_Edit):
 
     def test_the_model_row_says_what_the_variant_carries(self):
         row = self.row(self.new128)
-        self.assertEqual(row['history'], {'sold': 0, 'units': 0, 'reserved': 0})
+        self.assertEqual(row['history'], {'sold': 0, 'units': 0, 'reserved': 0, 'stock': 0, 'moved': False,
+                                          'open_orders': 0})
         self.assertEqual((row['identity_change'], row['line_change']), ('free', 'free'))
         self.assertIn('is_published_online', row)
 
@@ -136,3 +138,51 @@ class TenancyTest(_Edit):
         foreign_model = device_catalog.create_model(company=other, name='Ajeno')
         self.assertEqual(self.put(self.new128, model_id=foreign_model.pk).status_code, 404)
         self.assertTrue(ProductVariantOption.objects.filter(product=self.new128).exists())
+
+
+class BypassAndRaceTest(_Edit):
+    """Review: clearing then re-attaching must not skip the rules; stock and open orders count."""
+
+    def clear(self, product, client=None, **body):
+        return (client or self.api).put(f'/api/admin/products/{product.pk}/variant/{self.q}',
+                                        {'model_id': None, **body}, format='json')
+
+    def test_a_sold_variant_is_not_taken_out_of_its_model_by_a_manager(self):
+        self.sold(self.new128)
+        response = self.clear(self.new128)
+        self.assertEqual((response.status_code, response.json()['code']), (403, 'history_needs_superior'))
+        self.assertEqual(Product.objects.get(pk=self.new128.pk).product_model_id, self.model.pk)
+        self.assertEqual(self.clear(self.new128, client=self.boss_api, reason=REASON).status_code, 200)
+
+    def test_a_variant_with_devices_or_holds_is_not_taken_out_at_all(self):
+        unit, = self.receive(self.used128)
+        response = self.clear(self.used128, client=self.boss_api, reason=REASON)
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'variant_in_use'))
+        StockUnit.objects.filter(pk=unit.pk).update(status=StockUnit.Status.RESERVED)
+        self.assertEqual(self.clear(self.used128, client=self.boss_api, reason=REASON).status_code, 409)
+        self.assertEqual(Product.objects.get(pk=self.used128.pk).condition_line, 'used')
+
+    def test_attaching_a_product_with_devices_does_not_relabel_their_line(self):
+        loose = Product.objects.create(company=self.company, name='Suelto', slug='suelto-x', price=D('10.00'))
+        Product.objects.filter(pk=loose.pk).update(is_serialized=True, requires_imei=True)
+        loose.refresh_from_db()
+        self.receive(loose)
+        response = self.put(loose, condition_line='used', option_ids=[self.gb256.pk, self.blue.pk])
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'line_change_with_units'))
+
+    def test_stock_of_a_quantity_variant_is_history(self):
+        from store.tests import _m7_stock
+
+        Product.objects.filter(pk=self.new256.pk).update(is_serialized=False, requires_imei=False)
+        _m7_stock(self.branch, self.new256, 4)
+        self.assertEqual(self.row(self.new256)['identity_change'], 'superior')
+        self.assertEqual(self.put(self.new256, option_ids=[self.gb256.pk, self.blue.pk]).status_code, 403)
+
+    def test_an_open_order_blocks_the_identity(self):
+        order = self.sold(self.new128)
+        Order.objects.filter(pk=order.pk).update(fulfillment_status='preparing')
+        response = self.put(self.new128, client=self.boss_api, option_ids=[self.gb128.pk, self.blue.pk], reason=REASON)
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'variant_reserved'))
+        Order.objects.filter(pk=order.pk).update(fulfillment_status='delivered')
+        response = self.put(self.new128, client=self.boss_api, option_ids=[self.gb128.pk, self.blue.pk], reason=REASON)
+        self.assertEqual(response.status_code, 200, response.content)

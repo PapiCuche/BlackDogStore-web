@@ -34,6 +34,7 @@ _ERROR_STATUS = {
     'history_needs_superior': status.HTTP_403_FORBIDDEN,
     'variant_reserved': status.HTTP_409_CONFLICT,
     'line_change_with_units': status.HTTP_409_CONFLICT,
+    'variant_in_use': status.HTTP_409_CONFLICT,
 }
 
 

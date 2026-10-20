@@ -285,19 +285,33 @@ def variant_key(option_ids) -> str:
 HISTORY_REASON_MIN, HISTORY_REASON_MAX = 5, 500
 
 
-def variant_history(product) -> dict:
+def variant_history(product, *, lock=False) -> dict:
     """
     CATALOG-VARIANTS-UX — what a variant already carries: units of it sold
-    (order lines of any order), devices of it received (not written off) and
-    devices of it on hold or set aside.
+    (order lines of any order), devices of it received (not written off),
+    devices on hold or set aside, stock of it on the shelves (a product
+    counted by quantity), and orders with it not yet handed over.
+
+    `lock`: take the rows of its devices first (review P2), so a hold or a
+    sale that locks them queues behind the change instead of racing it.
     """
-    from .models import OrderItem
+    from django.db.models import Sum
+
+    from .models import BranchStock, Order, OrderItem, StockMovement
 
     units = StockUnit.objects.filter(product_id=product.pk)
+    if lock:
+        list(units.select_for_update().values_list('pk', flat=True))
+    items = OrderItem.objects.filter(product_id=product.pk)
     return {
-        'sold': OrderItem.objects.filter(product_id=product.pk).count(),
+        'sold': items.count(),
         'units': units.exclude(status=StockUnit.Status.WRITTEN_OFF).count(),
         'reserved': units.filter(status=StockUnit.Status.RESERVED).count(),
+        'stock': int(BranchStock.objects.filter(product_id=product.pk).aggregate(n=Sum('quantity'))['n'] or 0),
+        'moved': StockMovement.objects.filter(product_id=product.pk).exists(),
+        'open_orders': items.exclude(order__status=Order.Status.CANCELLED).exclude(
+            order__fulfillment_status__in=[Order.FulfillmentStatus.DELIVERED, Order.FulfillmentStatus.CANCELLED],
+        ).exclude(order__status__in=[Order.Status.FAILED]).values('order_id').distinct().count(),
     }
 
 
@@ -305,15 +319,19 @@ def edit_rules(history) -> dict:
     """
     How the identity (model, options) and the line of a variant with this
     history may change: 'free', 'superior' (with a reason, audited) or 'blocked'.
+    Taking it out of its model follows the identity, and is blocked while it
+    holds devices or stock (they would lose their line).
     """
-    if history['reserved']:
+    if history['reserved'] or history['open_orders']:
         identity = 'blocked'
-    elif history['sold'] or history['units']:
+    elif history['sold'] or history['units'] or history['stock'] or history['moved']:
         identity = 'superior'
     else:
         identity = 'free'
-    line = 'blocked' if (history['units'] or history['reserved']) else identity
-    return {'identity_change': identity, 'line_change': line}
+    holds_goods = bool(history['units'] or history['reserved'] or history['stock'] > 0)
+    line = 'blocked' if holds_goods else identity
+    removal = 'blocked' if (holds_goods or identity == 'blocked') else identity
+    return {'identity_change': identity, 'line_change': line, 'removal': removal}
 
 
 def _may_override(user, company) -> bool:
@@ -344,14 +362,45 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
     """
     product = Product.objects.select_for_update().get(pk=product.pk)
     company = product.company
+    history = variant_history(product, lock=True)
+    rules = edit_rules(history)
+    text = ''
+
+    def authorise(kind):
+        """`kind` is 'free', 'superior' or 'blocked' for this change."""
+        nonlocal text
+        if kind == 'free':
+            return
+        if kind == 'blocked':
+            raise CatalogError(
+                'Hay equipos de esta variante apartados, en un carrito o en pedidos sin entregar: '
+                'termina o libera esas operaciones antes de cambiarla.', field='options', code='variant_reserved')
+        if not _may_override(actor, company):
+            raise CatalogError(
+                f'Esta variante ya tiene historial ({history["sold"]} venta(s), {history["units"]} equipo(s), '
+                f'{history["stock"]} en stock): cambiarla corresponde a un superior (administrador de la empresa), '
+                'con un motivo.', field='options', code='history_needs_superior')
+        text = ' '.join(str(reason or '').split())
+        if not HISTORY_REASON_MIN <= len(text) <= HISTORY_REASON_MAX or any(ord(c) < 32 for c in text):
+            raise CatalogError(
+                f'Escribe el motivo del cambio ({HISTORY_REASON_MIN} a {HISTORY_REASON_MAX} caracteres): '
+                'quedará en la auditoría.', field='reason', code='history_reason_required')
+
     if model_id in (None, ''):
+        if product.product_model_id is None:
+            return product
+        if rules['removal'] == 'blocked' and rules['identity_change'] != 'blocked':
+            raise CatalogError(
+                'Esta variante tiene equipos o stock propios: sacarla del modelo cambiaría la línea de esos equipos. '
+                'Cámbiala de modelo u opciones en su lugar.', field='product_model', code='variant_in_use')
+        authorise(rules['identity_change'])
         ProductVariantOption.objects.filter(product=product).delete()
         product.product_model = None
         product.condition_line = Product.CONDITION_NEW
         product.variant_key = ''
         product.save(update_fields=['product_model', 'condition_line', 'variant_key', 'updated_at'])
         _audit('product_variant_cleared', company=company, actor=actor, request=request,
-               target_type='product', target_id=product.pk)
+               target_type='product', target_id=product.pk, history=history, reason=text)
         return product
 
     model = ProductModel.objects.filter(company=company, pk=model_id).first()
@@ -376,33 +425,22 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
         seen.add(option.attribute_id)
 
     key = variant_key(wanted)
-    changes_identity = (product.product_model_id != model.pk or product.variant_key != key)
-    changes_line = product.product_model_id is not None and product.condition_line != condition_line
-    history = rules = None
-    text = ''
-    if product.product_model_id is not None and (changes_identity or changes_line):
-        history = variant_history(product)
-        rules = edit_rules(history)
-        if changes_line and rules['line_change'] == 'blocked':
-            raise CatalogError(
-                'Esta variante tiene equipos propios: su línea (nuevo o seminuevo) es la de esos equipos y no '
-                'cambia. Registra los equipos en la variante que corresponde.',
-                field='condition_line', code='line_change_with_units')
-        if rules['identity_change'] == 'blocked':
-            raise CatalogError(
-                'Hay equipos de esta variante apartados o en un carrito: libera esas reservas antes de cambiarla.',
-                field='options', code='variant_reserved')
-        if rules['identity_change'] == 'superior':
-            if not _may_override(actor, company):
-                raise CatalogError(
-                    f'Esta variante ya tiene historial ({history["sold"]} venta(s), {history["units"]} equipo(s)): '
-                    'cambiar su modelo u opciones corresponde a un superior (administrador de la empresa), '
-                    'con un motivo.', field='options', code='history_needs_superior')
-            text = ' '.join(str(reason or '').split())
-            if not HISTORY_REASON_MIN <= len(text) <= HISTORY_REASON_MAX or any(ord(c) < 32 for c in text):
-                raise CatalogError(
-                    f'Escribe el motivo del cambio ({HISTORY_REASON_MIN} a {HISTORY_REASON_MAX} caracteres): '
-                    'quedará en la auditoría.', field='reason', code='history_reason_required')
+    # The line of a product outside any model is «new» by default: placing it
+    # as «used» relabels its devices too (review P1).
+    changes_line = product.condition_line != condition_line
+    if changes_line and rules['line_change'] == 'blocked':
+        raise CatalogError(
+            'Esta variante tiene equipos o stock propios: su línea (nuevo o seminuevo) es la de esos equipos y no '
+            'cambia. Registra los equipos en la variante que corresponde.',
+            field='condition_line', code='line_change_with_units')
+    # Placing a product that sits outside every model is classifying it (the
+    # «Agregar variante» flow), not changing an identity. Taking a variant OUT
+    # of its model is what the rules guard (above), so «out, then back in
+    # differently» cannot skip them; the line still never relabels devices.
+    changes_identity = product.product_model_id is not None and (
+        product.product_model_id != model.pk or product.variant_key != key or changes_line)
+    if changes_identity:
+        authorise(rules['identity_change'])
     clash = (
         Product.objects.filter(product_model=model, condition_line=condition_line, variant_key=key)
         .exclude(pk=product.pk).first()
@@ -425,7 +463,7 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
             product.save(update_fields=['product_model', 'condition_line', 'variant_key', 'updated_at'])
     except IntegrityError:
         raise CatalogError('Otra persona acaba de crear esa misma variante.', field='options', code='duplicate') from None
-    extra = {'history': history, 'reason': text} if history is not None else {}
+    extra = {'history': history, 'reason': text} if changes_identity and rules['identity_change'] != 'free' else {}
     _audit('product_variant_set', company=company, actor=actor, request=request,
            target_type='product', target_id=product.pk, model_id=model.pk,
            condition_line=condition_line, option_ids=wanted, **extra)
