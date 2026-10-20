@@ -2700,3 +2700,53 @@ controlar la publicación e-commerce de todo con acciones en bloque, y un menú 
   y avisa que el motivo no lleve montos; la carga de ofertas advierte dos filas del mismo
   producto con distinto «Bajo pedido»; un modelo nuevo se crea oculto si su primera variante no
   se puede publicar (`publication.model_hidden`; el asistente lo publica si luego publica la variante).
+
+### DEC-SUPPLIER-WEEKLY-01 · El Excel semanal del proveedor (SUPPLIER-DEVICE-FLOW-02 · A) — EN RAMA
+
+Migración `0140` (aditiva: sólo la tabla nueva `SupplierProductRef`; la vuelta a `0139` la
+borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
+
+- *Actualización parcial.* Sólo cambian las filas del archivo; una oferta que no aparece no se
+  toca (ni se desactiva, ni cambian su cantidad ni su vigencia).
+- *Qué oferta actualiza una fila* (`current_offer`): 1) la de la misma vigencia exacta (volver a
+  subir el mismo archivo no crea nada, tampoco una oferta futura); 2) si no, la oferta en curso
+  (no vencida; activa primero, luego la que termina más tarde) cuya vigencia la fila **se
+  superpone o toca** (un día de diferencia), y se actualiza en su lugar, fechas incluidas;
+  3) si hay una en curso pero la fila empieza **estrictamente después** (con un día o más de
+  hueco), se **crea** la oferta de esa semana futura y la de hoy sigue vendiendo; 4) si todas
+  ya vencieron, se actualiza la que venció última. Dos filas del mismo proveedor y producto en
+  un archivo son error.
+- *Nunca dos ofertas activas del mismo proveedor y producto el mismo día* — por archivo (error
+  de fila; `stale` al aplicar) y a mano (crear/editar en el panel: 400 `overlap`), bajo un
+  candado de aviso por (empresa, proveedor, producto). Sin restricción en la base: producción
+  puede tener superposiciones antiguas; una fila que conserva una de ellas sólo avisa. Cada
+  proveedor es independiente.
+- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido (leído bajo el candado al
+  aplicar): no se vende más y lo ya pagado se mantiene. Otra cantidad menor que lo comprometido
+  sigue siendo error.
+- *Precio comercial nuevo.* La vista previa lo muestra antes → después; aplicar responde 409
+  `price_confirmation_required` (con las filas) salvo `accept_price_changes: true` (escribe los
+  precios) o `keep_prices: true` (escribe lo demás, mantiene cada precio actual); las dos a la
+  vez, 400. Auditoría por oferta: `supplier_offer_price_changed` (antes/después) o
+  `supplier_offer_price_kept` (actual/propuesto), con el trabajo.
+- *Vista previa vieja.* Se guarda el `updated_at` de cada oferta leída; si cambió (edición,
+  pago, otro archivo) al aplicar se rechaza el trabajo entero (`stale`) sin escribir nada.
+- *Vista previa con diferencias.* `before` por fila (el costo sólo con `costs.view`, tampoco se
+  guarda sin él), `changes`, `sold_out`, `price_change` y `summary` (nuevas, cambian, sin
+  cambios, agotadas, errores, precios, códigos).
+- *Código del proveedor.* Columna opcional «Código del proveedor». Orden para hallar la variante:
+  código del sistema («Identificador»), código de barras/SKU, código del proveedor ya asociado,
+  modelo + opciones, nombre único. Dos claves que nombran variantes distintas, o un modelo cuyas
+  opciones calzan con varias variantes, son error (nada se adivina). Una fila con código del
+  proveedor hallada sin duda por otra clave lo recuerda al aplicar (auditado); una fila sin
+  variante ofrece «Elegir variante» (`POST /api/admin/suppliers/<pk>/product-refs/`,
+  `products.manage`, por empresa; 409 `ref_conflict` si ya nombra otra variante).
+- *Desactivada a mano.* Sigue siendo la oferta que la fila actualiza y sigue desactivada (sólo
+  «Activa: Sí» la reactiva). Una oferta apagada **sólo por vencimiento** («Vigencia vencida»)
+  vuelve a activarse si la fila le da días nuevos.
+- *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
+
+**Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya
+vendidas (en curso o vencida), lo comprometido **sigue contando** contra la nueva «Cantidad
+confirmada» (confirmada = tope total, como siempre). ¿La cantidad semanal debería ser
+adicional a lo ya vendido?

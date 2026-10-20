@@ -121,21 +121,73 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual(self.offer_now().confirmed_quantity, 5)
         self.assertEqual(SupplierOffer.objects.get(pk=later.pk).confirmed_quantity, 7)
 
-    def test_an_offer_whose_window_is_over_is_not_reused(self):
+    def test_a_future_window_after_the_running_offer_is_a_new_offer(self):
+        # Coordinator rule: a window strictly after a still-running offer (a gap of a day or more) never
+        # stops it — it is next week's offer, and the overlap guard keeps the two disjoint.
+        start, end = today() + timedelta(days=8), today() + timedelta(days=14)
+        rows = [self.same(**{'Vigente desde': start.isoformat(), 'Vigente hasta': end.isoformat(),
+                             'Cantidad confirmada': 9})]
+        body = self.preview(rows).json()
+        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        running = self.offer_now()
+        self.assertEqual((running.valid_from, running.valid_until, running.confirmed_quantity),
+                         (self.offer.valid_from, self.offer.valid_until, 5))
+        self.assertEqual(supply.best_offer(self.case, 1), running)          # still sells today
+        future = SupplierOffer.objects.get(supplier=self.supplier, product=self.case, valid_from=start)
+        self.assertEqual((future.valid_until, future.confirmed_quantity), (end, 9))
+        # The identical file again: the future offer is found by its own window, nothing new.
+        again = self.preview(rows).json()
+        self.assertEqual(again['rows'][0]['action'], 'no_change', again['rows'])
+        self.assertEqual(again['rows'][0]['data']['offer_id'], future.pk)
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+
+    def test_an_adjacent_window_updates_the_running_offer_in_place(self):
+        start = self.offer.valid_until + timedelta(days=1)
+        body = self.preview([self.same(**{'Vigente desde': start.isoformat(),
+                                          'Vigente hasta': (start + timedelta(days=6)).isoformat()})]).json()
+        self.assertEqual((body['rows'][0]['action'], body['rows'][0]['data']['offer_id']),
+                         ('update', self.offer.pk), body['rows'])
+
+    def test_an_offer_that_already_ended_is_updated_in_place(self):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(
             valid_from=today() - timedelta(days=9), valid_until=today() - timedelta(days=2), committed_quantity=2)
         body = self.preview([self.row()]).json()
-        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
-        self.assertEqual(self.apply(body['id']).status_code, 200)
-        old = self.offer_now()
-        self.assertEqual((old.committed_quantity, old.valid_until), (2, today() - timedelta(days=2)))
-        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+        self.assertEqual((body['rows'][0]['action'], body['rows'][0]['data']['offer_id']),
+                         ('update', self.offer.pk), body['rows'])
+        self.assertEqual(self.apply(body['id'], accept_price_changes=True).status_code, 200)
+        offer = self.offer_now()
+        # What was committed stays committed (owner question: does it count against the new quantity?).
+        self.assertEqual((offer.committed_quantity, offer.confirmed_quantity, offer.valid_until), (2, 8, self.end))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
+
+    def test_an_offer_switched_off_only_because_it_expired_comes_back_on(self):
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(
+            valid_from=today() - timedelta(days=9), valid_until=today() - timedelta(days=2))
+        self.assertEqual(supply.expire_offers(company=self.company), 1)
+        body = self.preview([self.row()]).json()
+        row = body['rows'][0]
+        self.assertEqual(row['action'], 'update', row)
+        self.assertIn('is_active', row['data']['changes'])
+        self.apply(body['id'], accept_price_changes=True)
+        self.assertTrue(self.offer_now().is_active)
+
+    def test_an_offer_switched_off_by_hand_stays_matched_and_off(self):
+        supply.deactivate_offer(self.offer, actor=self.staff, reason='Proveedor sin stock')
+        body = self.preview([self.same(**{'Cantidad confirmada': 7, 'Vigente hasta': (
+            today() + timedelta(days=9)).isoformat()})]).json()
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['offer_id']), ('update', self.offer.pk), row)
+        self.apply(body['id'])
+        self.assertEqual((self.offer_now().is_active, self.offer_now().confirmed_quantity), (False, 7))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
 
     def test_an_import_never_creates_an_offer_over_the_days_of_another_active_one(self):
-        # An offer that ended but is still switched on (the hourly command did not run yet) whose
-        # window reaches the new one: the new row would make two active offers over the same days.
+        # An offer that ended but is still switched on (the hourly command did not run yet), and next
+        # month's offer: a row between them is a new offer, and it would reach the ended one's days.
         SupplierOffer.objects.filter(pk=self.offer.pk).update(
             valid_from=today() - timedelta(days=9), valid_until=today() - timedelta(days=1))
+        self.make_offer(valid_from=today() + timedelta(days=20), valid_until=today() + timedelta(days=25))
         body = self.preview([self.row(**{'Vigente desde': (today() - timedelta(days=3)).isoformat()})]).json()
         self.assertEqual(body['rows'][0]['action'], 'error', body['rows'])
         self.assertTrue(any('superpone' in e for e in body['rows'][0]['errors']))

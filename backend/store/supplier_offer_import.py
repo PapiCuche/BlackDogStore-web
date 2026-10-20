@@ -15,15 +15,18 @@ A PARTIAL UPDATE (owner, SUPPLIER-DEVICE-FLOW-02). Only the rows of the file
 change something. An offer the file does not mention is not touched: not
 switched off, its quantity and its window stay.
 
-ONE OFFER PER SUPPLIER AND VARIANT, UPDATED IN PLACE. A row finds THE offer of
-its (supplier, variant) whose window is not over yet — the active one first,
-then the one that ends last, then the latest starting, then the highest id —
-and updates it, its window included. Only when there is none (or only offers
-whose window is over: they keep what they sold and expire on their own) does
-the row create an offer; a row whose window is exactly an old offer's updates
-that one. Two rows of one file for the same supplier and variant are an error.
-Before this, the key carried the window: next week's file created a SECOND
-offer and both sold over the overlapping days.
+ONE OFFER PER SUPPLIER AND VARIANT AND WINDOW, UPDATED IN PLACE
+(`current_offer`). A row updates the offer with exactly its window; else the
+running (not over) offer its window overlaps or touches (a day apart), window
+included; else, when a running offer exists but the row's window is strictly
+after it, it CREATES next week's offer — the running one keeps selling, and
+the overlap rule keeps the two disjoint; else (every offer already ended) it
+updates the one that ended last — what was committed stays committed and
+counts against the new confirmed quantity (an owner question). An offer off
+only because it expired comes back on with new days; one switched off by hand
+stays matched and off. Two rows of one file for the same supplier and variant
+are an error. Before this, the key carried the window: next week's file
+created a SECOND offer and both sold over the overlapping days.
 
 NEVER TWO ACTIVE OFFERS OF ONE SUPPLIER AND VARIANT OVER THE SAME DAYS — by
 file (row error, and STALE at apply) or by hand (`guard_offer_overlap`, from the
@@ -85,6 +88,7 @@ from __future__ import annotations
 import hashlib
 import io
 from collections import defaultdict
+from datetime import timedelta
 
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Count
@@ -118,6 +122,8 @@ SUPPLIER_CODE_HEADER = 'Código del proveedor'
 #: The system code (`import_formats.product_identifier`): written by the export.
 IDENTIFIER_HEADER = 'Identificador'
 STALE = 'El archivo cambió: vuelve a previsualizarlo.'
+#: The reason `supply_services.expire_offers` writes: an offer off ONLY because its days ran out.
+EXPIRED_REASON = 'Vigencia vencida'
 MAX_REF_CODE = 120
 _YES = {'si', 's', 'yes', 'y', '1', 'true', 'verdadero', 'x'}
 _NO = {'no', 'n', '0', 'false', 'falso'}
@@ -268,18 +274,39 @@ def lock_pairs(company_id, pairs) -> None:
             cursor.execute('SELECT pg_advisory_xact_lock(%s)', [lock_id])
 
 
+def _as_date(value):
+    return supply_services.clean_date(value, 'valid_from', 'la fecha') if value else None
+
+
 def current_offer(company, supplier_id, product_id, *, start=None, end=None, on=None):
     """
-    THE offer a row of (supplier, variant) updates: the one whose window is not
-    over — active first, then the one that ends last, the latest start, the
-    highest id — or else the one with exactly that window, or None.
+    THE offer a row of (supplier, variant) for `start..end` updates, or None
+    (the row creates one):
+
+      1. the offer with exactly that window, in any state (re-importing a file
+         finds what it made, a future offer included);
+      2. else the first offer whose window is not over — active first, then the
+         one that ends last, the latest start, the highest id — that the row's
+         window OVERLAPS OR TOUCHES (a day apart counts as touching);
+      3. else, when such offers exist but none is reached, None: a window
+         strictly after a running offer is next week's offer, never a reason to
+         stop this week's;
+      4. else (every offer already ended) the one that ended last.
     """
     on = on or supply_services.today()
+    start, end = _as_date(start), _as_date(end)
     offers = SupplierOffer.objects.filter(company=company, supplier_id=supplier_id, product_id=product_id)
-    found = offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-valid_from', '-pk').first()
-    if found is None and start and end:
-        found = offers.filter(valid_from=start, valid_until=end).first()
-    return found
+    if start and end:
+        exact = offers.filter(valid_from=start, valid_until=end).order_by('-is_active', '-pk').first()
+        if exact is not None:
+            return exact
+    running = list(offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-valid_from', '-pk'))
+    if running:
+        if not (start and end):
+            return running[0]
+        day = timedelta(days=1)
+        return next((o for o in running if start <= o.valid_until + day and end >= o.valid_from - day), None)
+    return offers.order_by('-valid_until', '-valid_from', '-pk').first()
 
 
 def _overlapping(company, supplier_id, product_id, start, end, *, exclude=None) -> dict:
@@ -702,6 +729,13 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
             payload['is_active'] = active
         if wanted_mode is not None:
             payload['sale_mode'] = wanted_mode
+        if (active is None and existing is not None and not existing.is_active
+                and existing.deactivated_reason == EXPIRED_REASON and clean['valid_until'] >= today):
+            # Off only because its days ran out (the hourly command), and the row gives it new days:
+            # back on. An offer switched off BY HAND stays off (below).
+            active = True
+            payload['is_active'] = True
+            warnings.append('La oferta estaba desactivada sólo por vencimiento: con la nueva vigencia se reactiva.')
         will_be_active = (active if active is not None else
                           (existing.is_active if existing is not None else True))
         added, kept = overlap_of(company, supplier.pk, product.pk, start=clean['valid_from'],
