@@ -13,9 +13,11 @@ Desde `master` `50e7afe`. Sin migraciones. Decisión **DEC-CATALOG-VARIANTS-UX-0
   cobrar, órdenes de compra y recepciones de compra, cuentas por pagar (PAYABLES-01), garantías,
   reportes por técnico. PARCIAL: equipos de clientes, facturación (resúmenes diarios y bajas sin
   pantalla).
-- Pruebas: 16 en `test_variant_edit` (mutación 10/10); suite completa 7853 OK; Jest 1682;
-  `next build`; Playwright 24/24. Revisión independiente: NO-GO (quitar y volver a ubicar saltaba
-  la regla), corregido en `bb35a74`.
+- Pruebas: 19 en `test_variant_edit` (mutación 12/13, la restante equivalente); suite completa
+  7853 OK sobre `e11702d`; focal 357 OK al final; Jest 1682; `next build`; Playwright 24/24.
+  Revisión independiente: NO-GO (quitar y volver a ubicar saltaba la regla), corregido en
+  `bb35a74`; segunda pasada GO con dos P2 (checkouts abandonados, productos sueltos usados)
+  corregidos en `c529792`.
 
 ## 2026-10-20 — ORDER-RETURN-01: verificación automática; aceptación funcional PENDIENTE
 

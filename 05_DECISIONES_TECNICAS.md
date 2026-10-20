@@ -87,10 +87,13 @@ filas de equipos bloqueadas). Editar nunca crea un producto.
 - Con historial (ventas, equipos no dados de baja, stock o movimientos de Kardex): cambiar modelo u
   opciones, o sacarla del modelo, lo hace un superior (`products.manage` + `company.manage`) con
   motivo de 5 a 500 caracteres, auditado con el historial.
-- Con equipos apartados o en un carrito, o con pedidos sin entregar: no cambia (409).
+- Con equipos apartados o en un carrito: no cambia (409). Un pedido pagado sin entregar la
+  convierte en «con historial» (superior); un checkout impago no cuenta (si aparta un equipo, ese
+  equipo ya figura apartado) para que los carritos abandonados no congelen la variante.
 - La línea (nuevo/seminuevo) no cambia mientras la variante tenga equipos o stock; sacarla del
   modelo tampoco (la dejaría «nuevo»). Ubicar por primera vez un producto en un modelo es libre,
-  salvo que cambie la línea de sus equipos.
+  salvo que cambie la línea de sus equipos; un producto suelto cuyos equipos son todos usados
+  puede ubicarse en la línea de seminuevos.
 - Precio y publicación se editan con la edición de producto existente; fotos, costo y stock por
   sus flujos (enlaces desde el formulario).
 
