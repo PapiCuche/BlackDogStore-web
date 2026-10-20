@@ -247,6 +247,9 @@ class PreviewDiffTest(WeeklyFile, TestCase):
         client = self.as_(['company.view', 'products.view', 'products.manage'], 'sdf2_sin_costo')
         body = self.preview([self.same(**{'Cantidad confirmada': 9})], client=client).json()
         self.assertNotIn('agreed_cost', body['rows'][0]['data']['before'])
+        # Not even kept: the staged row never held it.
+        from store.models import BulkImportRow
+        self.assertNotIn('agreed_cost', BulkImportRow.objects.get(job_id=body['id']).normalized_data['before'])
         # Previewed by costs.view, read back by somebody without it: still absent.
         job = self.preview([self.same(**{'Cantidad confirmada': 9, 'Costo pactado': '61'})]).json()
         self.assertIn('agreed_cost', job['rows'][0]['data']['changes'])
