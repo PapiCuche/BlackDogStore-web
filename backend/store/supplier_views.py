@@ -377,6 +377,8 @@ class AdminOrderSupplyActionView(APIView):
                 # SUPPLIER-DEVICE-FLOW-02: a repeated reception is not a wrong
                 # request — it already happened. 409, with what it brought in.
                 return Response({**exc.body(), 'units': getattr(exc, 'units', [])}, status=status.HTTP_409_CONFLICT)
+            if exc.code == 'return_open':
+                return Response(exc.body(), status=status.HTTP_409_CONFLICT)
             return _error(exc)
         line = OrderItem.objects.select_related(
             'supplier_offer__supplier', 'product', 'order__fulfillment_branch').get(pk=line.pk)

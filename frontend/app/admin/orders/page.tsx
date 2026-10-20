@@ -56,7 +56,7 @@ const ALERT_LABELS: Record<SupplyAlertKind, string> = {
   offer_expired: "Esperando a un proveedor con la oferta vencida",
   supplier_pending: "Esperando al proveedor",
   units_pending: "Equipos por identificar",
-  ready_to_deliver: "Recibidos, por entregar",
+  ready_to_deliver: "Recibidos, por despachar o entregar",
 };
 
 function OrdersContent({ user }: { user: AuthUser }) {

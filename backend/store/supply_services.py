@@ -679,7 +679,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
 
     ONCE. A line already received answers `already_received` (the view: 409,
     with the devices it named), under the order's lock: two receptions at the
-    same instant queue and the second one is told.
+    same instant queue and the second one is told. An order with a standing
+    return answers `return_open` (409) and nothing moves.
     """
     from . import inventory_services, stock_unit_services, unit_identification
     from .models import OrderUnit
@@ -691,6 +692,13 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
         raise error
     if locked.supply_status != OrderItem.SUPPLY_PENDING:
         raise SupplyError('Sólo se recibe una línea pedida al proveedor y aún no recibida.', code='wrong_state')
+    # ORDER-RETURN-01: while a return stands (a till sale is open to one from
+    # birth) the order's goods are coming back; receiving would sell goods out
+    # to it again — the «second exit» the close never puts back. Same rule and
+    # code as identifying a device (`unit_identification.returning`).
+    if unit_identification.returning(order):
+        raise SupplyError('Este pedido tiene una devolución: no se recibe mercadería para entregarlo. '
+                          'Revisa la devolución desde «Devolución».', code='return_open')
     branch = order.fulfillment_branch
     if branch is None:
         raise SupplyError('El pedido no tiene sucursal de despacho.', code='no_branch')

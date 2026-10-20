@@ -23,7 +23,8 @@ follow-up):
   * units_pending      a device nobody has identified yet (SERIAL-PICK-01):
                        the order cannot leave until somebody does;
   * ready_to_deliver   everything on order arrived and every device is named,
-                       and the order has not been delivered.
+                       and the order is still in the shop (not shipped, not
+                       delivered: «en camino» needs nobody in the shop).
 
 Nothing here writes, and nothing decides what an order may do: the order's own
 flow still says that.
@@ -50,7 +51,7 @@ KINDS = {
     'offer_expired': ('Esperando a un proveedor con la oferta vencida', 'warning'),
     'supplier_pending': ('Esperando al proveedor', 'info'),
     'units_pending': ('Equipos por identificar', 'warning'),
-    'ready_to_deliver': ('Recibidos, por entregar', 'info'),
+    'ready_to_deliver': ('Recibidos, por despachar o entregar', 'info'),
 }
 
 #: Already handed over, or never will be: nothing about it is waiting.
@@ -85,24 +86,85 @@ def promises(orders, today) -> tuple[set, set]:
     return due, overdue
 
 
-def _missing_devices(orders) -> set:
-    """Paid orders still in the shop with a device nobody identified (SERIAL-PICK-01)."""
+def pending_devices(order_ids) -> dict[int, dict[int, int]]:
+    """
+    order id -> {product id: devices nobody identified yet}, for MANY orders in
+    a fixed number of queries: `unit_identification.pending_units`, batched
+    (the dashboard asks on every load). Same rule, read in bulk:
+
+      * wanted: serialized lines, except on-order lines not received yet, and
+        except a product whose sale exit of that order left as a plain count;
+      * identified: an `OrderUnit` that left with the order, or whose device is
+        still sold to it.
+
+    An order with a corrected leaving entry (ORDER-FULFILLMENT-SAFETY-01: some
+    stamps do not count) is rare and is asked one by one, by the order rule.
+    """
+    from .models import AdminAuditLog, OrderUnit, StockMovement, StockUnit
+    from .order_cancellation import LEFT_MARKING_CORRECTED
     from .unit_identification import pending_units
 
+    ids = list(order_ids)
+    if not ids:
+        return {}
+    corrected = {int(pk) for pk in AdminAuditLog.objects.filter(
+        action=LEFT_MARKING_CORRECTED, target_type='order', target_id__in=[str(pk) for pk in ids],
+    ).values_list('target_id', flat=True)}
+    wanted: dict[int, dict[int, int]] = {}
+    for order_id, product_id, quantity, origin, state in OrderItem.objects.filter(
+        order_id__in=ids, product__is_serialized=True,
+    ).exclude(order_id__in=corrected).values_list(
+        'order_id', 'product_id', 'quantity', 'supply_origin', 'supply_status',
+    ):
+        if origin == OrderItem.SUPPLY_SUPPLIER and state != OrderItem.SUPPLY_RECEIVED:
+            continue
+        products = wanted.setdefault(order_id, {})
+        products[product_id] = products.get(product_id, 0) + quantity
+    if wanted:
+        for order_id, product_id, metadata in StockMovement.objects.filter(
+            order_id__in=list(wanted), movement_type=StockMovement.SALE_EXIT,
+        ).values_list('order_id', 'product_id', 'metadata'):
+            if product_id in wanted.get(order_id, {}) and not (metadata or {}).get('unit_ids'):
+                wanted[order_id].pop(product_id, None)
+    done: dict[tuple[int, int], int] = {}
+    for order_id, product_id, left_at, unit_order, unit_status in OrderUnit.objects.filter(
+        order_id__in=list(wanted),
+    ).values_list('order_id', 'product_id', 'left_at', 'unit__order_id', 'unit__status'):
+        if left_at is None and not (unit_order == order_id and unit_status == StockUnit.Status.SOLD):
+            continue
+        done[(order_id, product_id)] = done.get((order_id, product_id), 0) + 1
+    result: dict[int, dict[int, int]] = {}
+    for order_id, products in wanted.items():
+        missing = {product_id: quantity - done.get((order_id, product_id), 0)
+                   for product_id, quantity in products.items() if quantity > done.get((order_id, product_id), 0)}
+        if missing:
+            result[order_id] = missing
+    for order in Order.objects.filter(pk__in=corrected):
+        missing = pending_units(order)
+        if missing:
+            result[order.pk] = missing
+    return result
+
+
+def _missing_devices(orders) -> set:
+    """Paid orders still in the shop with a device nobody identified (SERIAL-PICK-01)."""
     candidates = (_paid(orders).exclude(fulfillment_status__in=_LEFT)
-                  .filter(items__product__is_serialized=True).distinct())
-    return {order.pk for order in candidates if pending_units(order)}
+                  .filter(items__product__is_serialized=True).values_list('pk', flat=True).distinct())
+    return set(pending_devices(candidates))
 
 
 def _ready(orders) -> set:
-    """Paid, not delivered, every on-order line received and every device named."""
-    from .unit_identification import pending_units
-
+    """
+    Paid, every on-order line received and every device named, and still in
+    the shop. SHIPPED is not counted: the goods are on their way and nobody in
+    the shop has to act; delivering it is the dispatch flow's next step.
+    """
     not_in = OrderItem.objects.filter(supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(
         supply_status=OrderItem.SUPPLY_RECEIVED).values('order_id')
-    candidates = (_paid(orders).exclude(fulfillment_status__in=_DONE)
-                  .filter(items__supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(pk__in=not_in).distinct())
-    return {order.pk for order in candidates if not pending_units(order)}
+    candidates = set(_paid(orders).exclude(fulfillment_status__in=_LEFT)
+                     .filter(items__supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(pk__in=not_in)
+                     .values_list('pk', flat=True).distinct())
+    return candidates - set(pending_devices(candidates))
 
 
 def _ids(orders, kind, today) -> set:

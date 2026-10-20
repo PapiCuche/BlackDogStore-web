@@ -2403,6 +2403,18 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   dirección, así que no llega preseleccionado.
 - **Fiscal:** la boleta/factura **no** espera la recepción: su emisión sigue pidiendo sólo un pedido
   pagado (ningún camino fiscal lee `supply_status`). Es el contrato vigente y no se cambió.
+- **Revisión independiente (2026-10-20):**
+  - *Recepción con devolución en curso:* recibir una línea de un pedido con una devolución no
+    retirada (registrada, recibida o cerrada; una venta de caja admite devolución desde que nace)
+    responde **409 `return_open`** y no mueve nada: sería una segunda salida que el cierre no
+    repone. Misma regla y código que identificar un equipo (`unit_identification.returning`).
+  - *Costo de las alertas:* «Equipos por identificar» y «Recibidos…» se calculan en lote
+    (`supply_alerts.pending_devices`: líneas, salidas y `OrderUnit` en consultas fijas, sin importar
+    cuántos pedidos); un pedido con una salida corregida por un superior se calcula uno a uno con
+    `pending_units`, que conoce esos sellos. Prueba de número de consultas igual para 1 y 6 pedidos.
+  - *«Recibidos, por despachar o entregar»* cuenta sólo lo que sigue en la tienda: un pedido
+    **enviado** queda fuera (va en camino; nadie en la tienda tiene que actuar) y uno entregado
+    también.
 
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
 

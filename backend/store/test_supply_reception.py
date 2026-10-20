@@ -276,6 +276,49 @@ class AlreadyReceivedTest(ReceptionShop, TestCase):
         self.assertEqual((res.status_code, res.json()['code']), (400, 'wrong_state'))
 
 
+class ReceiveWhileReturningTest(ReceptionShop, TestCase):
+    """
+    A till sale on order is open to a return from birth (ORDER-RETURN-01, D8).
+    While a return stands, receiving would sell goods out to an order whose
+    goods are coming back («second exit»): refused, like identifying a device.
+    """
+
+    def setUp(self):
+        self.build()
+
+    def returning(self, order, status='requested'):
+        from store.models import OrderReturn
+
+        dates = {'received': {'received_at': timezone.now(), 'receiving_branch': self.branch},
+                 'withdrawn': {'withdrawn_at': timezone.now()}}.get(status, {})
+        return OrderReturn.objects.create(company=self.company, order=order, status=status, kind='otro',
+                                          reason='Cliente desiste', requested_by=self.staff, **dates)
+
+    def test_a_standing_return_refuses_the_reception_with_409(self):
+        order = self.paid_order(self.phone, 1)
+        self.returning(order)
+        res = as_client(self.staff).post(self.url(order), {'units': [
+            {'serial_number': 'EQP0501', 'imei': IMEIS[35]}]}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'return_open'), res.content)
+        self.assertFalse(StockUnit.objects.filter(product=self.phone).exists())
+        self.assertFalse(OrderUnit.objects.filter(order=order).exists())
+        self.assertEqual(order.items.get().supply_status, 'pending')
+
+    def test_an_accessory_line_is_refused_too(self):
+        order = self.paid_order(self.case, 1)
+        self.returning(order, status='received')
+        with self.assertRaises(supply.SupplyError) as caught:
+            supply.receive_line(order.items.get(), actor=self.staff)
+        self.assertEqual(caught.exception.code, 'return_open')
+        self.assertFalse(StockMovement.objects.filter(order=order).exists())
+
+    def test_a_withdrawn_return_does_not_stand(self):
+        order = self.paid_order(self.case, 1)
+        self.returning(order, status='withdrawn')
+        supply.receive_line(order.items.get(), actor=self.staff)
+        self.assertEqual(order.items.get().supply_status, 'received')
+
+
 class ReceiveAtTheSameInstantTest(TransactionTestCase):
     """Two people press «Registrar recepción» together: one entry, one 409."""
 
@@ -408,6 +451,73 @@ class SupplyAlertsTest(ReceptionShop, TestCase):
     def test_the_service_answers_a_queryset(self):
         order = self.paid_order(self.case, 1)
         self.assertEqual(list(supply_alerts.filter_orders(Order.objects.all(), 'supplier_pending')), [order])
+
+
+class AlertsCostTest(ReceptionShop, TestCase):
+    """The dashboard asks on every load: the device alerts cost the same for 1 order or many."""
+
+    def setUp(self):
+        self.build()
+        from store import stock_unit_services as units
+        from store.models import CartItem
+
+        self.own = self.device('Equipo propio SDF2', 'sdf2-propio-n', requires_imei=False)
+        Product.objects.filter(pk=self.own.pk).update(sale_mode=Product.SALE_MODE_STOCK)
+        units.receive_units(branch=self.branch, product=self.own, actor=self.staff, reason='Compra',
+                            units=[{'serial_number': f'PRN{n:04d}'} for n in range(6)])
+        self.orders = []
+        for n in range(6):
+            CartItem.objects.create(session_key=f'n{n}', product=self.own, quantity=1)
+            order = self.checkout(f'n{n}')
+            self.pay(order)
+            self.orders.append(order)
+
+    def queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as seen:
+            rows = supply_alerts.summary(Order.objects.filter(company=self.company))
+        return len(seen.captured_queries), {row['kind']: row['count'] for row in rows}
+
+    def test_the_count_does_not_grow_with_the_orders(self):
+        many, counts = self.queries()
+        self.assertEqual(counts['units_pending'], 6)
+        Order.objects.filter(pk__in=[o.pk for o in self.orders[1:]]).update(status=Order.Status.CANCELLED)
+        one, counts = self.queries()
+        self.assertEqual(counts['units_pending'], 1)
+        self.assertEqual(many, one)
+        self.assertLessEqual(many, 20)
+
+    def test_the_batch_says_what_the_order_view_says(self):
+        from store import unit_identification
+
+        received = self.paid_order(self.phone, 1, session='r')
+        supply.receive_line(received.items.get(), actor=self.staff,
+                            units=[{'serial_number': 'EQP0601', 'imei': IMEIS[36]}])
+        ids = [o.pk for o in self.orders] + [received.pk]
+        batch = supply_alerts.pending_devices(ids)
+        for order in Order.objects.filter(pk__in=ids):
+            self.assertEqual(batch.get(order.pk, {}), unit_identification.pending_units(order), order.pk)
+
+
+class ReadyToDeliverTest(ReceptionShop, TestCase):
+    """«Recibidos, por entregar»: received and not yet out of the shop. Shipped is on its way, not waiting."""
+
+    def setUp(self):
+        self.build()
+
+    def test_shipped_and_delivered_are_not_waiting(self):
+        orders = []
+        for n, state in enumerate(('pending', 'ready_for_pickup', 'shipped', 'delivered')):
+            order = self.paid_order(self.case, 1, session=f'rd{n}')
+            supply.receive_line(order.items.get(), actor=self.staff)
+            Order.objects.filter(pk=order.pk).update(fulfillment_status=state)
+            orders.append(order)
+        rows = {row['kind']: row['count'] for row in supply_alerts.summary(Order.objects.all())}
+        self.assertEqual(rows['ready_to_deliver'], 2)
+        self.assertEqual(sorted(supply_alerts.filter_orders(Order.objects.all(), 'ready_to_deliver')
+                                .values_list('pk', flat=True)), sorted([orders[0].pk, orders[1].pk]))
 
 
 class OpsStatusOverdueTest(ReceptionShop, TestCase):
