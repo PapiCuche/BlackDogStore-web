@@ -142,6 +142,15 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual(again['rows'][0]['data']['offer_id'], future.pk)
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
 
+    def test_the_offer_with_exactly_the_rows_window_comes_first(self):
+        # Re-importing a file finds what it made, even when another offer of the pair also reaches those days.
+        twin = self.make_offer(valid_from=today() + timedelta(days=2), valid_until=self.offer.valid_until)
+        supply.deactivate_offer(twin, actor=self.staff, reason='Pausada')
+        twin.refresh_from_db()
+        body = self.preview([self.same(**{'Vigente desde': twin.valid_from.isoformat()})]).json()
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['offer_id']), ('no_change', twin.pk), row)
+
     def test_an_adjacent_window_updates_the_running_offer_in_place(self):
         start = self.offer.valid_until + timedelta(days=1)
         body = self.preview([self.same(**{'Vigente desde': start.isoformat(),
