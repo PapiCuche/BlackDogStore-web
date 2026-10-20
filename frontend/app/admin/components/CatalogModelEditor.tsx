@@ -10,18 +10,22 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
 
-import { fetchAdminCategories, fetchAdminProducts, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
+import { Fragment, useCallback, useEffect, useState } from "react";
+
+import { fetchAdminCategories, fetchAdminProducts, patchAdminProduct, type AdminCategory, type AdminProduct } from "@/app/lib/admin";
 import {
   DEFAULT_LINE_LABELS,
   fetchAdminCatalogModel,
+  fetchAdminCatalogModels,
   fetchCatalogAttributes,
   fetchCatalogSettings,
   setProductVariant,
   updateAdminCatalogModel,
   type AdminCatalogAttribute,
+  type AdminCatalogModel,
   type AdminCatalogModelDetail,
+  type AdminModelVariant,
   type CatalogLine,
 } from "../lib/internal-api";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
@@ -162,6 +166,231 @@ function AddVariantForm({
   );
 }
 
+const optionKey = (chosen: Record<number, string>) =>
+  Object.values(chosen).filter(Boolean).map(Number).sort((a, b) => a - b).join("-");
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * CATALOG-VARIANTS-UX — «Editar variante». The same product, never a new one:
+ * its model, line and options go through the variant endpoint, its price and
+ * publication through the product. Stock and cost are not edited here.
+ *
+ * What the variant already carries decides what may change, and the server
+ * decides again on every save; the form only explains it beforehand.
+ */
+function EditVariantForm({
+  variant, modelId, models, attributes, lineLabels, companyId, onSaved, onRefresh, onCancel,
+}: {
+  variant: AdminModelVariant;
+  modelId: number;
+  models: AdminCatalogModel[];
+  attributes: AdminCatalogAttribute[];
+  lineLabels: Record<CatalogLine, string>;
+  companyId: number | null;
+  onSaved: () => void;
+  onRefresh: () => void;
+  onCancel: () => void;
+}) {
+  const initialOptions = () => Object.fromEntries(
+    variant.options.map((option) => [option.attribute_id, String(option.option_id)]),
+  ) as Record<number, string>;
+  const [targetModel, setTargetModel] = useState(String(modelId));
+  const [line, setLine] = useState<CatalogLine>(variant.condition_line);
+  const [chosen, setChosen] = useState<Record<number, string>>(initialOptions);
+  const [price, setPrice] = useState(variant.price);
+  const [published, setPublished] = useState(Boolean(variant.is_published_online));
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [field, setField] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const identityRule = variant.identity_change ?? "free";
+  const lineRule = variant.line_change ?? "free";
+  const history = variant.history ?? { sold: 0, units: 0, reserved: 0 };
+  const identityLocked = identityRule === "blocked";
+  const lineLocked = lineRule === "blocked";
+
+  const identityChanged =
+    Number(targetModel) !== modelId || optionKey(chosen) !== optionKey(initialOptions());
+  const lineChanged = line !== variant.condition_line;
+  const variantChanged = identityChanged || lineChanged;
+  const priceChanged = Number(price) !== Number(variant.price);
+  const publicationChanged = published !== Boolean(variant.is_published_online);
+  // The server asks a superior's reason for ANY change of a variant with
+  // history once its identity is `superior` — the line included.
+  const needsReason = identityRule === "superior" && variantChanged;
+
+  // The current model is always an option, even before the list arrives.
+  const modelChoices = models.some((m) => m.id === modelId)
+    ? models
+    : [{ id: modelId, name: "Este modelo" } as AdminCatalogModel, ...models];
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setField(null);
+    if (!variantChanged && !priceChanged && !publicationChanged) {
+      setError("No hay cambios que guardar.");
+      return;
+    }
+    if (priceChanged && (price.trim() === "" || !Number.isFinite(Number(price)) || Number(price) < 0)) {
+      setError("Escribe un precio válido.");
+      setField("price");
+      return;
+    }
+    if (needsReason && reason.trim().length < 5) {
+      setError("Escribe el motivo del cambio (al menos 5 caracteres): quedará en la auditoría.");
+      setField("reason");
+      return;
+    }
+    setSaving(true);
+    let variantSaved = false;
+    try {
+      if (variantChanged) {
+        await setProductVariant(variant.product_id, {
+          model_id: Number(targetModel),
+          condition_line: line,
+          option_ids: Object.values(chosen).filter(Boolean).map(Number),
+          ...(needsReason ? { reason: reason.trim() } : {}),
+        }, companyId);
+        variantSaved = true;
+      }
+      if (priceChanged || publicationChanged) {
+        await patchAdminProduct(variant.product_id, {
+          ...(priceChanged ? { price: price.trim() } : {}),
+          ...(publicationChanged ? { is_published_online: published } : {}),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      const detail = message(err, "No se pudo guardar la variante.");
+      setError(variantSaved ? `La variante se guardó, pero el precio o la publicación no: ${detail}` : detail);
+      setField((err as { field?: string | null }).field ?? null);
+      if (variantSaved) onRefresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="grid gap-3 rounded-lg border border-bd-border bg-background p-4 text-left md:grid-cols-3" aria-label={`Editar variante ${variant.name}`}>
+      <p className="text-sm text-foreground md:col-span-3">
+        Editando <strong>{variant.name}</strong>. Es el mismo producto: conserva su stock, sus equipos y su historial.
+      </p>
+
+      {identityRule === "superior" ? (
+        <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning md:col-span-3">
+          Ya tiene {plural(history.sold, "venta", "ventas")} y {plural(history.units, "equipo", "equipos")}: cambiar modelo u
+          opciones lo hace un administrador de la empresa, con motivo.
+        </p>
+      ) : null}
+      {identityLocked ? (
+        <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning md:col-span-3">
+          Hay equipos apartados o en un carrito ({history.reserved}): su modelo, sus opciones y su línea no cambian
+          hasta que se liberen esas reservas. El precio y la publicación sí se pueden cambiar.
+        </p>
+      ) : null}
+
+      <label className="block text-xs text-muted">
+        Modelo
+        <select
+          value={targetModel}
+          onChange={(e) => setTargetModel(e.target.value)}
+          disabled={identityLocked}
+          aria-invalid={field === "product_model" ? true : undefined}
+          className={`mt-1.5 ${internalInputClass}`}
+        >
+          {modelChoices.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </label>
+      <label className="block text-xs text-muted">
+        Línea
+        <select
+          value={line}
+          onChange={(e) => setLine(e.target.value as CatalogLine)}
+          disabled={lineLocked}
+          aria-invalid={field === "condition_line" ? true : undefined}
+          className={`mt-1.5 ${internalInputClass}`}
+        >
+          <option value="new">{lineLabels.new}</option>
+          <option value="used">{lineLabels.used}</option>
+        </select>
+        {lineLocked && !identityLocked ? (
+          <span className="mt-1 block text-xs text-muted">
+            Tiene equipos propios: su línea es la de esos equipos y no cambia. Registra los equipos en la variante que corresponde.
+          </span>
+        ) : null}
+      </label>
+      {attributes.map((attribute) => (
+        <label key={attribute.id} className="block text-xs text-muted">
+          {attribute.name}
+          <select
+            value={chosen[attribute.id] ?? ""}
+            onChange={(e) => setChosen({ ...chosen, [attribute.id]: e.target.value })}
+            disabled={identityLocked}
+            aria-invalid={field === "options" ? true : undefined}
+            className={`mt-1.5 ${internalInputClass}`}
+          >
+            <option value="">No aplica</option>
+            {[...attribute.options].sort((a, b) => a.sort_order - b.sort_order).map((option) => (
+              <option key={option.id} value={option.id}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      ))}
+      <label className="block text-xs text-muted">
+        Precio (S/)
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          inputMode="decimal"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          aria-invalid={field === "price" ? true : undefined}
+          className={`mt-1.5 ${internalInputClass}`}
+        />
+      </label>
+      <label className="flex items-center gap-2 self-end pb-2 text-sm text-foreground">
+        <input type="checkbox" checked={published} onChange={(e) => setPublished(e.target.checked)} />
+        Publicado en la tienda
+      </label>
+
+      {needsReason ? (
+        <label className="block text-xs text-muted md:col-span-3">
+          Motivo del cambio (obligatorio)
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={2}
+            maxLength={500}
+            aria-required="true"
+            aria-invalid={field === "reason" ? true : undefined}
+            className={`mt-1.5 ${internalInputClass}`}
+          />
+          <span className="mt-1 block text-xs text-muted">Queda en la auditoría junto con su historial.</span>
+        </label>
+      ) : null}
+
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs md:col-span-3">
+        <Link href={`/admin/products/${variant.product_id}`} className="text-muted underline underline-offset-4 hover:text-foreground">
+          Fotos y datos del producto
+        </Link>
+        <Link href={`/admin/products/${variant.product_id}/stock-card`} className="text-muted underline underline-offset-4 hover:text-foreground">
+          Costo y stock
+        </Link>
+      </p>
+
+      {error ? <p role="alert" className="text-sm text-danger md:col-span-3">{error}</p> : null}
+      <div className="flex justify-end gap-2 md:col-span-3">
+        <button type="button" className={internalButtonClass} onClick={onCancel} disabled={saving}>Cancelar</button>
+        <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</button>
+      </div>
+    </form>
+  );
+}
+
 export function CatalogModelEditor({
   modelId, canManage, companyId,
 }: { modelId: number; canManage: boolean; companyId: number | null }) {
@@ -174,6 +403,8 @@ export function CatalogModelEditor({
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [models, setModels] = useState<AdminCatalogModel[]>([]);
 
   const load = useCallback(() => {
     fetchAdminCatalogModel(modelId, companyId).then(
@@ -183,6 +414,11 @@ export function CatalogModelEditor({
   }, [modelId, companyId]);
 
   useEffect(() => { load(); }, [load]);
+  // The company's models, for moving a variant: only once someone edits one.
+  useEffect(() => {
+    if (editingId === null || models.length) return;
+    fetchAdminCatalogModels(companyId).then(setModels, () => {});
+  }, [editingId, models.length, companyId]);
   useEffect(() => {
     fetchAdminCategories(companyId).then(setCategories, () => {});
     fetchCatalogAttributes(companyId).then(setAttributes, () => {});
@@ -317,40 +553,70 @@ export function CatalogModelEditor({
             </thead>
             <tbody>
               {model.variants.map((variant) => (
-                <tr key={variant.product_id} className="border-b border-bd-border/60">
-                  <Td>
-                    <Link href={`/admin/products/${variant.product_id}`} className="underline-offset-4 hover:underline">{variant.name}</Link>
-                    {variant.sku || variant.code ? <span className="block font-mono text-xs text-muted">{variant.sku || variant.code}</span> : null}
-                  </Td>
-                  <Td muted>{lineLabels[variant.condition_line] ?? variant.condition_line}</Td>
-                  <Td>
-                    <span className="flex flex-wrap gap-1.5">
-                      {variant.options.map((option) => (
-                        <span key={option.option_id} className="inline-flex items-center gap-1 rounded-full border border-bd-border px-2 py-0.5 text-xs">
-                          {option.swatch_hex ? (
-                            <span aria-hidden="true" className="h-3 w-3 rounded-full border border-foreground/25" style={{ backgroundColor: option.swatch_hex }} />
-                          ) : null}
-                          <span className="text-muted">{option.attribute_name}:</span> {option.label}
-                        </span>
-                      ))}
-                      {variant.options.length === 0 ? <span className="text-muted">—</span> : null}
-                    </span>
-                  </Td>
-                  <Td right muted>{formatSoles(variant.price)}</Td>
-                  <Td right>{variant.stock}</Td>
-                  {canManage ? (
-                    <Td right>
-                      <button
-                        type="button"
-                        className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
-                        onClick={() => void removeVariant(variant.product_id, variant.condition_line)}
-                        aria-label={`Quitar ${variant.name} del modelo`}
-                      >
-                        Quitar del modelo
-                      </button>
+                <Fragment key={variant.product_id}>
+                  <tr className="border-b border-bd-border/60">
+                    <Td>
+                      <Link href={`/admin/products/${variant.product_id}`} className="underline-offset-4 hover:underline">{variant.name}</Link>
+                      {variant.sku || variant.code ? <span className="block font-mono text-xs text-muted">{variant.sku || variant.code}</span> : null}
                     </Td>
+                    <Td muted>{lineLabels[variant.condition_line] ?? variant.condition_line}</Td>
+                    <Td>
+                      <span className="flex flex-wrap gap-1.5">
+                        {variant.options.map((option) => (
+                          <span key={option.option_id} className="inline-flex items-center gap-1 rounded-full border border-bd-border px-2 py-0.5 text-xs">
+                            {option.swatch_hex ? (
+                              <span aria-hidden="true" className="h-3 w-3 rounded-full border border-foreground/25" style={{ backgroundColor: option.swatch_hex }} />
+                            ) : null}
+                            <span className="text-muted">{option.attribute_name}:</span> {option.label}
+                          </span>
+                        ))}
+                        {variant.options.length === 0 ? <span className="text-muted">—</span> : null}
+                      </span>
+                    </Td>
+                    <Td right muted>{formatSoles(variant.price)}</Td>
+                    <Td right>{variant.stock}</Td>
+                    {canManage ? (
+                      <Td right>
+                        <span className="inline-flex flex-wrap justify-end gap-1.5">
+                          <button
+                            type="button"
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
+                            onClick={() => setEditingId(editingId === variant.product_id ? null : variant.product_id)}
+                            aria-expanded={editingId === variant.product_id}
+                            aria-label={`Editar variante ${variant.name}`}
+                          >
+                            Editar variante
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
+                            onClick={() => void removeVariant(variant.product_id, variant.condition_line)}
+                            aria-label={`Quitar ${variant.name} del modelo`}
+                          >
+                            Quitar del modelo
+                          </button>
+                        </span>
+                      </Td>
+                    ) : null}
+                  </tr>
+                  {canManage && editingId === variant.product_id ? (
+                    <tr className="border-b border-bd-border/60">
+                      <td colSpan={6} className="px-3 py-3">
+                        <EditVariantForm
+                          variant={variant}
+                          modelId={modelId}
+                          models={models}
+                          attributes={attributes}
+                          lineLabels={lineLabels}
+                          companyId={companyId}
+                          onCancel={() => setEditingId(null)}
+                          onRefresh={load}
+                          onSaved={() => { setEditingId(null); setNotice("Variante actualizada."); load(); }}
+                        />
+                      </td>
+                    </tr>
                   ) : null}
-                </tr>
+                </Fragment>
               ))}
             </tbody>
           </TableWrap>
