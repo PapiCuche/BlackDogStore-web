@@ -3,7 +3,7 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-10-19 — Devolución posterior a la entrega (fase 1)
+## 2026-10-19 — Devolución posterior a la entrega (fase 1) (#134, desplegado `acf20fc`)
 
 **Added**
 - Panel «Devolución» y `GET/POST /api/admin/orders/{id}/return/` (+ `receive/`, `close/`,

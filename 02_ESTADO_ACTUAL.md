@@ -3,7 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-19 — ORDER-RETURN-01 fase 1 (rama `feat/post-delivery-return`)
+## 2026-10-19 — ORDER-RETURN-01 fase 1 desplegada en producción (#134)
+
+**Producción en `acf20fc`** desde `055cf0d`, el 2026-10-19 (noche, Lima). Migración `0139` aplicada
+con `lock_timeout` y `statement_timeout`.
+- Antes: copia `20261019-192121` (`gzip -t` OK) restaurada en una base desechable: `0139` de ida en
+  6 s, vuelta a `0138` con esquema idéntico, reaplicación idéntica; la imagen anterior
+  (`rollback-055cf0d`) funciona sobre el esquema nuevo. Caddyfile respaldado
+  (`backups/Caddyfile.before-134`) y sin cambios. Pagos pendientes: 2 intentos de hace casi 8 días.
+- Después: `deploy/healthcheck.sh` 17 OK; recuentos iguales (6 pedidos, 4 cancelaciones, 3
+  reembolsos pendientes, 10 movimientos); sin errores en el backend.
+- Smoke: tienda en 200; endpoints de devolución piden sesión (401). Con las 3 membresías, sólo
+  lectura (0 escrituras): `return_block` en cada pedido; ninguno elegible hoy (los pagados ya
+  están cancelados); otra empresa 403.
+- **Vuelta atrás:** imágenes `rollback-055cf0d` sólo mientras no haya devoluciones ni movimientos
+  «Devolución de cliente»; después, corregir hacia adelante.
 
 Desde `master` `91b927c`. Decisión **DEC-ORDER-RETURN-01**; migración `0139`.
 - **IMPLEMENTADO:** devolución del pedido completo después de la entrega: registrar, recibir
