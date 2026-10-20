@@ -1,6 +1,6 @@
 # NEXT ACTION
 
-## ORDER-RETURN-01 — pruebas del propietario (PENDIENTES)
+## Desplegado: ORDER-RETURN-01 (#134, `acf20fc`) el 2026-10-19 — pruebas del propietario (PENDIENTES)
 
 Sobre un pedido de prueba entregado (pagado con Izipay TEST):
 1. Cancelarlo: debe decir «requiere devolución».

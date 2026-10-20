@@ -75,7 +75,7 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
-### DEC-ORDER-RETURN-01 · Devolución posterior a la entrega, fase 1 (2026-10-19)
+### DEC-ORDER-RETURN-01 · Devolución posterior a la entrega, fase 1 (2026-10-19) — DESPLEGADA (#134, `acf20fc`)
 
 Decisiones D1–D8 del propietario (todas según la recomendación de
 `docs/diseno-devolucion-post-entrega.md`). Migración `0139_order_returns` (aditiva).
