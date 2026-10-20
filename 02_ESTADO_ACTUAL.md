@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-20 — ORDER-RETURN-01: verificación automática; aceptación funcional PENDIENTE
+
+Estado: **IMPLEMENTADO y DESPLEGADO** (última comprobación por SSH, 2026-10-19: `acf20fc`, `0139`
+aplicada, 17 OK). **Aceptación funcional del propietario: PENDIENTE** (`docs/NEXT_ACTION.md`).
+- Verificación automática (evidencia técnica, no aceptación): 323 pruebas OK sobre `1448a5d`
+  (R1–R9) y 6 nuevas en `test_order_return_amounts`. Una venta de S/ 5,000 con S/ 500 de
+  descuento comercial (cobrado S/ 4,500) reembolsa S/ 4,500; con S/ 100 descontados por la
+  devolución, S/ 4,400; S/ 4,000 se rechaza. El descuento comercial nunca se resta dos veces
+  (mutación que lo resta otra vez: detectada).
+- **Verificación de producción pendiente:** el 2026-10-20 el SSH no respondió desde la IP del
+  equipo de trabajo; el sitio respondía 200 por HTTPS. No es una caída del servidor; no se tocó el
+  firewall. Repetir SHA, migraciones y salud cuando vuelva el acceso.
+
 ## 2026-10-19 — ORDER-RETURN-01 fase 1 desplegada en producción (#134)
 
 **Producción en `acf20fc`** desde `055cf0d`, el 2026-10-19 (noche, Lima). Migración `0139` aplicada
