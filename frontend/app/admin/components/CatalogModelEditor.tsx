@@ -404,6 +404,9 @@ export function CatalogModelEditor({
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  // Quitar una variante con historial: lo hace un superior, con motivo.
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
 
   const load = useCallback(() => {
@@ -457,12 +460,16 @@ export function CatalogModelEditor({
     }
   }
 
-  async function removeVariant(productId: number, line: CatalogLine) {
+  async function removeVariant(productId: number, line: CatalogLine, reason?: string) {
     setError(null);
     setNotice(null);
     try {
-      await setProductVariant(productId, { model_id: null, condition_line: line, option_ids: [] }, companyId);
+      await setProductVariant(productId, {
+        model_id: null, condition_line: line, option_ids: [], ...(reason ? { reason } : {}),
+      }, companyId);
       setNotice("El producto ya no es una variante de este modelo.");
+      setRemovingId(null);
+      setRemoveReason("");
       load();
     } catch (err) {
       setError(message(err, "No se pudo quitar la variante."));
@@ -589,8 +596,14 @@ export function CatalogModelEditor({
                           </button>
                           <button
                             type="button"
-                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
-                            onClick={() => void removeVariant(variant.product_id, variant.condition_line)}
+                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:opacity-50"
+                            disabled={variant.removal === "blocked"}
+                            title={variant.removal === "blocked"
+                              ? "Tiene equipos, stock o pedidos sin entregar: sacarla cambiaría la línea de esos equipos. Edítala en su lugar."
+                              : undefined}
+                            onClick={() => (variant.removal === "superior"
+                              ? setRemovingId(removingId === variant.product_id ? null : variant.product_id)
+                              : void removeVariant(variant.product_id, variant.condition_line))}
                             aria-label={`Quitar ${variant.name} del modelo`}
                           >
                             Quitar del modelo
@@ -599,6 +612,38 @@ export function CatalogModelEditor({
                       </Td>
                     ) : null}
                   </tr>
+                  {canManage && removingId === variant.product_id ? (
+                    <tr className="border-b border-bd-border/60">
+                      <td colSpan={6} className="px-3 py-3">
+                        <div data-testid={`remove-variant-${variant.product_id}`} className="space-y-2 text-sm">
+                          <p className="text-foreground">
+                            Esta variante ya tiene ventas: sacarla del modelo lo hace un administrador de la empresa, con
+                            un motivo que queda en la auditoría.
+                          </p>
+                          <label className="block text-xs text-muted">
+                            Motivo
+                            <textarea
+                              value={removeReason}
+                              onChange={(e) => setRemoveReason(e.target.value)}
+                              rows={2}
+                              className={`mt-1.5 ${internalInputClass}`}
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className={internalPrimaryButtonClass}
+                              disabled={removeReason.trim().length < 5}
+                              onClick={() => void removeVariant(variant.product_id, variant.condition_line, removeReason.trim())}
+                            >
+                              Quitar del modelo
+                            </button>
+                            <button type="button" className={internalButtonClass} onClick={() => setRemovingId(null)}>Cancelar</button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
                   {canManage && editingId === variant.product_id ? (
                     <tr className="border-b border-bd-border/60">
                       <td colSpan={6} className="px-3 py-3">

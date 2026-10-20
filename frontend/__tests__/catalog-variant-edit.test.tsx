@@ -52,6 +52,12 @@ const MODEL = {
     variant(52, 'Equipo X con historial', {
       options: [opt(3, 'Capacidad', 12, '256 GB'), opt(4, 'Color', 21, 'Azul')],
       history: { sold: 2, units: 1, reserved: 0 }, identity_change: 'superior', line_change: 'blocked',
+      removal: 'blocked',
+    }),
+    variant(54, 'Equipo X vendido', {
+      options: [opt(3, 'Capacidad', 11, '128 GB'), opt(4, 'Color', 22, 'Blanco')],
+      history: { sold: 3, units: 0, reserved: 0 }, identity_change: 'superior', line_change: 'superior',
+      removal: 'superior',
     }),
     variant(53, 'Equipo X apartado', {
       options: [opt(3, 'Capacidad', 12, '256 GB'), opt(4, 'Color', 22, 'Blanco')],
@@ -111,7 +117,7 @@ describe('quién ve «Editar variante»', () => {
 
   it('un gestor la tiene en cada fila', async () => {
     await mount(true);
-    expect(screen.getAllByRole('button', { name: /^Editar variante / })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: /^Editar variante / })).toHaveLength(MODEL.variants.length);
   });
 });
 
@@ -217,5 +223,34 @@ describe('lo que la variante ya lleva', () => {
     expect(field(form, /^Línea/)).toBeDisabled();
     expect(within(form).getByLabelText('Precio (S/)')).toBeEnabled();
     expect(within(form).getByLabelText('Publicado en la tienda')).toBeEnabled();
+  });
+});
+
+
+describe('quitar del modelo', () => {
+  it('una variante con equipos o stock no se quita: el botón está deshabilitado y dice por qué', async () => {
+    await mount();
+    const button = screen.getByRole('button', { name: 'Quitar Equipo X con historial del modelo' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', expect.stringContaining('Edítala en su lugar'));
+  });
+
+  it('una vendida pide motivo y lo manda', async () => {
+    await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar Equipo X vendido del modelo' }));
+    expect(writes).toHaveLength(0);                                   // primero el motivo
+    const box = screen.getByTestId('remove-variant-54');
+    const confirm = within(box).getByRole('button', { name: 'Quitar del modelo' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(within(box).getByLabelText('Motivo'), { target: { value: 'Se cargó en el modelo equivocado' } });
+    await act(async () => { fireEvent.click(confirm); });
+    expect(writes[0]).toMatchObject({ method: 'PUT', path: expect.stringContaining('/admin/products/54/variant/'),
+      body: { model_id: null, reason: 'Se cargó en el modelo equivocado' } });
+  });
+
+  it('una libre se quita directo, sin motivo', async () => {
+    await mount();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Quitar Equipo X libre del modelo' })); });
+    expect(writes[0].body).toEqual({ model_id: null, condition_line: 'new', option_ids: [] });
   });
 });

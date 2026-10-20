@@ -2183,9 +2183,15 @@ export type AdminModelVariant = {
   identity_change: VariantEditRule;
   /** How its line (new / used) may change. */
   line_change: VariantEditRule;
+  /** How it may be taken out of the model: blocked while it holds devices or stock. */
+  removal?: VariantEditRule;
 };
 
-export type VariantHistory = { sold: number; units: number; reserved: number };
+export type VariantHistory = {
+  sold: number; units: number; reserved: number;
+  /** Units on the shelves of a product counted by quantity; Kardex history; orders not handed over. */
+  stock?: number; moved?: boolean; open_orders?: number;
+};
 
 /**
  * CATALOG-VARIANTS-UX — `free`: anyone with `products.manage`; `superior`: a
