@@ -23,7 +23,7 @@
  */
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PRODUCT_IMAGE_ACCEPT,
   bulkSetProductVisibility,
@@ -61,6 +61,7 @@ import {
   type CosmeticGradeRow,
   type SupplierRow,
 } from "../lib/internal-api";
+import { pastedCodes, scanInputProps, useScanRows } from "../lib/scan-rows";
 import { imeiProblem } from "../lib/unit-entry";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -72,6 +73,9 @@ const NEW_MODEL = "__new";
 const NEW_SUPPLIER = "__new";
 
 const STEP_ORDER: Step[] = ["kind", "product", "stock", "review"];
+
+/** Enter's path through a new-device row (the order the fields are shown). */
+const UNIT_CHAIN = ["serial_number", "imei", "imei2"] as const;
 
 function stockStepLabel(kind: ArticleKind | null): string {
   return kind === "supplier" ? "Proveedor" : "Stock";
@@ -169,6 +173,36 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
     setDraft((prev) => ({ ...prev, ...change }));
   }
 
+  // SUPPLIER-DEVICE-FLOW-02 — the new-device rows take a scanner: Enter goes
+  // serial → IMEI → second IMEI → the next row; at the last row it opens a new
+  // one (if this one has something) instead of moving on.
+  const scanFocusRow = useRef<number | null>(null);
+  const unitScan = useScanRows(UNIT_CHAIN.length, draft.units.length, () => {
+    const last = draft.units[draft.units.length - 1];
+    if (!last || !(last.serial_number.trim() || last.imei.trim())) return;
+    scanFocusRow.current = draft.units.length;
+    update({ units: [...draft.units, emptyUnit()] });
+  });
+  const focusUnit = unitScan.focus;
+  useEffect(() => {
+    if (scanFocusRow.current === null) return;
+    focusUnit(scanFocusRow.current, 0);
+    scanFocusRow.current = null;
+  }, [draft.units.length, focusUnit]);
+
+  /** A list pasted into a device field (one code per line) fills that field down the rows, adding rows. */
+  function pasteUnits(index: number, key: (typeof UNIT_CHAIN)[number], event: React.ClipboardEvent<HTMLInputElement>) {
+    const codes = pastedCodes(event.clipboardData.getData("text"));
+    if (codes.length === 0) return;
+    event.preventDefault();
+    const rows = [...draft.units];
+    codes.forEach((code, offset) => {
+      const at = index + offset;
+      rows[at] = { ...(rows[at] ?? emptyUnit()), [key]: code };
+    });
+    update({ units: rows });
+  }
+
   const kind = draft.kind;
   const isDevice = kind === "new_device" || kind === "used_device";
   const costs = costState(access);
@@ -216,6 +250,11 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
         if (problem) found.push(problem);
       } else {
         found.push("Indica el IMEI del equipo.");
+      }
+      if (draft.used.imei2.trim()) {
+        const problem = imeiProblem(draft.used.imei2);
+        if (problem) found.push(`Segundo IMEI: ${problem}`);
+        else if (draft.used.imei2.trim() === draft.used.imei.trim()) found.push("El segundo IMEI es distinto del primero.");
       }
     }
     if (wantsSupplier) {
@@ -540,13 +579,16 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
           return (
             <div key={index} className="grid gap-3 rounded-lg border border-bd-border p-3 md:grid-cols-4">
               <Field id={`reg-serial-${n}`} label={`Número de serie ${n}`}>
-                <input id={`reg-serial-${n}`} value={unit.serial_number} onChange={(e) => set({ serial_number: e.target.value })} className={inputCls} />
+                <input id={`reg-serial-${n}`} value={unit.serial_number} onChange={(e) => set({ serial_number: e.target.value })}
+                  onPaste={(e) => pasteUnits(index, "serial_number", e)} {...unitScan.bind(index, 0)} {...scanInputProps} className={inputCls} />
               </Field>
               <Field id={`reg-imei-${n}`} label={`IMEI ${n}`}>
-                <input id={`reg-imei-${n}`} inputMode="numeric" value={unit.imei} onChange={(e) => set({ imei: e.target.value })} className={inputCls} />
+                <input id={`reg-imei-${n}`} inputMode="numeric" value={unit.imei} onChange={(e) => set({ imei: e.target.value })}
+                  onPaste={(e) => pasteUnits(index, "imei", e)} {...unitScan.bind(index, 1)} {...scanInputProps} className={inputCls} />
               </Field>
               <Field id={`reg-imei2-${n}`} label={`Segundo IMEI ${n} (opcional)`}>
-                <input id={`reg-imei2-${n}`} inputMode="numeric" value={unit.imei2} onChange={(e) => set({ imei2: e.target.value })} className={inputCls} />
+                <input id={`reg-imei2-${n}`} inputMode="numeric" value={unit.imei2} onChange={(e) => set({ imei2: e.target.value })}
+                  onPaste={(e) => pasteUnits(index, "imei2", e)} {...unitScan.bind(index, 2)} {...scanInputProps} className={inputCls} />
               </Field>
               {costs.enabled ? (
                 <Field id={`reg-unit-cost-${n}`} label={`Costo del equipo ${n} (S/)`}>
@@ -579,7 +621,10 @@ export function ArticleRegistrationWizard({ access, companyId, branches }: Props
           <input id="reg-used-serial" value={u.serial_number} onChange={(e) => set({ serial_number: e.target.value })} className={inputCls} />
         </Field>
         <Field id="reg-used-imei" label="IMEI">
-          <input id="reg-used-imei" inputMode="numeric" value={u.imei} onChange={(e) => set({ imei: e.target.value })} className={inputCls} />
+          <input id="reg-used-imei" inputMode="numeric" value={u.imei} onChange={(e) => set({ imei: e.target.value })} {...scanInputProps} className={inputCls} />
+        </Field>
+        <Field id="reg-used-imei2" label="Segundo IMEI (opcional)">
+          <input id="reg-used-imei2" inputMode="numeric" value={u.imei2} onChange={(e) => set({ imei2: e.target.value })} {...scanInputProps} className={inputCls} />
         </Field>
         <Field id="reg-used-battery" label="Batería (%)">
           <input id="reg-used-battery" inputMode="numeric" value={u.battery_health} onChange={(e) => set({ battery_health: e.target.value })} className={inputCls} />

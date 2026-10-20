@@ -18,6 +18,7 @@
  *   NO COST, no full IMEI: the server never sends them, and nothing here asks.
  */
 
+import Link from "next/link";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -129,6 +130,30 @@ function SupplierColumn({ product, canSeeSuppliers }: { product: AvailabilityPro
         <p className="text-[11px] text-warning">Este producto se vende sólo con stock propio.</p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * SUPPLIER-DEVICE-FLOW-02 — «Vender en caja»: the till sells what this page
+ * found. Own stock sells from the shelf; a valid offer of a product sold «Bajo
+ * pedido» sells on order there too (the till's «Bajo pedido» option). The
+ * till has no way to preselect a product from the address yet: it opens and the
+ * seller scans or searches it. Who may read this page may sell (`sales.pos.use`).
+ */
+export const POS_HREF = "/admin/sales/pos";
+
+function SellLinks({ product }: { product: AvailabilityProduct }) {
+  const own = product.stock.total.available > 0;
+  const onOrder = !own && product.sells_on_order && product.supplier_offers.length > 0;
+  if (!own && !onOrder) return null;
+  return (
+    <Link
+      href={POS_HREF}
+      className="inline-block rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground hover:border-foreground/25"
+      aria-label={`${own ? "Vender en caja" : "Vender bajo pedido en caja"}: ${product.name}`}
+    >
+      {own ? "Vender en caja" : "Vender bajo pedido en caja"}
+    </Link>
   );
 }
 
@@ -423,7 +448,7 @@ export function AvailabilityPanel({ pollMs = DEFAULT_POLL_MS }: { pollMs?: numbe
                     Proveedor (bajo pedido)
                     <span className="block text-[10px] font-normal normal-case tracking-normal">no es stock propio</span>
                   </th>
-                  <th className="px-3 py-2.5 text-right"><span className="sr-only">Equipos</span></th>
+                  <th className="px-3 py-2.5 text-right"><span className="sr-only">Acciones</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -444,16 +469,19 @@ export function AvailabilityPanel({ pollMs = DEFAULT_POLL_MS }: { pollMs?: numbe
                       <td className="px-3 py-3"><OwnStock product={product} multiBranch={multiBranch} /></td>
                       <td className="px-3 py-3"><SupplierColumn product={product} canSeeSuppliers={canSeeSuppliers} /></td>
                       <td className="px-3 py-3 text-right">
-                        {product.is_serialized ? (
-                          <button
-                            type="button"
-                            className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground hover:border-foreground/25"
-                            aria-expanded={open === product.id}
-                            onClick={() => setOpen(open === product.id ? null : product.id)}
-                          >
-                            {open === product.id ? "Ocultar equipos" : "Ver equipos"}
-                          </button>
-                        ) : null}
+                        <div className="flex flex-col items-end gap-1.5">
+                          <SellLinks product={product} />
+                          {product.is_serialized ? (
+                            <button
+                              type="button"
+                              className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground hover:border-foreground/25"
+                              aria-expanded={open === product.id}
+                              onClick={() => setOpen(open === product.id ? null : product.id)}
+                            >
+                              {open === product.id ? "Ocultar equipos" : "Ver equipos"}
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                     {open === product.id ? (

@@ -244,7 +244,7 @@ describe('abastecimiento de un pedido', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
-  it('recibir un producto con serie pide una serie/IMEI por unidad y los envía', async () => {
+  it('recibir un producto con serie pide la serie de cada unidad (la regla del servidor) y los envía', async () => {
     const onChanged = jest.fn();
     render(<OrderSupplyPanel
       order={orderWith({ supply_status: 'pending', product_is_serialized: true }, { can_receive_supply: true })}
@@ -253,16 +253,19 @@ describe('abastecimiento de un pedido', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Recibir del proveedor' }));
     const form = screen.getByRole('form', { name: /Recibir del proveedor/ });
     expect(within(form).getAllByRole('group')).toHaveLength(2);
+    fireEvent.change(within(form).getByLabelText('IMEI (equipo 2, opcional)'), { target: { value: '356789012345680' } });
     await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Registrar recepción' })); });
-    expect(within(form).getByRole('alert')).toHaveTextContent('Escribe la serie o el IMEI de cada equipo.');
+    // An IMEI alone is not enough: the server asks every device for its serial.
+    expect(within(form).getByRole('alert')).toHaveTextContent('Revisa los equipos marcados.');
+    expect(within(form).getAllByText('Falta el número de serie.')).toHaveLength(2);
     expect(writes).toEqual([]);
     fireEvent.change(within(form).getByLabelText('Serie (equipo 1)'), { target: { value: 'SER-A' } });
-    fireEvent.change(within(form).getByLabelText('IMEI (equipo 1)'), { target: { value: '356789012345678' } });
-    fireEvent.change(within(form).getByLabelText('IMEI (equipo 2)'), { target: { value: '356789012345686' } });
+    fireEvent.change(within(form).getByLabelText('IMEI (equipo 1, opcional)'), { target: { value: '356789012345672' } });
+    fireEvent.change(within(form).getByLabelText('Serie (equipo 2)'), { target: { value: 'SER-B' } });
     await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Registrar recepción' })); });
     expect(writes[0]).toMatchObject({
       method: 'POST', path: '/admin/orders/900/supply/2/receive/',
-      body: { units: [{ serial_number: 'SER-A', imei: '356789012345678' }, { serial_number: '', imei: '356789012345686' }] },
+      body: { units: [{ serial_number: 'SER-A', imei: '356789012345672' }, { serial_number: 'SER-B', imei: '356789012345680' }] },
     });
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });

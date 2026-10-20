@@ -16,6 +16,8 @@ import {
   fetchAdminOrders,
   PAYMENT_STATUS_LABELS,
   FULFILLMENT_STATUS_LABELS,
+  SUPPLY_ALERT_KINDS,
+  type SupplyAlertKind,
 } from "../../lib/admin";
 import type { AuthUser } from "../../lib/auth";
 
@@ -27,15 +29,39 @@ type Filters = {
   shortfall: string;
   review: string;
   supply: string;
+  /** SUPPLIER-DEVICE-FLOW-02: los pedidos de una «Alerta operativa» del panel (`?alert=`). */
+  alert: string;
   /** COMMERCE-ADMIN-UX-01: cancelados con un reembolso pendiente o confirmado. */
   refund: string;
   date_from: string;
   date_to: string;
 };
 
+const SUPPLY_FILTERS = ["to_confirm", "pending", "received", "failed"];
+
+/** The dashboard's alerts link here with `?alert=` (or `?supply=`): the list opens filtered. */
+function filtersFromSearch(search: string): Pick<Filters, "alert" | "supply"> {
+  const params = new URLSearchParams(search);
+  const alert = params.get("alert") ?? "";
+  const supply = params.get("supply") ?? "";
+  return {
+    alert: (SUPPLY_ALERT_KINDS as readonly string[]).includes(alert) ? alert : "",
+    supply: SUPPLY_FILTERS.includes(supply) ? supply : "",
+  };
+}
+
+const ALERT_LABELS: Record<SupplyAlertKind, string> = {
+  to_confirm: "Abastecimiento por confirmar",
+  promise_due: "Fecha prometida vencida o por vencer",
+  offer_expired: "Esperando a un proveedor con la oferta vencida",
+  supplier_pending: "Esperando al proveedor",
+  units_pending: "Equipos por identificar",
+  ready_to_deliver: "Recibidos, por entregar",
+};
+
 function OrdersContent({ user }: { user: AuthUser }) {
   const [data, setData] = useState<PaginatedResponse<AdminOrder> | null>(null);
-  const [filters, setFilters] = useState<Filters>({
+  const [filters, setFilters] = useState<Filters>(() => ({
     search: "",
     status: "",
     fulfillment_status: "",
@@ -43,10 +69,12 @@ function OrdersContent({ user }: { user: AuthUser }) {
     shortfall: "",
     review: "",
     supply: "",
+    alert: "",
     refund: "",
     date_from: "",
     date_to: "",
-  });
+    ...(typeof window === "undefined" ? {} : filtersFromSearch(window.location.search)),
+  }));
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -64,6 +92,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
         shortfall: (filters.shortfall || undefined) as "true" | undefined,
         review: (filters.review || undefined) as "pending" | undefined,
         supply: (filters.supply || undefined) as "to_confirm" | "pending" | "failed" | "received" | undefined,
+        alert: (filters.alert || undefined) as SupplyAlertKind | undefined,
         refund: (filters.refund || undefined) as "pending" | "confirmed" | undefined,
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
@@ -108,6 +137,16 @@ function OrdersContent({ user }: { user: AuthUser }) {
         <FilterBar>
           {/* COMMERCE-ADMIN-UX-01: «Cancelaciones / historial» es este listado filtrado. */}
           <div className="mb-3 flex flex-wrap gap-2">
+            {filters.alert ? (
+              <button
+                type="button"
+                onClick={() => setFilter("alert", "")}
+                className={internalButtonClass}
+                aria-label={`Quitar el filtro de alerta: ${ALERT_LABELS[filters.alert as SupplyAlertKind]}`}
+              >
+                Alerta: {ALERT_LABELS[filters.alert as SupplyAlertKind]} · quitar
+              </button>
+            ) : null}
             <button
               type="button"
               aria-pressed={filters.status === "cancelled"}

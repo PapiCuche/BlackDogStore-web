@@ -95,6 +95,8 @@ export type UnitDraft = { serial_number: string; imei: string; imei2: string; co
 export type UsedDraft = {
   serial_number: string;
   imei: string;
+  /** SUPPLIER-DEVICE-FLOW-02: the server already takes a second IMEI for a used device. */
+  imei2: string;
   battery_health: string;
   cosmetic_grade: string;
   sale_price: string;
@@ -151,7 +153,7 @@ export function emptyDraft(today = new Date()): RegistrationDraft {
     is_active: true, show_online: true,
     model_mode: "existing", model_id: "", model_name: "", options: {}, requires_imei: true,
     branch: "", units: [emptyUnit()],
-    used: { serial_number: "", imei: "", battery_health: "", cosmetic_grade: "", sale_price: "", cost: "", public_notes: "" },
+    used: { serial_number: "", imei: "", imei2: "", battery_health: "", cosmetic_grade: "", sale_price: "", cost: "", public_notes: "" },
     stock: [],
     supplier_mode: "none", supplier_id: "", supplier_name: "",
     offer: { commercial_price: "", agreed_cost: "", confirmed_quantity: "", valid_from: iso(today), valid_until: iso(later), lead_time_days: "" },
@@ -215,6 +217,7 @@ export function buildRegistrationBody(
     body.unit = {
       serial_number: text(u.serial_number),
       imei: optional(u.imei),
+      imei2: optional(u.imei2),
       battery_health: intOrUndefined(u.battery_health),
       cosmetic_grade: optional(u.cosmetic_grade),
       sale_price: optional(u.sale_price),
