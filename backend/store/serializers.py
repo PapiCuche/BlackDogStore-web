@@ -694,16 +694,33 @@ class AdminOrderItemSerializer(serializers.ModelSerializer):
     # supplier's name is the panel's to see; its cost is not here (costs.view).
     supplier_name = serializers.SerializerMethodField()
     product_is_serialized = serializers.BooleanField(source='product.is_serialized', read_only=True)
+    # SUPPLIER-DEVICE-FLOW-02 — the branch that receives and hands it over.
+    fulfillment_branch = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
         fields = ['id', 'product_id', 'product_name', 'quantity', 'price', 'subtotal',
                   'supply_origin', 'supply_status', 'supply_note', 'lead_time_days', 'supplier_offer_id',
-                  'supplier_name', 'product_is_serialized']
+                  'supplier_name', 'product_is_serialized', 'fulfillment_branch']
 
     def get_supplier_name(self, obj):
         offer = obj.supplier_offer if obj.supplier_offer_id else None
         return offer.supplier.name if offer is not None else ''
+
+    def get_fulfillment_branch(self, obj):
+        branch = obj.order.fulfillment_branch
+        return {'id': branch.pk, 'name': branch.name} if branch is not None else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # SUPPLIER-DEVICE-FLOW-02 — an on-order line's agreed cost, the real one
+        # it entered at and the difference: ONLY when the caller passed
+        # `with_cost` (costs.view, DC1). Without it the keys are absent.
+        if self.context.get('with_cost') and instance.supply_origin == OrderItem.SUPPLY_SUPPLIER:
+            from .supply_services import line_costs
+
+            data.update(line_costs(instance))
+        return data
 
     def get_subtotal(self, obj):
         return str(obj.price * obj.quantity)

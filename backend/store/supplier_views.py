@@ -298,14 +298,26 @@ class AdminProductSaleModeView(APIView):
 # The supply of an order
 # ---------------------------------------------------------------------------
 
-def supply_line_payload(item) -> dict:
+def supply_line_payload(item, *, with_cost: bool = False) -> dict:
+    """
+    An on-order line as the panel follows it (SUPPLIER-DEVICE-FLOW-02): what
+    was sold, to which branch, from which supplier; its costs (agreed, real,
+    difference) only `with_cost` (`costs.view`, DC1). Never on a public API.
+    """
     offer = item.supplier_offer
-    return {
+    branch = item.order.fulfillment_branch
+    payload = {
         'id': item.pk, 'supply_origin': item.supply_origin, 'supply_status': item.supply_status,
         'supply_note': item.supply_note, 'lead_time_days': item.lead_time_days,
         'supplier_offer_id': item.supplier_offer_id,
         'supplier_name': offer.supplier.name if offer is not None else '',
+        'order_id': item.order_id, 'product_id': item.product_id, 'product_name': item.product.name,
+        'quantity': item.quantity, 'price': str(item.price),
+        'fulfillment_branch': {'id': branch.pk, 'name': branch.name} if branch is not None else None,
     }
+    if with_cost:
+        payload.update(supply_services.line_costs(item))
+    return payload
 
 
 class AdminOrderSupplyActionView(APIView):
@@ -338,14 +350,20 @@ class AdminOrderSupplyActionView(APIView):
             elif action == 'receive':
                 units = request.data.get('units')
                 line = supply_services.receive_line(line, actor=request.user, company=company, request=request,
-                                                    units=units if isinstance(units, list) else None)
+                                                    units=units if isinstance(units, list) else None,
+                                                    unit_cost=request.data.get('unit_cost'))
             else:
                 line = supply_services.fail_line(line, actor=request.user, company=company, request=request,
                                                  reason=request.data.get('reason') or '')
         except supply_services.SupplyError as exc:
+            if exc.code == 'already_received':
+                # SUPPLIER-DEVICE-FLOW-02: a repeated reception is not a wrong
+                # request — it already happened. 409, with what it brought in.
+                return Response({**exc.body(), 'units': getattr(exc, 'units', [])}, status=status.HTTP_409_CONFLICT)
             return _error(exc)
-        line = OrderItem.objects.select_related('supplier_offer__supplier').get(pk=line.pk)
-        return Response(supply_line_payload(line))
+        line = OrderItem.objects.select_related(
+            'supplier_offer__supplier', 'product', 'order__fulfillment_branch').get(pk=line.pk)
+        return Response(supply_line_payload(line, with_cost=user_may_view_costs(request.user, company)))
 
 
 # ---------------------------------------------------------------------------

@@ -52,16 +52,25 @@ MAX_QUANTITY = 100000
 class SupplyError(Exception):
     """A supply rule refused something. `field` names the input, when there is one."""
 
-    def __init__(self, detail: str, *, field: str = '', code: str = 'invalid'):
+    def __init__(self, detail: str, *, field: str = '', code: str = 'invalid',
+                 line: int | None = None, unit_field: str = ''):
         super().__init__(detail)
         self.detail = detail
         self.field = field
         self.code = code
+        # SUPPLIER-DEVICE-FLOW-02: a refused device of a reception says WHICH
+        # row (1-based) and which of its inputs, so the form marks that input.
+        self.line = line
+        self.unit_field = unit_field
 
     def body(self) -> dict:
         payload = {'detail': self.detail, 'code': self.code}
         if self.field:
             payload['field'] = self.field
+        if self.line is not None:
+            payload['line'] = self.line
+        if self.unit_field:
+            payload['unit_field'] = self.unit_field
         return payload
 
 
@@ -636,38 +645,81 @@ def confirm_line(line, *, actor, offer_id=None, company=None, request=None) -> O
     return locked
 
 
+def _received_units(order, line) -> list[dict]:
+    """The devices a reception of `line` named, as staff read them (whole identifiers)."""
+    from .models import OrderUnit
+
+    return [
+        {'serial_number': row.unit.serial_number or '', 'imei': row.unit.imei or '', 'imei2': row.unit.imei2 or ''}
+        for row in OrderUnit.objects.filter(order=order, product_id=line.product_id)
+        .select_related('unit').order_by('identified_at', 'pk')
+    ]
+
+
 @transaction.atomic
-def receive_line(line, *, actor, units=None, company=None, request=None) -> OrderItem:
+def receive_line(line, *, actor, units=None, unit_cost=None, company=None, request=None) -> OrderItem:
     """
     «Recibir del proveedor»: the goods of a committed line arrive, and leave
-    with the order in the same transaction — an entry at the frozen cost and
-    the sale exit of this order: the shelf ends where it was, the Kardex
-    tells both. A serialized product arrives as REAL devices (`units`: one
-    serial / IMEI each, exactly the line's quantity), and those devices are
-    the ones sold to this order.
+    with the order in the same transaction — an entry and the sale exit of
+    this order: the shelf ends where it was, the Kardex tells both. A
+    serialized product arrives as REAL devices (`units`: one row each, exactly
+    the line's quantity, under `stock_unit_services`' rule — serial always,
+    IMEI when the product requires it, an optional `notes`), and those devices
+    are the ones sold to this order.
+
+    COST (SUPPLIER-DEVICE-FLOW-02). Two figures, never mixed:
+      * the SALE keeps its snapshot — `OrderItem.unit_cost`, the agreed cost
+        frozen at checkout with `cost_source='supplier_offer'` — never
+        rewritten here; the margin (estimated and realised) and the supplier
+        settlement keep reading it;
+      * the GOODS enter at the REAL cost when somebody with `costs.view`
+        states it (`unit_cost` for the line, or a device's own `cost`), else at
+        the agreed one. That is what the Kardex, the branch average and each
+        device carry. `received_unit_cost` reads it back.
+
+    ONCE. A line already received answers `already_received` (the view: 409,
+    with the devices it named), under the order's lock: two receptions at the
+    same instant queue and the second one is told.
     """
     from . import inventory_services, stock_unit_services, unit_identification
     from .models import OrderUnit
 
     order, locked = _locked_line(line, company=company)
+    if locked.supply_status == OrderItem.SUPPLY_RECEIVED:
+        error = SupplyError('Esta línea ya se recibió del proveedor.', code='already_received')
+        error.units = _received_units(order, locked)
+        raise error
     if locked.supply_status != OrderItem.SUPPLY_PENDING:
         raise SupplyError('Sólo se recibe una línea pedida al proveedor y aún no recibida.', code='wrong_state')
     branch = order.fulfillment_branch
     if branch is None:
         raise SupplyError('El pedido no tiene sucursal de despacho.', code='no_branch')
     product = locked.product
+    # Only `costs.view` states a real cost (DC1); from anybody else a sent
+    # value is ignored, as the weekly Excel ignores «Costo pactado».
+    may_state_cost = _may_view_costs(actor, order.company)
+    real = clean_money(unit_cost, 'unit_cost', 'el costo real') if may_state_cost else None
+    entry_cost = real if real is not None else locked.unit_cost
     reason = f'Recibido del proveedor para el pedido #{order.pk}'
     metadata = {'order_id': order.pk, 'line_id': locked.pk, 'supplier_offer_id': locked.supplier_offer_id}
     try:
         if product.is_serialized:
             rows = list(units or [])
             if len(rows) != locked.quantity:
-                raise SupplyError(f'Indica los {locked.quantity} equipo(s) recibidos, con su serie o IMEI.',
+                raise SupplyError(f'Indica los {locked.quantity} equipo(s) recibidos, con su número de serie.',
                                   field='units')
-            cost = str(locked.unit_cost) if locked.unit_cost is not None else None
+            line_cost = str(entry_cost) if entry_cost is not None else None
+
+            def device(row):
+                row = dict(row) if isinstance(row, dict) else {}
+                # A device's own cost only from `costs.view`; otherwise the line's.
+                if not (may_state_cost and row.get('cost') not in (None, '')):
+                    row['cost'] = line_cost
+                return row
+
             created = stock_unit_services.receive_units(
                 branch=branch, product=product, actor=actor, reason=reason, request=request,
-                units=[{**(row if isinstance(row, dict) else {}), 'cost': cost} for row in rows],
+                units=[device(row) for row in rows],
             )
             inventory_services.create_stock_movement(
                 branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
@@ -686,7 +738,7 @@ def receive_line(line, *, actor, units=None, company=None, request=None) -> Orde
                 branch=branch, product_id=product.pk, movement_type=StockMovement.PURCHASE_ENTRY,
                 quantity=locked.quantity, reason=reason, actor=actor, order=order,
                 reference_type='supplier_order', reference_id=order.pk, metadata=metadata,
-                unit_cost=locked.unit_cost,
+                unit_cost=entry_cost,
             )
             inventory_services.create_stock_movement(
                 branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
@@ -694,14 +746,65 @@ def receive_line(line, *, actor, units=None, company=None, request=None) -> Orde
                 actor=actor, order=order, reference_type='order', reference_id=order.pk, metadata=metadata,
             )
     except stock_unit_services.StockUnitError as exc:
-        raise SupplyError(str(exc), field='units') from None
+        raise SupplyError(str(exc), field='units', line=exc.line, unit_field=exc.field or '') from None
     except inventory_services.InventoryError as exc:
         raise SupplyError(str(exc)) from None
     OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_RECEIVED)
+    # Whether a real cost was stated, never the amount: the log is read by more people.
     _audit('order_supply_received', company=order.company, actor=actor, target_type='order', target_id=order.pk,
-           request=request, line_id=locked.pk, quantity=locked.quantity, offer_id=locked.supplier_offer_id)
+           request=request, line_id=locked.pk, quantity=locked.quantity, offer_id=locked.supplier_offer_id,
+           real_cost_stated=real is not None)
     locked.refresh_from_db()
     return locked
+
+
+def _may_view_costs(actor, company) -> bool:
+    from .cost_services import user_may_view_costs
+
+    return user_may_view_costs(actor, company)
+
+
+def received_unit_cost(line) -> Decimal | None:
+    """
+    The REAL unit cost a received on-order line entered at — the purchase
+    entry of the line, or the mean of the devices its reception sold — or None
+    (not received, or a device of unknown cost). `costs.view` only.
+    """
+    from .cost_services import quantize_cost
+    from .models import StockUnit
+
+    if line.supply_origin != OrderItem.SUPPLY_SUPPLIER or line.supply_status != OrderItem.SUPPLY_RECEIVED:
+        return None
+    entry = (StockMovement.objects.filter(
+        order_id=line.order_id, product_id=line.product_id, movement_type=StockMovement.PURCHASE_ENTRY,
+        reference_type='supplier_order', metadata__line_id=line.pk,
+    ).order_by('pk').values_list('unit_cost', flat=True).first())
+    if entry is not None:
+        return quantize_cost(entry)
+    sale = (StockMovement.objects.filter(
+        order_id=line.order_id, product_id=line.product_id, movement_type=StockMovement.SALE_EXIT,
+        metadata__line_id=line.pk,
+    ).order_by('pk').values_list('metadata', flat=True).first())
+    ids = (sale or {}).get('unit_ids') or []
+    costs = list(StockUnit.objects.filter(pk__in=ids).values_list('cost', flat=True))
+    if not costs or any(cost is None for cost in costs):
+        return None
+    return quantize_cost(sum(costs, Decimal('0')) / len(costs))
+
+
+def line_costs(line) -> dict:
+    """
+    What an on-order line cost, for `costs.view` ONLY: the agreed cost frozen
+    on the sale, the real one the goods entered at, and real − agreed per unit.
+    """
+    agreed = line.unit_cost if line.supply_origin == OrderItem.SUPPLY_SUPPLIER else None
+    real = received_unit_cost(line)
+    difference = real - agreed if real is not None and agreed is not None else None
+    return {
+        'agreed_unit_cost': None if agreed is None else str(agreed),
+        'received_unit_cost': None if real is None else str(real),
+        'unit_cost_difference': None if difference is None else str(difference),
+    }
 
 
 @transaction.atomic

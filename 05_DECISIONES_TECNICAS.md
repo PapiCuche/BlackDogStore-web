@@ -2363,6 +2363,47 @@ costo pactado, precio de venta, `valid_until`, estado ofrecido/apartado/vendido/
 (comprobando que coincide) y lo vende a la línea por `_sell_chosen_units`; vencida o
 retirada antes del pago → la línea queda `to_confirm` como en DC3.
 
+#### SUPPLIER-DEVICE-FLOW-02 · B — recibir del proveedor (2026-10-20, sin migraciones)
+
+- **Una regla por equipo, la del servidor** (`stock_unit_services._clean_row`): serie siempre;
+  IMEI cuando el producto lo exige (`requires_imei`); el segundo IMEI sólo con el primero. El
+  formulario pide exactamente eso (antes aceptaba «serie o IMEI» y el servidor lo rechazaba) y
+  muestra el rechazo del servidor en la fila y el campo (`line`, `unit_field`). Cada fila admite
+  su nota (`notes`, que ya leía el servidor).
+- **Lo que se ve al recibir**: pedido, producto, proveedor, sucursal de despacho
+  (`fulfillment_branch`), precio vendido y cantidad; con `costs.view`, el costo pactado
+  (`agreed_unit_cost`). Mismas claves en el detalle del pedido y en la respuesta de la acción;
+  ninguna llega a una API pública.
+- **Dos costos, sin mezclarse.** La venta conserva su instantánea (`OrderItem.unit_cost` = pactado,
+  `cost_source='supplier_offer'`), nunca reescrita. La mercadería entra al costo **real** si lo dice
+  quien tiene `costs.view` (`unit_cost` de la línea o `cost` de cada equipo); si no, al pactado (sin
+  `costs.view` un costo enviado se ignora, como en el Excel). Kardex, costo medio y cada equipo llevan
+  el real; `received_unit_cost` lo lee de la entrada (o de los equipos que vendió la recepción) y
+  `unit_cost_difference` = real − pactado, sólo para `costs.view`. Kardex sin cambios: una entrada y
+  una salida de venta, estante neto cero. La auditoría dice si se indicó costo real, nunca el importe.
+- **Margen (decisión, a confirmar):** el estimado y el realizado siguen leyendo la instantánea de
+  la venta (el pactado), como hasta ahora; también la liquidación al proveedor
+  (`pending_settlement`). La diferencia se ve por pedido. Si el propietario quiere el realizado al
+  costo real, es un cambio de `sales_analytics_views` (leer la entrada de la línea) y no de datos.
+- **Una sola vez.** Recibir una línea ya recibida responde **409 `already_received`** con los
+  equipos que nombró (antes 400 `wrong_state`); bajo el bloqueo del pedido, dos recepciones a la
+  vez dejan una sola entrada.
+- **Lector**: una fila por equipo; Enter pasa IMEI → IMEI 2 → serie → fila siguiente (sin IMEI,
+  serie → fila siguiente); pegar una lista (un código por línea) llena las filas siguientes; mismo
+  comportamiento en las filas de equipo nuevo del registro de artículos, que abre una fila más al
+  final. El seminuevo del registro admite su segundo IMEI (el servidor ya lo aceptaba).
+- **Alertas operativas** (`GET /api/admin/orders/alerts/`, `sales.orders.view`, alcance de
+  `visible_orders`): pedidos pagados esperando al proveedor; con fecha prometida (día del pago +
+  plazo de la línea) vencida o a 2 días; con la oferta vencida o desactivada; por confirmar; con
+  equipos por identificar; recibidos y aún no entregados. Cada una abre `/admin/orders?alert=`
+  (mismo filtro en el servidor). `ops_status` añade «ATENCIÓN abastecimiento» por fecha prometida
+  vencida (cuenta de plataforma).
+- **Disponibilidad**: «Vender en caja» (stock propio) y «Vender bajo pedido en caja» (oferta vigente
+  de un producto «Bajo pedido») llevan a `/admin/sales/pos`; la caja aún no lee un producto de la
+  dirección, así que no llega preseleccionado.
+- **Fiscal:** la boleta/factura **no** espera la recepción: su emisión sigue pidiendo sólo un pedido
+  pagado (ningún camino fiscal lee `supply_status`). Es el contrato vigente y no se cambió.
+
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
 
 Migración `0134` editada (sin publicar; sigue aditiva y segura con la versión anterior, que

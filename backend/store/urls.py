@@ -1,4 +1,5 @@
 from rest_framework.routers import DefaultRouter
+from . import supply_alerts
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
@@ -264,6 +265,8 @@ urlpatterns = [
     path('admin/products/<int:pk>/sale-mode/', AdminProductSaleModeView.as_view(), name='admin-product-sale-mode'),
     path('admin/orders/<int:pk>/supply/<int:line_pk>/<str:action>/', AdminOrderSupplyActionView.as_view(),
          name='admin-order-supply-action'),
+    # SUPPLIER-DEVICE-FLOW-02 — «Alertas operativas» of the dashboard.
+    path('admin/orders/alerts/', supply_alerts.AdminOrderAlertsView.as_view(), name='admin-order-alerts'),
     path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
     path('admin/catalog/models/bulk-visibility/', AdminModelBulkVisibilityView.as_view(),
          name='admin-catalog-models-bulk-visibility'),

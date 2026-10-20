@@ -1227,11 +1227,14 @@ def _order_detail_payload(request, order, company):
     may set — computed by the server, exactly as the native surface already
     does, so the panel no longer keeps its own role-keyed copy of the rule.
     """
+    from .cost_services import user_may_view_costs
     from .supply_services import order_supply_status
 
     shortfall = order_stock_shortfall(order)
     supply_status = order_supply_status(order)
-    data = AdminOrderDetailSerializer(order).data
+    # SUPPLIER-DEVICE-FLOW-02: an on-order line's costs travel only to costs.view.
+    data = AdminOrderDetailSerializer(
+        order, context={'with_cost': user_may_view_costs(request.user, company)}).data
     # SERIAL-PICK-01: which lines owe a device, the devices somebody already
     # identified, and how many are still to be.
     from . import unit_identification
@@ -1419,6 +1422,12 @@ class AdminOrderListView(APIView):
             orders = orders.filter(
                 items__supply_origin=OrderItem.SUPPLY_SUPPLIER, items__supply_status=supply_filter,
             ).distinct()
+
+        # SUPPLIER-DEVICE-FLOW-02: `?alert=<kind>` — the orders an «Alerta
+        # operativa» of the dashboard counts (same question, same scope).
+        from . import supply_alerts
+
+        orders = supply_alerts.filter_orders(orders, request.query_params.get('alert', '').strip())
 
         # COMMERCE-ADMIN-UX-01: `?refund=pending|confirmed` — cancelled orders
         # with a refund in that state (the cancellations history's follow-up).
