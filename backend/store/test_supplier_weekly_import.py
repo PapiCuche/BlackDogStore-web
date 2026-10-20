@@ -277,6 +277,16 @@ class ByHandOverlapTest(WeeklyFile, TestCase):
         self.assertEqual(self.client_.patch(url, {'commercial_price': '101.00'}, format='json').status_code, 200)
 
 
+    def test_the_guard_reads_the_offer_again_under_the_lock(self):
+        # Review P3: what the view read before the lock may be stale; the guard judges the row as it is now.
+        from store.supplier_offer_import import guard_offer_overlap
+        later = self.make_offer(valid_from=today() + timedelta(days=7), valid_until=today() + timedelta(days=9))
+        stale = SupplierOffer.objects.get(pk=later.pk)          # read while it was active
+        supply.deactivate_offer(later, actor=self.staff, reason='Pausada')
+        # Switched off meanwhile: moving it over the running offer's days adds no active overlap.
+        guard_offer_overlap(self.company, {'valid_from': str(today() + timedelta(days=5))}, current=stale)
+
+
 class SoldOutTest(WeeklyFile, TestCase):
     def setUp(self):
         self.build_week('sdf2-agotada')
