@@ -71,7 +71,7 @@ class FreeEditTest(_Edit):
     def test_the_model_row_says_what_the_variant_carries(self):
         row = self.row(self.new128)
         self.assertEqual(row['history'], {'sold': 0, 'units': 0, 'reserved': 0, 'stock': 0, 'moved': False,
-                                          'open_orders': 0})
+                                          'open_orders': 0, 'conditions': []})
         self.assertEqual((row['identity_change'], row['line_change']), ('free', 'free'))
         self.assertIn('is_published_online', row)
 
@@ -178,11 +178,26 @@ class BypassAndRaceTest(_Edit):
         self.assertEqual(self.row(self.new256)['identity_change'], 'superior')
         self.assertEqual(self.put(self.new256, option_ids=[self.gb256.pk, self.blue.pk]).status_code, 403)
 
-    def test_an_open_order_blocks_the_identity(self):
+    def test_a_paid_order_not_handed_over_asks_for_a_superior(self):
         order = self.sold(self.new128)
         Order.objects.filter(pk=order.pk).update(fulfillment_status='preparing')
+        self.assertEqual(self.row(self.new128)['history']['open_orders'], 1)
+        self.assertEqual(self.put(self.new128, option_ids=[self.gb128.pk, self.blue.pk]).status_code, 403)
         response = self.put(self.new128, client=self.boss_api, option_ids=[self.gb128.pk, self.blue.pk], reason=REASON)
-        self.assertEqual((response.status_code, response.json()['code']), (409, 'variant_reserved'))
-        Order.objects.filter(pk=order.pk).update(fulfillment_status='delivered')
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_an_abandoned_checkout_does_not_freeze_the_variant(self):
+        order = self.sold(self.new128)
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PENDING_PAYMENT, paid=False,
+                                                 fulfillment_status='pending')
+        self.assertEqual(self.row(self.new128)['history']['open_orders'], 0)
         response = self.put(self.new128, client=self.boss_api, option_ids=[self.gb128.pk, self.blue.pk], reason=REASON)
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_a_loose_product_with_used_devices_is_placed_in_the_used_line(self):
+        loose = Product.objects.create(company=self.company, name='Suelto usado', slug='suelto-usado', price=D('10.00'))
+        Product.objects.filter(pk=loose.pk).update(is_serialized=True, requires_imei=True)
+        loose.refresh_from_db()
+        self.receive(loose, condition='used')
+        response = self.put(loose, condition_line='used', option_ids=[self.gb256.pk, self.blue.pk])
         self.assertEqual(response.status_code, 200, response.content)

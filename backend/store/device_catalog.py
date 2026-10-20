@@ -309,9 +309,14 @@ def variant_history(product, *, lock=False) -> dict:
         'reserved': units.filter(status=StockUnit.Status.RESERVED).count(),
         'stock': int(BranchStock.objects.filter(product_id=product.pk).aggregate(n=Sum('quantity'))['n'] or 0),
         'moved': StockMovement.objects.filter(product_id=product.pk).exists(),
-        'open_orders': items.exclude(order__status=Order.Status.CANCELLED).exclude(
+        # Paid and not handed over yet. An unpaid checkout is not counted: if it
+        # still holds a device, that device is RESERVED (review P2: abandoned
+        # checkouts never expire and must not freeze a variant).
+        'open_orders': items.filter(order__status=Order.Status.PAID).exclude(
             order__fulfillment_status__in=[Order.FulfillmentStatus.DELIVERED, Order.FulfillmentStatus.CANCELLED],
-        ).exclude(order__status__in=[Order.Status.FAILED]).values('order_id').distinct().count(),
+        ).values('order_id').distinct().count(),
+        # The physical condition of its devices: what a line must agree with.
+        'conditions': sorted(set(units.exclude(status=StockUnit.Status.WRITTEN_OFF).values_list('condition', flat=True))),
     }
 
 
@@ -322,9 +327,9 @@ def edit_rules(history) -> dict:
     Taking it out of its model follows the identity, and is blocked while it
     holds devices or stock (they would lose their line).
     """
-    if history['reserved'] or history['open_orders']:
+    if history['reserved']:
         identity = 'blocked'
-    elif history['sold'] or history['units'] or history['stock'] or history['moved']:
+    elif history['sold'] or history['units'] or history['stock'] or history['moved'] or history['open_orders']:
         identity = 'superior'
     else:
         identity = 'free'
@@ -428,7 +433,15 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
     # The line of a product outside any model is «new» by default: placing it
     # as «used» relabels its devices too (review P1).
     changes_line = product.condition_line != condition_line
-    if changes_line and rules['line_change'] == 'blocked':
+    # A line is the line of the devices: it does not change while the variant
+    # holds devices, stock or a hold. Review P2: a product outside every model
+    # (line «new» only by default) whose devices are all used may be placed in
+    # the used line — that relabels nothing.
+    conditions = set(history['conditions'])
+    loose_used = (product.product_model_id is None and condition_line == Product.CONDITION_USED
+                  and bool(conditions) and StockUnit.Condition.NEW not in conditions
+                  and not (history['stock'] and not product.is_serialized) and not history['reserved'])
+    if changes_line and rules['line_change'] == 'blocked' and not loose_used:
         raise CatalogError(
             'Esta variante tiene equipos o stock propios: su línea (nuevo o seminuevo) es la de esos equipos y no '
             'cambia. Registra los equipos en la variante que corresponde.',
