@@ -8,7 +8,7 @@ import Link from "next/link";
 import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
 import { emitCartChange } from "../lib/cart";
-import { CartError, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
+import { CartError, SOLD_OUT_LABEL, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
@@ -323,7 +323,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 {onOrder
                   ? onOrderLabel(onOrder.lead_time_days)
                   : !inStock
-                    ? "Sin stock"
+                    ? SOLD_OUT_LABEL
                     : lowStock
                       ? `Últimas ${product.inventory} unidades`
                       : "En stock"}
@@ -379,7 +379,7 @@ export default function ProductDetail({ product }: { product: Product }) {
                 disabled={loading || !purchasable}
                 className="mt-5 w-full rounded-full bg-foreground px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {loading ? "Agregando…" : onOrder ? "Pedir bajo pedido" : !inStock ? "Sin stock" : "Agregar al carrito"}
+                {loading ? "Agregando…" : onOrder ? "Pedir bajo pedido" : !inStock ? SOLD_OUT_LABEL : "Agregar al carrito"}
               </button>
 
               {offer ? (

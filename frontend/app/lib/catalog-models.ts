@@ -35,6 +35,12 @@ export type CatalogModelCard = {
   from_price: string | null;
   has_new: boolean;
   has_used: boolean;
+  /**
+   * SUPPLIER-DEVICE-FLOW-02: published, but nothing of it can be bought now
+   * (in the line asked for). Shown with its photo and last price as «Agotado».
+   * Absent on servers before it: treated as on sale.
+   */
+  sold_out?: boolean;
 };
 
 export type CatalogModelList = { lines: Lines; results: CatalogModelCard[] };
@@ -109,6 +115,8 @@ export type CatalogModel = {
   lines: Lines;
   variants: Variant[];
   used_units: UsedUnit[];
+  /** SUPPLIER-DEVICE-FLOW-02: no variant available and no used device. Absent on older servers. */
+  sold_out?: boolean;
   as_of: string;
 };
 
@@ -235,6 +243,13 @@ export function onOrderLabel(days: number | null | undefined): string {
   return `Bajo pedido — ${deliveryDaysText(days)}`;
 }
 
+/**
+ * SUPPLIER-DEVICE-FLOW-02 (owner, 2026-10-20) — published does not mean
+ * available. What is published and has nothing to sell stays in the shop
+ * (photos, specs, last price) and is said with ONE word, everywhere.
+ */
+export const SOLD_OUT_LABEL = "Agotado";
+
 /** What a buyer is told about a variant's availability. */
 export function availabilityLabel(variant: Pick<Variant, "available" | "availability"> & { on_order?: OnOrder | null }): string {
   switch (variant.availability) {
@@ -243,9 +258,9 @@ export function availabilityLabel(variant: Pick<Variant, "available" | "availabi
     case "supplier":
       return onOrderLabel(variant.on_order?.lead_time_days);
     case "none":
-      return "Sin stock";
+      return SOLD_OUT_LABEL;
     default:
-      return variant.available ? "En stock" : "Sin stock";
+      return variant.available ? "En stock" : SOLD_OUT_LABEL;
   }
 }
 
@@ -286,12 +301,16 @@ export function optionsText(options: Record<string, string>, order: string[] = [
 //
 // THE RULE IS HIERARCHICAL, in the order the attributes come in (as on a
 // manufacturer's configurator: capacity first, then colour). An option of the
-// attribute at position i is selectable when some AVAILABLE variant has it
-// together with the options already chosen for the attributes before it.
-// Choosing one re-fits the attributes after it to the nearest available
-// combination. That way no option the buyer can press leads nowhere, and no
-// variant that exists and is available is unreachable — which a flat
-// «does this exact combination exist» rule cannot promise.
+// attribute at position i is selectable when some variant EXISTS with it
+// together with the options already chosen for the attributes before it, and
+// AVAILABLE when one of those can be bought. Choosing one re-fits the
+// attributes after it to the nearest available combination, or else to the
+// nearest existing one. That way no option the buyer can press leads nowhere,
+// no variant that exists is unreachable — a SOLD-OUT one too, so its photos
+// and last price can be seen (owner, 2026-10-20: published is not available,
+// and sold out is not hidden) — which a flat «does this exact combination
+// exist» rule cannot promise. Buying is the page's call: «Agotado» is never
+// added to a cart.
 
 export type Selection = Record<string, number>;
 
@@ -313,17 +332,35 @@ function fitsPrefix(variant: Variant, attributes: ModelAttribute[], selection: S
   return true;
 }
 
-/** Whether pressing `optionId` of the attribute at `index` leads to an available variant. */
-export function isOptionSelectable(
+function leadsTo(
   variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+  onlyAvailable: boolean,
 ): boolean {
   const key = String(attributes[index].id);
   return variants.some(
-    (variant) => variant.available && variant.options[key] === optionId && fitsPrefix(variant, attributes, selection, index),
+    (variant) => (!onlyAvailable || variant.available)
+      && variant.options[key] === optionId && fitsPrefix(variant, attributes, selection, index),
   );
 }
 
-/** Set `optionId` at `index`, then re-fit every later attribute to an available variant. */
+/** Whether pressing `optionId` of the attribute at `index` leads to a variant at all — sold out included. */
+export function isOptionSelectable(
+  variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+): boolean {
+  return leadsTo(variants, attributes, selection, index, optionId, false);
+}
+
+/** Whether pressing `optionId` of the attribute at `index` leads to a variant that can be bought now. */
+export function isOptionAvailable(
+  variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+): boolean {
+  return leadsTo(variants, attributes, selection, index, optionId, true);
+}
+
+/**
+ * Set `optionId` at `index`, then re-fit every later attribute: to an
+ * available variant when there is one, otherwise to an existing (sold-out) one.
+ */
 export function selectOption(
   variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
 ): Selection {
@@ -331,8 +368,12 @@ export function selectOption(
   for (let j = index + 1; j < attributes.length; j++) {
     const attribute = attributes[j];
     const key = String(attribute.id);
-    if (next[key] !== undefined && isOptionSelectable(variants, attributes, next, j, next[key])) continue;
-    const first = attribute.options.find((option) => isOptionSelectable(variants, attributes, next, j, option.id));
+    if (next[key] !== undefined && isOptionAvailable(variants, attributes, next, j, next[key])) continue;
+    const first =
+      attribute.options.find((option) => isOptionAvailable(variants, attributes, next, j, option.id))
+      ?? (next[key] !== undefined && isOptionSelectable(variants, attributes, next, j, next[key])
+        ? undefined
+        : attribute.options.find((option) => isOptionSelectable(variants, attributes, next, j, option.id)));
     if (first) next[key] = first.id;
   }
   return next;

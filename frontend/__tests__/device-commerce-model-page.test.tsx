@@ -11,7 +11,8 @@ import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-comme
  *
  * Línea de nuevos: un selector por atributo; la combinación elegida es una
  * variante, y su precio, su foto y su disponibilidad la siguen. Lo que no lleva
- * a nada disponible se VE deshabilitado, no desaparece. Línea de seminuevos:
+ * a ninguna variante se VE deshabilitado, no desaparece; lo agotado se puede
+ * elegir y dice «Agotado» (SUPPLIER-DEVICE-FLOW-02). Línea de seminuevos:
  * cada tarjeta es un equipo, y comprarlo manda ese equipo.
  */
 
@@ -63,7 +64,7 @@ describe('selección de variante', () => {
     expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-256-b.png');
   });
 
-  it('una combinación sin stock o inexistente se ve deshabilitada y lo dice', async () => {
+  it('una combinación inexistente se ve deshabilitada; una agotada se elige y lo dice', async () => {
     await renderPage();
     // Rojo no existe en 128 GB.
     const rojo = within(colour()).getByRole('radio', { name: 'Rojo, no disponible' });
@@ -71,10 +72,14 @@ describe('selección de variante', () => {
     fireEvent.click(rojo);
     expect(price()).toBe('S/ 3999.00');
 
-    // Blanco 256 GB existe pero no está disponible.
+    // Blanco 256 GB existe pero está agotado: se elige, muestra su precio y no se compra.
     fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
-    expect(within(colour()).getByRole('radio', { name: 'Blanco, no disponible' })).toHaveAttribute('aria-disabled', 'true');
+    const blanco = within(colour()).getByRole('radio', { name: 'Blanco, agotado' });
+    expect(blanco).not.toHaveAttribute('aria-disabled');
     expect(within(colour()).getByRole('radio', { name: 'Azul' })).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(blanco);
+    expect(price()).toBe('S/ 4499.00');
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
   });
 
   it('una capacidad que sólo existe en otro color reajusta el color en vez de quedar inalcanzable', async () => {
@@ -95,7 +100,7 @@ describe('selección de variante', () => {
     expect(mainImage()).toHaveAttribute('src', 'http://localhost/blanco-128.png');
   });
 
-  it('se maneja con el teclado: una sola parada de tabulación y flechas que saltan lo deshabilitado', async () => {
+  it('se maneja con el teclado: una sola parada de tabulación y flechas que saltan lo inexistente', async () => {
     await renderPage();
     const radios = within(capacity()).getAllByRole('radio');
     expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1]);
@@ -105,12 +110,14 @@ describe('selección de variante', () => {
     expect(radios[1]).toHaveFocus();
     expect(price()).toBe('S/ 4499.00');
 
-    // In 256 GB, Blanco is disabled: from Azul, the arrow goes past it (wraps to Azul, the only one).
+    // In 256 GB, Blanco is sold out (reachable) and Rojo does not exist (skipped).
     const colours = within(colour()).getAllByRole('radio');
     colours[0].focus();
     fireEvent.keyDown(colours[0], { key: 'ArrowRight' });
+    expect(colours[1]).toHaveAttribute('aria-checked', 'true');
+    fireEvent.keyDown(colours[1], { key: 'ArrowRight' });
     expect(colours[0]).toHaveAttribute('aria-checked', 'true');
-    expect(colours[1]).toHaveAttribute('aria-checked', 'false');
+    expect(colours[2]).toHaveAttribute('aria-checked', 'false');
   });
 
   it('«Agregar al carrito» manda la variante elegida, sin equipo', async () => {
@@ -136,7 +143,7 @@ describe('selección de variante', () => {
 
   it('las reglas de presentación están en un solo sitio', () => {
     expect(availabilityLabel({ available: true, availability: 'own_stock' })).toBe('En stock');
-    expect(availabilityLabel({ available: false, availability: 'none' })).toBe('Sin stock');
+    expect(availabilityLabel({ available: false, availability: 'none' })).toBe('Agotado');
     const attributes = sortedAttributes(modelFixture().attributes as never);
     expect(attributes.map((a) => a.name)).toEqual(['Capacidad', 'Color']);
     expect(initialSelection(modelFixture().variants as never, attributes)).toEqual({ '3': 11, '4': 21 });

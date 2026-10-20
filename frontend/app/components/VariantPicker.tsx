@@ -4,9 +4,14 @@
  * DC2 — one picker per attribute of a model, stacked in the model's order.
  *
  * Each picker is a radio group: Tab enters at the chosen option, the arrows
- * move between the options that can be chosen, Space/Enter chooses. An option
- * that leads to nothing available stays VISIBLE and says «no disponible» in its
- * accessible name; it is skipped by the arrows and pressing it does nothing.
+ * move between the options that can be chosen, Space/Enter chooses.
+ *
+ * SUPPLIER-DEVICE-FLOW-02 (owner, 2026-10-20) — published is not available.
+ * An option that leads only to SOLD-OUT variants can be chosen: the page then
+ * shows that variant's photos and last price, says «Agotado» and sells
+ * nothing. It is drawn muted and says «agotado» in its accessible name. An
+ * option that leads to no variant at all stays VISIBLE, says «no disponible»,
+ * is skipped by the arrows and pressing it does nothing.
  *
  * Text options are pills; colour options are round swatches painted with the
  * tenant's `swatch_hex`, named by their label (the chosen colour's name is also
@@ -15,6 +20,8 @@
 
 import { useId, useRef } from "react";
 import {
+  SOLD_OUT_LABEL,
+  isOptionAvailable,
   isOptionSelectable,
   type ModelAttribute,
   type Selection,
@@ -29,6 +36,7 @@ type Props = {
 };
 
 const NOT_AVAILABLE = "no disponible";
+const SOLD_OUT = SOLD_OUT_LABEL.toLowerCase();
 
 function OptionGroup({
   attribute, index, variants, attributes, selection, onSelect,
@@ -44,10 +52,14 @@ function OptionGroup({
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const chosenId = selection[String(attribute.id)];
   const chosen = attribute.options.find((option) => option.id === chosenId) ?? null;
-  const states = attribute.options.map((option) => ({
-    option,
-    selectable: isOptionSelectable(variants, attributes, selection, index, option.id),
-  }));
+  const states = attribute.options.map((option) => {
+    const selectable = isOptionSelectable(variants, attributes, selection, index, option.id);
+    return {
+      option,
+      selectable,
+      soldOut: selectable && !isOptionAvailable(variants, attributes, selection, index, option.id),
+    };
+  });
   const isColor = attribute.kind === "color";
   // Roving tab stop: the chosen option, or the first selectable one.
   const tabStop = Math.max(
@@ -92,9 +104,12 @@ function OptionGroup({
         aria-labelledby={labelId}
         className={`mt-3 flex flex-wrap ${isColor ? "gap-3" : "gap-2"}`}
       >
-        {states.map(({ option, selectable }, at) => {
+        {states.map(({ option, selectable, soldOut }, at) => {
           const checked = option.id === chosenId;
-          const name = selectable ? option.label : `${option.label}, ${NOT_AVAILABLE}`;
+          const name = !selectable
+            ? `${option.label}, ${NOT_AVAILABLE}`
+            : soldOut ? `${option.label}, ${SOLD_OUT}` : option.label;
+          const muted = !selectable || soldOut;
           const common = {
             ref: (el: HTMLButtonElement | null) => { refs.current[at] = el; },
             type: "button" as const,
@@ -120,12 +135,12 @@ function OptionGroup({
                 <span
                   aria-hidden="true"
                   // The ring keeps a white or very light swatch visible on a light page.
-                  className={`block h-8 w-8 rounded-full border border-foreground/25 ${selectable ? "" : "opacity-35"}`}
+                  className={`block h-8 w-8 rounded-full border border-foreground/25 ${muted ? "opacity-35" : ""}`}
                   style={{ backgroundColor: option.swatch_hex || "transparent" }}
                 />
-                {selectable ? null : (
+                {muted ? (
                   <span aria-hidden="true" className="pointer-events-none absolute h-[2px] w-9 rotate-45 rounded bg-foreground/60" />
-                )}
+                ) : null}
               </button>
             );
           }
@@ -133,13 +148,15 @@ function OptionGroup({
             <button
               key={option.id}
               {...common}
-              aria-label={selectable ? undefined : name}
+              aria-label={muted ? name : undefined}
               className={`min-h-11 rounded-xl border px-4 py-2.5 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
                 checked
                   ? "border-foreground bg-foreground text-background"
-                  : selectable
-                    ? "border-bd-border bg-surface text-foreground hover:border-foreground/40"
-                    : "cursor-not-allowed border-dashed border-bd-border bg-transparent text-muted line-through"
+                  : !selectable
+                    ? "cursor-not-allowed border-dashed border-bd-border bg-transparent text-muted line-through"
+                    : soldOut
+                      ? "border-dashed border-bd-border bg-transparent text-muted line-through hover:border-foreground/40"
+                      : "border-bd-border bg-surface text-foreground hover:border-foreground/40"
               }`}
             >
               {option.label}

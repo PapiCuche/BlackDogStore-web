@@ -58,7 +58,7 @@ describe('ficha de producto', () => {
 
   it('sin stock y sin oferta: deshabilitado', async () => {
     await renderProduct({ on_order: null });
-    expect(screen.getByRole('button', { name: 'Sin stock' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
     expect(screen.queryByText(/Bajo pedido/)).toBeNull();
   });
 
@@ -114,12 +114,13 @@ describe('página de un modelo', () => {
     expect(body).not.toHaveProperty('unit');
   });
 
-  it('una variante propia sigue sin `on_order`, y una sin nada sigue deshabilitada', async () => {
+  it('una variante propia sigue sin `on_order`, y una sin nada se ve «Agotado» sin poder comprarse', async () => {
     await renderModel(modelFixture());
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Agregar al carrito' })); });
     expect(bodyOf(0)).not.toHaveProperty('on_order');
     fireEvent.click(screen.getByRole('radio', { name: '256 GB' }));
-    expect(screen.getByRole('radio', { name: 'Blanco, no disponible' })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByRole('radio', { name: 'Blanco, agotado' }));
+    expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
   });
 
   it('las palabras están en un solo sitio', () => {
