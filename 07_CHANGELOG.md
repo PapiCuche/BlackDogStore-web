@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-21 — Proveedores, venta al pase y recepción rápida
+
+**Added**
+- Códigos de proveedor (`SupplierProductRef`), diferencias y decisión de precio en la lista semanal,
+  alertas operativas (`/api/admin/orders/alerts/`), costo real en la recepción, «Agotado» en tienda.
+
+**Changed**
+- La lista semanal actualiza sólo sus filas; cantidad 0 = agotada; una oferta por proveedor y
+  producto, sin solapes; la recepción exige lo que exige el servidor y se rechaza durante una
+  devolución.
+
 ## 2026-10-20 — Editar variantes y estado de los módulos
 
 **Added**

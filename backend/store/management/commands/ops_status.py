@@ -280,6 +280,15 @@ class Command(BaseCommand):
             if count:
                 supply.append(f'{_plural(count, "pedido pagado", "pedidos pagados")} {words}. '
                               'Se ven en Pedidos › Abastecimiento.')
+        # SUPPLIER-DEVICE-FLOW-02: a line still waiting for its supplier whose
+        # promised day (payment + lead time) already passed. Platform-wide
+        # count; each company sees its own in the dashboard's «Alertas operativas».
+        from store import supply_alerts
+
+        _due, overdue = supply_alerts.promises(Order.objects.all(), timezone.localdate())
+        if overdue:
+            supply.append(f'{_plural(len(overdue), "pedido pagado", "pedidos pagados")} con la fecha prometida '
+                          'vencida y el proveedor aún sin entregar. Se ven en el panel › Alertas operativas.')
         report('abastecimiento', supply, 'sin pedidos bajo pedido esperando a una persona')
 
         # DEVICE-COMMERCE-01 (integration review of PR #123, P2-1). A web hold

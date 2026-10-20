@@ -2639,9 +2639,47 @@ export type OrderSupplyLine = {
   lead_time_days: number | null;
   supplier_offer_id: number | null;
   supplier_name: string;
+  /** SUPPLIER-DEVICE-FLOW-02 — lo vendido y a qué sucursal. */
+  order_id?: number;
+  product_id?: number;
+  product_name?: string;
+  quantity?: number;
+  price?: string;
+  fulfillment_branch?: { id: number; name: string } | null;
+  /** Sólo con `costs.view` (la clave ausente = no ve costos). */
+  agreed_unit_cost?: string | null;
+  received_unit_cost?: string | null;
+  unit_cost_difference?: string | null;
 };
 
-export type ReceivedUnitInput = { serial_number: string; imei: string; imei2?: string };
+/**
+ * Un equipo que llegó. La regla es la del servidor: serie siempre, IMEI si el
+ * producto lo exige, el segundo IMEI sólo con el primero. `cost` (costo real
+ * de ese equipo) sólo lo toma el servidor de quien tiene `costs.view`.
+ */
+export type ReceivedUnitInput = { serial_number: string; imei: string; imei2?: string; notes?: string; cost?: string };
+
+/** Lo que una línea recibida ya trajo (respuesta 409 `already_received`). */
+export type ReceivedUnitRecord = { serial_number: string; imei: string; imei2: string };
+
+/**
+ * Una recepción rechazada. `line` (1 = primer equipo) y `unitField` dicen qué
+ * campo de qué fila marcar; `code === "already_received"` trae lo ya recibido.
+ */
+export class SupplyReceiveError extends CatalogApiError {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null,
+    field: string | null,
+    readonly line: number | null,
+    readonly unitField: string | null,
+    readonly units: ReceivedUnitRecord[],
+  ) {
+    super(message, status, code, field);
+    this.name = "SupplyReceiveError";
+  }
+}
 
 function supplyPath(orderId: number, itemId: number, action: "confirm" | "receive" | "fail") {
   return `/admin/orders/${orderId}/supply/${itemId}/${action}/`;
@@ -2656,12 +2694,25 @@ export function confirmOrderSupply(
   );
 }
 
-export function receiveOrderSupply(
+export async function receiveOrderSupply(
   orderId: number, itemId: number, units?: ReceivedUnitInput[], companyId?: number | null,
+  options: { unitCost?: string } = {},
 ): Promise<OrderSupplyLine> {
-  return catalogCall(
-    withQuery(supplyPath(orderId, itemId, "receive"), {}, companyId),
-    jsonInit("POST", units && units.length ? { units } : {}), "No se pudo registrar la recepción.",
+  const body: Record<string, unknown> = {};
+  if (units && units.length) body.units = units;
+  if (options.unitCost) body.unit_cost = options.unitCost;
+  const res = await fetchWithAuth(`${API_BASE}${withQuery(supplyPath(orderId, itemId, "receive"), {}, companyId)}`,
+    jsonInit("POST", body));
+  const answer = await res.json().catch(() => null);
+  if (res.ok) return answer as OrderSupplyLine;
+  const text = (key: string) => (answer && typeof answer[key] === "string" ? (answer[key] as string) : null);
+  const message = text("detail")
+    || (res.status === 403 ? "No tienes permisos para esta operación." : "No se pudo registrar la recepción.");
+  throw new SupplyReceiveError(
+    message, res.status, text("code"), text("field"),
+    answer && typeof answer.line === "number" ? answer.line : null,
+    text("unit_field"),
+    answer && Array.isArray(answer.units) ? (answer.units as ReceivedUnitRecord[]) : [],
   );
 }
 

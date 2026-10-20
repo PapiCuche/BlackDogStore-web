@@ -44,6 +44,7 @@ import {
   formatSoles,
 } from "./components/dashboard-ui";
 import { DashboardCancelledMoney } from "./components/CancelledMoneyNotes";
+import { SupplyAlertsCard } from "./components/SupplyAlertsCard";
 import { ModuleCard } from "./components/internal-ui";
 import {
   IconAdministration,
@@ -166,6 +167,8 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
   const capabilities = dashboard?.access.capabilities ?? [];
 
   const scope = branch ? `Sucursal: ${branch.name}` : "Alcance: toda la empresa";
+  // SUPPLIER-DEVICE-FLOW-02: whoever may see orders sees what of them waits.
+  const seesOrders = Boolean(company) && (Boolean(dashboard?.access.is_platform_admin) || capabilities.includes("sales.orders.view"));
 
   return (
     <div className="space-y-10">
@@ -248,6 +251,9 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
           </div>
         </DashboardSection>
       )}
+
+      {/* ── Operational alerts (SUPPLIER-DEVICE-FLOW-02) ────────────────── */}
+      {seesOrders ? <SupplyAlertsCard /> : null}
 
       {/* ── Inventory KPIs (Phase 2D) ──────────────────────────────────── */}
       {inventory && (

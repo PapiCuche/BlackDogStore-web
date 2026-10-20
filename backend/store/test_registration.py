@@ -383,6 +383,18 @@ class OnOrderTest(RegistrationFixture):
         self.assertTrue(data['supplier']['created'])
         self.assertEqual(data['offer']['id'], offer.pk)
 
+    def test_a_second_offer_over_the_same_days_on_an_existing_variant_is_refused(self):
+        # Review P1-a: the wizard obeys the panel's rule — never two active offers of one supplier and
+        # variant over the same days.
+        self.post(self.clerk, self.new_device(supplier={'name': 'Distribuidor Uno'}, offer=self.offer()), expect=201)
+        before = self.counts()
+        again = self.new_device(supplier={'name': 'Distribuidor Uno'}, offer=self.offer(),
+                                units=[{'serial_number': 'SNREG003', 'imei': IMEIS[3]},
+                                       {'serial_number': 'SNREG004', 'imei': IMEIS[4]}])
+        res = self.post(self.clerk, again, expect=400).json()
+        self.assertEqual((res['step'], res['code']), ('supplier', 'overlap'), res)
+        self.assertEqual(self.counts(), before)
+
     def test_an_existing_supplier_is_reused(self):
         supplier = Supplier.objects.create(company=self.company, name='Ya existe')
         data = self.post(self.clerk, self.on_order(supplier={'id': supplier.pk}), expect=201).json()
@@ -702,6 +714,7 @@ class ProductListFactsTest(RegistrationFixture):
 # Excel — the one field of the screen the files did not carry: «Bajo pedido»
 # ---------------------------------------------------------------------------
 
+from store import supply_services as supply  # noqa: E402
 from store.test_supplier_offers import OFFER_HEADERS, OfferExcelTest, SupplyShop  # noqa: E402
 
 
@@ -722,13 +735,16 @@ class OfferOnOrderColumnTest(SupplyShop, TestCase):
 
         res = self.client_.get('/api/admin/supplier-offers/import/template/')
         book = openpyxl.load_workbook(io.BytesIO(res.content))
-        self.assertEqual([c.value for c in book.active[1]], self.COLUMNS)
+        # SUPPLIER-DEVICE-FLOW-02 adds the optional «Código del proveedor» after it.
+        self.assertEqual([c.value for c in book.active[1]], self.COLUMNS + ['Código del proveedor'])
 
     def test_si_turns_bajo_pedido_on_and_no_turns_it_off(self):
         Product.objects.filter(pk=self.case.pk).update(sale_mode=Product.SALE_MODE_STOCK)
         body = self.preview([self.row() + ['', 'Sí']], headers=self.COLUMNS).json()
-        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
-        self.assertEqual(self.apply(body['id']).status_code, 200)
+        # SUPPLIER-DEVICE-FLOW-02 (owner): the row updates the shop's current offer in place, and its new
+        # commercial price is applied only when accepted.
+        self.assertEqual(body['rows'][0]['action'], 'update', body['rows'])
+        self.assertEqual(self.apply(body['id'], accept_price_changes=True).status_code, 200)
         self.case.refresh_from_db()
         self.assertEqual(self.case.sale_mode, Product.SALE_MODE_STOCK_OR_ORDER)
 
@@ -748,22 +764,25 @@ class OfferOnOrderColumnTest(SupplyShop, TestCase):
         self.assertEqual(self.case.sale_mode, Product.SALE_MODE_STOCK_OR_ORDER)
 
     def test_two_rows_of_one_product_disagreeing_on_bajo_pedido_warn_on_the_later_row(self):
-        later = {'Vigente desde': (self.start + timedelta(days=7)).isoformat(),
-                 'Vigente hasta': (self.end + timedelta(days=7)).isoformat()}
+        # SUPPLIER-DEVICE-FLOW-02 (owner): one row per supplier and variant — two rows of one product are
+        # now two suppliers' offers (before: two windows of one supplier).
+        supply.create_supplier(company=self.company, name='Importadora Norte', actor=self.staff)
+        later = {'Proveedor': 'Importadora Norte'}
         body = self.preview([self.row() + ['', 'Sí'], self.row(**later) + ['', 'No']],
                             headers=self.COLUMNS).json()
-        self.assertEqual([r['action'] for r in body['rows']], ['create', 'create'], body['rows'])
+        self.assertEqual([r['action'] for r in body['rows']], ['update', 'create'], body['rows'])
         self.assertEqual(body['rows'][0]['warnings'], [])
         self.assertTrue(any('Bajo pedido' in w and 'fila 2' in w for w in body['rows'][1]['warnings']),
                         body['rows'][1]['warnings'])
 
     def test_rows_that_agree_on_bajo_pedido_do_not_warn(self):
-        later = {'Vigente desde': (self.start + timedelta(days=7)).isoformat(),
-                 'Vigente hasta': (self.end + timedelta(days=7)).isoformat()}
-        body = self.preview([self.row() + ['', 'Sí'], self.row(**later) + ['', 'Sí'], self.row(
-            **{'Vigente desde': (self.start + timedelta(days=14)).isoformat(),
-               'Vigente hasta': (self.end + timedelta(days=14)).isoformat()}) + ['', '']],
-            headers=self.COLUMNS).json()
+        # SUPPLIER-DEVICE-FLOW-02: three suppliers of one product (one row per supplier and variant).
+        for name in ('Importadora Norte', 'Importadora Sur'):
+            supply.create_supplier(company=self.company, name=name, actor=self.staff)
+        body = self.preview([self.row() + ['', 'Sí'], self.row(**{'Proveedor': 'Importadora Norte'}) + ['', 'Sí'],
+                             self.row(**{'Proveedor': 'Importadora Sur'}) + ['', '']],
+                            headers=self.COLUMNS).json()
+        self.assertEqual([r['action'] for r in body['rows']], ['update', 'create', 'create'], body['rows'])
         self.assertEqual([r['warnings'] for r in body['rows']], [[], [], []], body['rows'])
 
     def test_an_unreadable_value_is_an_error(self):

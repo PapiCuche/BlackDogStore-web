@@ -7,6 +7,8 @@ supply of orders sold «bajo pedido».
     /api/admin/suppliers/settlement/              + costs.view (read only, PAYABLES-01 hook)
     /api/admin/supplier-offers/                   ?supplier= &product= &state=active|expired|inactive
     /api/admin/supplier-offers/<pk>/              (+ /deactivate/, /history/)
+    /api/admin/suppliers/<pk>/product-refs/       GET products.view · POST products.manage
+                                                  (the supplier's own codes, SUPPLIER-DEVICE-FLOW-02)
     /api/admin/products/<pk>/sale-mode/           products.manage
     /api/admin/orders/<pk>/supply/<line>/confirm|receive|fail/
                                                   sales.orders.manage (+ inventory.adjust to receive)
@@ -17,6 +19,7 @@ does not exist. An offer's agreed cost travels and is written only with
 """
 from __future__ import annotations
 
+from django.db import transaction
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -43,8 +46,13 @@ def _manage(request):
 
 
 def _error(exc: supply_services.SupplyError) -> Response:
-    code = status.HTTP_404_NOT_FOUND if exc.code == 'not_found' else status.HTTP_400_BAD_REQUEST
+    code = {'not_found': status.HTTP_404_NOT_FOUND, 'ref_conflict': status.HTTP_409_CONFLICT}.get(
+        exc.code, status.HTTP_400_BAD_REQUEST)
     return Response(exc.body(), status=code)
+
+
+def _flag(value) -> bool:
+    return value in (True, 'true', 'True', '1', 1)
 
 
 def supplier_payload(supplier) -> dict:
@@ -197,11 +205,16 @@ class AdminOfferListView(APIView):
         company, error = _manage(request)
         if error:
             return error
+        from . import supplier_offer_import
+
         fields = {key: request.data[key] for key in _OFFER_FIELDS if key in request.data}
         with_cost = user_may_view_costs(request.user, company)
         try:
-            offer = supply_services.create_offer(company=company, actor=request.user, request=request,
-                                                 may_view_costs=with_cost, **fields)
+            with transaction.atomic():
+                # SUPPLIER-DEVICE-FLOW-02: never two active offers of one supplier and variant over one day.
+                supplier_offer_import.guard_offer_overlap(company, fields)
+                offer = supply_services.create_offer(company=company, actor=request.user, request=request,
+                                                     may_view_costs=with_cost, **fields)
         except supply_services.SupplyError as exc:
             return _error(exc)
         return Response(offer_payload(offer, with_cost=with_cost), status=status.HTTP_201_CREATED)
@@ -230,12 +243,16 @@ class AdminOfferDetailView(APIView):
         offer = _offer(company, pk)
         if offer is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        from . import supplier_offer_import
+
         allowed = (*_OFFER_FIELDS[2:], 'is_active')
         fields = {key: request.data[key] for key in allowed if key in request.data}
         with_cost = user_may_view_costs(request.user, company)
         try:
-            offer = supply_services.update_offer(offer, actor=request.user, request=request,
-                                                 may_view_costs=with_cost, **fields)
+            with transaction.atomic():
+                supplier_offer_import.guard_offer_overlap(company, fields, current=offer)
+                offer = supply_services.update_offer(offer, actor=request.user, request=request,
+                                                     may_view_costs=with_cost, **fields)
         except supply_services.SupplyError as exc:
             return _error(exc)
         return Response(offer_payload(_offer(company, pk), with_cost=with_cost))
@@ -298,14 +315,26 @@ class AdminProductSaleModeView(APIView):
 # The supply of an order
 # ---------------------------------------------------------------------------
 
-def supply_line_payload(item) -> dict:
+def supply_line_payload(item, *, with_cost: bool = False) -> dict:
+    """
+    An on-order line as the panel follows it (SUPPLIER-DEVICE-FLOW-02): what
+    was sold, to which branch, from which supplier; its costs (agreed, real,
+    difference) only `with_cost` (`costs.view`, DC1). Never on a public API.
+    """
     offer = item.supplier_offer
-    return {
+    branch = item.order.fulfillment_branch
+    payload = {
         'id': item.pk, 'supply_origin': item.supply_origin, 'supply_status': item.supply_status,
         'supply_note': item.supply_note, 'lead_time_days': item.lead_time_days,
         'supplier_offer_id': item.supplier_offer_id,
         'supplier_name': offer.supplier.name if offer is not None else '',
+        'order_id': item.order_id, 'product_id': item.product_id, 'product_name': item.product.name,
+        'quantity': item.quantity, 'price': str(item.price),
+        'fulfillment_branch': {'id': branch.pk, 'name': branch.name} if branch is not None else None,
     }
+    if with_cost:
+        payload.update(supply_services.line_costs(item))
+    return payload
 
 
 class AdminOrderSupplyActionView(APIView):
@@ -338,14 +367,22 @@ class AdminOrderSupplyActionView(APIView):
             elif action == 'receive':
                 units = request.data.get('units')
                 line = supply_services.receive_line(line, actor=request.user, company=company, request=request,
-                                                    units=units if isinstance(units, list) else None)
+                                                    units=units if isinstance(units, list) else None,
+                                                    unit_cost=request.data.get('unit_cost'))
             else:
                 line = supply_services.fail_line(line, actor=request.user, company=company, request=request,
                                                  reason=request.data.get('reason') or '')
         except supply_services.SupplyError as exc:
+            if exc.code == 'already_received':
+                # SUPPLIER-DEVICE-FLOW-02: a repeated reception is not a wrong
+                # request — it already happened. 409, with what it brought in.
+                return Response({**exc.body(), 'units': getattr(exc, 'units', [])}, status=status.HTTP_409_CONFLICT)
+            if exc.code == 'return_open':
+                return Response(exc.body(), status=status.HTTP_409_CONFLICT)
             return _error(exc)
-        line = OrderItem.objects.select_related('supplier_offer__supplier').get(pk=line.pk)
-        return Response(supply_line_payload(line))
+        line = OrderItem.objects.select_related(
+            'supplier_offer__supplier', 'product', 'order__fulfillment_branch').get(pk=line.pk)
+        return Response(supply_line_payload(line, with_cost=user_may_view_costs(request.user, company)))
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +456,60 @@ class AdminOfferImportApplyView(APIView):
                                            import_type=BulkImportJob.SUPPLIER_OFFERS).first()
         if job is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        # SUPPLIER-DEVICE-FLOW-02: a file that changes a commercial price needs ONE of
+        # these (409 `price_confirmation_required` without; 400 with both).
         try:
-            result = supplier_offer_import.apply(job=job, actor=request.user, request=request)
+            result = supplier_offer_import.apply(
+                job=job, actor=request.user, request=request,
+                accept_price_changes=_flag(request.data.get('accept_price_changes')),
+                keep_prices=_flag(request.data.get('keep_prices')))
         except supplier_offer_import.OfferImportError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            code = (status.HTTP_409_CONFLICT if exc.code == 'price_confirmation_required'
+                    else status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)
+
+
+class AdminSupplierProductRefView(APIView):
+    """
+    The supplier's own codes for the shop's variants. POST maps one (the
+    preview's «elige la variante»): `{supplier_code, product_id, replace?}` →
+    201 new / 200 already so; 409 `ref_conflict` when the code names another
+    variant and `replace` is not true. Company-scoped: another company's
+    supplier or product answers 404.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        company, error = _view(request)
+        if error:
+            return error
+        from . import supplier_offer_import
+        from .models import SupplierProductRef
+
+        supplier = Supplier.objects.filter(company=company, pk=pk).first()
+        if supplier is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        refs = (SupplierProductRef.objects.filter(company=company, supplier=supplier).select_related('product')
+                .order_by('supplier_code', 'pk')[:500])
+        return Response({'results': [supplier_offer_import.ref_payload(ref) for ref in refs]})
+
+    def post(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        from . import supplier_offer_import
+
+        supplier = Supplier.objects.filter(company=company, pk=pk).first()
+        product_id = supply_services._pk(request.data.get('product_id'))
+        product = Product.objects.filter(company=company, pk=product_id).first()
+        if supplier is None or product is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        try:
+            ref, changed = supplier_offer_import.save_product_ref(
+                company=company, supplier=supplier, supplier_code=request.data.get('supplier_code'), product=product,
+                actor=request.user, request=request, replace=_flag(request.data.get('replace')))
+        except supply_services.SupplyError as exc:
+            return _error(exc)
+        return Response(supplier_offer_import.ref_payload(ref),
+                        status=status.HTTP_201_CREATED if changed else status.HTTP_200_OK)

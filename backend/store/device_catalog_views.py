@@ -89,10 +89,24 @@ class PublicModelListView(APIView):
                 .values_list('product__product_model', 'p')
             )
 
+        # SUPPLIER-DEVICE-FLOW-02 (owner, 2026-10-20) — PUBLISHED IS NOT
+        # AVAILABLE, and SOLD OUT IS NOT HIDDEN. A published model stays on the
+        # list while it has a published variant; `sold_out` says that nothing
+        # of it can be bought right now (no device on the shelf, no valid offer).
+        used_line_models = set(
+            sold.filter(condition_line=Product.CONDITION_USED).values_list('product_model', flat=True)
+        )
+        new_available = device_catalog.models_with_new_for_sale(
+            sold.filter(condition_line=Product.CONDITION_NEW), branch,
+        )
+
         line = request.query_params.get('line')
         results = []
         for model in models:
-            has_new, has_used = bool(new_by_model.get(model.pk)), bool(used_by_model.get(model.pk))
+            has_new, has_units = bool(new_by_model.get(model.pk)), bool(used_by_model.get(model.pk))
+            # A model sold only as used devices, with none on the shelf, is
+            # listed under its line as sold out — never with a device to offer.
+            has_used = has_units or (model.pk in used_line_models and not has_new)
             if not (has_new or has_used):
                 continue
             if line == Product.CONDITION_NEW and not has_new:
@@ -101,11 +115,18 @@ class PublicModelListView(APIView):
                 continue
             prices = [p for p in (new_prices.get(model.pk) if line != 'used' else None,
                                   used_prices.get(model.pk) if line != 'new' else None) if p is not None]
+            for_sale = {
+                Product.CONDITION_NEW: model.pk in new_available,
+                Product.CONDITION_USED: has_units,
+            }
+            sold_out = not (for_sale[line] if line in for_sale else any(for_sale.values()))
             results.append({
                 'slug': model.slug, 'name': model.name, 'image_url': model.image_url,
                 'category': {'slug': model.category.slug, 'name': model.category.name} if model.category_id else None,
+                # Sold out, it is the last configured price: shown, not sold.
                 'from_price': str(min(prices)) if prices else None,
                 'has_new': has_new, 'has_used': has_used,
+                'sold_out': sold_out,
             })
         labels = device_catalog.line_labels(company)
         return Response({

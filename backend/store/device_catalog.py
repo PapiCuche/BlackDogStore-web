@@ -634,6 +634,30 @@ def offered_units(products, branch, *, now=None):
     )
 
 
+def models_with_new_for_sale(products, branch) -> set[int]:
+    """
+    The models (ids) of which some NEW variant in `products` can be bought now:
+    a device on `branch`'s shelf or, DC3, an offer that sells it on order.
+    The same two reasons `public_model` gives a variant `available: true` — a
+    published variant with neither is sold out, shown but not sold.
+    """
+    from .supply_services import on_order_payload
+
+    for_sale: set[int] = set()
+    if branch is not None:
+        for_sale = set(
+            BranchStock.objects.filter(branch=branch, product__in=products, quantity__gt=0)
+            .values_list('product__product_model', flat=True)
+        )
+    # Only products the shop may sell on order can be saved by an offer.
+    for product in (products.exclude(product_model__in=for_sale)
+                    .filter(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+                    .select_related('company')):
+        if product.product_model_id not in for_sale and on_order_payload(product):
+            for_sale.add(product.product_model_id)
+    return for_sale
+
+
 def public_unit(unit, product, option_labels: dict) -> dict:
     """ONE used device as the shop shows it. An allowlist: nothing else leaves."""
     photos = [
@@ -664,6 +688,10 @@ def public_model(model, branch) -> dict:
     `available` is own stock in the storefront's fulfilment branch (as every
     other public product) or, DC3, a sale on order: `availability` says which
     ('own_stock', 'supplier' or 'none') and `on_order` its lead time and price.
+
+    A published variant with neither is NOT left out (owner, 2026-10-20:
+    published does not mean available): it comes with its price and photos
+    and `availability: 'none'`, and the page sells nothing of it.
     """
     from .product_media import public_payload
     from .supply_services import on_order_payload
@@ -754,5 +782,8 @@ def public_model(model, branch) -> dict:
         },
         'variants': variant_rows,
         'used_units': used_units,
+        # SUPPLIER-DEVICE-FLOW-02 — published, but nothing of it can be bought
+        # now: the page shows it (photos, options, last prices) as «Agotado».
+        'sold_out': not used_units and not any(row['available'] for row in variant_rows),
         'as_of': timezone.now().isoformat(),
     }

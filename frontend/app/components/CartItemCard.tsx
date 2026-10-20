@@ -1,7 +1,7 @@
 import { ProductImage } from "./ProductImage";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
-import { batteryText, imeiHintText, onOrderLabel, optionsText } from "../lib/catalog-models";
+import { SOLD_OUT_LABEL, batteryText, imeiHintText, onOrderLabel, optionsText } from "../lib/catalog-models";
 
 /**
  * DC3 — where a cart line comes from. A line is all shelf or all «bajo
@@ -12,10 +12,32 @@ export type CartSupply =
   | { origin: "own" }
   | { origin: "supplier"; available: boolean; lead_time_days: number | null; price: string | null };
 
-/** A line the buyer can pay now: still sold online and, if on order, still covered by an offer. */
-export function isCartLineSellable(line: { available?: boolean; supply?: CartSupply | null }): boolean {
+type SellableLine = {
+  available?: boolean;
+  supply?: CartSupply | null;
+  sells_by_unit?: boolean;
+  product?: { inventory?: number };
+};
+
+/**
+ * SUPPLIER-DEVICE-FLOW-02 — a line from the shop's own shelf whose shelf is
+ * now empty: still published, but «Agotado». The server refuses to charge it
+ * (checkout re-checks the stock); this says so before the form. A device line
+ * is not judged here: it holds its own device, and the server says when that
+ * hold is gone. Without a stock figure nothing is assumed.
+ */
+export function isCartLineSoldOut(line: SellableLine): boolean {
+  if (line.available === false || line.sells_by_unit) return false;
+  if (line.supply && line.supply.origin !== "own") return false;
+  const inventory = line.product?.inventory;
+  return typeof inventory === "number" && inventory <= 0;
+}
+
+/** A line the buyer can pay now: still sold online, not sold out and, if on order, still covered by an offer. */
+export function isCartLineSellable(line: SellableLine): boolean {
   if (line.available === false) return false;
   if (line.supply?.origin === "supplier" && !line.supply.available) return false;
+  if (isCartLineSoldOut(line)) return false;
   return true;
 }
 
@@ -67,6 +89,8 @@ type CartItemCardProps = {
     price?: number | string;
     slug?: string;
     image_url?: string;
+    /** What the shop's shelf has now; 0 on an own-stock line is «Agotado». */
+    inventory?: number;
   };
   /** DC2: sold device by device — the quantity is the number of devices, each with its own price. */
   sells_by_unit?: boolean;
@@ -218,6 +242,8 @@ export function CartItemCard({
 
   const price = fromSupplier ? fromSupplier.price : product.price ?? 0;
   const supplyGone = fromSupplier !== null && !fromSupplier.available;
+  const soldOut = isCartLineSoldOut({ available, supply, sells_by_unit, product });
+  const unpayable = supplyGone || soldOut;
 
   return (
     <div className="rounded-2xl border border-bd-border bg-surface p-4 sm:p-5">
@@ -233,7 +259,10 @@ export function CartItemCard({
             >
               {product.name}
             </Link>
-            {supplyGone ? null : <p className="mt-1 text-sm text-muted">S/ {formatMoney(price ?? 0)} c/u</p>}
+            {unpayable ? null : <p className="mt-1 text-sm text-muted">S/ {formatMoney(price ?? 0)} c/u</p>}
+            {soldOut ? (
+              <p data-testid="cart-line-sold-out" className="mt-1 text-sm font-semibold text-danger">{SOLD_OUT_LABEL}</p>
+            ) : null}
             {fromSupplier ? (
               <p
                 data-testid="cart-line-supply"
@@ -246,6 +275,7 @@ export function CartItemCard({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-4 sm:justify-end">
+          {soldOut ? null : (
           <label className="flex items-center gap-2 text-xs font-semibold text-muted">
             Cantidad
             <input
@@ -258,11 +288,12 @@ export function CartItemCard({
               className="h-11 w-16 rounded-xl border border-bd-border bg-background px-2 text-center text-sm tabular-nums text-foreground focus:border-foreground/25 focus:outline-none"
             />
           </label>
+          )}
           <p className="min-w-24 text-right font-display font-extrabold tabular-nums text-foreground" data-testid="cart-line-total">
-            {supplyGone ? "—" : `S/ ${formatMoney(cartLineAmount({ quantity, line_total, product }))}`}
+            {unpayable ? "—" : `S/ ${formatMoney(cartLineAmount({ quantity, line_total, product }))}`}
           </p>
           {onRemove ? (
-            <button type="button" onClick={onRemove} className={REMOVE}>
+            <button type="button" onClick={onRemove} aria-label={`Eliminar ${product.name}`} className={REMOVE}>
               Eliminar
             </button>
           ) : null}

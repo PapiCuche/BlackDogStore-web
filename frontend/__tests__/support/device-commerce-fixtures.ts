@@ -56,7 +56,7 @@ export function modelFixture() {
       variant(41, 11, 21, '3999.00', true, [], 'http://localhost/azul-128.png'),
       variant(42, 11, 22, '3999.00', true, [], 'http://localhost/blanco-128.png'),
       variant(43, 12, 21, '4499.00', true, ['http://localhost/azul-256-a.png', 'http://localhost/azul-256-b.png']),
-      // Exists, but nothing to sell: shown disabled, never hidden.
+      // Exists, but nothing to sell: shown as «Agotado» (selectable, not buyable), never hidden.
       variant(44, 12, 22, '4499.00', false, [], 'http://localhost/blanco-256.png'),
       // Rojo exists only at 512 GB.
       variant(45, 13, 23, '5499.00', true, [], 'http://localhost/rojo-512.png'),

@@ -98,7 +98,7 @@ async function mockApi(page: Page) {
 const price = (page: Page) => page.getByTestId("model-price");
 
 test.describe("DC2 · página de modelo", () => {
-  test("elegir capacidad y color cambia el precio; lo que no se vende se ve deshabilitado", async ({ page }) => {
+  test("elegir capacidad y color cambia el precio; lo agotado se elige y no se compra", async ({ page }) => {
     await mockApi(page);
     await page.goto(`/modelo/${SLUG}`);
 
@@ -112,12 +112,16 @@ test.describe("DC2 · página de modelo", () => {
     await capacity.getByRole("radio", { name: "256 GB" }).click();
     await expect(price(page)).toHaveText("S/ 4499.00");
 
-    // Blanco 256 GB exists but is not available: visible, disabled, and said.
-    const blanco = colour.getByRole("radio", { name: "Blanco, no disponible" });
+    // Blanco 256 GB exists but is sold out (SUPPLIER-DEVICE-FLOW-02): it can be chosen, shows its
+    // price and says «Agotado», and the cart button stays disabled.
+    const blanco = colour.getByRole("radio", { name: "Blanco, agotado" });
     await expect(blanco).toBeVisible();
-    await expect(blanco).toHaveAttribute("aria-disabled", "true");
-    // A disabled option ignores the click (forced: Playwright never clicks a disabled control).
-    await blanco.click({ force: true });
+    await expect(blanco).not.toHaveAttribute("aria-disabled", "true");
+    await blanco.click();
+    await expect(blanco).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("model-availability")).toHaveText("Agotado");
+    await expect(page.getByRole("button", { name: "Agotado" })).toBeDisabled();
+    await colour.getByRole("radio", { name: "Azul" }).click();
     await expect(colour.getByRole("radio", { name: "Azul" })).toHaveAttribute("aria-checked", "true");
 
     // Back to 128 GB with the keyboard: Blanco becomes available again.

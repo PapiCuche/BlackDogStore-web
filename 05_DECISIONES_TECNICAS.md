@@ -2363,6 +2363,59 @@ costo pactado, precio de venta, `valid_until`, estado ofrecido/apartado/vendido/
 (comprobando que coincide) y lo vende a la línea por `_sell_chosen_units`; vencida o
 retirada antes del pago → la línea queda `to_confirm` como en DC3.
 
+#### SUPPLIER-DEVICE-FLOW-02 · B — recibir del proveedor (2026-10-20, sin migraciones)
+
+- **Una regla por equipo, la del servidor** (`stock_unit_services._clean_row`): serie siempre;
+  IMEI cuando el producto lo exige (`requires_imei`); el segundo IMEI sólo con el primero. El
+  formulario pide exactamente eso (antes aceptaba «serie o IMEI» y el servidor lo rechazaba) y
+  muestra el rechazo del servidor en la fila y el campo (`line`, `unit_field`). Cada fila admite
+  su nota (`notes`, que ya leía el servidor).
+- **Lo que se ve al recibir**: pedido, producto, proveedor, sucursal de despacho
+  (`fulfillment_branch`), precio vendido y cantidad; con `costs.view`, el costo pactado
+  (`agreed_unit_cost`). Mismas claves en el detalle del pedido y en la respuesta de la acción;
+  ninguna llega a una API pública.
+- **Dos costos, sin mezclarse.** La venta conserva su instantánea (`OrderItem.unit_cost` = pactado,
+  `cost_source='supplier_offer'`), nunca reescrita. La mercadería entra al costo **real** si lo dice
+  quien tiene `costs.view` (`unit_cost` de la línea o `cost` de cada equipo); si no, al pactado (sin
+  `costs.view` un costo enviado se ignora, como en el Excel). Kardex, costo medio y cada equipo llevan
+  el real; `received_unit_cost` lo lee de la entrada (o de los equipos que vendió la recepción) y
+  `unit_cost_difference` = real − pactado, sólo para `costs.view`. Kardex sin cambios: una entrada y
+  una salida de venta, estante neto cero. La auditoría dice si se indicó costo real, nunca el importe.
+- **Margen (decisión, a confirmar):** el estimado y el realizado siguen leyendo la instantánea de
+  la venta (el pactado), como hasta ahora; también la liquidación al proveedor
+  (`pending_settlement`). La diferencia se ve por pedido. Si el propietario quiere el realizado al
+  costo real, es un cambio de `sales_analytics_views` (leer la entrada de la línea) y no de datos.
+- **Una sola vez.** Recibir una línea ya recibida responde **409 `already_received`** con los
+  equipos que nombró (antes 400 `wrong_state`); bajo el bloqueo del pedido, dos recepciones a la
+  vez dejan una sola entrada.
+- **Lector**: una fila por equipo; Enter pasa IMEI → IMEI 2 → serie → fila siguiente (sin IMEI,
+  serie → fila siguiente); pegar una lista (un código por línea) llena las filas siguientes; mismo
+  comportamiento en las filas de equipo nuevo del registro de artículos, que abre una fila más al
+  final. El seminuevo del registro admite su segundo IMEI (el servidor ya lo aceptaba).
+- **Alertas operativas** (`GET /api/admin/orders/alerts/`, `sales.orders.view`, alcance de
+  `visible_orders`): pedidos pagados esperando al proveedor; con fecha prometida (día del pago +
+  plazo de la línea) vencida o a 2 días; con la oferta vencida o desactivada; por confirmar; con
+  equipos por identificar; recibidos y aún no entregados. Cada una abre `/admin/orders?alert=`
+  (mismo filtro en el servidor). `ops_status` añade «ATENCIÓN abastecimiento» por fecha prometida
+  vencida (cuenta de plataforma).
+- **Disponibilidad**: «Vender en caja» (stock propio) y «Vender bajo pedido en caja» (oferta vigente
+  de un producto «Bajo pedido») llevan a `/admin/sales/pos`; la caja aún no lee un producto de la
+  dirección, así que no llega preseleccionado.
+- **Fiscal:** la boleta/factura **no** espera la recepción: su emisión sigue pidiendo sólo un pedido
+  pagado (ningún camino fiscal lee `supply_status`). Es el contrato vigente y no se cambió.
+- **Revisión independiente (2026-10-20):**
+  - *Recepción con devolución en curso:* recibir una línea de un pedido con una devolución no
+    retirada (registrada, recibida o cerrada; una venta de caja admite devolución desde que nace)
+    responde **409 `return_open`** y no mueve nada: sería una segunda salida que el cierre no
+    repone. Misma regla y código que identificar un equipo (`unit_identification.returning`).
+  - *Costo de las alertas:* «Equipos por identificar» y «Recibidos…» se calculan en lote
+    (`supply_alerts.pending_devices`: líneas, salidas y `OrderUnit` en consultas fijas, sin importar
+    cuántos pedidos); un pedido con una salida corregida por un superior se calcula uno a uno con
+    `pending_units`, que conoce esos sellos. Prueba de número de consultas igual para 1 y 6 pedidos.
+  - *«Recibidos, por despachar o entregar»* cuenta sólo lo que sigue en la tienda: un pedido
+    **enviado** queda fuera (va en camino; nadie en la tienda tiene que actuar) y uno entregado
+    también.
+
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
 
 Migración `0134` editada (sin publicar; sigue aditiva y segura con la versión anterior, que
@@ -2659,3 +2712,61 @@ controlar la publicación e-commerce de todo con acciones en bloque, y un menú 
   y avisa que el motivo no lleve montos; la carga de ofertas advierte dos filas del mismo
   producto con distinto «Bajo pedido»; un modelo nuevo se crea oculto si su primera variante no
   se puede publicar (`publication.model_hidden`; el asistente lo publica si luego publica la variante).
+
+### DEC-SUPPLIER-WEEKLY-01 · El Excel semanal del proveedor (SUPPLIER-DEVICE-FLOW-02 · A) — EN RAMA
+
+Migración `0140` (aditiva: sólo la tabla nueva `SupplierProductRef`; la vuelta a `0139` la
+borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
+
+- *Actualización parcial.* Sólo cambian las filas del archivo; una oferta que no aparece no se
+  toca (ni se desactiva, ni cambian su cantidad ni su vigencia).
+- *Qué oferta actualiza una fila* (`match_offer`): 1) la de la misma vigencia exacta (volver a
+  subir el mismo archivo no crea nada, tampoco una oferta futura); 2) si hay una oferta activa
+  **vendiéndose hoy**: una fila que empieza hoy o antes y se superpone o toca su vigencia (un día
+  de diferencia) la actualiza en su lugar; una fila que empieza en el futuro y la toca o va
+  después actualiza la oferta **programada** (futura) a la que llega, si ya existe (la cargó el
+  archivo anterior), o si no **crea** la oferta de esa semana (la de hoy sigue vendiendo, sin
+  tocarse); una fila que empieza en
+  el futuro y **se superpone** con ella es error de fila `overlaps_running` (subir temprano el
+  archivo de la semana siguiente nunca detiene ni mueve lo que se vende hoy); 3) si no hay una
+  vendiéndose, la programada o apagada a la que la fila llega se actualiza en su lugar; 4) si
+  todas ya vencieron, la que venció última. Dos filas del mismo proveedor y producto en un
+  archivo son error.
+- *Nunca dos ofertas activas del mismo proveedor y producto el mismo día* — por archivo (error
+  de fila; `stale` al aplicar) y a mano (crear/editar en el panel: 400 `overlap`), bajo un
+  candado de aviso por (empresa, proveedor, producto), también en el asistente de registro
+  (`overlap` en el paso «supplier») y al aplicar una fila que actualiza (`stale` si otra oferta
+  apareció entre la vista previa y la aplicación). Sin restricción en la base: producción
+  puede tener superposiciones antiguas; una fila que conserva una de ellas sólo avisa. Cada
+  proveedor es independiente.
+- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido (leído bajo el candado al
+  aplicar): no se vende más y lo ya pagado se mantiene. Otra cantidad menor que lo comprometido
+  sigue siendo error.
+- *Precio comercial nuevo.* La vista previa lo muestra antes → después; aplicar responde 409
+  `price_confirmation_required` (con las filas) salvo `accept_price_changes: true` (escribe los
+  precios) o `keep_prices: true` (escribe lo demás, mantiene cada precio actual); las dos a la
+  vez, 400. Auditoría por oferta: `supplier_offer_price_changed` (antes/después) o
+  `supplier_offer_price_kept` (actual/propuesto), con el trabajo.
+- *Vista previa vieja.* Se guarda el `updated_at` de cada oferta leída; si cambió (edición,
+  pago, otro archivo) al aplicar se rechaza el trabajo entero (`stale`) sin escribir nada.
+- *Vista previa con diferencias.* `before` por fila (el costo sólo con `costs.view`, tampoco se
+  guarda sin él), `changes`, `sold_out`, `price_change` y `summary` (nuevas, cambian, sin
+  cambios, agotadas, errores, precios, códigos).
+- *Código del proveedor.* Columna opcional «Código del proveedor». Orden para hallar la variante:
+  código del sistema («Identificador»), código de barras/SKU, código del proveedor ya asociado,
+  modelo + opciones, nombre único. Dos claves que nombran variantes distintas, o un modelo cuyas
+  opciones calzan con varias variantes, son error (nada se adivina). Una fila con código del
+  proveedor hallada sin duda por otra clave lo recuerda al aplicar (auditado); una fila sin
+  variante ofrece «Elegir variante» (`POST /api/admin/suppliers/<pk>/product-refs/`,
+  `products.manage`, por empresa; 409 `ref_conflict` si ya nombra otra variante).
+- *Desactivada a mano.* Sigue siendo la oferta que la fila actualiza y sigue desactivada (sólo
+  «Activa: Sí» la reactiva). Una oferta apagada **sólo por vencimiento** vuelve a activarse si
+  la fila le da días nuevos; «sólo por vencimiento» es que su último apagado auditado es
+  `supplier_offer_expired` (el comando), nunca un motivo escrito a mano. Conservador: si después
+  del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
+- *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
+
+**Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya
+vendidas (en curso o vencida), lo comprometido **sigue contando** contra la nueva «Cantidad
+confirmada» (confirmada = tope total, como siempre). ¿La cantidad semanal debería ser
+adicional a lo ya vendido?

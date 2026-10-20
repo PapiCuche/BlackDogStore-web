@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SOLD_OUT_LABEL } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
 import { ProductImage } from "./ProductImage";
 
@@ -13,7 +14,7 @@ type ProductCardProps = {
   category?: { id: number; name: string; slug: string };
   average_rating?: number | null;
   review_count?: number;
-  /** DC3: an empty shelf an offer still covers is «bajo pedido», not «sin stock». */
+  /** DC3: an empty shelf an offer still covers is «bajo pedido», not «agotado». */
   on_order?: { lead_time_days: number; price: string } | null;
 };
 
@@ -27,9 +28,10 @@ function StockBadge({ inventory, onOrder }: { inventory?: number; onOrder?: bool
     );
   }
   if (inventory === 0) {
+    // SUPPLIER-DEVICE-FLOW-02: published, nothing to sell — still listed, with its last price.
     return (
       <span className="rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger">
-        Sin stock
+        {SOLD_OUT_LABEL}
       </span>
     );
   }

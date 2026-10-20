@@ -1,4 +1,5 @@
 from rest_framework.routers import DefaultRouter
+from . import supply_alerts
 from .availability_views import AdminAvailabilityView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
@@ -150,7 +151,7 @@ from .supplier_views import (
     AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
     AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
     AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
-    AdminSupplierSettlementView,
+    AdminSupplierProductRefView, AdminSupplierSettlementView,
 )
 from .device_catalog_views import (
     AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
@@ -248,6 +249,8 @@ urlpatterns = [
     path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
+    path('admin/suppliers/<int:pk>/product-refs/', AdminSupplierProductRefView.as_view(),
+         name='admin-supplier-product-refs'),
     path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
     path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
          name='admin-supplier-offers-template'),
@@ -264,6 +267,8 @@ urlpatterns = [
     path('admin/products/<int:pk>/sale-mode/', AdminProductSaleModeView.as_view(), name='admin-product-sale-mode'),
     path('admin/orders/<int:pk>/supply/<int:line_pk>/<str:action>/', AdminOrderSupplyActionView.as_view(),
          name='admin-order-supply-action'),
+    # SUPPLIER-DEVICE-FLOW-02 — «Alertas operativas» of the dashboard.
+    path('admin/orders/alerts/', supply_alerts.AdminOrderAlertsView.as_view(), name='admin-order-alerts'),
     path('admin/catalog/models/', AdminModelListView.as_view(), name='admin-catalog-models'),
     path('admin/catalog/models/bulk-visibility/', AdminModelBulkVisibilityView.as_view(),
          name='admin-catalog-models-bulk-visibility'),

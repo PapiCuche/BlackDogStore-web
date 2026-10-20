@@ -19,7 +19,8 @@ type CheckoutItem = {
   quantity: number;
   /** INVENTORY-UNIFIED-01. `false`: ya no se vende en la web; llega sin precio. */
   available?: boolean;
-  product: { id: number; name: string; price?: number | string; slug?: string };
+  /** `inventory`: the shelf now; 0 on an own-stock line is «Agotado» (not payable). */
+  product: { id: number; name: string; price?: number | string; slug?: string; inventory?: number };
   /** DC2: what the line costs, from the server (devices sold one by one can each cost differently). */
   line_total?: string | null;
   sells_by_unit?: boolean;
@@ -39,8 +40,8 @@ import {
 import { useStorefront } from "../components/StorefrontProvider";
 import KryptonPaymentForm from "../components/KryptonPaymentForm";
 import { SavedAddressSelect } from "../components/SavedAddressSelect";
-import { cartLineAmount, isCartLineSellable, type CartSupply } from "../components/CartItemCard";
-import { onOrderLabel } from "../lib/catalog-models";
+import { cartLineAmount, isCartLineSellable, isCartLineSoldOut, type CartSupply } from "../components/CartItemCard";
+import { SOLD_OUT_LABEL, onOrderLabel } from "../lib/catalog-models";
 import {
   isPaymentSession,
   openPaymentForm,
@@ -918,6 +919,11 @@ export default function CheckoutPage() {
                         {item.available === false ? (
                           <span className="mt-0.5 block text-xs font-semibold text-danger">
                             Ya no está disponible.{" "}
+                            <Link href="/cart" className="underline underline-offset-2">Quítalo en el carrito</Link>
+                          </span>
+                        ) : isCartLineSoldOut(item) ? (
+                          <span className="mt-0.5 block text-xs font-semibold text-danger">
+                            {SOLD_OUT_LABEL}.{" "}
                             <Link href="/cart" className="underline underline-offset-2">Quítalo en el carrito</Link>
                           </span>
                         ) : !isCartLineSellable(item) ? (

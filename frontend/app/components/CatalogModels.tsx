@@ -8,6 +8,9 @@
  * The two lines are offered as tabs only when the category has both; their
  * names are the company's, from the API. A category without models renders
  * nothing here and the page stays exactly as it was.
+ *
+ * SUPPLIER-DEVICE-FLOW-02 — a published model with nothing to sell stays on
+ * the list, with its photo and last price, and says «Agotado».
  */
 
 import Link from "next/link";
@@ -15,6 +18,7 @@ import { useEffect, useState } from "react";
 import { ProductImage } from "./ProductImage";
 import { formatMoney } from "../lib/format";
 import {
+  SOLD_OUT_LABEL,
   fetchCatalogModels,
   type CatalogModelList,
   type ConditionLine,
@@ -103,7 +107,7 @@ export function CatalogModels({ category, line, onLineChange, onLoaded }: Props)
                       src={model.image_url}
                       alt={model.name}
                       sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
-                      className="object-contain p-6 transition-transform duration-300 ease-out group-hover:scale-105"
+                      className={`object-contain p-6 transition-transform duration-300 ease-out group-hover:scale-105 ${model.sold_out ? "opacity-50" : ""}`}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center">
@@ -112,6 +116,13 @@ export function CatalogModels({ category, line, onLineChange, onLoaded }: Props)
                       </div>
                     </div>
                   )}
+                  {model.sold_out ? (
+                    <div className="absolute left-3 top-3">
+                      <span className="rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger">
+                        {SOLD_OUT_LABEL}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex flex-1 flex-col gap-2 p-5">
                   <p className="font-display text-lg font-semibold leading-snug text-foreground">{model.name}</p>

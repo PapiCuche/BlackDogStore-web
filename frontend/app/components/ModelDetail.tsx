@@ -12,6 +12,12 @@
  *
  * The line names come from the API (each company names its own lines); a line
  * with nothing to show is not offered.
+ *
+ * SUPPLIER-DEVICE-FLOW-02 (owner, 2026-10-20) — published is not available,
+ * and sold out is not hidden. A sold-out variant can be chosen: its photos and
+ * last price are shown, it says «Agotado» and the cart button is disabled. A
+ * model with nothing to sell says «Agotado» next to its name; with no line to
+ * show at all (a used-only model without devices) its own photo is shown.
  */
 
 import Link from "next/link";
@@ -26,6 +32,7 @@ import { track } from "../lib/analytics/service";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import {
   CartError,
+  SOLD_OUT_LABEL,
   addDeviceToCart,
   availabilityLabel,
   fetchCatalogModel,
@@ -82,9 +89,10 @@ function NewLine({
   }));
   let selection = state.selection;
   if (state.source !== variants) {
-    // Fresh data (after a reload) may make the current choice unavailable: start again from the first available one.
+    // Fresh data (after a reload) may have sold the current choice out: it stays chosen and says so.
+    // Only a choice that no longer exists starts again from the first available one.
     const still = matchVariant(variants, attributes, state.selection);
-    selection = still && still.available ? state.selection : initialSelection(variants, attributes);
+    selection = still ? state.selection : initialSelection(variants, attributes);
     setState({ source: variants, selection });
   }
   const [imageIndex, setImageIndex] = useState(0);
@@ -206,7 +214,7 @@ function NewLine({
           <div className="mt-4 flex items-center gap-2 text-sm">
             <span className={`h-2 w-2 rounded-full ${onOrder ? "bg-warning" : available ? "bg-success" : "bg-muted/40"}`} aria-hidden="true" />
             <span data-testid="model-availability" className={available ? "text-foreground" : "text-muted"}>
-              {variant ? availabilityLabel(variant) : "Sin stock"}
+              {variant ? availabilityLabel(variant) : SOLD_OUT_LABEL}
             </span>
           </div>
           {onOrder ? (
@@ -220,7 +228,7 @@ function NewLine({
             disabled={busy || !variant || !available}
             className="mt-5 w-full rounded-full bg-foreground px-4 py-3.5 text-sm font-extrabold uppercase tracking-[0.08em] text-background transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {busy ? "Agregando…" : onOrder ? "Pedir bajo pedido" : "Agregar al carrito"}
+            {busy ? "Agregando…" : onOrder ? "Pedir bajo pedido" : !variant || !available ? SOLD_OUT_LABEL : "Agregar al carrito"}
           </button>
           {offer ? (
             <OnOrderOfferPrompt offer={offer} busy={busy} onAccept={() => void add(true)} />
@@ -407,6 +415,9 @@ export default function ModelDetail({ slug, initialLine }: { slug: string; initi
   }
 
   const panelId = `model-line-${slug}`;
+  // The server's word when it sends one; before it, the same rule from what it sent.
+  const soldOut = model.sold_out
+    ?? (!(model.variants ?? []).some((variant) => variant.available) && (model.used_units ?? []).length === 0);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -431,6 +442,14 @@ export default function ModelDetail({ slug, initialLine }: { slug: string; initi
           <h1 className="font-display text-[min(3rem,10.5vw)] font-semibold leading-[1.08] tracking-tight text-foreground sm:text-6xl">
             {model.name}
           </h1>
+          {soldOut ? (
+            <span
+              data-testid="model-sold-out"
+              className="mt-4 inline-flex rounded-full border border-danger-border bg-danger-surface px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-danger"
+            >
+              {SOLD_OUT_LABEL}
+            </span>
+          ) : null}
           {model.description ? (
             <p className="mt-4 text-sm leading-7 text-muted sm:text-base">{model.description}</p>
           ) : null}
@@ -465,9 +484,24 @@ export default function ModelDetail({ slug, initialLine }: { slug: string; initi
         ) : null}
 
         {line === null ? (
-          <p className="rounded-2xl border border-dashed border-bd-border px-6 py-10 text-center text-sm text-muted">
-            Este modelo no tiene equipos a la venta por ahora.
-          </p>
+          <div className="grid gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
+            {model.image_url ? (
+              <div className="relative overflow-hidden rounded-[1.75rem] border border-bd-border bg-surface">
+                <div data-testid="model-main-image" className="relative aspect-[4/3] min-h-72 lg:min-h-[520px]">
+                  <ProductImage
+                    src={model.image_url}
+                    alt={model.name}
+                    className="object-contain p-6 opacity-50 sm:p-10"
+                    sizes="(max-width: 1024px) 100vw, 58vw"
+                    priority
+                  />
+                </div>
+              </div>
+            ) : null}
+            <p className="self-start rounded-2xl border border-dashed border-bd-border px-6 py-10 text-center text-sm text-muted">
+              Este modelo está agotado por ahora. Vuelve pronto o consulta con la tienda.
+            </p>
+          </div>
         ) : (
           <div
             id={panelId}

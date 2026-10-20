@@ -369,8 +369,13 @@ _OFFER_KEYS = ('agreed_cost', 'commercial_price', 'confirmed_quantity', 'valid_f
 
 
 def _offer(company, supplier, product, wanted, *, may_view_costs, actor, request):
+    from .supplier_offer_import import guard_offer_overlap
+
     fields = {k: wanted[k] for k in _OFFER_KEYS if k in wanted}
     try:
+        # Review P1-a: the panel's rule — never two active offers of one supplier and variant over the same
+        # days (SUPPLIER-DEVICE-FLOW-02). Inside `register`'s transaction, under the pair's lock.
+        guard_offer_overlap(company, {**fields, 'supplier_id': supplier.pk, 'product_id': product.pk})
         offer = supply_services.create_offer(
             company=company, actor=actor, request=request, may_view_costs=may_view_costs,
             supplier_id=supplier.pk, product_id=product.pk, **fields,

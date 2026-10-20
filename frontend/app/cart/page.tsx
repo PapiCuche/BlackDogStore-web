@@ -28,6 +28,8 @@ type CartItem = {
     price?: number | string;
     slug?: string;
     image_url?: string;
+    /** The shelf now: 0 on an own-stock line is «Agotado» (SUPPLIER-DEVICE-FLOW-02). */
+    inventory?: number;
   };
   /** DC2: sold device by device. `quantity` is then the number of `units`. */
   sells_by_unit?: boolean;

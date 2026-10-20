@@ -557,6 +557,16 @@ export type AdminOrderItem = {
   supplier_name?: string;
   /** Recibir del proveedor pide una serie/IMEI por cada unidad de la línea. */
   product_is_serialized?: boolean;
+  /** SUPPLIER-DEVICE-FLOW-02: la sucursal que recibe y entrega el pedido. */
+  fulfillment_branch?: { id: number; name: string } | null;
+  /**
+   * SUPPLIER-DEVICE-FLOW-02 — sólo para `costs.view` y sólo en una línea bajo
+   * pedido: la clave AUSENTE significa que esta persona no ve costos. El
+   * pactado es el de la venta (no cambia); el real, el de la mercadería recibida.
+   */
+  agreed_unit_cost?: string | null;
+  received_unit_cost?: string | null;
+  unit_cost_difference?: string | null;
 };
 
 export type AdminOrder = {
@@ -784,6 +794,34 @@ export type OrderDispatch = {
 export const LEFT_MARKING_REASON_MIN = 5;
 
 /** DC3 — el abastecimiento de un pedido, en palabras del panel. */
+/** SUPPLIER-DEVICE-FLOW-02: las «Alertas operativas» (`GET /api/admin/orders/alerts/`). */
+export type SupplyAlertKind =
+  | 'to_confirm' | 'promise_due' | 'offer_expired' | 'supplier_pending' | 'units_pending' | 'ready_to_deliver';
+
+export const SUPPLY_ALERT_KINDS: readonly SupplyAlertKind[] = [
+  'to_confirm', 'promise_due', 'offer_expired', 'supplier_pending', 'units_pending', 'ready_to_deliver',
+];
+
+export type SupplyAlert = {
+  kind: SupplyAlertKind;
+  label: string;
+  level: 'critical' | 'warning' | 'info';
+  count: number;
+  /** Sólo `promise_due`: cuántos ya pasaron su fecha. */
+  overdue?: number;
+  /** El listado de órdenes filtrado por esta alerta. */
+  href: string;
+};
+
+export type SupplyAlerts = { alerts: SupplyAlert[]; due_soon_days: number };
+
+export async function fetchSupplyAlerts(): Promise<SupplyAlerts> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/orders/alerts/`);
+  if (res.status === 403) throw new Error('No tienes permisos para ver órdenes.');
+  if (!res.ok) throw new Error('No se pudieron cargar las alertas operativas.');
+  return res.json();
+}
+
 export const SUPPLY_STATUS_LABELS: Record<string, string> = {
   awaiting_payment: 'Esperando el pago',
   pending: 'Pedido al proveedor',
@@ -825,6 +863,8 @@ export async function fetchAdminOrders(params?: {
   review?: 'pending';
   /** DC3: por estado de abastecimiento de lo vendido bajo pedido. */
   supply?: 'to_confirm' | 'pending' | 'failed' | 'received';
+  /** SUPPLIER-DEVICE-FLOW-02: los pedidos que cuenta una alerta operativa. */
+  alert?: SupplyAlertKind;
   /** COMMERCE-ADMIN-UX-01: pedidos cancelados con un reembolso en ese estado. */
   refund?: 'pending' | 'confirmed';
   date_from?: string;
@@ -840,6 +880,7 @@ export async function fetchAdminOrders(params?: {
     shortfall: params?.shortfall,
     review: params?.review,
     supply: params?.supply,
+    alert: params?.alert,
     refund: params?.refund,
     date_from: params?.date_from,
     date_to: params?.date_to,
