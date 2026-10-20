@@ -59,9 +59,10 @@ import {
 import {
   INTERNAL_MODULES,
   MODULE_GROUPS,
-  navigableModules,
+  isNavigable,
   quickActions,
-  roadmapByGroup,
+  seesRoadmap,
+  upcomingByGroup,
 } from "./lib/internal-modules";
 
 function greeting(): string {
@@ -125,11 +126,9 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
 
   const access = useMemo(() => buildAccessContext(user, dashboard), [user, dashboard]);
   const actions = useMemo(() => quickActions(access), [access]);
-  const roadmap = useMemo(() => roadmapByGroup(), []);
-  const reachableIds = useMemo(
-    () => new Set(navigableModules(access).map((m) => m.id)),
-    [access],
-  );
+  const upcoming = useMemo(() => upcomingByGroup(), []);
+  const upcomingCount = upcoming.reduce((total, entry) => total + entry.modules.length, 0);
+  const showsRoadmap = seesRoadmap(access);
 
   // System coverage: a state-of-the-system figure, not a business KPI.
   const coverage = useMemo(() => {
@@ -533,10 +532,10 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
         </DashboardSection>
       )}
 
-      {/* ── Quick actions ──────────────────────────────────────────────── */}
+      {/* ── Operational tools ──────────────────────────────────────────── */}
       <DashboardSection
-        title="Accesos rápidos"
-        description="Solo los módulos que existen y a los que tienes acceso."
+        title="Herramientas operativas"
+        description="Los módulos disponibles a los que tienes acceso. Todos están en el menú."
       >
         {actions.length === 0 ? (
           <EmptyState message="Tu rol todavía no tiene módulos disponibles." />
@@ -568,55 +567,72 @@ function DashboardContent({ ctx }: { ctx: InternalContext }) {
         )}
       </DashboardSection>
 
-      {/* ── System coverage + roadmap ──────────────────────────────────── */}
-      <DashboardSection
-        title="Estado del sistema"
-        description="Qué módulos del control interno existen hoy."
-        action={
-          <button
-            type="button"
-            onClick={() => setShowRoadmap((v) => !v)}
-            aria-expanded={showRoadmap}
-            className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
-          >
-            {showRoadmap ? "Ocultar mapa" : "Ver mapa completo"}
-          </button>
-        }
-      >
-        <ChartCard
-          title="Cobertura de módulos"
-          description="Estado de implementación del control interno, no un indicador de negocio."
+      {/* ── In development: secondary, collapsed, administrators only ──── */}
+      {/*
+        What does not exist yet is not a tool: it never takes the main area and
+        never becomes a link. Only whoever administers the company sees it, and
+        it starts closed. A partial module with a page of its own is the one
+        exception to «no link», and only if the caller reaches it.
+      */}
+      {showsRoadmap && (
+        <section
+          aria-labelledby="roadmap-title"
+          className="rounded-xl border border-bd-border bg-surface p-4 sm:p-5"
         >
-          <StackedBar series={coverage} unit="módulos" />
-        </ChartCard>
-
-        {showRoadmap && (
-          <div className="mt-4 space-y-6">
-            {roadmap.map(({ group, modules }) => {
-              const GroupIcon = group.icon;
-              return (
-                <div key={group.id}>
-                  <p className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
-                    <GroupIcon className="h-3.5 w-3.5" />
-                    {group.label}
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {modules.map((module) => (
-                      <ModuleCard
-                        key={module.id}
-                        label={module.label}
-                        description={module.description}
-                        status={module.status}
-                        href={reachableIds.has(module.id) ? module.href : undefined}
-                      />
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 id="roadmap-title" className="text-sm font-semibold text-foreground">
+                En desarrollo / Próximamente
+              </h2>
+              <p className="mt-0.5 text-xs text-muted">
+                {upcomingCount} módulo{upcomingCount === 1 ? "" : "s"} todavía sin terminar. Solo lo ven los administradores de la empresa.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowRoadmap((v) => !v)}
+              aria-expanded={showRoadmap}
+              aria-controls="roadmap-list"
+              className="rounded-lg border border-bd-border px-3 py-1.5 text-xs text-muted transition hover:border-foreground/25 hover:text-foreground"
+            >
+              {showRoadmap ? "Ocultar" : "Ver lista"}
+            </button>
           </div>
-        )}
-      </DashboardSection>
+
+          {showRoadmap && (
+            <div id="roadmap-list" className="mt-4 space-y-6">
+              <ChartCard
+                title="Cobertura de módulos"
+                description="Estado de implementación del control interno, no un indicador de negocio."
+              >
+                <StackedBar series={coverage} unit="módulos" />
+              </ChartCard>
+              {upcoming.map(({ group, modules }) => {
+                const GroupIcon = group.icon;
+                return (
+                  <div key={group.id}>
+                    <p className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
+                      <GroupIcon className="h-3.5 w-3.5" />
+                      {group.label}
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {modules.map((module) => (
+                        <ModuleCard
+                          key={module.id}
+                          label={module.label}
+                          description={module.description}
+                          status={module.status}
+                          href={isNavigable(module, access) ? module.href : undefined}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

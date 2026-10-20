@@ -1,7 +1,14 @@
+import fs from 'fs';
+import path from 'path';
+
 import {
   INTERNAL_MODULES,
   canAccessModule,
+  isNavigable,
   navigableModules,
+  seesRoadmap,
+  upcomingByGroup,
+  type InternalModule,
   type ModuleAccessContext,
 } from '@/app/admin/lib/internal-modules';
 
@@ -134,5 +141,112 @@ describe('un módulo sólo para el master', () => {
 
   it('es el único módulo así: nada más deja de estar al alcance de un administrador', () => {
     expect(INTERNAL_MODULES.filter((m) => m.platformAdminOnly).map((m) => m.id)).toEqual(['admin.integrations']);
+  });
+});
+
+/**
+ * MODULE-CATALOGUE — una entrada por significado, y ningún enlace muerto.
+ *
+ * La auditoría encontró entradas pendientes que repetían pantallas que ya
+ * existían (Proveedores, Rentabilidad, Ventas), dos «Garantías» para el mismo
+ * flujo y descripciones que ya no eran verdad.
+ */
+describe('el catálogo de módulos', () => {
+  const byId = (id: string) => INTERNAL_MODULES.find((m) => m.id === id);
+  const APP = path.join(__dirname, '..', 'app');
+
+  it('no repite lo que ya existe en otra entrada', () => {
+    // Proveedores es Productos › Proveedores; Rentabilidad es Costos y precios;
+    // «Ventas» es el Resumen comercial; Garantías es una sola, la de Servicio.
+    for (const gone of ['purchases.suppliers', 'reports.profitability', 'reports.sales', 'customers.warranties']) {
+      expect(byId(gone)).toBeUndefined();
+    }
+    for (const label of ['Proveedores', 'Garantías', 'Rentabilidad', 'Cuentas por pagar', 'Facturación electrónica']) {
+      expect(INTERNAL_MODULES.filter((m) => m.label === label).length).toBeLessThanOrEqual(1);
+    }
+    expect(byId('products.suppliers')?.status).toBe('implemented');
+    expect(byId('inventory.costs')?.href).toBe('/admin/inventory/costs');
+    expect(byId('sales.summary')?.href).toBe('/admin/sales');
+    expect(byId('service.warranty')?.status).toBe('pending');
+  });
+
+  it('dice la verdad de lo que está a medias', () => {
+    const devices = byId('customers.devices')!;
+    expect(devices.status).toBe('partial');
+    expect(devices.href).toBeUndefined();
+    expect(devices.description).not.toMatch(/Fase 5/);
+    expect(byId('service.delivery')!.description).not.toMatch(/No registra cobro/);
+    expect(byId('service.delivery')!.description).toMatch(/cobro/);
+    for (const id of ['purchases.payables', 'sales.invoicing']) {
+      expect(byId(id)?.status).toBe('partial');
+      expect(byId(id)?.href).toBeUndefined();
+    }
+  });
+
+  it('cada enlace del catálogo lleva a una página que existe', () => {
+    const missing = INTERNAL_MODULES.filter((m) => m.href).filter((m) => {
+      const route = m.href!.split('?')[0].replace(/^\//, '');
+      return !fs.existsSync(path.join(APP, route, 'page.tsx'));
+    }).map((m) => `${m.id} → ${m.href}`);
+    expect(missing).toEqual([]);
+  });
+
+  it('nadie enlaza la pantalla antigua de usuarios: Personal es /admin/staff', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(entry.name) && /href=["{`']+\/admin\/users["`'}]/.test(fs.readFileSync(full, 'utf8'))) {
+          offenders.push(path.relative(APP, full));
+        }
+      }
+    };
+    walk(APP);
+    expect(offenders).toEqual([]);
+    expect(fs.readFileSync(path.join(APP, 'admin', 'roles', 'page.tsx'), 'utf8')).toContain('href="/admin/staff"');
+  });
+});
+
+describe('qué es un enlace', () => {
+  const admin = member(['sales.analytics.view']);
+  const partial: InternalModule = {
+    id: 'x.partial', group: 'sales', label: 'X', description: 'x', status: 'partial',
+    href: '/admin/sales', requiredCapabilities: ['sales.analytics.view'],
+  };
+
+  it('un módulo parcial con página propia se puede abrir', () => {
+    expect(isNavigable(partial, admin)).toBe(true);
+  });
+
+  it('pero no sin página, ni sin acceso, ni si está pendiente', () => {
+    expect(isNavigable({ ...partial, href: undefined }, admin)).toBe(false);
+    expect(isNavigable(partial, member([]))).toBe(false);
+    expect(isNavigable({ ...partial, status: 'pending' }, admin)).toBe(false);
+    expect(isNavigable({ ...partial, status: 'proposed' }, admin)).toBe(false);
+  });
+
+  it('el menú sólo trae lo que es un enlace', () => {
+    const all = member(Array.from(new Set(INTERNAL_MODULES.flatMap((m) => m.requiredCapabilities ?? []))));
+    expect(navigableModules(all).every((m) => isNavigable(m, all))).toBe(true);
+    expect(navigableModules(all).some((m) => m.status === 'pending' || m.status === 'proposed')).toBe(false);
+  });
+});
+
+describe('«En desarrollo / Próximamente»', () => {
+  it('sólo trae lo que no está terminado, sin grupos vacíos', () => {
+    const upcoming = upcomingByGroup();
+    expect(upcoming.length).toBeGreaterThan(0);
+    for (const { modules } of upcoming) {
+      expect(modules.length).toBeGreaterThan(0);
+      expect(modules.every((m) => m.status !== 'implemented')).toBe(true);
+    }
+  });
+
+  it('lo ve quien administra la empresa y el master; un vendedor, no', () => {
+    expect(seesRoadmap(member(['sales.pos.use', 'sales.orders.view'], 'sales'))).toBe(false);
+    expect(seesRoadmap(member(['company.view'], 'admin'))).toBe(false);
+    expect(seesRoadmap(member(['company.manage']))).toBe(true);
+    expect(seesRoadmap({ capabilities: [], legacyRole: null, isPlatformAdmin: true, hasCompanyContext: false })).toBe(true);
   });
 });
