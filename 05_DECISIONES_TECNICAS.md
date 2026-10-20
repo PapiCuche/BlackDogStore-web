@@ -75,6 +75,35 @@ confirmación del propietario.**
   cualquier venta. El equipo exacto vendido es el que vuelve. Los comandos
   `cancel_pending_*` siguen igual (sólo tocan pedidos aún pendientes).
 
+### DEC-CATALOG-VARIANTS-UX-01 · Editar una variante existente y estado real de los módulos (2026-10-20)
+
+**Causa raíz:** la página del modelo sólo permitía «Agregar variante» (elegir un producto) y
+«Quitar del modelo»; no había cómo editar una variante. El backend ya reasignaba
+(`PUT /api/admin/products/{id}/variant/`), sin mirar el historial.
+
+**Reglas** (`device_catalog.variant_history` / `edit_rules`, aplicadas en `set_variant` con las
+filas de equipos bloqueadas). Editar nunca crea un producto.
+- Sin historial: quien gestiona productos cambia modelo, opciones y línea.
+- Con historial (ventas, equipos no dados de baja, stock o movimientos de Kardex): cambiar modelo u
+  opciones, o sacarla del modelo, lo hace un superior (`products.manage` + `company.manage`) con
+  motivo de 5 a 500 caracteres, auditado con el historial.
+- Con equipos apartados o en un carrito, o con pedidos sin entregar: no cambia (409).
+- La línea (nuevo/seminuevo) no cambia mientras la variante tenga equipos o stock; sacarla del
+  modelo tampoco (la dejaría «nuevo»). Ubicar por primera vez un producto en un modelo es libre,
+  salvo que cambie la línea de sus equipos.
+- Precio y publicación se editan con la edición de producto existente; fotos, costo y stock por
+  sus flujos (enlaces desde el formulario).
+
+**Módulos del panel:** se quitaron entradas duplicadas (proveedores en Compras, rentabilidad,
+ventas en Reportes, garantías en Clientes), «Equipos de clientes» pasa a PARCIAL, se agregan
+Cuentas por pagar y Facturación como PARCIAL sin enlace, y se corrige la descripción de Entrega
+de servicio técnico (sí registra el cobro). El tablero separa «Herramientas operativas» de
+«En desarrollo / Próximamente», plegado al final y sólo para administradores de la empresa.
+
+**Deuda:** la vista previa de la carga masiva no avisa de una variante con historial (falla segura
+al aplicar); el detalle del modelo cuenta el historial por variante (consultas por fila); quien
+sólo ve productos ve el número de ventas por variante.
+
 ### DEC-ORDER-RETURN-01 · Devolución posterior a la entrega, fase 1 (2026-10-19) — DESPLEGADA (#134, `acf20fc`)
 
 Decisiones D1–D8 del propietario (todas según la recomendación de

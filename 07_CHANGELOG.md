@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-20 — Editar variantes y estado de los módulos
+
+**Added**
+- «Editar variante» en la página del modelo; motivo de superior para variantes con historial.
+
+**Changed**
+- Quitar una variante del modelo sigue las mismas reglas; el tablero separa lo operativo de lo
+  que está en desarrollo; catálogo de módulos sin duplicados y con estados reales.
+
 ## 2026-10-20 — Pruebas de importe de devolución
 
 **Added**

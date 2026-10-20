@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-20 — CATALOG-VARIANTS-UX + auditoría de módulos (rama `feat/catalog-variants-ux`, NO desplegado)
+
+Desde `master` `50e7afe`. Sin migraciones. Decisión **DEC-CATALOG-VARIANTS-UX-01**.
+- **IMPLEMENTADO:** «Editar variante» en cada fila del modelo (modelo, línea, opciones, precio,
+  publicación) con reglas por historial; «Quitar del modelo» con la misma regla; catálogo de
+  módulos corregido; tablero con «Herramientas operativas» y «En desarrollo» aparte.
+- Sigue PENDIENTE de verdad: cotizaciones, caja (sesiones, movimientos, caja chica), cuentas por
+  cobrar, órdenes de compra y recepciones de compra, cuentas por pagar (PAYABLES-01), garantías,
+  reportes por técnico. PARCIAL: equipos de clientes, facturación (resúmenes diarios y bajas sin
+  pantalla).
+- Pruebas: 16 en `test_variant_edit` (mutación 10/10); suite completa 7853 OK; Jest 1682;
+  `next build`; Playwright 24/24. Revisión independiente: NO-GO (quitar y volver a ubicar saltaba
+  la regla), corregido en `bb35a74`.
+
 ## 2026-10-20 — ORDER-RETURN-01: verificación automática; aceptación funcional PENDIENTE
 
 Estado: **IMPLEMENTADO y DESPLEGADO** (última comprobación por SSH, 2026-10-19: `acf20fc`, `0139`
