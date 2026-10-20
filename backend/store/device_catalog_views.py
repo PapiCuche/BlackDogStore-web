@@ -29,9 +29,16 @@ from .tenancy import company_fulfillment_branch, company_storefront_products, re
 _NOT_FOUND = {'detail': 'No encontrado.'}
 
 
+_ERROR_STATUS = {
+    'not_found': status.HTTP_404_NOT_FOUND,
+    'history_needs_superior': status.HTTP_403_FORBIDDEN,
+    'variant_reserved': status.HTTP_409_CONFLICT,
+    'line_change_with_units': status.HTTP_409_CONFLICT,
+}
+
+
 def _error(exc: device_catalog.CatalogError) -> Response:
-    code = status.HTTP_404_NOT_FOUND if exc.code == 'not_found' else status.HTTP_400_BAD_REQUEST
-    return Response(exc.body(), status=code)
+    return Response(exc.body(), status=_ERROR_STATUS.get(exc.code, status.HTTP_400_BAD_REQUEST))
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +172,14 @@ def _model_payload(model, *, variants=False):
     if variants:
         rows = []
         for product in model.variants.order_by('condition_line', 'pk'):
+            history = device_catalog.variant_history(product)
             rows.append({
                 'product_id': product.pk, 'name': product.name, 'slug': product.slug,
                 'condition_line': product.condition_line, 'price': str(product.price),
                 'is_serialized': product.is_serialized, 'stock': product.inventory,
+                'is_published_online': product.is_published_online,
+                # CATALOG-VARIANTS-UX: what it carries, and so how it may change.
+                'history': history, **device_catalog.edit_rules(history),
                 'options': [
                     {'attribute_id': link.attribute_id, 'attribute_name': link.attribute.name,
                      'option_id': link.option_id, 'label': link.option.label, 'swatch_hex': link.option.swatch_hex}
@@ -357,6 +368,7 @@ class AdminProductVariantView(APIView):
                 product, model_id=request.data.get('model_id'),
                 condition_line=request.data.get('condition_line') or Product.CONDITION_NEW,
                 option_ids=option_ids, actor=request.user, request=request,
+                reason=request.data.get('reason') or '',
             )
         except device_catalog.CatalogError as exc:
             return _error(exc)

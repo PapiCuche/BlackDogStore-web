@@ -282,12 +282,65 @@ def variant_key(option_ids) -> str:
     return '-'.join(str(pk) for pk in sorted(set(int(pk) for pk in option_ids)))
 
 
+HISTORY_REASON_MIN, HISTORY_REASON_MAX = 5, 500
+
+
+def variant_history(product) -> dict:
+    """
+    CATALOG-VARIANTS-UX — what a variant already carries: units of it sold
+    (order lines of any order), devices of it received (not written off) and
+    devices of it on hold or set aside.
+    """
+    from .models import OrderItem
+
+    units = StockUnit.objects.filter(product_id=product.pk)
+    return {
+        'sold': OrderItem.objects.filter(product_id=product.pk).count(),
+        'units': units.exclude(status=StockUnit.Status.WRITTEN_OFF).count(),
+        'reserved': units.filter(status=StockUnit.Status.RESERVED).count(),
+    }
+
+
+def edit_rules(history) -> dict:
+    """
+    How the identity (model, options) and the line of a variant with this
+    history may change: 'free', 'superior' (with a reason, audited) or 'blocked'.
+    """
+    if history['reserved']:
+        identity = 'blocked'
+    elif history['sold'] or history['units']:
+        identity = 'superior'
+    else:
+        identity = 'free'
+    line = 'blocked' if (history['units'] or history['reserved']) else identity
+    return {'identity_change': identity, 'line_change': line}
+
+
+def _may_override(user, company) -> bool:
+    """A superior of the company: products AND the company (legacy: admin/superadmin)."""
+    from .models import UserProfile
+    from .permissions import get_user_role
+    from .tenancy import has_capability, uses_legacy_bridge
+
+    if company is None or user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    if uses_legacy_bridge(user, company):
+        return get_user_role(user) in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN)
+    return has_capability(user, company, 'products.manage') and has_capability(user, company, 'company.manage')
+
+
 @transaction.atomic
 def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, option_ids=(),
-                actor=None, request=None) -> Product:
+                actor=None, request=None, reason='') -> Product:
     """
     Make `product` the variant of a model with these options, or (model_id None)
     a product of its own again. Its stock, price and history do not move.
+
+    CATALOG-VARIANTS-UX: a variant that already sold or holds devices keeps its
+    commercial identity unless a superior changes it with a reason (audited);
+    one with a device on hold does not change at all; its line (new / used)
+    never changes while it holds devices. Leaving the identity as it is, is
+    always allowed.
     """
     product = Product.objects.select_for_update().get(pk=product.pk)
     company = product.company
@@ -323,6 +376,33 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
         seen.add(option.attribute_id)
 
     key = variant_key(wanted)
+    changes_identity = (product.product_model_id != model.pk or product.variant_key != key)
+    changes_line = product.product_model_id is not None and product.condition_line != condition_line
+    history = rules = None
+    text = ''
+    if product.product_model_id is not None and (changes_identity or changes_line):
+        history = variant_history(product)
+        rules = edit_rules(history)
+        if changes_line and rules['line_change'] == 'blocked':
+            raise CatalogError(
+                'Esta variante tiene equipos propios: su línea (nuevo o seminuevo) es la de esos equipos y no '
+                'cambia. Registra los equipos en la variante que corresponde.',
+                field='condition_line', code='line_change_with_units')
+        if rules['identity_change'] == 'blocked':
+            raise CatalogError(
+                'Hay equipos de esta variante apartados o en un carrito: libera esas reservas antes de cambiarla.',
+                field='options', code='variant_reserved')
+        if rules['identity_change'] == 'superior':
+            if not _may_override(actor, company):
+                raise CatalogError(
+                    f'Esta variante ya tiene historial ({history["sold"]} venta(s), {history["units"]} equipo(s)): '
+                    'cambiar su modelo u opciones corresponde a un superior (administrador de la empresa), '
+                    'con un motivo.', field='options', code='history_needs_superior')
+            text = ' '.join(str(reason or '').split())
+            if not HISTORY_REASON_MIN <= len(text) <= HISTORY_REASON_MAX or any(ord(c) < 32 for c in text):
+                raise CatalogError(
+                    f'Escribe el motivo del cambio ({HISTORY_REASON_MIN} a {HISTORY_REASON_MAX} caracteres): '
+                    'quedará en la auditoría.', field='reason', code='history_reason_required')
     clash = (
         Product.objects.filter(product_model=model, condition_line=condition_line, variant_key=key)
         .exclude(pk=product.pk).first()
@@ -345,9 +425,10 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
             product.save(update_fields=['product_model', 'condition_line', 'variant_key', 'updated_at'])
     except IntegrityError:
         raise CatalogError('Otra persona acaba de crear esa misma variante.', field='options', code='duplicate') from None
+    extra = {'history': history, 'reason': text} if history is not None else {}
     _audit('product_variant_set', company=company, actor=actor, request=request,
            target_type='product', target_id=product.pk, model_id=model.pk,
-           condition_line=condition_line, option_ids=wanted)
+           condition_line=condition_line, option_ids=wanted, **extra)
     return product
 
 
