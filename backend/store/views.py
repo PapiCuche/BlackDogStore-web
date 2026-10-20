@@ -110,7 +110,16 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if category:
             queryset = queryset.filter(category__slug=category)
         if search:
-            queryset = queryset.filter(name__icontains=search)
+            # SUPPLIER-DEVICE-FLOW-02 — a variant is also found by its model's
+            # name, while that model is published (an unpublished one is not
+            # a public word). Not by SKU: the shop never shows it, so it is no
+            # key a buyer has, only one a curious caller could probe.
+            # Sold-out products stay in the results: published is not
+            # available, and the card says «Agotado».
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(product_model__is_published_online=True, product_model__name__icontains=search)
+            )
         if in_stock == 'true':
             # The annotation, not the column: "in stock" has to mean "the
             # branch that ships can ship it", or the filter promises deliveries
