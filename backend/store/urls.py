@@ -151,7 +151,7 @@ from .supplier_views import (
     AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
     AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
     AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
-    AdminSupplierSettlementView,
+    AdminSupplierProductRefView, AdminSupplierSettlementView,
 )
 from .device_catalog_views import (
     AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogSettingsView, AdminGradeListView,
@@ -249,6 +249,8 @@ urlpatterns = [
     path('admin/suppliers/', AdminSupplierListView.as_view(), name='admin-suppliers'),
     path('admin/suppliers/settlement/', AdminSupplierSettlementView.as_view(), name='admin-supplier-settlement'),
     path('admin/suppliers/<int:pk>/', AdminSupplierDetailView.as_view(), name='admin-supplier'),
+    path('admin/suppliers/<int:pk>/product-refs/', AdminSupplierProductRefView.as_view(),
+         name='admin-supplier-product-refs'),
     path('admin/supplier-offers/', AdminOfferListView.as_view(), name='admin-supplier-offers'),
     path('admin/supplier-offers/import/template/', AdminOfferTemplateView.as_view(),
          name='admin-supplier-offers-template'),

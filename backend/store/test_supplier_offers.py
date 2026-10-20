@@ -694,10 +694,13 @@ class AdminSupplierApiTest(SupplyShop, TestCase):
         detail = self.as_(self.seller).get(f'/api/admin/supplier-offers/{self.offer.pk}/')
         self.assertNotIn('agreed_cost', detail.json())
         # Writing a cost without the permission is ignored, not stored.
+        # After the shop's offer ends: two active offers of one supplier and variant never share a day
+        # (SUPPLIER-DEVICE-FLOW-02).
+        later = str(today() + timedelta(days=7))
         made = self.as_(self.seller).post('/api/admin/supplier-offers/', {
             'supplier_id': self.supplier.pk, 'product_id': self.case.pk, 'agreed_cost': '1.00',
-            'commercial_price': '100.00', 'confirmed_quantity': 2, 'valid_from': str(today()),
-            'valid_until': str(today()), 'lead_time_days': 3}, format='json')
+            'commercial_price': '100.00', 'confirmed_quantity': 2, 'valid_from': later,
+            'valid_until': later, 'lead_time_days': 3}, format='json')
         self.assertEqual(made.status_code, 201, made.content)
         self.assertIsNone(SupplierOffer.objects.get(pk=made.json()['id']).agreed_cost)
         self.as_(self.seller).patch(f'/api/admin/supplier-offers/{self.offer.pk}/', {'agreed_cost': '1.00'},
@@ -912,8 +915,10 @@ class OfferExcelTest(SupplyShop, TestCase):
         return (client or self.client_).post('/api/admin/supplier-offers/import/preview/',
                                              {'file': self.file(rows, headers)}, format='multipart')
 
-    def apply(self, job_id, client=None):
-        return (client or self.client_).post(f'/api/admin/supplier-offers/import/{job_id}/apply/', {}, format='json')
+    def apply(self, job_id, client=None, **body):
+        # SUPPLIER-DEVICE-FLOW-02: `accept_price_changes` / `keep_prices` when the file changes a price.
+        return (client or self.client_).post(f'/api/admin/supplier-offers/import/{job_id}/apply/', body,
+                                             format='json')
 
     def test_template_has_one_sheet_with_the_columns(self):
         import io
@@ -923,8 +928,9 @@ class OfferExcelTest(SupplyShop, TestCase):
         book = openpyxl.load_workbook(io.BytesIO(res.content))
         self.assertEqual(book.sheetnames, ['Ofertas de proveedor'])
         # «Activa (Sí/No)» is optional (DC3 review P3.3): the template offers it, files without it still load.
+        # SUPPLIER-DEVICE-FLOW-02 adds the optional «Código del proveedor» (the owner's decision).
         self.assertEqual([c.value for c in book.active[1]],
-                         OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)'])
+                         OFFER_HEADERS + ['Activa (Sí/No)', 'Bajo pedido (Sí/No)', 'Código del proveedor'])
 
     def test_preview_marks_errors_per_row_and_writes_nothing(self):
         res = self.preview([
@@ -937,40 +943,50 @@ class OfferExcelTest(SupplyShop, TestCase):
         ])
         self.assertEqual(res.status_code, 200, res.content)
         body = res.json()
-        self.assertEqual((body['rows_create'], body['rows_error']), (1, 5))
-        self.assertEqual([r['action'] for r in body['rows']], ['create'] + ['error'] * 5)
+        # SUPPLIER-DEVICE-FLOW-02 (owner): a row now UPDATES the current offer of its supplier and variant,
+        # whatever its window; the good row is the shop's offer, updated.
+        self.assertEqual((body['rows_update'], body['rows_error']), (1, 5))
+        self.assertEqual([r['action'] for r in body['rows']], ['update'] + ['error'] * 5)
         self.assertTrue(all(r['errors'] for r in body['rows'][1:]))
         self.assertEqual(SupplierOffer.objects.count(), 1)
         self.assertEqual(self.apply(body['id']).status_code, 400)       # a file with errors is not applied
 
     def test_apply_is_idempotent_and_updates_the_same_window(self):
+        # SUPPLIER-DEVICE-FLOW-02 (owner): a row now UPDATES the current offer of its supplier and variant,
+        # whatever its window; this test starts without one so the first file creates it.
+        SupplierOffer.objects.filter(pk=self.offer.pk).delete()
         body = self.preview([self.row()]).json()
         res = self.apply(body['id'])
         self.assertEqual((res.status_code, res.json()['created']), (200, 1), res.content)
         made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
         self.assertEqual((made.agreed_cost, made.commercial_price, made.confirmed_quantity, made.lead_time_days),
                          (D('68.00'), D('109.90'), 8, 5))
-        self.assertEqual(self.apply(body['id']).json(), {'status': 'applied', 'created': 1, 'updated': 0,
-                                                          'unchanged': 0})    # the same job twice: nothing
+        self.assertEqual(self.apply(body['id']).json(), {
+            'status': 'applied', 'created': 1, 'updated': 0, 'unchanged': 0, 'sold_out': 0, 'prices_changed': 0,
+            'prices_kept': 0, 'mappings': 0, 'price_decision': None})    # the same job twice: nothing
         again = self.preview([self.row()]).json()
         self.assertEqual(again['rows_no_change'], 1)
         self.apply(again['id'])
         self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
-        # Next week's file: a new price for the same window updates it; a new window is a new offer.
-        week = self.preview([self.row(**{'Precio comercial': '105'}),
-                             self.row(**{'Vigente desde': (self.end + timedelta(days=1)).isoformat(),
+        # Next week's file: a new price AND a new window update THE offer in place (owner,
+        # SUPPLIER-DEVICE-FLOW-02 — before, a new window was a second offer that sold alongside).
+        week = self.preview([self.row(**{'Precio comercial': '105',
+                                         'Vigente desde': (self.end + timedelta(days=1)).isoformat(),
                                          'Vigente hasta': (self.end + timedelta(days=7)).isoformat()})]).json()
-        self.assertEqual((week['rows_update'], week['rows_create']), (1, 1))
-        self.apply(week['id'])
+        self.assertEqual((week['rows_update'], week['rows_create']), (1, 0))
+        self.assertEqual(self.apply(week['id'], accept_price_changes=True).status_code, 200)
         made.refresh_from_db()
-        self.assertEqual(made.commercial_price, D('105.00'))
-        self.assertEqual(SupplierOffer.objects.count(), 3)
+        self.assertEqual((made.commercial_price, made.valid_until), (D('105.00'), self.end + timedelta(days=7)))
+        self.assertEqual(SupplierOffer.objects.count(), 1)
         self.assertTrue(AdminAuditLog.objects.filter(action='supplier_offer_updated', target_id=str(made.pk)).exists())
 
     def test_the_cost_column_needs_costs_view(self):
         manager, _ = _p2d_member(self.company, 'dc3_sin_costo', ['company.view', 'products.view', 'products.manage'])
         client = APIClient()
         client.force_authenticate(user=manager)
+        # SUPPLIER-DEVICE-FLOW-02 (owner): a row now UPDATES the current offer of its supplier and variant,
+        # whatever its window; this test is about a new one.
+        SupplierOffer.objects.filter(pk=self.offer.pk).delete()
         body = self.preview([self.row()], client=client).json()
         self.assertTrue(body['cost_column_ignored'])
         self.assertNotIn('agreed_cost', body['rows'][0]['data'])
@@ -1165,6 +1181,9 @@ class ReviewExcelTest(OfferFile, TestCase):
         self.build_excel()
 
     def test_the_same_file_previewed_twice_creates_one_offer_and_the_second_apply_is_refused(self):
+        # SUPPLIER-DEVICE-FLOW-02 (owner): a row now UPDATES the current offer of its supplier and variant,
+        # whatever its window; this test is about two creations.
+        SupplierOffer.objects.filter(pk=self.offer.pk).delete()
         first = self.preview([self.row()]).json()
         second = self.preview([self.row()]).json()
         self.assertEqual((first['rows_create'], second['rows_create']), (1, 1))
@@ -1189,6 +1208,7 @@ class ReviewExcelTest(OfferFile, TestCase):
     def test_an_integrity_error_at_apply_is_the_same_refusal(self):
         from unittest import mock
         from django.db import IntegrityError
+        SupplierOffer.objects.filter(pk=self.offer.pk).delete()    # a creation (SUPPLIER-DEVICE-FLOW-02)
         body = self.preview([self.row()]).json()
         with mock.patch.object(SupplierOffer.objects, 'create', side_effect=IntegrityError('duplicate key')):
             refused = self.apply(body['id'])
@@ -1202,15 +1222,17 @@ class ReviewExcelTest(OfferFile, TestCase):
         other = APIClient()
         other.force_authenticate(user=manager)
         SupplierOffer.objects.filter(pk=self.offer.pk).update(agreed_cost=D('70.00'))
+        # SUPPLIER-DEVICE-FLOW-02: one row per supplier and variant, so the new offer is of another product.
+        cable = _prod(self.company, 'Cable', 'dc3-cable-costo', price='40.00', inventory=0)
         body = self.preview([
-            self.row(),
+            self.row(**{'Código/SKU del producto': cable.slug}),
             self.row(**{'Vigente desde': self.offer.valid_from.isoformat(),
                         'Vigente hasta': self.offer.valid_until.isoformat(), 'Costo pactado': '50',
                         'Precio comercial': '111'}),
         ]).json()
         self.assertEqual((body['rows_create'], body['rows_update']), (1, 1), body['rows'])
-        self.assertEqual(self.apply(body['id'], client=other).status_code, 200)
-        made = SupplierOffer.objects.get(valid_from=self.start, valid_until=self.end)
+        self.assertEqual(self.apply(body['id'], client=other, accept_price_changes=True).status_code, 200)
+        made = SupplierOffer.objects.get(product=cable)
         self.assertIsNone(made.agreed_cost)
         self.offer.refresh_from_db()
         self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('111.00')))
@@ -1223,7 +1245,7 @@ class ReviewExcelTest(OfferFile, TestCase):
         self.assertEqual(body['rows'][0]['action'], 'no_change', body['rows'])
         body = self.preview([self.row(**{**key, 'Precio comercial': '112'}, **{'Costo pactado': ''})]).json()
         self.assertEqual(body['rows'][0]['action'], 'update')
-        self.apply(body['id'])
+        self.apply(body['id'], accept_price_changes=True)    # a new price is decided (SUPPLIER-DEVICE-FLOW-02)
         self.offer.refresh_from_db()
         self.assertEqual((self.offer.agreed_cost, self.offer.commercial_price), (D('70.00'), D('112.00')))
 
@@ -1237,14 +1259,14 @@ class ReviewExcelTest(OfferFile, TestCase):
         self.assertTrue(any('desactivada a mano: no se reactiva' in w for w in body['rows'][0]['warnings']))
         body = self.preview([self.row(**{**key, 'Precio comercial': '115'})]).json()
         self.assertEqual(body['rows'][0]['action'], 'update')
-        self.apply(body['id'])
+        self.apply(body['id'], accept_price_changes=True)    # a new price is decided (SUPPLIER-DEVICE-FLOW-02)
         self.offer.refresh_from_db()
         self.assertEqual((self.offer.is_active, self.offer.commercial_price), (False, D('115.00')))
         # Asked for explicitly, it is reactivated.
         headers = OFFER_HEADERS + ['Activa (Sí/No)']
         body = self.preview([self.row(**key) + ['Sí']], headers=headers).json()
         self.assertEqual(body['rows'][0]['action'], 'update', body['rows'])
-        self.apply(body['id'])
+        self.apply(body['id'], accept_price_changes=True)
         self.offer.refresh_from_db()
         self.assertTrue(self.offer.is_active)
         bad = self.preview([self.row(**key) + ['quizás']], headers=headers).json()
@@ -1254,13 +1276,16 @@ class ReviewExcelTest(OfferFile, TestCase):
         """P3.8 — the file's row order is not the lock order: one statement, by id, first."""
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
-        later = self.make_offer(valid_from=self.start + timedelta(days=10), valid_until=self.end + timedelta(days=10))
-        rows = [self.row(**{'Vigente desde': o.valid_from.isoformat(), 'Vigente hasta': o.valid_until.isoformat(),
-                            'Precio comercial': '99'}) for o in (later, self.offer)]
+        # SUPPLIER-DEVICE-FLOW-02: one row per supplier and variant, so the later offer is of another product.
+        cable = _prod(self.company, 'Cable', 'dc3-cable-orden', price='40.00', inventory=0)
+        later = self.make_offer(product=cable)
+        rows = [self.row(**{'Código/SKU del producto': o.product.slug, 'Vigente desde': o.valid_from.isoformat(),
+                            'Vigente hasta': o.valid_until.isoformat(), 'Precio comercial': '99'})
+                for o in (later, self.offer)]
         body = self.preview(rows).json()
         self.assertEqual(body['rows_update'], 2, body['rows'])
         with CaptureQueriesContext(connection) as queries:
-            self.assertEqual(self.apply(body['id']).status_code, 200)
+            self.assertEqual(self.apply(body['id'], accept_price_changes=True).status_code, 200)
         sql = [q['sql'] for q in queries.captured_queries]
         locks = [i for i, s in enumerate(sql) if 'FOR UPDATE' in s and '"store_supplieroffer"' in s.split('FROM')[1][:40]]
         writes = [i for i, s in enumerate(sql) if s.startswith('UPDATE "store_supplieroffer"')]
@@ -1284,6 +1309,7 @@ class ReviewOfferApplyRaceTest(TransactionTestCase):
 
         shop = OfferFile()
         shop.build_excel('dc3-dos-cargas')
+        SupplierOffer.objects.filter(pk=shop.offer.pk).delete()    # two creations (SUPPLIER-DEVICE-FLOW-02)
         jobs = [shop.preview([shop.row()]).json()['id'] for _ in range(2)]
         barrier, outcomes = Barrier(2), []
 

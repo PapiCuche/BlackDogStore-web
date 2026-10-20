@@ -10582,3 +10582,37 @@ class SupplierOffer(models.Model):
 
     def __str__(self):
         return f'{self.supplier} · {self.product} ({self.valid_from}–{self.valid_until})'
+
+
+class SupplierProductRef(models.Model):
+    """
+    SUPPLIER-DEVICE-FLOW-02 — a supplier's OWN code for one of the shop's
+    variants, as their weekly list writes it.
+
+    The weekly Excel finds a variant by the system code, then a barcode or
+    SKU, then this mapping, then model and options. A mapping is written when
+    a row carrying a supplier code matched without doubt by another key, or
+    when a person picks the variant of a row nobody could match; the next
+    file is then matched by the code alone. One code of one supplier names ONE
+    variant of the company; a variant may carry codes of several suppliers.
+    Each supplier is independent: the same code of two suppliers is two rows.
+    """
+
+    company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='supplier_product_refs')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='product_refs')
+    supplier_code = models.CharField(max_length=120)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='supplier_refs')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['supplier_id', 'supplier_code', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'supplier', 'supplier_code'],
+                                    name='unique_supplier_product_ref'),
+        ]
+
+    def __str__(self):
+        return f'{self.supplier} · {self.supplier_code} → {self.product}'

@@ -12,7 +12,11 @@
  * offer carries the key — never derived, never a zero standing in for «you may
  * not see it».
  *
- * Weekly updates are a re-upload of the Excel: preview, then apply.
+ * Weekly updates are a re-upload of the Excel: preview, then apply. The file
+ * is a PARTIAL update (SUPPLIER-DEVICE-FLOW-02): the preview shows, per row,
+ * what the offer was and what it becomes; a new commercial price is applied
+ * only after an explicit decision (accept, or keep the current ones); a row
+ * nobody could match may be mapped to a variant by the supplier's code.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,24 +26,34 @@ import {
   CatalogApiError,
   SUPPLIER_OFFER_ACTION_LABELS,
   SUPPLIER_OFFER_STATE_LABELS,
-  applySupplierOfferImport,
   createSupplierOffer,
   deactivateSupplierOffer,
   fetchSupplierOfferHistory,
   fetchSupplierOffers,
   fetchSuppliers,
-  previewSupplierOfferImport,
   supplierOfferExportUrl,
   supplierOfferTemplateUrl,
   updateSupplierOffer,
-  type SupplierImportPreview,
-  type SupplierImportResult,
   type SupplierOffer,
   type SupplierOfferHistoryEntry,
   type SupplierOfferState,
   type SupplierOfferWrite,
   type SupplierRow,
 } from "../lib/internal-api";
+import {
+  CHANGE_LABELS,
+  WeeklyImportError,
+  applyWeeklyImport,
+  previewWeeklyImport,
+  saveSupplierProductRef,
+  summaryOf,
+  type PriceChangeRow,
+  type PriceDecision,
+  type SupplierImportChange,
+  type WeeklyImportPreview,
+  type WeeklyImportResult,
+  type WeeklyImportRow,
+} from "../lib/supplier-import-api";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -565,24 +579,73 @@ const IMPORT_ACTION_LABELS: Record<string, string> = {
   create: "Nueva", update: "Cambia", no_change: "Sin cambios", error: "Error", skip: "Omitida",
 };
 
+function formatChange(field: SupplierImportChange, value: unknown): string {
+  if (value === null || value === undefined || value === "") return field === "confirmed_quantity" ? "Sin confirmar" : "—";
+  if (field === "commercial_price" || field === "agreed_cost") return formatSoles(String(value));
+  if (field === "valid_from" || field === "valid_until") return formatDay(String(value));
+  if (field === "is_active") return value ? "Sí" : "No";
+  return String(value);
+}
+
+export type RowChange = { field: SupplierImportChange; label: string; before: string; after: string };
+
+/**
+ * «Antes → después» for each field a row changes, from the server's `before`
+ * block. A cost appears only when the server sent it in `before` (costs.view).
+ */
+export function rowDiff(row: WeeklyImportRow): RowChange[] {
+  const before = row.data.before;
+  if (!before || !row.data.changes) return [];
+  const after = row.data as Record<string, unknown>;
+  return row.data.changes
+    .filter((field) => field !== "sale_mode" && (field !== "agreed_cost" || Object.prototype.hasOwnProperty.call(before, "agreed_cost")))
+    .map((field) => {
+      const next = field === "confirmed_quantity" && row.data.sold_out ? before.committed_quantity : after[field];
+      return {
+        field,
+        label: CHANGE_LABELS[field],
+        before: formatChange(field, (before as Record<string, unknown>)[field]),
+        after: formatChange(field, next),
+      };
+    });
+}
+
+function resultText(result: WeeklyImportResult): string {
+  const parts = [`Ofertas actualizadas: ${result.created} nuevas, ${result.updated} modificadas, ${result.unchanged} sin cambios.`];
+  if (result.sold_out) parts.push(`${result.sold_out} agotadas.`);
+  if (result.prices_changed) parts.push(`${result.prices_changed} precios nuevos aceptados.`);
+  if (result.prices_kept) parts.push(`Se mantuvo el precio actual de ${result.prices_kept} ofertas.`);
+  if (result.mappings) parts.push(`${result.mappings} códigos de proveedor recordados.`);
+  return parts.join(" ");
+}
+
+type Mapping = { row: number; supplierId: number; code: string; product: PickedProduct | null };
+
 function ImportSection({
   canManage, companyId, onApplied,
 }: { canManage: boolean; companyId: number | null; onApplied: () => void }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<SupplierImportPreview | null>(null);
-  const [result, setResult] = useState<SupplierImportResult | null>(null);
+  const [preview, setPreview] = useState<WeeklyImportPreview | null>(null);
+  const [result, setResult] = useState<WeeklyImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refused, setRefused] = useState<PriceChangeRow[]>([]);
   const [busy, setBusy] = useState(false);
+  const [acceptPrices, setAcceptPrices] = useState(false);
+  const [mapping, setMapping] = useState<Mapping | null>(null);
+  const [mapNote, setMapNote] = useState<string | null>(null);
 
   async function runPreview() {
     if (!file) return;
     setBusy(true);
     setError(null);
+    setRefused([]);
     setResult(null);
     setPreview(null);
+    setAcceptPrices(false);
+    setMapping(null);
     try {
-      setPreview(await previewSupplierOfferImport(file, companyId));
+      setPreview(await previewWeeklyImport(file, companyId));
     } catch (err) {
       setError(message(err, "No se pudo leer el archivo."));
     } finally {
@@ -590,29 +653,59 @@ function ImportSection({
     }
   }
 
-  async function apply() {
+  async function apply(decision: PriceDecision | null) {
     if (!preview) return;
     setBusy(true);
     setError(null);
+    setRefused([]);
     try {
-      setResult(await applySupplierOfferImport(preview.id, companyId));
+      setResult(await applyWeeklyImport(preview.id, decision, companyId));
       setPreview(null);
       setFile(null);
+      setMapNote(null);
       if (fileRef.current) fileRef.current.value = "";
       onApplied();
     } catch (err) {
-      setError(message(err, "No se pudo aplicar el archivo."));
+      if (err instanceof WeeklyImportError && err.code === "stale") {
+        // Nothing was written. The file is still chosen: preview it again.
+        setPreview(null);
+        setError(`${err.message} No se aplicó nada: pulsa «Previsualizar» otra vez.`);
+      } else if (err instanceof WeeklyImportError && err.code === "price_confirmation_required") {
+        setRefused(err.priceChanges);
+        setError(err.message);
+      } else {
+        setError(message(err, "No se pudo aplicar el archivo."));
+      }
     } finally {
       setBusy(false);
     }
   }
 
+  async function saveMapping() {
+    if (!mapping?.product) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const ref = await saveSupplierProductRef(mapping.supplierId, { supplier_code: mapping.code, product_id: mapping.product.id }, companyId);
+      setMapNote(`El código «${ref.supplier_code}» del proveedor queda asociado a «${ref.product_name}». Se volvió a previsualizar el archivo.`);
+      setMapping(null);
+    } catch (err) {
+      setError(message(err, "No se pudo guardar el código del proveedor."));
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    await runPreview();
+  }
+
   const shown = preview ? preview.rows.filter((row) => row.action !== "no_change") : [];
+  const summary = preview ? summaryOf(preview) : null;
+  const priceRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.price_change) : [];
 
   return (
     <Panel
       title="Actualizar ofertas desde Excel"
-      description="Descarga la plantilla, complétala con las ofertas de la semana y súbela: primero ves qué cambiaría, luego lo aplicas."
+      description="Descarga la plantilla, complétala con las ofertas de la semana y súbela: primero ves qué cambiaría, luego lo aplicas. Sólo cambian las ofertas que trae el archivo."
       action={(
         <span className="inline-flex flex-wrap gap-2">
           <a className={internalButtonClass} href={supplierOfferTemplateUrl(companyId)}>Descargar plantilla</a>
@@ -628,7 +721,7 @@ function ImportSection({
               ref={fileRef}
               type="file"
               accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); }}
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setResult(null); setMapNote(null); }}
               className={`mt-1.5 ${internalInputClass}`}
             />
           </label>
@@ -641,18 +734,24 @@ function ImportSection({
       )}
 
       {error ? <div className="mt-4"><ErrorBox message={error} /></div> : null}
+      {refused.length ? (
+        <ul className="mt-2 list-disc pl-5 text-xs text-danger" aria-label="Precios que el servidor pidió confirmar">
+          {refused.map((row) => (
+            <li key={row.row_number}>Fila {row.row_number}: {row.product_name} · {formatSoles(row.before)} → {formatSoles(row.after)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {mapNote ? <p role="status" className="mt-4 text-sm text-success">{mapNote}</p> : null}
       {result ? (
-        <p role="status" className="mt-4 text-sm text-success">
-          Ofertas actualizadas: {result.created} nuevas, {result.updated} modificadas, {result.unchanged} sin cambios.
-        </p>
+        <p role="status" className="mt-4 text-sm text-success">{resultText(result)}</p>
       ) : null}
 
-      {preview ? (
+      {preview && summary ? (
         <div className="mt-5 space-y-4" data-testid="supplier-import-preview">
-          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-6">
             {[
-              ["Filas", preview.rows_total], ["Nuevas", preview.rows_create], ["Cambian", preview.rows_update],
-              ["Sin cambios", preview.rows_no_change], ["Con error", preview.rows_error],
+              ["Filas", preview.rows_total], ["Nuevas", summary.new], ["Cambian", summary.updated],
+              ["Agotadas", summary.sold_out], ["Sin cambios", summary.unchanged], ["Con error", summary.errors],
             ].map(([label, value]) => (
               <div key={label} className="rounded-lg border border-bd-border bg-background p-3">
                 <dt className="text-xs text-muted">{label}</dt>
@@ -670,44 +769,112 @@ function ImportSection({
               <thead>
                 <tr className="border-b border-bd-border">
                   <Th right>Fila</Th><Th>Acción</Th><Th>Proveedor</Th><Th>Producto</Th><Th right>Precio</Th>
-                  <Th right>Cantidad</Th><Th>Vigencia</Th><Th>Observaciones</Th>
+                  <Th right>Cantidad</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
                 </tr>
               </thead>
               <tbody>
-                {shown.map((row) => (
-                  <tr key={row.row_number} className="border-b border-bd-border/60">
-                    <Td right>{row.row_number}</Td>
-                    <Td>
-                      <span className={row.action === "error" ? "font-semibold text-danger" : ""}>{IMPORT_ACTION_LABELS[row.action] ?? row.action}</span>
-                    </Td>
-                    <Td muted>{row.data.supplier || "—"}</Td>
-                    <Td>{row.data.product_name || "—"}</Td>
-                    <Td right>{row.data.commercial_price ? formatSoles(row.data.commercial_price) : "—"}</Td>
-                    <Td right>{row.data.confirmed_quantity ?? "—"}</Td>
-                    <Td muted>
-                      {row.data.valid_from ? formatDay(String(row.data.valid_from)) : "—"} – {row.data.valid_until ? formatDay(String(row.data.valid_until)) : "—"}
-                    </Td>
-                    <Td muted>
-                      {row.errors.map((text) => <span key={text} className="block text-danger">{text}</span>)}
-                      {row.warnings.map((text) => <span key={text} className="block text-warning">{text}</span>)}
-                    </Td>
-                  </tr>
-                ))}
+                {shown.map((row) => {
+                  const diff = rowDiff(row);
+                  const mappable = row.action === "error" ? row.data.mappable : undefined;
+                  const choosing = mapping?.row === row.row_number ? mapping : null;
+                  return (
+                    <tr key={row.row_number} className="border-b border-bd-border/60" data-testid={`import-row-${row.row_number}`}>
+                      <Td right>{row.row_number}</Td>
+                      <Td>
+                        <span className={row.action === "error" ? "font-semibold text-danger" : row.data.sold_out ? "font-semibold text-warning" : ""}>
+                          {row.data.sold_out ? "Agotada" : IMPORT_ACTION_LABELS[row.action] ?? row.action}
+                        </span>
+                      </Td>
+                      <Td muted>{row.data.supplier || "—"}</Td>
+                      <Td>{row.data.product_name || "—"}</Td>
+                      <Td right>{row.data.commercial_price ? formatSoles(row.data.commercial_price) : "—"}</Td>
+                      <Td right>{row.data.confirmed_quantity ?? "—"}</Td>
+                      <Td muted>
+                        {row.data.valid_from ? formatDay(String(row.data.valid_from)) : "—"} – {row.data.valid_until ? formatDay(String(row.data.valid_until)) : "—"}
+                      </Td>
+                      <Td muted>
+                        {diff.length ? (
+                          <ul className="space-y-0.5" aria-label={`Cambios de la fila ${row.row_number}`}>
+                            {diff.map((change) => (
+                              <li key={change.field}>
+                                <span className="text-foreground">{change.label}:</span> {change.before} → <span className="font-semibold text-foreground">{change.after}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : row.action === "create" ? "Oferta nueva" : "—"}
+                      </Td>
+                      <Td muted>
+                        {row.errors.map((text) => <span key={text} className="block text-danger">{text}</span>)}
+                        {row.warnings.map((text) => <span key={text} className="block text-warning">{text}</span>)}
+                        {row.data.map_supplier_code ? (
+                          <span className="block">Se recordará el código del proveedor «{row.data.map_supplier_code}».</span>
+                        ) : null}
+                        {canManage && mappable && !choosing ? (
+                          <button
+                            type="button"
+                            className={`mt-1 ${internalButtonClass}`}
+                            onClick={() => setMapping({ row: row.row_number, supplierId: mappable.supplier_id, code: mappable.supplier_code, product: null })}
+                          >
+                            Elegir variante
+                          </button>
+                        ) : null}
+                        {choosing ? (
+                          <div className="mt-2 space-y-2" role="group" aria-label={`Variante para el código ${choosing.code}`}>
+                            <ProductPicker
+                              label={`Variante para «${choosing.code}»`}
+                              value={choosing.product}
+                              onChange={(product) => setMapping({ ...choosing, product })}
+                              companyId={companyId}
+                            />
+                            <span className="inline-flex gap-2">
+                              <button type="button" className={internalButtonClass} onClick={() => setMapping(null)} disabled={busy}>Cancelar</button>
+                              <button type="button" className={internalPrimaryButtonClass} onClick={() => void saveMapping()} disabled={busy || !choosing.product}>
+                                Guardar código
+                              </button>
+                            </span>
+                          </div>
+                        ) : null}
+                      </Td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </TableWrap>
           ) : (
             <p className="text-sm text-muted">Ninguna fila cambia algo.</p>
           )}
+          {priceRows.length && preview.rows_error === 0 ? (
+            <fieldset className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm" aria-label="Precios comerciales que cambian">
+              <legend className="px-1 text-xs font-semibold text-warning">El archivo cambia lo que paga el cliente</legend>
+              <ul className="mb-2 space-y-0.5 text-foreground">
+                {priceRows.map((row) => (
+                  <li key={row.row_number}>
+                    Fila {row.row_number}: {row.data.product_name} · {row.data.supplier} · {formatSoles(row.data.price_change!.before)} → <span className="font-semibold">{formatSoles(row.data.price_change!.after)}</span>
+                  </li>
+                ))}
+              </ul>
+              <label className="flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={acceptPrices} onChange={(e) => setAcceptPrices(e.target.checked)} />
+                Acepto los precios nuevos de {priceRows.length === 1 ? "esta oferta" : `estas ${priceRows.length} ofertas`}
+              </label>
+              <p className="mt-1 text-xs text-muted">Sin aceptarlos puedes aplicar lo demás y mantener los precios actuales.</p>
+            </fieldset>
+          ) : null}
           <div className="flex flex-wrap items-center justify-end gap-3">
             {preview.rows_error > 0 ? (
               <p className="text-xs text-danger">Corrige las filas con error y vuelve a subir el archivo para aplicarlo.</p>
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
+            {priceRows.length ? (
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0}>
+                Aplicar sin cambiar precios
+              </button>
+            ) : null}
             <button
               type="button"
               className={internalPrimaryButtonClass}
-              onClick={() => void apply()}
-              disabled={busy || preview.rows_error > 0}
+              onClick={() => void apply(priceRows.length ? "accept" : null)}
+              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices)}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
             </button>
