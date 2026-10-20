@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-20 — Pruebas de importe de devolución
+
+**Added**
+- `test_order_return_amounts`: descuento comercial frente a deducción de devolución, tope
+  reembolsable, reembolso duplicado, stock una vez al costo de la venta, pago intacto.
+
 ## 2026-10-19 — Devolución posterior a la entrega (fase 1) (#134, desplegado `acf20fc`)
 
 **Added**
