@@ -495,8 +495,16 @@ class AlertsCostTest(ReceptionShop, TestCase):
         received = self.paid_order(self.phone, 1, session='r')
         supply.receive_line(received.items.get(), actor=self.staff,
                             units=[{'serial_number': 'EQP0601', 'imei': IMEIS[36]}])
+        # A record whose device is back on the shelf (not sold to the order, never left) names nothing.
+        from store import stock_unit_services as units
+
+        shelf, = units.receive_units(branch=self.branch, product=self.own, actor=self.staff, reason='Compra',
+                                     units=[{'serial_number': 'PRN9999'}])
+        OrderUnit.objects.create(company=self.company, order=self.orders[0], product=self.own, unit=shelf,
+                                 method='manual', identified_by=self.staff)
         ids = [o.pk for o in self.orders] + [received.pk]
         batch = supply_alerts.pending_devices(ids)
+        self.assertEqual(batch[self.orders[0].pk], {self.own.pk: 1})
         for order in Order.objects.filter(pk__in=ids):
             self.assertEqual(batch.get(order.pk, {}), unit_identification.pending_units(order), order.pk)
 
