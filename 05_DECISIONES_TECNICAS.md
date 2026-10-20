@@ -2724,7 +2724,9 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   subir el mismo archivo no crea nada, tampoco una oferta futura); 2) si hay una oferta activa
   **vendiéndose hoy**: una fila que empieza hoy o antes y se superpone o toca su vigencia (un día
   de diferencia) la actualiza en su lugar; una fila que empieza en el futuro y la toca o va
-  después **crea** la oferta de esa semana (la de hoy sigue vendiendo); una fila que empieza en
+  después actualiza la oferta **programada** (futura) a la que llega, si ya existe (la cargó el
+  archivo anterior), o si no **crea** la oferta de esa semana (la de hoy sigue vendiendo, sin
+  tocarse); una fila que empieza en
   el futuro y **se superpone** con ella es error de fila `overlaps_running` (subir temprano el
   archivo de la semana siguiente nunca detiene ni mueve lo que se vende hoy); 3) si no hay una
   vendiéndose, la programada o apagada a la que la fila llega se actualiza en su lugar; 4) si
@@ -2760,7 +2762,8 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
 - *Desactivada a mano.* Sigue siendo la oferta que la fila actualiza y sigue desactivada (sólo
   «Activa: Sí» la reactiva). Una oferta apagada **sólo por vencimiento** vuelve a activarse si
   la fila le da días nuevos; «sólo por vencimiento» es que su último apagado auditado es
-  `supplier_offer_expired` (el comando), nunca un motivo escrito a mano.
+  `supplier_offer_expired` (el comando), nunca un motivo escrito a mano. Conservador: si después
+  del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
 
 **Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya

@@ -174,6 +174,23 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual(self.preview(rows).json()['rows'][0]['action'], 'no_change')
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
 
+    def test_next_weeks_offer_with_a_changed_window_is_updated_in_place(self):
+        # Re-review P2: last week's file already created next week's offer; this week's file moves its end.
+        # It updates THAT scheduled offer, and the one selling today is not touched.
+        start = self.offer.valid_until + timedelta(days=1)
+        scheduled = self.make_offer(valid_from=start, valid_until=start + timedelta(days=6))
+        running_before = self.offer_now()
+        body = self.preview([self.same(**{'Vigente desde': start.isoformat(),
+                                          'Vigente hasta': (start + timedelta(days=7)).isoformat()})]).json()
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data'].get('offer_id')), ('update', scheduled.pk), row)
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(SupplierOffer.objects.get(pk=scheduled.pk).valid_until, start + timedelta(days=7))
+        running = self.offer_now()
+        self.assertEqual((running.valid_from, running.valid_until, running.updated_at),
+                         (running_before.valid_from, running_before.valid_until, running_before.updated_at))
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+
     def test_a_scheduled_offer_the_row_reaches_is_updated_in_place(self):
         SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=today() + timedelta(days=3),
                                                               valid_until=today() + timedelta(days=9))

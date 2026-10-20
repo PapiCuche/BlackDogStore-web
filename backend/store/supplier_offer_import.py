@@ -294,8 +294,10 @@ def match_offer(company, supplier_id, product_id, *, start=None, end=None, on=No
          the one that ends last, then the latest start, then the highest id):
          - a row starting today or before that overlaps or touches it (a day
            apart) updates it in place;
-         - a row starting in the future that touches it or comes after it is
-           next week's offer: created, and today's keeps selling;
+         - a row starting in the future that touches it or comes after it
+           updates the SCHEDULED offer it overlaps or touches (next week's,
+           already loaded), or else is next week's offer: created; today's
+           keeps selling;
          - a row starting in the future that OVERLAPS it is refused
            (`overlaps_running`): neither a silent stop nor an in-place move;
       3. else the first offer not over yet (scheduled, or switched off) —
@@ -327,6 +329,11 @@ def match_offer(company, supplier_id, product_id, *, start=None, end=None, on=No
                     return offer, None
             elif start <= offer.valid_until:
                 return None, offer
+        if start > on:
+            # Next week's offer may already exist (last week's file): a future row that reaches a
+            # SCHEDULED offer updates that one, never the one selling today.
+            scheduled = (offers.filter(valid_from__gt=on).order_by('-is_active', 'valid_from', 'pk'))
+            return next((o for o in scheduled if reaches(o)), None), None
         return None, None
     pending = list(offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-valid_from', '-pk'))
     if pending:
