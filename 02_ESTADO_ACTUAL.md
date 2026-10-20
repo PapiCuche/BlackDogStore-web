@@ -3,7 +3,29 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-20 — CATALOG-VARIANTS-UX + auditoría de módulos (rama `feat/catalog-variants-ux`, NO desplegado)
+## 2026-10-21 — SUPPLIER-DEVICE-FLOW-02 (rama `feat/supplier-device-flow-02`, NO desplegado)
+
+Desde `master` `f3f6c29` (con #137). Migración `0140_supplier_product_ref` (aditiva). Decisiones:
+DEC-SUPPLIER-WEEKLY-01 y la sección de recepción en 05.
+- **Ya IMPLEMENTADO antes (se reutilizó):** asistente con cuatro tipos (nuevo propio, al pase,
+  seminuevo, accesorio); seminuevos por unidad; ofertas sin IMEI ni stock; venta bajo pedido con
+  Izipay, revalidación y `to_confirm`; recepción `receive_line`; consulta de disponibilidad.
+- **Implementado ahora:** lista semanal **parcial** (sólo cambian las filas del archivo; las
+  ausentes quedan intactas; cantidad 0 = agotada), diferencias antes/después, decisión explícita y
+  auditada del precio comercial, vista previa obsoleta rechazada, códigos de proveedor reutilizables,
+  una oferta por proveedor y producto sin ventanas solapadas (la lista de la semana siguiente nunca
+  detiene la vigente). Recepción rápida: datos precargados, escáner (Enter al siguiente),
+  observación, costo real junto al acordado (sólo `costs.view`), repetición = 409, rechazada con
+  devolución abierta. Alertas operativas por empresa en el tablero. «Agotado» visible y no
+  comprable en la tienda. «Vender en caja» desde disponibilidad. IMEI 2 en seminuevos.
+- **Fiscal:** la boleta/factura no espera a la recepción (contrato actual: pedido pagado).
+- **Preguntas para el propietario:** la cantidad semanal ¿incluye lo ya comprometido? (hoy sí);
+  margen realizado ¿con costo real o acordado? (hoy acordado).
+- Pruebas: suite completa 7945 OK (antes de las correcciones de la revisión); Jest 1727;
+  `next build`; Playwright 101/101. Revisión independiente: NO-GO (oferta solapada desde el
+  asistente; la lista de la semana siguiente detenía la vigente; solape al aplicar), corregido.
+
+## 2026-10-20 — CATALOG-VARIANTS-UX + auditoría de módulos (#137 en `master` `f3f6c29`, NO desplegado)
 
 Desde `master` `50e7afe`. Sin migraciones. Decisión **DEC-CATALOG-VARIANTS-UX-01**.
 - **IMPLEMENTADO:** «Editar variante» en cada fila del modelo (modelo, línea, opciones, precio,

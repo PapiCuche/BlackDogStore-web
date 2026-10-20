@@ -1,5 +1,16 @@
 # NEXT ACTION
 
+## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (cuando se despliegue)
+
+1. Editar una variante sin historial y otra con ventas (debe pedir motivo de administrador).
+2. Subir la lista semanal de un proveedor: revisar diferencias, aceptar o conservar precios;
+   confirmar que lo que no viene en el archivo no cambia y que «0» queda agotado.
+3. Tienda: una variante sin stock ni oferta se ve «Agotado» y no se puede comprar; con oferta
+   vigente, «Disponible bajo pedido» con su plazo.
+4. Comprar al pase con Izipay TEST; en el pedido, «Recibir equipo del proveedor» con el IMEI
+   (escáner); revisar Kardex y, con `costs.view`, costo acordado y real.
+5. Tablero: «Alertas operativas».
+
 ## Desplegado: ORDER-RETURN-01 (#134, `acf20fc`) el 2026-10-19 — pruebas del propietario (PENDIENTES)
 
 Sobre un pedido de prueba entregado (pagado con Izipay TEST):
