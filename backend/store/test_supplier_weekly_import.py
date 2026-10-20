@@ -65,8 +65,9 @@ class PartialUpdateTest(WeeklyFile, TestCase):
     def setUp(self):
         self.build_week()
 
-    def test_a_new_window_updates_the_current_offer_in_place(self):
-        start, end = today() + timedelta(days=7), today() + timedelta(days=13)
+    def test_a_window_that_starts_today_or_before_updates_the_running_offer_in_place(self):
+        # Review P1-b: only a row that starts on or before today may move the offer running today.
+        start, end = today(), today() + timedelta(days=13)
         body = self.preview([self.same(**{'Vigente desde': start.isoformat(), 'Vigente hasta': end.isoformat(),
                                           'Cantidad confirmada': 9})]).json()
         row = body['rows'][0]
@@ -76,6 +77,15 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
         offer = self.offer_now()
         self.assertEqual((offer.valid_from, offer.valid_until, offer.confirmed_quantity), (start, end, 9))
+
+    def test_a_future_window_that_overlaps_the_running_offer_is_an_error(self):
+        # Review P1-b: never a silent stop nor an in-place move of what sells today.
+        body = self.preview([self.same(**{'Vigente desde': (today() + timedelta(days=3)).isoformat(),
+                                          'Vigente hasta': (today() + timedelta(days=10)).isoformat()})]).json()
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data'].get('error_code')), ('error', 'overlaps_running'), row)
+        self.assertTrue(any('se está vendiendo' in e for e in row['errors']), row)
+        self.assertEqual(self.offer_now().valid_until, self.offer.valid_until)
 
     def test_offers_the_file_does_not_mention_are_untouched(self):
         other = self.make_offer(product=self.cable, confirmed_quantity=3, commercial_price='35.00')
@@ -151,10 +161,24 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         row = body['rows'][0]
         self.assertEqual((row['action'], row['data']['offer_id']), ('no_change', twin.pk), row)
 
-    def test_an_adjacent_window_updates_the_running_offer_in_place(self):
+    def test_next_weeks_window_right_after_the_running_offer_is_a_new_offer(self):
+        # Review P1-b (replaces «a touching window updates in place»): next week's file uploaded early
+        # must not move this week's offer — it is a new offer, and this week's keeps selling.
         start = self.offer.valid_until + timedelta(days=1)
-        body = self.preview([self.same(**{'Vigente desde': start.isoformat(),
-                                          'Vigente hasta': (start + timedelta(days=6)).isoformat()})]).json()
+        rows = [self.same(**{'Vigente desde': start.isoformat(),
+                             'Vigente hasta': (start + timedelta(days=6)).isoformat()})]
+        body = self.preview(rows).json()
+        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        self.assertEqual(supply.best_offer(self.case, 1), self.offer_now())
+        self.assertEqual(self.preview(rows).json()['rows'][0]['action'], 'no_change')
+        self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 2)
+
+    def test_a_scheduled_offer_the_row_reaches_is_updated_in_place(self):
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(valid_from=today() + timedelta(days=3),
+                                                              valid_until=today() + timedelta(days=9))
+        body = self.preview([self.same(**{'Vigente desde': (today() + timedelta(days=5)).isoformat(),
+                                          'Vigente hasta': (today() + timedelta(days=12)).isoformat()})]).json()
         self.assertEqual((body['rows'][0]['action'], body['rows'][0]['data']['offer_id']),
                          ('update', self.offer.pk), body['rows'])
 
@@ -180,6 +204,16 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertIn('is_active', row['data']['changes'])
         self.apply(body['id'], accept_price_changes=True)
         self.assertTrue(self.offer_now().is_active)
+
+    def test_a_person_typing_the_expiry_reason_does_not_make_it_expired(self):
+        # Review P3: «off only by expiry» is what the expiry job audited, never a reason anybody can type.
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(
+            valid_from=today() - timedelta(days=9), valid_until=today() - timedelta(days=2))
+        supply.deactivate_offer(self.offer, actor=self.staff, reason='Vigencia vencida')
+        body = self.preview([self.row()]).json()
+        self.assertNotIn('is_active', body['rows'][0]['data']['changes'], body['rows'])
+        self.apply(body['id'], accept_price_changes=True)
+        self.assertFalse(self.offer_now().is_active)
 
     def test_an_offer_switched_off_by_hand_stays_matched_and_off(self):
         supply.deactivate_offer(self.offer, actor=self.staff, reason='Proveedor sin stock')
@@ -380,6 +414,15 @@ class StalePreviewTest(WeeklyFile, TestCase):
         self.assertEqual(self.offer_now().confirmed_quantity, 5)
         self.assertFalse(SupplierOffer.objects.filter(product=self.cable).exists())
         self.assertEqual(BulkImportJob.objects.get(pk=body['id']).status, BulkImportJob.PREVIEWED)
+
+    def test_an_offer_created_by_hand_between_preview_and_apply_makes_it_stale(self):
+        # Review P2: the row's new days are checked again, under the lock, against every active offer.
+        body = self.preview([self.same(**{'Vigente hasta': (today() + timedelta(days=12)).isoformat()})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'update', body['rows'])
+        self.make_offer(valid_from=today() + timedelta(days=9), valid_until=today() + timedelta(days=11))
+        res = self.apply(body['id'])
+        self.assertEqual(res.json().get('code'), 'stale', res.content)
+        self.assertEqual(self.offer_now().valid_until, self.offer.valid_until)
 
     def test_an_unchanged_row_whose_offer_changed_is_stale_too(self):
         body = self.preview([self.same()]).json()

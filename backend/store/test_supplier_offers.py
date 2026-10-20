@@ -968,10 +968,10 @@ class OfferExcelTest(SupplyShop, TestCase):
         self.assertEqual(again['rows_no_change'], 1)
         self.apply(again['id'])
         self.assertEqual(SupplierOffer.objects.filter(valid_from=self.start, valid_until=self.end).count(), 1)
-        # Next week's file: a new price AND a new window update THE offer in place (owner,
-        # SUPPLIER-DEVICE-FLOW-02 — before, a new window was a second offer that sold alongside).
+        # A new price and a longer window starting today update THE offer in place (owner,
+        # SUPPLIER-DEVICE-FLOW-02 — before, a new window was a second offer that sold alongside; a row
+        # starting after today would be next week's offer and leave this one selling).
         week = self.preview([self.row(**{'Precio comercial': '105',
-                                         'Vigente desde': (self.end + timedelta(days=1)).isoformat(),
                                          'Vigente hasta': (self.end + timedelta(days=7)).isoformat()})]).json()
         self.assertEqual((week['rows_update'], week['rows_create']), (1, 0))
         self.assertEqual(self.apply(week['id'], accept_price_changes=True).status_code, 200)

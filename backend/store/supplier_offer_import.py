@@ -16,17 +16,22 @@ change something. An offer the file does not mention is not touched: not
 switched off, its quantity and its window stay.
 
 ONE OFFER PER SUPPLIER AND VARIANT AND WINDOW, UPDATED IN PLACE
-(`current_offer`). A row updates the offer with exactly its window; else the
-running (not over) offer its window overlaps or touches (a day apart), window
-included; else, when a running offer exists but the row's window is strictly
-after it, it CREATES next week's offer — the running one keeps selling, and
-the overlap rule keeps the two disjoint; else (every offer already ended) it
-updates the one that ended last — what was committed stays committed and
-counts against the new confirmed quantity (an owner question). An offer off
-only because it expired comes back on with new days; one switched off by hand
-stays matched and off. Two rows of one file for the same supplier and variant
-are an error. Before this, the key carried the window: next week's file
-created a SECOND offer and both sold over the overlapping days.
+(`match_offer`). A row updates the offer with exactly its window. Else, when
+an active offer is running TODAY: a row starting today or before that overlaps
+or touches it (a day apart) updates it in place; a row starting in the future
+that touches it or comes after it CREATES next week's offer — today's keeps
+selling, the overlap rule keeps the two disjoint; a row starting in the future
+that OVERLAPS it is an error (`overlaps_running`): uploading next week's file
+early never stops nor moves what sells today. Else the scheduled or switched-
+off offer the row reaches is updated in place; else (every offer ended) the
+one that ended last — what was committed stays committed and counts against
+the new confirmed quantity (an owner question). An offer off only because the
+expiry job switched it off (its last audited switch-off is
+`supplier_offer_expired`; a typed reason never counts) comes back on with new
+days; one switched off by hand stays matched and off. Two rows of one file
+for the same supplier and variant are an error. Before this, the key carried
+the window: next week's file created a SECOND offer and both sold over the
+overlapping days.
 
 NEVER TWO ACTIVE OFFERS OF ONE SUPPLIER AND VARIANT OVER THE SAME DAYS — by
 file (row error, and STALE at apply) or by hand (`guard_offer_overlap`, from the
@@ -122,8 +127,6 @@ SUPPLIER_CODE_HEADER = 'Código del proveedor'
 #: The system code (`import_formats.product_identifier`): written by the export.
 IDENTIFIER_HEADER = 'Identificador'
 STALE = 'El archivo cambió: vuelve a previsualizarlo.'
-#: The reason `supply_services.expire_offers` writes: an offer off ONLY because its days ran out.
-EXPIRED_REASON = 'Vigencia vencida'
 MAX_REF_CODE = 120
 _YES = {'si', 's', 'yes', 'y', '1', 'true', 'verdadero', 'x'}
 _NO = {'no', 'n', '0', 'false', 'falso'}
@@ -278,19 +281,27 @@ def _as_date(value):
     return supply_services.clean_date(value, 'valid_from', 'la fecha') if value else None
 
 
-def current_offer(company, supplier_id, product_id, *, start=None, end=None, on=None):
+def match_offer(company, supplier_id, product_id, *, start=None, end=None, on=None):
     """
-    THE offer a row of (supplier, variant) for `start..end` updates, or None
-    (the row creates one):
+    `(offer, running)` for a row of (supplier, variant) over `start..end`:
+    `offer` is THE offer the row updates (None = the row creates one);
+    `running` is set instead when the row is refused because it would move,
+    in the future, the offer that sells today.
 
       1. the offer with exactly that window, in any state (re-importing a file
          finds what it made, a future offer included);
-      2. else the first offer whose window is not over — active first, then the
-         one that ends last, the latest start, the highest id — that the row's
-         window OVERLAPS OR TOUCHES (a day apart counts as touching);
-      3. else, when such offers exist but none is reached, None: a window
-         strictly after a running offer is next week's offer, never a reason to
-         stop this week's;
+      2. an ACTIVE offer running TODAY (`valid_from <= today <= valid_until`;
+         the one that ends last, then the latest start, then the highest id):
+         - a row starting today or before that overlaps or touches it (a day
+           apart) updates it in place;
+         - a row starting in the future that touches it or comes after it is
+           next week's offer: created, and today's keeps selling;
+         - a row starting in the future that OVERLAPS it is refused
+           (`overlaps_running`): neither a silent stop nor an in-place move;
+      3. else the first offer not over yet (scheduled, or switched off) —
+         active first, then the one that ends last — that the row overlaps or
+         touches, updated in place; None when there are such offers but none
+         is reached;
       4. else (every offer already ended) the one that ended last.
     """
     on = on or supply_services.today()
@@ -299,14 +310,56 @@ def current_offer(company, supplier_id, product_id, *, start=None, end=None, on=
     if start and end:
         exact = offers.filter(valid_from=start, valid_until=end).order_by('-is_active', '-pk').first()
         if exact is not None:
-            return exact
-    running = list(offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-valid_from', '-pk'))
+            return exact, None
+    day = timedelta(days=1)
+
+    def reaches(offer):
+        return start <= offer.valid_until + day and end >= offer.valid_from - day
+
+    if not (start and end):
+        return offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-pk').first(), None
+    running = list(offers.filter(is_active=True, valid_from__lte=on, valid_until__gte=on)
+                   .order_by('-valid_until', '-valid_from', '-pk'))
     if running:
-        if not (start and end):
-            return running[0]
-        day = timedelta(days=1)
-        return next((o for o in running if start <= o.valid_until + day and end >= o.valid_from - day), None)
-    return offers.order_by('-valid_until', '-valid_from', '-pk').first()
+        for offer in running:
+            if start <= on:
+                if reaches(offer):
+                    return offer, None
+            elif start <= offer.valid_until:
+                return None, offer
+        return None, None
+    pending = list(offers.filter(valid_until__gte=on).order_by('-is_active', '-valid_until', '-valid_from', '-pk'))
+    if pending:
+        return next((o for o in pending if reaches(o)), None), None
+    return offers.order_by('-valid_until', '-valid_from', '-pk').first(), None
+
+
+def current_offer(company, supplier_id, product_id, *, start=None, end=None, on=None):
+    """THE offer the row updates, or None — see `match_offer`."""
+    return match_offer(company, supplier_id, product_id, start=start, end=end, on=on)[0]
+
+
+def _overlaps_running_text(running) -> str:
+    return (f'Esta vigencia empieza en el futuro y se cruza con la oferta que se está vendiendo hoy (del '
+            f'{running.valid_from:%d/%m/%Y} al {running.valid_until:%d/%m/%Y}). Para la semana siguiente, '
+            f'empieza el {running.valid_until + timedelta(days=1):%d/%m/%Y} o después; para cambiar la oferta de '
+            'hoy, haz que la fila empiece hoy o antes.')
+
+
+def expired_only(offer) -> bool:
+    """
+    Whether `offer` is off ONLY because the expiry job switched it off: the last
+    audited switch-off is `supplier_offer_expired`. A reason anybody can type
+    (even «Vigencia vencida») never counts.
+    """
+    if offer.is_active:
+        return False
+    last = (AdminAuditLog.objects.filter(company_id=offer.company_id, target_type='supplier_offer',
+                                         target_id=str(offer.pk),
+                                         action__in=('supplier_offer_expired', 'supplier_offer_deactivated',
+                                                     'supplier_offer_updated', 'supplier_offer_created'))
+            .order_by('-created_at', '-pk').values_list('action', flat=True).first())
+    return last == 'supplier_offer_expired'
 
 
 def _overlapping(company, supplier_id, product_id, start, end, *, exclude=None) -> dict:
@@ -365,6 +418,13 @@ def guard_offer_overlap(company, fields: dict, *, current=None) -> None:
     else:
         active = True if current is None else current.is_active
     lock_pairs(company.pk, [(supplier_id, product_id)])
+    if current is not None:
+        # Read again under the lock: what was read before it may have changed since.
+        current = SupplierOffer.objects.get(pk=current.pk)
+        start = start if 'valid_from' in fields else current.valid_from
+        end = end if 'valid_until' in fields else current.valid_until
+        if 'is_active' not in fields:
+            active = current.is_active
     added, _kept = overlap_of(company, supplier_id, product_id, start=start, end=end, active=active, current=current)
     if added:
         raise supply_services.SupplyError(_overlap_text(added), field='valid_from', code='overlap')
@@ -713,8 +773,12 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
                     f'La fila {earlier[0]} pide otro «Bajo pedido» para este mismo producto, y un producto tiene '
                     'un solo modo de venta: queda el de la última fila que se aplique. Revisa cuál quieres.')
             modes[product.pk] = (row_number, wanted_mode)
-        existing = current_offer(company, supplier.pk, product.pk, start=clean['valid_from'],
-                                 end=clean['valid_until'], on=today)
+        existing, running = match_offer(company, supplier.pk, product.pk, start=clean['valid_from'],
+                                        end=clean['valid_until'], on=today)
+        if running is not None:
+            stage(row_number, BulkImportRow.ERROR, data={**shown, 'error_code': 'overlaps_running'},
+                  warnings=warnings, errors=[_overlaps_running_text(running)])
+            continue
         payload = {
             **shown, 'supplier_id': supplier.pk, 'product_id': product.pk, 'matched_by': matched_by,
             'valid_from': clean['valid_from'].isoformat(), 'valid_until': clean['valid_until'].isoformat(),
@@ -730,7 +794,7 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
         if wanted_mode is not None:
             payload['sale_mode'] = wanted_mode
         if (active is None and existing is not None and not existing.is_active
-                and existing.deactivated_reason == EXPIRED_REASON and clean['valid_until'] >= today):
+                and clean['valid_until'] >= today and expired_only(existing)):
             # Off only because its days ran out (the hourly command), and the row gives it new days:
             # back on. An offer switched off BY HAND stays off (below).
             active = True
@@ -903,11 +967,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         data = row.normalized_data or {}
         if row.action == BulkImportRow.CREATE:
             start, end = data.get('valid_from'), data.get('valid_until')
-            taken = current_offer(job.company, data.get('supplier_id'), data.get('product_id'), start=start, end=end,
-                                  on=today)
+            taken, running = match_offer(job.company, data.get('supplier_id'), data.get('product_id'), start=start,
+                                         end=end, on=today)
             added, _kept = overlap_of(job.company, data.get('supplier_id'), data.get('product_id'),
                                       start=start, end=end, active=data.get('is_active', True) is not False)
-            if taken is not None or added:
+            if taken is not None or running is not None or added:
                 raise OfferImportError(STALE, code='stale')
             continue
         offer = offers.get(_pk(data.get('offer_id')))
@@ -915,6 +979,14 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             raise OfferImportError(f'La oferta de la fila {row.row_number} ya no existe. Vuelve a subir el archivo.',
                                    code='stale')
         if data.get('offer_updated_at') and offer.updated_at.isoformat() != data['offer_updated_at']:
+            raise OfferImportError(STALE, code='stale')
+        # Under the lock, the row's days against every OTHER active offer of the pair: one created by
+        # hand (or by another file) since the preview must not end up selling over the same days.
+        added, _kept = overlap_of(job.company, offer.supplier_id, offer.product_id,
+                                  start=_as_date(data.get('valid_from')), end=_as_date(data.get('valid_until')),
+                                  active=data['is_active'] if 'is_active' in data else offer.is_active,
+                                  current=offer)
+        if added:
             raise OfferImportError(STALE, code='stale')
 
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0

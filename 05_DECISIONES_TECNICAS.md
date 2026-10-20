@@ -2708,17 +2708,21 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
 
 - *Actualización parcial.* Sólo cambian las filas del archivo; una oferta que no aparece no se
   toca (ni se desactiva, ni cambian su cantidad ni su vigencia).
-- *Qué oferta actualiza una fila* (`current_offer`): 1) la de la misma vigencia exacta (volver a
-  subir el mismo archivo no crea nada, tampoco una oferta futura); 2) si no, la oferta en curso
-  (no vencida; activa primero, luego la que termina más tarde) cuya vigencia la fila **se
-  superpone o toca** (un día de diferencia), y se actualiza en su lugar, fechas incluidas;
-  3) si hay una en curso pero la fila empieza **estrictamente después** (con un día o más de
-  hueco), se **crea** la oferta de esa semana futura y la de hoy sigue vendiendo; 4) si todas
-  ya vencieron, se actualiza la que venció última. Dos filas del mismo proveedor y producto en
-  un archivo son error.
+- *Qué oferta actualiza una fila* (`match_offer`): 1) la de la misma vigencia exacta (volver a
+  subir el mismo archivo no crea nada, tampoco una oferta futura); 2) si hay una oferta activa
+  **vendiéndose hoy**: una fila que empieza hoy o antes y se superpone o toca su vigencia (un día
+  de diferencia) la actualiza en su lugar; una fila que empieza en el futuro y la toca o va
+  después **crea** la oferta de esa semana (la de hoy sigue vendiendo); una fila que empieza en
+  el futuro y **se superpone** con ella es error de fila `overlaps_running` (subir temprano el
+  archivo de la semana siguiente nunca detiene ni mueve lo que se vende hoy); 3) si no hay una
+  vendiéndose, la programada o apagada a la que la fila llega se actualiza en su lugar; 4) si
+  todas ya vencieron, la que venció última. Dos filas del mismo proveedor y producto en un
+  archivo son error.
 - *Nunca dos ofertas activas del mismo proveedor y producto el mismo día* — por archivo (error
   de fila; `stale` al aplicar) y a mano (crear/editar en el panel: 400 `overlap`), bajo un
-  candado de aviso por (empresa, proveedor, producto). Sin restricción en la base: producción
+  candado de aviso por (empresa, proveedor, producto), también en el asistente de registro
+  (`overlap` en el paso «supplier») y al aplicar una fila que actualiza (`stale` si otra oferta
+  apareció entre la vista previa y la aplicación). Sin restricción en la base: producción
   puede tener superposiciones antiguas; una fila que conserva una de ellas sólo avisa. Cada
   proveedor es independiente.
 - *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido (leído bajo el candado al
@@ -2742,8 +2746,9 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   variante ofrece «Elegir variante» (`POST /api/admin/suppliers/<pk>/product-refs/`,
   `products.manage`, por empresa; 409 `ref_conflict` si ya nombra otra variante).
 - *Desactivada a mano.* Sigue siendo la oferta que la fila actualiza y sigue desactivada (sólo
-  «Activa: Sí» la reactiva). Una oferta apagada **sólo por vencimiento** («Vigencia vencida»)
-  vuelve a activarse si la fila le da días nuevos.
+  «Activa: Sí» la reactiva). Una oferta apagada **sólo por vencimiento** vuelve a activarse si
+  la fila le da días nuevos; «sólo por vencimiento» es que su último apagado auditado es
+  `supplier_offer_expired` (el comando), nunca un motivo escrito a mano.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
 
 **Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya

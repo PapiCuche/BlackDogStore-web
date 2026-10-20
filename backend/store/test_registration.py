@@ -383,6 +383,18 @@ class OnOrderTest(RegistrationFixture):
         self.assertTrue(data['supplier']['created'])
         self.assertEqual(data['offer']['id'], offer.pk)
 
+    def test_a_second_offer_over_the_same_days_on_an_existing_variant_is_refused(self):
+        # Review P1-a: the wizard obeys the panel's rule — never two active offers of one supplier and
+        # variant over the same days.
+        self.post(self.clerk, self.new_device(supplier={'name': 'Distribuidor Uno'}, offer=self.offer()), expect=201)
+        before = self.counts()
+        again = self.new_device(supplier={'name': 'Distribuidor Uno'}, offer=self.offer(),
+                                units=[{'serial_number': 'SNREG003', 'imei': IMEIS[3]},
+                                       {'serial_number': 'SNREG004', 'imei': IMEIS[4]}])
+        res = self.post(self.clerk, again, expect=400).json()
+        self.assertEqual((res['step'], res['code']), ('supplier', 'overlap'), res)
+        self.assertEqual(self.counts(), before)
+
     def test_an_existing_supplier_is_reused(self):
         supplier = Supplier.objects.create(company=self.company, name='Ya existe')
         data = self.post(self.clerk, self.on_order(supplier={'id': supplier.pk}), expect=201).json()
