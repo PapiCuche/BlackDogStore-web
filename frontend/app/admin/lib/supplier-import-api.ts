@@ -20,11 +20,13 @@ export type SupplierImportBefore = {
   valid_until: string;
   lead_time_days: number;
   is_active: boolean;
+  /** What was left to sell (confirmed − committed); null = unconfirmed. Owner D1. */
+  available?: number | null;
   agreed_cost?: string | null;
 };
 
 export type SupplierImportChange =
-  | "commercial_price" | "confirmed_quantity" | "valid_from" | "valid_until" | "lead_time_days"
+  | "commercial_price" | "available" | "confirmed_quantity" | "valid_from" | "valid_until" | "lead_time_days"
   | "is_active" | "agreed_cost" | "sale_mode";
 
 export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
@@ -33,7 +35,11 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     product_id?: number;
     before?: SupplierImportBefore;
     changes?: SupplierImportChange[];
-    /** Explicit 0: «agotada» — confirmed becomes what is committed. */
+    /**
+     * Owner D1: the file's quantity is the supplier's NET availability — what is left to sell after
+     * applying (confirmed becomes committed + this). Explicit 0: «agotada».
+     */
+    available?: number | null;
     sold_out?: boolean;
     price_change?: { before: string; after: string };
     /** The supplier code this row will remember for the variant, when applied. */
@@ -166,6 +172,7 @@ export function summaryOf(preview: WeeklyImportPreview): WeeklyImportSummary {
 
 export const CHANGE_LABELS: Record<SupplierImportChange, string> = {
   commercial_price: "Precio comercial",
+  available: "Disponible para vender",
   confirmed_quantity: "Cantidad confirmada",
   valid_from: "Vigente desde",
   valid_until: "Vigente hasta",

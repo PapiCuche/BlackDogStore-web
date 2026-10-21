@@ -2739,16 +2739,28 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   apareció entre la vista previa y la aplicación). Sin restricción en la base: producción
   puede tener superposiciones antiguas; una fila que conserva una de ellas sólo avisa. Cada
   proveedor es independiente.
-- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido (leído bajo el candado al
-  aplicar): no se vende más y lo ya pagado se mantiene. Otra cantidad menor que lo comprometido
-  sigue siendo error.
+- *La cantidad es la disponibilidad NETA del proveedor (decisión D1 del propietario,
+  2026-10-21).* Lo ya vendido contra la oferta ya está descontado en el número del archivo y no se
+  resta otra vez: al actualizar una oferta, `confirmada = comprometida + cantidad del archivo`, con
+  lo comprometido leído bajo el candado de la oferta al aplicar, así que lo que queda por vender
+  después de aplicar es **exactamente** la cantidad del archivo (nunca negativo), aunque entre la
+  vista previa y la aplicación entre un pago. Una oferta nueva confirma la cantidad del archivo.
+  Las filas se comparan por lo disponible (`available`), no por la confirmada: el mismo archivo
+  otra vez no hace crecer la oferta. La vista previa muestra «Disponible para vender: actual →
+  archivo»; la exportación escribe lo disponible (y vuelve a cargar sin cambios). Auditoría
+  `supplier_offer_quantity_set` (confirmada, comprometida y disponible antes y después, cantidad
+  del archivo, trabajo). Cantidad vacía en una oferta con unidades vendidas es error.
+- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido: no se vende más y lo ya pagado
+  se mantiene.
 - *Precio comercial nuevo.* La vista previa lo muestra antes → después; aplicar responde 409
   `price_confirmation_required` (con las filas) salvo `accept_price_changes: true` (escribe los
   precios) o `keep_prices: true` (escribe lo demás, mantiene cada precio actual); las dos a la
   vez, 400. Auditoría por oferta: `supplier_offer_price_changed` (antes/después) o
   `supplier_offer_price_kept` (actual/propuesto), con el trabajo.
-- *Vista previa vieja.* Se guarda el `updated_at` de cada oferta leída; si cambió (edición,
-  pago, otro archivo) al aplicar se rechaza el trabajo entero (`stale`) sin escribir nada.
+- *Vista previa vieja.* Se guarda lo que la vista previa leyó de cada oferta (precio, confirmada,
+  vigencia, plazo, estado, costo); si cambió (edición, otro archivo) al aplicar se rechaza el
+  trabajo entero (`stale`) sin escribir nada. Un pago sólo mueve lo comprometido, que la regla
+  neta ya absorbe: no vuelve vieja la vista previa.
 - *Vista previa con diferencias.* `before` por fila (el costo sólo con `costs.view`, tampoco se
   guarda sin él), `changes`, `sold_out`, `price_change` y `summary` (nuevas, cambian, sin
   cambios, agotadas, errores, precios, códigos).
@@ -2766,7 +2778,6 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
 
-**Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya
-vendidas (en curso o vencida), lo comprometido **sigue contando** contra la nueva «Cantidad
-confirmada» (confirmada = tope total, como siempre). ¿La cantidad semanal debería ser
-adicional a lo ya vendido?
+**Decidido (D1, 2026-10-21).** La cantidad semanal es lo que le queda al proveedor: se suma a lo
+ya vendido (ver «disponibilidad NETA» arriba). Antes, lo comprometido contaba contra la nueva
+cantidad y una cantidad menor que lo vendido era error.

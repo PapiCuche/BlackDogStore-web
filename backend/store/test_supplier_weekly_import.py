@@ -215,8 +215,8 @@ class PartialUpdateTest(WeeklyFile, TestCase):
                          ('update', self.offer.pk), body['rows'])
         self.assertEqual(self.apply(body['id'], accept_price_changes=True).status_code, 200)
         offer = self.offer_now()
-        # What was committed stays committed (owner question: does it count against the new quantity?).
-        self.assertEqual((offer.committed_quantity, offer.confirmed_quantity, offer.valid_until), (2, 8, self.end))
+        # What was committed stays committed; owner D1: the file's 8 is what is LEFT, so confirmed = 2 + 8.
+        self.assertEqual((offer.committed_quantity, offer.confirmed_quantity, offer.valid_until), (2, 10, self.end))
         self.assertEqual(SupplierOffer.objects.filter(supplier=self.supplier, product=self.case).count(), 1)
 
     def test_an_offer_switched_off_only_because_it_expired_comes_back_on(self):
@@ -346,10 +346,84 @@ class SoldOutTest(WeeklyFile, TestCase):
         offer = self.offer_now()
         self.assertEqual((offer.confirmed_quantity, offer.committed_quantity), (3, 3))
 
-    def test_a_non_zero_quantity_below_what_was_sold_is_still_an_error(self):
+    def test_a_quantity_below_what_was_sold_is_what_is_left_not_an_error(self):
+        # Owner D1 (replaces «below the committed quantity is an error»): the file's quantity is the
+        # supplier's NET availability, so 3 with 4 already sold means 3 more to sell.
         SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=4)
         body = self.preview([self.same(**{'Cantidad confirmada': 3})]).json()
-        self.assertEqual(body['rows'][0]['action'], 'error')
+        self.assertEqual(body['rows'][0]['action'], 'update', body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        offer = self.offer_now()
+        self.assertEqual((offer.confirmed_quantity, offer.committed_quantity, offer.remaining), (7, 4, 3))
+
+    def test_an_empty_quantity_with_units_sold_is_an_error(self):
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=2)
+        body = self.preview([self.same(**{'Cantidad confirmada': ''})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'error', body['rows'])
+
+
+class NetAvailabilityTest(WeeklyFile, TestCase):
+    """Owner D1: the weekly quantity is what the supplier still has at the cut-off — never minus what was sold."""
+
+    def setUp(self):
+        self.build_week('sdf2-neto')
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=2)    # confirmed 5: 3 left
+
+    def test_the_files_quantity_is_what_is_left_to_sell_after_applying(self):
+        body = self.preview([self.same(**{'Cantidad confirmada': 4})]).json()
+        row = body['rows'][0]
+        self.assertEqual((row['action'], row['data']['before']['available'], row['data']['available']),
+                         ('update', 3, 4), row)
+        self.assertIn('available', row['data']['changes'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        offer = self.offer_now()
+        self.assertEqual((offer.confirmed_quantity, offer.committed_quantity, offer.remaining), (6, 2, 4))
+        log = AdminAuditLog.objects.get(action='supplier_offer_quantity_set', target_id=str(self.offer.pk))
+        self.assertEqual((log.metadata['before'], log.metadata['after'], log.metadata['file_quantity']), (
+            {'confirmed': 5, 'committed': 2, 'available': 3}, {'confirmed': 6, 'committed': 2, 'available': 4}, 4))
+
+    def test_the_identical_file_again_does_not_grow_the_offer(self):
+        rows = [self.same(**{'Cantidad confirmada': 4})]
+        self.apply(self.preview(rows).json()['id'])
+        again = self.preview(rows).json()
+        self.assertEqual(again['rows'][0]['action'], 'no_change', again['rows'])
+        self.assertEqual(self.apply(again['id']).status_code, 200)
+        self.assertEqual(self.offer_now().confirmed_quantity, 6)
+
+    def test_the_same_available_quantity_is_unchanged(self):
+        body = self.preview([self.same(**{'Cantidad confirmada': 3})]).json()
+        self.assertEqual(body['rows'][0]['action'], 'no_change', body['rows'])
+
+    def test_a_commitment_between_preview_and_apply_still_leaves_the_files_quantity(self):
+        from django.db.models import F
+        from django.utils import timezone
+        body = self.preview([self.same(**{'Cantidad confirmada': 4})]).json()
+        # A payment commits one more (as `commit_order_lines` does: the stamp moves too).
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=F('committed_quantity') + 1,
+                                                              updated_at=timezone.now())
+        res = self.apply(body['id'])
+        self.assertEqual(res.status_code, 200, res.content)
+        offer = self.offer_now()
+        self.assertEqual((offer.confirmed_quantity, offer.committed_quantity, offer.remaining), (7, 3, 4))
+
+    def test_the_export_writes_what_is_left_and_loads_back_unchanged(self):
+        import io
+
+        import openpyxl
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        res = self.client_.get('/api/admin/supplier-offers/export/')
+        sheet = openpyxl.load_workbook(io.BytesIO(res.content)).active
+        headers = [c.value for c in sheet[1]]
+        self.assertEqual(sheet[2][headers.index('Cantidad confirmada')].value, 3)
+        upload = SimpleUploadedFile('ofertas.xlsx', res.content)
+        body = self.client_.post('/api/admin/supplier-offers/import/preview/', {'file': upload},
+                                 format='multipart').json()
+        self.assertEqual(body['rows_no_change'], 1, body['rows'])
+
+    def test_a_new_offer_confirms_the_files_quantity(self):
+        body = self.preview([self.row(**{'Código/SKU del producto': self.cable.slug, 'Cantidad confirmada': 4})]).json()
+        self.apply(body['id'])
+        self.assertEqual(SupplierOffer.objects.get(product=self.cable).confirmed_quantity, 4)
 
 
 class PreviewDiffTest(WeeklyFile, TestCase):
@@ -367,9 +441,10 @@ class PreviewDiffTest(WeeklyFile, TestCase):
         self.assertEqual(before, {
             'commercial_price': '110.00', 'confirmed_quantity': 5, 'committed_quantity': 1,
             'valid_from': self.offer.valid_from.isoformat(), 'valid_until': self.offer.valid_until.isoformat(),
-            'lead_time_days': 4, 'is_active': True, 'agreed_cost': '70.00'})
+            'lead_time_days': 4, 'is_active': True, 'agreed_cost': '70.00', 'available': 4})
+        # Owner D1: rows are compared on what is left to sell (`available`), not on `confirmed`.
         self.assertEqual(sorted(body['rows'][0]['data']['changes']),
-                         ['agreed_cost', 'confirmed_quantity', 'lead_time_days'])
+                         ['agreed_cost', 'available', 'lead_time_days'])
         self.assertEqual(body['summary'], {'new': 1, 'updated': 1, 'unchanged': 0, 'sold_out': 0, 'errors': 1,
                                            'skipped': 0, 'price_changes': 0, 'mappings': 0})
 
@@ -386,7 +461,7 @@ class PreviewDiffTest(WeeklyFile, TestCase):
         from store import supplier_offer_import
         payload = supplier_offer_import.job_payload(BulkImportJob.objects.get(pk=job['id']), include_cost=False)
         self.assertNotIn('agreed_cost', payload['rows'][0]['data']['before'])
-        self.assertEqual(payload['rows'][0]['data']['changes'], ['confirmed_quantity'])
+        self.assertEqual(payload['rows'][0]['data']['changes'], ['available'])     # owner D1
 
 
 class PriceDecisionTest(WeeklyFile, TestCase):
@@ -611,6 +686,52 @@ class SnapshotTest(WeeklyFile, TestCase):
         line.refresh_from_db()
         self.assertEqual((line.price, line.lead_time_days, line.unit_cost, line.supplier_offer_id), frozen)
         self.assertEqual(self.offer_now().committed_quantity, 2)
+
+
+class PaymentDuringApplyTest(TransactionTestCase):
+    """Owner D1: a payment and the weekly apply at the same instant — never negative, never more than the file."""
+
+    def test_the_file_quantity_is_what_is_left_whoever_goes_first(self):
+        from threading import Barrier, Thread
+
+        from django.db import connection
+
+        from store import supplier_offer_import as offer_import
+
+        shop = WeeklyFile()
+        shop.build_week('sdf2-pago')
+        shop.add_on_order(quantity=1)
+        order = shop.checkout()
+        job = shop.preview([shop.same(**{'Cantidad confirmada': 4})]).json()['id']
+        barrier, outcomes = Barrier(2), []
+
+        def run(task):
+            try:
+                barrier.wait(timeout=5)
+                outcomes.append(task())
+            except Exception as exc:  # noqa: BLE001 — the test reports it
+                outcomes.append(repr(exc))
+            finally:
+                connection.close()
+
+        def apply():
+            offer_import.apply(job=BulkImportJob.objects.get(pk=job), actor=shop.staff)
+            return 'applied'
+
+        def pay():
+            shop.pay(order)
+            return 'paid'
+
+        threads = [Thread(target=run, args=(task,)) for task in (apply, pay)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertEqual(sorted(outcomes), ['applied', 'paid'], outcomes)
+        offer = SupplierOffer.objects.get(pk=shop.offer.pk)
+        # Payment first: 1 committed, then 1 + 4 confirmed. Apply first: 4 confirmed, then 1 of them sold.
+        self.assertIn((offer.confirmed_quantity, offer.committed_quantity), [(5, 1), (4, 1)])
+        self.assertEqual(OrderItem.objects.get(order=order).supply_status, 'pending')
 
 
 class ConcurrentCreateTest(TransactionTestCase):

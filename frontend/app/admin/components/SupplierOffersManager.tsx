@@ -580,7 +580,9 @@ const IMPORT_ACTION_LABELS: Record<string, string> = {
 };
 
 function formatChange(field: SupplierImportChange, value: unknown): string {
-  if (value === null || value === undefined || value === "") return field === "confirmed_quantity" ? "Sin confirmar" : "—";
+  if (value === null || value === undefined || value === "") {
+    return field === "confirmed_quantity" || field === "available" ? "Sin confirmar" : "—";
+  }
   if (field === "commercial_price" || field === "agreed_cost") return formatSoles(String(value));
   if (field === "valid_from" || field === "valid_until") return formatDay(String(value));
   if (field === "is_active") return value ? "Sí" : "No";
@@ -600,6 +602,7 @@ export function rowDiff(row: WeeklyImportRow): RowChange[] {
   return row.data.changes
     .filter((field) => field !== "sale_mode" && (field !== "agreed_cost" || Object.prototype.hasOwnProperty.call(before, "agreed_cost")))
     .map((field) => {
+      // An older server compared `confirmed_quantity`; its sold-out «after» was what was committed.
       const next = field === "confirmed_quantity" && row.data.sold_out ? before.committed_quantity : after[field];
       return {
         field,
@@ -769,7 +772,7 @@ function ImportSection({
               <thead>
                 <tr className="border-b border-bd-border">
                   <Th right>Fila</Th><Th>Acción</Th><Th>Proveedor</Th><Th>Producto</Th><Th right>Precio</Th>
-                  <Th right>Cantidad</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
+                  <Th right>Disponible</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
                 </tr>
               </thead>
               <tbody>

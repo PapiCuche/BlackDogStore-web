@@ -1039,12 +1039,17 @@ class OfferExcelTest(SupplyShop, TestCase):
                                  format='multipart').json()
         self.assertEqual((body['rows_no_change'], body['rows_error']), (1, 0), body['rows'])
 
-    def test_confirmed_quantity_below_what_was_sold_is_a_row_error(self):
+    def test_confirmed_quantity_below_what_was_sold_is_what_is_left(self):
+        # Owner D1 (SUPPLIER-WEEKLY, 2026-10-21; before: a row error): the file's quantity is the
+        # supplier's NET availability — 3 with 4 sold means 3 more, confirmed 7.
         SupplierOffer.objects.filter(pk=self.offer.pk).update(committed_quantity=4)
         body = self.preview([self.row(**{'Vigente desde': self.offer.valid_from.isoformat(),
                                          'Vigente hasta': self.offer.valid_until.isoformat(),
                                          'Cantidad confirmada': 3})]).json()
-        self.assertEqual(body['rows'][0]['action'], 'error')
+        self.assertEqual(body['rows'][0]['action'], 'update')
+        self.apply(body['id'], accept_price_changes=True)
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.confirmed_quantity, self.offer.remaining), (7, 3))
 
 
 class ExpiryCommandTest(SupplyShop, TestCase):

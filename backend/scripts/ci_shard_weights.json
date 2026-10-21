@@ -26,6 +26,7 @@
   "store.test_supplier_offers.LastUnitRaceTest",
   "store.test_supplier_offers.ReviewOfferApplyRaceTest",
   "store.test_supplier_weekly_import.ConcurrentCreateTest",
+  "store.test_supplier_weekly_import.PaymentDuringApplyTest",
   "store.test_supply_reception.ReceiveAtTheSameInstantTest",
   "store.test_verification_code.ConcurrencyTest",
   "store.tests.C11IdempotencyRecoveryTest",
