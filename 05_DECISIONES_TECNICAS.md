@@ -2318,7 +2318,8 @@ registra** y la línea queda «abastecimiento por confirmar»; nunca stock negat
   «Recibir del proveedor» (entrada `purchase_entry` al costo congelado + salida de venta
   de esa línea en la misma transacción: estante neto cero y Kardex completo; un serializado
   entra con sus series/IMEI reales y se venden **esos** equipos, con su `OrderUnit`),
-  «No se pudo abastecer» (motivo obligatorio; devuelve lo comprometido a la oferta, marca
+  «No se pudo abastecer» (motivo obligatorio; libera lo comprometido — en un pedido pagado es
+  falla del proveedor y lo disponible no sube, decisión D3 del 2026-10-21 —, marca
   `failed` y deja la nota de cancelar o reembolsar por el flujo existente — ORDER-CANCEL-01
   no está en esta rama: el paso es manual). `sales.orders.manage`; recibir además
   `inventory.adjust`.
@@ -2823,9 +2824,22 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
 
-**Por confirmar con el propietario.** «No se pudo abastecer» (`fail_line`) devuelve la unidad
-liberada a la oferta (baja lo comprometido); con la regla neta, lo disponible puede quedar por
-encima de la cifra del proveedor del último archivo. ¿Debe la unidad liberada volver a la oferta?
+**Decidido (D3, 2026-10-21) — una falla del proveedor no es stock confirmado.** Cada camino que
+libera lo comprometido de una oferta:
+
+| Camino | Causa | Comprometida | Confirmada | Disponible |
+|---|---|---|---|---|
+| «No se pudo abastecer» (`fail_line`) en pedido **pagado** | falla del proveedor | − liberado | − liberado | igual |
+| `fail_line` en pedido ya **reembolsado/cancelado** por otra vía | cancelación ordinaria | − liberado | igual | + liberado |
+| Cancelar pedido (ORDER-CANCEL-01, `_release_supply`, también al cerrar una devolución) | cancelación ordinaria | − liberado | igual | + liberado |
+| Línea `to_confirm` (nunca comprometió), línea ya `failed`, línea recibida | — | nada | nada | nada |
+| Vencimiento (`expire_offers`), reembolso, anulación de caja, devolución | no liberan | nada | nada | nada |
+
+Siempre bajo el candado de la oferta, nunca más de lo que la oferta tiene (nunca negativo,
+confirmada nunca bajo comprometida), una sola vez (la línea pasa a `failed`; otra cancelación no
+la vuelve a tocar). Auditoría `order_supply_failed` con `cause` (`supplier_failure` /
+`cancellation`), `released`, `confirmed_released` y lo disponible antes y después. El siguiente
+archivo semanal sigue fijando lo disponible = su cantidad (D1).
 
 **Decidido (D1, 2026-10-21).** La cantidad semanal es lo que le queda al proveedor: se suma a lo
 ya vendido (ver «disponibilidad NETA» arriba). Antes, lo comprometido contaba contra la nueva

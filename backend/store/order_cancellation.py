@@ -694,8 +694,11 @@ def _release_supply(order, actor, reason, request) -> list[dict]:
     DEVICE-COMMERCE-01 · DC3. Every on-order line still waiting for its
     supplier stops waiting: «No se pudo abastecer», with the cancellation's
     reason. A line committed against an offer gives the offer back what it
-    committed — never more than the offer holds — exactly as the staff's
-    `supply_services.fail_line` does, audited the same way. A line «por
+    committed — never more than the offer holds — audited like the staff's
+    `supply_services.fail_line`. An ORDINARY cancellation (owner D3): the
+    supplier did not fail, it still has the units, so what is left to sell
+    grows back; only a supplier failure (`fail_line` on a paid order) keeps it
+    flat. A line already `failed` is not touched again (never released twice). A line «por
     confirmar» committed nothing. A RECEIVED line is goods on the shelf: its
     sale exit comes back in `_restore_stock`. A line not yet paid ('')
     committed nothing either.
@@ -727,7 +730,8 @@ def _release_supply(order, actor, reason, request) -> list[dict]:
             supply_status=OrderItem.SUPPLY_FAILED, supply_note=f'Pedido cancelado: {reason}'[:300])
         _audit('order_supply_failed', company=order.company, actor=actor, target_type='order',
                target_id=order.pk, request=request, line_id=line.pk, reason=reason, released=quantity,
-               order_status=Order.Status.CANCELLED, source='order_cancellation')
+               order_status=Order.Status.CANCELLED, source='order_cancellation', cause='cancellation',
+               confirmed_released=0)
         released.append({'line_id': line.pk, 'offer_id': line.supplier_offer_id, 'quantity': quantity,
                          'previous_status': line.supply_status})
     return released
