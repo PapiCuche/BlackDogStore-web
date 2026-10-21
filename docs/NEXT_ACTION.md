@@ -1,5 +1,24 @@
 # NEXT ACTION
 
+## Despliegue conjunto #137 + #138 + D1/D2 — plan (NO ejecutado; requiere autorización)
+
+Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los tres.
+1. **Acceso SSH:** desde la IP de trabajo actual el puerto 22 no responde (lista de Lightsail).
+   El propietario agrega esa IP como `/32` en Lightsail › instancia › Redes › Firewall IPv4 ›
+   regla SSH (sin abrir 22 al mundo) y avisa; el agente no toca el firewall.
+2. Preflight (sólo lectura): SHA, servicios, disco, `crontab`, pagos `pending` y su antigüedad,
+   pedidos con líneas al pase pendientes, md5 de `deploy/Caddyfile`.
+3. Copia `sh deploy/backup.sh` + `gzip -t`; restaurar en un PostgreSQL desechable y ensayar
+   `0140` y `0141` con la imagen nueva: ida, vuelta a `0139`, ida (esquema idéntico) y la imagen
+   anterior (`rollback-acf20fc`) funcionando sobre el esquema nuevo.
+4. Etiquetar imágenes `rollback-acf20fc`; respaldar Caddyfile; `git checkout <master>`; build.
+5. `migrate` con `PGOPTIONS=-c lock_timeout=5000 -c statement_timeout=300000`; `up -d`;
+   `deploy/healthcheck.sh`; recuentos iguales antes/después; sin errores.
+6. Smoke: tienda (agotado/bajo pedido), caja, productos y variantes (#137), proveedores (vista
+   previa sin aplicar), pedidos, alertas; permisos por rol; otra empresa 403.
+7. **Vuelta atrás:** sólo imágenes `rollback-acf20fc` mientras no haya `SupplierProductRef` ni
+   líneas con costo real registrado que importen; las migraciones quedan (aditivas).
+
 ## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (cuando se despliegue)
 
 1. Editar una variante sin historial y otra con ventas (debe pedir motivo de administrador).
