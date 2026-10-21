@@ -19,6 +19,14 @@ migraciones nuevas `0140` y `0141` (D3 no tiene). Preflight de sólo lectura del
    `deploy/healthcheck.sh`; recuentos iguales antes/después; sin errores.
 6. Smoke: tienda (agotado/bajo pedido), caja, productos y variantes (#137), proveedores (vista
    previa sin aplicar), pedidos, alertas; permisos por rol; otra empresa 403.
+   **Editor de variantes (#137), obligatorio:** el propietario confirmó (2026-10-21) que en
+   producción aún no puede editar modelos y variantes; es lo esperado mientras siga `acf20fc`.
+   Con una cuenta autorizada y sólo datos de prueba autorizados (nunca productos comerciales
+   reales): Productos › Modelos y variantes › abrir un modelo › ver «Editar variante» › editar y
+   guardar una variante sin historial › comprobar modelo, opciones, precio y publicación ›
+   probar el bloqueo con historial y con reservas › ver el cambio en la tienda › recargar y
+   confirmar que persiste. Un HTTP 200 o un build verde no son aceptación funcional. El informe
+   dice `VARIANT EDITOR #137: DEPLOYED / VERIFIED / PENDING OWNER ACCEPTANCE`.
 7. **Vuelta atrás:** sólo imágenes `rollback-acf20fc`, sin deshacer migraciones (aditivas), y
    sólo si no hay vistas previas de listas semanales abiertas (la versión anterior leería la
    cantidad neta como bruta) ni datos nuevos que dependan de lo desplegado; si los hay, corregir
