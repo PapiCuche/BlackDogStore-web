@@ -911,6 +911,34 @@ class OrderItem(models.Model):
     supply_chosen_over_stock = models.BooleanField(default=False, db_default=False)
     supply_choice_reason = models.CharField(max_length=200, blank=True, default='', db_default='')
 
+    # SUPPLIER-MARGIN (owner's decision D2) — the REAL unit cost the goods of
+    # an on-order line entered at, frozen next to (never instead of) the
+    # agreed `unit_cost` of the sale. The REALISED margin reads it; the
+    # estimated one keeps reading `unit_cost`. NULL = «costo real pendiente»:
+    # not received, received before this snapshot existed (never backfilled),
+    # or received by somebody without costs.view (`received_cost_source`
+    # 'agreed': it entered the Kardex at the agreed cost, nobody said the real
+    # one) until somebody with costs.view records it
+    # (`supply_services.record_real_cost`). 'real': stated or confirmed by
+    # somebody with costs.view, at reception or afterwards.
+    RECEIVED_COST_REAL = 'real'
+    RECEIVED_COST_AGREED = 'agreed'
+    RECEIVED_COST_SOURCE_CHOICES = [
+        ('', '—'),
+        (RECEIVED_COST_REAL, 'Costo real registrado'),
+        (RECEIVED_COST_AGREED, 'Recibido al costo pactado, costo real pendiente'),
+    ]
+    received_unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    received_cost_source = models.CharField(
+        max_length=8, choices=RECEIVED_COST_SOURCE_CHOICES, blank=True, default='', db_default='',
+    )
+    # When the goods arrived, and when their real cost was recorded (the same
+    # instant when it was said at reception). Who: the actor of the audit lines
+    # `order_supply_received` / `order_supply_real_cost_recorded` (no column:
+    # an FK would build an index on this table while it migrates).
+    received_at = models.DateTimeField(null=True, blank=True)
+    received_cost_at = models.DateTimeField(null=True, blank=True)
+
     @property
     def on_order(self) -> bool:
         return self.supply_origin == self.SUPPLY_SUPPLIER

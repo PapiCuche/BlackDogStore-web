@@ -24,8 +24,8 @@ selling, the overlap rule keeps the two disjoint; a row starting in the future
 that OVERLAPS it is an error (`overlaps_running`): uploading next week's file
 early never stops nor moves what sells today. Else the scheduled or switched-
 off offer the row reaches is updated in place; else (every offer ended) the
-one that ended last — what was committed stays committed and counts against
-the new confirmed quantity (an owner question). An offer off only because the
+one that ended last — what was committed stays committed (see NET
+AVAILABILITY). An offer off only because the
 expiry job switched it off (its last audited switch-off is
 `supplier_offer_expired`; a typed reason never counts) comes back on with new
 days; one switched off by hand stays matched and off. Two rows of one file
@@ -40,10 +40,20 @@ overlapping rows from before, and an exclusion constraint would refuse the
 migration. A row that keeps an overlap which already existed warns instead.
 Each supplier is independent: two suppliers of one variant may overlap.
 
-AN EXPLICIT 0 IS «AGOTADA». The confirmed quantity becomes what is committed
-(read again under the lock when applied): nothing more sells, orders already
-paid keep theirs. A non-zero quantity below the committed one is still an
-error.
+NET AVAILABILITY (owner D1, 2026-10-21). The file's quantity is what the
+supplier still has at the cut-off: what was already sold against the offer is
+reflected in it and is never subtracted again. A row that updates an offer
+sets `confirmed = committed + file quantity`, `committed` read under the
+offer's lock when applied — so what is left to sell after applying is EXACTLY
+the file's quantity, whatever payments committed between preview and apply,
+and never negative. A new offer confirms the file's quantity. Rows are
+compared on what is left (`available`), not on `confirmed`: the identical
+file again changes nothing. Audited per offer (`supplier_offer_quantity_set`:
+confirmed, committed and available before and after). An empty quantity on an
+offer with units sold is an error (it cannot become «sin confirmar»).
+
+AN EXPLICIT 0 IS «AGOTADA». `confirmed = committed`: nothing more sells,
+orders already paid keep theirs.
 
 THE COMMERCIAL PRICE IS NEVER CHANGED IN SILENCE. A row that changes an
 offer's `commercial_price` (what the customer pays on order) is shown before →
@@ -54,12 +64,22 @@ current price. Both at once is refused. Each decision is audited per offer
 (`supplier_offer_price_changed` with before/after, `supplier_offer_price_kept`
 with the current and the proposed price) with the job id.
 
-A STALE PREVIEW IS NOT APPLIED. The preview keeps each existing offer's
-`updated_at`; apply compares it under the lock (a payment, an edit, another
-file all move it) and refuses the WHOLE job — «El archivo cambió: vuelve a
+A STALE PREVIEW IS NOT APPLIED. The preview keeps what it read of each
+existing offer (`offer_state`: price, confirmed, window, lead time, state,
+cost); apply compares it under the lock (an edit, another file) and refuses
+the WHOLE job — a payment only moves `committed`, which NET AVAILABILITY
+already absorbs, so it never makes a preview stale — «El archivo cambió: vuelve a
 previsualizarlo» — before writing anything. A row the preview staged as new
 is stale too when, by then, the supplier and variant have an offer that is
 not over, or one over those days.
+
+THE SAME FILE TWICE. Under NET AVAILABILITY, re-applying a file after sales
+would set what is left once more (applied 4, sold 3, the same file again → 4
+left, not 1). A preview whose SHA-256 is that of a file already APPLIED in the
+company says so (`already_applied: {job_id, applied_at}`), and apply refuses it
+(409 `already_applied`, nothing written) unless `confirm_reapply: true`; the
+confirmation is audited (`supplier_offers_reapply_confirmed`). Checked again at
+apply, after the stale checks.
 
 WHICH VARIANT. In order: the system code («Identificador», or a code cell that
 is one); a barcode or SKU (slug); the supplier's own code already mapped to a
@@ -181,8 +201,9 @@ def _notes() -> dict:
             'permiso para ver costos; si no, se ignora.'),
         'Precio comercial': ('Lo que paga el cliente cuando compra bajo pedido. Si cambia el de una oferta, '
                              'al aplicar se te pide aceptarlo o mantener el actual.'),
-        'Cantidad confirmada': ('Cuántas unidades confirmó el proveedor. Vacío = sin confirmar: no se vende. '
-                                '0 = agotada: no se vende más; lo ya vendido se mantiene.'),
+        'Cantidad confirmada': ('Cuántas unidades le QUEDAN al proveedor a la fecha del archivo (lo ya vendido '
+                                'no se resta otra vez). Vacío = sin confirmar: no se vende. 0 = agotada: no se '
+                                'vende más; lo ya vendido se mantiene.'),
         'Vigente desde': 'Primer día de la oferta (AAAA-MM-DD o DD/MM/AAAA).',
         'Vigente hasta': 'Último día de la oferta, incluido.',
         'Plazo (días)': 'Días hasta la entrega al cliente.',
@@ -242,7 +263,7 @@ def export_bytes(*, company, include_cost: bool) -> bytes:
             'Proveedor': offer.supplier.name, 'Código/SKU del producto': _product_code(offer.product),
             'Modelo': '', 'Capacidad': '', 'Color': '', 'Línea': '',
             'Costo pactado': float(offer.agreed_cost) if offer.agreed_cost is not None else None,
-            'Precio comercial': float(offer.commercial_price), 'Cantidad confirmada': offer.confirmed_quantity,
+            'Precio comercial': float(offer.commercial_price), 'Cantidad confirmada': _available(offer),
             'Vigente desde': offer.valid_from.isoformat(), 'Vigente hasta': offer.valid_until.isoformat(),
             'Plazo (días)': offer.lead_time_days,
             SUPPLIER_CODE_HEADER: refs.get((offer.supplier_id, offer.product_id), ''),
@@ -633,12 +654,30 @@ def _resolve_product(company, index, fields, *, supplier, refs):
     return None, 'Indica el código del producto o su modelo.', None, None, None
 
 
+def _available(offer):
+    """What is left to sell: None for an unconfirmed offer."""
+    if offer.confirmed_quantity is None:
+        return None
+    return max(offer.confirmed_quantity - offer.committed_quantity, 0)
+
+
+def _fingerprint(offer) -> dict:
+    """What the preview read of an offer and a person (or another file) may change. Not `committed`."""
+    return {
+        'commercial_price': str(offer.commercial_price), 'confirmed_quantity': offer.confirmed_quantity,
+        'valid_from': offer.valid_from.isoformat(), 'valid_until': offer.valid_until.isoformat(),
+        'lead_time_days': offer.lead_time_days, 'is_active': offer.is_active,
+        'deactivated_reason': offer.deactivated_reason,
+        'agreed_cost': str(offer.agreed_cost) if offer.agreed_cost is not None else None,
+    }
+
+
 def _offer_before(offer, *, with_cost: bool) -> dict:
     before = {
         'commercial_price': str(offer.commercial_price), 'confirmed_quantity': offer.confirmed_quantity,
         'committed_quantity': offer.committed_quantity, 'valid_from': offer.valid_from.isoformat(),
         'valid_until': offer.valid_until.isoformat(), 'lead_time_days': offer.lead_time_days,
-        'is_active': offer.is_active,
+        'is_active': offer.is_active, 'available': _available(offer),
     }
     if with_cost:
         before['agreed_cost'] = str(offer.agreed_cost) if offer.agreed_cost is not None else None
@@ -832,21 +871,21 @@ def preview(*, company, actor, upload, filename) -> BulkImportJob:
             continue
         payload['offer_id'] = existing.pk
         payload['offer_updated_at'] = existing.updated_at.isoformat()
+        payload['offer_state'] = _fingerprint(existing)
         payload['before'] = _offer_before(existing, with_cost=with_cost)
-        confirmed = clean['confirmed_quantity']
-        sold_out = confirmed == 0
-        target = existing.committed_quantity if sold_out else confirmed
-        below = confirmed is None or confirmed < existing.committed_quantity
-        if not sold_out and existing.committed_quantity and below:
+        available = clean['confirmed_quantity']        # NET: what the supplier still has
+        payload['available'] = available
+        sold_out = available == 0
+        if available is None and existing.committed_quantity:
             stage(row_number, BulkImportRow.ERROR, data=shown, warnings=warnings, errors=[
-                f'Ya se vendieron {existing.committed_quantity} contra esta oferta: la cantidad confirmada '
-                'no puede ser menor (0 = agotada).'])
+                f'Ya se vendieron {existing.committed_quantity} contra esta oferta: indica cuántas le quedan al '
+                'proveedor (0 = agotada).'])
             continue
         if active is None and not existing.is_active:
             warnings.append('Oferta desactivada a mano: no se reactiva. Escribe «Sí» en «Activa» para reactivarla.')
         changes = [name for name, differs in (
             ('commercial_price', existing.commercial_price != clean['commercial_price']),
-            ('confirmed_quantity', existing.confirmed_quantity != target),
+            ('available', _available(existing) != available),
             ('valid_from', existing.valid_from != clean['valid_from']),
             ('valid_until', existing.valid_until != clean['valid_until']),
             ('lead_time_days', existing.lead_time_days != clean['lead_time_days']),
@@ -919,6 +958,7 @@ def job_payload(job, *, include_cost: bool) -> dict:
         'id': job.pk, 'status': job.status, 'rows_total': job.rows_total, 'rows_create': job.rows_create,
         'rows_update': job.rows_update, 'rows_no_change': job.rows_no_change, 'rows_error': job.rows_error,
         'cost_column_ignored': bool((job.summary or {}).get('cost_column_ignored')),
+        'already_applied': previously_applied(job) if job.status != BulkImportJob.APPLIED else None,
         'summary': summary, 'rows': rows,
     }
 
@@ -926,6 +966,16 @@ def job_payload(job, *, include_cost: bool) -> dict:
 # ---------------------------------------------------------------------------
 # Apply
 # ---------------------------------------------------------------------------
+
+def previously_applied(job):
+    """`{job_id, applied_at}` of the latest APPLIED job of the company with the very same file, or None."""
+    earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
+                                            file_sha256=job.file_sha256, status=BulkImportJob.APPLIED)
+               .exclude(pk=job.pk).order_by('-applied_at', '-pk').first())
+    if earlier is None:
+        return None
+    return {'job_id': earlier.pk, 'applied_at': earlier.applied_at.isoformat() if earlier.applied_at else None}
+
 
 def _price_rows(rows) -> list[dict]:
     return [{
@@ -936,7 +986,8 @@ def _price_rows(rows) -> list[dict]:
 
 
 @transaction.atomic
-def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False) -> dict:
+def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False,
+          confirm_reapply: bool = False) -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -985,8 +1036,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         if offer is None:
             raise OfferImportError(f'La oferta de la fila {row.row_number} ya no existe. Vuelve a subir el archivo.',
                                    code='stale')
-        if data.get('offer_updated_at') and offer.updated_at.isoformat() != data['offer_updated_at']:
-            raise OfferImportError(STALE, code='stale')
+        if data.get('offer_state') is not None:
+            if _fingerprint(offer) != data['offer_state']:
+                raise OfferImportError(STALE, code='stale')
+        elif data.get('offer_updated_at') and offer.updated_at.isoformat() != data['offer_updated_at']:
+            raise OfferImportError(STALE, code='stale')     # a job previewed before NET AVAILABILITY
         # Under the lock, the row's days against every OTHER active offer of the pair: one created by
         # hand (or by another file) since the preview must not end up selling over the same days.
         added, _kept = overlap_of(job.company, offer.supplier_id, offer.product_id,
@@ -995,6 +1049,18 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                   current=offer)
         if added:
             raise OfferImportError(STALE, code='stale')
+
+    earlier = previously_applied(job)
+    if earlier is not None:
+        if not confirm_reapply:
+            raise OfferImportError(
+                'Este archivo ya se aplicó: aplicarlo otra vez vuelve a fijar lo disponible de cada oferta (lo '
+                'vendido desde entonces no se descuenta). Confírmalo para aplicarlo de nuevo.',
+                code='already_applied', extra={'already_applied': earlier})
+        AdminAuditLog.log(actor=actor, action='supplier_offers_reapply_confirmed', target_type='bulk_import_job',
+                          target_id=job.pk, request=request, company=job.company,
+                          metadata={'job_id': job.pk, 'previous_job_id': earlier['job_id'],
+                                    'previous_applied_at': earlier['applied_at'], 'file_sha256': job.file_sha256})
 
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
     for row in writing:
@@ -1014,17 +1080,34 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             elif row.action == BulkImportRow.UPDATE:
                 offer = offers[_pk(data.get('offer_id'))]
                 price_change = data.get('price_change')
-                if data.get('sold_out'):
-                    # Read under the lock: what is committed now, never less.
+                quantity_before = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
+                                   'available': _available(offer)}
+                if 'available' in data:
+                    # NET AVAILABILITY: `committed` read under the lock, so what is left is the file's quantity.
+                    if data['available'] is None:
+                        fields['confirmed_quantity'] = None
+                    else:
+                        fields['confirmed_quantity'] = offer.committed_quantity + int(data['available'])
+                elif data.get('sold_out'):
                     fields['confirmed_quantity'] = offer.committed_quantity
                 if price_change and keep_prices:
                     fields.pop('commercial_price')
                 supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
+                quantity_after = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
+                                  'available': _available(offer)}
+                if quantity_after != quantity_before:
+                    AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_set', target_type='supplier_offer',
+                                      target_id=offer.pk, request=request, company=job.company, metadata={
+                                          'job_id': job.pk, 'row_number': row.row_number,
+                                          'file_quantity': data.get('available'), 'before': quantity_before,
+                                          'after': quantity_after})
                 if price_change:
                     _audit_price(job, row, offer, price_change, kept=keep_prices, actor=actor, request=request)
                     prices_kept += keep_prices
                     prices_changed += not keep_prices
-                if keep_prices and data.get('changes') == ['commercial_price']:
+                if keep_prices and data.get('changes') == ['commercial_price'] and quantity_after == quantity_before:
+                    # Only the price changed, and it was kept. A payment since the preview moves `confirmed`
+                    # (NET AVAILABILITY): then it is an update.
                     unchanged += 1
                 elif data.get('sold_out'):
                     sold_out += 1

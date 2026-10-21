@@ -47,6 +47,7 @@ import {
   previewWeeklyImport,
   saveSupplierProductRef,
   summaryOf,
+  type AlreadyApplied,
   type PriceChangeRow,
   type PriceDecision,
   type SupplierImportChange,
@@ -580,7 +581,9 @@ const IMPORT_ACTION_LABELS: Record<string, string> = {
 };
 
 function formatChange(field: SupplierImportChange, value: unknown): string {
-  if (value === null || value === undefined || value === "") return field === "confirmed_quantity" ? "Sin confirmar" : "—";
+  if (value === null || value === undefined || value === "") {
+    return field === "confirmed_quantity" || field === "available" ? "Sin confirmar" : "—";
+  }
   if (field === "commercial_price" || field === "agreed_cost") return formatSoles(String(value));
   if (field === "valid_from" || field === "valid_until") return formatDay(String(value));
   if (field === "is_active") return value ? "Sí" : "No";
@@ -600,6 +603,7 @@ export function rowDiff(row: WeeklyImportRow): RowChange[] {
   return row.data.changes
     .filter((field) => field !== "sale_mode" && (field !== "agreed_cost" || Object.prototype.hasOwnProperty.call(before, "agreed_cost")))
     .map((field) => {
+      // An older server compared `confirmed_quantity`; its sold-out «after» was what was committed.
       const next = field === "confirmed_quantity" && row.data.sold_out ? before.committed_quantity : after[field];
       return {
         field,
@@ -632,6 +636,8 @@ function ImportSection({
   const [refused, setRefused] = useState<PriceChangeRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [acceptPrices, setAcceptPrices] = useState(false);
+  const [reapplied, setReapplied] = useState<AlreadyApplied | null>(null);
+  const [confirmReapply, setConfirmReapply] = useState(false);
   const [mapping, setMapping] = useState<Mapping | null>(null);
   const [mapNote, setMapNote] = useState<string | null>(null);
 
@@ -643,9 +649,13 @@ function ImportSection({
     setResult(null);
     setPreview(null);
     setAcceptPrices(false);
+    setConfirmReapply(false);
+    setReapplied(null);
     setMapping(null);
     try {
-      setPreview(await previewWeeklyImport(file, companyId));
+      const shown = await previewWeeklyImport(file, companyId);
+      setPreview(shown);
+      setReapplied(shown.already_applied ?? null);
     } catch (err) {
       setError(message(err, "No se pudo leer el archivo."));
     } finally {
@@ -659,7 +669,7 @@ function ImportSection({
     setError(null);
     setRefused([]);
     try {
-      setResult(await applyWeeklyImport(preview.id, decision, companyId));
+      setResult(await applyWeeklyImport(preview.id, decision, companyId, { confirmReapply: Boolean(reapplied) && confirmReapply }));
       setPreview(null);
       setFile(null);
       setMapNote(null);
@@ -670,6 +680,11 @@ function ImportSection({
         // Nothing was written. The file is still chosen: preview it again.
         setPreview(null);
         setError(`${err.message} No se aplicó nada: pulsa «Previsualizar» otra vez.`);
+      } else if (err instanceof WeeklyImportError && err.code === "already_applied") {
+        // Found applied only now (another person applied the same file meanwhile): ask, then retry.
+        setReapplied(err.alreadyApplied);
+        setConfirmReapply(false);
+        setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code === "price_confirmation_required") {
         setRefused(err.priceChanges);
         setError(err.message);
@@ -769,7 +784,7 @@ function ImportSection({
               <thead>
                 <tr className="border-b border-bd-border">
                   <Th right>Fila</Th><Th>Acción</Th><Th>Proveedor</Th><Th>Producto</Th><Th right>Precio</Th>
-                  <Th right>Cantidad</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
+                  <Th right>Disponible</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
                 </tr>
               </thead>
               <tbody>
@@ -860,13 +875,22 @@ function ImportSection({
               <p className="mt-1 text-xs text-muted">Sin aceptarlos puedes aplicar lo demás y mantener los precios actuales.</p>
             </fieldset>
           ) : null}
+          {reapplied ? (
+            <fieldset className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm" aria-label="Archivo ya aplicado">
+              <label className="flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmReapply} onChange={(e) => setConfirmReapply(e.target.checked)} />
+                Este archivo ya se aplicó el {reapplied.applied_at ? formatDateTime(reapplied.applied_at) : "—"}; aplicarlo otra vez vuelve a fijar lo disponible.
+              </label>
+              <p className="mt-1 text-xs text-muted">Lo vendido desde entonces no se descuenta: cada oferta vuelve a quedar con la cantidad del archivo.</p>
+            </fieldset>
+          ) : null}
           <div className="flex flex-wrap items-center justify-end gap-3">
             {preview.rows_error > 0 ? (
               <p className="text-xs text-danger">Corrige las filas con error y vuelve a subir el archivo para aplicarlo.</p>
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || preview.rows_error > 0 || (Boolean(reapplied) && !confirmReapply)}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -874,7 +898,7 @@ function ImportSection({
               type="button"
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
-              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices)}
+              disabled={busy || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || (Boolean(reapplied) && !confirmReapply)}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
             </button>

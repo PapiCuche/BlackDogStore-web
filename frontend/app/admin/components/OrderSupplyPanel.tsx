@@ -26,6 +26,7 @@ import {
   failOrderSupply,
   fetchSupplierOffers,
   receiveOrderSupply,
+  recordOrderSupplyRealCost,
   SupplyReceiveError,
   type SupplierOffer,
 } from "../lib/internal-api";
@@ -344,7 +345,7 @@ function ReceiveForm({
             />
           </label>
           <span id={`supply-${item.id}-unit-cost-hint`} className="mt-1 block text-[11px] text-muted">
-            Vacío: entra al costo pactado. La venta conserva el costo pactado.
+            Vacío: la mercadería entra al costo pactado y el costo real queda pendiente hasta registrarlo. La venta conserva el costo pactado.
           </span>
           <FieldError id={`supply-${item.id}-unit-cost-error`} message={errors.unit_cost} />
         </div>
@@ -358,6 +359,47 @@ function ReceiveForm({
   );
 }
 
+/**
+ * SUPPLIER-MARGIN (D2) — «Registrar costo real»: a received line whose real
+ * cost nobody recorded. Only the line's real cost is written (the margin
+ * reads it); the Kardex and the branch average are not touched.
+ */
+function RealCostForm({
+  orderId, item, onDone,
+}: { orderId: number; item: AdminOrderItem; onDone: () => Promise<void> }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!value.trim()) { setError("Escribe el costo real por unidad."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await recordOrderSupplyRealCost(orderId, item.id, value.trim());
+      await onDone();
+    } catch (err) {
+      setError(message(err, "No se pudo registrar el costo real."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} noValidate aria-label={`Registrar costo real: ${item.product_name}`} className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-warning-border bg-warning-surface p-3">
+      <label className="block min-w-48 text-xs text-muted">
+        Costo real por unidad
+        <input value={value} onChange={(e) => setValue(e.target.value)} inputMode="decimal" autoComplete="off"
+          placeholder={item.agreed_unit_cost ?? ""} className={`mt-1.5 ${internalInputClass}`} />
+      </label>
+      <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>{saving ? "Registrando…" : "Registrar costo real"}</button>
+      <p className="w-full text-[11px] text-muted">Sólo para el margen realizado: no cambia el Kardex ni el costo promedio.</p>
+      {error ? <p role="alert" className="w-full text-xs text-danger">{error}</p> : null}
+    </form>
+  );
+}
+
 /** For `costs.view`: what the line was sold against and what it really cost. */
 function CostFacts({ item }: { item: AdminOrderItem }) {
   if (!seesCosts(item)) return null;
@@ -365,6 +407,7 @@ function CostFacts({ item }: { item: AdminOrderItem }) {
   return (
     <p className="mt-1 text-xs text-muted" aria-label="Costos de la línea">
       Costo pactado {soles(item.agreed_unit_cost)}
+      {item.supply_status === "received" && !item.received_unit_cost ? " · Costo real pendiente (sin costo real registrado)" : null}
       {item.received_unit_cost !== null && item.received_unit_cost !== undefined ? (
         <>
           {" · "}Costo real {soles(item.received_unit_cost)}
@@ -425,13 +468,14 @@ export function OrderSupplyPanel({
   const canManage = Boolean(order.can_manage_supply);
   const canReceive = Boolean(order.can_receive_supply);
 
-  function done(kind: "confirm" | "receive" | "fail") {
+  function done(kind: "confirm" | "receive" | "fail" | "real-cost") {
     return async (said?: string) => {
       setAction(null);
       setNotice(
         said ?? (kind === "fail"
           ? "Registrado como no abastecido. La devolución o la anulación se hace con el flujo habitual de la orden; no ocurre sola."
-          : kind === "receive" ? "Recepción registrada." : "Confirmado con el proveedor."),
+          : kind === "receive" ? "Recepción registrada."
+            : kind === "real-cost" ? "Costo real registrado." : "Confirmado con el proveedor."),
       );
       try {
         onChanged(await fetchAdminOrderDetail(order.id));
@@ -501,6 +545,9 @@ export function OrderSupplyPanel({
               {open === "confirm" ? <ConfirmForm orderId={order.id} item={item} onDone={done("confirm")} onCancel={() => setAction(null)} /> : null}
               {open === "receive" ? <ReceiveForm orderId={order.id} item={item} onDone={done("receive")} onCancel={() => setAction(null)} /> : null}
               {open === "fail" ? <FailForm orderId={order.id} item={item} onDone={done("fail")} onCancel={() => setAction(null)} /> : null}
+              {canReceive && seesCosts(item) && status === "received" && !item.received_unit_cost ? (
+                <RealCostForm orderId={order.id} item={item} onDone={done("real-cost")} />
+              ) : null}
               {status === "failed" ? (
                 <p className="mt-3 text-xs text-danger">
                   No se abasteció. Si corresponde, haz la devolución o la anulación con el flujo habitual de la orden.

@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-21 — Cantidad neta semanal y margen realizado con costo real
+
+**Changed**
+- La cantidad de la lista semanal es lo que queda por vender (no se descuenta otra vez lo
+  comprometido).
+- El margen realizado de una venta al pase usa el costo real de la recepción; sin él, «costo real
+  pendiente».
+
+**Added**
+- «Registrar costo real» de una línea recibida (`costs.view`).
+
 ## 2026-10-21 — Proveedores, venta al pase y recepción rápida
 
 **Added**

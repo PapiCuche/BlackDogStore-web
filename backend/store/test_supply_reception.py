@@ -151,7 +151,9 @@ class LinePayloadTest(ReceptionShop, TestCase):
         line = as_client(self.staff).post(self.url(self.order), {}, format='json').json()
         self.assertEqual((line['product_name'], line['quantity'], line['price']), ('Cargador 20W', 2, '110.00'))
         self.assertEqual(line['fulfillment_branch'], {'id': self.branch.pk, 'name': self.branch.name})
-        self.assertEqual((line['agreed_unit_cost'], line['received_unit_cost']), ('70.0000', '70.0000'))
+        # D2: received without stating a real cost -> «costo real pendiente».
+        self.assertEqual((line['agreed_unit_cost'], line['received_unit_cost'], line['received_cost_source']),
+                         ('70.0000', None, 'agreed'))
 
     def test_the_buyer_sees_none_of_it(self):
         from django.contrib.auth.models import User
@@ -223,15 +225,15 @@ class RealCostTest(ReceptionShop, TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(StockUnit.objects.get(product=self.phone).cost, D('2500.00'))
 
-    def test_the_margin_keeps_reading_the_agreed_cost(self):
-        """Decision: estimated and realised margin read the sale snapshot (the agreed cost)."""
+    def test_the_margin_estimates_at_the_agreed_cost_and_realises_at_the_real_one(self):
+        """Owner's decision D2 (see test_supply_margin): estimated = agreed, realised = real."""
         order = self.paid_order(self.case, 2)
         Order.objects.filter(pk=order.pk).update(paid_at=timezone.now())
         supply.receive_line(order.items.get(), actor=self.staff, unit_cost='50.00')
         analyst, _ = _p2d_member(self.company, 'sdf2_margen', ['company.view', 'sales.analytics.view', 'costs.view'])
         body = as_client(analyst).get('/api/admin/sales/margin/?days=7').json()
         self.assertEqual(D(body['cost_of_goods_sold']), D('140.00'))
-        self.assertEqual(D(body['realised']['cost']), D('140.00'))
+        self.assertEqual(D(body['realised']['cost']), D('100.00'))
         self.assertEqual(body['realised']['lines'], 1)
 
     def test_the_settlement_keeps_the_agreed_cost(self):

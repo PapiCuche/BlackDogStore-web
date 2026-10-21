@@ -3,7 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-21 — SUPPLIER-DEVICE-FLOW-02 (rama `feat/supplier-device-flow-02`, NO desplegado)
+## 2026-10-21 — D1/D2: cantidad neta semanal y margen realizado con costo real (rama `fix/supplier-margin-qty`, NO desplegado)
+
+Desde `master` `a9dfd00`. Migración `0141_orderitem_received_cost` (aditiva, columnas nulas).
+- **D1:** la cantidad de la lista semanal es la disponibilidad neta del proveedor a la fecha de
+  corte: al actualizar, confirmado = comprometido actual + cantidad del archivo (disponible =
+  archivo); nueva oferta = archivo; 0 = agotada. Mismo archivo otra vez: sin cambios.
+- **D2:** margen estimado con el costo acordado (instantánea de la venta, nunca reescrita);
+  margen realizado con el costo real registrado al recibir (`OrderItem.received_unit_cost`). Sin
+  costo real (no recibido, recibido sin `costs.view` o antes de este cambio) = «costo real
+  pendiente», aparte y nunca como realizado; `costs.view` lo registra después
+  (`POST …/supply/<línea>/real-cost/`), sin tocar Kardex ni costo promedio.
+
+## 2026-10-21 — SUPPLIER-DEVICE-FLOW-02 (#138 en `master` `a9dfd00`, NO desplegado)
 
 Desde `master` `f3f6c29` (con #137). Migración `0140_supplier_product_ref` (aditiva). Decisiones:
 DEC-SUPPLIER-WEEKLY-01 y la sección de recepción en 05.
@@ -19,8 +31,7 @@ DEC-SUPPLIER-WEEKLY-01 y la sección de recepción en 05.
   devolución abierta. Alertas operativas por empresa en el tablero. «Agotado» visible y no
   comprable en la tienda. «Vender en caja» desde disponibilidad. IMEI 2 en seminuevos.
 - **Fiscal:** la boleta/factura no espera a la recepción (contrato actual: pedido pagado).
-- **Preguntas para el propietario:** la cantidad semanal ¿incluye lo ya comprometido? (hoy sí);
-  margen realizado ¿con costo real o acordado? (hoy acordado).
+- Decisiones D1/D2 del propietario aplicadas en la corrección siguiente.
 - Pruebas: suite completa 7945 OK (antes de las correcciones de la revisión); Jest 1727;
   `next build`; Playwright 101/101. Revisión independiente: NO-GO (oferta solapada desde el
   asistente; la lista de la semana siguiente detenía la vigente; solape al aplicar), corregido.

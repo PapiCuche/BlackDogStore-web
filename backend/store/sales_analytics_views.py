@@ -24,7 +24,7 @@ so any such number would be invented. Turnover is reported; earnings are not.
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import Avg, Count, DecimalField, F, Q, Sum
+from django.db.models import Avg, Case, Count, DecimalField, F, Q, Sum, When
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -509,6 +509,11 @@ class AdminSalesMarginView(APIView):
     costs only); unknown costs (`unknown_cost`) and refunds (`refunds`, with
     and without IGV) apart. There is no cost adjustment of goods sold to show:
     the history is never recomputed (DC1). Never «utilidad neta».
+
+    OWNER'S DECISION D2 (SUPPLIER-MARGIN). An on-order line is ESTIMATED at its
+    agreed cost (`unit_cost`) and REALISED at the real cost frozen when it was
+    received (`received_unit_cost`); one without a real cost is listed apart
+    as `real_cost_pending` (lines, orders, net sales) and is never realised.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -578,9 +583,20 @@ class AdminSalesMarginView(APIView):
 
         known_net = _cents(totals['net'])
         cost = _cents(totals['cost'])
-        realised = self._figures(known.filter(self.REALISED))
+        # SUPPLIER-MARGIN (owner's decision D2): the realised margin of an
+        # on-order line is at the REAL cost frozen when it was received; the
+        # estimate keeps its agreed cost. Without a real cost the line is
+        # «costo real pendiente», listed apart and never realised.
+        realised = self._figures(known.filter(self.REALISED), cost=self.REALISED_COST)
         collections = _collections(company, branches, since, today, tz)
         estimated_only = known.exclude(self.REALISED)
+        # A FAILED line will never be received: it is not «pending», it goes to
+        # the refund flow (its order is cancelled or refunded in time). A line
+        # «por confirmar» may still be received: pending, counted apart.
+        real_pending = lines.filter(supply_origin=OrderItem.SUPPLY_SUPPLIER, received_unit_cost__isnull=True).exclude(
+            supply_status=OrderItem.SUPPLY_FAILED)
+        real_pending_net = real_pending.aggregate(
+            net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['net']
         return Response({
             'window_days': days,
             'label': 'Margen comercial estimado',
@@ -610,12 +626,26 @@ class AdminSalesMarginView(APIView):
             'estimated': {'lines': known.count(), 'net_sales': str(known_net), 'cost': str(cost),
                           'margin': str(known_net - cost), 'margin_percent': _percent(known_net - cost, known_net)},
             'realised': realised,
+            # D2: on-order lines without a real cost yet — not received, or
+            # received before the real cost was recorded (never backfilled).
+            'real_cost_pending': {
+                'lines': real_pending.count(),
+                'orders': real_pending.values('order_id').distinct().count(),
+                'net_sales': str(_cents(real_pending_net)),
+                'not_received_lines': real_pending.filter(supply_status=OrderItem.SUPPLY_PENDING).count(),
+                'to_confirm_lines': real_pending.filter(supply_status=OrderItem.SUPPLY_TO_CONFIRM).count(),
+                'received_without_real_cost_lines': real_pending.filter(
+                    supply_status=OrderItem.SUPPLY_RECEIVED).count(),
+            },
             'estimated_only': {
                 'lines': estimated_only.count(),
                 'net_sales': str(known_net - Decimal(realised['net_sales'])),
                 'reference_cost_lines': estimated_only.filter(cost_source=OrderItem.COST_REFERENCE).count(),
                 'on_order_not_received_lines': estimated_only.filter(
-                    supply_origin=OrderItem.SUPPLY_SUPPLIER).count(),
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(supply_status=OrderItem.SUPPLY_RECEIVED).count(),
+                # D2: received, but no real cost recorded yet.
+                'on_order_without_real_cost_lines': estimated_only.filter(
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED).count(),
             },
             'unknown_cost': {
                 'lines': pending.count(),
@@ -672,19 +702,28 @@ class AdminSalesMarginView(APIView):
 
     #: A CONFIRMED cost (owner, 2026-10-15): what left our own shelf at its
     #: average or its device's own cost, or an on-order line whose goods were
-    #: received (its entry was written at the agreed cost). A reference cost,
-    #: or an agreed cost of goods not received yet, is only an estimate.
+    #: received WITH a real cost recorded (owner's decision D2). A reference
+    #: cost, an agreed cost of goods not received yet, or a line received
+    #: before its real cost was recorded, is only an estimate.
     REALISED = (
         Q(supply_origin=OrderItem.SUPPLY_OWN, cost_source__in=(OrderItem.COST_AVERAGE, OrderItem.COST_UNIT))
-        | Q(supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED)
+        | Q(supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED,
+            received_unit_cost__isnull=False)
+    )
+    #: D2: the realised cost of a line — an own line's snapshot, an on-order
+    #: line's real cost at reception (never its agreed `unit_cost`).
+    REALISED_COST = Case(
+        When(supply_origin=OrderItem.SUPPLY_SUPPLIER, then=F('received_unit_cost')),
+        default=F('unit_cost'), output_field=DecimalField(max_digits=14, decimal_places=4),
     )
 
     @staticmethod
-    def _figures(lines) -> dict:
+    def _figures(lines, cost=None) -> dict:
         """Lines, net sales, cost, margin and margin % of lines that all have a cost."""
+        unit = cost if cost is not None else F('unit_cost')
         totals = lines.aggregate(
             net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY),
-            cost=Coalesce(Sum(F('unit_cost') * F('quantity'), output_field=_COST), Decimal('0'),
+            cost=Coalesce(Sum(unit * F('quantity'), output_field=_COST), Decimal('0'),
                           output_field=_COST),
         )
         net, cost = _cents(totals['net']), _cents(totals['cost'])

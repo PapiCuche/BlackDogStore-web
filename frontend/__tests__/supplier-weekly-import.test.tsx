@@ -23,7 +23,7 @@ let preview: unknown;
 
 const BEFORE = {
   commercial_price: '110.00', confirmed_quantity: 5, committed_quantity: 2, valid_from: '2026-10-19',
-  valid_until: '2026-10-25', lead_time_days: 4, is_active: true,
+  valid_until: '2026-10-25', lead_time_days: 4, is_active: true, available: 3,
 };
 
 const updateRow = (row_number: number, data: Record<string, unknown>, warnings: string[] = []) => ({
@@ -50,8 +50,8 @@ beforeEach(() => {
   previews = 0;
   applyAnswer = () => reply({ status: 'applied', created: 0, updated: 1, unchanged: 0, sold_out: 1 });
   preview = previewOf([
-    updateRow(2, { confirmed_quantity: 9, lead_time_days: 6, changes: ['confirmed_quantity', 'lead_time_days'] }),
-    updateRow(3, { confirmed_quantity: 0, sold_out: true, changes: ['confirmed_quantity'] }, ['Agotada: no se vende más.']),
+    updateRow(2, { confirmed_quantity: 9, available: 9, lead_time_days: 6, changes: ['available', 'lead_time_days'] }),
+    updateRow(3, { confirmed_quantity: 0, available: 0, sold_out: true, changes: ['available'] }, ['Agotada: no se vende más.']),
   ]);
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -85,14 +85,20 @@ describe('vista previa: antes → después', () => {
   it('cada fila dice qué era y qué será, y el resumen cuenta las agotadas', async () => {
     const shown = await upload();
     const changes = within(shown).getByRole('list', { name: 'Cambios de la fila 2' });
-    expect(changes).toHaveTextContent('Cantidad confirmada: 5 → 9');
+    // Owner D1: the file's quantity is what is left to sell after applying (3 left now → 9).
+    expect(changes).toHaveTextContent('Disponible para vender: 3 → 9');
     expect(changes).toHaveTextContent('Entrega (días): 4 → 6');
+    expect(within(shown).getByRole('columnheader', { name: 'Disponible' })).toBeInTheDocument();
     const soldOut = screen.getByTestId('import-row-3');
     expect(soldOut).toHaveTextContent('Agotada');
-    // Sold out: what remains confirmed is what was committed.
-    expect(within(soldOut).getByRole('list', { name: 'Cambios de la fila 3' })).toHaveTextContent('Cantidad confirmada: 5 → 2');
+    expect(within(soldOut).getByRole('list', { name: 'Cambios de la fila 3' })).toHaveTextContent('Disponible para vender: 3 → 0');
     const agotadas = within(shown).getByText('Agotadas').closest('div')!;
     expect(agotadas).toHaveTextContent('1');
+  });
+
+  it('una respuesta de un servidor anterior (compara la cantidad confirmada) se sigue leyendo', () => {
+    const row = updateRow(3, { confirmed_quantity: 0, sold_out: true, changes: ['confirmed_quantity'] }) as unknown as WeeklyImportRow;
+    expect(rowDiff(row)).toEqual([{ field: 'confirmed_quantity', label: 'Cantidad confirmada', before: '5', after: '2' }]);
   });
 
   it('el costo sólo aparece si el servidor lo mandó en «before»', () => {
@@ -145,6 +151,30 @@ describe('precio comercial nuevo: decisión explícita', () => {
     expect(within(shown).queryByRole('button', { name: 'Aplicar sin cambiar precios' })).toBeNull();
     await act(async () => { fireEvent.click(within(shown).getByRole('button', { name: 'Aplicar cambios' })); });
     expect(applied()[0].body).toEqual({});
+  });
+});
+
+describe('el mismo archivo otra vez', () => {
+  it('avisa, exige la casilla y envía `confirm_reapply`', async () => {
+    preview = { ...previewOf([updateRow(2, { changes: ['available'], available: 7 })], { sold_out: 0 }),
+      already_applied: { job_id: 60, applied_at: '2026-10-20T15:00:00Z' } };
+    const shown = await upload();
+    const group = within(shown).getByRole('group', { name: 'Archivo ya aplicado' });
+    const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
+    expect(applyButton).toBeDisabled();
+    fireEvent.click(within(group).getByRole('checkbox', { name: /Este archivo ya se aplicó el .*vuelve a fijar lo disponible/ }));
+    expect(applyButton).toBeEnabled();
+    await act(async () => { fireEvent.click(applyButton); });
+    expect(applied()[0].body).toEqual({ confirm_reapply: true });
+  });
+
+  it('si el servidor lo descubre al aplicar (409), pide la confirmación', async () => {
+    applyAnswer = () => reply({ detail: 'Este archivo ya se aplicó.', code: 'already_applied', already_applied: { job_id: 60, applied_at: '2026-10-20T15:00:00Z' } }, 409);
+    preview = previewOf([updateRow(2, { changes: ['available'], available: 7 })], { sold_out: 0 });
+    const shown = await upload();
+    await act(async () => { fireEvent.click(within(shown).getByRole('button', { name: 'Aplicar cambios' })); });
+    expect(await within(shown).findByRole('group', { name: 'Archivo ya aplicado' })).toBeInTheDocument();
+    expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
   });
 });
 

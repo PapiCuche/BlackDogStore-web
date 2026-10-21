@@ -2381,10 +2381,8 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   el real; `received_unit_cost` lo lee de la entrada (o de los equipos que vendió la recepción) y
   `unit_cost_difference` = real − pactado, sólo para `costs.view`. Kardex sin cambios: una entrada y
   una salida de venta, estante neto cero. La auditoría dice si se indicó costo real, nunca el importe.
-- **Margen (decisión, a confirmar):** el estimado y el realizado siguen leyendo la instantánea de
-  la venta (el pactado), como hasta ahora; también la liquidación al proveedor
-  (`pending_settlement`). La diferencia se ve por pedido. Si el propietario quiere el realizado al
-  costo real, es un cambio de `sales_analytics_views` (leer la entrada de la línea) y no de datos.
+- **Margen:** *superado por la decisión D2 del propietario* (ver «Margen realizado al costo real»,
+  abajo). La liquidación al proveedor (`pending_settlement`) sigue al costo pactado.
 - **Una sola vez.** Recibir una línea ya recibida responde **409 `already_received`** con los
   equipos que nombró (antes 400 `wrong_state`); bajo el bloqueo del pedido, dos recepciones a la
   vez dejan una sola entrada.
@@ -2415,6 +2413,43 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   - *«Recibidos, por despachar o entregar»* cuenta sólo lo que sigue en la tienda: un pedido
     **enviado** queda fuera (va en camino; nadie en la tienda tiene que actuar) y uno entregado
     también.
+- **Margen realizado al costo real — decisión D2 del propietario (2026-10-21, `fix/supplier-margin-qty`,
+  migración `0141_orderitem_received_cost`, aditiva):**
+  - *Estimado* = costo pactado congelado de la línea bajo pedido (`OrderItem.unit_cost`), como antes.
+    *Realizado* = costo real registrado: `OrderItem.received_unit_cost` (+ `received_cost_source`
+    `real`/`agreed`, `received_at`, `received_cost_at`), escrito bajo el bloqueo del pedido.
+    `unit_cost` nunca se reescribe. Quién: el actor de la auditoría `order_supply_received` /
+    `order_supply_real_cost_recorded` (sin columna: una FK crearía un índice en la tabla grande).
+  - *Real* sólo si alguien con `costs.view` lo **escribe**: al recibir (el de la línea, o el de cada
+    equipo; equipos: la media) o después. Dejar el campo vacío **no** confirma el pactado (regla D2
+    «si falta costo real → pendiente»): queda `agreed` y pendiente hasta registrarlo.
+  - *Recibida sin `costs.view`*: entró al Kardex al pactado, pero nadie registró su costo real →
+    origen `agreed`, `received_unit_cost` vacío: **costo real pendiente**, no realizado.
+  - *Registrar costo real* — `POST /api/admin/orders/<pk>/supply/<línea>/real-cost/` `{unit_cost}`:
+    `sales.orders.manage` + `inventory.adjust` (lo de recibir) + `costs.view`; sólo una línea
+    recibida (si no, 409 `not_received`), importe positivo, bajo el bloqueo del pedido. El mismo
+    valor otra vez responde 200 sin nueva auditoría; otro valor sobre un costo real ya registrado,
+    409 `already_real` (nunca se sobrescribe). Auditoría: que se registró y sobre qué origen, nunca
+    el importe (como el resto de la auditoría de costos). En el panel, «Registrar costo real» en
+    la línea pendiente para quien ve costos.
+  - *No toca el Kardex ni el costo promedio* de la sucursal ni el de los equipos: la mercadería
+    sigue registrada al costo con que entró. Corregir ese costo es la fase separada **PENDIENTE**.
+  - *Sin costo real* (no recibida, o recibida antes de `0141`: esas quedan NULL, **no se rellenan**
+    desde el Kardex porque no se sabe si aquel costo era real o el pactado): «costo real pendiente»,
+    fuera del realizado y listada aparte en `/api/admin/sales/margin/` (`real_cost_pending`: líneas,
+    pedidos, venta neta sin IGV; desglose sin recibir / por confirmar / recibidas sin costo real) y
+    en el panel. Una línea **no abastecida** (`failed`) no cuenta como pendiente: nunca se recibirá
+    y va al flujo de reembolso. «Por confirmar» sí (puede recibirse), contada aparte.
+    `estimated_only` separa `on_order_not_received_lines` (cualquier estado distinto de recibido) de
+    `on_order_without_real_cost_lines` (recibidas sin costo real).
+  - *Cifras a mano* (`test_device_decisions.MarginEstimatedRealisedTest`): la línea bajo pedido
+    recibida sin costo real pasa del realizado a «costo real pendiente» (realizado 300/190, 36,67 %);
+    estimado, ventas, costo desconocido y reembolsos no cambian.
+  - *Sin cambios*: las líneas de stock propio; las ventas netas (`net_amount`, sin IGV) y su reparto;
+    cancelados y reembolsados fuera como antes; sólo `costs.view`. Una línea bajo pedido sin costo
+    pactado sigue en «costo desconocido» (fuera de ambos), aunque tenga costo real.
+  - *Vuelta atrás*: a `0140` borra las cuatro columnas; el realizado vuelve a leer el pactado. Los
+    costos reales siguen en el Kardex y en los equipos.
 
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
 
@@ -2739,16 +2774,38 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   apareció entre la vista previa y la aplicación). Sin restricción en la base: producción
   puede tener superposiciones antiguas; una fila que conserva una de ellas sólo avisa. Cada
   proveedor es independiente.
-- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido (leído bajo el candado al
-  aplicar): no se vende más y lo ya pagado se mantiene. Otra cantidad menor que lo comprometido
-  sigue siendo error.
+- *La cantidad es la disponibilidad NETA del proveedor (decisión D1 del propietario,
+  2026-10-21).* Lo ya vendido contra la oferta ya está descontado en el número del archivo y no se
+  resta otra vez: al actualizar una oferta, `confirmada = comprometida + cantidad del archivo`, con
+  lo comprometido leído bajo el candado de la oferta al aplicar, así que lo que queda por vender
+  después de aplicar es **exactamente** la cantidad del archivo (nunca negativo), aunque entre la
+  vista previa y la aplicación entre un pago. Una oferta nueva confirma la cantidad del archivo.
+  Las filas se comparan por lo disponible (`available`), no por la confirmada: el mismo archivo
+  otra vez no hace crecer la oferta. La vista previa muestra «Disponible para vender: actual →
+  archivo»; la exportación escribe lo disponible (y vuelve a cargar sin cambios). Auditoría
+  `supplier_offer_quantity_set` (confirmada, comprometida y disponible antes y después, cantidad
+  del archivo, trabajo). Cantidad vacía en una oferta con unidades vendidas es error.
+- *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido: no se vende más y lo ya pagado
+  se mantiene.
+- *El mismo archivo otra vez.* Con la regla neta, volver a aplicar un archivo ya aplicado después
+  de vender fijaría otra vez lo disponible (aplicado 4, vendidos 3, el mismo archivo → quedan 4, no
+  1). La vista previa de un archivo cuyo SHA-256 es el de un trabajo **aplicado** de la misma
+  empresa lo dice (`already_applied: {job_id, applied_at}`) y aplicar responde 409
+  `already_applied` sin escribir nada, salvo `confirm_reapply: true` (casilla «Este archivo ya se
+  aplicó el …; aplicarlo otra vez vuelve a fijar lo disponible»); la confirmación se audita
+  (`supplier_offers_reapply_confirmed`). Se vuelve a comprobar al aplicar, después de lo `stale`.
+- *Vuelta atrás.* No volver al código anterior mientras haya vistas previas hechas con este código
+  sin aplicar: el código anterior leería la cantidad neta como total (confirmada = cantidad del
+  archivo) y lo vendido se restaría dos veces. Aplicar o descartar esos trabajos antes.
 - *Precio comercial nuevo.* La vista previa lo muestra antes → después; aplicar responde 409
   `price_confirmation_required` (con las filas) salvo `accept_price_changes: true` (escribe los
   precios) o `keep_prices: true` (escribe lo demás, mantiene cada precio actual); las dos a la
   vez, 400. Auditoría por oferta: `supplier_offer_price_changed` (antes/después) o
   `supplier_offer_price_kept` (actual/propuesto), con el trabajo.
-- *Vista previa vieja.* Se guarda el `updated_at` de cada oferta leída; si cambió (edición,
-  pago, otro archivo) al aplicar se rechaza el trabajo entero (`stale`) sin escribir nada.
+- *Vista previa vieja.* Se guarda lo que la vista previa leyó de cada oferta (precio, confirmada,
+  vigencia, plazo, estado, costo); si cambió (edición, otro archivo) al aplicar se rechaza el
+  trabajo entero (`stale`) sin escribir nada. Un pago sólo mueve lo comprometido, que la regla
+  neta ya absorbe: no vuelve vieja la vista previa.
 - *Vista previa con diferencias.* `before` por fila (el costo sólo con `costs.view`, tampoco se
   guarda sin él), `changes`, `sold_out`, `price_change` y `summary` (nuevas, cambian, sin
   cambios, agotadas, errores, precios, códigos).
@@ -2766,7 +2823,10 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
 
-**Por confirmar con el propietario.** Al actualizar en su lugar una oferta con unidades ya
-vendidas (en curso o vencida), lo comprometido **sigue contando** contra la nueva «Cantidad
-confirmada» (confirmada = tope total, como siempre). ¿La cantidad semanal debería ser
-adicional a lo ya vendido?
+**Por confirmar con el propietario.** «No se pudo abastecer» (`fail_line`) devuelve la unidad
+liberada a la oferta (baja lo comprometido); con la regla neta, lo disponible puede quedar por
+encima de la cifra del proveedor del último archivo. ¿Debe la unidad liberada volver a la oferta?
+
+**Decidido (D1, 2026-10-21).** La cantidad semanal es lo que le queda al proveedor: se suma a lo
+ya vendido (ver «disponibilidad NETA» arriba). Antes, lo comprometido contaba contra la nueva
+cantidad y una cantidad menor que lo vendido era error.

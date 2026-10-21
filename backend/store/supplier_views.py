@@ -338,9 +338,13 @@ def supply_line_payload(item, *, with_cost: bool = False) -> dict:
 
 
 class AdminOrderSupplyActionView(APIView):
-    """POST /api/admin/orders/<pk>/supply/<line>/<action>/ — confirm, receive or fail an on-order line."""
+    """
+    POST /api/admin/orders/<pk>/supply/<line>/<action>/ — confirm, receive or fail an
+    on-order line, or record the real cost of a received one (`real-cost`:
+    what receiving takes + costs.view; owner's decision D2).
+    """
     permission_classes = [permissions.IsAuthenticated]
-    ACTIONS = ('confirm', 'receive', 'fail')
+    ACTIONS = ('confirm', 'receive', 'fail', 'real-cost')
 
     def post(self, request, pk, line_pk, action):
         from .tenancy import visible_orders
@@ -357,8 +361,11 @@ class AdminOrderSupplyActionView(APIView):
         if not has_capability(request.user, company, CAP_ORDERS_MANAGE):
             return Response({'detail': 'No tienes permiso para administrar pedidos.'},
                             status=status.HTTP_403_FORBIDDEN)
-        if action == 'receive' and not has_capability(request.user, company, CAP_INVENTORY_ADJUST):
+        if action in ('receive', 'real-cost') and not has_capability(request.user, company, CAP_INVENTORY_ADJUST):
             return Response({'detail': 'Recibir mercadería requiere permiso para mover inventario.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if action == 'real-cost' and not user_may_view_costs(request.user, company):
+            return Response({'detail': 'Registrar el costo real requiere el permiso «Ver costos y márgenes».'},
                             status=status.HTTP_403_FORBIDDEN)
         try:
             if action == 'confirm':
@@ -369,6 +376,9 @@ class AdminOrderSupplyActionView(APIView):
                 line = supply_services.receive_line(line, actor=request.user, company=company, request=request,
                                                     units=units if isinstance(units, list) else None,
                                                     unit_cost=request.data.get('unit_cost'))
+            elif action == 'real-cost':
+                line = supply_services.record_real_cost(line, actor=request.user, company=company, request=request,
+                                                        unit_cost=request.data.get('unit_cost'))
             else:
                 line = supply_services.fail_line(line, actor=request.user, company=company, request=request,
                                                  reason=request.data.get('reason') or '')
@@ -377,7 +387,7 @@ class AdminOrderSupplyActionView(APIView):
                 # SUPPLIER-DEVICE-FLOW-02: a repeated reception is not a wrong
                 # request — it already happened. 409, with what it brought in.
                 return Response({**exc.body(), 'units': getattr(exc, 'units', [])}, status=status.HTTP_409_CONFLICT)
-            if exc.code == 'return_open':
+            if exc.code in ('return_open', 'already_real', 'not_received'):
                 return Response(exc.body(), status=status.HTTP_409_CONFLICT)
             return _error(exc)
         line = OrderItem.objects.select_related(
@@ -462,9 +472,10 @@ class AdminOfferImportApplyView(APIView):
             result = supplier_offer_import.apply(
                 job=job, actor=request.user, request=request,
                 accept_price_changes=_flag(request.data.get('accept_price_changes')),
-                keep_prices=_flag(request.data.get('keep_prices')))
+                keep_prices=_flag(request.data.get('keep_prices')),
+                confirm_reapply=_flag(request.data.get('confirm_reapply')))
         except supplier_offer_import.OfferImportError as exc:
-            code = (status.HTTP_409_CONFLICT if exc.code == 'price_confirmation_required'
+            code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied')
                     else status.HTTP_400_BAD_REQUEST)
             return Response({'detail': str(exc), 'code': exc.code, **exc.extra}, status=code)
         return Response(result)

@@ -219,16 +219,24 @@ export function SalesMarginSection({
           <MarginFigure
             label="Margen comercial realizado"
             totals={realised}
-            hint={`${plural(realised.lines, "línea", "líneas")} con costo confirmado (stock propio vendido o bajo pedido recibido), sobre ${money(realised.net_sales)}`}
+            hint={`${plural(realised.lines, "línea", "líneas")} con costo confirmado (stock propio vendido o bajo pedido recibido, a su costo real), sobre ${money(realised.net_sales)}`}
             percentTestId="realised-percent"
             boxTestId="margin-realised"
           />
           <Figure
             label="Sólo estimado"
             value={money(estimatedOnly.net_sales)}
-            hint={`${plural(estimatedOnly.lines, "línea", "líneas")}: ${estimatedOnly.reference_cost_lines} con costo de referencia · ${estimatedOnly.on_order_not_received_lines} bajo pedido sin recibir`}
+            hint={`${plural(estimatedOnly.lines, "línea", "líneas")}: ${estimatedOnly.reference_cost_lines} con costo de referencia · ${estimatedOnly.on_order_not_received_lines} bajo pedido sin recibir${estimatedOnly.on_order_without_real_cost_lines ? ` · ${estimatedOnly.on_order_without_real_cost_lines} recibidas sin costo real` : ""}`}
             boxTestId="margin-estimated-only"
           />
+          {report.real_cost_pending && report.real_cost_pending.lines > 0 ? (
+            <Figure
+              label="Costo real pendiente"
+              value={money(report.real_cost_pending.net_sales)}
+              hint={`${plural(report.real_cost_pending.lines, "línea", "líneas")} bajo pedido sin costo real (${report.real_cost_pending.not_received_lines} sin recibir · ${report.real_cost_pending.to_confirm_lines ?? 0} por confirmar · ${report.real_cost_pending.received_without_real_cost_lines} recibidas sin costo real registrado), sin IGV · fuera del realizado`}
+              boxTestId="margin-real-cost-pending"
+            />
+          ) : null}
           <Figure
             label="Costo desconocido"
             value={money(unknown.net_sales)}
