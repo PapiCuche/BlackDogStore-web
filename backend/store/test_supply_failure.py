@@ -60,6 +60,7 @@ class SupplierFailureTest(FailureShop, TestCase):
         order = self.on_order(2)
         supply.fail_line(order.items.get(), actor=self.staff, reason='Sin stock')
         before = counts(self.offer)
+        # No pending on-order line is left: no supply cause is asked.
         cancelling.cancel_paid_order(order, self.staff, REASON)
         self.assertEqual(counts(self.offer), before)
 
@@ -85,7 +86,7 @@ class OrdinaryCancellationTest(FailureShop, TestCase):
 
     def test_a_cancellation_before_supply_gives_the_units_back_once(self):
         order = self.on_order(2)
-        cancelling.cancel_paid_order(order, self.staff, REASON)
+        cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='ordinary')
         self.assertEqual(counts(self.offer), (5, 0, 5))
         log = AdminAuditLog.objects.get(action='order_supply_failed', target_id=str(order.pk))
         self.assertEqual(log.metadata['cause'], 'cancellation')
@@ -98,6 +99,116 @@ class OrdinaryCancellationTest(FailureShop, TestCase):
         Order.objects.filter(pk=order.pk).update(status=Order.Status.REFUNDED)
         supply.fail_line(order.items.get(), actor=self.staff, reason='Reembolsado al cliente')
         self.assertEqual(counts(self.offer), (5, 0, 5))
+
+
+class CancelSupplyCauseTest(FailureShop, TestCase):
+    """D3 review P2: cancelling an order with lines still waiting for the supplier says WHY."""
+
+    def setUp(self):
+        self.build('d3-causa')
+
+    def client_for(self, user):
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_without_the_cause_nothing_is_written(self):
+        order = self.on_order(2)
+        with self.assertRaises(cancelling.OrderCancelError) as caught:
+            cancelling.cancel_paid_order(order, self.staff, REASON)
+        self.assertEqual((caught.exception.code, caught.exception.http_status), ('supply_cause_required', 400))
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.PAID)
+        self.assertEqual(counts(self.offer), (5, 2, 3))
+        self.assertEqual(order.items.get().supply_status, OrderItem.SUPPLY_PENDING)
+        with self.assertRaises(cancelling.OrderCancelError) as caught:
+            cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='quizás')
+        self.assertEqual(caught.exception.code, 'supply_cause_required')
+
+    def test_a_supplier_failure_keeps_what_is_left(self):
+        order = self.on_order(2)
+        cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='supplier_failure')
+        self.assertEqual(counts(self.offer), (3, 0, 3))
+        log = AdminAuditLog.objects.get(action='order_supply_failed', target_id=str(order.pk))
+        self.assertEqual((log.metadata['cause'], log.metadata['confirmed_released'], log.metadata['available_before'],
+                          log.metadata['available_after']), ('supplier_failure', 2, 3, 3))
+
+    def test_an_ordinary_cancellation_gives_the_units_back(self):
+        order = self.on_order(2)
+        cancelling.cancel_paid_order(order, self.staff, REASON, supply_cause='ordinary')
+        self.assertEqual(counts(self.offer), (5, 0, 5))
+        log = AdminAuditLog.objects.get(action='order_supply_failed', target_id=str(order.pk))
+        self.assertEqual((log.metadata['cause'], log.metadata['available_before'], log.metadata['available_after']),
+                         ('cancellation', 3, 5))
+
+    def test_the_cancel_endpoint_asks_for_it_only_when_a_line_waits(self):
+        order = self.on_order(2)
+        url = f'/api/admin/orders/{order.pk}/cancel/'
+        res = self.client_for(self.staff).post(url, {'reason': REASON}, format='json')
+        self.assertEqual((res.status_code, res.json().get('code')), (400, 'supply_cause_required'), res.content)
+        res = self.client_for(self.staff).post(url, {'reason': REASON, 'supply_cause': 'supplier_failure'},
+                                               format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(counts(self.offer), (3, 0, 3))
+        # An order with nothing waiting: the contract does not change.
+        CartItem.objects.all().delete()
+        self.stock(self.case, 1)
+        CartItem.objects.create(session_key='carrito-c', product=self.case, quantity=1)
+        shelf = self.checkout('carrito-c')
+        self.pay(shelf)
+        res = self.client_for(self.staff).post(f'/api/admin/orders/{shelf.pk}/cancel/', {'reason': REASON},
+                                               format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_a_line_to_confirm_asks_nothing(self):
+        self.add_on_order(quantity=2)
+        order = self.checkout()
+        SupplierOffer.objects.filter(pk=self.offer.pk).update(confirmed_quantity=1)
+        self.pay(order)
+        cancelling.cancel_paid_order(order, self.staff, REASON)
+        self.assertEqual(counts(self.offer), (1, 0, 1))
+
+    def test_closing_a_return_never_raises_what_is_left(self):
+        # A delivered order cannot hold a line still waiting (FulfillmentBlocked); if one does anyway, the
+        # return's cancellation takes the conservative road: availability stays where it was.
+        order = self.on_order(2)
+        cancelling.cancel_for_return(order, self.staff, REASON, refund_method='cash', refund_amount=0, return_id=0)
+        self.assertEqual(counts(self.offer), (3, 0, 3))
+        log = AdminAuditLog.objects.get(action='order_supply_failed', target_id=str(order.pk))
+        self.assertEqual(log.metadata['cause'], 'return_close')
+
+
+class FailCauseTest(FailureShop, TestCase):
+    """D3 review P3: «No se pudo abastecer» may say the shop chose not to supply (an ordinary release)."""
+
+    def setUp(self):
+        self.build('d3-fallo-causa')
+
+    def fail(self, order, **extra):
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=self.staff)
+        line = order.items.get()
+        return client.post(f'/api/admin/orders/{order.pk}/supply/{line.pk}/fail/', {'reason': 'Sin stock', **extra},
+                           format='json')
+
+    def test_the_default_is_a_supplier_failure(self):
+        order = self.on_order(2)
+        self.assertEqual(self.fail(order).status_code, 200)
+        self.assertEqual(counts(self.offer), (3, 0, 3))
+
+    def test_other_is_an_ordinary_release(self):
+        order = self.on_order(2)
+        self.assertEqual(self.fail(order, cause='other').status_code, 200)
+        self.assertEqual(counts(self.offer), (5, 0, 5))
+        log = AdminAuditLog.objects.get(action='order_supply_failed', target_id=str(order.pk))
+        self.assertEqual(log.metadata['cause'], 'other')
+
+    def test_an_unknown_cause_is_refused(self):
+        order = self.on_order(2)
+        self.assertEqual(self.fail(order, cause='magia').status_code, 400)
+        self.assertEqual(counts(self.offer), (5, 2, 3))
 
 
 class WeeklyFileAfterFailureTest(OfferFile, TestCase):

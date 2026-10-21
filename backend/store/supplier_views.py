@@ -381,7 +381,8 @@ class AdminOrderSupplyActionView(APIView):
                                                         unit_cost=request.data.get('unit_cost'))
             else:
                 line = supply_services.fail_line(line, actor=request.user, company=company, request=request,
-                                                 reason=request.data.get('reason') or '')
+                                                 reason=request.data.get('reason') or '',
+                                                 cause=request.data.get('cause') or None)
         except supply_services.SupplyError as exc:
             if exc.code == 'already_received':
                 # SUPPLIER-DEVICE-FLOW-02: a repeated reception is not a wrong

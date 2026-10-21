@@ -2829,16 +2829,26 @@ libera lo comprometido de una oferta:
 
 | Camino | Causa | Comprometida | Confirmada | Disponible |
 |---|---|---|---|---|
-| «No se pudo abastecer» (`fail_line`) en pedido **pagado** | falla del proveedor | − liberado | − liberado | igual |
+| «No se pudo abastecer» (`fail_line`) en pedido **pagado**, `cause` `supplier_failure` (por omisión) | falla del proveedor | − liberado | − liberado | igual |
+| `fail_line` en pedido pagado con `cause: other` (la tienda decide no abastecer; el proveedor sí tiene) | ordinaria | − liberado | igual | + liberado |
 | `fail_line` en pedido ya **reembolsado/cancelado** por otra vía | cancelación ordinaria | − liberado | igual | + liberado |
-| Cancelar pedido (ORDER-CANCEL-01, `_release_supply`, también al cerrar una devolución) | cancelación ordinaria | − liberado | igual | + liberado |
+| Cancelar pedido o anular venta de caja (ORDER-CANCEL-01, `_release_supply`) con `supply_cause: supplier_failure` | falla del proveedor | − liberado | − liberado | igual |
+| Lo mismo con `supply_cause: ordinary` | cancelación ordinaria | − liberado | igual | + liberado |
+| Cerrar una devolución (`cancel_for_return`) — un pedido entregado no tiene líneas pendientes; si las tuviera | conservador (`return_close`) | − liberado | − liberado | igual |
 | Línea `to_confirm` (nunca comprometió), línea ya `failed`, línea recibida | — | nada | nada | nada |
-| Vencimiento (`expire_offers`), reembolso, anulación de caja, devolución | no liberan | nada | nada | nada |
+| Vencimiento (`expire_offers`), reembolso | no liberan | nada | nada | nada |
+
+*Causa obligatoria al cancelar (revisión de D3, P2).* Si el pedido tiene una línea bajo pedido
+comprometida que el proveedor aún no entregó (`pending`), cancelarlo o anular la venta pide
+`supply_cause` (`supplier_failure` | `ordinary`); sin ella, 400 `supply_cause_required` y nada se
+escribe. El panel lo pregunta («El proveedor no pudo abastecer» / «Se cancela por otra razón; el
+proveedor sigue teniendo el equipo») con una línea sobre su efecto en lo disponible. Un pedido sin
+esas líneas no cambia de contrato.
 
 Siempre bajo el candado de la oferta, nunca más de lo que la oferta tiene (nunca negativo,
 confirmada nunca bajo comprometida), una sola vez (la línea pasa a `failed`; otra cancelación no
 la vuelve a tocar). Auditoría `order_supply_failed` con `cause` (`supplier_failure` /
-`cancellation`), `released`, `confirmed_released` y lo disponible antes y después. El siguiente
+`other` / `cancellation` / `return_close`), `released`, `confirmed_released` y lo disponible antes y después. El siguiente
 archivo semanal sigue fijando lo disponible = su cantidad (D1).
 
 **Decidido (D1, 2026-10-21).** La cantidad semanal es lo que le queda al proveedor: se suma a lo

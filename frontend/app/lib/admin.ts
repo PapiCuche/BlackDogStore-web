@@ -1022,12 +1022,22 @@ export const CANCEL_REASON_MAX = 500;
  * mercadería de una venta POS volvió al local. `refundMethod`: registrar, con
  * la cancelación, un reembolso pendiente por lo cobrado. Devuelve el detalle.
  */
+/** D3 — por qué se cancela un pedido con líneas que aún esperan al proveedor. */
+export type SupplyCancelCause = 'supplier_failure' | 'ordinary';
+
+/** Si el pedido tiene una línea bajo pedido comprometida que el proveedor aún no entregó. */
+export function waitsForSupplier(order: Pick<AdminOrderDetail, 'items'>): boolean {
+  return (order.items ?? []).some((item) => item.supply_origin === 'supplier' && item.supply_status === 'pending');
+}
+
 export async function cancelAdminOrder(
   orderId: number,
   reason: string,
-  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean },
+  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause },
 ): Promise<AdminOrderDetail> {
   const body: Record<string, unknown> = { reason };
+  // D3: obligatorio si una línea bajo pedido aún espera al proveedor (400 `supply_cause_required` sin él).
+  if (options?.supplyCause) body.supply_cause = options.supplyCause;
   if (options?.goodsReturned) body.goods_returned = true;
   if (options?.refundMethod) body.refund_method = options.refundMethod;
   // Sólo una venta POS: anular sin reponer stock (ya volvió por una devolución manual).

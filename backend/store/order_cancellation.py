@@ -93,6 +93,7 @@ class OrderCancelError(Exception):
     #: state (409).
     _BAD_REQUEST = frozenset([
         'reason_required', 'reason_too_long', 'goods_return_required', 'restore_stock_not_allowed',
+        'supply_cause_required',
     ])
     #: The caller may cancel orders, but not THIS one: a superior must (403).
     _FORBIDDEN = frozenset(['superior_required'])
@@ -128,6 +129,21 @@ def clean_reason(reason) -> str:
 
 
 MODE_UNPAID, MODE_PAID, MODE_POS = 'unpaid', 'paid', 'pos'
+
+#: D3 review P2 — why an order with lines still waiting for the supplier is cancelled.
+#: `supplier_failure`: the supplier could not supply → what is left to sell stays flat
+#: (committed and confirmed both lose the line). `ordinary`: the supplier still has the
+#: units → they go back to the offer. `return_close` (internal): the conservative road.
+SUPPLY_CAUSE_SUPPLIER, SUPPLY_CAUSE_ORDINARY, SUPPLY_CAUSE_RETURN = 'supplier_failure', 'ordinary', 'return_close'
+SUPPLY_CAUSES = (SUPPLY_CAUSE_SUPPLIER, SUPPLY_CAUSE_ORDINARY)
+
+
+def waiting_supply(order) -> bool:
+    """Whether `order` has an on-order line committed and still waiting for its supplier."""
+    from .models import OrderItem
+
+    return OrderItem.objects.filter(order=order, supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                                    supply_status=OrderItem.SUPPLY_PENDING).exists()
 
 
 def mode_of(order) -> str | None:
@@ -423,7 +439,7 @@ def fiscal_label(document) -> str:
 
 
 def cancel_order(order, user, reason, *, goods_returned=False, refund_method=None, restore_stock=True,
-                 request=None) -> OrderCancellation:
+                 request=None, supply_cause=None) -> OrderCancellation:
     """
     Cancel `order` — already resolved through the caller's scoped queryset —
     and return its cancellation. Raises `OrderCancelError` (or, for the
@@ -433,6 +449,8 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
     `goods_returned`: the cashier's word that a till sale's goods are back.
     `refund_method`: record, with the cancellation, a PENDING refund of
     everything collected, to be given back that way. Paid modes only.
+    `supply_cause`: REQUIRED when a line still waits for its supplier (any
+    mode — a till sale too): `supplier_failure` or `ordinary` (owner D3).
     """
     reason = clean_reason(reason)
     actor = user if getattr(user, 'is_authenticated', False) else None
@@ -463,6 +481,11 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
         if not restore_stock and mode != MODE_POS:
             raise OrderCancelError(
                 'restore_stock_not_allowed', 'Sólo una venta POS se anula sin reponer stock.')
+        if waiting_supply(locked) and supply_cause not in SUPPLY_CAUSES:
+            raise OrderCancelError(
+                'supply_cause_required',
+                'Este pedido tiene productos bajo pedido que el proveedor aún no entregó: indica si el proveedor '
+                'no pudo abastecer o si se cancela por otra razón.')
         if mode == MODE_POS and restore_stock and _manual_return_after_sale(locked):
             raise OrderCancelError(
                 'manual_return_after_sale',
@@ -472,7 +495,7 @@ def cancel_order(order, user, reason, *, goods_returned=False, refund_method=Non
         return _commit(
             locked, actor, reason, mode=mode, restore_stock=restore_stock, conditions=conditions,
             authority='superior' if conditions else 'simple', goods_returned=mode == MODE_POS,
-            refund_method=refund_method, request=request)
+            refund_method=refund_method, request=request, supply_cause=supply_cause or SUPPLY_CAUSE_ORDINARY)
 
 
 def cancel_for_return(order, user, reason, *, refund_method, refund_amount, return_id, request=None):
@@ -504,11 +527,14 @@ def cancel_for_return(order, user, reason, *, refund_method, refund_amount, retu
             locked, actor, reason, mode=mode_of(locked), restore_stock=False, conditions=[],
             authority='superior', goods_returned=True, refund_method=refund_method,
             refund_amount=refund_amount, request=request,
-            extra_audit={'return_id': return_id, 'stock_returned_by': 'order_return'})
+            extra_audit={'return_id': return_id, 'stock_returned_by': 'order_return'},
+            # A delivered order holds no line still waiting; if one does, never raise what is left (D3).
+            supply_cause=SUPPLY_CAUSE_RETURN)
 
 
 def _commit(locked, actor, reason, *, mode, restore_stock, conditions, authority, goods_returned,
-            refund_method, request, refund_amount=None, extra_audit=None) -> OrderCancellation:
+            refund_method, request, refund_amount=None, extra_audit=None,
+            supply_cause=SUPPLY_CAUSE_ORDINARY) -> OrderCancellation:
     """
     Everything a cancellation does once its rules said yes, on the locked
     order: the one tail of `cancel_order` and `cancel_for_return`.
@@ -518,7 +544,7 @@ def _commit(locked, actor, reason, *, mode, restore_stock, conditions, authority
     """
     previous_status, previous_fulfillment = locked.status, locked.fulfillment_status
     # DC3 before the shelf: the supply module's lock order is order, offers, shelf.
-    supply_released = _release_supply(locked, actor, reason, request)
+    supply_released = _release_supply(locked, actor, reason, request, cause=supply_cause)
     holds_released = _release_holds(locked) if mode == MODE_UNPAID else 0
     movements, units_returned, already_returned = (
         _restore_stock(locked, actor, reason, request) if restore_stock else ([], [], []))
@@ -689,7 +715,7 @@ def products_returned_by_hand_after_sale(order) -> set[int]:
     }
 
 
-def _release_supply(order, actor, reason, request) -> list[dict]:
+def _release_supply(order, actor, reason, request, *, cause=SUPPLY_CAUSE_ORDINARY) -> list[dict]:
     """
     DEVICE-COMMERCE-01 · DC3. Every on-order line still waiting for its
     supplier stops waiting: «No se pudo abastecer», with the cancellation's
@@ -697,8 +723,9 @@ def _release_supply(order, actor, reason, request) -> list[dict]:
     committed — never more than the offer holds — audited like the staff's
     `supply_services.fail_line`. An ORDINARY cancellation (owner D3): the
     supplier did not fail, it still has the units, so what is left to sell
-    grows back; only a supplier failure (`fail_line` on a paid order) keeps it
-    flat. A line already `failed` is not touched again (never released twice). A line «por
+    grows back. `cause` `supplier_failure` (asked of whoever cancels, D3 review
+    P2) or `return_close` keeps it flat: the line leaves committed AND confirmed.
+    A line already `failed` is not touched again (never released twice). A line «por
     confirmar» committed nothing. A RECEIVED line is goods on the shelf: its
     sale exit comes back in `_restore_stock`. A line not yet paid ('')
     committed nothing either.
@@ -717,21 +744,32 @@ def _release_supply(order, actor, reason, request) -> list[dict]:
                 supply_status__in=(OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_TO_CONFIRM))
         .order_by('supplier_offer_id', 'pk')
     )
+    flat = cause in (SUPPLY_CAUSE_SUPPLIER, SUPPLY_CAUSE_RETURN)
     for line in lines:
-        quantity = 0
+        quantity = confirmed_released = 0
+        available_before = available_after = None
         if line.supply_status == OrderItem.SUPPLY_PENDING and line.supplier_offer_id:
             offer = SupplierOffer.objects.select_for_update().filter(pk=line.supplier_offer_id).first()
             if offer is not None:
+                available_before = offer.remaining if offer.confirmed_quantity is not None else None
                 quantity = min(offer.committed_quantity, line.quantity)
                 if quantity:
-                    SupplierOffer.objects.filter(pk=offer.pk).update(
-                        committed_quantity=F('committed_quantity') - quantity, updated_at=timezone.now())
+                    changes = {'committed_quantity': F('committed_quantity') - quantity}
+                    if flat:
+                        # committed > 0 means confirmed >= committed >= quantity: never negative.
+                        changes['confirmed_quantity'] = F('confirmed_quantity') - quantity
+                        confirmed_released = quantity
+                    SupplierOffer.objects.filter(pk=offer.pk).update(updated_at=timezone.now(), **changes)
+                offer.refresh_from_db()
+                available_after = offer.remaining if offer.confirmed_quantity is not None else None
         OrderItem.objects.filter(pk=line.pk).update(
             supply_status=OrderItem.SUPPLY_FAILED, supply_note=f'Pedido cancelado: {reason}'[:300])
         _audit('order_supply_failed', company=order.company, actor=actor, target_type='order',
                target_id=order.pk, request=request, line_id=line.pk, reason=reason, released=quantity,
-               order_status=Order.Status.CANCELLED, source='order_cancellation', cause='cancellation',
-               confirmed_released=0)
+               order_status=Order.Status.CANCELLED, source='order_cancellation',
+               cause='cancellation' if cause == SUPPLY_CAUSE_ORDINARY else cause,
+               confirmed_released=confirmed_released, available_before=available_before,
+               available_after=available_after)
         released.append({'line_id': line.pk, 'offer_id': line.supplier_offer_id, 'quantity': quantity,
                          'previous_status': line.supply_status})
     return released

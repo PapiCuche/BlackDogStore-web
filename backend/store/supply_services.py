@@ -865,8 +865,11 @@ def line_costs(line) -> dict:
     }
 
 
+FAIL_CAUSES = ('supplier_failure', 'other')
+
+
 @transaction.atomic
-def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
+def fail_line(line, *, actor, reason, company=None, request=None, cause=None) -> OrderItem:
     """
     «No se pudo abastecer»: the line will not be supplied. The order says it
     has to be refunded or cancelled through the existing flow, and nothing
@@ -881,6 +884,9 @@ def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
         ordinary release: the supplier still has the units, the offer gets
         back what the line committed. ORDER-CANCEL-01 releases its own lines
         the same ordinary way (`order_cancellation._release_supply`).
+    `cause` on a paid order (D3 review P3): `supplier_failure` (the default)
+    or `other` — the shop decided not to supply although the supplier has
+    the units: an ordinary release.
     Either way never more than the offer holds (never below zero, confirmed
     never below committed), once (the line becomes `failed`), audited with
     the cause and what was left before and after.
@@ -888,12 +894,14 @@ def fail_line(line, *, actor, reason, company=None, request=None) -> OrderItem:
     reason = ' '.join(str(reason or '').split())[:250]
     if not reason:
         raise SupplyError('Indica el motivo.', field='reason')
+    if cause not in (None, '', *FAIL_CAUSES):
+        raise SupplyError('Causa no válida: «supplier_failure» u «other».', field='cause')
     order, locked = _locked_line(line, company=company, statuses=_RELEASABLE)
     if locked.supply_status not in (OrderItem.SUPPLY_PENDING, OrderItem.SUPPLY_TO_CONFIRM):
         raise SupplyError('Esta línea ya no está esperando al proveedor.', code='wrong_state')
     released = confirmed_released = 0
     available_before = available_after = None
-    cause = 'supplier_failure' if order.status == Order.Status.PAID else 'cancellation'
+    cause = (cause or 'supplier_failure') if order.status == Order.Status.PAID else 'cancellation'
     if locked.supply_status == OrderItem.SUPPLY_PENDING and locked.supplier_offer_id:
         offer = SupplierOffer.objects.select_for_update().filter(pk=locked.supplier_offer_id).first()
         if offer is not None:

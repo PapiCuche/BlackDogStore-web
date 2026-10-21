@@ -23,8 +23,10 @@ import {
   OrderCancellation,
   OrderRefundMethod,
   REFUND_METHOD_LABELS,
+  SupplyCancelCause,
   cancelAdminOrder,
   formatAdminDate,
+  waitsForSupplier,
 } from "../../lib/admin";
 import { internalButtonClass } from "./internal-ui";
 
@@ -99,7 +101,11 @@ export function OrderCancelDialog({
   const [skipStock, setSkipStock] = useState(false);
   const [withRefund, setWithRefund] = useState(false);
   const [refundMethod, setRefundMethod] = useState<OrderRefundMethod>(pos ? "cash" : "gateway");
-  const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN && (!pos || goodsBack);
+  // D3: con una línea bajo pedido que aún espera al proveedor, hay que decir por qué se cancela.
+  const waiting = waitsForSupplier(order);
+  const [supplyCause, setSupplyCause] = useState<SupplyCancelCause | null>(null);
+  const ready = normaliseReason(reason).length >= CANCEL_REASON_MIN && (!pos || goodsBack)
+    && (!waiting || supplyCause !== null);
   const verb = pos ? "Anular venta" : "Cancelar pedido";
 
   useEffect(() => {
@@ -135,7 +141,10 @@ export function OrderCancelDialog({
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
-    const options: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean } = {};
+    const options: {
+      goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause;
+    } = {};
+    if (waiting && supplyCause) options.supplyCause = supplyCause;
     if (pos) options.goodsReturned = true;
     if (pos && skipStock) options.restoreStock = false;
     if (mode !== "unpaid" && withRefund) options.refundMethod = refundMethod;
@@ -252,6 +261,37 @@ export function OrderCancelDialog({
               (revisa el Kardex); requiere autorización superior
             </span>
           </label>
+        ) : null}
+        {waiting ? (
+          <fieldset className="mt-3 rounded-lg border border-warning-border bg-warning-surface p-3 text-sm">
+            <legend className="px-1 text-xs font-semibold text-warning">Productos bajo pedido sin entregar</legend>
+            <label className="flex items-start gap-2 text-foreground">
+              <input
+                type="radio"
+                name={`${reasonId}-supply-cause`}
+                checked={supplyCause === "supplier_failure"}
+                onChange={() => setSupplyCause("supplier_failure")}
+                disabled={busy}
+                className="mt-0.5"
+              />
+              <span>El proveedor no pudo abastecer</span>
+            </label>
+            <label className="mt-1 flex items-start gap-2 text-foreground">
+              <input
+                type="radio"
+                name={`${reasonId}-supply-cause`}
+                checked={supplyCause === "ordinary"}
+                onChange={() => setSupplyCause("ordinary")}
+                disabled={busy}
+                className="mt-0.5"
+              />
+              <span>Se cancela por otra razón; el proveedor sigue teniendo el equipo</span>
+            </label>
+            <p className="mt-2 text-xs text-muted">
+              Si el proveedor no pudo, lo disponible de su oferta no cambia; si fue otra razón, esas unidades vuelven a
+              estar disponibles para vender bajo pedido.
+            </p>
+          </fieldset>
         ) : null}
         {mode !== "unpaid" ? (
           <div className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-sm">

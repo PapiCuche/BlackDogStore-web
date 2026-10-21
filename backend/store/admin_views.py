@@ -1753,6 +1753,8 @@ class AdminOrderCancelView(APIView):
                 # Review P2: only a literal false annuls a till sale without stock.
                 restore_stock=body.get('restore_stock') is not False,
                 request=request,
+                # D3 review P2: required when a line still waits for its supplier.
+                supply_cause=body.get('supply_cause') or None,
             )
         except (cancelling.OrderCancelError, order_refunds.RefundError) as exc:
             return Response(exc.body(), status=exc.http_status)
