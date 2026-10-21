@@ -589,9 +589,14 @@ class MarginEstimatedRealisedTest(MarginFixture):
 
     Estimado (costo conocido): A 200/120 · B 100/70 · G 50/30 · H 200/150 · I 200/150
         neto 750 · costo 520 · margen 230 · 230/750 = 30,67 %
-    Realizado (costo confirmado: stock propio vendido o bajo pedido recibido): A · B · H
-        neto 500 · costo 340 · margen 160 · 160/500 = 32,00 %
-    Sólo estimado: G (referencia) e I (sin recibir): 2 líneas, neto 250
+    Realizado (costo confirmado: stock propio vendido, o bajo pedido recibido CON su costo
+    real registrado — decisión D2 del propietario): A · B
+        neto 300 · costo 190 · margen 110 · 110/300 = 36,67 %
+        (antes de D2: A · B · H, neto 500 · costo 340 · 32,00 %. El único cambio es H: recibida
+        sin costo real registrado (`received_unit_cost` vacío) pasa de realizado a «costo real
+        pendiente»; el estimado, las ventas, el costo desconocido y los reembolsos no cambian.)
+    Sólo estimado: G (referencia), H (recibida sin costo real) e I (sin recibir): 3 líneas, neto 450
+    Costo real pendiente: H · I · 2 líneas · neto 400
     Costo desconocido: C · 1 línea · neto 50 (fuera de los dos márgenes)
     Reembolsos: D · 1 pedido · 118,00 con IGV · 100,00 neto
     Ventas: 6 pedidos · brutas 944 · netas 800 (= 750 + 50)
@@ -632,10 +637,15 @@ class MarginEstimatedRealisedTest(MarginFixture):
         self.assertEqual(body['sales'], {'orders': 6, 'gross': '944.00', 'net': '800.00'})
         self.assertEqual(body['estimated'], {'lines': 5, 'net_sales': '750.00', 'cost': '520.00',
                                              'margin': '230.00', 'margin_percent': '30.67'})
-        self.assertEqual(body['realised'], {'lines': 3, 'net_sales': '500.00', 'cost': '340.00',
-                                            'margin': '160.00', 'margin_percent': '32.00'})
-        self.assertEqual(body['estimated_only'], {'lines': 2, 'net_sales': '250.00', 'reference_cost_lines': 1,
-                                                  'on_order_not_received_lines': 1})
+        # D2: H (received, no real cost recorded) left the realised margin for «costo real pendiente».
+        self.assertEqual(body['realised'], {'lines': 2, 'net_sales': '300.00', 'cost': '190.00',
+                                            'margin': '110.00', 'margin_percent': '36.67'})
+        self.assertEqual(body['estimated_only'], {'lines': 3, 'net_sales': '450.00', 'reference_cost_lines': 1,
+                                                  'on_order_not_received_lines': 1,
+                                                  'on_order_without_real_cost_lines': 1})
+        self.assertEqual(body['real_cost_pending'], {'lines': 2, 'orders': 2, 'net_sales': '400.00',
+                                                     'not_received_lines': 1, 'to_confirm_lines': 0,
+                                                     'received_without_real_cost_lines': 1})
         self.assertEqual(body['unknown_cost'], {'lines': 1, 'orders': 1, 'net_sales': '50.00'})
         self.assertEqual(body['refunds'], {'orders': 1, 'amount': '118.00', 'net': '100.00'})
         # The top-level figures are the estimated margin, as before.

@@ -345,7 +345,7 @@ function ReceiveForm({
             />
           </label>
           <span id={`supply-${item.id}-unit-cost-hint`} className="mt-1 block text-[11px] text-muted">
-            Vacío: entra al costo pactado. La venta conserva el costo pactado.
+            Vacío: la mercadería entra al costo pactado y el costo real queda pendiente hasta registrarlo. La venta conserva el costo pactado.
           </span>
           <FieldError id={`supply-${item.id}-unit-cost-error`} message={errors.unit_cost} />
         </div>

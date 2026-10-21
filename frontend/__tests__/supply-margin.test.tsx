@@ -24,9 +24,11 @@ const REPORT = {
   net_sales_with_cost: '200.00', cost_of_goods_sold: '140.00', margin: '60.00', margin_percent: '30.00',
   pending_cost: { lines: 0, orders: 0, amount: '0.00' }, refunds: { orders: 0, amount: '0.00', net: '0.00' },
   estimated: totals('140.00'), realised: totals('60.00'),
-  estimated_only: { lines: 1, net_sales: '100.00', reference_cost_lines: 0, on_order_not_received_lines: 1 },
+  estimated_only: { lines: 2, net_sales: '100.00', reference_cost_lines: 0, on_order_not_received_lines: 1,
+    on_order_without_real_cost_lines: 1 },
   unknown_cost: { lines: 0, orders: 0, net_sales: '0.00' },
-  real_cost_pending: { lines: 2, orders: 2, net_sales: '93.22', not_received_lines: 1, received_without_real_cost_lines: 1 },
+  real_cost_pending: { lines: 3, orders: 3, net_sales: '93.22', not_received_lines: 1, to_confirm_lines: 1,
+    received_without_real_cost_lines: 1 },
   by_product: [], by_branch: [], by_channel: [],
 } as unknown as api.SalesMargin;
 
@@ -44,8 +46,11 @@ it('el margen lista aparte el costo real pendiente', async () => {
   await act(async () => { render(<SalesMarginSection companyId={7} branchId={null} canSeeCosts />); });
   const box = screen.getByTestId('margin-real-cost-pending');
   expect(box).toHaveTextContent('Costo real pendiente');
-  expect(box).toHaveTextContent('2 líneas');
-  expect(box).toHaveTextContent('1 sin recibir · 1 recibidas sin costo real registrado');
+  expect(box).toHaveTextContent('3 líneas');
+  expect(box).toHaveTextContent('1 sin recibir · 1 por confirmar · 1 recibidas sin costo real registrado');
+  // «Sólo estimado» says the two apart: not received, and received without a real cost.
+  expect(screen.getByTestId('margin-estimated-only')).toHaveTextContent(
+    '1 bajo pedido sin recibir · 1 recibidas sin costo real');
   expect(box).toHaveTextContent('fuera del realizado');
 });
 
@@ -62,6 +67,14 @@ it('una línea recibida dice su costo real, su origen o que está pendiente', ()
   unmount();
   render(<OrderSupplyPanel order={line({ received_unit_cost: null, received_cost_source: 'agreed' })} onChanged={jest.fn()} />);
   expect(screen.getByLabelText('Costos de la línea')).toHaveTextContent('Costo real pendiente');
+});
+
+it('al recibir, el costo real vacío queda pendiente y así se dice', () => {
+  const { fireEvent } = jest.requireActual('@testing-library/react');
+  render(<OrderSupplyPanel order={{ ...line({ supply_status: 'pending', received_unit_cost: null }),
+    supply_status: 'pending', can_receive_supply: true } as AdminOrderDetail} onChanged={jest.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Recibir del proveedor' }));
+  expect(screen.getByText(/costo real queda pendiente hasta registrarlo/)).toBeInTheDocument();
 });
 
 describe('registrar costo real', () => {

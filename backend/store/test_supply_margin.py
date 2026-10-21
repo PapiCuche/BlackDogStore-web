@@ -11,8 +11,8 @@ SUPPLIER-MARGIN — decisión D2 del propietario (vinculante).
   * Recibida sin `costs.view`: entró al Kardex al costo pactado, pero nadie
     registró su costo real → «costo real pendiente» (`received_cost_source=
     'agreed'`, `received_unit_cost` vacío) hasta que alguien con `costs.view`
-    lo registre (`POST …/supply/<línea>/real-cost/`). Quien tiene
-    `costs.view` y recibe sin escribir otro costo confirma el pactado como real.
+    lo registre (`POST …/supply/<línea>/real-cost/`). Recibir con el
+    campo «Costo real» vacío tampoco lo confirma: queda pendiente (D2).
   * Las líneas de stock propio no cambian. Cancelados y reembolsados, fuera
     como hasta ahora. Nada de esto viaja sin `costs.view`.
 """
@@ -117,12 +117,46 @@ class RealisedMarginTest(MarginShop, TestCase):
         self.assertEqual(body['realised']['lines'], 0)
         self.assertEqual(body['real_cost_pending']['received_without_real_cost_lines'], 1)
 
-    def test_costs_view_receiving_without_another_cost_confirms_the_agreed_one(self):
+    def test_costs_view_receiving_with_the_real_cost_empty_stays_pending(self):
+        """D2 «si falta costo real → pendiente»: an empty field is not a confirmation of the agreed cost."""
         order = self.paid_order(self.case, 2)
         supply.receive_line(order.items.get(), actor=self.staff)
         line = order.items.get()
-        self.assertEqual((line.received_unit_cost, line.received_cost_source), (D('70.0000'), 'real'))
+        self.assertEqual((line.received_unit_cost, line.received_cost_source), (None, 'agreed'))
+        body = self.margin()
+        self.assertEqual(body['realised']['lines'], 0)
+        self.assertEqual(body['real_cost_pending']['received_without_real_cost_lines'], 1)
+        supply.record_real_cost(order.items.get(), actor=self.staff, unit_cost='70.00')
         self.assertEqual(D(self.margin()['realised']['cost']), D('140.00'))
+
+    def test_devices_without_a_cost_each_and_no_line_cost_stay_pending(self):
+        order = self.paid_order(self.phone, 2)
+        supply.receive_line(order.items.get(), actor=self.staff, units=[
+            {'serial_number': 'MRG0011', 'imei': IMEIS[33], 'cost': '2450.00'},
+            {'serial_number': 'MRG0012', 'imei': IMEIS[34]},                 # entered at the agreed cost
+        ])
+        line = order.items.get()
+        self.assertEqual((line.received_unit_cost, line.received_cost_source), (None, 'agreed'))
+
+    def test_failed_lines_are_not_pending_forever_and_to_confirm_is_said_apart(self):
+        failed = self.paid_order(self.case, 1, session='f1')
+        supply.fail_line(failed.items.get(), actor=self.staff, reason='El proveedor no tiene')
+        to_confirm = self.paid_order(self.case, 1, session='f2')
+        OrderItem.objects.filter(order=to_confirm).update(supply_status=OrderItem.SUPPLY_TO_CONFIRM)
+        self.paid_order(self.case, 1, session='f3')                        # pending
+        received = self.paid_order(self.case, 1, session='f4')
+        supply.receive_line(received.items.get(), actor=self.staff)       # no real cost
+        pending = self.margin()['real_cost_pending']
+        self.assertEqual((pending['lines'], pending['not_received_lines'], pending['to_confirm_lines'],
+                          pending['received_without_real_cost_lines']), (3, 1, 1, 1))
+
+    def test_estimated_only_says_not_received_and_without_real_cost_apart(self):
+        self.paid_order(self.case, 1, session='e1')
+        received = self.paid_order(self.case, 1, session='e2')
+        supply.receive_line(received.items.get(), actor=self.staff)
+        only = self.margin()['estimated_only']
+        self.assertEqual((only['lines'], only['on_order_not_received_lines'], only['on_order_without_real_cost_lines']),
+                         (2, 1, 1))
 
     def test_devices_realise_at_the_mean_of_their_real_costs(self):
         order = self.paid_order(self.phone, 2)

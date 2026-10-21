@@ -675,10 +675,12 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
       * the GOODS enter at the REAL cost when somebody with `costs.view`
         states it (`unit_cost` for the line, or a device's own `cost`), else at
         the agreed one. That is what the Kardex, the branch average and each
-        device carry, and what the line freezes as `received_unit_cost`
-        (`received_cost_source` 'stated' or 'agreed') — the cost of the
-        REALISED margin (owner's decision D2); the estimated one keeps the
-        agreed snapshot.
+        device carry. The line freezes it as `received_unit_cost`
+        (`received_cost_source='real'`) — the cost of the REALISED margin
+        (owner's decision D2) — ONLY when it was stated for every unit;
+        otherwise the source is 'agreed' and the real cost stays pending
+        («si falta costo real → pendiente») until `record_real_cost`. The
+        estimated margin keeps the agreed snapshot.
 
     ONCE. A line already received answers `already_received` (the view: 409,
     with the devices it named), under the order's lock: two receptions at the
@@ -711,7 +713,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
     may_state_cost = _may_view_costs(actor, order.company)
     real = clean_money(unit_cost, 'unit_cost', 'el costo real') if may_state_cost else None
     entry_cost = real if real is not None else locked.unit_cost
-    stated = real is not None
+    stated = real is not None           # a real cost said for the whole line
+    stated_units = 0                    # devices that brought their own
     received_cost = entry_cost
     reason = f'Recibido del proveedor para el pedido #{order.pk}'
     metadata = {'order_id': order.pk, 'line_id': locked.pk, 'supplier_offer_id': locked.supplier_offer_id}
@@ -724,11 +727,11 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
             line_cost = str(entry_cost) if entry_cost is not None else None
 
             def device(row):
-                nonlocal stated
+                nonlocal stated_units
                 row = dict(row) if isinstance(row, dict) else {}
                 # A device's own cost only from `costs.view`; otherwise the line's.
                 if may_state_cost and row.get('cost') not in (None, ''):
-                    stated = True
+                    stated_units += 1
                 else:
                     row['cost'] = line_cost
                 return row
@@ -774,12 +777,15 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
 
     # SUPPLIER-MARGIN (D2): the real cost is frozen on the line, here, under the
     # order's lock and once — the sale's agreed `unit_cost` is not touched.
-    # It is REAL only when somebody with costs.view received it (they stated
-    # it, or saw the agreed one and left it). Received by anybody else, the
-    # goods entered at the agreed cost but nobody said the real one: «costo
-    # real pendiente» until `record_real_cost`.
+    # It is REAL only when somebody with costs.view STATED it for every unit
+    # (the line's cost, or each device's own). An empty field is not a
+    # confirmation of the agreed cost (owner's rule D2): the goods entered at
+    # the agreed cost, nobody said the real one — «costo real pendiente» until
+    # `record_real_cost`.
+    if product.is_serialized and stated_units == locked.quantity:
+        stated = True
     now = timezone.now()
-    real_known = may_state_cost and received_cost is not None
+    real_known = stated and received_cost is not None
     OrderItem.objects.filter(pk=locked.pk).update(
         supply_status=OrderItem.SUPPLY_RECEIVED,
         received_unit_cost=quantize_cost(received_cost) if real_known else None,

@@ -590,7 +590,11 @@ class AdminSalesMarginView(APIView):
         realised = self._figures(known.filter(self.REALISED), cost=self.REALISED_COST)
         collections = _collections(company, branches, since, today, tz)
         estimated_only = known.exclude(self.REALISED)
-        real_pending = lines.filter(supply_origin=OrderItem.SUPPLY_SUPPLIER, received_unit_cost__isnull=True)
+        # A FAILED line will never be received: it is not «pending», it goes to
+        # the refund flow (its order is cancelled or refunded in time). A line
+        # «por confirmar» may still be received: pending, counted apart.
+        real_pending = lines.filter(supply_origin=OrderItem.SUPPLY_SUPPLIER, received_unit_cost__isnull=True).exclude(
+            supply_status=OrderItem.SUPPLY_FAILED)
         real_pending_net = real_pending.aggregate(
             net=Coalesce(Sum('net_amount', output_field=_MONEY), Decimal('0.00'), output_field=_MONEY))['net']
         return Response({
@@ -628,7 +632,8 @@ class AdminSalesMarginView(APIView):
                 'lines': real_pending.count(),
                 'orders': real_pending.values('order_id').distinct().count(),
                 'net_sales': str(_cents(real_pending_net)),
-                'not_received_lines': real_pending.exclude(supply_status=OrderItem.SUPPLY_RECEIVED).count(),
+                'not_received_lines': real_pending.filter(supply_status=OrderItem.SUPPLY_PENDING).count(),
+                'to_confirm_lines': real_pending.filter(supply_status=OrderItem.SUPPLY_TO_CONFIRM).count(),
                 'received_without_real_cost_lines': real_pending.filter(
                     supply_status=OrderItem.SUPPLY_RECEIVED).count(),
             },
@@ -637,7 +642,10 @@ class AdminSalesMarginView(APIView):
                 'net_sales': str(known_net - Decimal(realised['net_sales'])),
                 'reference_cost_lines': estimated_only.filter(cost_source=OrderItem.COST_REFERENCE).count(),
                 'on_order_not_received_lines': estimated_only.filter(
-                    supply_origin=OrderItem.SUPPLY_SUPPLIER).count(),
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER).exclude(supply_status=OrderItem.SUPPLY_RECEIVED).count(),
+                # D2: received, but no real cost recorded yet.
+                'on_order_without_real_cost_lines': estimated_only.filter(
+                    supply_origin=OrderItem.SUPPLY_SUPPLIER, supply_status=OrderItem.SUPPLY_RECEIVED).count(),
             },
             'unknown_cost': {
                 'lines': pending.count(),

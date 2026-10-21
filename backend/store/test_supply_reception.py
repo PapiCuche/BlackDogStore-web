@@ -151,7 +151,9 @@ class LinePayloadTest(ReceptionShop, TestCase):
         line = as_client(self.staff).post(self.url(self.order), {}, format='json').json()
         self.assertEqual((line['product_name'], line['quantity'], line['price']), ('Cargador 20W', 2, '110.00'))
         self.assertEqual(line['fulfillment_branch'], {'id': self.branch.pk, 'name': self.branch.name})
-        self.assertEqual((line['agreed_unit_cost'], line['received_unit_cost']), ('70.0000', '70.0000'))
+        # D2: received without stating a real cost -> «costo real pendiente».
+        self.assertEqual((line['agreed_unit_cost'], line['received_unit_cost'], line['received_cost_source']),
+                         ('70.0000', None, 'agreed'))
 
     def test_the_buyer_sees_none_of_it(self):
         from django.contrib.auth.models import User

@@ -2420,8 +2420,9 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
     `real`/`agreed`, `received_at`, `received_cost_at`), escrito bajo el bloqueo del pedido.
     `unit_cost` nunca se reescribe. Quién: el actor de la auditoría `order_supply_received` /
     `order_supply_real_cost_recorded` (sin columna: una FK crearía un índice en la tabla grande).
-  - *Real* sólo si lo registra alguien con `costs.view`: al recibir (lo escribe, o deja vacío y
-    confirma el pactado que ve) o después. Equipos: la media de los costos con que entraron.
+  - *Real* sólo si alguien con `costs.view` lo **escribe**: al recibir (el de la línea, o el de cada
+    equipo; equipos: la media) o después. Dejar el campo vacío **no** confirma el pactado (regla D2
+    «si falta costo real → pendiente»): queda `agreed` y pendiente hasta registrarlo.
   - *Recibida sin `costs.view`*: entró al Kardex al pactado, pero nadie registró su costo real →
     origen `agreed`, `received_unit_cost` vacío: **costo real pendiente**, no realizado.
   - *Registrar costo real* — `POST /api/admin/orders/<pk>/supply/<línea>/real-cost/` `{unit_cost}`:
@@ -2436,7 +2437,14 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   - *Sin costo real* (no recibida, o recibida antes de `0141`: esas quedan NULL, **no se rellenan**
     desde el Kardex porque no se sabe si aquel costo era real o el pactado): «costo real pendiente»,
     fuera del realizado y listada aparte en `/api/admin/sales/margin/` (`real_cost_pending`: líneas,
-    pedidos, venta neta sin IGV, sin recibir / recibidas sin costo real) y en el panel.
+    pedidos, venta neta sin IGV; desglose sin recibir / por confirmar / recibidas sin costo real) y
+    en el panel. Una línea **no abastecida** (`failed`) no cuenta como pendiente: nunca se recibirá
+    y va al flujo de reembolso. «Por confirmar» sí (puede recibirse), contada aparte.
+    `estimated_only` separa `on_order_not_received_lines` (cualquier estado distinto de recibido) de
+    `on_order_without_real_cost_lines` (recibidas sin costo real).
+  - *Cifras a mano* (`test_device_decisions.MarginEstimatedRealisedTest`): la línea bajo pedido
+    recibida sin costo real pasa del realizado a «costo real pendiente» (realizado 300/190, 36,67 %);
+    estimado, ventas, costo desconocido y reembolsos no cambian.
   - *Sin cambios*: las líneas de stock propio; las ventas netas (`net_amount`, sin IGV) y su reparto;
     cancelados y reembolsados fuera como antes; sólo `costs.view`. Una línea bajo pedido sin costo
     pactado sigue en «costo desconocido» (fuera de ambos), aunque tenga costo real.
