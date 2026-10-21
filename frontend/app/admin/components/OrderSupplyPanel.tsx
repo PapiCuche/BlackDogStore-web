@@ -365,9 +365,10 @@ function CostFacts({ item }: { item: AdminOrderItem }) {
   return (
     <p className="mt-1 text-xs text-muted" aria-label="Costos de la línea">
       Costo pactado {soles(item.agreed_unit_cost)}
+      {item.supply_status === "received" && !item.received_unit_cost ? " · Costo real pendiente (recibido sin costo real registrado)" : null}
       {item.received_unit_cost !== null && item.received_unit_cost !== undefined ? (
         <>
-          {" · "}Costo real {soles(item.received_unit_cost)}
+          {" · "}Costo real {soles(item.received_unit_cost)}{item.received_cost_source === "agreed" ? " (al costo pactado)" : ""}
           {difference !== null && difference !== undefined && Number(difference) !== 0
             ? ` · Diferencia ${Number(difference) > 0 ? "+" : ""}${Number(difference).toFixed(2)} por unidad`
             : " · Sin diferencia"}

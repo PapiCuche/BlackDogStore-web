@@ -911,6 +911,29 @@ class OrderItem(models.Model):
     supply_chosen_over_stock = models.BooleanField(default=False, db_default=False)
     supply_choice_reason = models.CharField(max_length=200, blank=True, default='', db_default='')
 
+    # SUPPLIER-MARGIN (owner's decision D2) — the REAL unit cost the goods of
+    # an on-order line entered at, frozen by `supply_services.receive_line`
+    # under the order's lock, next to (never instead of) the agreed
+    # `unit_cost` of the sale. The REALISED margin reads it; the estimated one
+    # keeps reading `unit_cost`. NULL = «costo real pendiente»: not received,
+    # or received before this snapshot existed (never backfilled).
+    # `received_cost_source`: 'stated' (somebody with costs.view said it) or
+    # 'agreed' (entered at the agreed cost: nobody stated another).
+    RECEIVED_COST_STATED = 'stated'
+    RECEIVED_COST_AGREED = 'agreed'
+    RECEIVED_COST_SOURCE_CHOICES = [
+        ('', '—'),
+        (RECEIVED_COST_STATED, 'Costo real indicado al recibir'),
+        (RECEIVED_COST_AGREED, 'Recibido al costo pactado'),
+    ]
+    received_unit_cost = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    received_cost_source = models.CharField(
+        max_length=8, choices=RECEIVED_COST_SOURCE_CHOICES, blank=True, default='', db_default='',
+    )
+    # Who received it is the actor of the `order_supply_received` audit line
+    # (no column: an FK would build an index on this table while it migrates).
+    received_at = models.DateTimeField(null=True, blank=True)
+
     @property
     def on_order(self) -> bool:
         return self.supply_origin == self.SUPPLY_SUPPLIER

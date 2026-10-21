@@ -566,6 +566,8 @@ export type AdminOrderItem = {
    */
   agreed_unit_cost?: string | null;
   received_unit_cost?: string | null;
+  /** D2: 'stated' (indicado al recibir) o 'agreed' (entró al costo pactado); '' sin costo real. */
+  received_cost_source?: '' | 'stated' | 'agreed';
   unit_cost_difference?: string | null;
 };
 

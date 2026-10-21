@@ -670,12 +670,15 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
     COST (SUPPLIER-DEVICE-FLOW-02). Two figures, never mixed:
       * the SALE keeps its snapshot — `OrderItem.unit_cost`, the agreed cost
         frozen at checkout with `cost_source='supplier_offer'` — never
-        rewritten here; the margin (estimated and realised) and the supplier
-        settlement keep reading it;
+        rewritten here; the ESTIMATED margin and the supplier settlement keep
+        reading it;
       * the GOODS enter at the REAL cost when somebody with `costs.view`
         states it (`unit_cost` for the line, or a device's own `cost`), else at
         the agreed one. That is what the Kardex, the branch average and each
-        device carry. `received_unit_cost` reads it back.
+        device carry, and what the line freezes as `received_unit_cost`
+        (`received_cost_source` 'stated' or 'agreed') — the cost of the
+        REALISED margin (owner's decision D2); the estimated one keeps the
+        agreed snapshot.
 
     ONCE. A line already received answers `already_received` (the view: 409,
     with the devices it named), under the order's lock: two receptions at the
@@ -708,6 +711,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
     may_state_cost = _may_view_costs(actor, order.company)
     real = clean_money(unit_cost, 'unit_cost', 'el costo real') if may_state_cost else None
     entry_cost = real if real is not None else locked.unit_cost
+    stated = real is not None
+    received_cost = entry_cost
     reason = f'Recibido del proveedor para el pedido #{order.pk}'
     metadata = {'order_id': order.pk, 'line_id': locked.pk, 'supplier_offer_id': locked.supplier_offer_id}
     try:
@@ -719,9 +724,12 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
             line_cost = str(entry_cost) if entry_cost is not None else None
 
             def device(row):
+                nonlocal stated
                 row = dict(row) if isinstance(row, dict) else {}
                 # A device's own cost only from `costs.view`; otherwise the line's.
-                if not (may_state_cost and row.get('cost') not in (None, '')):
+                if may_state_cost and row.get('cost') not in (None, ''):
+                    stated = True
+                else:
                     row['cost'] = line_cost
                 return row
 
@@ -735,6 +743,11 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
                 order=order, reference_type='order', reference_id=order.pk, metadata=metadata,
                 units=created, expected_unit_status='available', sell_units=True,
             )
+            # The line's real cost: the mean of what its devices entered at
+            # (unknown if any of them has no cost).
+            costs = [unit.cost for unit in created]
+            received_cost = (None if any(cost is None for cost in costs)
+                             else sum(costs, Decimal('0')) / len(costs))
             for unit in created:
                 if not OrderUnit.objects.filter(order=order, unit=unit).exists():
                     unit_identification.record(order=order, unit=unit, method=unit_identification.MANUAL,
@@ -757,11 +770,21 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
         raise SupplyError(str(exc), field='units', line=exc.line, unit_field=exc.field or '') from None
     except inventory_services.InventoryError as exc:
         raise SupplyError(str(exc)) from None
-    OrderItem.objects.filter(pk=locked.pk).update(supply_status=OrderItem.SUPPLY_RECEIVED)
+    from .cost_services import quantize_cost
+
+    # SUPPLIER-MARGIN (D2): the real cost is frozen on the line, here, under the
+    # order's lock and once — the sale's agreed `unit_cost` is not touched.
+    OrderItem.objects.filter(pk=locked.pk).update(
+        supply_status=OrderItem.SUPPLY_RECEIVED,
+        received_unit_cost=None if received_cost is None else quantize_cost(received_cost),
+        received_cost_source='' if received_cost is None else (
+            OrderItem.RECEIVED_COST_STATED if stated else OrderItem.RECEIVED_COST_AGREED),
+        received_at=timezone.now(),
+    )
     # Whether a real cost was stated, never the amount: the log is read by more people.
     _audit('order_supply_received', company=order.company, actor=actor, target_type='order', target_id=order.pk,
            request=request, line_id=locked.pk, quantity=locked.quantity, offer_id=locked.supplier_offer_id,
-           real_cost_stated=real is not None)
+           real_cost_stated=stated)
     locked.refresh_from_db()
     return locked
 
@@ -772,45 +795,19 @@ def _may_view_costs(actor, company) -> bool:
     return user_may_view_costs(actor, company)
 
 
-def received_unit_cost(line) -> Decimal | None:
-    """
-    The REAL unit cost a received on-order line entered at — the purchase
-    entry of the line, or the mean of the devices its reception sold — or None
-    (not received, or a device of unknown cost). `costs.view` only.
-    """
-    from .cost_services import quantize_cost
-    from .models import StockUnit
-
-    if line.supply_origin != OrderItem.SUPPLY_SUPPLIER or line.supply_status != OrderItem.SUPPLY_RECEIVED:
-        return None
-    entry = (StockMovement.objects.filter(
-        order_id=line.order_id, product_id=line.product_id, movement_type=StockMovement.PURCHASE_ENTRY,
-        reference_type='supplier_order', metadata__line_id=line.pk,
-    ).order_by('pk').values_list('unit_cost', flat=True).first())
-    if entry is not None:
-        return quantize_cost(entry)
-    sale = (StockMovement.objects.filter(
-        order_id=line.order_id, product_id=line.product_id, movement_type=StockMovement.SALE_EXIT,
-        metadata__line_id=line.pk,
-    ).order_by('pk').values_list('metadata', flat=True).first())
-    ids = (sale or {}).get('unit_ids') or []
-    costs = list(StockUnit.objects.filter(pk__in=ids).values_list('cost', flat=True))
-    if not costs or any(cost is None for cost in costs):
-        return None
-    return quantize_cost(sum(costs, Decimal('0')) / len(costs))
-
-
 def line_costs(line) -> dict:
     """
     What an on-order line cost, for `costs.view` ONLY: the agreed cost frozen
-    on the sale, the real one the goods entered at, and real − agreed per unit.
+    on the sale, the real one frozen at reception (None = «costo real
+    pendiente»), where that came from, and real − agreed per unit.
     """
     agreed = line.unit_cost if line.supply_origin == OrderItem.SUPPLY_SUPPLIER else None
-    real = received_unit_cost(line)
+    real = line.received_unit_cost if line.supply_origin == OrderItem.SUPPLY_SUPPLIER else None
     difference = real - agreed if real is not None and agreed is not None else None
     return {
         'agreed_unit_cost': None if agreed is None else str(agreed),
         'received_unit_cost': None if real is None else str(real),
+        'received_cost_source': line.received_cost_source if real is not None else '',
         'unit_cost_difference': None if difference is None else str(difference),
     }
 

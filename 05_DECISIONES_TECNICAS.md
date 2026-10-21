@@ -2381,10 +2381,8 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   el real; `received_unit_cost` lo lee de la entrada (o de los equipos que vendió la recepción) y
   `unit_cost_difference` = real − pactado, sólo para `costs.view`. Kardex sin cambios: una entrada y
   una salida de venta, estante neto cero. La auditoría dice si se indicó costo real, nunca el importe.
-- **Margen (decisión, a confirmar):** el estimado y el realizado siguen leyendo la instantánea de
-  la venta (el pactado), como hasta ahora; también la liquidación al proveedor
-  (`pending_settlement`). La diferencia se ve por pedido. Si el propietario quiere el realizado al
-  costo real, es un cambio de `sales_analytics_views` (leer la entrada de la línea) y no de datos.
+- **Margen:** *superado por la decisión D2 del propietario* (ver «Margen realizado al costo real»,
+  abajo). La liquidación al proveedor (`pending_settlement`) sigue al costo pactado.
 - **Una sola vez.** Recibir una línea ya recibida responde **409 `already_received`** con los
   equipos que nombró (antes 400 `wrong_state`); bajo el bloqueo del pedido, dos recepciones a la
   vez dejan una sola entrada.
@@ -2415,6 +2413,24 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   - *«Recibidos, por despachar o entregar»* cuenta sólo lo que sigue en la tienda: un pedido
     **enviado** queda fuera (va en camino; nadie en la tienda tiene que actuar) y uno entregado
     también.
+- **Margen realizado al costo real — decisión D2 del propietario (2026-10-21, `fix/supplier-margin-qty`,
+  migración `0141_orderitem_received_cost`, aditiva):**
+  - *Estimado* = costo pactado congelado de la línea bajo pedido (`OrderItem.unit_cost`), como antes.
+    *Realizado* = costo real congelado al recibir: `OrderItem.received_unit_cost` (+
+    `received_cost_source` `stated`/`agreed`, `received_at`), escrito por `receive_line` bajo el
+    bloqueo del pedido y una sola vez. `unit_cost` nunca se reescribe. Quién recibió: el actor de
+    la auditoría `order_supply_received` (sin columna: una FK crearía un índice en la tabla grande).
+  - *Recibida sin `costs.view`*: entró al Kardex al pactado; cuenta como real con origen `agreed`.
+    Equipos: la media de los costos con que entraron.
+  - *Sin costo real* (no recibida, o recibida antes de `0141`: esas quedan NULL, **no se rellenan**
+    desde el Kardex porque no se sabe si aquel costo era real o el pactado): «costo real pendiente»,
+    fuera del realizado y listada aparte en `/api/admin/sales/margin/` (`real_cost_pending`: líneas,
+    pedidos, venta neta sin IGV, sin recibir / recibidas sin costo real) y en el panel.
+  - *Sin cambios*: las líneas de stock propio; las ventas netas (`net_amount`, sin IGV) y su reparto;
+    cancelados y reembolsados fuera como antes; sólo `costs.view`. Una línea bajo pedido sin costo
+    pactado sigue en «costo desconocido» (fuera de ambos), aunque tenga costo real.
+  - *Vuelta atrás*: a `0140` borra las tres columnas; el realizado vuelve a leer el pactado. Los
+    costos reales siguen en el Kardex y en los equipos.
 
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)
 

@@ -1202,7 +1202,7 @@ export type SalesMargin = {
   refunds: { orders: number; amount: string; net: string };
   /** Todas las líneas con costo conocido (promedio, unidad, referencia u oferta del proveedor). */
   estimated: SalesMarginTotals;
-  /** Sólo las líneas con costo confirmado: stock propio vendido o bajo pedido ya recibido. */
+  /** Sólo las líneas con costo confirmado: stock propio vendido o bajo pedido recibido con su costo real. */
   realised: SalesMarginTotals;
   /** Lo que entra en el estimado pero aún no en el realizado. */
   estimated_only: {
@@ -1210,6 +1210,13 @@ export type SalesMargin = {
   };
   /** Líneas sin costo: fuera de ambos márgenes. */
   unknown_cost: { lines: number; orders: number; net_sales: string };
+  /**
+   * SUPPLIER-MARGIN (D2): líneas bajo pedido sin costo real todavía (no
+   * recibidas, o recibidas antes de que se guardara): fuera del realizado.
+   */
+  real_cost_pending?: {
+    lines: number; orders: number; net_sales: string; not_received_lines: number; received_without_real_cost_lines: number;
+  };
   by_product: SalesMarginRow[];
   by_branch: SalesMarginRow[];
   by_channel: SalesMarginRow[];
