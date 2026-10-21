@@ -64,10 +64,14 @@ export type WeeklyImportSummary = {
 export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   /** Absent on an answer of an older server: then the counts are the `rows_*` fields. */
   summary?: WeeklyImportSummary;
+  /** The very same file (SHA-256) was already applied: applying it again sets what is left once more. */
+  already_applied?: AlreadyApplied | null;
   rows: WeeklyImportRow[];
 };
 
 export type PriceDecision = "accept" | "keep";
+
+export type AlreadyApplied = { job_id: number; applied_at: string | null };
 
 export type WeeklyImportResult = {
   status: "applied";
@@ -106,6 +110,7 @@ export class WeeklyImportError extends CatalogApiError {
     code: string | null,
     field: string | null,
     readonly priceChanges: PriceChangeRow[] = [],
+    readonly alreadyApplied: AlreadyApplied | null = null,
   ) {
     super(message, status, code, field);
     this.name = "WeeklyImportError";
@@ -128,6 +133,7 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
     body && typeof body.code === "string" ? body.code : null,
     body && typeof body.field === "string" ? body.field : null,
     body && Array.isArray(body.price_changes) ? (body.price_changes as PriceChangeRow[]) : [],
+    body && body.already_applied && typeof body.already_applied === "object" ? (body.already_applied as AlreadyApplied) : null,
   );
 }
 
@@ -143,12 +149,14 @@ export function previewWeeklyImport(file: File, companyId?: number | null): Prom
  * Apply a previewed job. A file that changes a commercial price needs a
  * decision: `accept` writes the new prices, `keep` writes the rest and keeps
  * every current price. Without one the server answers 409
- * `price_confirmation_required`; a job whose offers changed since, 400 `stale`.
+ * `price_confirmation_required`; a job whose offers changed since, 400 `stale`; the very same file
+ * applied before, 409 `already_applied` unless `confirmReapply`.
  */
 export function applyWeeklyImport(
-  id: number, decision: PriceDecision | null, companyId?: number | null,
+  id: number, decision: PriceDecision | null, companyId?: number | null, options: { confirmReapply?: boolean } = {},
 ): Promise<WeeklyImportResult> {
-  const body = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
+  const body: Record<string, boolean> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
+  if (options.confirmReapply) body.confirm_reapply = true;
   return call(withCompany(`/admin/supplier-offers/import/${id}/apply/`, companyId),
     { method: "POST", body: JSON.stringify(body) }, "No se pudo aplicar el archivo.");
 }

@@ -2787,6 +2787,16 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   del archivo, trabajo). Cantidad vacía en una oferta con unidades vendidas es error.
 - *Cantidad 0 = agotada.* La confirmada pasa a ser lo comprometido: no se vende más y lo ya pagado
   se mantiene.
+- *El mismo archivo otra vez.* Con la regla neta, volver a aplicar un archivo ya aplicado después
+  de vender fijaría otra vez lo disponible (aplicado 4, vendidos 3, el mismo archivo → quedan 4, no
+  1). La vista previa de un archivo cuyo SHA-256 es el de un trabajo **aplicado** de la misma
+  empresa lo dice (`already_applied: {job_id, applied_at}`) y aplicar responde 409
+  `already_applied` sin escribir nada, salvo `confirm_reapply: true` (casilla «Este archivo ya se
+  aplicó el …; aplicarlo otra vez vuelve a fijar lo disponible»); la confirmación se audita
+  (`supplier_offers_reapply_confirmed`). Se vuelve a comprobar al aplicar, después de lo `stale`.
+- *Vuelta atrás.* No volver al código anterior mientras haya vistas previas hechas con este código
+  sin aplicar: el código anterior leería la cantidad neta como total (confirmada = cantidad del
+  archivo) y lo vendido se restaría dos veces. Aplicar o descartar esos trabajos antes.
 - *Precio comercial nuevo.* La vista previa lo muestra antes → después; aplicar responde 409
   `price_confirmation_required` (con las filas) salvo `accept_price_changes: true` (escribe los
   precios) o `keep_prices: true` (escribe lo demás, mantiene cada precio actual); las dos a la
@@ -2812,6 +2822,10 @@ borra). Código: `supplier_offer_import.py`; pantalla: `SupplierOffersManager`.
   `supplier_offer_expired` (el comando), nunca un motivo escrito a mano. Conservador: si después
   del vencimiento alguien la editó (`supplier_offer_updated`), la carga ya no la reactiva sola.
 - *Instantáneas.* Las líneas ya vendidas conservan precio, plazo, costo y oferta.
+
+**Por confirmar con el propietario.** «No se pudo abastecer» (`fail_line`) devuelve la unidad
+liberada a la oferta (baja lo comprometido); con la regla neta, lo disponible puede quedar por
+encima de la cifra del proveedor del último archivo. ¿Debe la unidad liberada volver a la oferta?
 
 **Decidido (D1, 2026-10-21).** La cantidad semanal es lo que le queda al proveedor: se suma a lo
 ya vendido (ver «disponibilidad NETA» arriba). Antes, lo comprometido contaba contra la nueva

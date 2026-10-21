@@ -73,6 +73,14 @@ previsualizarlo» — before writing anything. A row the preview staged as new
 is stale too when, by then, the supplier and variant have an offer that is
 not over, or one over those days.
 
+THE SAME FILE TWICE. Under NET AVAILABILITY, re-applying a file after sales
+would set what is left once more (applied 4, sold 3, the same file again → 4
+left, not 1). A preview whose SHA-256 is that of a file already APPLIED in the
+company says so (`already_applied: {job_id, applied_at}`), and apply refuses it
+(409 `already_applied`, nothing written) unless `confirm_reapply: true`; the
+confirmation is audited (`supplier_offers_reapply_confirmed`). Checked again at
+apply, after the stale checks.
+
 WHICH VARIANT. In order: the system code («Identificador», or a code cell that
 is one); a barcode or SKU (slug); the supplier's own code already mapped to a
 variant (`SupplierProductRef`, «Código del proveedor», or an unmatched code
@@ -950,6 +958,7 @@ def job_payload(job, *, include_cost: bool) -> dict:
         'id': job.pk, 'status': job.status, 'rows_total': job.rows_total, 'rows_create': job.rows_create,
         'rows_update': job.rows_update, 'rows_no_change': job.rows_no_change, 'rows_error': job.rows_error,
         'cost_column_ignored': bool((job.summary or {}).get('cost_column_ignored')),
+        'already_applied': previously_applied(job) if job.status != BulkImportJob.APPLIED else None,
         'summary': summary, 'rows': rows,
     }
 
@@ -957,6 +966,16 @@ def job_payload(job, *, include_cost: bool) -> dict:
 # ---------------------------------------------------------------------------
 # Apply
 # ---------------------------------------------------------------------------
+
+def previously_applied(job):
+    """`{job_id, applied_at}` of the latest APPLIED job of the company with the very same file, or None."""
+    earlier = (BulkImportJob.objects.filter(company_id=job.company_id, import_type=BulkImportJob.SUPPLIER_OFFERS,
+                                            file_sha256=job.file_sha256, status=BulkImportJob.APPLIED)
+               .exclude(pk=job.pk).order_by('-applied_at', '-pk').first())
+    if earlier is None:
+        return None
+    return {'job_id': earlier.pk, 'applied_at': earlier.applied_at.isoformat() if earlier.applied_at else None}
+
 
 def _price_rows(rows) -> list[dict]:
     return [{
@@ -967,7 +986,8 @@ def _price_rows(rows) -> list[dict]:
 
 
 @transaction.atomic
-def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False) -> dict:
+def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_prices: bool = False,
+          confirm_reapply: bool = False) -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -1030,6 +1050,18 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         if added:
             raise OfferImportError(STALE, code='stale')
 
+    earlier = previously_applied(job)
+    if earlier is not None:
+        if not confirm_reapply:
+            raise OfferImportError(
+                'Este archivo ya se aplicó: aplicarlo otra vez vuelve a fijar lo disponible de cada oferta (lo '
+                'vendido desde entonces no se descuenta). Confírmalo para aplicarlo de nuevo.',
+                code='already_applied', extra={'already_applied': earlier})
+        AdminAuditLog.log(actor=actor, action='supplier_offers_reapply_confirmed', target_type='bulk_import_job',
+                          target_id=job.pk, request=request, company=job.company,
+                          metadata={'job_id': job.pk, 'previous_job_id': earlier['job_id'],
+                                    'previous_applied_at': earlier['applied_at'], 'file_sha256': job.file_sha256})
+
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
     for row in writing:
         data = row.normalized_data or {}
@@ -1073,7 +1105,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                     _audit_price(job, row, offer, price_change, kept=keep_prices, actor=actor, request=request)
                     prices_kept += keep_prices
                     prices_changed += not keep_prices
-                if keep_prices and data.get('changes') == ['commercial_price']:
+                if keep_prices and data.get('changes') == ['commercial_price'] and quantity_after == quantity_before:
+                    # Only the price changed, and it was kept. A payment since the preview moves `confirmed`
+                    # (NET AVAILABILITY): then it is an update.
                     unchanged += 1
                 elif data.get('sold_out'):
                     sold_out += 1

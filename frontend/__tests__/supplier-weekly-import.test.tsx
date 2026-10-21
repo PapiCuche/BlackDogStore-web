@@ -154,6 +154,30 @@ describe('precio comercial nuevo: decisión explícita', () => {
   });
 });
 
+describe('el mismo archivo otra vez', () => {
+  it('avisa, exige la casilla y envía `confirm_reapply`', async () => {
+    preview = { ...previewOf([updateRow(2, { changes: ['available'], available: 7 })], { sold_out: 0 }),
+      already_applied: { job_id: 60, applied_at: '2026-10-20T15:00:00Z' } };
+    const shown = await upload();
+    const group = within(shown).getByRole('group', { name: 'Archivo ya aplicado' });
+    const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
+    expect(applyButton).toBeDisabled();
+    fireEvent.click(within(group).getByRole('checkbox', { name: /Este archivo ya se aplicó el .*vuelve a fijar lo disponible/ }));
+    expect(applyButton).toBeEnabled();
+    await act(async () => { fireEvent.click(applyButton); });
+    expect(applied()[0].body).toEqual({ confirm_reapply: true });
+  });
+
+  it('si el servidor lo descubre al aplicar (409), pide la confirmación', async () => {
+    applyAnswer = () => reply({ detail: 'Este archivo ya se aplicó.', code: 'already_applied', already_applied: { job_id: 60, applied_at: '2026-10-20T15:00:00Z' } }, 409);
+    preview = previewOf([updateRow(2, { changes: ['available'], available: 7 })], { sold_out: 0 });
+    const shown = await upload();
+    await act(async () => { fireEvent.click(within(shown).getByRole('button', { name: 'Aplicar cambios' })); });
+    expect(await within(shown).findByRole('group', { name: 'Archivo ya aplicado' })).toBeInTheDocument();
+    expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
+  });
+});
+
 describe('vista previa vieja', () => {
   it('el servidor la rechaza: no se aplicó nada y se puede volver a previsualizar el mismo archivo', async () => {
     applyAnswer = () => reply({ detail: 'El archivo cambió: vuelve a previsualizarlo.', code: 'stale' }, 400);
