@@ -2656,6 +2656,7 @@ export type OrderSupplyLine = {
   /** Sólo con `costs.view` (la clave ausente = no ve costos). */
   agreed_unit_cost?: string | null;
   received_unit_cost?: string | null;
+  received_cost_source?: "" | "real" | "agreed";
   unit_cost_difference?: string | null;
 };
 
@@ -2720,6 +2721,19 @@ export async function receiveOrderSupply(
     answer && typeof answer.line === "number" ? answer.line : null,
     text("unit_field"),
     answer && Array.isArray(answer.units) ? (answer.units as ReceivedUnitRecord[]) : [],
+  );
+}
+
+/**
+ * SUPPLIER-MARGIN (D2) — «Registrar costo real» de una línea recibida cuyo costo
+ * real quedó pendiente. `costs.view` + lo que pide recibir. No toca el Kardex.
+ */
+export function recordOrderSupplyRealCost(
+  orderId: number, itemId: number, unitCost: string, companyId?: number | null,
+): Promise<OrderSupplyLine> {
+  return catalogCall(
+    withQuery(`/admin/orders/${orderId}/supply/${itemId}/real-cost/`, {}, companyId),
+    jsonInit("POST", { unit_cost: unitCost }), "No se pudo registrar el costo real.",
   );
 }
 

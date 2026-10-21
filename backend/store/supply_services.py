@@ -774,17 +774,64 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
 
     # SUPPLIER-MARGIN (D2): the real cost is frozen on the line, here, under the
     # order's lock and once — the sale's agreed `unit_cost` is not touched.
+    # It is REAL only when somebody with costs.view received it (they stated
+    # it, or saw the agreed one and left it). Received by anybody else, the
+    # goods entered at the agreed cost but nobody said the real one: «costo
+    # real pendiente» until `record_real_cost`.
+    now = timezone.now()
+    real_known = may_state_cost and received_cost is not None
     OrderItem.objects.filter(pk=locked.pk).update(
         supply_status=OrderItem.SUPPLY_RECEIVED,
-        received_unit_cost=None if received_cost is None else quantize_cost(received_cost),
-        received_cost_source='' if received_cost is None else (
-            OrderItem.RECEIVED_COST_STATED if stated else OrderItem.RECEIVED_COST_AGREED),
-        received_at=timezone.now(),
+        received_unit_cost=quantize_cost(received_cost) if real_known else None,
+        received_cost_source=(OrderItem.RECEIVED_COST_REAL if real_known
+                              else OrderItem.RECEIVED_COST_AGREED if received_cost is not None else ''),
+        received_at=now,
+        received_cost_at=now if real_known else None,
     )
     # Whether a real cost was stated, never the amount: the log is read by more people.
     _audit('order_supply_received', company=order.company, actor=actor, target_type='order', target_id=order.pk,
            request=request, line_id=locked.pk, quantity=locked.quantity, offer_id=locked.supplier_offer_id,
            real_cost_stated=stated)
+    locked.refresh_from_db()
+    return locked
+
+
+@transaction.atomic
+def record_real_cost(line, *, actor, unit_cost, company=None, request=None) -> OrderItem:
+    """
+    «Registrar costo real» (owner's decision D2): a received on-order line whose
+    real cost nobody recorded (received without costs.view, or before the
+    snapshot existed) gets it now — under the order's lock, once.
+
+    Only the line's `received_unit_cost` (and its source and time) is written:
+    NOT the Kardex, NOT the branch average, NOT the devices — correcting what
+    the goods entered at is a separate, pending phase. The same value twice
+    answers the line again without a second audit line; another value over a
+    real cost already recorded is refused (`already_real`), never overwritten.
+    The audit line says that it was recorded and over which source; never the
+    amount (the log is read by more people than costs.view).
+
+    The caller checks the authority (costs.view + what receiving takes).
+    """
+    from .cost_services import quantize_cost
+
+    order, locked = _locked_line(line, company=company)
+    if locked.supply_status != OrderItem.SUPPLY_RECEIVED:
+        raise SupplyError('Sólo se registra el costo real de una línea ya recibida.', code='not_received')
+    amount = clean_money(unit_cost, 'unit_cost', 'el costo real', required=True, positive=True)
+    amount = quantize_cost(amount)
+    if locked.received_cost_source == OrderItem.RECEIVED_COST_REAL and locked.received_unit_cost is not None:
+        if locked.received_unit_cost == amount:
+            return locked
+        raise SupplyError('Esta línea ya tiene su costo real registrado; no se sobrescribe.', code='already_real')
+    previous = locked.received_cost_source
+    OrderItem.objects.filter(pk=locked.pk).update(
+        received_unit_cost=amount, received_cost_source=OrderItem.RECEIVED_COST_REAL,
+        received_cost_at=timezone.now(),
+    )
+    _audit('order_supply_real_cost_recorded', company=order.company, actor=actor, target_type='order',
+           target_id=order.pk, request=request, line_id=locked.pk, previous_source=previous or 'none',
+           kardex_untouched=True)
     locked.refresh_from_db()
     return locked
 
@@ -807,7 +854,7 @@ def line_costs(line) -> dict:
     return {
         'agreed_unit_cost': None if agreed is None else str(agreed),
         'received_unit_cost': None if real is None else str(real),
-        'received_cost_source': line.received_cost_source if real is not None else '',
+        'received_cost_source': line.received_cost_source if line.supply_origin == OrderItem.SUPPLY_SUPPLIER else '',
         'unit_cost_difference': None if difference is None else str(difference),
     }
 

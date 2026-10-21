@@ -2416,12 +2416,23 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
 - **Margen realizado al costo real — decisión D2 del propietario (2026-10-21, `fix/supplier-margin-qty`,
   migración `0141_orderitem_received_cost`, aditiva):**
   - *Estimado* = costo pactado congelado de la línea bajo pedido (`OrderItem.unit_cost`), como antes.
-    *Realizado* = costo real congelado al recibir: `OrderItem.received_unit_cost` (+
-    `received_cost_source` `stated`/`agreed`, `received_at`), escrito por `receive_line` bajo el
-    bloqueo del pedido y una sola vez. `unit_cost` nunca se reescribe. Quién recibió: el actor de
-    la auditoría `order_supply_received` (sin columna: una FK crearía un índice en la tabla grande).
-  - *Recibida sin `costs.view`*: entró al Kardex al pactado; cuenta como real con origen `agreed`.
-    Equipos: la media de los costos con que entraron.
+    *Realizado* = costo real registrado: `OrderItem.received_unit_cost` (+ `received_cost_source`
+    `real`/`agreed`, `received_at`, `received_cost_at`), escrito bajo el bloqueo del pedido.
+    `unit_cost` nunca se reescribe. Quién: el actor de la auditoría `order_supply_received` /
+    `order_supply_real_cost_recorded` (sin columna: una FK crearía un índice en la tabla grande).
+  - *Real* sólo si lo registra alguien con `costs.view`: al recibir (lo escribe, o deja vacío y
+    confirma el pactado que ve) o después. Equipos: la media de los costos con que entraron.
+  - *Recibida sin `costs.view`*: entró al Kardex al pactado, pero nadie registró su costo real →
+    origen `agreed`, `received_unit_cost` vacío: **costo real pendiente**, no realizado.
+  - *Registrar costo real* — `POST /api/admin/orders/<pk>/supply/<línea>/real-cost/` `{unit_cost}`:
+    `sales.orders.manage` + `inventory.adjust` (lo de recibir) + `costs.view`; sólo una línea
+    recibida (si no, 409 `not_received`), importe positivo, bajo el bloqueo del pedido. El mismo
+    valor otra vez responde 200 sin nueva auditoría; otro valor sobre un costo real ya registrado,
+    409 `already_real` (nunca se sobrescribe). Auditoría: que se registró y sobre qué origen, nunca
+    el importe (como el resto de la auditoría de costos). En el panel, «Registrar costo real» en
+    la línea pendiente para quien ve costos.
+  - *No toca el Kardex ni el costo promedio* de la sucursal ni el de los equipos: la mercadería
+    sigue registrada al costo con que entró. Corregir ese costo es la fase separada **PENDIENTE**.
   - *Sin costo real* (no recibida, o recibida antes de `0141`: esas quedan NULL, **no se rellenan**
     desde el Kardex porque no se sabe si aquel costo era real o el pactado): «costo real pendiente»,
     fuera del realizado y listada aparte en `/api/admin/sales/margin/` (`real_cost_pending`: líneas,
@@ -2429,7 +2440,7 @@ retirada antes del pago → la línea queda `to_confirm` como en DC3.
   - *Sin cambios*: las líneas de stock propio; las ventas netas (`net_amount`, sin IGV) y su reparto;
     cancelados y reembolsados fuera como antes; sólo `costs.view`. Una línea bajo pedido sin costo
     pactado sigue en «costo desconocido» (fuera de ambos), aunque tenga costo real.
-  - *Vuelta atrás*: a `0140` borra las tres columnas; el realizado vuelve a leer el pactado. Los
+  - *Vuelta atrás*: a `0140` borra las cuatro columnas; el realizado vuelve a leer el pactado. Los
     costos reales siguen en el Kardex y en los equipos.
 
 #### DC3 · revisión independiente (2026-10-15, misma rama, antes de publicar)

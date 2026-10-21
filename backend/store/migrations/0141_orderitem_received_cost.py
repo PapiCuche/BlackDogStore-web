@@ -4,7 +4,7 @@
 SUPPLIER-MARGIN (owner's decision D2) — the real unit cost an on-order line
 was received at, beside the agreed cost of its sale.
 
-ADDITIVE: three nullable / `db_default` columns on `store_orderitem`, no
+ADDITIVE: four nullable / `db_default` columns on `store_orderitem`, no
 index, no data written. The previous release keeps inserting lines (it does
 not name the columns; the database fills '' / NULL). Rollback to 0140 drops
 the columns: the realised margin then reads the agreed cost again, and the
@@ -12,7 +12,8 @@ real costs recorded meanwhile stay in the Kardex and on the devices.
 
 Lines received before this migration keep NULL: «costo real pendiente». They
 are NOT backfilled from the Kardex — whether their entry cost was a real one
-or the agreed one is not known.
+or the agreed one is not known. Somebody with costs.view records it
+(`POST /api/admin/orders/<pk>/supply/<line>/real-cost/`).
 """
 from django.db import migrations, models
 
@@ -31,8 +32,13 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='orderitem',
+            name='received_cost_at',
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name='orderitem',
             name='received_cost_source',
-            field=models.CharField(blank=True, choices=[('', '—'), ('stated', 'Costo real indicado al recibir'), ('agreed', 'Recibido al costo pactado')], db_default='', default='', max_length=8),
+            field=models.CharField(blank=True, choices=[('', '—'), ('real', 'Costo real registrado'), ('agreed', 'Recibido al costo pactado, costo real pendiente')], db_default='', default='', max_length=8),
         ),
         migrations.AddField(
             model_name='orderitem',

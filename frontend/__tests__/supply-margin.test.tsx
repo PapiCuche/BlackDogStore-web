@@ -56,10 +56,62 @@ it('sin líneas pendientes no aparece', async () => {
 });
 
 it('una línea recibida dice su costo real, su origen o que está pendiente', () => {
-  const { unmount } = render(<OrderSupplyPanel order={line({ received_unit_cost: '70.0000', received_cost_source: 'agreed',
+  const { unmount } = render(<OrderSupplyPanel order={line({ received_unit_cost: '70.0000', received_cost_source: 'real',
     unit_cost_difference: '0.0000' })} onChanged={jest.fn()} />);
-  expect(screen.getByLabelText('Costos de la línea')).toHaveTextContent('Costo real S/ 70.00 (al costo pactado)');
+  expect(screen.getByLabelText('Costos de la línea')).toHaveTextContent('Costo real S/ 70.00 · Sin diferencia');
   unmount();
-  render(<OrderSupplyPanel order={line({ received_unit_cost: null, received_cost_source: '' })} onChanged={jest.fn()} />);
+  render(<OrderSupplyPanel order={line({ received_unit_cost: null, received_cost_source: 'agreed' })} onChanged={jest.fn()} />);
   expect(screen.getByLabelText('Costos de la línea')).toHaveTextContent('Costo real pendiente');
+});
+
+describe('registrar costo real', () => {
+  const send = jest.requireMock('@/app/lib/auth').fetchWithAuth as jest.Mock;
+  let writes: { path: string; body: unknown }[];
+  let answer: { status: number; body: unknown };
+
+  beforeEach(() => {
+    writes = [];
+    answer = { status: 200, body: { id: 2, supply_status: 'received', received_unit_cost: '64.0000', received_cost_source: 'real' } };
+    send.mockReset();
+    send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      if ((init.method ?? 'GET') !== 'GET') {
+        writes.push({ path: url.replace(/^.*\/api/, ''), body: JSON.parse(String(init.body ?? '{}')) });
+        return { ok: answer.status < 300, status: answer.status, json: async () => answer.body } as Response;
+      }
+      return { ok: true, status: 200, json: async () => line({ received_unit_cost: '64.0000', received_cost_source: 'real' }) } as Response;
+    });
+  });
+
+  const pending = (flags = {}) => line({ received_unit_cost: null, received_cost_source: 'agreed', ...flags });
+
+  it('con costs.view y permiso de recibir, se registra en una línea pendiente', async () => {
+    const onChanged = jest.fn();
+    render(<OrderSupplyPanel order={{ ...pending(), can_receive_supply: true } as AdminOrderDetail} onChanged={onChanged} />);
+    const { fireEvent } = jest.requireActual('@testing-library/react');
+    fireEvent.change(screen.getByLabelText('Costo real por unidad'), { target: { value: '64.00' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Registrar costo real' })); });
+    expect(writes).toEqual([{ path: '/admin/orders/900/supply/2/real-cost/', body: { unit_cost: '64.00' } }]);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('el rechazo del servidor se dice (ya registrado)', async () => {
+    answer = { status: 409, body: { detail: 'Esta línea ya tiene su costo real registrado; no se sobrescribe.', code: 'already_real' } };
+    render(<OrderSupplyPanel order={{ ...pending(), can_receive_supply: true } as AdminOrderDetail} onChanged={jest.fn()} />);
+    const { fireEvent } = jest.requireActual('@testing-library/react');
+    fireEvent.change(screen.getByLabelText('Costo real por unidad'), { target: { value: '60' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Registrar costo real' })); });
+    expect(screen.getByRole('alert')).toHaveTextContent('no se sobrescribe');
+  });
+
+  it('sin costs.view, sin permiso de recibir o con el costo ya registrado no aparece', () => {
+    const { unmount } = render(<OrderSupplyPanel order={{ ...line({ agreed_unit_cost: undefined, received_unit_cost: undefined }), can_receive_supply: true } as AdminOrderDetail} onChanged={jest.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Registrar costo real' })).toBeNull();
+    unmount();
+    const second = render(<OrderSupplyPanel order={pending()} onChanged={jest.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Registrar costo real' })).toBeNull();
+    second.unmount();
+    render(<OrderSupplyPanel order={{ ...line({ received_unit_cost: '64.0000', received_cost_source: 'real' }), can_receive_supply: true } as AdminOrderDetail} onChanged={jest.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Registrar costo real' })).toBeNull();
+  });
 });
