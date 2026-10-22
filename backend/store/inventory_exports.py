@@ -54,6 +54,7 @@ from __future__ import annotations
 import io
 import zipfile
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from django.db.models import IntegerField, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
@@ -64,10 +65,10 @@ from .import_formats import (
     DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE, IDENTIFIER_HEADER, STATE_HEADER, STATE_LABELS,
     product_identifier,
 )
-from .models import BranchStock, Product, StockUnit
+from .models import BranchStock, Product, StockUnit, SupplierOffer
 from .xlsx_reader import looks_like_formula, mark_as_text
 
-KINDS = ('products', 'stock', 'units', 'full')
+KINDS = ('products', 'stock', 'units', 'full', 'integral')
 MODE_REIMPORT, MODE_REPORT = 'reimport', 'report'
 MODES = (MODE_REIMPORT, MODE_REPORT)
 
@@ -89,6 +90,7 @@ FILENAMES = {
     ('units', MODE_REIMPORT): 'equipos-para-cargar.xlsx',
     ('units', MODE_REPORT): 'reporte-equipos.xlsx',
     ('full', MODE_REIMPORT): 'inventario-completo.zip',
+    ('integral', MODE_REPORT): 'reporte-integral-inventario.xlsx',
 }
 #: The names INSIDE the ZIP.
 ZIP_PRODUCTS, ZIP_STOCK, ZIP_UNITS, ZIP_NOTE = 'Productos.xlsx', 'Stock.xlsx', 'Equipos.xlsx', 'LEEME.txt'
@@ -217,10 +219,24 @@ def _text(value) -> str | None:
     return ILLEGAL_CHARACTERS_RE.sub('', str(value or '')) or None
 
 
+class Sheet(NamedTuple):
+    """One sheet of a workbook: what `_workbook_bytes` writes (INV-EXP-02: several in one file)."""
+    title: str
+    headers: list
+    rows: list
+    text_columns: tuple = ()
+    widths: tuple = ()
+
+
 def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) -> bytes:
+    """ONE sheet. See `_sheets_bytes`."""
+    return _sheets_bytes([Sheet(title, headers, rows, tuple(text_columns), tuple(widths))])
+
+
+def _sheets_bytes(sheets) -> bytes:
     """
-    ONE sheet, written in write-only mode: rows are streamed to the file as
-    they come instead of being held as cell objects.
+    Every sheet in `sheets`, in order, written in write-only mode: rows are
+    streamed to the file as they come instead of being held as cell objects.
 
     `text_columns` are the indexes of identifiers (codes, serials, IMEIs): their
     cells are text whatever they look like, so no zero is lost and no IMEI
@@ -235,13 +251,22 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
     from openpyxl.utils import get_column_letter
 
     workbook = openpyxl.Workbook(write_only=True)
+    for spec in sheets:
+        _write_sheet(workbook, spec, get_column_letter, WriteOnlyCell,
+                     Font(bold=True, color='FFFFFF'), PatternFill('solid', fgColor='1F2937'))
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _write_sheet(workbook, spec, get_column_letter, WriteOnlyCell, bold, fill) -> None:
+    title, headers, rows, text_columns, widths = spec
     sheet = workbook.create_sheet(title)
     # In write-only mode the layout is declared BEFORE the first row.
     sheet.freeze_panes = 'A2'
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
 
-    bold, fill = Font(bold=True, color='FFFFFF'), PatternFill('solid', fgColor='1F2937')
     head = []
     for title_ in headers:
         # A header can carry a tenant's text too («ALMACEN <branch name>»): the
@@ -270,10 +295,6 @@ def _workbook_bytes(title: str, headers, rows, *, text_columns=(), widths=()) ->
             else:
                 cells.append(value)
         sheet.append(cells)
-
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
 
 
 def _check_rows(count: int) -> None:
@@ -550,6 +571,12 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
         )
         return payload, len(rows)
 
+    sheet = _stock_report_sheet(company, filters, queryset, branches)
+    return _sheets_bytes([sheet]), len(sheet.rows)
+
+
+def _stock_report_sheet(company, filters: ExportFilters, queryset, branches) -> Sheet:
+    """One row per product AND branch (the `report` of `stock_workbook`)."""
     queryset = queryset.select_related('category').order_by('name', 'pk')
     _check_rows(queryset.count() * len(branches))
     codes = import_exports.product_codes(company)
@@ -572,11 +599,8 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
                 # DC1 — the branch's weighted average, `costs.view` only.
                 averages.get((branch.pk, product.pk)) if filters.include_cost else None,
             ])
-    payload = _workbook_bytes(
-        import_exports.REPORT_SHEETS['stock'], STOCK_REPORT_HEADERS, rows, text_columns=(0, 1),
-        widths=[16, 18, 46, 28, 16, 24, 12, 16],
-    )
-    return payload, len(rows)
+    return Sheet(import_exports.REPORT_SHEETS['stock'], STOCK_REPORT_HEADERS, rows, (0, 1),
+                 (16, 18, 46, 28, 16, 24, 12, 16))
 
 
 # =============================================================================
@@ -584,6 +608,11 @@ def stock_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
 # =============================================================================
 
 def units_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, int]:
+    sheet = _units_sheet(company, filters, mode)
+    return _sheets_bytes([sheet]), len(sheet.rows)
+
+
+def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
     """
     Devices, one row each. `(bytes, rows)`.
 
@@ -654,12 +683,68 @@ def units_workbook(company, filters: ExportFilters, mode: str) -> tuple[bytes, i
     widths = {'Código': 20, 'Producto': 43, 'Sucursal': 25, 'Número de serie': 27, 'IMEI': 22, 'IMEI 2': 22,
               'Condición': 23, 'Costo': 18, UNIT_REASON_HEADER: 48, 'Modelo': 30, 'Estado estético': 20,
               'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48}
-    payload = _workbook_bytes(
+    return Sheet(
         import_exports.REPORT_SHEETS['units'] if report else unit_import_services.SHEET, headers, rows,
-        text_columns=_columns_of(headers, UNIT_TEXT_HEADERS),
-        widths=[widths.get(header, 16) for header in headers],
+        tuple(_columns_of(headers, UNIT_TEXT_HEADERS)), tuple(widths.get(header, 16) for header in headers),
     )
-    return payload, len(rows)
+
+
+# =============================================================================
+# Integral — own stock, devices and what suppliers can deliver (INV-EXP-02)
+# =============================================================================
+
+INTEGRAL_SHEETS = ('Stock propio', 'Equipos', 'Disponibilidad de proveedores')
+OFFER_HEADERS = ['Producto', 'Línea', 'Proveedor', 'Precio comercial', 'Disponible', 'Se puede vender', 'Comprometido',
+                 'Plazo (días)', 'Vigente desde', 'Vigente hasta', 'Costo pactado']
+UNKNOWN_QUANTITY = 'Desconocida'
+LINE_LABELS = {LINE_NEW: 'Nuevo', LINE_USED: 'Seminuevo', LINE_ACCESSORY: 'Accesorio'}
+
+
+def _line_of(product) -> str:
+    if product.condition_line == Product.CONDITION_USED:
+        return LINE_USED
+    return LINE_NEW if (product.product_model_id or product.is_serialized) else LINE_ACCESSORY
+
+
+def _offers_sheet(company, filters: ExportFilters) -> Sheet:
+    """
+    The offers that may sell today, one row each. Never added to stock: a
+    supplier's units are not the shop's. A quantity the supplier did not
+    state is «Desconocida», never a number. The agreed cost, `costs.view` only.
+    """
+    from .supply_services import today
+
+    on = today()
+    # Every offer running today — with a stated quantity or not, sold out or not. Whether it can SELL is
+    # its own column, by the one predicate the shop uses (`supply_services.valid_offer_q`).
+    queryset = (
+        SupplierOffer.objects.filter(is_active=True, supplier__is_active=True, valid_from__lte=on, valid_until__gte=on,
+                                     company=company, product__in=_products(company, filters))
+        .select_related('product', 'supplier').order_by('product__name', 'supplier__name', 'valid_from', 'pk')
+    )
+    _check_rows(queryset.count())
+    rows = []
+    for offer in queryset.iterator(chunk_size=2000):
+        known = offer.confirmed_quantity is not None
+        left = max(offer.confirmed_quantity - offer.committed_quantity, 0) if known else None
+        rows.append([
+            offer.product.name, LINE_LABELS[_line_of(offer.product)], offer.supplier.name, offer.commercial_price,
+            left if known else UNKNOWN_QUANTITY, 'Sí' if known and left > 0 else 'No',
+            offer.committed_quantity, offer.lead_time_days, offer.valid_from, offer.valid_until,
+            offer.agreed_cost if filters.include_cost else None,
+        ])
+    return Sheet(INTEGRAL_SHEETS[2], OFFER_HEADERS, rows, (), (46, 14, 30, 18, 14, 16, 14, 12, 14, 14, 16))
+
+
+def integral_workbook(company, filters: ExportFilters) -> tuple[bytes, dict]:
+    """One workbook for reading, three sheets, nothing added across them."""
+    branches = sorted(filters.branches, key=lambda branch: (branch.name, branch.pk))
+    stock = _stock_report_sheet(company, filters, _products(company, filters), branches)._replace(
+        title=INTEGRAL_SHEETS[0])
+    units = _units_sheet(company, filters, MODE_REPORT)._replace(title=INTEGRAL_SHEETS[1])
+    offers = _offers_sheet(company, filters)
+    return _sheets_bytes([stock, units, offers]), {
+        'stock': len(stock.rows), 'units': len(units.rows), 'offers': len(offers.rows)}
 
 
 # =============================================================================
@@ -781,6 +866,8 @@ def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes,
     """`(bytes, {'<what>': rows})` for one download."""
     if kind == 'full':
         return full_archive(company, filters)
+    if kind == 'integral':
+        return integral_workbook(company, filters)
     builder = {'products': products_workbook, 'stock': stock_workbook, 'units': units_workbook}[kind]
     payload, rows = builder(company, filters, mode)
     return payload, {kind: rows}
