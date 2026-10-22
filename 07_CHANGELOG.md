@@ -3,6 +3,11 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — Exportar por línea (INV-EXP-01)
+
+**Added**
+- Exportaciones de inventario: elegir solo nuevos, solo seminuevos, nuevos y seminuevos, o solo accesorios.
+
 ## 2026-10-22 — Interruptor de IA y modos del inventario (INV-SWITCH-01)
 
 **Added**

@@ -3,7 +3,15 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-10-22 — INV-SWITCH-01 (rama `feat/inv-switch-01`, NO desplegado)
+## 2026-10-22 — INV-EXP-01 (rama `feat/inv-exp-01`, NO desplegado)
+
+Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
+nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
+serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
+conservan sus columnas. Pendiente INV-EXP-02: reporte integral con stock propio y disponibilidad de
+proveedores en hojas separadas.
+
+## 2026-10-22 — INV-SWITCH-01 (#144, en master `b54ca45`, NO desplegado)
 
 Migración `0142_inventory_ai_settings` (aditiva). Interruptor de IA: global `INVENTORY_AI_ENABLED=false`,
 por empresa en Configuración › «Inventario · Inteligencia artificial», y por importación («Usar IA en esta

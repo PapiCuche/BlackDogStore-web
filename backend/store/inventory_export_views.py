@@ -104,6 +104,14 @@ class AdminInventoryExportsView(APIView):
                 return _bad(f'Parámetro "{name}" inválido.')
             setattr(filters, name, value)
 
+        # INV-EXP-01: `line=new,used` — a list of known lines, each once; anything else is refused.
+        raw_lines = (params.get('line') or '').strip().lower()
+        if raw_lines:
+            parts = raw_lines.split(',')
+            if any(part not in inventory_exports.LINES for part in parts) or len(set(parts)) != len(parts):
+                return _bad('Parámetro "line" inválido.')
+            filters.lines = tuple(parts)
+
         raw_category = (params.get('category') or '').strip()
         if raw_category:
             if not raw_category.isascii() or not raw_category.isdigit() or len(raw_category) > 9:
