@@ -1,5 +1,14 @@
 # Estado actual
 
+## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
+
+Sólo frontend, sin migraciones. El reconocedor local de #142 lee listas reales por etapas
+(`inventory-text-stages.ts`): limpieza conservadora de WhatsApp, segmentación, equipo o accesorio,
+atributos por significado (capacidad con o sin GB, RAM, SIM, región LL/A·ZA/A, vatios, longitud,
+generación, color), costo = un único importe o «Costo:» explícito (dos o más: vacío y aviso), duplicados
+por variante completa, y cada línea no reconocida con su motivo. Sigue siendo vista previa: sin
+escrituras, sin red, cantidad desconocida.
+
 ## 2026-10-21 — INV-TEXT-01 (rama feat/inv-safe-text-preview-01; NO MERGEADO, NO DESPLEGADO)
 
 - Vista previa local de texto de WhatsApp montada en Gestión masiva de inventario; solo en navegador, sin red, sin IA API, sin stock/precios/comprobantes escritos.

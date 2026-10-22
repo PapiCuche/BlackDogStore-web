@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-22 — Listas de proveedores reales (INV-TEXT-02)
+
+**Changed**
+- La vista previa de texto reconoce el costo en cualquier posición, accesorios, colores, regiones y SIM,
+  el formato de WhatsApp y la capacidad sin «GB», y lista las líneas que no reconoce con su motivo.
+
 ## 2026-10-21 — INV-TEXT-01: vista previa local de listas (EN RAMA, no desplegado)
 
 **Added**
