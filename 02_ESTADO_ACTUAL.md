@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-10-22 — INV-AI-01 (rama `feat/inv-ai-01`, #148, borrador, NO-GO del propietario hasta la auditoría, NO desplegado)
 
-Migración `0143_inventory_ai_usage` (aditiva). Puerta del adaptador de IA: redacción de identificadores,
+Migración `0145_inventory_ai_usage` (aditiva; renumerada desde `0143` tras integrarse #151). Puerta del adaptador de IA: redacción de identificadores,
 respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
 envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
 
@@ -13,8 +13,8 @@ Arquitectura decidida por el propietario (2026-10-22): la IA no recibe texto lib
 estructurada, mínima y validada por el reconocedor local (ADR `docs/adr-inv-ai-structured.md`). Contrato
 implementado: `inventory_ai_payload.build_request`/`validate_answer` e `inventory_ai.propose`, que sólo acepta
 un `StructuredRequest`; la ruta de texto libre se eliminó. NO-GO del propietario para cualquier proveedor
-externo; sin integrar hasta revisión independiente GO. **Numeración:** su `0143_inventory_ai_usage` choca con
-la `0143` de #151; la que entre después se renumera.
+externo; sin integrar hasta revisión independiente GO. **Numeración:** #151 entró antes (`b25ef1d`); esta migración pasó a
+`0145_inventory_ai_usage`, después de `0144_supplier_offer_confirmed_has_quantity`.
 
 ## 2026-10-22 — INV-SNAPSHOT-01 (rama `feat/inv-snapshot-01`, NO desplegado)
 

@@ -37,7 +37,7 @@ US$0,05) bajo el bloqueo de la empresa antes de llamar, así dos llamadas a la v
 y el presupuesto es un corte real. Cortacircuitos tras 3 fallos seguidos en 10 minutos. Cada llamada
 deja un `InventoryAIUsage` (nunca el texto). Sin reintentos: un fallo es «sin IA» y se sigue en local.
 Registro de proveedores vacío: no hay proveedor real ni clave (INV-AI-02, con la clave del propietario).
-Migración `0143_inventory_ai_usage`.
+Migración `0145_inventory_ai_usage` (renumerada desde `0143` tras integrarse #151).
 
 ### DEC-INV-SNAPSHOT-01 · Lista completa de un proveedor y disponibilidad no confirmada (2026-10-22)
 
