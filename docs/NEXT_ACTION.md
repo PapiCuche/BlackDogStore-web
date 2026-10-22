@@ -1,6 +1,6 @@
 # NEXT ACTION
 
-## Despliegue conjunto #137 + #138 + #139 (D1/D2) + D3 — plan (NO ejecutado; requiere autorización)
+## Desplegado: #137 + #138 + #139 + #140 (`6daf9ae`) el 2026-10-22 — plan seguido (registro en 02)
 
 Producción `acf20fc` (migraciones hasta `0139`). Se despliega el `master` que contenga los cuatro;
 migraciones nuevas `0140` y `0141` (D3 no tiene). Preflight de sólo lectura del 2026-10-21: sano,
@@ -32,7 +32,7 @@ migraciones nuevas `0140` y `0141` (D3 no tiene). Preflight de sólo lectura del
    cantidad neta como bruta) ni datos nuevos que dependan de lo desplegado; si los hay, corregir
    hacia adelante. Nunca restaurar la copia sobre pagos o pedidos nuevos.
 
-## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (cuando se despliegue)
+## SUPPLIER-DEVICE-FLOW-02 + #137 — pruebas del propietario (PENDIENTES; `VARIANT EDITOR #137: DEPLOYED / PENDING OWNER ACCEPTANCE`)
 
 1. Editar una variante sin historial y otra con ventas (debe pedir motivo de administrador).
 2. Subir la lista semanal de un proveedor: revisar diferencias, aceptar o conservar precios;
