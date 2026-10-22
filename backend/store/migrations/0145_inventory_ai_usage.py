@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0142_inventory_ai_settings'),
+        ('store', '0144_supplier_offer_confirmed_has_quantity'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
