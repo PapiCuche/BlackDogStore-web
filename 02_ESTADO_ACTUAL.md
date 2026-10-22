@@ -1,5 +1,8 @@
 # Estado actual
 
+Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
+documentación real, sin reemplazar su historial.
+
 ## 2026-10-22 — INV-TEXT-02 (rama `feat/inv-safe-text-preview-01`, #142, borrador, NO desplegado)
 
 Sólo frontend, sin migraciones. El reconocedor local de #142 lee listas reales por etapas
@@ -15,13 +18,9 @@ escrituras, sin red, cantidad desconocida.
 - Clasificación declarada nuevo/seminuevo/accesorio, origen propio/proveedor, extracción orientativa de características, comprobación Luhn, detección conservadora de repetidos y cantidad siempre NO CONFIRMADA.
 - La propuesta conserva modo minucioso existente; no incorpora importación de lotes, IA remota, exportación adicional ni autocompletado IMEI en formularios: esos puntos están PROPUESTOS en docs/inventory-ai-safe-rollout.md.
 - Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
-- Migraciones: ninguna. Tests añadidos, NO ejecutados aún; baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
+- Migraciones: ninguna. Tests añadidos (ejecutados después en INV-TEXT-02: Jest, tsc, lint y CI en verde); baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
 
-
-Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
-documentación real, sin reemplazar su historial.
-
-## 2026-10-22 — INV-EXP-02 (rama `feat/inv-exp-02`, #146, NO desplegado)
+## 2026-10-22 — INV-EXP-02 (#146, en master `fb7fcee`, NO desplegado)
 
 Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de
 proveedores» en hojas separadas; nada se suma entre hojas; cantidad no informada = «Desconocida»; «Se puede
@@ -1710,7 +1709,6 @@ El aviso describe medición, no sustituye la política completa de cuentas, pedi
 comprobantes y servicio técnico. No se declara cumplimiento legal, ni se acepta en
 nombre del titular la declaración de Google. Antes de publicar: validar identidad y
 contacto configurados, conservación de Analytics y política para las demás finalidades.
-
 
 ## 2026-10-07 — CHECKPOINT 2: servidor preparado, despliegue pendiente
 
