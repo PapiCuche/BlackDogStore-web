@@ -77,7 +77,12 @@ class SecondSubmitAfterTheAnswerTest(TransactionTestCase):
             post_save.disconnect(when_the_attempt_is_finished, sender=FiscalSubmissionAttempt)
         for thread in second:
             thread.join(timeout=20)
+            self.assertFalse(thread.is_alive(), 'el segundo envío no terminó')
 
         self.assertEqual(len(calls), 1, f'se transmitió {len(calls)} veces el mismo comprobante')
+        # Review: the second send ended normally, with the accepted document, not with an error.
+        self.assertEqual(len(outcomes), 1, outcomes)
+        self.assertIsInstance(outcomes[0], FiscalDocument, outcomes)
+        self.assertTrue(outcomes[0].is_accepted)
         self.assertTrue(FiscalDocument.objects.get(pk=self.doc.pk).is_accepted)
         self.assertEqual(FiscalSubmissionAttempt.objects.filter(document=self.doc).count(), 1)

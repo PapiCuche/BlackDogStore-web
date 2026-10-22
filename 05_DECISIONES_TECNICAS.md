@@ -21,7 +21,11 @@ rechazado no se reclama y no se transmite. El intento se cierra en la MISMA tran
 comprobante. Antes el intento quedaba terminado (su propio commit) un instante antes de que el comprobante
 quedara aceptado, y un segundo «Enviar» en ese instante lo transmitía otra vez; tampoco se bloqueaba ninguna
 fila cuando no había intentos previos. Detectado por `C22A1ConcurrencyTest`, intermitente en CI (#142).
-Sin cambios de contenido fiscal ni de XML; facturación no está habilitada en producción.
+Sin cambios de contenido fiscal ni de XML; facturación no está habilitada en producción. Alcance: cierra la
+ventana posterior a la respuesta; NO cubre (pendiente aparte) un proveedor que lanza una excepción fuera del
+transporte —el intento queda abierto y el comprobante FIRMADO, reenviable tras 10 minutos sin consultar el
+CDR—, el reenvío tras un `ReadTimeout` incierto sin reconciliar antes, ni una baja en curso que no bloquea el
+envío individual.
 
 ### DEC-INV-SWITCH-01 · La IA del inventario es opcional en tres niveles y la decide el servidor (2026-10-22)
 
