@@ -1033,9 +1033,14 @@ export function waitsForSupplier(order: Pick<AdminOrderDetail, 'items'>): boolea
 export async function cancelAdminOrder(
   orderId: number,
   reason: string,
-  options?: { goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause },
+  options?: {
+    goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause;
+    expectedMode?: OrderCancelMode;
+  },
 ): Promise<AdminOrderDetail> {
   const body: Record<string, unknown> = { reason };
+  // CANCEL-CROSSED-PAYMENT: el modo que se vio; si el pedido cambió (llegó un pago), 409 `order_changed`.
+  if (options?.expectedMode) body.expected_mode = options.expectedMode;
   // D3: obligatorio si una línea bajo pedido aún espera al proveedor (400 `supply_cause_required` sin él).
   if (options?.supplyCause) body.supply_cause = options.supplyCause;
   if (options?.goodsReturned) body.goods_returned = true;

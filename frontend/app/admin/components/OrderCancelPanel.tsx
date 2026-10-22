@@ -20,6 +20,7 @@ import {
   CANCEL_REASON_MAX,
   CANCEL_REASON_MIN,
   FULFILLMENT_STATUS_LABELS,
+  OrderCancelMode,
   OrderCancellation,
   OrderRefundMethod,
   REFUND_METHOD_LABELS,
@@ -143,7 +144,10 @@ export function OrderCancelDialog({
     setError(null);
     const options: {
       goodsReturned?: boolean; refundMethod?: OrderRefundMethod; restoreStock?: boolean; supplyCause?: SupplyCancelCause;
+      expectedMode?: OrderCancelMode;
     } = {};
+    // CANCEL-CROSSED-PAYMENT: lo que se vio; si llegó un pago entre medio, el servidor responde 409.
+    if (order.cancel_mode) options.expectedMode = order.cancel_mode;
     if (waiting && supplyCause) options.supplyCause = supplyCause;
     if (pos) options.goodsReturned = true;
     if (pos && skipStock) options.restoreStock = false;

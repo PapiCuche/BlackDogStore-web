@@ -539,7 +539,8 @@ class UnpaidCancelAgainstPaymentRaceTest(_RaceBase):
             amount=D('30.00'), currency='PEN', environment='production')
 
         def cancel():
-            return cancelling.cancel_order(Order.objects.get(pk=order.pk), self.user, REASON)
+            # The desk saw it unpaid (CANCEL-CROSSED-PAYMENT): a payment first makes it a 409.
+            return cancelling.cancel_order(Order.objects.get(pk=order.pk), self.user, REASON, expected_mode='unpaid')
 
         def pay():
             return _late_charge(PaymentTransaction.objects.get(pk=attempt.pk))
@@ -559,6 +560,7 @@ class UnpaidCancelAgainstPaymentRaceTest(_RaceBase):
             # Paid first: the unpaid cancellation is refused; the sale stands.
             self.assertEqual(outcomes['pay'], 'paid', outcomes)
             self.assertIsInstance(outcomes['cancel'], cancelling.OrderCancelError, outcomes)
+            self.assertEqual(outcomes['cancel'].code, 'order_changed', outcomes)
             self.assertEqual((order.status, order.paid, stock), (Order.Status.PAID, True, 7))
             self.assertFalse(OrderCancellation.objects.filter(order=order).exists())
 

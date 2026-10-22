@@ -97,7 +97,8 @@ describe('pedido sin pagar', () => {
     const { dialog } = openDialog({ paid: false, status: 'pending_payment', cancel_mode: 'unpaid' });
     fireEvent.change(screen.getByLabelText('Motivo de la cancelación'), { target: { value: 'No pagó a tiempo' } });
     fireEvent.click(confirmIn(dialog, 'Cancelar pedido'));
-    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'No pagó a tiempo'));
+    // CANCEL-CROSSED-PAYMENT: lleva el modo que se vio; un pago entre medio es un 409.
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'No pagó a tiempo', { expectedMode: 'unpaid' }));
   });
 
   it('el bloque dice que se canceló sin pago y los equipos liberados', () => {
@@ -124,7 +125,7 @@ describe('venta POS', () => {
     fireEvent.click(screen.getByLabelText('La mercadería volvió al local'));
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
-    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Cliente devolvió', { goodsReturned: true }));
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Cliente devolvió', { goodsReturned: true, expectedMode: 'pos' }));
   });
 
   it('puede anularse sin reponer stock cuando ya hubo una devolución manual', async () => {
@@ -135,7 +136,7 @@ describe('venta POS', () => {
     fireEvent.click(within(dialog).getByLabelText(/Anular sin reponer stock/));
     fireEvent.click(confirmIn(dialog, 'Anular venta'));
     await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(
-      42, 'Ya se devolvió', { goodsReturned: true, restoreStock: false }));
+      42, 'Ya se devolvió', { goodsReturned: true, restoreStock: false, expectedMode: 'pos' }));
   });
 
   it('el bloque de una venta anulada lo dice con esas palabras', () => {
@@ -155,7 +156,7 @@ describe('pedido pagado · reembolso pendiente al cancelar', () => {
     fireEvent.click(within(dialog).getByLabelText(/Registrar reembolso pendiente/));
     fireEvent.change(within(dialog).getByLabelText('Medio del reembolso'), { target: { value: 'transfer' } });
     fireEvent.click(confirmIn(dialog, 'Cancelar pedido'));
-    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Sin stock real', { refundMethod: 'transfer' }));
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith(42, 'Sin stock real', { refundMethod: 'transfer', expectedMode: 'paid' }));
   });
 });
 
