@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-10-22 — INV-SNAPSHOT-01 (rama `feat/inv-snapshot-01`, NO desplegado)
+
+Migración `0143_supplier_offer_availability_confirmed` (aditiva, con relleno). Lista completa de un
+proveedor en la carga semanal, con confirmación del número de ofertas ausentes a desactivar y de que la lista
+está completa; las programadas no cambian; las ausentes con ventas siguen sus compromisos. Disponibilidad no
+confirmada como estado explícito. DEC-INV-SNAPSHOT-01. **Numeración:** #148 también propone una `0143`
+(`inventory_ai_usage`, sin aplicar en ninguna parte); se renumerará a la siguiente al rebasarse.
+
 ## 2026-10-22 — ADR listas completas y seminuevos externos (#150, documentación, NO implementado)
 
 `docs/adr-inv-snapshot-external-used.md` con las decisiones del propietario D1–D4: las ofertas programadas no
