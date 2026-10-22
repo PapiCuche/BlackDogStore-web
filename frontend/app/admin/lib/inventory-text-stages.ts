@@ -118,6 +118,15 @@ function takeColour(words: string[]): [string, Set<number>] {
 }
 
 const ID_LABEL = /^(?:imei[12]?|n\.?s\.?|n\/s|s\/n|sn|serie|serial)[:#=]?$/i;
+const UNIT = /^\d{1,4}(?:gb|tb|w|mm|m|mah)$/i;
+
+/** A serial-shaped code: 8+ letters and digits (hyphens aside), at least two of each — not «Thunderbolt-4». */
+function looksLikeCode(token: string): boolean {
+  const bare = token.replace(/-/g, "");
+  return /^[a-z0-9]{8,}$/i.test(bare) && (bare.match(/\d/g) ?? []).length >= 2
+    && (bare.match(/[a-z]/gi) ?? []).length >= 2 && !UNIT.test(token);
+}
+
 const ID_GLUED = /^(?:imei[12]?|n\.?s\.?|n\/s|s\/n|sn|serie|serial)[:#=]\S+$/i;
 
 /**
@@ -129,8 +138,7 @@ export function identifierTokens(tokens: string[]): Set<number> {
   const marked = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (ID_GLUED.test(token) || /^\d{7,}$/.test(token.replace(/[.\-/]/g, ""))
-        || (/^(?=.*\d)(?=.*[a-z])[a-z0-9-]{8,}$/i.test(token) && !/^\d{1,4}(?:gb|tb|w|m|mah)$/i.test(token))) {
+    if (ID_GLUED.test(token) || /^\d{7,}$/.test(token.replace(/[.\-/]/g, "")) || looksLikeCode(token)) {
       marked.add(i);
       continue;
     }
@@ -147,8 +155,8 @@ export function identifierTokens(tokens: string[]): Set<number> {
       }
     } else {
       const value = tokens[sep ? j + 1 : j] ?? "";
-      // «Serie 9» is a name; a serial label is followed by a code of 4 or more.
-      if (!/^[a-z0-9][a-z0-9/-]{3,39}$/i.test(value)) continue;
+      // «Serie 9», «Serie 45mm» are names; a serial label is followed by a code of 4 or more.
+      if (!/^[a-z0-9][a-z0-9/-]{3,39}$/i.test(value) || UNIT.test(value)) continue;
       marked.add(i);
       if (sep) marked.add(j++);
       marked.add(j++);

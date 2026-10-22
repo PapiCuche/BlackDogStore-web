@@ -158,13 +158,27 @@ class FinalReviewTest(_Match):
 class IdentifierInModelTest(_Match):
     """Pre-merge review: an identifier hidden in the allowed `model` field is refused, never echoed."""
 
-    def test_a_model_with_an_imei_or_a_serial_is_refused(self):
-        for model in ('iPhone 13 356789012345678', 'iPhone 13 IMEI 3567 8901 2345 678', 'iPhone 13 NS: F2LXK9ABCD',
-                      'iPhone 13 S/N F2LXK9ABCD', 'iPhone 13 serie ABCDEFGH'):
-            with self.subTest(model=model):
-                response = self.match({'key': '1', 'kind': 'device', 'line': 'used', 'model': model,
-                                       'capacityGb': 128})
-                self.assertEqual(response.status_code, 400)
-                self.assertNotIn('F2LX', str(response.data))
-                self.assertNotIn('5678', str(response.data))
-                self.assertNotIn('ABCDEFGH', str(response.data))
+    def test_a_model_with_an_imei_or_a_serial_is_not_searched_nor_echoed(self):
+        models = ('iPhone 13 356789012345678', 'iPhone 13 IMEI 3567 8901 2345 678', 'iPhone 13 NS: F2LXK9ABCD',
+                  'iPhone 13 S/N F2LXK9ABCD', 'iPhone 13 serie ABCDEFGH', 'iPhone 13 F2LX-K9AB-CD')
+        response = self.match(*[{'key': str(i), 'kind': 'device', 'line': 'used', 'model': model, 'capacityGb': 128}
+                                for i, model in enumerate(models)])
+        self.assertEqual(response.status_code, 200)
+        for i in range(len(models)):
+            self.assertEqual(response.data['matches'][str(i)]['status'], 'none')
+            self.assertIn('identificador', response.data['matches'][str(i)]['reason'])
+        for value in ('F2LX', '5678', 'ABCDEFGH'):
+            self.assertNotIn(value, str(response.data))
+
+    def test_real_names_are_not_taken_for_identifiers_and_one_bad_row_does_not_fail_the_list(self):
+        names = ('Funda Snoopy iPhone 15', 'Galaxy Z Flip6 Snapdragon', 'Cable Thunderbolt-4', 'Cargador 35W-USB-C',
+                 'iPad Air 10.9 2022', 'Apple Watch Serie 45mm', 'Apple Watch Serie 9', 'Galaxy S24 Ultra',
+                 'AirPods Pro 2', 'Cargador USB-C 20W', 'iPad Air M2 11')
+        rows = [{'key': str(i), 'kind': 'accessory', 'line': 'accessory', 'model': name} for i, name in enumerate(names)]
+        rows.append({'key': 'bad', 'kind': 'device', 'line': 'used', 'model': 'iPhone 13 356789012345678'})
+        response = self.match(*rows)
+        self.assertEqual(response.status_code, 200)
+        for i, name in enumerate(names):
+            with self.subTest(name=name):
+                self.assertNotIn('identificador', response.data['matches'][str(i)]['reason'])
+        self.assertEqual(response.data['matches']['bad']['status'], 'none')

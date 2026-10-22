@@ -33,12 +33,42 @@ def _text(value, limit):
     return ' '.join(value.split())
 
 
-_IDENTIFIER = re.compile(
-    r'\d(?:[ .\-/]?\d){6,}'                                    # 7+ digits, also grouped (IMEI, phone, document)
-    r'|\b(?:imei|s/n|n/s|serial)\b'                              # an identifier label
-    r'|\b(?:ns|sn|serie)\s*[:#=]?\s*[A-Za-z0-9][A-Za-z0-9/-]{3,}'   # a serial label with its value («Serie 9» is a name)
-    r'|\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{8,}\b',  # a code of 8+ mixing letters and digits
-    re.I)
+_UNIT = re.compile(r'\d{1,4}(?:gb|tb|w|mm|m|mah)', re.I)
+_LABEL = re.compile(r'\b(?:imei[12]?|s/n|n/s|serial)\b', re.I)
+_SERIAL_LABEL = re.compile(r'\b(?:n\.?s\.?|sn|serie)\b\s*[:#=]?\s*([A-Za-z0-9][A-Za-z0-9/-]{3,39})', re.I)
+
+
+def _digit_run_is_identifier(run: str) -> bool:
+    """Same rule as the browser: a group of 7+, 12+ digits in all, or a phone (9 digits starting with 9)."""
+    groups = re.split(r'[ .,/-]', run)
+    digits = ''.join(groups)
+    return any(len(g) >= 7 for g in groups) or len(digits) >= 12 \
+        or (len(digits) == 9 and digits.startswith('9') and all(len(g) >= 2 for g in groups))
+
+
+def _looks_like_code(token: str) -> bool:
+    bare = token.replace('-', '')
+    return bool(re.fullmatch(r'[A-Za-z0-9]{8,}', bare)) and sum(c.isdigit() for c in bare) >= 2 \
+        and sum(c.isalpha() for c in bare) >= 2 and not _UNIT.fullmatch(token)
+
+
+def has_identifier(model: str) -> bool:
+    """
+    Pre-merge review: an IMEI, serial, phone or document hidden in the model. The same rules as the browser's
+    `identifierTokens`/`looksLikeIdentifier`, so a real name («Funda Snoopy», «Cable Thunderbolt-4», «iPad Air
+    10.9 2022», «Apple Watch Serie 45mm») is searched and an identifier is not.
+    """
+    if _LABEL.search(model):
+        return True
+    serial = _SERIAL_LABEL.search(model)
+    if serial and not _UNIT.fullmatch(serial.group(1)):
+        return True
+    if any(_digit_run_is_identifier(run) for run in re.findall(r'\d+(?:[ .,/-]\d+)*', model)):
+        return True
+    return any(_looks_like_code(token) for token in model.split())
+
+
+IDENTIFIER_REASON = 'El modelo lleva un IMEI, una serie u otro identificador: quítalo para buscar.'
 
 
 def clean(candidate) -> dict:
@@ -59,11 +89,9 @@ def clean(candidate) -> dict:
     if kind not in ('device', 'accessory') or line not in ('new', 'used', 'accessory'):
         raise BadCandidate('Tipo o línea inválidos.')
     model = _text(candidate.get('model'), 120)
-    if _IDENTIFIER.search(model):
-        # Pre-merge review: an identifier hidden in an allowed field. Refused, and never echoed back.
-        raise BadCandidate('El modelo no puede llevar IMEI, series ni otros identificadores.')
     return {'key': key, 'kind': kind, 'line': line, 'capacity': capacity,
-            'model': model, 'colour': _text(candidate.get('colour'), 60)}
+            # An identifier hidden in an allowed field: that row is not searched, and never echoed back.
+            'identifier': has_identifier(model), 'model': model, 'colour': _text(candidate.get('colour'), 60)}
 
 
 def _option_payload(product) -> dict:
@@ -153,6 +181,10 @@ def match(company, candidates) -> dict:
     # The same model/options asked many times is looked up once (review: query cost per request).
     seen, out = {}, {}
     for c in cleaned:
+        if c['identifier']:
+            # One row like this never fails the whole list (review: «Funda Snoopy» used to 400 every row).
+            out[c['key']] = {'status': 'none', 'reason': IDENTIFIER_REASON, 'options': []}
+            continue
         accessory = c['kind'] == 'accessory' or c['line'] == 'accessory'
         signature = (accessory, c['model'].lower(), c['capacity'], c['colour'].lower(), c['line'])
         if signature not in seen:

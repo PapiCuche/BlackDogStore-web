@@ -105,3 +105,12 @@ describe("revisión pre-fusión: lo que viaja al catálogo", () => {
       ["iPhone 13", "iPhone 13", "iPhone 13", "Cargador USB-C 20W"]);
   });
 });
+
+describe("revisión pre-fusión: nombres reales no se toman por identificadores", () => {
+  it.each(["Cable Thunderbolt-4", "Apple Watch Serie 45mm", "Apple Watch Serie 9", "Funda Snoopy iPhone",
+    "Galaxy Z Flip6 Snapdragon", "Cargador 35W-USB-C", "iPad Air M2 11", "Galaxy S24 Ultra"])("%s", model => {
+    const { matchPayload } = jest.requireActual("@/app/admin/lib/inventory-text-match");
+    const body = matchPayload([{ id: 1, kind: "accessory", line: "accessory", model, capacityGb: null, colour: "" }]);
+    expect(body.candidates[0].model).toBe(model);
+  });
+});
