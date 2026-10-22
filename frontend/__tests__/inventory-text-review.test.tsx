@@ -74,3 +74,40 @@ it('sin permiso de costos no se puede ver ni corregir el costo', () => {
   expect(screen.queryByLabelText('Costo del registro 1')).toBeNull();
   expect(within(screen.getAllByRole('row')[1]).queryByText('2300')).toBeNull();
 });
+
+describe('correcciones de la revisión', () => {
+  it('corregir un registro después de buscar borra su resultado anterior', async () => {
+    send.mockResolvedValue(reply(200, { matches: { 1: EXACT } }));
+    analyze('IPH 15 128 2300 negro');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' })); });
+    expect(screen.getByLabelText('Variante del registro 1')).toHaveValue('7');
+    fireEvent.change(screen.getByLabelText('Capacidad del registro 1'), { target: { value: '256' } });
+    expect(screen.queryByLabelText('Variante del registro 1')).toBeNull();
+  });
+
+  it('una respuesta que llega después de volver a analizar se ignora', async () => {
+    let answer: (value: Response) => void = () => {};
+    send.mockReturnValue(new Promise<Response>(resolve => { answer = resolve; }));
+    analyze('IPH 15 128 2300 negro');
+    fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' }));
+    fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: 'IPH 16 128 2600 negro' } });
+    fireEvent.click(screen.getByRole('button', { name: /Analizar/ }));
+    await act(async () => { answer(reply(200, { matches: { 1: EXACT } })); });
+    expect(screen.queryByLabelText('Variante del registro 1')).toBeNull();
+  });
+
+  it('una capacidad fuera de rango no se envía y se avisa en su fila', async () => {
+    send.mockResolvedValue(reply(200, { matches: {} }));
+    analyze('IPH 15 128 2300 negro');
+    fireEvent.change(screen.getByLabelText('Capacidad del registro 1'), { target: { value: '9999' } });
+    expect(screen.getByText('Capacidad fuera de rango.')).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Buscar en el catálogo' })); });
+    expect(JSON.parse(String(send.mock.calls[0][1]?.body)).candidates[0].capacityGb).toBeNull();
+  });
+
+  it('el texto original enmascara también series y números partidos', () => {
+    expect(maskedSource('NS: F2LXK9ABCD')).toBe('NS: ••••ABCD');
+    expect(maskedSource('IMEI 4901/5420/3237/518')).toBe('IMEI ••••7518');
+    expect(maskedSource('IPH 15 128 2300 negro')).toBe('IPH 15 128 2300 negro');
+  });
+});

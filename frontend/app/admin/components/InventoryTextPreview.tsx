@@ -5,13 +5,13 @@
  * Sin fetch, sin proveedor IA, sin almacenamiento y sin escritura de inventario.
  * El modo minucioso sigue siendo los formularios y las importaciones existentes.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import {
   MAX_TEXT_CHARS, previewSupplierText,
   type InventoryLine, type InventoryOrigin, type TextCandidate, type TextPreview,
 } from "../lib/inventory-text-preview";
-import { maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
+import { capacityInRange, maskedSource, matchCandidates, type MatchResult } from "../lib/inventory-text-match";
 
 /** INV-TEXT-02: what the person corrected on a candidate. Stays in this preview; nothing is written. */
 type Edit = Partial<Pick<TextCandidate, "model" | "capacityGb" | "colour" | "supplierCost" | "line">>;
@@ -45,28 +45,40 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
   const [matching, setMatching] = useState(false);
   const [matchError, setMatchError] = useState("");
   const current = (candidate: TextCandidate): TextCandidate => ({ ...candidate, ...edits[candidate.id] });
-  const edit = (id: number, change: Edit) => setEdits(all => ({ ...all, [id]: { ...all[id], ...change } }));
+  // Review: a correction makes the row's earlier result stale — it is dropped, and searched again on request.
+  const edit = (id: number, change: Edit) => {
+    setEdits(all => ({ ...all, [id]: { ...all[id], ...change } }));
+    if (change.supplierCost === undefined) {
+      setMatches(all => { const next = { ...all }; delete next[String(id)]; return next; });
+      setChosen(all => { const next = { ...all }; delete next[id]; return next; });
+    }
+  };
+  // Each analysis has its own number: a search answered after a new analysis is ignored.
+  const generation = useRef(0);
   async function findVariants() {
     if (!preview) return;
+    const asked = generation.current;
     setMatching(true);
     setMatchError("");
     try {
       const found = await matchCandidates(preview.candidates.map(current));
+      if (asked !== generation.current) return;
       setMatches(found);
       // An exact match is preselected; several, never.
       setChosen(Object.fromEntries(Object.entries(found)
         .filter(([, result]) => result.status === "exact")
         .map(([key, result]) => [Number(key), String(result.options[0].product_id)])));
     } catch (cause) {
-      setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
+      if (asked === generation.current) setMatchError(cause instanceof Error ? cause.message : "No se pudo consultar el catálogo.");
     } finally {
-      setMatching(false);
+      if (asked === generation.current) setMatching(false);
     }
   }
   function analyze() {
     try {
       setPreview(previewSupplierText(raw, { line, origin }));
-      setEdits({}); setMatches({}); setChosen({}); setReviewed({});
+      generation.current += 1;
+      setEdits({}); setMatches({}); setChosen({}); setReviewed({}); setMatching(false);
       setError("");
     } catch (cause) {
       setPreview(null);
@@ -114,7 +126,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
           value={raw} onChange={event => changeRaw(event.target.value)} />
         <span className="block text-xs text-muted">{raw.length} / {MAX_TEXT_CHARS} caracteres. Los datos solo viven en esta pestaña.</span>
       </label>
-      <button type="button" onClick={analyze} disabled={!raw.trim()}
+      <button type="button" onClick={analyze} disabled={!raw.trim() || matching}
         className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-background disabled:opacity-40">
         Analizar localmente
       </button>
@@ -138,6 +150,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
           {matchError ? <p role="alert" className="text-xs text-danger">{matchError}</p> : null}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
+              <caption className="sr-only">Registros reconocidos, corregibles, con su variante del catálogo</caption>
               <thead>
                 <tr className="border-b border-bd-border">
                   <th scope="col" className="p-2">#</th>
@@ -183,7 +196,9 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                           const value = event.target.value.replace(/\D/g, "");
                           edit(candidate.id, { capacityGb: value ? Number(value) : null });
                         }}
-                        className="w-16 rounded border border-bd-border bg-background p-1" /> GB
+                        maxLength={4} className="w-16 rounded border border-bd-border bg-background p-1" /> GB
+                      {capacityInRange(candidate.capacityGb) ? null
+                        : <p className="mt-1 text-danger">Capacidad fuera de rango.</p>}
                     </td>
                     <td className="p-2">
                       <input aria-label={`Color del registro ${candidate.id}`} value={candidate.colour} maxLength={60}
@@ -206,6 +221,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                       {found ? (
                         <>
                           <select aria-label={`Variante del registro ${candidate.id}`} value={chosen[candidate.id] ?? ""}
+                            aria-describedby={found.reason ? `match-reason-${candidate.id}` : undefined}
                             onChange={event => setChosen(all => ({ ...all, [candidate.id]: event.target.value }))}
                             disabled={!found.options.length}
                             className="max-w-48 rounded border border-bd-border bg-background p-1">
@@ -214,16 +230,15 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                               <option key={option.product_id} value={String(option.product_id)}>{option.name}</option>
                             ))}
                           </select>
-                          {found.reason ? <p className="mt-1 text-warning">{found.reason}</p> : null}
+                          {found.reason ? <p id={`match-reason-${candidate.id}`} className="mt-1 text-warning">{found.reason}</p> : null}
                         </>
                       ) : <span className="text-muted">—</span>}
                     </td>
                     <td className="p-2">
                       <label className="mb-1 flex items-center gap-1">
-                        <input type="checkbox" aria-label={`Revisado registro ${candidate.id}`}
-                          checked={Boolean(reviewed[candidate.id])}
+                        <input type="checkbox" checked={Boolean(reviewed[candidate.id])}
                           onChange={event => setReviewed(all => ({ ...all, [candidate.id]: event.target.checked }))} />
-                        Revisado
+                        Revisado<span className="sr-only"> registro {candidate.id}</span>
                       </label>
                       {candidate.warnings.length
                         ? <ul className="space-y-1">{candidate.warnings.map((warning, index) =>

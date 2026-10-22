@@ -39,8 +39,6 @@ class MatchTest(_Match):
 
     def test_without_the_colour_several_fit_and_none_is_chosen(self):
         Product.objects.filter(pk=self.new128.pk)  # 128 GB Negro (new)
-        found = self.one(kind='device', model='Teléfono X', capacityGb=128, colour='', line='used')
-        self.assertEqual(found['status'], 'exact')
         found = self.one(kind='device', model='Teléfono X', capacityGb=None, colour='negro', line='new')
         self.assertEqual(found['status'], 'ambiguous')
         self.assertEqual(sorted(o['product_id'] for o in found['options']), sorted([self.new128.pk, self.new256.pk]))
@@ -100,3 +98,40 @@ class GuardTest(_Match):
     def test_costs_and_identifiers_are_refused_not_carried(self):
         response = self.match({'key': 'a', 'model': 'Teléfono X', 'supplierCost': '2300', 'imei': '490154203237518'})
         self.assertEqual(response.status_code, 400)
+
+
+class ReviewFixesTest(_Match):
+    def test_a_subset_of_options_is_never_exact(self):
+        # Only «Teléfono X 128 GB Azul usado» is used: a candidate with the capacity only fits it, but is not it.
+        found = self.one(kind='device', model='Teléfono X', capacityGb=128, colour='', line='used')
+        self.assertEqual(found['status'], 'ambiguous')
+        self.assertEqual([o['product_id'] for o in found['options']], [self.used128.pk])
+
+    def test_a_capacity_is_looked_up_in_the_capacity_attribute_only(self):
+        ram = device_catalog.create_attribute(company=self.company, name='RAM')
+        device_catalog.create_option(company=self.company, attribute_id=ram.pk, label='512 GB')
+        found = self.one(kind='device', model='Teléfono X', capacityGb=512, colour='negro', line='new')
+        self.assertEqual(found['status'], 'none')
+        self.assertIn('512 GB', found['reason'])
+
+    def test_fields_that_are_not_used_are_refused(self):
+        for field in ('ramGb', 'sim', 'region'):
+            with self.subTest(field=field):
+                response = self.match({'key': 'a', 'model': 'Teléfono X', field: 'x'})
+                self.assertEqual(response.status_code, 400)
+
+    def test_a_repeated_key_is_refused(self):
+        response = self.match({'key': 'a', 'model': 'x'}, {'key': 'a', 'model': 'y'})
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_same_candidate_many_times_costs_the_same_queries(self):
+        one = [{'key': 'k0', 'kind': 'device', 'model': 'Teléfono X', 'capacityGb': 256, 'colour': 'negro'}]
+        many = [{**one[0], 'key': f'k{i}'} for i in range(50)]
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as single:
+            self.match(*one)
+        with CaptureQueriesContext(connection) as repeated:
+            self.match(*many)
+        self.assertLessEqual(len(repeated), len(single) + 2)
