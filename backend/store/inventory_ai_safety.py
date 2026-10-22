@@ -166,7 +166,8 @@ def _hide_after_imei(segment: str, keep) -> str:
         return segment
     first = re.search(r'\d', segment).start()
     # «IMEI 1:» / «IMEI2» name the slot: its number stays.
-    head = re.match(r'imei\s{0,3}[12]?\s{0,3}[:#=-]?\s{0,3}', segment, re.I)
+    # The slot digit only when a separator follows it («IMEI 1: …»), never the first digit of the IMEI.
+    head = re.match(r'imei\s{0,3}(?:[12](?=\s{0,3}[:#=-]|\s+\d)\s{0,3})?[:#=-]?\s{0,3}', segment, re.I)
     body_start = max(first, head.end() if head else 0)
     body = segment[body_start:]
     value = ''.join(re.findall(r'\d+', body))
@@ -215,13 +216,14 @@ def redact(text: str) -> tuple[str, dict]:
             out.append('[DATO_PERSONAL]' if stripped else line)
             carry = None if stripped else carry
             continue
-        if carry in ('IMEI', 'SERIE') and stripped:
-            out.append(keep(carry, line.strip()) if carry == 'SERIE' else _hide_after_imei('imei ' + line, keep)[5:])
-            carry = None
-            continue
+        # A personal line goes out whole FIRST — also right after a lone «IMEI:» or «S/N:» label.
         if _PERSONAL.search(lower) or _EMAIL_SIGN.search(lower):
             out.append('[DATO_PERSONAL]')
             carry = 'personal' if stripped.endswith(':') else None
+            continue
+        if carry in ('IMEI', 'SERIE') and stripped:
+            out.append(keep(carry, line.strip()) if carry == 'SERIE' else _hide_after_imei('imei ' + line, keep)[5:])
+            carry = None
             continue
         # Split the line at every IMEI or serial label, and treat each stretch on its own.
         cuts = sorted({m.start() for m in _IMEI_WORD.finditer(lower)} | {m.start() for m in _SERIAL_WORD.finditer(lower)})
@@ -320,6 +322,9 @@ def restore(rows: list[dict], secrets: dict) -> list[dict]:
                                                           for m in _PLACEHOLDER.finditer(value)):
                     continue
                 value = _PLACEHOLDER.sub(lambda m: secrets[m.group(0)], value)
+                # A serial goes back only if it looks like one: never a name or a phone a label caught.
+                if key == 'serial' and not re.fullmatch(r'(?=[A-Za-z0-9.\-/]*[0-9])[A-Za-z0-9.\-/]{4,40}', value):
+                    continue
                 if key in ('imei', 'imei2'):
                     value = re.sub(r'[^0-9]', '', value)
                     if len(value) != 15:

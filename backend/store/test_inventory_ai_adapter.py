@@ -499,3 +499,39 @@ class ThirdAuditExtractTest(_Base):
                             ('INVENTORY_AI_USER_PER_DAY', None)):
             with self.subTest(name=name), override_settings(**{name: value}):
                 self.assertFalse(inventory_ai.within_quota(self.company, self.user))
+
+
+class FourthAuditTest(TestCase):
+    def test_a_personal_line_after_a_lone_imei_label_still_goes_out(self):
+        for text in ('IMEI:\nCliente: María Gómez 987654321', 'S/N:\nSr. Juan Pérez'):
+            with self.subTest(text=text):
+                redacted, _ = safety.redact(text)
+                self.assertNotIn('Gómez', redacted)
+                self.assertNotIn('Pérez', redacted)
+
+    def test_the_imei_slot_number_never_eats_the_imei(self):
+        redacted, secrets = safety.redact('IMEI 123456789012345')
+        self.assertEqual(list(secrets.values()), ['123456789012345'])
+        self.assertNotIn('1[', redacted)
+
+    def test_a_serial_is_put_back_only_if_it_looks_like_one(self):
+        _, secrets = safety.redact('S/N:\nJuan Pérez 987654321')
+        placeholder = next((key for key in secrets if key.startswith('[SERIE')), None)
+        rows = safety.restore([{'serial': placeholder or '[SERIE_9]'}], secrets)
+        self.assertEqual(rows, [{}])
+
+
+@override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
+class FourthAuditExtractTest(_Base):
+    def test_a_zero_budget_or_zero_reserve_is_closed(self):
+        for budget, reserve in (('0', '0.05'), ('5', '0')):
+            with self.subTest(budget=budget, reserve=reserve), override_settings(
+                    INVENTORY_AI_MONTHLY_BUDGET_USD=budget, INVENTORY_AI_MAX_COST_PER_CALL=reserve):
+                self.assertFalse(inventory_ai.within_quota(self.company, self.user))
+
+    def test_an_anonymous_user_never_calls(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        with mock.patch.object(inventory_ai, 'get_provider', return_value=FakeProvider()):
+            result = inventory_ai.extract(self.company, AnonymousUser(), TEXT, requested=True, permitted=True)
+        self.assertEqual(result.reason, 'forbidden')

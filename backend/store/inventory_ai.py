@@ -128,7 +128,7 @@ def within_quota(company, user) -> bool:
     if mine.filter(at__gte=now - timedelta(days=1)).count() >= per_day:
         return False
     status, reserve = budget_status(company), _max_cost()
-    if status['budget'] is None or reserve is None:
+    if not status['budget'] or not reserve:  # None or zero: no room to spend, closed
         return False
     return status['spent'] + reserve <= status['budget']
 
@@ -202,7 +202,7 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
     is cleaned to the fixed shape; each call is recorded, never its text.
     Anything that fails means no AI: the caller goes on the local way.
     """
-    if user is None:
+    if user is None or not getattr(user, 'is_authenticated', False):
         return ExtractResult(False, FORBIDDEN, [])
     decision = decide(company, user, requested=requested, permitted=permitted)
     if not decision.use_ai:
