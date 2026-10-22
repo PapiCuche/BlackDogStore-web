@@ -37,6 +37,7 @@ const ACCESSORIES = 'Productos por cantidad';
 const STOCK = 'Stock por sucursal';
 const DEVICES = 'Equipos con serie';
 const FULL = 'Inventario completo (ZIP)';
+const INTEGRAL = 'Reporte integral';
 
 function show(props: Partial<React.ComponentProps<typeof InventoryExportPanel>> = {}) {
   return render(
@@ -59,10 +60,10 @@ beforeEach(() => {
   adminApi.fetchAdminCategories.mockReset().mockResolvedValue(CATEGORIES as admin.AdminCategory[]);
 });
 
-describe('las cinco descargas', () => {
+describe('las seis descargas', () => {
   it('se ofrecen con su nombre y una frase que dice qué trae cada una', () => {
     show();
-    expect(titles()).toEqual([CATALOGUE, ACCESSORIES, STOCK, DEVICES, FULL]);
+    expect(titles()).toEqual([CATALOGUE, ACCESSORIES, STOCK, DEVICES, FULL, INTEGRAL]);
     expect(card(CATALOGUE)).toHaveTextContent(/una fila por producto/i);
     expect(card(ACCESSORIES)).toHaveTextContent(/sin los equipos con número de serie/i);
     expect(card(STOCK)).toHaveTextContent(/una columna por sucursal/i);
@@ -123,6 +124,14 @@ describe('para volver a cargar o reporte', () => {
     expect(lastCall()[1]).toBe('report');
     await download(DEVICES);
     expect(lastCall()[1]).toBe('report');
+  });
+
+  it('INV-EXP-02: el reporte integral es siempre un reporte, con proveedores aparte', async () => {
+    show();
+    expect(card(INTEGRAL)).toHaveTextContent(/proveedores en su propia hoja/i);
+    expect(card(INTEGRAL)).toHaveTextContent(/nunca se suman/i);
+    await download(INTEGRAL);
+    expect(lastCall().slice(0, 2)).toEqual(['integral', 'report']);
   });
 
   it('el ZIP es siempre para volver a cargar, y lo dice', async () => {
@@ -209,6 +218,18 @@ describe('los filtros', () => {
     expect(lastCall()[2]).toMatchObject({
       category: '5', type: 'serialized', stock: 'in_stock', condition: 'used', visibility: 'internal', is_active: 'true',
     });
+  });
+
+  it('INV-EXP-01: elige la línea — nuevos, seminuevos, accesorios o nuevos y seminuevos', async () => {
+    show();
+    const options = [...(screen.getByLabelText('Línea') as HTMLSelectElement).options].map((o) => [o.value, o.textContent]);
+    expect(options).toEqual([
+      ['', 'Todo el inventario'], ['new', 'Solo nuevos'], ['used', 'Solo seminuevos'],
+      ['new,used', 'Nuevos y seminuevos'], ['accessory', 'Solo accesorios'],
+    ]);
+    fireEvent.change(screen.getByLabelText('Línea'), { target: { value: 'new,used' } });
+    await download(DEVICES);
+    expect(lastCall()[2]).toMatchObject({ line: 'new,used' });
   });
 
   it('las opciones dicen lo que el servidor entiende', () => {
@@ -337,6 +358,11 @@ describe('la petición al servidor', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       company: '7', mode: 'report', branches: '11,12', category: '5', stock: 'in_stock', condition: 'used',
     });
+  });
+
+  it('INV-EXP-01: la línea viaja tal cual', () => {
+    const url = new URL(real.inventoryExportPath('products', 'reimport', { line: 'accessory' }, null), 'http://panel.test');
+    expect(url.searchParams.get('line')).toBe('accessory');
   });
 
   it('sin filtros no manda ninguno, y el ZIP no lleva modo', () => {

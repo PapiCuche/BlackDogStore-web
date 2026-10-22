@@ -13,7 +13,7 @@ import { fetchWithAuth } from "./auth";
  * servidor. Aquí sólo se arma la petición y se guarda lo que responde.
  */
 
-export type ExportKind = "products" | "stock" | "units" | "full";
+export type ExportKind = "products" | "stock" | "units" | "full" | "integral";
 export type ExportMode = "reimport" | "report";
 
 export type ExportFilters = {
@@ -25,6 +25,8 @@ export type ExportFilters = {
   condition?: string;
   visibility?: "" | "published" | "internal";
   is_active?: "" | "true" | "false";
+  /** INV-EXP-01: `new`, `used`, `accessory` o varias separadas por comas. Vacío = todas. */
+  line?: string;
 };
 
 /** La dirección de una descarga, con sólo los filtros que se pusieron. */
@@ -36,7 +38,7 @@ export function inventoryExportPath(
   // El ZIP sólo existe para volver a cargar: no se le pide otro modo.
   if (kind !== "full") qs.set("mode", mode);
   if (filters.branches?.length) qs.set("branches", filters.branches.join(","));
-  for (const key of ["category", "type", "stock", "condition", "visibility", "is_active"] as const) {
+  for (const key of ["category", "type", "stock", "condition", "visibility", "is_active", "line"] as const) {
     const value = filters[key];
     if (value) qs.set(key, value);
   }
@@ -53,6 +55,7 @@ const FALLBACK_NAMES: Record<string, string> = {
   "units:reimport": "equipos-para-cargar.xlsx",
   "units:report": "reporte-equipos.xlsx",
   "full:reimport": "inventario-completo.zip",
+  "integral:report": "reporte-integral-inventario.xlsx",
 };
 
 /** Pide una descarga y la guarda. Lanza un error con lo que el servidor explicó. */
@@ -79,7 +82,7 @@ export async function downloadInventoryExport(
   // El nombre lo pone el servidor, y es fijo: nada de lo que alguien escribió.
   const disposition = res.headers.get("Content-Disposition") ?? "";
   const served = /filename="([^"]+)"/.exec(disposition)?.[1];
-  const effectiveMode = kind === "full" ? "reimport" : mode;
+  const effectiveMode = kind === "full" ? "reimport" : kind === "integral" ? "report" : mode;
 
   const url = URL.createObjectURL(await res.blob());
   const link = document.createElement("a");

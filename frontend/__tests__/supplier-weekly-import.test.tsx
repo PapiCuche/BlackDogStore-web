@@ -81,6 +81,28 @@ async function upload() {
 
 const applied = () => writes.filter((w) => w.path.includes('/import/61/apply/'));
 
+describe('INV-SWITCH-01: IA por importación', () => {
+  it('sin marcarla no se pide IA ni se muestra aviso', async () => {
+    await upload();
+    const form = send.mock.calls.find(([url]) => String(url).includes('/import/preview/'))![1]!.body as FormData;
+    expect(form.has('use_ai')).toBe(false);
+    expect(screen.queryByTestId('import-ai-notice')).toBeNull();
+  });
+
+  it('marcada, se pide para esa importación y el aviso dice que se leyó sin IA', async () => {
+    preview = { ...(preview as object), ai: { requested: true, allowed: false, reason: 'not_configured', used: false } };
+    render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
+    await screen.findByText('No hay ofertas que coincidan.');
+    fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Usar IA en esta importación' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
+    await screen.findByTestId('supplier-import-preview');
+    const form = send.mock.calls.find(([url]) => String(url).includes('/import/preview/'))![1]!.body as FormData;
+    expect(form.get('use_ai')).toBe('true');
+    expect(screen.getByTestId('import-ai-notice')).toHaveTextContent('IA no configurada: el archivo se leyó sin IA.');
+  });
+});
+
 describe('vista previa: antes → después', () => {
   it('cada fila dice qué era y qué será, y el resumen cuenta las agotadas', async () => {
     const shown = await upload();

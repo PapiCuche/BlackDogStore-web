@@ -8,6 +8,25 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Fixed**
 - Un segundo «Enviar» justo después de la respuesta de SUNAT ya no transmite otra vez el mismo comprobante.
 
+## 2026-10-22 — IMEI con el dígito que falta (INV-ID-01)
+
+**Added**
+- Al escribir 14 dígitos de un IMEI, se ofrece completar el decimoquinto mostrando el número completo.
+
+## 2026-10-22 — Exportar por línea (INV-EXP-01)
+
+**Added**
+- Exportaciones de inventario: elegir solo nuevos, solo seminuevos, nuevos y seminuevos, o solo accesorios.
+- «Reporte integral»: stock propio, equipos y disponibilidad de proveedores en un solo Excel, cada uno en su
+  hoja y sin sumarse.
+
+## 2026-10-22 — Interruptor de IA y modos del inventario (INV-SWITCH-01)
+
+**Added**
+- Configuración › Inventario · Inteligencia artificial: activar o desactivar la IA de la empresa (apagada).
+- «Usar IA en esta importación» al previsualizar la lista semanal; sin IA configurada se lee igual y lo dice.
+- Inventario: «Modo rápido» con las tareas del día y «Modo avanzado» con el tablero completo.
+
 ## 2026-10-22 — Cancelación que cruza un pago
 
 **Fixed**

@@ -81,6 +81,17 @@ async function submit(form: HTMLElement) {
   await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Registrar recepción' })); });
 }
 
+describe('INV-ID-01: el dígito que falta', () => {
+  it('con 14 dígitos ofrece el decimoquinto y sólo lo pone si se pide', () => {
+    const form = openReceive();
+    type(form, 'IMEI (equipo 1)', IMEI_A.slice(0, 14));
+    expect(within(form).getByLabelText('IMEI (equipo 1)')).toHaveValue(IMEI_A.slice(0, 14));
+    fireEvent.click(within(form).getByRole('button', { name: `Completar con ${IMEI_A.slice(-1)}` }));
+    expect(within(form).getByLabelText('IMEI (equipo 1)')).toHaveValue(IMEI_A);
+    expect(within(form).queryByRole('button', { name: /Completar con/ })).toBeNull();
+  });
+});
+
 describe('la regla de cada equipo es la del servidor', () => {
   it('un producto con IMEI pide serie e IMEI en cada fila, sin escribir nada', async () => {
     const form = openReceive();
