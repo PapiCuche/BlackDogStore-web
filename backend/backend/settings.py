@@ -243,6 +243,12 @@ DATABASES = {
 # poder enviar nada a SUNAT por el hecho de tener el código instalado.
 FISCAL_ENABLED = env.bool('FISCAL_ENABLED', default=False)
 
+# INV-SWITCH-01 — inventory recognition with AI. OFF BY DEFAULT: off, nothing
+# is sent to any AI service and nothing is spent; the manual and local paths
+# work the same. A company also has to turn it on, and the person ask for it in
+# each import (`store.inventory_ai.decide`). No provider exists in this phase.
+INVENTORY_AI_ENABLED = env.bool('INVENTORY_AI_ENABLED', default=False)
+
 # EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
 # falla cerrado ante cualquier valor distinto de «beta»: producción exige un
 # certificado acreditado y credenciales por empresa, y ninguna de las dos cosas

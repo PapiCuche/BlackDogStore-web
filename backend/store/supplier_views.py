@@ -449,8 +449,14 @@ class AdminOfferImportPreviewView(APIView):
                                                 filename=getattr(upload, 'name', '') or 'ofertas.xlsx')
         except (supplier_offer_import.OfferImportError, xlsx_reader.XlsxError) as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(supplier_offer_import.job_payload(
-            job, include_cost=user_may_view_costs(request.user, company)))
+        payload = supplier_offer_import.job_payload(job, include_cost=user_may_view_costs(request.user, company))
+        # INV-SWITCH-01: what was decided about AI for this import. The file was read the local way either way.
+        from . import inventory_ai
+
+        requested = _flag(request.data.get('use_ai'))
+        payload['ai'] = inventory_ai.import_payload(
+            inventory_ai.decide(company, request.user, requested=requested, permitted=True), requested=requested)
+        return Response(payload)
 
 
 class AdminOfferImportApplyView(APIView):

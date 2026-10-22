@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AdminShell } from "../components/AdminShell";
 import { AccessGuard } from "../components/AccessGuard";
 import { PageHeader } from "../components/internal-ui";
+import { InventoryModeSwitch, QuickInventoryTasks, useInventoryMode } from "../components/InventoryMode";
 import { BranchSelector, ScopeNote } from "../components/BranchSelector";
 import { useBranchScope } from "../lib/use-branch-scope";
 import { HorizontalBarChart, VerticalBarChart } from "../components/charts";
@@ -50,7 +51,11 @@ type Data = {
   movements: StockMovement[];
 };
 
-function InventoryDashboardPage({ user, canSeeCosts = false }: { user: AuthUser; canSeeCosts?: boolean }) {
+function InventoryDashboardPage({ user, canSeeCosts = false, canSeeSuppliers = false, canRegister = false }: {
+  user: AuthUser; canSeeCosts?: boolean; canSeeSuppliers?: boolean; canRegister?: boolean;
+}) {
+  // INV-SWITCH-01: the quick view links to the same screens; the advanced one is this dashboard.
+  const [mode, setMode] = useInventoryMode();
   const scope = useBranchScope({ preferAggregate: true });
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +110,8 @@ function InventoryDashboardPage({ user, canSeeCosts = false }: { user: AuthUser;
           title="Inventario"
           description="Stock por sucursal, movimientos, reposición y control físico dentro del alcance de tu cuenta."
           actions={
+            <div className="flex flex-wrap items-center gap-3">
+            <InventoryModeSwitch mode={mode} onChange={setMode} />
             <BranchSelector
               access={scope.access}
               value={scope.branch}
@@ -113,8 +120,11 @@ function InventoryDashboardPage({ user, canSeeCosts = false }: { user: AuthUser;
                 scope.setBranch(next);
               }}
             />
+            </div>
           }
         />
+
+        {mode === "quick" ? <QuickInventoryTasks canSeeSuppliers={canSeeSuppliers} canRegister={canRegister} /> : null}
 
         <nav className="-mt-2 overflow-x-auto border-b border-bd-border pb-3" aria-label="Secciones de inventario">
           <div className="flex min-w-max gap-1">
@@ -147,7 +157,7 @@ function InventoryDashboardPage({ user, canSeeCosts = false }: { user: AuthUser;
         {loading && scope.ready ? <Spinner label="Cargando inventario…" /> : null}
         {error ? <ErrorBox message={error} /> : null}
 
-        {data && summary && charts ? (
+        {mode === "advanced" && data && summary && charts ? (
           <>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <StatCard
@@ -289,6 +299,8 @@ export default function InventoryPage() {
         <InventoryDashboardPage
           user={access.user}
           canSeeCosts={access.can("costs.view", ["admin", "superadmin"])}
+          canSeeSuppliers={access.can("products.view", ["admin", "superadmin"])}
+          canRegister={access.can("products.manage", ["admin", "superadmin"])}
         />
       )}
     </AccessGuard>
