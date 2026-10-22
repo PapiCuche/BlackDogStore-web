@@ -76,6 +76,11 @@ const DOWNLOADS: Download[] = [
     id: "full", title: "Inventario completo (ZIP)", kind: "full", needs: "both",
     description: "Productos.xlsx, Stock.xlsx y Equipos.xlsx con una hoja cada uno, y una nota con el orden para cargarlos en una tienda vacía. Productos activos e inactivos; siempre para volver a cargar.",
   },
+  {
+    // INV-EXP-02 — para consultar: lo propio y lo de proveedores, cada uno en su hoja.
+    id: "integral", title: "Reporte integral", kind: "integral", needs: "both",
+    description: "Un solo Excel para consultar: stock propio por sucursal, equipos con serie y la disponibilidad de proveedores en su propia hoja. Las cantidades de proveedores nunca se suman al stock; si el proveedor no dio cantidad, dice «Desconocida». Siempre es un reporte.",
+  },
 ];
 
 const NO_FILTERS = { category: "", type: "", stock: "", condition: "", visibility: "", is_active: "", line: "" };
@@ -109,7 +114,7 @@ export function InventoryExportPanel({
     try {
       await downloadInventoryExport(
         item.kind,
-        item.kind === "full" ? "reimport" : mode,
+        item.kind === "full" ? "reimport" : item.kind === "integral" ? "report" : mode,
         {
           ...(filters as ExportFilters),
           ...item.fixed,

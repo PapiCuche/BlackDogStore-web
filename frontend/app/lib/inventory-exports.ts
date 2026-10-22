@@ -13,7 +13,7 @@ import { fetchWithAuth } from "./auth";
  * servidor. Aquí sólo se arma la petición y se guarda lo que responde.
  */
 
-export type ExportKind = "products" | "stock" | "units" | "full";
+export type ExportKind = "products" | "stock" | "units" | "full" | "integral";
 export type ExportMode = "reimport" | "report";
 
 export type ExportFilters = {
@@ -55,6 +55,7 @@ const FALLBACK_NAMES: Record<string, string> = {
   "units:reimport": "equipos-para-cargar.xlsx",
   "units:report": "reporte-equipos.xlsx",
   "full:reimport": "inventario-completo.zip",
+  "integral:report": "reporte-integral-inventario.xlsx",
 };
 
 /** Pide una descarga y la guarda. Lanza un error con lo que el servidor explicó. */
@@ -81,7 +82,7 @@ export async function downloadInventoryExport(
   // El nombre lo pone el servidor, y es fijo: nada de lo que alguien escribió.
   const disposition = res.headers.get("Content-Disposition") ?? "";
   const served = /filename="([^"]+)"/.exec(disposition)?.[1];
-  const effectiveMode = kind === "full" ? "reimport" : mode;
+  const effectiveMode = kind === "full" ? "reimport" : kind === "integral" ? "report" : mode;
 
   const url = URL.createObjectURL(await res.blob());
   const link = document.createElement("a");

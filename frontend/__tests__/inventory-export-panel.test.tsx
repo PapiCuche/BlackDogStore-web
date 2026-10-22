@@ -37,6 +37,7 @@ const ACCESSORIES = 'Productos por cantidad';
 const STOCK = 'Stock por sucursal';
 const DEVICES = 'Equipos con serie';
 const FULL = 'Inventario completo (ZIP)';
+const INTEGRAL = 'Reporte integral';
 
 function show(props: Partial<React.ComponentProps<typeof InventoryExportPanel>> = {}) {
   return render(
@@ -59,10 +60,10 @@ beforeEach(() => {
   adminApi.fetchAdminCategories.mockReset().mockResolvedValue(CATEGORIES as admin.AdminCategory[]);
 });
 
-describe('las cinco descargas', () => {
+describe('las seis descargas', () => {
   it('se ofrecen con su nombre y una frase que dice qué trae cada una', () => {
     show();
-    expect(titles()).toEqual([CATALOGUE, ACCESSORIES, STOCK, DEVICES, FULL]);
+    expect(titles()).toEqual([CATALOGUE, ACCESSORIES, STOCK, DEVICES, FULL, INTEGRAL]);
     expect(card(CATALOGUE)).toHaveTextContent(/una fila por producto/i);
     expect(card(ACCESSORIES)).toHaveTextContent(/sin los equipos con número de serie/i);
     expect(card(STOCK)).toHaveTextContent(/una columna por sucursal/i);
@@ -123,6 +124,14 @@ describe('para volver a cargar o reporte', () => {
     expect(lastCall()[1]).toBe('report');
     await download(DEVICES);
     expect(lastCall()[1]).toBe('report');
+  });
+
+  it('INV-EXP-02: el reporte integral es siempre un reporte, con proveedores aparte', async () => {
+    show();
+    expect(card(INTEGRAL)).toHaveTextContent(/proveedores en su propia hoja/i);
+    expect(card(INTEGRAL)).toHaveTextContent(/nunca se suman/i);
+    await download(INTEGRAL);
+    expect(lastCall().slice(0, 2)).toEqual(['integral', 'report']);
   });
 
   it('el ZIP es siempre para volver a cargar, y lo dice', async () => {
