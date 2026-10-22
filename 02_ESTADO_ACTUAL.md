@@ -9,6 +9,10 @@ Migración `0143_inventory_ai_usage` (aditiva). Puerta del adaptador de IA: reda
 respuesta de forma fija, cuotas, presupuesto mensual y cortacircuitos; sin proveedor real ni clave, no se
 envía nada. DEC-INV-AI-01. Aún no hay pantalla que lo use: la vista previa de texto (#142) es local.
 
+Arquitectura decidida por el propietario (2026-10-22): la IA no recibe texto libre; sólo una representación
+estructurada, mínima y validada por el reconocedor local. ADR `docs/adr-inv-ai-structured.md` (PROPUESTA).
+NO-GO para cualquier proveedor externo hasta implementarla.
+
 ## 2026-10-22 — INV-ID-01 (#147, en master `c1c0ad9`, NO desplegado)
 
 Sólo frontend. Con exactamente 14 dígitos de IMEI se ofrece el decimoquinto (Luhn) mostrando el número
