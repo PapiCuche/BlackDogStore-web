@@ -7,6 +7,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Added**
 - Exportaciones de inventario: elegir solo nuevos, solo seminuevos, nuevos y seminuevos, o solo accesorios.
+- «Reporte integral»: stock propio, equipos y disponibilidad de proveedores en un solo Excel, cada uno en su
+  hoja y sin sumarse.
 
 ## 2026-10-22 — Despliegue de #137, #138, #139 y #140 en producción
 

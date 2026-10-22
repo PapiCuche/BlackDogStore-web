@@ -8,8 +8,10 @@ documentación real, sin reemplazar su historial.
 Sin migraciones. Exportaciones de inventario con filtro «Línea»: todo, solo nuevos, solo seminuevos,
 nuevos y seminuevos, solo accesorios (`line=new,used,accessory`). Un equipo pertenece a un modelo o va por
 serie; lo demás de la línea nueva es accesorio. Sólo elige filas: los archivos para volver a cargar
-conservan sus columnas. Pendiente INV-EXP-02: reporte integral con stock propio y disponibilidad de
-proveedores en hojas separadas.
+conservan sus columnas. INV-EXP-02 (rama `feat/inv-exp-02`): «Reporte integral», un Excel de consulta con
+«Stock propio», «Equipos» y «Disponibilidad de proveedores» en hojas separadas; nada se suma entre hojas;
+cantidad no informada = «Desconocida»; «Se puede vender» con la regla de la tienda; costo pactado sólo con
+`costs.view`.
 
 ## 2026-10-22 — Desplegado #137 + #138 + #139 + #140 (`acf20fc` → `6daf9ae`, 0140–0141)
 
