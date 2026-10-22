@@ -11,14 +11,15 @@ function analyze(text: string, canSeeCosts = true) {
   fireEvent.click(screen.getByRole('button', { name: /Analizar/ }));
 }
 
-it('muestra tipo, variante y costo de cada candidato', () => {
+it('muestra tipo, variante y costo de cada candidato, corregibles', () => {
   analyze('IPH 17 pro chip 256gb LLA 4370 blanco\nAirPods Pro 2 850 blanco');
-  const rows = screen.getAllByRole('row').slice(1);
-  expect(rows[0]).toHaveTextContent('Nuevo');
-  expect(rows[0]).toHaveTextContent('iPhone 17 Pro');
-  expect(rows[0]).toHaveTextContent('Chip · LL/A · blanco');
-  expect(rows[0]).toHaveTextContent('4370');
-  expect(rows[1]).toHaveTextContent('Accesorio');
+  expect(screen.getByLabelText('Línea del registro 1')).toHaveValue('new');
+  expect(screen.getByLabelText('Modelo del registro 1')).toHaveValue('iPhone 17 Pro');
+  expect(screen.getByLabelText('Capacidad del registro 1')).toHaveValue('256');
+  expect(screen.getByLabelText('Color del registro 1')).toHaveValue('blanco');
+  expect(screen.getAllByRole('row')[1]).toHaveTextContent('Chip · LL/A');
+  expect(screen.getByLabelText('Costo del registro 1')).toHaveValue('4370');
+  expect(screen.getByLabelText('Línea del registro 2')).toHaveValue('accessory');
 });
 
 it('las líneas no reconocidas se listan con su motivo', () => {
