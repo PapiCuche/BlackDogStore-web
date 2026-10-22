@@ -11,14 +11,21 @@ The switch the panel shows is not the control: the server decides here, on
 every import. AI only ever proposes; what is written goes through the same
 services and checks as a manual import.
 
-No provider exists in this phase (`get_provider` is always None): the adapter,
-its credentials, quotas and budget come with INV-AI-01, behind this same gate.
+INV-AI-01 adds what any provider goes through (`extract`): redaction, a fixed
+answer shape, per-person quotas, a monthly budget and a circuit breaker, every
+call recorded in `InventoryAIUsage`. No real provider is built yet: the
+registry is empty, so `get_provider` is None whatever is configured.
 """
+from datetime import timedelta
+from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from django.conf import settings
+from django.db.models import Sum
+from django.utils import timezone
 
-from .models import InventoryAISettings
+from . import inventory_ai_safety as safety
+from .models import InventoryAISettings, InventoryAIUsage
 
 # Why AI is not used — one code each, in the order they are asked.
 NOT_REQUESTED = 'not_requested'
@@ -45,13 +52,55 @@ class Decision(NamedTuple):
     reason: Optional[str]
 
 
+#: name -> provider class. EMPTY: no real provider is built yet (INV-AI-02 adds
+#: one, with its key from the environment, when the owner provides it).
+_PROVIDERS: dict = {}
+
+BREAKER_FAILURES = 3
+BREAKER_WINDOW = timedelta(minutes=10)
+BUDGET_ALERTS = (50, 80, 100)
+
+
 def get_provider():
     """
-    The configured AI provider, or None. Always None in this phase: no adapter
-    is built, so no request ever leaves the server. A provider answers
-    `is_available()` and `has_quota(company, user)`.
+    The configured AI provider, or None — None while the registry is empty, so
+    no request ever leaves the server. A provider answers `is_available()`,
+    `has_quota(company, user)` and `extract(text, timeout=...) -> (answer, cost_usd)`.
     """
-    return None
+    provider = _PROVIDERS.get(getattr(settings, 'INVENTORY_AI_PROVIDER', '') or '')
+    return provider() if provider else None
+
+
+def _month_start(now):
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def budget_status(company) -> dict:
+    """This month's spend against the budget, and the highest alert level reached (50, 80, 100 or None)."""
+    budget = Decimal(str(settings.INVENTORY_AI_MONTHLY_BUDGET_USD))
+    spent = InventoryAIUsage.objects.filter(company=company, at__gte=_month_start(timezone.now())) \
+        .aggregate(total=Sum('cost_usd'))['total'] or Decimal('0')
+    share = (spent * 100 / budget) if budget > 0 else Decimal('100')
+    reached = [level for level in BUDGET_ALERTS if share >= level]
+    return {'spent': spent, 'budget': budget, 'alert': reached[-1] if reached else None}
+
+
+def within_quota(company, user) -> bool:
+    """Per person: so many a minute and a day; per company: the monthly budget, cut at 100 %."""
+    now = timezone.now()
+    mine = InventoryAIUsage.objects.filter(user=user)
+    if mine.filter(at__gte=now - timedelta(minutes=1)).count() >= settings.INVENTORY_AI_USER_PER_MINUTE:
+        return False
+    if mine.filter(at__gte=now - timedelta(days=1)).count() >= settings.INVENTORY_AI_USER_PER_DAY:
+        return False
+    return budget_status(company)['alert'] != 100
+
+
+def breaker_open() -> bool:
+    """The last calls, platform-wide, all failed recently: stop calling for a while."""
+    recent = list(InventoryAIUsage.objects.filter(at__gte=timezone.now() - BREAKER_WINDOW)
+                  .order_by('-at', '-pk').values_list('ok', flat=True)[:BREAKER_FAILURES])
+    return len(recent) == BREAKER_FAILURES and not any(recent)
 
 
 def company_enabled(company) -> bool:
@@ -62,9 +111,9 @@ def company_enabled(company) -> bool:
 def _provider_refusal(provider, company, user) -> Optional[str]:
     if provider is None:
         return NOT_CONFIGURED
-    if not provider.is_available():
+    if breaker_open() or not provider.is_available():
         return UNAVAILABLE
-    if not provider.has_quota(company, user):
+    if (user is not None and not within_quota(company, user)) or not provider.has_quota(company, user):
         return QUOTA_EXHAUSTED
     return None
 
@@ -101,3 +150,38 @@ def state(company, user=None) -> str:
 def import_payload(decision: Decision, *, requested: bool) -> dict:
     """What an import preview says about AI. `used` stays False until INV-AI-01 builds the adapter."""
     return {'requested': requested, 'allowed': decision.use_ai, 'reason': decision.reason, 'used': False}
+
+
+class ExtractResult(NamedTuple):
+    used: bool
+    reason: Optional[str]
+    candidates: list
+
+
+def extract(company, user, text: str, *, requested: bool, permitted: bool) -> ExtractResult:
+    """
+    Candidates read from `text` by the provider — only when `decide` says so.
+    Identifiers are taken out before the call and put back here; the answer
+    is cleaned to the fixed shape; each call is recorded, never its text.
+    Anything that fails means no AI: the caller goes on the local way.
+    """
+    decision = decide(company, user, requested=requested, permitted=permitted)
+    if not decision.use_ai:
+        return ExtractResult(False, decision.reason, [])
+    if len(text) > safety.MAX_CHARS:
+        return ExtractResult(False, 'too_long', [])
+    redacted, secrets = safety.redact(text)
+    provider = get_provider()
+    try:
+        answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
+        InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=False)
+        return ExtractResult(False, 'failed', [])
+    try:
+        rows = safety.clean_candidates(answer)
+    except safety.BadAnswer:
+        InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=False,
+                                        cost_usd=Decimal(cost or 0))
+        return ExtractResult(False, 'bad_answer', [])
+    InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=True, cost_usd=Decimal(cost or 0))
+    return ExtractResult(True, None, safety.restore(rows, secrets))
