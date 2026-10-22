@@ -708,11 +708,13 @@ def _line_of(product) -> str:
 
 def _offers_sheet(company, filters: ExportFilters) -> Sheet:
     """
-    The offers that may sell today, one row each. Never added to stock: a
+    The offers running today, one row each — company-wide, like «Consultar
+    disponibilidad»: an offer belongs to the company, not to a branch, so the
+    branch filter narrows the stock and device sheets only. Never added to stock: a
     supplier's units are not the shop's. A quantity the supplier did not
     state is «Desconocida», never a number. The agreed cost, `costs.view` only.
     """
-    from .supply_services import today
+    from .supply_services import today, valid_offer_q
 
     on = today()
     # Every offer running today — with a stated quantity or not, sold out or not. Whether it can SELL is
@@ -723,13 +725,15 @@ def _offers_sheet(company, filters: ExportFilters) -> Sheet:
         .select_related('product', 'supplier').order_by('product__name', 'supplier__name', 'valid_from', 'pk')
     )
     _check_rows(queryset.count())
+    # Review P3: «Se puede vender» is the shop's own predicate, not a copy of it.
+    sellable = set(queryset.filter(valid_offer_q(on=on)).values_list('pk', flat=True))
     rows = []
     for offer in queryset.iterator(chunk_size=2000):
         known = offer.confirmed_quantity is not None
         left = max(offer.confirmed_quantity - offer.committed_quantity, 0) if known else None
         rows.append([
             offer.product.name, LINE_LABELS[_line_of(offer.product)], offer.supplier.name, offer.commercial_price,
-            left if known else UNKNOWN_QUANTITY, 'Sí' if known and left > 0 else 'No',
+            left if known else UNKNOWN_QUANTITY, 'Sí' if offer.pk in sellable else 'No',
             offer.committed_quantity, offer.lead_time_days, offer.valid_from, offer.valid_until,
             offer.agreed_cost if filters.include_cost else None,
         ])
