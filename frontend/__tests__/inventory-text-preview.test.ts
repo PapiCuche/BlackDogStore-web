@@ -89,3 +89,19 @@ describe("INV-TEXT-01, texto sin red ni escritura", () => {
     expect(() => previewSupplierText("IPH 15", { line: "unknown" as "new", origin: "supplier" })).toThrow();
   });
 });
+
+describe("revisión pre-fusión: lo que viaja al catálogo", () => {
+  it("un modelo editado con un IMEI o una serie no los envía", () => {
+    const { matchPayload } = jest.requireActual("@/app/admin/lib/inventory-text-match");
+    const body = matchPayload([
+      { id: 1, kind: "device", line: "used", model: "iPhone 13 IMEI: 356789012345678", capacityGb: 128, colour: "azul" },
+      { id: 2, kind: "device", line: "used", model: "iPhone 13 NS: F2LXK9ABCD", capacityGb: 128, colour: "azul" },
+      { id: 3, kind: "device", line: "used", model: "iPhone 13 3567 8901 2345 678", capacityGb: 128, colour: "azul" },
+      { id: 4, kind: "accessory", line: "accessory", model: "Cargador USB-C 20W", capacityGb: null, colour: "" },
+    ]);
+    const text = JSON.stringify(body);
+    expect(text).not.toMatch(/356789|5678|F2LX|ABCD|IMEI|"NS/);
+    expect(body.candidates.map((c: { model: string }) => c.model)).toEqual(
+      ["iPhone 13", "iPhone 13", "iPhone 13", "Cargador USB-C 20W"]);
+  });
+});

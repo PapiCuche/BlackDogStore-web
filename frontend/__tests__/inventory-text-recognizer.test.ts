@@ -197,3 +197,21 @@ describe('IMEI sin dos puntos', () => {
     expect(one('iPhone 13\nIMEI 1 490154203237518', used).imei).toBe('490154203237518');
   });
 });
+
+describe("revisión pre-fusión: un IMEI o una serie en la línea del producto no entra en el modelo", () => {
+  const IMEI = "356789012345678";
+  it.each([
+    `IPH 13 128GB azul IMEI: ${IMEI} 2300`,
+    `IPH 13 128 azul ${IMEI} 2300`,
+    `IPH 13 128GB azul IMEI:${IMEI} 2300`,
+    `IPH 13 128GB azul IMEI 3567 8901 2345 678 2300`,
+    "IPH 13 128GB azul NS: F2LXK9ABCD 2300",
+    "IPH 13 128GB azul S/N F2LXK9ABCD 2300",
+    "IPH 13 128GB azul F2LXK9ABCD 2300",
+  ])("%s", text => {
+    const row = one(text, used);
+    expect(row.model).toBe("iPhone 13");
+    expect(row.model).not.toMatch(/\d{5,}|F2LX|IMEI|NS|S\/N/i);
+    expect(row.supplierCost).toBe("2300");
+  });
+});

@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * INV-TEXT-01: reconocimiento inicial EN EL NAVEGADOR.
- * Sin fetch, sin proveedor IA, sin almacenamiento y sin escritura de inventario.
+ * INV-TEXT-01/02: reconocimiento inicial EN EL NAVEGADOR.
+ * Sin proveedor IA, sin almacenamiento y sin escritura de inventario. La única llamada es la búsqueda de
+ * variantes del propio catálogo (sólo lectura), sin texto, costos, cantidades, IMEI ni series.
  * El modo minucioso sigue siendo los formularios y las importaciones existentes.
  */
 import { useRef, useState } from "react";
@@ -30,6 +31,13 @@ function variantOf(candidate: TextCandidate): string {
     candidate.watts !== null ? `${candidate.watts} W` : "", candidate.length,
     candidate.generation ? `${candidate.generation}.ª generación` : "",
   ].filter(Boolean).join(" · ");
+}
+
+/** A notice about the cost, without its amounts, for whoever cannot see costs. */
+function withoutAmounts(warning: string): string {
+  return warning
+    .replace(/^Costos ambiguos \([^)]*\)/, "Costos ambiguos")
+    .replace(/^Importe \S+ demasiado bajo/, "Importe demasiado bajo");
 }
 
 export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) {
@@ -251,7 +259,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                       </label>
                       {candidate.warnings.length
                         ? <ul className="space-y-1">{candidate.warnings.map((warning, index) =>
-                            <li key={index} className="text-warning">{warning}</li>)}</ul>
+                            <li key={index} className="text-warning">{canSeeCosts ? warning : withoutAmounts(warning)}</li>)}</ul>
                         : <span className="text-success">Sin avisos de formato</span>}
                     </td>
                   </tr>
@@ -265,7 +273,7 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
               <summary>{preview.unrecognized.length} líneas no reconocidas: revisa que ninguna sea un producto</summary>
               <ul className="mt-2 space-y-1" aria-label="Líneas no reconocidas">
                 {preview.unrecognized.map((item, index) => (
-                  <li key={index}><span className="font-mono">{item.line}</span> — {item.reason}</li>
+                  <li key={index}><span className="font-mono">{maskedSource(item.line)}</span> — {item.reason}</li>
                 ))}
               </ul>
             </details>

@@ -7,6 +7,8 @@ or none and why. The same rules as the weekly file's model columns
 name, options by their labels, the line (new or used) apart. Accessories by
 their product name. Costs, quantities and identifiers are not part of it.
 """
+import re
+
 from django.db.models import Count
 
 from . import device_catalog
@@ -31,6 +33,14 @@ def _text(value, limit):
     return ' '.join(value.split())
 
 
+_IDENTIFIER = re.compile(
+    r'\d(?:[ .\-/]?\d){6,}'                                    # 7+ digits, also grouped (IMEI, phone, document)
+    r'|\b(?:imei|s/n|n/s|serial)\b'                              # an identifier label
+    r'|\b(?:ns|sn|serie)\s*[:#=]?\s*[A-Za-z0-9][A-Za-z0-9/-]{3,}'   # a serial label with its value («Serie 9» is a name)
+    r'|\b(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{8,}\b',  # a code of 8+ mixing letters and digits
+    re.I)
+
+
 def clean(candidate) -> dict:
     if not isinstance(candidate, dict):
         raise BadCandidate('Cada candidato es un objeto.')
@@ -48,8 +58,12 @@ def clean(candidate) -> dict:
     line = candidate.get('line') or 'new'
     if kind not in ('device', 'accessory') or line not in ('new', 'used', 'accessory'):
         raise BadCandidate('Tipo o línea inválidos.')
+    model = _text(candidate.get('model'), 120)
+    if _IDENTIFIER.search(model):
+        # Pre-merge review: an identifier hidden in an allowed field. Refused, and never echoed back.
+        raise BadCandidate('El modelo no puede llevar IMEI, series ni otros identificadores.')
     return {'key': key, 'kind': kind, 'line': line, 'capacity': capacity,
-            'model': _text(candidate.get('model'), 120), 'colour': _text(candidate.get('colour'), 60)}
+            'model': model, 'colour': _text(candidate.get('colour'), 60)}
 
 
 def _option_payload(product) -> dict:

@@ -153,3 +153,18 @@ class FinalReviewTest(_Match):
         with CaptureQueriesContext(connection) as queries:
             self.assertEqual(self.match(*rows).status_code, 200)
         self.assertLess(len(queries), 80, len(queries))
+
+
+class IdentifierInModelTest(_Match):
+    """Pre-merge review: an identifier hidden in the allowed `model` field is refused, never echoed."""
+
+    def test_a_model_with_an_imei_or_a_serial_is_refused(self):
+        for model in ('iPhone 13 356789012345678', 'iPhone 13 IMEI 3567 8901 2345 678', 'iPhone 13 NS: F2LXK9ABCD',
+                      'iPhone 13 S/N F2LXK9ABCD', 'iPhone 13 serie ABCDEFGH'):
+            with self.subTest(model=model):
+                response = self.match({'key': '1', 'kind': 'device', 'line': 'used', 'model': model,
+                                       'capacityGb': 128})
+                self.assertEqual(response.status_code, 400)
+                self.assertNotIn('F2LX', str(response.data))
+                self.assertNotIn('5678', str(response.data))
+                self.assertNotIn('ABCDEFGH', str(response.data))

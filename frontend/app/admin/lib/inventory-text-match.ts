@@ -5,6 +5,7 @@
 import { API_BASE } from "../../lib/api";
 import { fetchWithAuth } from "../../lib/auth";
 import type { TextCandidate } from "./inventory-text-preview";
+import { identifierTokens } from "./inventory-text-stages";
 
 export type CandidateDraft = Pick<TextCandidate, "id" | "kind" | "line" | "model" | "capacityGb" | "colour">;
 
@@ -14,11 +15,25 @@ export type MatchResult = { status: "exact" | "ambiguous" | "none"; reason: stri
 /** A capacity the catalogue can have (the server refuses anything else). */
 export const capacityInRange = (gb: number | null) => gb === null || (Number.isInteger(gb) && gb > 0 && gb <= 8192);
 
+/** The model as it may travel: without IMEIs, serials or other identifiers, also when typed by hand. */
+function modelWithoutIdentifiers(model: string): string {
+  const tokens = model.split(/\s+/).filter(Boolean);
+  const ids = identifierTokens(tokens);
+  return tokens.filter((_token, index) => !ids.has(index)).join(" ")
+    .replace(/\d+(?:[ .,/-]\d+)*/g, run => {
+      if (!looksLikeIdentifier(run)) return run;
+      // «13 3567 8901 2345 678»: the model number in front stays, the identifier after it goes.
+      const lead = run.match(/^(\d{1,2})[ ](.+)$/);
+      return lead && looksLikeIdentifier(lead[2]) ? lead[1] : "";
+    })
+    .split(/\s+/).filter(Boolean).join(" ");
+}
+
 /** The request body: exactly the allowed fields, nothing else from the candidate. */
 export function matchPayload(drafts: CandidateDraft[]) {
   return {
     candidates: drafts.map(draft => ({
-      key: String(draft.id), kind: draft.kind, line: draft.line, model: draft.model.slice(0, 120),
+      key: String(draft.id), kind: draft.kind, line: draft.line, model: modelWithoutIdentifiers(draft.model).slice(0, 120),
       // Out of range: not sent (the row says why) — one bad row never fails the whole search.
       capacityGb: capacityInRange(draft.capacityGb) ? draft.capacityGb : null, colour: draft.colour.slice(0, 60),
     })),

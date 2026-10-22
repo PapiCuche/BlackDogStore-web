@@ -33,3 +33,18 @@ it('sin permiso de costos, el costo no aparece', () => {
   analyze('IPH 15 128 2300 negro', false);
   expect(screen.queryByText('2300')).toBeNull();
 });
+
+it('revisión pre-fusión: una línea no reconocida con un IMEI se muestra enmascarada', () => {
+  analyze('IPH 15 128 2300 negro\n\nIMEI: 356789012345678\n356789012345678');
+  const list = screen.getByRole('list', { name: 'Líneas no reconocidas' });
+  expect(list).not.toHaveTextContent('356789012345678');
+  expect(list).not.toHaveTextContent('35678901');
+});
+
+it('revisión pre-fusión: sin permiso de costos, los avisos no muestran importes', () => {
+  analyze('IPH 15 128 2300 2500 negro\nIPH 14 128 80 azul', false);
+  // The notices (the person's own pasted text stays available, masked, under «Ver texto original»).
+  const notices = screen.getAllByText(/Costos ambiguos|demasiado bajo/).map(node => node.textContent ?? '');
+  expect(notices).toEqual(['Costos ambiguos: indicar cuál es el costo.',
+    'Importe demasiado bajo para un equipo: revisar si es el costo.']);
+});

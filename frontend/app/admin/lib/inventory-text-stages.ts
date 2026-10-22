@@ -117,13 +117,57 @@ function takeColour(words: string[]): [string, Set<number>] {
   return ["", new Set()];
 }
 
+const ID_LABEL = /^(?:imei[12]?|n\.?s\.?|n\/s|s\/n|sn|serie|serial)[:#=]?$/i;
+const ID_GLUED = /^(?:imei[12]?|n\.?s\.?|n\/s|s\/n|sn|serie|serial)[:#=]\S+$/i;
+
+/**
+ * Pre-merge review: the tokens of a line that are an identifier (IMEI, serial, document) and never part of a
+ * name — a label with its value, a run of 7+ digits, a code of 8+ that mixes letters and digits. Shared with
+ * what travels to the catalogue (`matchPayload`), so an identifier typed into the model does not travel either.
+ */
+export function identifierTokens(tokens: string[]): Set<number> {
+  const marked = new Set<number>();
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (ID_GLUED.test(token) || /^\d{7,}$/.test(token.replace(/[.\-/]/g, ""))
+        || (/^(?=.*\d)(?=.*[a-z])[a-z0-9-]{8,}$/i.test(token) && !/^\d{1,4}(?:gb|tb|w|m|mah)$/i.test(token))) {
+      marked.add(i);
+      continue;
+    }
+    if (!ID_LABEL.test(token)) continue;
+    let j = i + 1;
+    const sep = /^[:#=]$/.test(tokens[j] ?? "");
+    if (/^imei/i.test(token)) {
+      marked.add(i);
+      if (sep) marked.add(j++);
+      let digits = 0;
+      while (j < tokens.length && digits < 15 && /^\d[\d.\-]*$/.test(tokens[j])) {
+        digits += tokens[j].replace(/\D/g, "").length;
+        marked.add(j++);
+      }
+    } else {
+      const value = tokens[sep ? j + 1 : j] ?? "";
+      // «Serie 9» is a name; a serial label is followed by a code of 4 or more.
+      if (!/^[a-z0-9][a-z0-9/-]{3,39}$/i.test(value)) continue;
+      marked.add(i);
+      if (sep) marked.add(j++);
+      marked.add(j++);
+    }
+    i = j - 1;
+  }
+  return marked;
+}
+
 /**
  * The meaning of each token of a product line. `familyEnd`: how many tokens
  * name the family and its model number («IPH 16», «AirPods Pro 2»); those are
  * never an amount or a capacity.
  */
 export function readAttributes(line: string, kind: "device" | "accessory", { field = false } = {}): Attributes {
-  const tokens = joinUnits(splitFamily(line).split(" ").filter(Boolean));
+  const all = joinUnits(splitFamily(line).split(" ").filter(Boolean));
+  // Identifiers are read from the whole line elsewhere (IMEI, serial); here they are never a name or an amount.
+  const ids = identifierTokens(all);
+  const tokens = all.filter((_token, index) => !ids.has(index));
   const attrs: Attributes = {
     capacityGb: null, ramGb: null, sim: "", region: "", watts: null, length: "", generation: "", colour: "",
     amounts: [], battery: null, nameTokens: [],
