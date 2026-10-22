@@ -23,6 +23,28 @@ siendo vista previa: sin escrituras, cantidad desconocida, nada se aplica.
 - Archivos: frontend/app/admin/lib/inventory-text-preview.ts; frontend/app/admin/components/InventoryTextPreview.tsx; frontend/app/admin/components/BulkInventoryCentre.tsx; frontend/__tests__/inventory-text-preview.test.ts; docs/inventory-ai-safe-rollout.md.
 - Migraciones: ninguna. Tests añadidos (ejecutados después en INV-TEXT-02: Jest, tsc, lint y CI en verde); baseline real de repo no ejecutable en este entorno (sin clone). GitHub no devolvió checks del commit base. PR borrador, revisión y CI obligatorios antes de merge.
 
+## 2026-10-22 — ADR listas completas y seminuevos externos (#150, documentación, NO implementado)
+
+`docs/adr-inv-snapshot-external-used.md` con las decisiones del propietario D1–D4: las ofertas programadas no
+se desactivan por ausencia; las vigentes ausentes dejan de venderse sin tocar compromisos, pagos ni
+reembolsos; un seminuevo externo sólo publica datos comerciales; una discrepancia de IMEI/serie al recibir
+bloquea y se revisa, nunca se sustituye en silencio. Disponibilidad no confirmada como estado explícito
+(`availability_confirmed`). Implementación en una rama aparte; venta bajo pedido de seminuevos externos y
+fiscal, sin cambios.
+
+**Deuda fiscal registrada (aparte de #149, sin tocar inventario):** un intento queda abierto si el proveedor
+falla fuera del transporte (reenviable a los 10 minutos sin consultar el CDR); un timeout incierto se reenvía
+sin reconciliar antes; una baja en curso no bloquea el envío individual. Facturación sigue deshabilitada en
+producción.
+
+## 2026-10-22 — FISCAL-DOUBLE-SUBMIT (#149, en master `97c2dd0`, NO desplegado)
+
+Sin migraciones. Un comprobante no se vuelve a transmitir a SUNAT si un segundo envío llega justo después de
+la respuesta del primero (DEC-FISCAL-DOUBLE-SUBMIT-01). Era la causa de la falla intermitente de
+`C22A1ConcurrencyTest` en CI de #142; nueva prueba determinista `test_fiscal_double_submit`. Quedan
+pendientes aparte (DEC-FISCAL-DOUBLE-SUBMIT-01): excepción del proveedor fuera del transporte, reenvío tras
+un timeout incierto sin reconciliar, y una baja en curso que no bloquea el envío.
+
 ## 2026-10-22 — INV-EXP-02 (#146, en master `fb7fcee`, NO desplegado)
 
 Sin migraciones. «Reporte integral»: un Excel de consulta con «Stock propio», «Equipos» y «Disponibilidad de

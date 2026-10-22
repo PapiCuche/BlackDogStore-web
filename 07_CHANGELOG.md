@@ -25,6 +25,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-10-22 — ADR de listas completas y seminuevos externos
+
+**Docs**
+- Decisiones D1–D4 del propietario y el estado «disponibilidad no confirmada» (sin implementar).
+
+## 2026-10-22 — Doble envío de un comprobante
+
+**Fixed**
+- Un segundo «Enviar» justo después de la respuesta de SUNAT ya no transmite otra vez el mismo comprobante.
+
 ## 2026-10-22 — IMEI con el dígito que falta (INV-ID-01)
 
 **Added**
