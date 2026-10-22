@@ -9,12 +9,25 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   MAX_TEXT_CHARS, previewSupplierText,
-  type InventoryLine, type InventoryOrigin, type TextPreview,
+  type InventoryLine, type InventoryOrigin, type TextCandidate, type TextPreview,
 } from "../lib/inventory-text-preview";
 
 function masked(value: string): string {
   if (!value) return "—";
   return "••••" + value.slice(-4);
+}
+
+const LINE_LABELS: Record<TextCandidate["line"], string> = { new: "Nuevo", used: "Seminuevo", accessory: "Accesorio" };
+
+/** INV-TEXT-02: what tells this variant apart — RAM, SIM, region, colour, watts, length, generation. */
+function variantOf(candidate: TextCandidate): string {
+  return [
+    candidate.ramGb !== null ? `${candidate.ramGb} GB RAM` : "",
+    candidate.sim === "esim" ? "eSIM" : candidate.sim === "chip" ? "Chip" : "",
+    candidate.region, candidate.colour,
+    candidate.watts !== null ? `${candidate.watts} W` : "", candidate.length,
+    candidate.generation ? `${candidate.generation}.ª generación` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) {
@@ -89,7 +102,9 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
               <thead>
                 <tr className="border-b border-bd-border">
                   <th scope="col" className="p-2">#</th>
+                  <th scope="col" className="p-2">Tipo</th>
                   <th scope="col" className="p-2">Modelo sugerido</th>
+                  <th scope="col" className="p-2">Variante</th>
                   <th scope="col" className="p-2">Capacidad</th>
                   <th scope="col" className="p-2">Batería</th>
                   <th scope="col" className="p-2">Serie / IMEI</th>
@@ -101,7 +116,9 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
                 {preview.candidates.map(candidate => (
                   <tr key={candidate.id} className="border-b border-bd-border align-top">
                     <td className="p-2">{candidate.id}</td>
+                    <td className="p-2">{LINE_LABELS[candidate.line]}</td>
                     <td className="p-2">{candidate.model}</td>
+                    <td className="p-2">{variantOf(candidate) || "—"}</td>
                     <td className="p-2">{candidate.capacityGb !== null ? String(candidate.capacityGb) + " GB" : "—"}</td>
                     <td className="p-2">{candidate.batteryPercent !== null ? String(candidate.batteryPercent) + "%" : "—"}</td>
                     <td className="p-2">{masked(candidate.serial)} / {masked(candidate.imei)}
@@ -118,6 +135,16 @@ export function InventoryTextPreview({ canSeeCosts }: { canSeeCosts: boolean }) 
               </tbody>
             </table>
           </div>
+          {preview.unrecognized.length ? (
+            <details className="text-xs">
+              <summary>{preview.unrecognized.length} líneas no reconocidas: revisa que ninguna sea un producto</summary>
+              <ul className="mt-2 space-y-1" aria-label="Líneas no reconocidas">
+                {preview.unrecognized.map((item, index) => (
+                  <li key={index}><span className="font-mono">{item.line}</span> — {item.reason}</li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
           <p className="text-xs text-muted">
             Ningún candidato está confirmado. Las cantidades no se deducen de filas repetidas;
             una lista del proveedor no constituye recepción física. Luhn no verifica la existencia real de un equipo.

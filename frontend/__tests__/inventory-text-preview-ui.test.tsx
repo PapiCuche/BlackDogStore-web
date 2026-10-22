@@ -1,0 +1,34 @@
+import { fireEvent, render, screen, within } from '@testing-library/react';
+
+import { InventoryTextPreview } from '@/app/admin/components/InventoryTextPreview';
+
+/** INV-TEXT-02 · la vista previa dice qué variante leyó y qué líneas no reconoció, con su motivo. */
+
+function analyze(text: string, canSeeCosts = true) {
+  render(<InventoryTextPreview canSeeCosts={canSeeCosts} />);
+  fireEvent.change(screen.getByLabelText('Línea declarada'), { target: { value: 'new' } });
+  fireEvent.change(screen.getByLabelText('Texto para reconocer'), { target: { value: text } });
+  fireEvent.click(screen.getByRole('button', { name: /Analizar/ }));
+}
+
+it('muestra tipo, variante y costo de cada candidato', () => {
+  analyze('IPH 17 pro chip 256gb LLA 4370 blanco\nAirPods Pro 2 850 blanco');
+  const rows = screen.getAllByRole('row').slice(1);
+  expect(rows[0]).toHaveTextContent('Nuevo');
+  expect(rows[0]).toHaveTextContent('iPhone 17 Pro');
+  expect(rows[0]).toHaveTextContent('Chip · LL/A · blanco');
+  expect(rows[0]).toHaveTextContent('4370');
+  expect(rows[1]).toHaveTextContent('Accesorio');
+});
+
+it('las líneas no reconocidas se listan con su motivo', () => {
+  analyze('Buenos días 👋\nNokia 3310 150\nIPH 15 128 2300 negro');
+  const list = screen.getByRole('list', { name: 'Líneas no reconocidas' });
+  expect(within(list).getByText(/Nokia 3310 150/).closest('li')).toHaveTextContent('Modelo no reconocido');
+  expect(within(list).getByText(/Buenos días/).closest('li')).toHaveTextContent('Texto sin producto');
+});
+
+it('sin permiso de costos, el costo no aparece', () => {
+  analyze('IPH 15 128 2300 negro', false);
+  expect(screen.queryByText('2300')).toBeNull();
+});
