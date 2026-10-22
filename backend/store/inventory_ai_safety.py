@@ -21,18 +21,36 @@ MAX_CANDIDATES = 300
 TIMEOUT_SECONDS = 15
 _TEXT_MAX = 120
 
+_INVISIBLE = re.compile('[\u200b\u200c\u200d\u2060\ufeff\u00ad]')
+_DASHES = re.compile('[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]')
 _EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
-#: A run of digit groups joined by single spaces, dots or dashes («13 35 693803 564380 9»).
-_DIGIT_RUN = re.compile(r'\d+(?:[ .\-]\d+)*')
+_EMAIL_SPOKEN = re.compile(
+    r'(?i)[\w.+-]+\s*(?:\[at\]|\(at\)|\bat\b|\barroba\b)\s*[\w-]+'
+    r'(?:\s*(?:\.|\[dot\]|\(dot\)|\bdot\b|\bpunto\b)\s*[\w-]+)+')
+#: A run of digit groups joined by one separator each: space of any kind, newline, dot, dash or slash.
+_DIGIT_RUN = re.compile(r'\d+(?:[\s.\-/]\d+)*')
 _IMEI_WORD = re.compile(r'(?i)imei\s*\d?\s*[:#=]?\s*$')
+#: How an IMEI is usually written in groups (TAC 8 = 2+6, serial 6, check 1).
+_IMEI_GROUPS = {(2, 6, 6), (2, 6, 6, 1), (8, 6), (8, 6, 1), (2, 6, 7), (8, 7)}
 _SERIAL = re.compile(
-    r'(?i)\b(n[uú]mero de serie|nro\.? de serie|N/S|S/N|NS|SN|serie|serial)(\s*[:#=]?\s*)([A-Z0-9]{6,20})\b')
-_DOCUMENT = re.compile(r'(?i)\b(DNI|RUC|CE|carn[eé] de extranjer[ií]a)(\s*[:#=]?\s*)(\d{8,12})\b')
-_PHONE = re.compile(r'(?<![\d/])(?:\+?51[\s-]?)?9\d{2}[\s-]?\d{3}[\s-]?\d{3}(?![\d/])')
-#: A name follows the words that introduce one: «Cliente: Juan Pérez», «Sr. Díaz», «llamar a Rosa».
+    r'(?i:\b(n[uú]mero de serie|nro\.? de serie|N/S|S/N|NS|SN|serie|serial))(\s*[:#=]?\s*)'
+    r'([A-Za-z0-9]{3,20}(?:[ \-](?!(?:IMEI|NS|SN|DNI|RUC)\b)[A-Z0-9]{2,10}){0,3})')
+_DOCUMENT = re.compile(
+    r'(?i:\b(DNI|RUC|CE|carn[eé] de extranjer[ií]a))(\s*[:#=]?\s*)(\d{1,3}(?:[.\s]\d{3}){2}|\d{8,12})')
+_BARE_RUC = re.compile(r'(?<!\d)(?:10|15|16|17|20)\d{9}(?!\d)')
+_PHONE = re.compile(r'(?<!\d)(?:\+?51[\s.\-]?)?9(?:[\s.\-]?\d){8}(?!\d)')
+_LANDLINE = re.compile(r'(?<!\d)01[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)')
+#: A name follows the words that introduce one, whatever its case: «Cliente: juan pérez», «SR. DÍAZ».
 _NAME = re.compile(
-    r'(?i:\b(cliente|contacto|nombre|comprador|vendedor|atiende|llamar a|sr\.?|sra\.?|srta\.?))(\s*:?\s*)'
-    r'([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,2})')
+    r'(?i:\b(cliente|contacto|nombre|comprador|vendedor|atiende|llamar a|sr\.?|sra\.?|srta\.?)(?![\w]))'
+    r'([ \t]*:?[ \t]*)([^\W\d_]+(?:[ \t]+[^\W\d_]+){0,2})')
+
+
+def normalize(text: str) -> str:
+    """One way of writing: compatibility forms folded (NFKC), invisible characters out, every dash a «-»."""
+    import unicodedata
+
+    return _DASHES.sub('-', _INVISIBLE.sub('', unicodedata.normalize('NFKC', text)))
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -50,26 +68,27 @@ def _luhn_ok(digits: str) -> bool:
 def _imei_spans(run: str, before: str) -> list:
     """
     Where, inside one run of digit groups, IMEIs are: one group of 14 to 16
-    digits, consecutive groups that make 15 digits passing Luhn, or 14 to 16
-    digits right after the word «IMEI». A model number before it («iPhone 13»)
-    stays outside.
+    digits; consecutive groups that make 15 digits passing Luhn; the usual
+    groupings of 14 or 15 digits (2+6+6, 8+6, …); or 14 to 16 digits right
+    after the word «IMEI». A model number before it («iPhone 13») stays outside.
     """
     groups = [(m.start(), m.end(), m.group(0)) for m in re.finditer(r'\d+', run)]
     spans, i = [], 0
     while i < len(groups):
-        found = None
+        found_at = None
         digits = ''
         for j in range(i, len(groups)):
             digits += groups[j][2]
             if len(digits) > 16:
                 break
+            shape = tuple(len(group[2]) for group in groups[i:j + 1])
             single = j == i and 14 <= len(digits) <= 16
             keyword = 14 <= len(digits) <= 16 and i == 0 and _IMEI_WORD.search(before)
-            if single or (len(digits) == 15 and _luhn_ok(digits)) or keyword:
-                found = (groups[i][0], groups[j][1])
-        if found:
-            spans.append(found)
-            i = next(k for k, group in enumerate(groups) if group[1] == found[1]) + 1
+            if single or (len(digits) == 15 and _luhn_ok(digits)) or shape in _IMEI_GROUPS or keyword:
+                found_at = j
+        if found_at is not None:
+            spans.append((groups[i][0], groups[found_at][1]))
+            i = found_at + 1
         else:
             i += 1
     return spans
@@ -90,8 +109,8 @@ def _redact_imeis(text: str, keep) -> str:
 #: field -> kind. Nothing else survives.
 _FIELDS = {
     'brand': 'text', 'model': 'text', 'capacity': 'text', 'ram': 'text', 'color': 'text', 'sim': 'text',
-    'region': 'text', 'condition': 'text', 'serial': 'text', 'imei': 'text', 'imei2': 'text',
-    'supplier_cost': 'text', 'quantity': 'count', 'battery': 'percent',
+    'region': 'text', 'condition': 'text', 'serial': 'serial', 'imei': 'imei', 'imei2': 'imei',
+    'supplier_cost': 'cost', 'quantity': 'count', 'battery': 'percent',
 }
 
 
@@ -109,24 +128,47 @@ def redact(text: str) -> tuple[str, dict]:
         secrets[placeholder] = value
         return placeholder
 
+    def serial(m):
+        value = m.group(3)
+        if len(re.sub(r'[^A-Za-z0-9]', '', value)) < 6:
+            return m.group(0)
+        return m.group(1) + m.group(2) + keep('SERIE', value)
+
+    text = normalize(text)
     text = _EMAIL.sub(lambda m: keep('EMAIL', m.group(0)), text)
+    text = _EMAIL_SPOKEN.sub(lambda m: keep('EMAIL', m.group(0)), text)
     text = _redact_imeis(text, keep)
-    text = _SERIAL.sub(lambda m: m.group(1) + m.group(2) + keep('SERIE', m.group(3)), text)
+    text = _SERIAL.sub(serial, text)
     text = _DOCUMENT.sub(lambda m: m.group(1) + m.group(2) + keep('DOC', m.group(3)), text)
+    text = _BARE_RUC.sub(lambda m: keep('DOC', m.group(0)), text)
     text = _PHONE.sub(lambda m: keep('TEL', m.group(0)), text)
+    text = _LANDLINE.sub(lambda m: keep('TEL', m.group(0)), text)
     text = _NAME.sub(lambda m: m.group(1) + m.group(2) + keep('NOMBRE', m.group(3)), text)
     return text, secrets
 
 
+_COST = re.compile(r'^\d{1,7}(?:[.,]\d{1,2})?$')
+_IMEI_VALUE = re.compile(r'^(?:\[IMEI_\d+\]|\d{15})$')
+_SERIAL_VALUE = re.compile(r'^(?:\[SERIE_\d+\]|[A-Za-z0-9][A-Za-z0-9 \-]{2,39})$')
+MAX_QUANTITY = 100_000
+
+
 def _value(kind, value):
-    if kind == 'text':
+    if kind in ('text', 'cost', 'imei', 'serial'):
         # Data, never markup: no angle brackets, bounded.
         text = value.replace('<', '').replace('>', '').strip() if isinstance(value, str) else ''
-        return text[:_TEXT_MAX] or None
+        text = text[:_TEXT_MAX]
+        if kind == 'cost':
+            return text if _COST.match(text) else None
+        if kind == 'imei':
+            return text if _IMEI_VALUE.match(text) else None
+        if kind == 'serial':
+            return text if _SERIAL_VALUE.match(text) else None
+        return text or None
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     if kind == 'count':
-        return value if value >= 0 else None
+        return value if 0 <= value <= MAX_QUANTITY else None
     return value if 0 <= value <= 100 else None
 
 
@@ -148,10 +190,28 @@ def clean_candidates(answer) -> list[dict]:
     return rows
 
 
+#: Which placeholders go back into which field. Anything else (a name, a phone, an
+#: e-mail, a document) is never put back: a field that carries one is dropped.
+_RESTORABLE = {'imei': 'IMEI', 'imei2': 'IMEI', 'serial': 'SERIE'}
+_PLACEHOLDER = re.compile(r'\[([A-Z]+)_\d+\]')
+
+
 def restore(rows: list[dict], secrets: dict) -> list[dict]:
-    """Put the identifiers back, here on the server, into the text fields that name their placeholder."""
-    if not secrets:
-        return rows
-    pattern = re.compile('|'.join(re.escape(key) for key in secrets))
-    return [{key: pattern.sub(lambda m: secrets[m.group(0)], value) if isinstance(value, str) else value
-             for key, value in row.items()} for row in rows]
+    """Put identifiers back, here on the server, only where they belong; drop a field holding any other."""
+    restored = []
+    for row in rows:
+        out = {}
+        for key, value in row.items():
+            if isinstance(value, str) and _PLACEHOLDER.search(value):
+                kinds = {m.group(1) for m in _PLACEHOLDER.finditer(value)}
+                if kinds != {_RESTORABLE.get(key)} or any(m.group(0) not in secrets
+                                                          for m in _PLACEHOLDER.finditer(value)):
+                    continue
+                value = _PLACEHOLDER.sub(lambda m: secrets[m.group(0)], value)
+                if key in ('imei', 'imei2'):
+                    value = re.sub(r'\D', '', value)
+                    if len(value) != 15:
+                        continue
+            out[key] = value
+        restored.append(out)
+    return restored

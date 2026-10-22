@@ -300,3 +300,104 @@ class ConcurrentQuotaTest(TransactionTestCase):
             thread.join(timeout=20)
         self.assertEqual(sorted(result.used for result in outcomes), [False, True], outcomes)
         self.assertEqual(InventoryAIUsage.objects.filter(company=company).count(), 1)
+
+
+class SecondAuditTest(TestCase):
+    """Independent review of #148: each text that leaked, pinned."""
+
+    def gone(self, text, *values):
+        redacted, secrets = safety.redact(text)
+        flat = re.sub(r'\s', '', redacted).lower()
+        for value in values:
+            self.assertNotIn(re.sub(r'\s', '', value).lower(), flat, redacted)
+        return redacted
+
+    def test_imeis_with_unicode_separators(self):
+        for text in ('IMEI 49\xa0015420\xa0323751\xa08', 'IMEI 49015420\n323751 8', 'IMEI 49015420/323751/8',
+                     'IMEI 35345678​9012345', 'IMEI 49–015420–323751–8', 'imei\t490154203237518'):
+            with self.subTest(text=text):
+                self.gone(text, '490154203', '0154203237518')
+
+    def test_a_split_fourteen_digit_imei_in_its_usual_groups(self):
+        self.gone('equipo 35 345678 901234 negro', '345678901234')
+
+    def test_names_whatever_their_case(self):
+        for text in ('cliente juan perez', 'CLIENTE JUAN PEREZ', 'sr. díaz', 'Contacto: rosa huamán'):
+            with self.subTest(text=text):
+                self.gone(text, text.split()[-1])
+
+    def test_obfuscated_emails(self):
+        for text in ('juan [at] gmail.com', 'juan(at)gmail(dot)com', 'juan＠gmail.com', 'juan arroba gmail punto com'):
+            with self.subTest(text=text):
+                self.gone(text, 'juan')
+
+    def test_phones_with_dots_pairs_links_and_landlines(self):
+        for text in ('999.111.222', '999 11 22 33', 'wa.me/51999111222', 'fijo 01 234 5678'):
+            with self.subTest(text=text):
+                self.gone(text, '111', '1122', '999111222', '2345678')
+
+    def test_serials_with_separators(self):
+        self.gone('SN: ABC-12345-XY batería 90%', 'ABC-12345-XY')
+        self.gone('S/N: C02 XY 12345', 'C02XY12345')
+
+    def test_dotted_dni_and_a_bare_ruc(self):
+        self.gone('DNI 12.345.678', '12.345.678')
+        self.gone('factura a 20123456789', '20123456789')
+
+    def test_prices_lists_still_survive(self):
+        text = 'precios 1200 1500 1800 2000 2200 · iPhone 13 128GB 3500 · 8/256 1930 · 4370 blanco'
+        self.assertEqual(safety.redact(text)[0], text)
+
+    def test_a_name_put_into_a_product_field_is_never_restored_there(self):
+        _, secrets = safety.redact('cliente Juan Pérez · IMEI 356938035643809')
+        rows = safety.restore([{'model': '[NOMBRE_1]', 'imei': '[IMEI_1]'}], secrets)
+        self.assertEqual(rows[0]['imei'], '356938035643809')
+        self.assertNotIn('Juan', rows[0].get('model', ''))
+
+    def test_answer_values_are_checked_not_trusted(self):
+        rows = safety.clean_candidates({'candidates': [
+            {'model': 'A', 'supplier_cost': 'gratis', 'quantity': 10 ** 18, 'imei': '12345'},
+            {'model': 'B', 'supplier_cost': '2300.50', 'quantity': 3},
+        ]})
+        self.assertEqual(rows[0], {'model': 'A'})
+        self.assertEqual(rows[1], {'model': 'B', 'supplier_cost': '2300.50', 'quantity': 3})
+
+
+@override_settings(INVENTORY_AI_ENABLED=True, INVENTORY_AI_USER_PER_MINUTE=10)
+class CostAndSettingsTest(_Base):
+    def test_a_negative_or_unreadable_cost_never_lowers_the_spend(self):
+        for cost in ('-5', 'NaN', {'x': 1}, 'Infinity'):
+            with self.subTest(cost=cost):
+                InventoryAIUsage.objects.all().delete()
+                result = self.run_with(FakeProvider(cost='0'))  # warm path
+                provider = FakeProvider()
+                provider.cost = cost
+                result = self.run_with(provider)
+                self.assertFalse(result.used)
+                self.assertEqual(result.reason, 'bad_cost')
+                self.assertGreaterEqual(min(InventoryAIUsage.objects.values_list('cost_usd', flat=True)), 0)
+                self.assertFalse(InventoryAIUsage.objects.filter(ok__isnull=True).exists())
+
+    def test_a_cost_above_the_reserve_is_recorded_as_it_was(self):
+        self.run_with(FakeProvider(cost='0.20'))
+        self.assertEqual(InventoryAIUsage.objects.get().cost_usd, Decimal('0.20'))
+
+    def test_a_provider_that_blows_up_leaves_no_open_reserve(self):
+        class Boom(FakeProvider):
+            def extract(self, text, *, timeout):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_with(Boom())
+        self.assertFalse(InventoryAIUsage.objects.filter(ok__isnull=True).exists())
+
+    def test_unreadable_budget_settings_fail_closed(self):
+        for budget, reserve in (('Infinity', '0.05'), ('nan', '0.05'), ('5', '-1'), ('abc', '0.05')):
+            with self.subTest(budget=budget, reserve=reserve), override_settings(
+                    INVENTORY_AI_MONTHLY_BUDGET_USD=budget, INVENTORY_AI_MAX_COST_PER_CALL=reserve):
+                self.assertFalse(inventory_ai.within_quota(self.company, self.user))
+
+    def test_no_call_without_a_person(self):
+        with mock.patch.object(inventory_ai, 'get_provider', return_value=FakeProvider()):
+            result = inventory_ai.extract(self.company, None, TEXT, requested=True, permitted=True)
+        self.assertEqual((result.used, result.reason), (False, 'forbidden'))

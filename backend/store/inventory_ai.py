@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -73,21 +74,33 @@ def get_provider():
 
 
 def _month_start(now):
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """The first instant of this month in the shop's time zone (Lima), not UTC."""
+    return timezone.localtime(now).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _money_setting(name: str) -> Optional[Decimal]:
+    """A finite, non-negative amount from settings, or None: an unreadable value fails CLOSED (no AI)."""
+    from decimal import InvalidOperation
+
+    try:
+        value = Decimal(str(getattr(settings, name)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return value if value.is_finite() and value >= 0 else None
 
 
 def budget_status(company) -> dict:
     """This month's spend against the budget, and the highest alert level reached (50, 80, 100 or None)."""
-    budget = Decimal(str(settings.INVENTORY_AI_MONTHLY_BUDGET_USD))
+    budget = _money_setting('INVENTORY_AI_MONTHLY_BUDGET_USD')
     spent = InventoryAIUsage.objects.filter(company=company, at__gte=_month_start(timezone.now())) \
         .aggregate(total=Sum('cost_usd'))['total'] or Decimal('0')
-    share = (spent * 100 / budget) if budget > 0 else Decimal('100')
+    share = (spent * 100 / budget) if budget else Decimal('100')
     reached = [level for level in BUDGET_ALERTS if share >= level]
     return {'spent': spent, 'budget': budget, 'alert': reached[-1] if reached else None}
 
 
-def _max_cost() -> Decimal:
-    return Decimal(str(settings.INVENTORY_AI_MAX_COST_PER_CALL))
+def _max_cost() -> Optional[Decimal]:
+    return _money_setting('INVENTORY_AI_MAX_COST_PER_CALL')
 
 
 def within_quota(company, user) -> bool:
@@ -102,8 +115,10 @@ def within_quota(company, user) -> bool:
         return False
     if mine.filter(at__gte=now - timedelta(days=1)).count() >= settings.INVENTORY_AI_USER_PER_DAY:
         return False
-    status = budget_status(company)
-    return status['spent'] + _max_cost() <= status['budget']
+    status, reserve = budget_status(company), _max_cost()
+    if status['budget'] is None or reserve is None:
+        return False
+    return status['spent'] + reserve <= status['budget']
 
 
 def breaker_open() -> bool:
@@ -175,6 +190,8 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
     is cleaned to the fixed shape; each call is recorded, never its text.
     Anything that fails means no AI: the caller goes on the local way.
     """
+    if user is None:
+        return ExtractResult(False, FORBIDDEN, [])
     decision = decide(company, user, requested=requested, permitted=permitted)
     if not decision.use_ai:
         return ExtractResult(False, decision.reason, [])
@@ -182,26 +199,55 @@ def extract(company, user, text: str, *, requested: bool, permitted: bool) -> Ex
         return ExtractResult(False, 'too_long', [])
     redacted, secrets = safety.redact(text)
     provider = get_provider()
-    # Reserve under the company's lock: two calls at once cannot both take the last of a quota or budget.
+    # Reserve under the company's AND the person's lock: two calls at once cannot both take the last of a
+    # quota (the person's counts every company) or of the budget.
     with transaction.atomic():
         InventoryAISettings.objects.select_for_update().filter(company=company).first()
+        get_user_model().objects.select_for_update().filter(pk=user.pk).first()
         if not within_quota(company, user):
             return ExtractResult(False, QUOTA_EXHAUSTED, [])
+        reserve = _max_cost()
         usage = InventoryAIUsage.objects.create(company=company, user=user, chars=len(text), ok=None,
-                                                cost_usd=_max_cost())
+                                                cost_usd=reserve)
+    closed = False
 
     def close(ok, cost):
-        InventoryAIUsage.objects.filter(pk=usage.pk).update(ok=ok, cost_usd=min(Decimal(cost or 0), _max_cost()))
+        nonlocal closed
+        InventoryAIUsage.objects.filter(pk=usage.pk).update(ok=ok, cost_usd=cost)
+        closed = True
 
     try:
-        answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
-    except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
-        close(False, 0)
-        return ExtractResult(False, 'failed', [])
+        try:
+            answer, cost = provider.extract(redacted, timeout=safety.TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 — a provider that fails is no AI, never a 500
+            close(False, Decimal('0'))
+            return ExtractResult(False, 'failed', [])
+        spent = _cost(cost)
+        if spent is None:
+            # Unreadable or negative: it never lowers the spend — the reserve stays as spent.
+            close(False, reserve)
+            return ExtractResult(False, 'bad_cost', [])
+        try:
+            rows = safety.clean_candidates(answer)
+        except safety.BadAnswer:
+            close(False, spent)
+            return ExtractResult(False, 'bad_answer', [])
+        close(True, spent)
+        return ExtractResult(True, None, safety.restore(rows, secrets))
+    finally:
+        if not closed:
+            # Anything that escaped (a kill, a BaseException): the reserve is not left open.
+            close(False, reserve)
+
+
+def _cost(value) -> Optional[Decimal]:
+    """What the provider says the call cost, recorded as it was (not capped), or None if unreadable or < 0."""
+    from decimal import InvalidOperation
+
+    if isinstance(value, bool) or not isinstance(value, (int, str, Decimal)):
+        return None
     try:
-        rows = safety.clean_candidates(answer)
-    except safety.BadAnswer:
-        close(False, cost)
-        return ExtractResult(False, 'bad_answer', [])
-    close(True, cost)
-    return ExtractResult(True, None, safety.restore(rows, secrets))
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return amount if amount.is_finite() and amount >= 0 else None

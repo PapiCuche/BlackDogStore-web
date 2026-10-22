@@ -20,7 +20,15 @@ ADR por dominio, que no se reescriben.
 (`inventory_ai_safety.redact`) y guarda en el servidor: IMEI escritos de cualquier forma (de corrido, o en
 grupos con espacios, puntos o guiones si cumplen Luhn o siguen a «IMEI»), series tras sus palabras (NS, N/S,
 S/N, serie, número de serie…), DNI/RUC/CE, teléfonos, correos y nombres tras «cliente», «contacto», «Sr.»…;
-un nombre sin esa palabra no se detecta: la redacción baja el riesgo, no autoriza enviar datos de clientes. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
+un nombre sin esa palabra no se detecta: la redacción baja el riesgo, no autoriza enviar datos de clientes.
+Segunda auditoría: el texto se normaliza antes (NFKC, sin caracteres invisibles, guiones unificados); IMEI con
+cualquier espacio, salto de línea, punto, guion o barra, y en sus agrupaciones habituales (2+6+6, 8+6);
+nombres en cualquier caja; correos «arroba/at/punto»; teléfonos con puntos, pares, `wa.me` y fijos 01; series
+con grupos; DNI con puntos y RUC suelto. Sólo IMEI y series vuelven, y sólo a sus campos; un nombre o teléfono
+que la respuesta ponga en otro campo se descarta. Costo informado por el proveedor: finito y ≥ 0, se registra
+tal cual (sin tope); ilegible o negativo = «sin IA» y la reserva queda como gastada. Ajustes ilegibles
+(presupuesto o reserva infinitos, NaN, negativos) cierran: sin IA. Sin persona no hay llamada; el cupo de la
+persona se bloquea junto al de la empresa; el mes se cuenta en hora de Lima. La respuesta se limpia a campos conocidos y tipos fijos (`clean_candidates`): nunca una acción,
 un precio de venta, una empresa o un permiso; máximo 300 candidatos y 60 000 caracteres; cantidad sólo entera
 o desconocida. Cuotas por persona (2/minuto, 20/día), presupuesto mensual por empresa cortado al 100 % con
 alertas 50/80/100 (US$5 por defecto). Cada llamada reserva su costo máximo (`INVENTORY_AI_MAX_COST_PER_CALL`,
