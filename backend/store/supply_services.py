@@ -276,7 +276,8 @@ def _offer_values(company, fields: dict, *, current=None, may_view_costs: bool) 
         # unconfirmed offer with the SAME number it holds (the editor resends it) confirms nothing (review).
         unchanged = (current is not None and not current.availability_confirmed
                      and values['confirmed_quantity'] == current.confirmed_quantity)
-        # Second review: a person may confirm the very number the offer holds, explicitly.
+        # Second review: a person may confirm the very number the offer holds, explicitly. An explicit False is
+        # not a way to un-confirm: a quantity given always means the supplier stated it (leave it blank instead).
         explicit = fields.get('availability_confirmed') is True
         values['availability_confirmed'] = values['confirmed_quantity'] is not None and (explicit or not unchanged)
     if fields.get('availability_unconfirmed_keeping_commitments') and current is not None:

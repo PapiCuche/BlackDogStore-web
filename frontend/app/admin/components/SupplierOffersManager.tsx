@@ -308,7 +308,9 @@ function OfferForm({
           type="number"
           min={0}
           value={draft.confirmed_quantity}
-          onChange={(e) => setDraft({ ...draft, confirmed_quantity: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, confirmed_quantity: e.target.value,
+            // A blank quantity is never «confirmed»: the mark goes with it.
+            ...(e.target.value.trim() === "" ? { confirm_availability: false } : {}) })}
           aria-invalid={fields.confirmed_quantity ? true : undefined}
           className={`mt-1.5 ${internalInputClass}`}
         />
