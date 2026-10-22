@@ -46,5 +46,6 @@ it('el aviso muestra el número completo y lo completa sólo si se pide', () => 
   fireEvent.click(screen.getByRole('button', { name: `Completar con ${FULL.slice(-1)}` }));
   expect(onComplete).toHaveBeenCalledWith(FULL);
   rerender(<ImeiCompletionHint value={FULL} onComplete={onComplete} />);
-  expect(screen.queryByRole('status')).toBeNull();
+  // The live region stays (so the next prompt is announced), empty.
+  expect(screen.getByRole('status')).toBeEmptyDOMElement();
 });
