@@ -55,7 +55,7 @@ import io
 import zipfile
 from dataclasses import dataclass, field
 
-from django.db.models import IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models import IntegerField, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -128,6 +128,11 @@ VISIBILITY_PUBLISHED, VISIBILITY_INTERNAL = 'published', 'internal'
 #: A device that is physically in the shop. The others left: sold or written off.
 ON_THE_SHELF = (StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED)
 
+#: INV-EXP-01 — the line a product is sold on. A device belongs to a model or is
+#: counted by serial; everything else on the new line is an accessory.
+LINE_NEW, LINE_USED, LINE_ACCESSORY = 'new', 'used', 'accessory'
+LINES = (LINE_NEW, LINE_USED, LINE_ACCESSORY)
+
 #: filter -> the values it takes. Anything else is refused, never ignored.
 FILTER_CHOICES = {
     'type': (TYPE_SERIALIZED, TYPE_QUANTITY),
@@ -187,6 +192,8 @@ class ExportFilters:
     condition: str = ''
     visibility: str = ''
     is_active: str = ''
+    #: INV-EXP-01: which lines (`LINES`); empty means all of them.
+    lines: tuple = ()
     #: Whether any cost column carries data: only for a caller holding `costs.view` (DC1).
     include_cost: bool = False
 
@@ -195,7 +202,7 @@ class ExportFilters:
             'branches': sorted(branch.pk for branch in self.branches),
             'category': self.category.pk if self.category else None,
             'type': self.type, 'stock': self.stock, 'condition': self.condition,
-            'visibility': self.visibility, 'is_active': self.is_active,
+            'visibility': self.visibility, 'is_active': self.is_active, 'lines': sorted(self.lines),
         }
 
 
@@ -397,7 +404,20 @@ def _products(company, filters: ExportFilters):
         queryset = queryset.filter(is_published_online=filters.visibility == VISIBILITY_PUBLISHED)
     if filters.is_active:
         queryset = queryset.filter(is_active=filters.is_active == 'true')
+    if filters.lines and set(filters.lines) != set(LINES):
+        queryset = queryset.filter(_line_query(filters.lines))
     return queryset
+
+
+def _line_query(lines) -> Q:
+    """Products on any of `lines` (INV-EXP-01)."""
+    used = Q(condition_line=Product.CONDITION_USED)
+    device = Q(product_model__isnull=False) | Q(is_serialized=True)
+    parts = {LINE_USED: used, LINE_NEW: ~used & device, LINE_ACCESSORY: ~used & ~device}
+    query = Q(pk__in=[])
+    for line in lines:
+        query |= parts[line]
+    return query
 
 
 def _in_branches(queryset, branches):
