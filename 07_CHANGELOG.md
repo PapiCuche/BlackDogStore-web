@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-21 — INV-TEXT-01: vista previa local de listas (EN RAMA, no desplegado)
+
+**Added**
+- Reconocedor determinista solo en navegador para pegar texto de WhatsApp y revisar candidatos sin API ni escritura.
+- Alertas de IMEI Luhn, duplicados, cantidad desconocida y conflictos de condición.
+- Tests focales de parser y documento de seguridad/roadmap (docs/inventory-ai-safe-rollout.md).
+
+**Preserved**
+- Importadores, exportaciones, stock real/Kardex, módulos manuales, precios comerciales, fiscal y checkout.
+
+**Pending**
+- Ejecución Jest/typecheck/lint/build/E2E, revisión funcional, aceptación y merge. API Claude y secretos quedan para fase posterior de despliegue.
+
+
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
